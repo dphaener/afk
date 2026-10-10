@@ -197,6 +197,8 @@ Last error: {error_summary}
 
 Run scoped verification — target only the files affected by this task. Never run the full test suite as a default.
 
+**Lean-cycle rules (apply to every sub-agent prompt and to your own commands):** run only the focused tests for the files touched plus the task's Acceptance Criteria commands, never the whole suite; never `sleep` or poll for a result; no single command may run longer than about four minutes.
+
 **Scoped Verification Algorithm:**
 
 1. **Extract scope.** Read the task's `**Files**` section. This is your scope input — the set of files the sub-agent was authorized to touch. (Do not use the cumulative branch diff; that is the reviewer's job.)
@@ -256,20 +258,20 @@ Note: Fix delegations use the same model tier as the original task. If the fix i
 
 ### C. Mark Completion
 
-After passing verification, mark the task complete in the plan file:
+After passing verification, mark the task complete with the `afk plan check` command, never by editing the plan file. It is the plan's only writer and is safe when several writers mark at once:
 
 ```
-Edit(".afk/plans/{name}.md"):
-  Replace: "- [ ] (WN.TM)"
-  With:    "- [x] (WN.TM)"
+afk plan check --project {working-dir} {name} WN.TM done
 ```
+
+`{working-dir}` is the absolute project root and `{name}` the plan name. A non-zero exit means the mark did not land: read its message, fix the cause (for example `afk` missing from PATH), and run it again before moving on.
 
 ### Verification Checklist (ALL must pass):
 ```
 [ ] Automated: Scoped lint and tests pass on affected files (trigger files detected and handled; fallback logged if used; cap noted if applied)
 [ ] Manual: Read EVERY changed file, verified logic matches requirements
 [ ] Cross-check: Sub-agent claims match actual code
-[ ] Plan updated: Task marked [x] in plan file
+[ ] Plan updated: `afk plan check ... done` exited 0 for the task
 ```
 
 ---
@@ -287,17 +289,9 @@ Use the `# Failure Retry Prompt` block injected into this command's context belo
 
 2. **Maximum 3 total attempts per task** (original + up to 2 retries).
 3. After 3 failed attempts:
-   - Append to `.afk/{plan-name}/issues.md`:
+   - Mark the task failed with the command, giving a one-line diagnosis (it writes the `- [!] (WN.TM) {title} FAILED: {reason}` line and appends the `## (WN.TM) FAILED` entry to `.afk/{plan-name}/issues.md` itself, so do not write either by hand):
      ```
-     ## [TIMESTAMP] FAILED: (WN.TM)
-     Task: {title}
-     Attempts: 3
-     Last error: {error}
-     Reason: {diagnosis}
-     ```
-   - Mark task as failed in the plan file:
-     ```
-     - [!] (WN.TM) FAILED: {reason}
+     afk plan check --project {working-dir} --reason "{reason}" {name} WN.TM failed
      ```
    - Continue to independent tasks that do not depend on this one.
 
@@ -396,7 +390,7 @@ The caller decides the review step; do not prompt the user to run `/afk:review` 
 - Read all notepad files before every delegation
 - Run scoped automated verification (lint + tests on affected files only) after every delegation
 - Read every changed file manually after every delegation
-- Mark tasks complete (`- [x]`) in the plan file after verification passes
+- Mark tasks complete with `afk plan check ... done` after verification passes
 - Execute independent tasks within a wave concurrently
 - Pass inherited wisdom to every sub-agent
 - Delegate ALL code fixes found during verification back to a sub-agent — never edit source files directly

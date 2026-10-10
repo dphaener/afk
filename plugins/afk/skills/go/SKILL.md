@@ -46,6 +46,7 @@ Plugin root — record this value; Phases B and C substitute it as `{plugin-root
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/autonomy.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/grill.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/crucible.md"`
+!`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/project-docs.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/plan-format.md"`
 
 > Note: the Light-Path Flow block is deliberately NOT loaded — the conductor always elects the FULL path (see the conductor skill's Phase A overrides).

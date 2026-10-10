@@ -8,8 +8,17 @@
 // plan.go parses `.afk/plans/{name}.md` per the schema in
 // plugins/afk/skills/planner/plan-format.md (in this repo). It
 // extracts exactly what that schema defines — waves, task IDs, titles,
-// checkbox states, Model tiers, and `**Depends on**` task dependencies — and
-// invents nothing beyond it.
+// checkbox states, Model tiers, `**Depends on**` task dependencies, the files
+// a task names (`**Files**`: Files and FileRefs) and its `**QA Scenarios**`
+// (QA: tool, steps, expected, evidence) — and invents nothing beyond it.
+//
+// The Files and QA fields are read leniently: a plan without them, with a
+// malformed scenario, or with `N/A` files parses without error and yields
+// empty or partial values. The strict check (every task has scenarios with
+// all four fields, exact file paths, evidence under `.afk/{plan}/evidence/`)
+// lives in plugins/afk/scripts/plan_to_args.rb, which runs before a plan is
+// executed; the dashboard must still show progress for a plan that check
+// would refuse.
 package state
 
 import (
@@ -98,6 +107,27 @@ type Task struct {
 	// the dashboard must still show progress for a plan the engine would
 	// refuse to run. Scheduling decides what to do with them.
 	DependsOn []string
+	// Files is the paths from the `**Files**` subsection with any trailing
+	// line range stripped (`internal/state/plan.go:107-125` becomes
+	// `internal/state/plan.go`), de-duplicated, in order. FileRefs is the
+	// same entries as written, ranges kept. `N/A` entries are dropped, so a
+	// task that says `N/A` or has no Files line has both nil. Globs and
+	// directories are kept verbatim: judging them is plan_to_args.rb's job.
+	Files    []string
+	FileRefs []string
+	// QA is the scenarios from the `**QA Scenarios**` subsection, nil when
+	// the subsection is absent. A scenario missing a field keeps that field
+	// as the empty string.
+	QA []QAScenario
+}
+
+// QAScenario is one `- Tool:` entry of a task's `**QA Scenarios**`. Evidence
+// has its backticks removed, as plan_to_args.rb emits it.
+type QAScenario struct {
+	Tool     string
+	Steps    string
+	Expected string
+	Evidence string
 }
 
 // Wave is a `### Wave N: {name}` heading plus its tasks. plan-format.md
@@ -136,6 +166,15 @@ var (
 	// at ANY label line, not just the labels this parser knows, otherwise
 	// an unrecognized label's text would be glued onto the dependency list.
 	labelRE = regexp.MustCompile(`^\s*\*\*([^*]+)\*\*:\s*(.*)$`)
+	// qaToolRE opens a scenario and qaFieldRE names its other fields. Both
+	// are matched line by line, never on the joined value, so a colon or the
+	// word "Expected" inside a step cannot split a scenario: only a line that
+	// STARTS with a key is a field (same rule as plan_to_args.rb).
+	qaToolRE  = regexp.MustCompile(`^\s*-\s+Tool:\s*(.*?)\s*$`)
+	qaFieldRE = regexp.MustCompile(`^\s*(Steps|Expected|Evidence):\s*(.*?)\s*$`)
+	// lineRangeRE is the optional trailing `:107-125` or `:107` on a file
+	// reference.
+	lineRangeRE = regexp.MustCompile(`:\d+(?:-\d+)?$`)
 )
 
 // ParsePlanFile reads and parses the plan file at path.
@@ -168,6 +207,14 @@ func ParsePlan(data []byte) (*Plan, error) {
 	var dependsRaw string
 	dependsOpen := false
 	dependsSeen := false
+	// filesRaw/filesOpen/filesSeen do for `**Files**` what the depends
+	// trio does for Depends on (first label wins, wrapped value ends at a
+	// blank or label line). qaIn says the lines now being read belong to
+	// the first `**QA Scenarios**` subsection, qaField is the scenario
+	// field a continuation line extends, and inFence skips fenced lines so
+	// an example block inside a task is not read as scenarios.
+	var filesRaw, qaField string
+	filesOpen, filesSeen, qaIn, qaSeen, inFence := false, false, false, false, false
 
 	lines := strings.Split(string(data), "\n")
 	for i, raw := range lines {
@@ -186,6 +233,7 @@ func ParsePlan(data []byte) (*Plan, error) {
 			curWave = nil
 			curTask = nil
 			dependsOpen = false
+			filesOpen, qaIn = false, false
 			continue
 		}
 
@@ -203,6 +251,7 @@ func ParsePlan(data []byte) (*Plan, error) {
 			curWave = &idx
 			curTask = nil
 			dependsOpen = false
+			filesOpen, qaIn = false, false
 			continue
 		}
 
@@ -220,6 +269,8 @@ func ParsePlan(data []byte) (*Plan, error) {
 			curTask = &idx
 			dependsOpen = false
 			dependsSeen = false
+			filesRaw, qaField = "", ""
+			filesOpen, filesSeen, qaIn, qaSeen, inFence = false, false, false, false, false
 			continue
 		}
 
@@ -227,6 +278,41 @@ func ParsePlan(data []byte) (*Plan, error) {
 		// Depends on value.
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") || labelRE.MatchString(line) {
 			dependsOpen = false
+			filesOpen = false
+		}
+
+		if curWave != nil && curTask != nil {
+			t := &plan.Waves[*curWave].Tasks[*curTask]
+			if strings.HasPrefix(strings.TrimSpace(line), "```") || strings.HasPrefix(strings.TrimSpace(line), "~~~") {
+				inFence = !inFence
+				continue
+			}
+			if inFence {
+				continue
+			}
+			if m := labelRE.FindStringSubmatch(line); m != nil {
+				label := strings.TrimSpace(m[1])
+				qaIn = label == "QA Scenarios" && !qaSeen
+				if qaIn {
+					qaSeen = true
+				}
+				qaField = ""
+				if label == "Files" && !filesSeen {
+					filesSeen, filesOpen = true, true
+					filesRaw = strings.TrimSpace(m[2])
+					t.Files, t.FileRefs = parseFileRefs(filesRaw)
+					continue
+				}
+			} else if strings.TrimSpace(line) == "" {
+				qaIn = false
+			} else if qaIn {
+				parseQALine(t, line, &qaField)
+				continue
+			} else if filesOpen {
+				filesRaw = strings.TrimSpace(filesRaw + " " + strings.TrimSpace(line))
+				t.Files, t.FileRefs = parseFileRefs(filesRaw)
+				continue
+			}
 		}
 
 		if m := dependsRE.FindStringSubmatch(line); m != nil {
@@ -265,6 +351,81 @@ func ParsePlan(data []byte) (*Plan, error) {
 		return nil, err
 	}
 	return plan, nil
+}
+
+// parseFileRefs splits a joined `**Files**` value into the paths (line range
+// stripped, de-duplicated) and the references as written. Backticks and
+// "(only if ...)" asides are dropped and `N/A` entries ignored. Both results
+// are nil when nothing is left, so "no usable files" is one shape.
+func parseFileRefs(raw string) (files, refs []string) {
+	raw = onlyIfRE.ReplaceAllString(raw, "")
+	seen := map[string]bool{}
+	for _, item := range strings.Split(raw, ",") {
+		ref := strings.TrimSpace(strings.ReplaceAll(item, "`", ""))
+		if ref == "" || strings.EqualFold(ref, "n/a") {
+			continue
+		}
+		refs = append(refs, ref)
+		path := lineRangeRE.ReplaceAllString(ref, "")
+		if !seen[path] {
+			seen[path] = true
+			files = append(files, path)
+		}
+	}
+	return files, refs
+}
+
+var onlyIfRE = regexp.MustCompile(`(?i)\s*\(only if[^)]*\)`)
+
+// parseQALine applies one non-blank line of a QA Scenarios subsection to t.
+// `- Tool:` opens a scenario; a Steps/Expected/Evidence line sets that field
+// of the open scenario; any other line continues the field above it. Lines
+// before the first `- Tool:` are ignored, so a malformed subsection yields
+// partial values rather than an error.
+func parseQALine(t *Task, line string, field *string) {
+	if m := qaToolRE.FindStringSubmatch(line); m != nil {
+		t.QA = append(t.QA, QAScenario{Tool: m[1]})
+		*field = "tool"
+		return
+	}
+	if len(t.QA) == 0 {
+		return
+	}
+	sc := &t.QA[len(t.QA)-1]
+	if m := qaFieldRE.FindStringSubmatch(line); m != nil {
+		*field = strings.ToLower(m[1])
+		setQAField(sc, *field, m[2])
+		return
+	}
+	if *field != "" {
+		setQAField(sc, *field, strings.TrimSpace(qaFieldValue(sc, *field)+" "+strings.TrimSpace(line)))
+	}
+}
+
+func qaFieldValue(sc *QAScenario, field string) string {
+	switch field {
+	case "tool":
+		return sc.Tool
+	case "steps":
+		return sc.Steps
+	case "expected":
+		return sc.Expected
+	default:
+		return sc.Evidence
+	}
+}
+
+func setQAField(sc *QAScenario, field, v string) {
+	switch field {
+	case "tool":
+		sc.Tool = v
+	case "steps":
+		sc.Steps = v
+	case "expected":
+		sc.Expected = v
+	default:
+		sc.Evidence = strings.TrimSpace(strings.ReplaceAll(v, "`", ""))
+	}
 }
 
 // parseDepends splits a joined `**Depends on**` value into task IDs. Each

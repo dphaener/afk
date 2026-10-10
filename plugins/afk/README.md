@@ -45,9 +45,13 @@ afk runs in one of two modes. Both avoid stops that exist only to ask permission
 - The Workflow engine opt-in question.
 - The "generate the plan?" confirmation after the grill.
 - The Crucible offer. The Crucible now runs automatically, only when the planner rates the plan's risk HIGH, and afk resolves its CRITICAL findings itself and records each in `## Assumptions`.
-- The ship approval: the commit and draft PR open without asking (see Ship below).
+- The ship approval: the commit (and, in default mode, the draft PR) happens without asking (see Ship below).
 
-**Stops that remain in default mode only:** an escalation-rule question during planning, a relayed `NEEDS_INPUT` from a sub-agent, and the `/afk:go` fix-loop cap (2 fix cycles exhausted, findings handed to you). Autonomous mode replaces the cap stop with a `[not approved]` draft PR and marks the session `failed`.
+**Stops that remain in default mode only:** an escalation-rule question during planning, a relayed `NEEDS_INPUT` from a sub-agent, and the `/afk:go` fix-loop cap (2 fix cycles exhausted, findings handed to you). Autonomous mode replaces the cap stop with a commit of the unapproved work on the session branch (no push, no PR) and marks the session `failed`.
+
+**The autonomous policy.** In autonomous mode the conductor follows seven rules, written out in `skills/conductor/prompts/autonomous.md`: never wait on a rubber stamp; take the recommended option on any question and record it; park instead of guessing; fix every confirmed blocker and major finding; never block on a check a machine cannot do; log unsolicited ideas instead of building them; and obey the project's `afk.toml` `[policy] notes` lines. **Parking** means the next step is irreversible or needs something only you can supply (a missing credential, a third-party dashboard, real money beyond your allowance): the conductor sets `awaiting_input`, sends a desktop notice, says what is missing, and ends its turn. Run `/afk:go --session {name}` again to resume. The inbox command that will later carry these records (`afk inbox add`) does not exist yet, so for now they go to `.afk/{name}/decisions.md`.
+
+**Stop before shipping.** An autonomous session ends at a reviewed commit on its own branch with `phase: done`. It does not push and does not open a pull request; the branch is yours to ship. The one exception is a session description that says how to ship (for example "push the branch and open a draft PR"); the conductor follows those instructions.
 
 **What can still pause a run.** Permission prompts from the Claude Code harness are outside afk's control and can pause a run in either mode, including the Workflow tool's own permission dialog the first time a script runs. Pre-approve the tools you trust in your Claude Code permissions if you want truly unattended runs.
 
@@ -75,7 +79,9 @@ Orchestrated task delegation with **real model selection**. The **Workflow engin
 
 **DAG scheduling.** Every task in a newly generated plan has a `**Depends on**` field: a comma-separated list of task IDs from earlier waves, or `none`. The engine starts a task as soon as everything it depends on has passed, so independent tasks overlap across wave boundaries. Tasks whose `**Files**` overlap never run concurrently and run in plan order. A **legacy plan** in which no task has the field falls back to wave barriers: each wave finishes before the next starts. A plan where only some tasks have the field is invalid.
 
-**Tiered verification.** Each task agent runs its own acceptance commands and self-reports `{status, checks, summary}`. A separate verifier agent runs only when the task is `heavy` or `reasoning` tier, touches a risky path (`.github/`, a `hooks/` directory, a test path), reported no checks, reported a non-zero exit code, or reported anything but `done`. Everything else passes on its self-report. A verifier FAIL triggers a fix agent, and the fix is re-verified. The Agent-loop keeps its orchestrator-run verification of every output.
+**No bookkeeping agent.** The engine does not spawn an agent to tick checkboxes. The task agent (or the verifier, when it certifies the task) runs `afk plan check --project {root} {plan} {task-id} done`, and a task that fails is recorded by `... failed --reason "{why}"`, which also adds an entry to `.afk/{plan-name}/issues.md`. The command takes a lock, so tasks that finish together cannot overwrite each other's ticks. If the run finishes and a tick did not land, the conductor's reconcile step corrects it from the run result.
+
+**Tiered verification.** Each task agent runs its own acceptance commands and the task's QA scenarios, saves each scenario's evidence under `.afk/{plan-name}/evidence/`, ticks its own checkbox with `afk plan check` and self-reports `{status, checks, summary}`. A separate verifier agent runs only when the task is `heavy` or `reasoning` tier, touches a risky path (`.github/`, a `hooks/` directory, a test path), reported no checks, reported a non-zero exit code, or reported anything but `done`. Everything else passes on its self-report. A verifier FAIL triggers a fix agent, and the fix is re-verified. The Agent-loop keeps its orchestrator-run verification of every output.
 
 Either engine sets the `model` parameter to the tier assigned during planning, and each sub-agent runs on the model corresponding to its tier per the afk Model Registry (see `plugins/afk/models.md` for current tier→model mappings), with behavioral guidance tuned to its tier's strengths. The orchestrator never writes code directly. If a task fails, the tier automatically escalates on retry (3 attempts): light → balanced → heavy → reasoning, with reasoning as the ceiling. On fallback, the caller retries with the tier's fallback alias per the registry.
 
@@ -83,13 +89,13 @@ Artifacts land in `.afk/{plan-name}/`.
 
 ### Phase 3: Review (`/afk:review`)
 
-Three-check verification, each with an adversarial critic on the `reasoning` tier:
+Three-check verification:
 
-1. **Plan compliance** — did the implementation match the spec?
+1. **Plan compliance** — did the implementation match the plan, and was nothing extra built?
 2. **Code quality** — does it meet your repo's standards?
-3. **Scope fidelity** — no unplanned changes snuck in?
+3. **Hands-on QA** — does it work when run? This check runs the plan's QA scenarios and each task's acceptance commands itself, and writes its own evidence under `.afk/{plan-name}/evidence/qa/` rather than trusting the task agents' files.
 
-Each check runs on the `balanced` tier and spawns an adversarial critic on the `reasoning` tier (per the afk Model Registry) to challenge its findings. The check must reconcile disagreements before producing its verdict. Ends with an explicit **APPROVE** or **REJECT** verdict.
+Each check runs on the `balanced` tier. **The critic rule:** an adversarial critic on the `reasoning` tier (per the afk Model Registry) runs for a check only when that check returned at least one `blocker` or `major` finding. The critic sees only those findings and confirms, downgrades or rejects each one; `minor` findings pass through untouched. Ends with an explicit **APPROVE** or **REJECT** verdict.
 
 **Severity gate.** Every finding is `blocker`, `major`, or `minor`. A check fails if and only if it has at least one `blocker` or `major` finding, and the verdict is REJECT if and only if any check fails. Minor findings never cause a REJECT; they are listed as follow-ups (and land in the draft PR body when `/afk:go` ships). The gate is applied to the findings themselves, not to the verdict a check or critic returned.
 
@@ -104,7 +110,7 @@ Both verdicts have an optional, user-gated follow-up — neither runs automatica
 
 ## Quick Start
 
-Plan and Execute can share a session, or run in separate ones — either works, since the plan file on disk (re-read from scratch) is the contract Execute follows, not conversational memory. A fresh session between them is still fine, and preferable once you're getting close to the context limit, but it's no longer required. Review is the same: it can run in the same session. Its independence comes from fresh Workflow check agents (and a fresh critic per check) that never see the planning or execution history, so it checks the diff against the plan file rather than against what any session remembers deciding. If a REJECT verdict opens the fix-rejections loop, the re-review passes that follow run inside that *same* review session — which necessarily remembers the fixes it just orchestrated — rather than starting fresh again on every pass.
+Plan and Execute can share a session, or run in separate ones — either works, since the plan file on disk (re-read from scratch) is the contract Execute follows, not conversational memory. A fresh session between them is still fine, and preferable once you're getting close to the context limit, but it's no longer required. Review is the same: it can run in the same session. Its independence comes from fresh Workflow check agents (and a fresh critic for any check that found a blocker or major issue) that never see the planning or execution history, so it checks the diff against the plan file rather than against what any session remembers deciding. If a REJECT verdict opens the fix-rejections loop, the re-review passes that follow run inside that *same* review session — which necessarily remembers the fixes it just orchestrated — rather than starting fresh again on every pass.
 
 ```bash
 # Plan
@@ -148,8 +154,8 @@ The Conductor:
 
 1. **Plans** (Phase A) — researches your codebase, decides what it can and asks you only escalation-rule decisions (default mode) or nothing (autonomous mode), and produces a plan file at `.afk/{plan-name}/plans/{name}.md`
 2. **Executes** (Phase B) — runs the Workflow engine by default (Agent-loop fallback, announced), applies smart model selection, delegates tasks to the appropriate tier, and verifies by tier
-3. **Reviews** (Phase C) — makes a WIP commit, then runs three independent checks (compliance, quality, scope) with adversarial critics on the `reasoning` tier, each as a fresh agent isolated from the session history
-4. **Ships** — on APPROVE, folds the WIP commits into one commit and opens a draft PR
+3. **Reviews** (Phase C) — makes a WIP commit, then runs three independent checks (compliance, quality, hands-on QA), each as a fresh agent isolated from the session history, with an adversarial critic on the `reasoning` tier for any check that found a blocker or major issue
+4. **Ships** — in default mode, on APPROVE, folds the WIP commits into one commit and opens a draft PR. In autonomous mode it stops before shipping (see below)
 
 Pass `--autonomous` to run the whole pipeline with no user stops (see Modes above): `/afk:go --autonomous TICKET-123`.
 
@@ -167,9 +173,9 @@ The verdict follows the severity gate above. On REJECT the conductor runs up to 
 
 ### Ship: Commit and Draft PR
 
-On APPROVE the conductor ships without asking, in either mode. It folds the WIP commits (reset `--soft` to `wip-base`) into one scoped Conventional Commit, using the `commit-style` and `humanize` skills when installed, then opens a **draft PR** (with `gs branch submit --draft` in a git-spice repo, otherwise `gh pr create --draft`). The PR body carries a summary, the plan's `## Assumptions`, and the review's minor findings as follow-ups. Drafts and their commits publish **without your approval**; it never force-pushes, marks a PR ready, or pushes to the base branch. Only after that does the session reach `done`. Scratch files stay in `.afk/{name}/`, which no commit stages.
+On APPROVE the conductor commits without asking. It folds the WIP commits (reset `--soft` to `wip-base`) into one scoped Conventional Commit, using the `commit-style` and `humanize` skills when installed. In **default mode** it then opens a **draft PR** (with `gs branch submit --draft` in a git-spice repo, otherwise `gh pr create --draft`). The PR body carries a summary, the plan's `## Assumptions`, and the review's minor findings as follow-ups. Drafts and their commits publish **without your approval**; it never force-pushes, marks a PR ready, or pushes to the base branch. In **autonomous mode** it stops at the commit: no push, no PR (see Stop before shipping above). Only after that does the session reach `done`. When your description names a master-plan task, the ship step also adds an `Amended <date>` line to that task's entry and checks `docs/decisions.md`. Scratch files stay in `.afk/{name}/`, which no commit stages.
 
-At the fix-loop cap in autonomous mode, the same step runs in **not-approved mode**: the draft PR title starts with `[not approved] ` and the body opens with the unresolved blocker and major findings, then the session ends `failed`. That prefix fails this repo's scoped-commit PR-title lint, which is acceptable on a draft.
+At the fix-loop cap in autonomous mode, the same step runs in **not-approved mode**: it commits the work on the session branch with no push and no PR, and the session ends `failed` with the unresolved blocker and major findings in the report.
 
 ### Auto-Saved Learnings
 
@@ -204,6 +210,8 @@ Notifications fire when:
 - **REJECT verdict** (review completes) → toast, session marked as awaiting input for findings presentation
 - **Fix-loop cap** (2 fix cycles exhausted, default mode) → toast, session marked as awaiting input. In autonomous mode there is no toast and no awaiting-input state
 - **NEEDS_INPUT relay** (executor asks a question mid-interview, default mode) → toast, session marked as awaiting input
+
+**Rate-limit marker.** When the agent CLI stops because of a rate limit, the `StopFailure` hook (`hooks/on-stop-failure.sh`, registered for the `rate_limit` reason only) writes `.afk/{name}/.rate-limited`, one line `{"at":"<time>"}`, for the matching session. It never touches `status.json`. The next prompt you submit, or the next normal stop, removes the file. Nothing reads the marker yet; it is groundwork for the always-on runner. See `status-schema.md` section 10.
 
 Background work (delegated task subagents, background Phase-C review) runs without notifications — the session self-resumes on completion. The dashboard's "awaiting input" indicator pairs with `updated_at` to show age.
 
@@ -248,6 +256,10 @@ afk clean session-name     # Archive and remove the worktree; keep the branch
 
 Plan files are structured markdown documents that capture the full context of a feature: goals, constraints, tasks, acceptance criteria, and file scope.
 
+Every task carries seven subsections: `**What to do**`, `**Must NOT do**`, `**Files**`, `**Depends on**`, `**Acceptance Criteria**`, `**QA Scenarios**` and `**Model**`. `**Files**` must name exact file paths. Each QA scenario gives a tool, steps, the expected result and an evidence path under `.afk/{plan-name}/evidence/`; `N/A` is not allowed for Files or QA Scenarios, and the plan parser rejects a plan that breaks these rules.
+
+The planner also keeps two project documents. It reads `CONTEXT.md` (the project's glossary) during research and adds each new domain term as one line, and when your description names a master-plan task it writes that task's decisions into `docs/decisions.md`. Those are the only files it writes outside `.afk/`.
+
 See [`skills/planner/plan-format.md`](skills/planner/plan-format.md) for the full spec.
 
 ---
@@ -261,7 +273,7 @@ afk discovers your test, build, and lint commands from `CLAUDE.md`. Add a sectio
 ```markdown
 ## Commands
 
-- **Test**: `bundle exec rspec`
+- **Test**: `make test`
 - **Build**: `bin/build`
 - **Lint**: `bin/rubocop`
 - **Type check**: `bin/sorbet`
@@ -307,7 +319,7 @@ Drop markdown files in `.claude/rules/` to encode repo-specific conventions. afk
 Run from the repo root:
 
 ```bash
-bundle exec rspec spec/plugins/afk                       # plan_to_args.rb parser: DAG, legacy waves, errors
+ruby plugins/afk/scripts/test/plan_to_args_test.rb       # plan_to_args.rb parser: DAG, legacy waves, QA scenarios, errors
 node --test plugins/afk/workflows/test/*.test.mjs        # execute.js and review.js on a virtual clock
 for t in plugins/afk/hooks/*.test.sh; do bash "$t"; done # hook scripts
 ```
@@ -367,7 +379,7 @@ Model selection is automatic and real — each sub-agent runs on the actual mode
 
 During Phase 1 (Plan), the planner grills the user, reads the code, and assigns a tier to each task based on complexity, blast radius, and risk. During Phase 2 (Execute), the orchestrator delegates each task to the tier assigned in the plan, with tier-specific behavioral guidance. No manual model selection is needed.
 
-Each of the reviewer's three checks (Phase 3) runs on the `balanced` tier and spawns an adversarial critic on the `reasoning` tier to challenge its findings. This ensures every dimension of review — compliance, quality, and scope — receives a thorough, skeptical second opinion.
+Each of the reviewer's three checks (Phase 3: compliance, quality, hands-on QA) runs on the `balanced` tier. A check that finds a blocker or major issue gets an adversarial critic on the `reasoning` tier to challenge those findings, so a finding that would trigger a fix has had a skeptical second opinion.
 
 ### Escalation & Fallback
 

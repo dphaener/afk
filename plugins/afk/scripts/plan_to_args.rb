@@ -16,7 +16,13 @@ class PlanError < StandardError; end
 
 TIERS = %w[light balanced heavy reasoning].freeze
 DEFAULT_TIER = 'balanced'
-LABELS = ['What to do', 'Must NOT do', 'Files', 'Depends on', 'Acceptance Criteria', 'Model'].freeze
+LABELS = ['What to do', 'Must NOT do', 'Files', 'Depends on', 'Acceptance Criteria', 'QA Scenarios', 'Model'].freeze
+QA_LABEL = 'QA Scenarios'
+# Scenario field keys. A line starting with one of these (or with `- Tool:`)
+# opens or switches a field; any other line continues the field above it, so a
+# colon or the word "Expected" inside a step cannot split a scenario.
+QA_TOOL_LINE = /\A\s*-\s+Tool:\s*(.*?)\s*\z/.freeze
+QA_FIELD_LINE = /\A\s*(Steps|Expected|Evidence):\s*(.*?)\s*\z/.freeze
 
 TASK_LINE = /\A- \[([ x!])\] \((W(\d+)\.T(\d+))\) (.*?)\s*\z/.freeze
 WAVE_LINE = /\A### Wave (\d+):\s*(.*?)\s*\z/.freeze
@@ -81,12 +87,100 @@ def subsection_values(block_lines)
   values
 end
 
-def parse_files(value)
+# Splits a **Files** value into its entries as written, dropping the
+# "(only if ...)" asides and surrounding backticks. Strictness lives in
+# check_file_refs; this only tokenizes.
+def parse_file_refs(value)
   return [] if value.nil?
 
   cleaned = value.gsub(/\s*\(only if[^)]*\)/i, '')
-  items = cleaned.split(',').map { |s| s.strip.delete('`').strip }.reject(&:empty?)
-  items.reject { |s| %w[none n/a].include?(s.downcase) }
+  cleaned.split(',').map { |s| s.strip.delete('`').strip }.reject(&:empty?)
+end
+
+# Drops a trailing line range (`path:107-125` or `path:107`) from a reference.
+def strip_range(ref)
+  ref.sub(/:\d+(?:-\d+)?\z/, '')
+end
+
+# Enforces contract C2 for **Files**: at least one exact file path, no N/A, no
+# globs, and a directory (trailing slash) only beside an exact file. Exact paths
+# let a task agent start editing at once instead of searching (PLAN section 5.7
+# rule 8) and give execute.js's overlap check real paths to compare.
+def check_file_refs(id, refs)
+  raise PlanError, "(#{id}) **Files** is empty; name at least one exact file path" if refs.empty?
+
+  refs.each do |r|
+    if %w[n/a none].include?(r.downcase)
+      raise PlanError, "(#{id}) **Files** must name exact file paths, not '#{r}'"
+    end
+    raise PlanError, "(#{id}) **Files** entry '#{r}' is a glob; name exact file paths" if r.include?('*')
+  end
+  exact = refs.reject { |r| r.end_with?('/') }
+  return unless exact.empty?
+
+  raise PlanError, "(#{id}) **Files** lists only directories; add at least one exact file path"
+end
+
+# Reads the QA scenarios of one task from its raw block lines (not from the
+# joined subsection value, which loses line boundaries). The scenarios are the
+# lines after the **QA Scenarios**: label up to the next label or blank line.
+# Returns [{ 'tool', 'steps', 'expected', 'evidence' }] with missing fields as ''.
+def parse_qa(block_lines)
+  scenarios = []
+  field = nil
+  in_section = false
+  in_fence = false
+  block_lines.each do |line|
+    if line =~ /\A\s*(```|~~~)/
+      in_fence = !in_fence
+      next
+    end
+    next if in_fence
+
+    if (m = LABEL_LINE.match(line))
+      in_section = m[1].strip == QA_LABEL && scenarios.empty?
+      field = nil
+      next
+    end
+    if line.strip.empty?
+      in_section = false
+      next
+    end
+    next unless in_section
+
+    if (m = QA_TOOL_LINE.match(line))
+      scenarios << { 'tool' => m[1], 'steps' => '', 'expected' => '', 'evidence' => '' }
+      field = 'tool'
+    elsif scenarios.any? && (m = QA_FIELD_LINE.match(line))
+      field = m[1].downcase
+      scenarios.last[field] = m[2]
+    elsif scenarios.any? && field
+      scenarios.last[field] = "#{scenarios.last[field]} #{line.strip}".strip
+    end
+  end
+  scenarios.each { |sc| sc['evidence'] = sc['evidence'].delete('`').strip }
+  scenarios
+end
+
+# Enforces contract C2 for **QA Scenarios**: at least one scenario, every field
+# present, evidence under .afk/{plan}/evidence/.
+def check_qa(id, plan, scenarios)
+  if scenarios.empty?
+    raise PlanError, "(#{id}) has no **QA Scenarios**; add at least one scenario starting with '- Tool:' (N/A is not allowed)"
+  end
+
+  prefix = ".afk/#{plan}/evidence/"
+  scenarios.each_with_index do |sc, i|
+    %w[tool steps expected evidence].each do |f|
+      next unless sc[f].empty?
+
+      raise PlanError, "(#{id}) QA scenario #{i + 1} is missing '#{f.capitalize}:'"
+    end
+    ev = sc['evidence']
+    if !ev.start_with?(prefix) || ev == prefix || ev.split('/').include?('..')
+      raise PlanError, "(#{id}) QA scenario #{i + 1} evidence '#{ev}' must be a file under #{prefix}"
+    end
+  end
 end
 
 def parse_depends(value)
@@ -164,7 +258,7 @@ def finalize_ends(tasks, waves_lines, total)
   end
 end
 
-def build_tasks(raw_tasks, tiers)
+def build_tasks(raw_tasks, tiers, plan)
   raw_tasks.map do |t|
     status = { ' ' => 'todo', 'x' => 'done', '!' => 'failed' }.fetch(t[:mark])
     title = t[:head]
@@ -177,6 +271,11 @@ def build_tasks(raw_tasks, tiers)
       raise PlanError, "task #{t[:id]} has unknown **Model** tier '#{tier}'" unless TIERS.include?(tier)
     end
 
+    refs = parse_file_refs(values['Files'])
+    check_file_refs(t[:id], refs)
+    qa = parse_qa(t[:lines])
+    check_qa(t[:id], plan, qa)
+
     {
       'id' => t[:id],
       'title' => title.strip,
@@ -184,7 +283,9 @@ def build_tasks(raw_tasks, tiers)
       'status' => status,
       'dependsOn' => parse_depends(values['Depends on']),
       'hasDepends' => values.key?('Depends on'),
-      'files' => parse_files(values['Files']),
+      'files' => refs.map { |r| strip_range(r) }.uniq,
+      'fileRefs' => refs,
+      'qa' => qa,
       'tier' => tier,
       'model' => tiers[tier]['model'],
       'fallbackModel' => tiers[tier]['fallbackModel'],
@@ -273,7 +374,7 @@ def run(argv)
   lines = File.readlines(plan_path)
   waves, raw_tasks = parse_plan(lines)
   finalize_ends(raw_tasks, lines.map(&:chomp), lines.size)
-  tasks = build_tasks(raw_tasks, tiers)
+  tasks = build_tasks(raw_tasks, tiers, File.basename(plan_path, '.*'))
   by_id = validate_ids(tasks)
   mode = detect_mode(tasks)
   if mode == 'dag'

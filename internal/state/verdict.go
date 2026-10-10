@@ -13,7 +13,7 @@
 //	## Checks
 //	- Compliance: PASS | FAIL
 //	- Quality: PASS | FAIL
-//	- Scope: PASS | FAIL
+//	- QA: PASS | FAIL
 //
 //	## Findings
 //	- [{severity}] {task-id}: {one-line description}
@@ -69,7 +69,7 @@ type ReviewVerdict struct {
 	Verdict    Verdict
 	Compliance CheckResult
 	Quality    CheckResult
-	Scope      CheckResult
+	QA         CheckResult
 	// Findings is empty when the file's Findings section was the literal
 	// "- none" line — never nil vs. empty-slice significant to callers.
 	Findings []Finding
@@ -83,7 +83,7 @@ type ReviewVerdict struct {
 // parser's job is to faithfully report what the reviewer wrote, not to
 // re-adjudicate it.
 func (v *ReviewVerdict) Consistent() bool {
-	allPass := v.Compliance == CheckPass && v.Quality == CheckPass && v.Scope == CheckPass
+	allPass := v.Compliance == CheckPass && v.Quality == CheckPass && v.QA == CheckPass
 	if v.Verdict == VerdictApprove {
 		return allPass
 	}
@@ -92,7 +92,7 @@ func (v *ReviewVerdict) Consistent() bool {
 
 var (
 	metaRE    = regexp.MustCompile(`^\*\*(Plan|Date|Verdict)\*\*:\s*(.+)$`)
-	checkRE   = regexp.MustCompile(`^- (Compliance|Quality|Scope):\s*(PASS|FAIL)\s*$`)
+	checkRE   = regexp.MustCompile(`^- (Compliance|Quality|QA):\s*(PASS|FAIL)\s*$`)
 	findingRE = regexp.MustCompile(`^- \[(blocker|major|minor)\]\s*([^:]+):\s*(.+)$`)
 	noneRE    = regexp.MustCompile(`^- none\s*$`)
 	headingRE = regexp.MustCompile(`^## (.+)$`)
@@ -159,8 +159,8 @@ func ParseVerdict(data []byte) (*ReviewVerdict, error) {
 					v.Compliance = result
 				case "Quality":
 					v.Quality = result
-				case "Scope":
-					v.Scope = result
+				case "QA":
+					v.QA = result
 				}
 				continue
 			}
@@ -200,8 +200,8 @@ func validateVerdict(v *ReviewVerdict, foundFindingsSection bool) error {
 	if v.Verdict == "" {
 		return fmt.Errorf("missing required **Verdict** field")
 	}
-	if v.Compliance == "" || v.Quality == "" || v.Scope == "" {
-		return fmt.Errorf("## Checks section is incomplete: Compliance/Quality/Scope must all be present")
+	if v.Compliance == "" || v.Quality == "" || v.QA == "" {
+		return fmt.Errorf("## Checks section is incomplete: Compliance/Quality/QA must all be present")
 	}
 	if !foundFindingsSection {
 		return fmt.Errorf("## Findings section is missing or empty (expected at least a \"- none\" line)")

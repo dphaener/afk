@@ -5671,7 +5671,7 @@ func TestViewDoesNotPanic(t *testing.T) {
 			},
 			Verdict: &state.ReviewVerdict{
 				Verdict: state.VerdictReject, Compliance: state.CheckFail,
-				Quality: state.CheckPass, Scope: state.CheckPass,
+				Quality: state.CheckPass, QA: state.CheckPass,
 				Findings: []state.Finding{{Severity: state.SeverityBlocker, TaskID: "W1.T2", Description: "broke"}},
 			},
 		},

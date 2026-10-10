@@ -1,6 +1,6 @@
 # Autonomous Mode
 
-This block extends the afk Conductor (`conductor/SKILL.md`). In autonomous mode a `/afk:go` run goes from invocation to a draft PR with zero user stops: the conductor never calls `AskUserQuestion`, never sets `awaiting_input: true`, and never waits for a reply. Every other conductor rule (disk gates, the status write protocol, the 2-cycle fix cap, grader independence) is unchanged. Default mode is unchanged by this block.
+This block extends the afk Conductor (`conductor/SKILL.md`). In autonomous mode a `/afk:go` run goes from invocation to reviewed commits on the session branch with nobody in the loop: the conductor never calls `AskUserQuestion` and never waits for a reply; it parks (§2 rule 3) only on something no machine can do, and it stops at the commit — no push, no PR (`docs/PLAN.md` T0.2). Every other conductor rule (disk gates, the status write protocol, the 2-cycle fix cap, grader independence) is unchanged. Default mode is unchanged by this block except for §7, which applies in both modes.
 
 ---
 
@@ -14,30 +14,37 @@ This block extends the afk Conductor (`conductor/SKILL.md`). In autonomous mode 
 
 ---
 
-## 2. Every user stop and its autonomous replacement
+## 2. The policy (`docs/PLAN.md` §5.5)
 
-| Point | Default mode | Autonomous mode |
-|---|---|---|
-| Step 0.2, no session UUID | AskUserQuestion: abort or continue degraded | Continue degraded without asking; announce `session UUID unavailable — continuing degraded (no hook notifications)` |
-| Step 0.3, branch guard | Non-interactive in both modes | Same |
-| Phase A, planning | Planner asks only escalation-rule decisions | Conductor passes autonomous mode; the planner never asks and marks would-escalate decisions `(assumed, would have escalated)`; Crucible runs only on HIGH risk, with no question |
-| Phase A, planner error (no request, Jira unreachable) | Planner asks | Planner stops with its error; if `status.json` exists, apply Failure Handling (`phase: "failed"`) |
-| Phase B, engine choice | No question (both modes) | Same; parser gets `--autonomous` |
-| Phase B, `NEEDS_INPUT` | Relay: S4 write, toast, AskUserQuestion, C2 | Conductor answers itself (§3); no S4, no toast |
-| Phase C, fix-loop cap | S3 stop | Not-approved ship, then `phase: "failed"` (§4) |
-| Ship | Non-interactive in both modes | Same |
+Seven rules, in order of precedence: an earlier rule wins over a later one, except that rule 7's project lines win over rules 2–6.
+
+1. **Never wait on a rubber stamp.** No plan-approval gate, no ship sign-off, no "shall I proceed". The planner's TLDR, the engine choice, the review and the commit all happen without a question.
+2. **Take the recommended option** on any question the planner would have asked or a sub-agent asks (§3). Record each assumed answer twice: as a bullet under `## Assumptions` in the work plan (`.afk/plans/{name}.md` — the planner writes its own during planning; you append later ones between runs, never while a run is in flight) and as a line in `.afk/{name}/decisions.md` (§3 gives the form).
+3. **Park instead of guessing** when the next step is irreversible or outside the machine: a missing credential or environment variable, a third-party dashboard, spending real money beyond the allowance in `afk.toml` `[policy] notes`, deleting data, anything that needs a physical device. Parking, in this order:
+   - a. Status-write `awaiting_input: true` (S4), per the Status Write Protocol; `phase` stays as it is.
+   - b. Toast, best-effort: `"{plugin-root}/hooks/notify.sh" "{name}" "$(basename "$PWD")" "afk is parked: {what the owner must do}" >/dev/null 2>&1 || true`
+   - c. State plainly what is missing, where it goes, and that `/afk:go --session {name}` resumes the session (the startup write clears the flag, C3, and Resume Semantics pick the phase up from disk).
+   - d. End the turn. No `AskUserQuestion`, no polling, no guess.
+   Parking is the only `awaiting_input: true` write in autonomous mode; the S3 cap stop is replaced by §4.
+4. **Fix every confirmed review finding** of blocker or major severity (the review's critic has confirmed each one before it reaches you, contract C3), then re-review only the checks that failed. At the fix-loop cap, end `failed` (§4).
+5. **Verification a machine cannot do** (a check on a real phone, a look at a screen you do not have) never blocks: append one line to `.afk/{name}/decisions.md` under `## Verification for the owner` — what to check and how — and carry on.
+6. **Unsolicited scope ideas** go to `.afk/{name}/decisions.md` under `## Scope ideas`, one line each; never into the diff and never into the plan.
+7. **Project lines** from `afk.toml` `[policy] notes` at the project root, when that file exists: read them once after detection, append them after rule 6, and let them win over rules 2–6 (for example, a logged allowance for live API calls). They never override rule 1, the status schema, the phase gates or the 2-cycle cap.
+
+`afk inbox add` (`docs/PLAN.md` T1.2) will carry the records of rules 2, 5 and 6 and the park of rule 3 once it exists. It does not exist yet: the files and the writes above are the mechanism today, and this command is never run.
 
 ---
 
 ## 3. NEEDS_INPUT in autonomous mode
 
-Delegations state autonomous mode, so sub-agents decide for themselves and record the decision in decisions.md. Under the Workflow engine, `plan_to_args.rb --autonomous` sets `args.autonomous`, and `execute.js` counts a `needs_input` self-report as a failed attempt; `needsInput` stays empty. A `NEEDS_INPUT` can still reach the conductor from the Agent-loop fallback (or from a sub-agent that ignored the mode). Handle each one, without asking anyone:
+Delegations state autonomous mode, so sub-agents decide for themselves and record the decision in decisions.md. Under the Workflow engine, `plan_to_args.rb --autonomous` sets `args.autonomous`, and `execute.js` counts a `needs_input` self-report as a failed attempt; `needsInput` stays empty. A `NEEDS_INPUT` can still reach the conductor from the Agent-loop fallback (or from a sub-agent that ignored the mode). Answer each one yourself — unless its question is one of rule 3's cases, in which case park (§2 rule 3) instead:
 
 1. **Pick the recommended option.** Use the option the sub-agent marked recommended; otherwise the reversible, least-exposure option consistent with the plan's What to do, Must NOT do, and `## Assumptions`. For an open-ended question, answer from the plan, the codebase, and the notepads with the same least-exposure rule.
 2. **Record it** in `.afk/{name}/decisions.md` (append) under `## Relayed answers`:
    `- [{task-id}] {question verbatim} → {answer} — {reason} (assumed, would have asked)`
-3. **Re-delegate the SAME full prompt** with the `### Relayed Answer` subsection filled in: the question verbatim and the answer, stated as decided by the conductor in autonomous mode. Under the Workflow engine, re-run the parser and start a fresh run instead (`done` tasks skip by status).
-4. No `awaiting_input: true` write, no toast, no AskUserQuestion. The round-trip does not consume the task's 3-attempt retry budget.
+   and as a bullet under the plan's `## Assumptions` (rule 2).
+3. **Re-delegate the SAME full prompt** with the `### Relayed Answer` subsection filled in: the question verbatim and the answer, stated as decided by the conductor in autonomous mode. Under the Workflow engine, re-run the parser and start a fresh run instead (`[x]` tasks skip by status).
+4. No toast, no AskUserQuestion, no `awaiting_input: true` (a park is the one exception, above). The round-trip does not consume the task's 3-attempt retry budget.
 
 ---
 
@@ -46,29 +53,36 @@ Delegations state autonomous mode, so sub-agents decide for themselves and recor
 The cap itself is unchanged: never a third fix cycle. Only the stop is replaced:
 
 1. No S3 write, no toast, no stop. `loop_count` stays `2`.
-2. Hand off to the `# Ship Step` block (`conductor/prompts/ship.md`) in its **not-approved mode**: it commits the work and opens a draft PR whose title starts with `[not approved] ` and whose body opens with the open blocker and major findings from the verdict file. If no `# Ship Step` block is loaded in this session, skip shipping and say so in the report.
-3. Status-write `phase: "failed"`, `awaiting_input: false` (C4), whatever the ship outcome. `failed` is terminal, so epic children never start from an unapproved parent.
-4. Report: the verdict file's Checks and blocker/major Findings verbatim, the commit and PR (or the ship failure), and the reason `review still failing after 2 fix cycles`.
+2. Hand off to the `# Ship Step` block (`conductor/prompts/ship.md`) in its **not-approved mode**: it folds the WIP commits and commits the work on the session branch — no push, no PR, no master-plan amendment. If no `# Ship Step` block is loaded in this session, skip the commit and say so in the report.
+3. Status-write `phase: "failed"`, `awaiting_input: false` (C4), whatever the commit outcome. `failed` is terminal, so epic children never start from an unapproved parent.
+4. Report: the verdict file's Checks and blocker/major Findings verbatim, the commit (or the commit failure), the branch the owner can inspect, and the reason `review still failing after 2 fix cycles`.
 
 ---
 
-## 5. Same in both modes
+## 5. Every user stop and its autonomous replacement
 
-These conductor rules are not autonomy rules; they apply to every run:
-
-- **WIP commits** before every review pass (Phase C.2): `wip-base` written once, `git add -A -- . ':(exclude).afk'`, `chore(afk): WIP {name} review pass {n}`, hooks run, one retry, then the two-dot `git diff {base_branch}` fallback with `git add -N`.
-- **Workflow review** (Phase C.1–C.4): Read reviewer/SKILL.md, run `review.js` (Agent path without the Workflow tool), map its result to the verdict file lines, re-review only `FAIL` checks with the Subset Merge.
-- **Branch guard** (Step 0.3) and the non-blocking planning handoff.
-- **Draft PRs** open without the user's approval in both modes (the Ship Step).
+| Point | Default mode | Autonomous mode |
+|---|---|---|
+| Step 0.2, no session UUID | AskUserQuestion: abort or continue degraded | Continue degraded without asking; announce `session UUID unavailable — continuing degraded (no hook notifications)` |
+| Step 0.3, branch guard | Non-interactive in both modes | Same |
+| Phase A, planning | Planner asks only escalation-rule decisions | Conductor passes autonomous mode; the planner never asks and marks would-escalate decisions `(assumed, would have escalated)`; Crucible runs only on HIGH risk, with no question |
+| Phase A, planner error (no request, Jira unreachable) | Planner asks | Planner stops with its error; if `status.json` exists, apply Failure Handling (`phase: "failed"`) |
+| Phase B, engine choice | No question (both modes) | Same; parser gets `--autonomous` |
+| Phase B, `NEEDS_INPUT` | Relay: S4 write, toast, AskUserQuestion, C2 | Conductor answers itself (§3); a rule 3 case parks (§2) |
+| Any phase, a rule 3 case | The user is in the loop | Park: S4 write, toast, plain statement, end the turn |
+| Phase C, fix-loop cap | S3 stop | Not-approved ship (commit only), then `phase: "failed"` (§4) |
+| Ship | Commit, draft PR, `done` | Commit, no push, no PR, `done` (ship.md §2a); ship instructions in the session description are the one exception |
 
 ---
 
 ## 6. Never in autonomous mode
 
-- Call `AskUserQuestion`, or end a turn waiting for a reply.
-- Write `awaiting_input: true` (S3 or S4).
+- Call `AskUserQuestion`, or end a turn waiting for a reply — a rule 3 park is the only deliberate stop.
+- Write `awaiting_input: true` for anything but a rule 3 park; never S3.
+- Push, open a PR, or ship in any way the session description did not ask for.
 - Exceed the 2-cycle fix cap, or skip the `phase: "failed"` write at the cap.
-- Hide an assumed answer: every self-answered question is in decisions.md.
+- Hide an assumed answer, a parked step, an owner check or a scope idea: each is in decisions.md.
+- Run `afk inbox add`: it does not exist yet (§2).
 
 ---
 
@@ -92,11 +106,11 @@ If an adopted file's `branch` equals its `base_branch`, do NOT perform the start
 
 ### 7.3 Verdict file mapping (Phase C.4)
 
-Map review.js's `{checks: {compliance|quality|scope: {verdict, findings: [{severity, taskId, text}]}}}` (or the Agent path's per-check results) to `.afk/{name}/review-verdict.md` with the reviewer skill's Persist Verdict template, exactly:
+Map review.js's `{checks: {compliance|quality|qa: {verdict, findings: [{severity, taskId, text}]}}}` (or the Agent path's per-check results) to `.afk/{name}/review-verdict.md` with the reviewer skill's Persist Verdict template, exactly (contract C3):
 
-- **Checks lines**: `- Compliance: PASS|FAIL`, `- Quality: PASS|FAIL`, `- Scope: PASS|FAIL`. A check is `FAIL` iff it has at least one `blocker` or `major` finding; ignore the returned `verdict` field.
-- **Findings**: each is `- [{severity}] {task-id}: ({check}) {text}` (`general` when `taskId` is empty), where `{check}` is `compliance`, `quality`, or `scope`, the check that produced it. Group by check in that order, most severe first within a check. Nothing else goes under `## Findings`: no sub-headings, no prose. No findings at all: the single line `- none`.
-- **Subset run**: each check not rerun keeps its previous `## Checks` line and its previous finding lines (those prefixed with its name) unchanged; rerun checks' lines are replaced (Subset Merge).
+- **Checks lines**: `- Compliance: PASS|FAIL`, `- Quality: PASS|FAIL`, `- QA: PASS|FAIL`. A check is `FAIL` iff it has at least one `blocker` or `major` finding; the script's `verdict` is computed the same way, so recompute it rather than trust it (the Agent path returns none).
+- **Findings**: each is `- [{severity}] {task-id}: ({check}) {text}` (`general` when `taskId` is empty), where `{check}` is `compliance`, `quality`, or `qa`, the check that produced it. Group by check in that order, most severe first within a check. Nothing else goes under `## Findings`: no sub-headings, no prose. No findings at all: the single line `- none`.
+- **Subset run**: each check not rerun keeps its previous `## Checks` line and its previous finding lines (those tagged with its name) unchanged; rerun checks' lines are replaced (Subset Merge).
 - **`**Verdict**`**: `REJECT` iff any Checks line is `FAIL`, else `APPROVE`. The write overwrites the previous file.
 
 ### 7.4 WIP commit detail (Phase C.2)
@@ -109,7 +123,7 @@ Map review.js's `{checks: {compliance|quality|scope: {verdict, findings: [{sever
 
 ### 7.5 Review run (Phase C.3)
 
-With the Workflow tool, first copy the checked-in script into the working tree, on every review pass, and never edit the copy: `cp {plugin-root}/workflows/review.js .afk/{name}/review.js`. The Workflow tool rejects a `scriptPath` outside the working directory and added directories, and the plugin root is outside both. Then pass `args` as a real object:
+With the Workflow tool, first copy the checked-in script into the working tree, on every review pass, and never edit the copy: `cp {plugin-root}/workflows/review.js .afk/{name}/review.js`. The Workflow tool rejects a `scriptPath` outside the working directory and added directories, and the plugin root is outside both. Then pass `args` as a real object, with `checks` drawn from `compliance`, `quality`, `qa` (all three on the first pass; on a re-review only the checks whose line is `FAIL`):
 
 ```
 Workflow({scriptPath: "{working-dir}/.afk/{name}/review.js", args: {
@@ -119,4 +133,13 @@ Workflow({scriptPath: "{working-dir}/.afk/{name}/review.js", args: {
 }})
 ```
 
-Substitute `{working-dir}` (absolute project root) and `{plugin-root}` (captured when `/afk:go` loaded).
+Substitute `{working-dir}` (absolute project root) and `{plugin-root}` (captured when `/afk:go` loaded). The `qa` check runs the app and the full test suite once, so the run is long; §7.6's no-call rule still holds.
+
+### 7.6 Execution runs (Phase B)
+
+- **Before the first run**: `command -v afk`. When it fails, apply Failure Handling (`phase: "failed"`) with this message: "afk is not on PATH. Install it (`make install` in the afk repo) so `afk plan check` can mark finished tasks, then run `/afk:go --session {name}` again." Every checkbox mark depends on it (engine spec §2.2.1).
+- **While a run is in flight** (`execute.js` or `review.js`): make no model call and do no polling; the Workflow tool returns when the run ends (`docs/PLAN.md` §5.7 rule 7).
+- **After each execute run**, before reading the plan for the Phase B gate, reconcile with the command — never by hand, never through a delegated agent — treating the result's `mark` list as authoritative over the file (contract C1; the engine spec's §2.3 says the same):
+  1. For each `mark` entry: `afk plan check --project {working-dir} --reason "{reason}" {name} {id} failed`. It rewrites the task line and appends the `## (ID) FAILED` entry to issues.md. Run it even where an agent had already ticked the task `[x]`: the run's verdict wins. Skip a task whose line is already `[!]`: its first reason wins.
+  2. For each id in `passed` whose line is not `[x]`: `afk plan check --project {working-dir} {name} {id} done`, and note the missed mark in `.afk/{name}/issues.md`.
+  3. A non-zero exit is reported with the command's own message (1: unknown task or missing plan; 2: bad usage). Never edit the plan to work around it.

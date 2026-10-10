@@ -30,6 +30,9 @@ main() {
   [ -n "$MATCH_FILE" ] || return 0
 
   clear_background_tasks_sidecar "$(dirname "$MATCH_FILE")"
+  # A submitted prompt means the owner is back: the rate-limit marker (§10)
+  # no longer describes the session.
+  rm -f "$(dirname "$MATCH_FILE")/.rate-limited" 2>/dev/null
   atomic_write_awaiting_input "$MATCH_FILE" false
   return 0
 }

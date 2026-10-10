@@ -5,6 +5,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  AGENT_KINDS,
   EXECUTE_SCRIPT,
   FORBIDDEN_API,
   PASS,
@@ -20,19 +21,37 @@ import {
   ids,
   kindOf,
   makeArgs,
+  markDoneCommand,
+  markers,
   nothing,
   ok,
-  planState,
   readScript,
   responder,
   runScript,
   selfReport,
   span,
   task,
+  tellsToMark,
 } from './lib/harness.mjs'
 
+// Every agent the engine spawns does a task's work or verifies it. Nothing is
+// spawned only to edit the plan file: `afk plan check` does that, run by the
+// agent whose result settles the task.
+function assertOnlyWorkAgents(rec) {
+  for (const c of rec.calls) {
+    assert.doesNotMatch(c.label, /bookkeep/i, `no bookkeeping agent may be spawned (got "${c.label}")`)
+    assert.match(c.label, /^(verify:W\d+\.T\d+|fix:W\d+\.T\d+#\d+|W\d+\.T\d+( .*)?)$/, `unexpected agent "${c.label}"`)
+    assert.ok(AGENT_KINDS.includes(kindOf(c.label)))
+    assert.equal(c.opts.phase, 'Execute', `"${c.label}" must run in the Execute phase`)
+    assert.ok(c.schema, `"${c.label}" must return structured output; a bare "ok" reply is the old bookkeeping shape`)
+  }
+}
+
+// Every run in this file goes through here, so the no-bookkeeping-agent rule
+// is checked on every run shape the suite exercises, not on one sample.
 async function run(args, respondOpts = {}, extra = {}) {
   const rec = await runScript(EXECUTE_SCRIPT, { args, respond: responder(respondOpts), ...extra })
+  assertOnlyWorkAgents(rec)
   return rec
 }
 
@@ -154,8 +173,9 @@ describe('execute.js (3) task states and failure propagation', () => {
     const args = makeArgs([task('W1.T1', { status: 'done' }), task('W2.T1', { deps: ['W1.T1'] })])
     const rec = await run(args)
     assertCompleted(rec)
-    assert.equal(callsFor(rec, 'W1.T1').length, 0, 'a done task gets no agent calls, not even bookkeeping')
+    assert.equal(callsFor(rec, 'W1.T1').length, 0, 'a done task gets no agent calls')
     assert.deepEqual(ids(rec.result.passed).sort(), ['W1.T1', 'W2.T1'])
+    assert.deepEqual(rec.result.mark, [])
   })
 
   it('in dag mode, a task already marked failed blocks its dependents', async () => {
@@ -165,7 +185,7 @@ describe('execute.js (3) task states and failure propagation', () => {
     assert.equal(callsFor(rec, 'W1.T1').length, 0)
     assert.equal(attemptCalls(rec, 'W2.T1').length, 0)
     assert.equal(entry(rec.result.skipped, 'W2.T1').reason, 'blocked')
-    assert.equal(planState(rec, args)['W2.T1'], 'failed')
+    assert.deepEqual(rec.result.mark, [{ id: 'W2.T1', state: 'failed', reason: 'blocked by W1.T1' }])
   })
 
   it('in waves mode, a failed task does not block the next wave, which still waits for it', async () => {
@@ -178,23 +198,27 @@ describe('execute.js (3) task states and failure propagation', () => {
     assert.deepEqual(ids(rec.result.failed), ['W1.T1'])
     assert.ok(ids(rec.result.passed).includes('W2.T1'))
     assert.ok(span(rec, 'W2.T1').start >= span(rec, 'W1.T1').end)
-    assert.equal(planState(rec, args)['W2.T1'], 'done')
+    assert.deepEqual(markers(rec)['W2.T1'], ['task'], 'W2.T1 passed and its own agent marked it')
+    assert.deepEqual(ids(rec.result.mark), ['W1.T1'])
   })
 
-  it('in waves mode, the next wave starts after the failed task is marked [!], and its prompt warns a dependency may have failed', async () => {
+  it('in waves mode, the next wave is told which tasks failed in this run, not to look for [!] in the plan', async () => {
     const args = makeArgs([task('W1.T1'), task('W2.T1')], { mode: 'waves' })
     const rec = await run(args, {
-      bookkeepTicks: 5,
       scripts: { 'W1.T1': { task: [nothing(), nothing(), nothing()] } },
     })
     assertCompleted(rec)
-    const failBook = callsFor(rec, 'W1.T1', 'bookkeep')[0]
-    assert.ok(failBook, 'the failed task is bookkept')
-    assert.ok(span(rec, 'W2.T1').start >= failBook.end, 'W2.T1 starts after the [!] mark lands')
+    assert.ok(span(rec, 'W2.T1').start >= span(rec, 'W1.T1').end, 'W2.T1 starts after W1.T1 has failed')
+    assert.match(callsFor(rec, 'W1.T1', 'task')[0].prompt, /no task has failed so far in this run/)
     const prompt = callsFor(rec, 'W2.T1', 'task')[0].prompt
-    assert.match(prompt, /may have FAILED/)
-    assert.match(prompt, /issues\.md/)
+    assert.match(prompt, /a task in it may have failed/)
+    assert.match(prompt, /these tasks have failed so far in this run: W1\.T1 \(3 attempts failed/)
+    assert.match(prompt, /written to the plan file only after the run ends/)
     assert.doesNotMatch(prompt, /every dependency has passed/)
+    for (const c of rec.calls) {
+      assert.doesNotMatch(c.prompt, /\[!\]/, `"${c.label}" must not send an agent looking for a [!] mark mid-run`)
+      assert.doesNotMatch(c.prompt, /listed in [^ ]*issues\.md/)
+    }
   })
 
   it('in dag mode, the task prompt says every dependency has passed', async () => {
@@ -211,7 +235,7 @@ describe('execute.js (3) task states and failure propagation', () => {
     assert.ok(ids(rec.result.passed).includes('W2.T1'))
   })
 
-  it('class (a): dependents of a task that used all 3 attempts end [!] blocked, transitively, with an issues.md entry', async () => {
+  it('class (a): dependents of a task that used all 3 attempts are blocked, transitively, and returned in mark as failed', async () => {
     const args = makeArgs([
       task('W1.T1'),
       task('W2.T1', { deps: ['W1.T1'] }),
@@ -223,15 +247,15 @@ describe('execute.js (3) task states and failure propagation', () => {
     assertCompleted(rec)
     assert.deepEqual(ids(rec.result.failed), ['W1.T1'])
     for (const id of ['W2.T1', 'W3.T1']) {
-      assert.equal(attemptCalls(rec, id).length, 0, `${id} must never start`)
+      assert.equal(callsFor(rec, id).length, 0, `${id} must never start, and no agent is spawned to mark it`)
       assert.equal(entry(rec.result.skipped, id).reason, 'blocked')
-      assert.equal(planState(rec, args)[id], 'failed', `${id} must end [!] in the plan file`)
-      const book = callsFor(rec, id, 'bookkeep')
-      assert.equal(book.length, 1)
-      assert.match(book[0].prompt, /FAILED: blocked by W\d+\.T\d+/)
-      assert.match(book[0].prompt, /issues\.md/)
     }
-    assert.match(callsFor(rec, 'W2.T1', 'bookkeep')[0].prompt, /FAILED: blocked by W1\.T1/)
+    assert.equal(entry(rec.result.skipped, 'W2.T1').by, 'W1.T1')
+    assert.equal(entry(rec.result.skipped, 'W3.T1').by, 'W2.T1')
+    assert.deepEqual(rec.result.mark.slice(1), [
+      { id: 'W2.T1', state: 'failed', reason: 'blocked by W1.T1' },
+      { id: 'W3.T1', state: 'failed', reason: 'blocked by W2.T1' },
+    ])
     assert.ok(rec.logs.some((l) => l.includes('W2.T1')), 'every skipped task is logged')
   })
 
@@ -247,13 +271,8 @@ describe('execute.js (3) task states and failure propagation', () => {
       },
     })
     assertCompleted(rec)
-    const state = planState(rec, args)
-    assert.equal(state['W1.T1'], 'todo')
-    assert.equal(state['W2.T1'], 'todo', 'a needs_input dependent stays [ ] in the plan file')
-    assert.equal(state['W3.T1'], 'todo')
-    for (const id of ['W1.T1', 'W2.T1', 'W3.T1']) {
-      assert.equal(callsFor(rec, id, 'bookkeep').length, 0, `${id} must never be bookkept`)
-    }
+    assert.deepEqual(rec.result.mark, [], 'needs_input tasks and their dependents stay [ ]: nothing to mark')
+    assert.equal(rec.calls.length, 1, 'only the one task agent ran')
     assert.equal(entry(rec.result.skipped, 'W2.T1').reason, 'needs_input')
     assert.equal(entry(rec.result.skipped, 'W3.T1').reason, 'needs_input')
     assert.ok(ids(rec.result.needsInput).includes('W1.T1'))
@@ -412,8 +431,9 @@ describe('execute.js (6) retries, fixes, and escalation', () => {
     assert.equal(attemptCalls(rec, 'W1.T1').length, 3)
     assert.equal(callsFor(rec, 'W1.T1', 'verify').length, 3)
     assert.deepEqual(ids(rec.result.failed), ['W1.T1'])
-    assert.equal(planState(rec, args)['W1.T1'], 'failed')
-    assert.match(callsFor(rec, 'W1.T1', 'bookkeep')[0].prompt, /FAILED:/)
+    assert.equal(entry(rec.result.failed, 'W1.T1').reason, entry(rec.result.mark, 'W1.T1').reason)
+    assert.match(entry(rec.result.mark, 'W1.T1').reason, /^3 attempts failed; last: verify FAIL: c/)
+    assert.deepEqual(rec.result.mark.map((m) => `${m.id}:${m.state}`), ['W1.T1:failed', 'W2.T1:failed'])
     assert.equal(entry(rec.result.skipped, 'W2.T1').reason, 'blocked')
     assert.deepEqual(ids(rec.result.passed).sort(), ['W1.T2', 'W2.T2'])
   })
@@ -527,7 +547,7 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
     assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
   })
 
-  it('bookkeeps a task that passes after the budget runs out, so it is not re-run', async () => {
+  it('a task that passes as the budget runs out was already marked by its own agent, so nothing runs after the stop', async () => {
     let seen = null
     const exhausted = () => Boolean(seen && seen.calls.some((c) => c.label.startsWith('W1.T1 ') && c.end !== null))
     const budget = {
@@ -547,10 +567,11 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
     )
     assertCompleted(rec)
     assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
-    assert.equal(callsFor(rec, 'W1.T1', 'bookkeep').length, 1, 'the passed task is still marked [x]')
-    assert.equal(planState(rec, args)['W1.T1'], 'done')
+    assert.equal(rec.calls.length, 1, 'no agent starts after the budget is gone, not even to mark the plan')
+    assert.ok(tellsToMark(rec.calls[0], 'W1.T1'), 'the task agent was told to mark its own task, so it is not re-run')
     assert.equal(callsFor(rec, 'W2.T1').length, 0)
     assert.equal(entry(rec.result.skipped, 'W2.T1').reason, 'budget')
+    assert.deepEqual(rec.result.mark, [])
   })
 
   it('counts a throw after the fallback as one failed attempt, then retries on the task tier', async () => {
@@ -574,7 +595,7 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
     assert.ok(!rec.logs.some((l) => /Budget stop/i.test(l)))
   })
 
-  it('checks the budget before verify, fix, and bookkeep starts, not only before the first task call', async () => {
+  it('checks the budget before verify and fix starts, not only before the first task call', async () => {
     let seen = null
     // The budget runs out when the task agent for W1.T1 finishes.
     const exhausted = () => Boolean(seen && seen.calls.some((c) => c.label.startsWith('W1.T1 ') && c.end !== null))
@@ -595,9 +616,10 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
     )
     assertCompleted(rec)
     assert.equal(callsFor(rec, 'W1.T1', 'verify').length, 0, 'no verify agent starts after the budget is gone')
-    assert.equal(callsFor(rec, 'W1.T1', 'bookkeep').length, 0)
+    assert.equal(rec.calls.length, 1)
     assert.equal(entry(rec.result.skipped, 'W1.T1').reason, 'budget')
-    assert.equal(planState(rec, args)['W1.T1'], 'todo')
+    assert.deepEqual(markers(rec), {}, 'a heavy task is marked by its verifier, which never ran, so it stays [ ]')
+    assert.deepEqual(rec.result.mark, [])
   })
 
   it('does not retry with a fallback when the tier has none', async () => {
@@ -638,7 +660,7 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
     for (const id of ['W2.T1', 'W3.T1']) {
       assert.equal(callsFor(rec, id).length, 0, `${id} must not start after the budget stop`)
       assert.equal(entry(rec.result.skipped, id).reason, 'budget')
-      assert.equal(planState(rec, args)[id], 'todo')
+      assert.equal(entry(rec.result.mark, id), undefined, `${id} stays [ ] for a re-run`)
     }
     assert.ok(rec.logs.some((l) => /budget/i.test(l)), 'the budget stop is logged')
   })
@@ -650,11 +672,11 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
     })
     assertCompleted(rec)
     assert.equal(callsFor(rec, 'W1.T1', 'task').length, 1, 'no fallback retry and no new attempt after a budget throw')
-    assert.equal(callsFor(rec, 'W1.T1', 'bookkeep').length, 0)
+    assert.equal(rec.calls.length, 1)
     assert.ok(!ids(rec.result.failed).includes('W1.T1'))
     assert.equal(callsFor(rec, 'W2.T1').length, 0)
     assert.equal(entry(rec.result.skipped, 'W2.T1').reason, 'budget')
-    assert.equal(planState(rec, args)['W2.T1'], 'todo')
+    assert.deepEqual(rec.result.mark, [], 'budget stops stay [ ] for a re-run')
     assert.ok(rec.logs.some((l) => /budget/i.test(l)))
   })
 })
@@ -691,55 +713,258 @@ describe('execute.js (8) needs_input', () => {
     assert.deepEqual(attempts.map((c) => c.model), ['tiny', 'tiny', 'mid'])
     assert.deepEqual(ids(rec.result.failed), ['W1.T1'])
     assert.deepEqual(rec.result.needsInput, [])
-    assert.equal(planState(rec, args)['W1.T1'], 'failed')
+    assert.equal(entry(rec.result.mark, 'W1.T1').state, 'failed')
+    assert.match(entry(rec.result.mark, 'W1.T1').reason, /needs_input in autonomous mode/)
   })
 })
 
 // ---------------------------------------------------------------------------
-describe('execute.js (9) bookkeeping', () => {
-  it('marks each finished task through one bookkeep agent at a time on the light model', async () => {
-    const args = makeArgs([task('W1.T1'), task('W1.T2'), task('W1.T3'), task('W1.T4')])
-    const rec = await run(args, { bookkeepTicks: 10 })
+describe('execute.js (9) marking the plan file', () => {
+  // Load-bearing rows: the two "verifier certain" groups (tier, risky file)
+  // must NOT put the command in the task prompt, because the script sends
+  // those tasks to the verifier whatever the self-report says; a task agent
+  // that ticked the box there would mark a task that can still fail. The
+  // default task() file is a plain .md, so the light and balanced rows are
+  // the only ones where the task agent settles the task by itself.
+  const whoMarks = [
+    { name: 'light task, plain file', t: () => task('W1.T1', { tier: 'light' }), by: ['task'] },
+    { name: 'balanced task, plain file', t: () => task('W1.T1', { tier: 'balanced' }), by: ['task'] },
+    { name: 'heavy task', t: () => task('W1.T1', { tier: 'heavy' }), by: ['verify'] },
+    { name: 'reasoning task', t: () => task('W1.T1', { tier: 'reasoning' }), by: ['verify'] },
+    { name: 'light task touching a test file', t: () => task('W1.T1', { files: ['src/a.md', 'src/a.test.ts'] }), by: ['verify'] },
+    { name: 'light task touching a hook', t: () => task('W1.T1', { files: ['plugins/afk/hooks/x.sh'] }), by: ['verify'] },
+    { name: 'light task touching CI', t: () => task('W1.T1', { files: ['.github/workflows/ci.yml'] }), by: ['verify'] },
+  ]
+  for (const row of whoMarks) {
+    it(`${row.name}: the ${row.by[0]} agent is the one told to run afk plan check ... done`, async () => {
+      const rec = await run(makeArgs([row.t()]))
+      assertCompleted(rec)
+      assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
+      assert.deepEqual(markers(rec), { 'W1.T1': row.by })
+      assert.equal(tellsToMark(callsFor(rec, 'W1.T1', 'task')[0], 'W1.T1'), row.by[0] === 'task')
+      assert.deepEqual(rec.result.mark, [], 'a passed task is never left for the caller to mark')
+    })
+  }
+
+  it('the task prompt gives the command with the script\'s own pass condition: at least one check, all exit 0, status done', async () => {
+    const rec = await run(makeArgs([task('W1.T1')]))
     assertCompleted(rec)
-    const book = rec.calls.filter((c) => kindOf(c.label) === 'bookkeep')
-    assert.equal(book.length, 4)
-    for (const c of book) {
-      assert.equal(c.model, args.tiers.light.model)
-      assert.equal(c.label, `bookkeep:${/W\d+\.T\d+/.exec(c.label)[0]}`)
-      assert.ok(c.prompt.includes(PLAN_PATH))
-      assert.ok(c.prompt.includes(/W\d+\.T\d+/.exec(c.label)[0]))
+    const prompt = callsFor(rec, 'W1.T1', 'task')[0].prompt
+    assert.ok(prompt.includes(`\`${markDoneCommand('W1.T1')}\``))
+    assert.equal(markDoneCommand('W1.T1'), 'afk plan check --project /repo sample W1.T1 done')
+    assert.match(prompt, /if, and only if, you ran at least one check, every check you ran exited 0, and the status you are about to return is "done"/)
+    assert.match(prompt, /as your very last command/)
+    assert.match(prompt, /In every other case do not run it/)
+  })
+
+  it('a task agent that reports no checks is not the one that settles the task: the verifier is told to mark it', async () => {
+    const rec = await run(makeArgs([task('W1.T1')]), {
+      scripts: { 'W1.T1': { task: [ok(selfReport('done', []))] } },
+    })
+    assertCompleted(rec)
+    assert.deepEqual(markers(rec), { 'W1.T1': ['task', 'verify'] })
+    assert.match(callsFor(rec, 'W1.T1', 'task')[0].prompt, /at least one check/)
+  })
+
+  it('a retried task agent still carries the command when no verifier is certain', async () => {
+    const rec = await run(makeArgs([task('W1.T1')]), { scripts: { 'W1.T1': { task: [nothing()] } } })
+    assertCompleted(rec)
+    const attempts = callsFor(rec, 'W1.T1', 'task')
+    assert.equal(attempts.length, 2)
+    assert.match(attempts[1].prompt, /attempt 2 of 3/)
+    assert.ok(tellsToMark(attempts[1], 'W1.T1'))
+  })
+
+  for (const tier of ['light', 'heavy']) {
+    it(`the fix prompt never carries the command (${tier} task): a fix is always re-verified`, async () => {
+      const rec = await run(makeArgs([task('W1.T1', { tier })]), {
+        scripts: {
+          'W1.T1': {
+            task: [ok(selfReport('done', failingCheck))],
+            verify: [ok(failVerdict('still broken')), ok(PASS)],
+          },
+        },
+      })
+      assertCompleted(rec)
+      const [fix] = callsFor(rec, 'W1.T1', 'fix')
+      assert.ok(fix, 'a fix agent ran')
+      assert.equal(tellsToMark(fix, 'W1.T1'), false)
+      assert.doesNotMatch(fix.prompt, /afk plan check [^`]*\bdone\b/)
+      assert.match(fix.prompt, /you run it only if this prompt tells you to/)
+      const verifies = callsFor(rec, 'W1.T1', 'verify')
+      assert.equal(verifies.length, 2)
+      assert.ok(verifies.every((c) => tellsToMark(c, 'W1.T1')), 'the verifier of the fix marks the task on PASS')
+      assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
+    })
+  }
+
+  it('the verifier prompt carries the command only when the self-report it was given says done', async () => {
+    const rec = await run(makeArgs([task('W1.T1', { tier: 'heavy' })]), {
+      scripts: {
+        'W1.T1': {
+          task: [ok(selfReport('blocked', [], { summary: 'cannot write the fixture' })), ok(selfReport('done'))],
+          verify: [ok(PASS), ok(PASS)],
+        },
+      },
+    })
+    assertCompleted(rec)
+    const [first, second] = callsFor(rec, 'W1.T1', 'verify')
+    assert.equal(tellsToMark(first, 'W1.T1'), false, 'a PASS on a blocked report re-runs the task agent, so it must not mark')
+    assert.match(first.prompt, /Do not modify any file, and do not run `afk plan check`/)
+    assert.ok(tellsToMark(second, 'W1.T1'))
+    assert.match(second.prompt, /Do not modify any file, with one exception: if, and only if, your verdict is PASS, run `afk plan check /)
+    assert.match(second.prompt, /Never run it on FAIL/)
+    assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
+  })
+
+  it('a re-verification after a silent verifier keeps the command for a done self-report', async () => {
+    const rec = await run(makeArgs([task('W1.T1', { tier: 'heavy' })]), {
+      scripts: { 'W1.T1': { verify: [nothing(), ok(PASS)] } },
+    })
+    assertCompleted(rec)
+    assert.deepEqual(markers(rec), { 'W1.T1': ['verify', 'verify'] })
+  })
+
+  // Load-bearing rows: W1.T1 and W1.T2 were already [!] and [x] when the run
+  // started and must be absent, or a re-run would replace the recorded reason
+  // of an earlier failure and add a second issues.md entry. W2.T1 is blocked
+  // by a task that failed before this run and is itself new, so it is listed.
+  it('mark names every task that failed or was blocked in this run and leaves out tasks already marked', async () => {
+    const args = makeArgs([
+      task('W1.T1', { status: 'failed' }),
+      task('W1.T2', { status: 'done' }),
+      task('W1.T3'),
+      task('W2.T1', { deps: ['W1.T1'] }),
+      task('W2.T2', { deps: ['W1.T3'] }),
+      task('W2.T3', { deps: ['W1.T2'] }),
+    ])
+    const rec = await run(args, {
+      scripts: { 'W1.T3': { task: [nothing(), nothing(), nothing()] } },
+    })
+    assertCompleted(rec)
+    assert.deepEqual(rec.result.mark, [
+      { id: 'W1.T3', state: 'failed', reason: '3 attempts failed; last: agent returned no self-report' },
+      { id: 'W2.T1', state: 'failed', reason: 'blocked by W1.T1' },
+      { id: 'W2.T2', state: 'failed', reason: 'blocked by W1.T3' },
+    ])
+    assert.deepEqual(ids(rec.result.failed), ['W1.T1', 'W1.T3'], 'failed still reports the preexisting failure')
+    for (const f of rec.result.failed) assert.equal(typeof f.reason, 'string')
+    assert.deepEqual(rec.result.skipped, [
+      { id: 'W2.T1', reason: 'blocked', by: 'W1.T1' },
+      { id: 'W2.T2', reason: 'blocked', by: 'W1.T3' },
+    ])
+    assert.deepEqual(ids(rec.result.passed), ['W1.T2', 'W2.T3'])
+    assert.deepEqual(
+      Object.keys(markers(rec)).sort(),
+      ['W1.T3', 'W2.T3'],
+      'only tasks that ran had an agent that could mark them; blocked and preexisting tasks spawn none'
+    )
+  })
+
+  it('quotes a project root the shell would split, and drops --project when the plan is not under <project>/.afk/plans/', async () => {
+    const spaced = await run(makeArgs([task('W1.T1')], { planPath: "/home/o'neil/my repo/.afk/plans/sample.md" }))
+    assertCompleted(spaced)
+    assert.ok(
+      spaced.calls[0].prompt.includes(`afk plan check --project '/home/o'\\''neil/my repo' sample W1.T1 done`),
+      'the root is single-quoted with the embedded quote escaped'
+    )
+    for (const planPath of ['/elsewhere/sample.md', 'repo/.afk/plans/sample.md']) {
+      const rec = await run(makeArgs([task('W1.T1')], { planPath }))
+      assertCompleted(rec)
+      const prompt = rec.calls[0].prompt
+      assert.ok(prompt.includes('`afk plan check sample W1.T1 done`'), `no --project for planPath "${planPath}"`)
+      assert.match(prompt, /run it from the project root, the folder that holds \.afk\//)
     }
-    const sorted = [...book].sort((a, b) => a.start - b.start)
-    for (let i = 1; i < sorted.length; i++) {
-      assert.ok(sorted[i].start >= sorted[i - 1].end, 'bookkeep agents must never overlap')
-    }
-    assert.deepEqual(Object.values(planState(rec, args)), ['done', 'done', 'done', 'done'])
+  })
+
+  it('never spawns a bookkeeping agent, in a run where tasks pass, are fixed, fail, and are blocked', async () => {
+    const args = makeArgs([
+      task('W1.T1'),
+      task('W1.T2', { tier: 'heavy' }),
+      task('W1.T3'),
+      task('W2.T1', { deps: ['W1.T3'] }),
+      task('W2.T2', { deps: ['W1.T1', 'W1.T2'] }),
+    ])
+    const rec = await run(args, {
+      scripts: {
+        'W1.T2': { verify: [ok(failVerdict('x')), ok(PASS)] },
+        'W1.T3': { task: [nothing(), nothing(), nothing()] },
+      },
+    })
+    assertCompleted(rec)
+    assert.deepEqual(ids(rec.result.passed), ['W1.T1', 'W1.T2', 'W2.T2'])
+    assert.equal(rec.calls.filter((c) => /bookkeep/i.test(c.label)).length, 0)
+    assert.deepEqual(
+      rec.calls.map((c) => `${kindOf(c.label)}:${/W\d+\.T\d+/.exec(c.label)[0]}`).sort(),
+      [
+        'fix:W1.T2',
+        'task:W1.T1',
+        'task:W1.T2',
+        'task:W1.T3',
+        'task:W1.T3',
+        'task:W1.T3',
+        'task:W2.T2',
+        'verify:W1.T2',
+        'verify:W1.T2',
+      ],
+      'every agent call is task work or verification; none exists to edit the plan'
+    )
+    assert.deepEqual(rec.phases, ['Execute'])
+    assert.doesNotMatch(readScript(EXECUTE_SCRIPT), /bookkeep/i)
   })
 })
 
-describe('execute.js (9b) bookkeeping happens at each task\'s terminal state', () => {
-  it('marks a fast later task [x] while an earlier-in-plan task is still running', async () => {
-    const args = makeArgs([task('W1.T1'), task('W1.T2')])
-    const rec = await run(args, { durations: { 'W1.T1': 50, 'W1.T2': 1 } })
+describe('execute.js (9b) lean-cycle rules and QA evidence in the prompts', () => {
+  const fixRun = (t) =>
+    run(makeArgs([t]), {
+      scripts: { [t.id]: { task: [ok(selfReport('done', failingCheck))], verify: [ok(failVerdict('d')), ok(PASS)] } },
+    })
+
+  it('task and fix prompts carry the focused-tests, no-polling, and four-minute rules', async () => {
+    const rec = await fixRun(task('W1.T1'))
     assertCompleted(rec)
-    const slowTask = callsFor(rec, 'W1.T1', 'task')[0]
-    const fastBook = callsFor(rec, 'W1.T2', 'bookkeep')[0]
-    assert.ok(fastBook.start < slowTask.end, 'W1.T2 is bookkept before W1.T1 finishes')
-    const slowBook = callsFor(rec, 'W1.T1', 'bookkeep')[0]
-    assert.ok(slowBook.start >= slowTask.end)
-    assert.ok(fastBook.end <= slowBook.start, 'one bookkeep agent at a time')
+    for (const kind of ['task', 'fix']) {
+      const prompt = callsFor(rec, 'W1.T1', kind)[0].prompt
+      assert.match(prompt, /Run only the focused lint and tests for the files you touched and the task's Acceptance Criteria commands; never run the whole suite/, kind)
+      assert.match(prompt, /Never sleep or poll/, kind)
+      assert.match(prompt, /No single command may run longer than about four minutes/, kind)
+    }
   })
 
-  it('marks a failed task [!] at once and its blocked dependents as they settle', async () => {
-    const args = makeArgs([task('W1.T1'), task('W1.T2'), task('W2.T1', { deps: ['W1.T1'] })])
-    const rec = await run(args, {
-      durations: { 'W1.T2': 60 },
-      scripts: { 'W1.T1': { task: [nothing(), nothing(), nothing()] } },
-    })
+  it('task and fix prompts allow the evidence files and name afk plan check as the plan file\'s only writer', async () => {
+    const rec = await fixRun(task('W1.T1'))
     assertCompleted(rec)
-    const slowTask = callsFor(rec, 'W1.T2', 'task')[0]
-    assert.ok(callsFor(rec, 'W2.T1', 'bookkeep')[0].start < slowTask.end)
-    assert.deepEqual(planState(rec, args), { 'W1.T1': 'failed', 'W1.T2': 'done', 'W2.T1': 'failed' })
+    for (const kind of ['task', 'fix']) {
+      const prompt = callsFor(rec, 'W1.T1', kind)[0].prompt
+      assert.match(prompt, /the task's evidence files under \.afk\/sample\/evidence\//, kind)
+      assert.match(prompt, /Never edit the plan file by hand; `afk plan check` is its only writer/, kind)
+      assert.doesNotMatch(prompt, /engine marks checkboxes/, kind)
+      assert.match(prompt, /Never write a "## \(ID\) FAILED" heading in issues\.md/, kind)
+    }
+    const verify = callsFor(rec, 'W1.T1', 'verify')[0].prompt
+    assert.match(verify, /other than the notepads and the task's evidence files under \.afk\/sample\/evidence\//)
+    assert.match(verify, /never edit the plan file by hand/)
+  })
+
+  it('a task given qa in args.tasks[] has each evidence path in its task and fix prompts', async () => {
+    const qa = [
+      { tool: 'Bash', steps: 'run the tests', expected: 'exit 0', evidence: '.afk/sample/evidence/w1-t1-tests.txt' },
+      { tool: 'Bash', steps: 'run the binary', expected: 'prints ok', evidence: '.afk/sample/evidence/w1-t1-run.txt' },
+    ]
+    const rec = await fixRun(task('W1.T1', { qa }))
+    assertCompleted(rec)
+    for (const kind of ['task', 'fix']) {
+      const prompt = callsFor(rec, 'W1.T1', kind)[0].prompt
+      assert.match(prompt, /Carry out each of the task's QA Scenarios and save its evidence at the path the plan names: /, kind)
+      for (const sc of qa) assert.ok(prompt.includes(`\`${sc.evidence}\``), `${kind} prompt names ${sc.evidence}`)
+      assert.ok(!prompt.includes('run the binary'), 'the scenario text stays in the plan; the prompt points to disk')
+    }
+  })
+
+  it('a task with no qa in args still gets the QA Scenarios obligation', async () => {
+    const rec = await run(makeArgs([task('W1.T1')]))
+    assertCompleted(rec)
+    assert.match(rec.calls[0].prompt, /Carry out each of the task's QA Scenarios and save its evidence at the path the plan names\./)
   })
 })
 
@@ -777,11 +1002,11 @@ describe('execute.js (9a) argument validation and opening log', () => {
 
 // ---------------------------------------------------------------------------
 describe('execute.js (10) result shape', () => {
-  it('returns {passed, failed, skipped, needsInput} arrays', async () => {
+  it('returns {passed, failed, skipped, needsInput, mark} arrays', async () => {
     const rec = await run(makeArgs([task('W1.T1')]))
     assertCompleted(rec)
-    assert.deepEqual(Object.keys(rec.result).sort(), ['failed', 'needsInput', 'passed', 'skipped'])
-    for (const k of ['passed', 'failed', 'skipped', 'needsInput']) assert.ok(Array.isArray(rec.result[k]))
+    assert.deepEqual(Object.keys(rec.result).sort(), ['failed', 'mark', 'needsInput', 'passed', 'skipped'])
+    for (const k of ['passed', 'failed', 'skipped', 'needsInput', 'mark']) assert.ok(Array.isArray(rec.result[k]))
     assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
   })
 })
@@ -821,6 +1046,7 @@ describe('execute.js (12) Workflow script constraints', () => {
     const meta = extractMeta(readScript(EXECUTE_SCRIPT))
     assert.equal(meta.name, 'afk-execute')
     assert.equal(typeof meta.description, 'string')
+    assert.deepEqual(meta.phases.map((p) => p.title), ['Execute'], 'there is no bookkeeping phase')
   })
 
   it('uses no Date.now, Math.random, argless new Date, require, or imports', () => {

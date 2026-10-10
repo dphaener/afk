@@ -10,7 +10,7 @@ Your caller appends exactly three inputs after these instructions:
 2. **Diff command** — the command that produces the EVIDENCE. Run it yourself, exactly as given, from the repository root. For the list of changed files, run the same command with `--name-only --diff-filter=ACMR` appended.
 3. **Output format** — the shape of your result. Report in that format and nothing else.
 
-The one other file you may read is `.afk/{plan-name}/issues.md` (`{plan-name}` is the plan file's basename without `.md`), and only to verify acknowledged `[!]` failures — it is a plan artifact, not execution history. Do not read any other `.afk/` file (notepads, review history, status files).
+The one other file you may read is `.afk/{plan-name}/issues.md` (`{plan-name}` is the plan file's basename without `.md`), and only to verify acknowledged `[!]` failures — it is a plan artifact, not execution history. Do not read any other `.afk/` file (notepads, review history, status files). The one exception is an existence check: you may list `.afk/{plan-name}/evidence/` and test the size of the files the plan names there, without reading their contents.
 
 ## What to verify
 
@@ -31,7 +31,15 @@ For EVERY item in **Objectives**:
 - It is present in the implementation.
 
 For EVERY item in **Must NOT do** (task-level):
-- It is absent from the implementation.
+- It is absent from the implementation. A prohibited action that was taken is a `blocker`, keyed to that task.
+
+For EVERY task, the change stays inside the plan's Files and Must NOT do (nothing extra built). Compare what the task specified (its **What to do** and **Files**) with what the diff changed:
+- **Under-built**: something the task specified was not built. An unmet part of a task is `major`; a task whose work is wholly absent is a missing task (`blocker`).
+- **Scope creep**: something was built that no task references. `major` when it changes behavior; `minor` when incidental (formatting, a comment, a regenerated lockfile line).
+- **Unaccounted files**: a changed file that appears in no task's **Files** list (a listed directory covers the files under it). Same grading as scope creep; key it to `general` when it maps to no task.
+
+For EVERY QA scenario in a task's **QA Scenarios**:
+- The evidence file named in its `Evidence:` field exists and is not empty. Check existence and size only; do not treat its contents as proof that the scenario passed (the QA check re-runs scenarios itself). A missing or empty file is a `major` finding keyed to that task.
 
 For EVERY item in **Success Criteria**:
 - The criterion is satisfied by the implementation — check observable outcomes, not just task completion.

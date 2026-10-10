@@ -29,6 +29,10 @@ main() {
   [ -n "$MATCH_FILE" ] || return 0
 
   write_background_tasks_sidecar "$(dirname "$MATCH_FILE")" "$payload"
+  # A completed turn after a StopFailure proves the limit has lifted; this
+  # covers an agent CLI that waits it out and continues with no prompt
+  # submitted (status-schema.md section 10).
+  rm -f "$(dirname "$MATCH_FILE")/.rate-limited" 2>/dev/null
   return 0
 }
 

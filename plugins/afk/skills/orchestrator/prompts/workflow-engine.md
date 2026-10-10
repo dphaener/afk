@@ -17,6 +17,8 @@ Announce exactly one of these strings before the first delegation:
 
 If the tool is present but `ruby` is not on PATH, announce that the parser cannot run and use the Agent-loop (Section 3), stating the reason in the announcement.
 
+Also run `command -v afk`; it must succeed before the Workflow engine is chosen, because every checkbox mark is an `afk plan check` call. When it fails, say plainly: "afk is not on PATH. Install it (`make install` in the afk repo) so `afk plan check` can mark finished tasks, then run this again." A standalone `/afk:execute` has no conductor to check this, so you check it here. In autonomous mode the caller's failure path reports it.
+
 **Never silently pick an engine.** Engine selection is a routing decision and must be announced before the first delegation.
 
 ---
@@ -32,7 +34,7 @@ The orchestrator **never writes or edits Workflow JS**. One script, `{plugin-roo
 3. Otherwise copy the checked-in script into the session's working tree, then run the copy: `cp {plugin-root}/workflows/execute.js .afk/{name}/execute.js`, then `Workflow({scriptPath: "{working-dir}/.afk/{name}/execute.js", args: <the parsed JSON>})`, with `{working-dir}` the absolute project root. The Workflow tool rejects a `scriptPath` outside the working directory and added directories, and the plugin root is outside both. Copy on every run, so the copy always matches the checked-in script, and never edit the copy. Pass `args` as a real object, never as a JSON string; the script throws before starting any agent when `args.tasks` is not an array.
 4. Record the run ID the Workflow tool returns in `.afk/{name}/decisions.md` (append, under a `## Workflow run` heading).
 
-The script schedules tasks by the dependency DAG that `plan_to_args.rb` builds (`mode: "dag"`) or by synthesized wave dependencies (`mode: "waves"` for legacy plans). A task starts as soon as everything it depends on has passed. Tasks whose `**Files**` overlap never run concurrently and run in plan order; this is the same-file serialization rule from SKILL.md Step 5, enforced by the script. Per-task retries, tier escalation (3 attempts, `light` to `balanced` to `heavy` to `reasoning`), the fallback-alias retry, budget stops, and serialized checkbox bookkeeping all live inside the script.
+The script schedules tasks by the dependency DAG that `plan_to_args.rb` builds (`mode: "dag"`) or by synthesized wave dependencies (`mode: "waves"` for legacy plans). A task starts as soon as everything it depends on has passed. Tasks whose `**Files**` overlap never run concurrently and run in plan order; this is the same-file serialization rule from SKILL.md Step 5, enforced by the script. Per-task retries, tier escalation (3 attempts, `light` to `balanced` to `heavy` to `reasoning`), the fallback-alias retry, budget stops, and the marking of finished tasks (below) all live inside the script. No bookkeeping agent exists.
 
 ### 2.2 Tiered verification and short task prompts (Workflow engine only)
 
@@ -41,16 +43,26 @@ Two rules of the Agent-loop are deliberately replaced for the Workflow engine. T
 - **Tiered verification replaces the per-task verifier.** Each task agent self-reports `{status, checks: [{command, exitCode}], summary, question?}` after running its own acceptance commands. A separate verifier agent (model `args.verifierModel`) runs only when the task is `heavy` or `reasoning` tier, touches a risky path (`.github/`, a `hooks/` directory, or a test path), reported no checks, reported a non-zero exit code, or reported a status other than `done`. Everything else passes on its self-report. On a verifier FAIL a fix agent runs, and the fix is re-verified. A `blocked` self-report never passes on a verifier PASS alone: the task agent runs again with the agent's own reason. A verifier that returns nothing is re-run on the next attempt against the same self-report; the task agent is not.
 - **Short disk-pointer prompts replace the "prompts under 30 lines are too short" rule.** Task prompts point at the plan path and the task's line range, the codename announcement file under `{plugin-root}/skills/orchestrator/prompts/`, and the notepads. They do not carry the task text; the sub-agent reads the plan block itself. Sub-agents still read the notepads at start and append findings before finishing.
 
+### 2.2.1 Who marks the plan
+
+Nothing in the run edits the plan by hand; `afk plan check` is its only writer.
+
+- **`done`:** the agent whose result settles the task runs `afk plan check --project {working-dir} {name} {id} done` as its last command. That is the verifier on PASS when one runs, else the task agent when it ran at least one check, every check exited 0 and its status is `done`. Finished work is marked when it finishes, so a crashed run never redoes it.
+- **`failed` and blocked:** the script cannot run a command and spawns no agent for it, so the caller does. After each run, run `afk plan check --project {working-dir} --reason "{reason}" {name} {id} failed` for each entry of the result's `mark` list (Section 2.3). It also appends the `## (ID) FAILED` entry to issues.md.
+- **While a run is in flight, the caller makes no model call and does not poll.** Wait for the Workflow tool to return; checking progress in a loop spends tokens for nothing.
+- Verification stays tiered (Section 2.2): the task agents' own focused tests and self-reports carry most tasks, and the independent verifier runs on risk.
+
 ### 2.3 Results
 
-The run returns `{passed, failed, skipped, needsInput}`:
+The run returns `{passed, failed, skipped, needsInput, mark}`:
 
 - `passed`: task ID strings.
-- `failed`: `{id, reason}` entries. A task that used all 3 attempts is marked `- [!]` in the plan and logged in issues.md by the script.
-- `skipped`: `{id, reason, by?}` entries. Reason `blocked` means a dependency failed; the script already marked the task `[!]` and logged it. Reasons `needs_input` and `budget` mean the task never ran and stays `[ ]`.
+- `failed`: `{id, reason}` entries. A task that used all 3 attempts is listed in `mark`; the plan is not changed until the caller marks it.
+- `skipped`: `{id, reason, by?}` entries. Reason `blocked` means a dependency failed; the task is listed in `mark`. Reasons `needs_input` and `budget` mean the task never ran and stays `[ ]`.
 - `needsInput`: `{id, question}` entries (default mode only; in autonomous mode a `needs_input` self-report counts as a failed attempt).
+- `mark`: `{id, state: "failed", reason}` entries for every task the script could not have had an agent mark (failed tasks and tasks blocked by one), leaving out tasks already `[!]` or `[x]` when the run started. It is authoritative over the file.
 
-Checkbox bookkeeping is not budget-gated: a task that passes or fails after the budget stop is still marked, so `passed` and `[x]` normally agree. When a bookkeep agent itself produced nothing, the script logs `mark (ID) ... by hand`; before any re-run, reconcile `passed` against the plan and mark any such task `[x]` through a delegated sub-agent (the orchestrator does not edit files), recording it in issues.md, so a re-run never re-executes finished work.
+Reconcile before anything else, using the command and not a delegated sub-agent: for each `mark` entry run `afk plan check --project {working-dir} --reason "{reason}" {name} {id} failed`, even where an agent had already ticked the task (the `mark` list wins over the file), skipping a task already `[!]`. Then for any ID in `passed` whose line is not `[x]`, run `afk plan check --project {working-dir} {name} {id} done` and record it in issues.md, so a re-run never re-executes finished work. A command that exits non-zero is reported with its message; do not hand-edit the plan.
 
 Handle them in this order:
 
@@ -60,7 +72,7 @@ Handle them in this order:
 
 ### 2.4 Final audit
 
-After the last run returns, re-read the plan file. Confirm every task ID in `passed` is marked `[x]`; a mismatch means bookkeeping failed, so mark it through a delegated sub-agent (the orchestrator does not edit files) and record it in issues.md. Spot-check changed files per SKILL.md Step 3.B (the cap rules apply). The orchestrator remains the final QA gate.
+After the last run returns, re-read the plan file. Confirm every task ID in `passed` is marked `[x]`; a mismatch means a mark did not land, so run `afk plan check ... done` for it (Section 2.3) and record it in issues.md. Spot-check changed files per SKILL.md Step 3.B (the cap rules apply). The orchestrator remains the final QA gate.
 
 ### 2.5 Wisdom
 

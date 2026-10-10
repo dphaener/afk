@@ -207,11 +207,17 @@ Each task specifies a **Model** tier that tells the orchestrator which model to 
 
   **Must NOT do**: [Explicit scope boundaries — what to avoid or leave alone]
 
-  **Files**: [Comma-separated list of files to create or modify]
+  **Files**: [Comma-separated exact file paths to create or modify]
 
   **Depends on**: [Comma-separated task IDs from earlier waves, or `none`]
 
   **Acceptance Criteria**: [How to verify this task is done correctly]
+
+  **QA Scenarios**:
+  - Tool: [Bash | Read | Playwright | ...]
+    Steps: [What to run or do]
+    Expected: [What a pass looks like]
+    Evidence: `.afk/{plan-name}/evidence/{file}`
 
   **Model**: light | balanced | heavy | reasoning
 ```
@@ -237,9 +243,9 @@ Task IDs must be unique within a plan. They do not need to be globally unique ac
 |---|---|
 | `- [ ] (WN.TM)` | Task is incomplete |
 | `- [x] (WN.TM)` | Task is complete |
-| `- [!] (WN.TM) FAILED: {reason}` | Task failed after retries — see `issues.md` |
+| `- [!] (WN.TM) {title} FAILED: {reason}` | Task failed after retries — see `issues.md` |
 
-The orchestrator marks tasks complete by replacing `- [ ]` with `- [x]`. Tasks that fail after 3 retry attempts are marked `- [!]` with a reason, and the failure is logged in `.afk/{plan-name}/issues.md`. Nothing else in the task block changes.
+`afk plan check` is the only writer of checkboxes: `afk plan check {session} WN.TM done` turns the line into `- [x] (WN.TM) {title}`, and `afk plan check --reason "{reason}" {session} WN.TM failed` turns it into the `- [!]` form above (the title stays, the reason is one line) and logs the failure in `.afk/{plan-name}/issues.md`. Tasks that fail after 3 retry attempts are marked failed. Nothing else in the task block changes.
 
 ### Task subsections
 
@@ -247,12 +253,38 @@ The orchestrator marks tasks complete by replacing `- [ ]` with `- [x]`. Tasks t
 |---|---|---|
 | `**What to do**` | Yes | Step-by-step instructions |
 | `**Must NOT do**` | Yes | Scope boundaries, things to avoid |
-| `**Files**` | Yes | Files to create or modify |
+| `**Files**` | Yes | Exact file paths to create or modify |
 | `**Depends on**` | Yes (new plans) | Task IDs this task needs, or `none` |
 | `**Acceptance Criteria**` | Yes | How to verify the task is done |
+| `**QA Scenarios**` | Yes | Hands-on checks the task agent runs, each with saved evidence |
 | `**Model**` | Yes | Which model tier (`light`, `balanced`, `heavy`, `reasoning`) the orchestrator should use for this task |
 
-All six subsections are required. If a subsection has nothing meaningful to say, write `N/A` rather than omitting it. `**Depends on**` takes `none` instead of `N/A`.
+All seven subsections are required. If `**What to do**`, `**Must NOT do**` or `**Acceptance Criteria**` has nothing meaningful to say, write `N/A` rather than omitting it. `**Depends on**` takes `none` instead of `N/A`. `**Files**` and `**QA Scenarios**` never take `N/A`.
+
+### Files
+
+`**Files**` names at least one exact file path, comma-separated. A path may end in a line range (`internal/state/plan.go:107-125`) to point the task agent at the lines that matter. Globs (`*`) and `N/A` are not allowed. Why: with exact paths a task agent starts editing at once instead of searching, and the engine compares the paths to decide which tasks can run in parallel.
+
+A directory may be listed only with a trailing `/`, and only in addition to at least one exact file. Use it for files the task generates and cannot name in advance (regenerated golden files), for example `` `internal/state/plan.go`, `internal/state/testdata/` ``.
+
+### QA Scenarios
+
+`**QA Scenarios**` is one or more scenarios with no blank line between them. Each scenario has four fields:
+
+- `Tool`: what drives the check (`Bash`, `Read`, `Playwright`, `curl`, ...).
+- `Steps`: what to run or do, concrete enough to repeat.
+- `Expected`: what a pass looks like.
+- `Evidence`: the file the task agent saves the output to. It must be under `.afk/{plan-name}/evidence/`.
+
+```markdown
+  **QA Scenarios**:
+  - Tool: Bash
+    Steps: run `go test ./internal/plancheck/ -count=1`
+    Expected: exit 0 and an `ok` line
+    Evidence: `.afk/{plan-name}/evidence/w1-t1-tests.txt`
+```
+
+The task agent runs each scenario and saves the evidence at that path, and the QA review check reads it. Scenarios are different from `**Acceptance Criteria**`: the criteria say what must be true, the scenarios say how a person would see it with their own eyes. `N/A` is not allowed; a task with nothing to run still has a scenario that reads the result back, such as `Read` of the changed file. A line starting `- Tool:` opens a scenario, and the `Steps:`, `Expected:` and `Evidence:` lines after it are its fields. A line starting with none of those keys continues the field above, so a step may contain colons or the word "Expected".
 
 ### Depends on
 
@@ -343,6 +375,12 @@ screen and the backend logic to respect those preferences when sending.
   **Acceptance Criteria**: Migration runs without errors. Table exists
   with correct columns and defaults.
 
+  **QA Scenarios**:
+  - Tool: Bash
+    Steps: run the migration against a scratch database and describe the table
+    Expected: the table has the four columns with the stated defaults
+    Evidence: `.afk/add-user-notification-preferences/evidence/w1-t1-schema.txt`
+
   **Model**: light
 
 - [ ] (W1.T2) Add NotificationPreferences model
@@ -354,10 +392,16 @@ screen and the backend logic to respect those preferences when sending.
 
   **Files**: `src/models/notificationPreferences.ts`
 
-  **Depends on**: W1.T1
+  **Depends on**: none
 
   **Acceptance Criteria**: Model can be instantiated and saved. Duplicate
   `user_id` raises a validation error.
+
+  **QA Scenarios**:
+  - Tool: Bash
+    Steps: save two preferences rows with the same `user_id` in a console
+    Expected: the second save raises a validation error
+    Evidence: `.afk/add-user-notification-preferences/evidence/w1-t2-unique.txt`
 
   **Model**: light
 
@@ -383,6 +427,16 @@ screen and the backend logic to respect those preferences when sending.
   with `{ "email_enabled": false }` returns 200 and persists the change.
   PATCH with unknown fields returns 400.
 
+  **QA Scenarios**:
+  - Tool: Bash
+    Steps: curl `PATCH` with `{ "email_enabled": false }`, then `GET`
+    Expected: PATCH returns 200 and GET shows `email_enabled` false
+    Evidence: `.afk/add-user-notification-preferences/evidence/w2-t1-patch.txt`
+  - Tool: Bash
+    Steps: curl `PATCH` with an unknown field
+    Expected: 400 response
+    Evidence: `.afk/add-user-notification-preferences/evidence/w2-t1-unknown.txt`
+
   **Model**: balanced
 
 - [ ] (W2.T2) Write API tests
@@ -400,6 +454,12 @@ screen and the backend logic to respect those preferences when sending.
 
   **Acceptance Criteria**: All new tests pass. Coverage includes happy
   path, partial update, and unknown field rejection.
+
+  **QA Scenarios**:
+  - Tool: Bash
+    Steps: run `npm test -- notificationPreferences`
+    Expected: exit 0 with the new tests listed as passing
+    Evidence: `.afk/add-user-notification-preferences/evidence/w2-t2-tests.txt`
 
   **Model**: balanced
 
@@ -425,6 +485,12 @@ screen and the backend logic to respect those preferences when sending.
   a switch calls PATCH and updates the UI. On API error, the toggle
   reverts and an error toast appears.
 
+  **QA Scenarios**:
+  - Tool: Playwright
+    Steps: open `/settings/notifications`, toggle email off, reload
+    Expected: the toggle stays off after the reload
+    Evidence: `.afk/add-user-notification-preferences/evidence/w3-t1-toggle.txt`
+
   **Model**: balanced
 
 - [ ] (W3.T2) Gate outgoing notifications against preferences
@@ -445,6 +511,12 @@ screen and the backend logic to respect those preferences when sending.
   **Acceptance Criteria**: A user with `email_enabled: false` does not
   receive email notifications. The skip is logged. All existing
   notification tests still pass.
+
+  **QA Scenarios**:
+  - Tool: Bash
+    Steps: send an email event for a user with `email_enabled` false and read the debug log
+    Expected: no email is sent and a skip line is logged
+    Evidence: `.afk/add-user-notification-preferences/evidence/w3-t2-skip.txt`
 
   **Model**: reasoning
 

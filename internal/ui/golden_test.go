@@ -142,7 +142,7 @@ func goldenSessions() []Session {
 		Verdict:    state.VerdictReject,
 		Compliance: state.CheckPass,
 		Quality:    state.CheckFail,
-		Scope:      state.CheckPass,
+		QA:         state.CheckPass,
 		Findings: []state.Finding{
 			{Severity: state.SeverityMajor, TaskID: "W2.T1", Description: "invoice totals ignore tax rounding"},
 		},

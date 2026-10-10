@@ -22,6 +22,24 @@ Dropped from the copy: `.claude-plugin/`, `.codex-plugin/`, `skills/*/agents/ope
 
 `workflows/execute.js`, `workflows/review.js`, and `workflows/test/` are unchanged from upstream.
 
+## Lag note (2026-10-10)
+
+This port lags the T0.2 change to `plugins/afk` (plugin version 4.0.0). It still carries the
+earlier forge behaviour in these areas:
+
+- the review checks (compliance, quality, scope fidelity, each with a critic) instead of
+  compliance, quality and hands-on QA, with a critic only on blocker or major findings;
+- the plan format (six task subsections, no QA scenarios, no exact-file rule) and
+  `plan_to_args.rb`;
+- the bookkeeping agent in `workflows/execute.js` instead of `afk plan check`;
+- the verdict file's check names and the matching `workflows/review.js`;
+- the autonomous policy, the stop-before-shipping rule and the conductor and ship prompts;
+- the planner's `CONTEXT.md` and `docs/decisions.md` handling;
+- the `StopFailure` rate-limit marker hook (the port has no hooks directory).
+
+The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
+that rely on the behaviour above.
+
 ## Phase 0 spike findings (OpenCode 2.0.24)
 
 - Tool executor context: `sessionID, agent, messageID, id, progress, signal`. No directory;

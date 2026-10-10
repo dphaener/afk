@@ -45,7 +45,9 @@ fmt-check: ## Fail if any Go file is unformatted
 	fi
 
 .PHONY: plugin-test
-plugin-test: ## Run the plugin node test suites
+plugin-test: ## Run the plugin node and ruby test suites and the prompt size check
+	ruby plugins/afk/scripts/test/plan_to_args_test.rb
+	bash plugins/afk/scripts/check-cat-sizes.sh
 	node --test plugins/afk/workflows/test/*.test.mjs
 	cd plugins/afk-opencode && npm test
 

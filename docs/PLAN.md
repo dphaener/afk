@@ -17,6 +17,9 @@ shared contract every task builds against. Never start a task whose dependencies
    `gh pr checks --watch`, and merge it if green".
 2. **From T0.2 until T2.2 is merged**, tasks run with afk's own plugin:
    `afk new --autonomous --description "Implement T1.1 from docs/PLAN.md" t1-1`, same ship instruction.
+   The description must ask to open the pull request too ("push the branch and open a draft PR, then
+   mark it ready, wait for CI…"), because from T0.2 the autonomous conductor stops at reviewed commits
+   and no longer pushes or opens one.
 3. **Once T2.2 is merged**, afk builds the rest of itself: `afk daemon` runs on this repo and takes the
    remaining tasks from this plan.
 
@@ -184,6 +187,13 @@ keeps forge's layout, renamed.
 | `.afk/plans/{session}.md` | planner | The per-task work plan (waves, `(W1.T2)` ids, `**Depends on**`). Not the master plan. |
 | `.afk/{session}/review-verdict.md` | conductor | Severity-gated verdict. |
 | `.afk/{session}/learnings.md`, `decisions.md`, `issues.md` | agents, append-only | |
+
+Added by T0.2, also per session and gitignored:
+
+- `.afk/{session}/evidence/` — QA evidence. Task agents save each scenario's output at the path the
+  work plan names; the hands-on QA check writes its own under `evidence/qa/`.
+- `.afk/{session}/.rate-limited` — one line `{"at":"<RFC 3339 UTC>"}`, written by the `StopFailure`
+  hook on a rate limit and removed by the next prompt or normal stop. It never touches `status.json`.
 
 ### 4.2 Ledger — `.afk/build/ledger.json` (new; daemon is the only writer)
 
@@ -587,6 +597,21 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   `plan_to_args.rb` rejects a task missing QA scenarios or file references. A supervised autonomous
   run of one small real task in a scratch repo ends `phase: done` with evidence files, a verdict file
   and zero terminal questions.
+- **Amended 2026-10-10 (T0.2 done):** later tasks may assume the following. (1) `afk plan check
+  [--project DIR] [--reason TEXT] <session> <task-id> done|failed` is the only writer of plan
+  checkboxes: it edits one line of `.afk/plans/{session}.md` under a lock, `failed` needs a
+  non-empty reason and also appends `## (ID) FAILED` to `.afk/{session}/issues.md`, repeating a call
+  is a no-op, exit 1 for an unknown task or missing plan, exit 2 for bad usage. (2) Reviews run three
+  checks, keys `compliance`, `quality`, `qa`; the verdict file's lines are `- Compliance:`,
+  `- Quality:`, `- QA:`, and findings read `- [severity] ID: (check) text`; an old verdict with a
+  `- Scope:` line shows as a parse error. (3) A work-plan task has seven subsections, with
+  `**QA Scenarios**` after Acceptance Criteria, and exact file references in `**Files**`. (4) The
+  rate-limit marker is `.afk/{session}/.rate-limited`. (5) The autonomous prompt parks through
+  `awaiting_input` (the schema's S4 write and a toast) until T1.2 adds `afk inbox add`; T1.2 must
+  replace that. (6) `[policy] notes` from `afk.toml` is read by the agent directly until T1.1's loader
+  exists. (7) The autonomous conductor ends at reviewed commits with `phase: done` and does not push.
+  (8) The supervised scratch-repo run in this entry's acceptance is still owed by the owner; see
+  `## T0.2` in `docs/decisions.md`. The OpenCode port lags this change.
 
 ---
 

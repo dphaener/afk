@@ -19,7 +19,7 @@ func TestParseVerdictFile_Approve(t *testing.T) {
 	if v.Verdict != VerdictApprove {
 		t.Errorf("Verdict = %q, want APPROVE", v.Verdict)
 	}
-	if v.Compliance != CheckPass || v.Quality != CheckPass || v.Scope != CheckPass {
+	if v.Compliance != CheckPass || v.Quality != CheckPass || v.QA != CheckPass {
 		t.Errorf("Checks = %+v, want all PASS", v)
 	}
 	if len(v.Findings) != 0 {
@@ -38,7 +38,7 @@ func TestParseVerdictFile_RejectWithFindings(t *testing.T) {
 	if v.Verdict != VerdictReject {
 		t.Errorf("Verdict = %q, want REJECT", v.Verdict)
 	}
-	if v.Compliance != CheckFail || v.Quality != CheckPass || v.Scope != CheckPass {
+	if v.Compliance != CheckFail || v.Quality != CheckPass || v.QA != CheckPass {
 		t.Errorf("Checks = %+v", v)
 	}
 	if len(v.Findings) != 3 {
@@ -69,6 +69,8 @@ func TestParseVerdictFile_Malformed(t *testing.T) {
 		{"invalid severity", "malformed_invalid_severity.md"},
 		{"incomplete Checks section", "malformed_incomplete_checks.md"},
 		{"missing Findings section", "malformed_missing_findings.md"},
+		// Load-bearing: no compatibility path for the old Scope line.
+		{"legacy Scope line", "malformed_legacy_scope.md"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,7 +108,7 @@ func TestReviewVerdict_ConsistentDetectsMismatch(t *testing.T) {
 		Verdict:    VerdictApprove,
 		Compliance: CheckPass,
 		Quality:    CheckFail,
-		Scope:      CheckPass,
+		QA:         CheckPass,
 	}
 	if v.Consistent() {
 		t.Error("Consistent() = true, want false (APPROVE with a FAIL check is inconsistent)")

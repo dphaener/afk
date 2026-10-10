@@ -1,13 +1,13 @@
 export const meta = {
   name: 'afk-review',
-  description: 'afk review: one check agent and one adversarial critic per requested check',
-  phases: [{ title: 'Review', detail: 'Independent checks, each reconciled by a critic' }],
+  description: 'afk review: one check agent per requested check, and a critic only for a check with a blocker or major finding',
+  phases: [{ title: 'Review', detail: 'Independent checks; a critic judges only blocker and major findings' }],
 }
 
 const PROMPT_FILES = {
   compliance: 'check-plan-compliance.md',
   quality: 'check-code-quality.md',
-  scope: 'check-scope-fidelity.md',
+  qa: 'check-hands-on-qa.md',
 }
 
 const FINDING_SCHEMA = {
@@ -18,6 +18,16 @@ const FINDING_SCHEMA = {
     text: { type: 'string' },
   },
   required: ['severity', 'taskId', 'text'],
+}
+
+// The critic returns only the surviving subset of the findings it was given,
+// so it has no verdict: the script computes every verdict itself.
+const CRITIC_SCHEMA = {
+  type: 'object',
+  properties: {
+    findings: { type: 'array', items: FINDING_SCHEMA },
+  },
+  required: ['findings'],
 }
 
 const RESULT_SCHEMA = {
@@ -33,6 +43,9 @@ const ISOLATION = 'You know nothing about how this work was executed and must no
 
 const OUTPUT_FORMAT =
   'Return the structured result: verdict PASS or FAIL, and findings, each with severity (blocker, major, or minor), taskId (the plan task ID, or "general"), and text. Use the severity definitions in your prompt file.'
+
+const CRITIC_OUTPUT_FORMAT =
+  'Return the structured result: findings only, no verdict. Return the findings that survive, in the shape you were given (severity, taskId, text). A downgrade changes severity; a rejected finding is left out; never add a finding.'
 
 if (!args || typeof args.planPath !== 'string' || typeof args.diffCommand !== 'string' || typeof args.pluginRoot !== 'string') {
   throw new Error('review.js: args must include planPath, diffCommand, and pluginRoot')
@@ -82,8 +95,19 @@ function criticPrompt(name, findings) {
     '- Plan path: ' + args.planPath,
     '- Diff command: ' + args.diffCommand,
     '- Check findings (JSON): ' + JSON.stringify(findings),
-    '- Output format: ' + OUTPUT_FORMAT,
+    '- Output format: ' + CRITIC_OUTPUT_FORMAT,
   ].join('\n')
+}
+
+function isGated(f) {
+  return f.severity === 'blocker' || f.severity === 'major'
+}
+
+// A check fails if and only if a blocker or major finding remains. Agents'
+// own verdicts are never passed through, so a stray PASS cannot hide a
+// blocker and a stray FAIL cannot block on minors alone.
+function verdictOf(findings) {
+  return findings.some(isGated) ? 'FAIL' : 'PASS'
 }
 
 function blocker(text) {
@@ -97,7 +121,7 @@ async function runCritic(name, findings) {
   let lastError = null
   for (const model of models) {
     try {
-      const out = await agent(prompt, { label: 'critic:' + name, model: model, schema: RESULT_SCHEMA })
+      const out = await agent(prompt, { label: 'critic:' + name, model: model, schema: CRITIC_SCHEMA })
       if (out) return { out: out, error: null }
     } catch (e) {
       lastError = errorText(e)
@@ -125,15 +149,18 @@ const entries = await pipeline(
       return { name: name, verdict: 'FAIL', findings: [blocker('Check ' + name + ' failed to run: ' + prev.error)] }
     }
     const checkFindings = listOf(prev.found.findings)
-    const critic = await runCritic(name, checkFindings)
-    if (!critic.out) {
-      return {
-        name: name,
-        verdict: 'FAIL',
-        findings: checkFindings.concat([blocker('Critic for ' + name + ' failed to run: ' + critic.error)]),
-      }
+    const gated = checkFindings.filter(isGated)
+    if (gated.length === 0) {
+      return { name: name, verdict: verdictOf(checkFindings), findings: checkFindings }
     }
-    return { name: name, verdict: critic.out.verdict, findings: listOf(critic.out.findings) }
+    const minors = checkFindings.filter((f) => !isGated(f))
+    const critic = await runCritic(name, gated)
+    if (!critic.out) {
+      const findings = checkFindings.concat([blocker('Critic for ' + name + ' failed to run: ' + critic.error)])
+      return { name: name, verdict: verdictOf(findings), findings: findings }
+    }
+    const findings = listOf(critic.out.findings).concat(minors)
+    return { name: name, verdict: verdictOf(findings), findings: findings }
   }
 )
 

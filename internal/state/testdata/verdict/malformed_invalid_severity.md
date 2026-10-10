@@ -7,7 +7,7 @@
 ## Checks
 - Compliance: FAIL
 - Quality: PASS
-- Scope: PASS
+- QA: PASS
 
 ## Findings
 - [critical] W2.T1: PATCH endpoint accepts unknown fields without a 400
