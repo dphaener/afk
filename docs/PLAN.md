@@ -79,7 +79,7 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Language | Go (version per forge's `go.mod`), charm.land v2 modules for the TUI. Carried over from forge. |
 | Base | **forge's Go code and forge's plugin are the base**, renamed. Reason: the binary's parsers, dashboard and tests already implement the forge plugin's on-disk formats, and its hooks are portable shell. shipit's proven strengths are grafted in (T0.2). shipit's Claude Code mods (write-guard, continuation enforcer, band) are **not** carried: they are Claude-only, and afk enforces those things from the daemon instead. |
 | No vendor lock-in | The agent CLI stays swappable. Everything provider-specific sits behind `internal/provider`: launch, resume, preflight (exist today) plus usage probe and limit signal (new). v1 implements the new parts for Claude Code only; Codex and OpenCode keep working as session providers with "usage unknown". Nothing outside `internal/provider` may name a provider. |
-| Machine | A dedicated always-on **Linux VM** in the owner's homelab, from the start (T0.0). afk itself is built there. forge already cross-compiles for linux/amd64 and linux/arm64 and its CI runs on `ubuntu-latest`. |
+| Machine | A dedicated always-on **Linux VM** in the owner's homelab, from the start (T0.0). afk itself is built there. forge already cross-compiles for linux/amd64 and linux/arm64 and its CI runs on Ubuntu. The VM runs **Ubuntu Server 26.04 LTS**, and every project afk builds names that release in its CI (`runs-on: ubuntu-26.04`) so a pass on the VM predicts a pass in CI. |
 | Permissions | Agents run with permissions bypassed **on the VM only**; the VM is the sandbox. No production secrets on it. A dedicated API key with a low spend cap covers live calls, which are allowed for smoke checks and recording fixtures and must be logged. |
 | Ship policy | Every task runs on a feature branch. CI runs in GitHub. **Green CI → merge to main, fully unattended.** Merging deploys (for projects that deploy), and it should. A task is done when the deploy is healthy, not when it merges. |
 | Who ships | **The daemon, not the agent.** A session ends with reviewed commits on its branch. Push, pull request, CI wait, merge and deploy check are code (§5.4). |
@@ -454,7 +454,7 @@ T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are indep
 - **Depends on:** —
 - **Goal:** an always-on Linux VM that afk is built on and later runs from.
 - **Scope (owner checklist):** follow `~/code/afk-vm-runbook.html` (a homelab runbook, kept outside
-  this repo): an Ubuntu Server 24.04 LTS VM on Proxmox (4 vCPU / 8 GB / 60 GB), the toolchain (git,
+  this repo): an Ubuntu Server 26.04 LTS VM on Proxmox (4 vCPU / 8 GB / 60 GB), the toolchain (git,
   Go, Node, Ruby, `gh`, `jq`, tmux), a clean snapshot, `gh auth login`, Claude Code with an interactive
   `/login`, **extra usage turned off** on the Claude account, bypassed permissions in Claude Code's
   settings, forge built from `~/code/forge-cli` (`make install`) with `forge plugin install --target
@@ -472,7 +472,8 @@ T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are indep
   etc.; `plugins/forge-opencode` → `plugins/afk-opencode`; marketplace manifests; every user-facing
   string. Drop the README section about the Foundry name collision. Keep `.claude/worktrees/` as the
   worktree location (renaming it is deferred). Write afk's `CLAUDE.md` from forge's, updated for the
-  new names and for §7. Rewrite `README.md` for afk. CI: Go on `ubuntu-latest`, plus the plugin's node
+  new names and for §7. Rewrite `README.md` for afk. CI: Go on `ubuntu-26.04` (named explicitly so CI matches the VM; `ubuntu-latest` still means
+  24.04), plus the plugin's node
   tests and hook shell tests.
 - **Must not:** change behaviour, schemas or tests' meaning. This task is a rename.
 - **Acceptance:** `make check` green locally and in CI; `grep -ri forge` over tracked files returns
@@ -636,7 +637,7 @@ with nobody at the keyboard.
 - **Scope:** `docs/runbook-vm.md`: project prerequisites on the VM (for nebari: Ruby, PostgreSQL 17,
   libvips, Chrome for system specs), the capped API key, `afkd` enabled under systemd, web page
   reachable over the owner's tunnel. In nebari: add `afk.toml` (health URL, `required_env_pattern` for
-  `${VAR:?}` in `docker-compose.coolify.yml`, policy notes on live calls), seed the ledger, confirm CI
+  `${VAR:?}` in `docker-compose.coolify.yml`, policy notes on live calls), seed the ledger, switch its CI to `runs-on: ubuntu-26.04` so it matches the VM, confirm CI
   runs on pull requests (it does) and that a merge to main triggers the Coolify deploy.
   **Owner prerequisites:** enable nebari's database backups to B2 and do the restore drill (deferred
   since nebari T0.3; unattended deploys run migrations with nobody watching); finish or hand over the
