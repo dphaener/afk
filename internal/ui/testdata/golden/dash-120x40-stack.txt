@@ -1,0 +1,40 @@
+ afk Dashboard                                                                                                          
+╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
+│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
+│                                           ││ ─────────────────────────────────────────────────────────────────────── │
+│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ ○ main                                                                  │
+│   ● Billing v2          REVIEWING   7/7   ││ ├── ● feat-auth [feat-auth]                                             │
+│   ● fix-login-redirect  PLANNING      – ● ││ │   ╰── ○ feat-billing [feat-billing]                                   │
+│   ○ feat-search         DONE        5/5   ││ ╰── ○ fix-login-redirect [fix-login-redirect]                           │
+│   ● scratch-1           SCRATCH       –   ││                                                                         │
+│   ○ old-migration       BROKEN        –   ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+╰───────────────────────────────────────────╯╰───────────────────────────── enter/f: focus view · c: clean · l: label ─╯
+↑/k preview↑ · ↓/j preview↓ · enter/f focus view · ctrl+t agent/view · ctrl+\ close pane · n new session …              

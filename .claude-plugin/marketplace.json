@@ -1,0 +1,15 @@
+{
+  "name": "afk",
+  "owner": {
+    "name": "Darin Haener"
+  },
+  "metadata": {
+    "description": "The afk Plan → Execute → Review workflow, shipped with the afk CLI"
+  },
+  "plugins": [
+    {
+      "name": "afk",
+      "source": "./plugins/afk"
+    }
+  ]
+}

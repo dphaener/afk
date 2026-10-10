@@ -1,0 +1,28 @@
+{
+  "name": "afk",
+  "version": "3.7.0",
+  "description": "Structured Plan → Execute → Review workflow with research agents and adversarial review",
+  "author": {
+    "name": "Ontra"
+  },
+  "homepage": "https://github.com/dphaener/afk",
+  "repository": "https://github.com/dphaener/afk",
+  "keywords": [
+    "workflow",
+    "planning",
+    "review",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "afk",
+    "shortDescription": "Plan → Execute → Review workflow with adversarial review.",
+    "longDescription": "A structured development workflow that plans a change, executes it with appropriate model selection and research, and then runs an adversarial review pass before handing results back.",
+    "developerName": "Ontra",
+    "category": "Development",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Use afk to plan, execute, and review this change."
+    ]
+  }
+}

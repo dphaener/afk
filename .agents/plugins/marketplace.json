@@ -1,0 +1,20 @@
+{
+  "name": "afk",
+  "interface": {
+    "displayName": "afk"
+  },
+  "plugins": [
+    {
+      "name": "afk",
+      "source": {
+        "source": "local",
+        "path": "./plugins/afk"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Development"
+    }
+  ]
+}

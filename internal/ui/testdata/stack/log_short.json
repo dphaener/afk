@@ -1,0 +1,4 @@
+{"name":"feat-b","current":true,"down":{"name":"feat-a"}}
+{"name":"main","ups":[{"name":"feat-a"},{"name":"feat-c"}]}
+{"name":"feat-c","down":{"name":"main"}}
+{"name":"feat-a","down":{"name":"main"},"ups":[{"name":"feat-b"}]}

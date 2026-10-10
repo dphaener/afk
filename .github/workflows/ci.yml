@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check:
+    # Named explicitly so CI matches the VM; `ubuntu-latest` is still 24.04.
+    runs-on: ubuntu-26.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    # `make check` is the single entry point: gofmt, vet, Go tests, the plugin
+    # node suites and the hook shell tests. It needs bash and jq, which the
+    # runner image provides.
+    - name: Run checks
+      run: make check

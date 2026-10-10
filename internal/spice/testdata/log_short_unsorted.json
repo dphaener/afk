@@ -1,0 +1,3 @@
+{"name":"main","ups":[{"name":"feat/afk-adaptive-dual-mode"}]}
+{"name":"feat/afk-go-orchestration","current":true,"down":{"name":"feat/afk-adaptive-dual-mode"}}
+{"name":"feat/afk-adaptive-dual-mode","down":{"name":"main"},"ups":[{"name":"feat/afk-go-orchestration"}],"change":{"id":"#293","url":"https://github.com/Ontra-ai/claude-marche/pull/293"},"push":{"ahead":0,"behind":0}}

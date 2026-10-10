@@ -1,0 +1,40 @@
+ afk Dashboard                                                                                                          
+╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
+│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
+│                                           ││ ─────────────────────────────────────────────────────────────────────── │
+│ ▌ ● feat-auth           EXECUTING   3/7 ● ││                                                                         │
+│   ● Billing v2          REVIEWING   7/7   ││ Learnings (last 10)                                                     │
+│   ● fix-login-redirect  PLANNING      – ● ││ huh v2 needs explicit WithWidth                                         │
+│   ○ feat-search         DONE        5/5   ││                                                                         │
+│   ● scratch-1           SCRATCH       –   ││ Issues (last 10)                                                        │
+│   ○ old-migration       BROKEN        –   ││ legacy_sessions has no FK to users — confirm before dropping            │
+│                                           ││ rate limiter test flaky under -race                                     │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+╰───────────────────────────────────────────╯╰───────────────────────────── enter/f: focus view · c: clean · l: label ─╯
+↑/k preview↑ · ↓/j preview↓ · enter/f focus view · ctrl+t agent/view · ctrl+\ close pane · n new session …              

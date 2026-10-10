@@ -1,0 +1,13 @@
+{
+  "name": "afk-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "test": "node --test workflows/test/*.test.mjs test/*.test.mjs"
+  }
+}
