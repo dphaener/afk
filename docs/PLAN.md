@@ -47,6 +47,31 @@ Two existing systems by the same owner are being merged and replaced:
   touched in 31 commits. "Next task" must be re-derived every cycle.
 - No subscription usage limit was hit at human pace. Neither forge nor shipit handles one.
 
+### Where the tokens went (measured from the same build: 543 transcripts, 14,523 model calls)
+
+"Cost" below weights token types by API price ratios (§4.7). How a subscription weights them is not
+published, so shares are approximate.
+
+- **92% of cost is context being written and re-read**; generated output is under 8%. Cost is driven
+  by the number of model calls times the size of the context on each call.
+- By role: implementation agents 49%, review and verification agents 18%, orchestrating main loops
+  18%, planning and research 9%, post-review fixes and shipping 5%.
+- **Running execution as a workflow script neither saved nor cost anything measurable** (0.74M versus
+  0.84M per work item, inside task-to-task variation).
+- **Idle gaps cost about 14%.** An agent that waits more than five minutes on one command loses its
+  cached context and re-sends all of it. It happened 265 times, mostly behind a long test run or a
+  sleep-and-poll loop.
+- **Agent start-up cost up to 13%.** Each implementation or review agent began with about 45k tokens
+  of context before doing anything (17k for lightweight research agents). What the extra 28k contains
+  was not determined.
+- **Some review never fired.** The scope reviewer rejected nothing in 25 runs; per-item verifiers
+  passed 50 of 50; after any rejection all four reviewers were re-run. Code-quality review was the
+  cheapest source of real fixes, and hands-on QA the most expensive but the one that found functional
+  defects.
+- Agents spent a median of seven calls reading before their first edit (about 6% of the build).
+- Waking the orchestrator for every finished item cost one task 122 main-loop calls where a similar
+  task used 13.
+
 ### What afk must do
 
 1. **Run unattended** on an always-on machine: pick the next ready task from a master plan, run it, ship
@@ -87,6 +112,8 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Human gates | None in autonomous mode. Plan approval and ship sign-off are replaced by policy (§5.5). Review stays, including hands-on QA. |
 | Usage reserve | **10% kept for the owner on every window** (5-hour session, weekly, per-model weekly): hard pause at 90% used. New tasks stop launching earlier, at 75% of the session window (tunable). Extra usage (paid overage) must be **off**; the daemon refuses to run if it is on. |
 | Pacing | None beyond the reserve. The runner may spend the week's allowance early and then idle until the reset. |
+| Token economy | **For an always-on runner, tokens are speed**: once it sits at the usage limit, tasks per week is set by tokens per task. So the task cycle is built lean (§5.7) and every task's token use is recorded by phase and role (§4.7), so further cuts are measured, not argued. Review that finds real defects stays. |
+| Permission mode | **Passed explicitly at launch**, not left to a settings file. The daemon starts each agent in the provider's unattended mode and refuses to launch if the machine isn't set up for it. (On the VM, a user-settings default that had drifted to another mode silently changed how a task ran.) |
 | Concurrency | **One task at a time** in v1. Usage, not wall-clock, is the limit, and sequential tasks never conflict. |
 | Notifications | ntfy (plain HTTP POST) for push. Desktop toasts from forge stay as a macOS-only extra. |
 | Web surface | A small server-rendered page served by `afk daemon` (Go `net/http` + `html/template`, no JS build step). Loopback by default; protected by a shared token; meant to sit behind Tailscale or the owner's reverse proxy. |
@@ -231,6 +258,19 @@ ntfy_url = ""                   # e.g. https://ntfy.example/afk-nebari
 Machine config `~/.config/afk/config.toml`: projects the daemon runs, governor thresholds (§6.3), web
 bind address and token, provider choice.
 
+### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
+
+One line per task per phase per role, written when a task ends: `{at, task, session, phase:
+plan|execute|review|fix|ship, role, model, calls, input, output, cache_write, cache_read, weighted}`.
+Roles are the plugin's own (conductor, planner, research, task agent, verifier, each review check,
+critic). The numbers come from the provider's session transcripts, read through `internal/provider`.
+
+- **Weighted cost** = `input + 5×output + 1.25×cache_write + 0.1×cache_read`, in input-token
+  equivalents. It is a proxy from API price ratios; keep the raw fields so it can be recomputed.
+- **Counting rule (Claude Code transcripts):** the same message id appears on several lines (streaming
+  chunks, forked transcripts). Count each id once, taking the maximum of each usage field.
+- **Baseline to beat:** the nebari build averaged about 16M weighted per master-plan task.
+
 ---
 
 ## 5. The build loop
@@ -268,7 +308,12 @@ Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason
 1. Governor says launching is allowed (§6.3), else wait.
 2. Create the session: branch `afk/t4-3`, its worktree, seeded `status.json`, and a description of
    `Implement T4.3 from docs/PLAN.md`. Ledger → `running`.
-3. Spawn the detached session host running the provider's CLI with the autonomous conductor.
+3. Spawn the detached session host running the provider's CLI with the autonomous conductor, **in the
+   provider's unattended permission mode, named on the command line** (Claude Code:
+   `--permission-mode bypassPermissions`). Before the first launch, the provider's preflight checks
+   the machine can run that mode without a dialog (Claude Code: the bypass warning has been accepted
+   in user settings, and the user is not root); if not, a blocking `failure` item says what to do and
+   nothing launches.
 4. Watch `status.json` and `host.json` on a ticker (files only):
    - `phase: done` → ship (§5.4).
    - `phase: failed` → ledger `failed`, a `failure` inbox item with the verdict, move on.
@@ -334,6 +379,30 @@ The conductor in autonomous mode follows these, in this order of precedence:
 - **Host gone entirely** (VM reboot): relaunch the host with the resume argv.
 - **Daemon restart:** reconcile ledger against sessions on disk; adopt running sessions, never start a
   second one for a task that has one.
+
+### 5.7 A lean task cycle
+
+Rules for the plugin, each tied to a measurement in §1. They apply in every mode, not only autonomous.
+
+1. **No long waits inside an agent.** A task agent runs the focused tests for what it touched, never
+   the whole suite, and never sleeps or polls. No single command should run longer than about four
+   minutes. The full suite runs once per cycle, in the hands-on QA check, and again in CI.
+2. **Three review checks, not four:** compliance, code quality, hands-on QA. "Did the change stay in
+   scope" is one criterion inside compliance, not its own agent.
+3. **A critic runs only on a finding that would trigger a fix** (blocker or major), to confirm it
+   before a fix loop starts. A check that passes gets no critic. (Judgement, not measurement: the
+   nebari build had no critics. Revisit with the token ledger.)
+4. **Re-review only the check that failed**, after a fix.
+5. **Verification stays tiered.** A separate verifier runs for risky items only, as forge does today;
+   never one per item by default.
+6. **No agent does a script's job.** Ticking a work-plan checkbox is a command (`afk plan check`), not
+   a model call.
+7. **The conductor sleeps while work runs.** Between launching the execute or review workflow and its
+   completion, the conductor makes no model call.
+8. **Work-plan tasks carry their references.** Each names exact files, and line ranges where it helps,
+   so a task agent starts editing sooner. The agent still reads what it edits.
+9. **Research is opt-in in autonomous mode.** With a master-plan task as input, web research runs only
+   when the task names an external API or library the repo doesn't already use.
 
 ---
 
@@ -439,10 +508,11 @@ M0 Foundation ──▶ M1 Primitives ──▶ M2 Daemon ──▶ M3 Surfaces 
  T0.0 VM          T1.1 ledger        T2.1 loop     T3.1 web        T4.1 nebari on the VM
  T0.1 seed        T1.2 inbox         T2.2 ship     T3.2 dash       T4.2 supervised, then unattended
  T0.2 plugin      T1.3 usage         T2.3 recover
-                                     T2.4 govern
+                  T1.4 tokens        T2.4 govern
+                  T1.5 start-up
 ```
 
-T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are independent once T2.1 is in.
+T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent once T2.1 is in.
 
 ---
 
@@ -489,8 +559,14 @@ T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are indep
   - **QA scenarios and evidence.** Each work-plan task gains shipit's QA Scenarios (tool, steps,
     expected, evidence path); evidence is written under `.afk/{session}/evidence/`. Update
     `plan-format.md`, `plan_to_args.rb` and the Go plan parser together.
-  - **Hands-on QA review check.** Add shipit's F3 (real QA: run the app, exercise the change) as a
-    fourth check in `review.js`, with the existing critic and severity gate.
+  - **Hands-on QA review check.** Add shipit's F3 (real QA: run the app, exercise the change, run the
+    full test suite once) as a check in `review.js`, under the existing severity gate.
+  - **The lean cycle of §5.7**, all nine rules. In particular: remove forge's separate scope check and
+    make scope a compliance criterion, leaving three checks; run a critic only on a blocker or major
+    finding; replace the bookkeeping agent in `execute.js` with a call to a new `afk plan check
+    <session> <task-id> done|failed` command (atomic write, safe when two tasks finish together);
+    write the test-running and no-polling rules into the task-agent prompt; require file references
+    in `plan-format.md`.
   - **Glossary and decisions output.** The planner maintains the project's `CONTEXT.md` and records
     decisions the master plan didn't make in `docs/decisions.md`, as nebari's tasks do today.
   - **Master-plan awareness.** When the session description names a master-plan task, the planner
@@ -503,10 +579,13 @@ T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are indep
   - Add the `StopFailure` hook of §6.4 (marker file only).
 - **Not in scope:** shipit's Claude Code mods; the OpenCode port (record in its `PROVENANCE.md` that it
   lags this change; resync is deferred).
-- **Acceptance:** plugin node tests and hook tests green, with new cases for the fourth review check
-  and the QA-scenario fields; `plan_to_args.rb` rejects a task missing QA scenarios; a supervised
-  autonomous run of one small real task in a scratch repo ends `phase: done` with evidence files, a
-  verdict file and zero terminal questions.
+- **Acceptance:** plugin node tests and hook tests green, with new cases for: the hands-on QA check;
+  exactly three checks with no scope agent; a critic spawned for a major finding and none for a
+  passing check; re-review limited to the failed check; no bookkeeping agent in an execute run; the
+  QA-scenario fields. Table tests for `afk plan check`, including two concurrent writers.
+  `plan_to_args.rb` rejects a task missing QA scenarios or file references. A supervised autonomous
+  run of one small real task in a scratch repo ends `phase: done` with evidence files, a verdict file
+  and zero terminal questions.
 
 ---
 
@@ -549,6 +628,34 @@ T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are indep
   test, one row per condition and each boundary value; Codex and OpenCode return
   `ErrUsageUnsupported`; `afk usage` works on the VM.
 
+#### T1.4 — Token ledger
+- **Depends on:** T0.1
+- **Scope:** §4.7. A provider method that returns per-call usage records for a session and its
+  subagents, with each record's role and phase; the Claude Code implementation reads its JSONL
+  transcripts (main session, subagent and workflow-agent files) with the counting rule of §4.7, and
+  takes role from the agent's metadata and the phase from `status.json` transitions. Codex and
+  OpenCode return "unsupported". `internal/tokens` aggregates and appends to the ledger. Command:
+  `afk tokens [session|task]` (table by phase and role, weighted total, share of each). **Spike
+  first:** run one real autonomous task on the VM and commit a trimmed copy of its transcripts
+  (prompts and file contents removed, usage and metadata kept) as the fixture.
+- **Acceptance:** parser tests on the fixture and on hand-made cases (a message id split across lines,
+  the same id in two files, a subagent with no metadata, an unknown role); the weighted formula as a
+  table test; `afk tokens` on the fixture matches numbers computed by hand in the test.
+
+#### T1.5 — Measure and trim agent start-up context
+- **Depends on:** T0.2, T1.4
+- **Goal:** know what a fresh agent carries before its first action, and remove what it doesn't need.
+- **Scope:** on the VM, with the afk plugin, capture the first model call of a task agent, a review
+  agent and a research agent, and itemise their context: tool definitions, plugin skills and agent
+  definitions, `CLAUDE.md` and rules files, connectors, anything else. Record the itemised sizes in
+  `docs/decisions.md`. Then trim what is safe: restrict each agent type's tools to what its role uses
+  (the hands-on QA check keeps its browser tools), and keep project rules that govern the code it
+  writes. Re-measure.
+- **Must not:** remove project rules from agents that write code, or weaken any review check.
+- **Acceptance:** before-and-after sizes per agent type in `docs/decisions.md`; a scratch-repo
+  autonomous run after the trim still ends `phase: done` with all three checks run; `afk tokens` for
+  that run shows the start-up share.
+
 ---
 
 ### M2 — Daemon
@@ -557,9 +664,10 @@ T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are indep
 with nobody at the keyboard.
 
 #### T2.1 — The build loop
-- **Depends on:** T0.2, T1.1, T1.2
+- **Depends on:** T0.2, T1.1, T1.2, T1.4
 - **Scope:** `afk daemon` implementing §5.3 for the projects in machine config, one task at a time per
-  project. Decision log (§4.4). `afk daemon status` (what it is doing and why). `afk pause <project>`
+  project, launching each agent in the provider's unattended permission mode after the preflight of
+  §5.3 step 3. Decision log (§4.4). Token ledger entry for every finished task (§4.7). `afk daemon status` (what it is doing and why). `afk pause <project>`
   and `afk resume <project>` (a flag file the loop honours between tasks). A systemd unit file in
   `contrib/`. The daemon holds no state in memory that is not on disk; killing and restarting it at
   any point must be safe. Shipping is a stub here: at `phase: done` the task goes to `shipping` and
@@ -567,7 +675,9 @@ with nobody at the keyboard.
 - **Acceptance:** with a fake provider whose "agent" is a script that writes `status.json`
   transitions, integration tests cover: happy path to `shipping`; `phase: failed`; a blocking inbox
   item parks and an answer un-parks; `awaiting_input` stall raises an item; daemon killed mid-task and
-  restarted adopts the running session and starts no duplicate; pause honoured.
+  restarted adopts the running session and starts no duplicate; pause honoured; the launch argv
+  carries the unattended mode; a failed preflight raises an item and launches nothing; a finished
+  task has ledger lines for each phase.
 
 #### T2.2 — Ship in code
 - **Depends on:** T2.1
@@ -650,7 +760,8 @@ with nobody at the keyboard.
 - **Scope:** run one nebari task with the owner watching through `afk dash`, end to end including the
   deploy. Write up what needed a human and fix or file each cause. Then leave the daemon running.
 - **Acceptance:** one nebari task merged and deployed with no terminal input; a retrospective in
-  `docs/decisions.md`; the daemon then runs unattended until the plan is done or it is waiting on the
+  `docs/decisions.md`, including that task's `afk tokens` breakdown against the nebari baseline of
+  about 16M weighted per task (§4.7); the daemon then runs unattended until the plan is done or it is waiting on the
   owner.
 
 ---
@@ -667,6 +778,11 @@ with nobody at the keyboard.
   are already disk predicates), checkbox bookkeeping, verdict rendering, the fix-loop counter. Then
   policy rules learned from repeated identical answers.
 - **Parallel tasks** across independent milestones.
+- **A fresh session per phase.** In one long session the review phase's main-loop calls carried 47–69k
+  tokens each, against 19–23k when review ran as its own session (about 3% of the build). The daemon
+  launching plan, execute and review as separate sessions also moves the conductor toward code.
+- **A thinner cycle for small master-plan tasks**: one agent, one review pass, no wave plan. Decide
+  with ledger data, not before it.
 - **Usage probes for Codex and OpenCode**; per-provider limit signals.
 - **API-key billing** as a first-class alternative to a subscription (and a spend governor for it).
 - **OpenCode port resync** with the T0.2 plugin changes.
@@ -683,7 +799,7 @@ with nobody at the keyboard.
 
 | Question | Needed by |
 |---|---|
-| Does forge's autonomous flow hold up on real tasks as well as `/shipit:go` did on nebari? T0.1 and T0.2 are the test; if it struggles, T0.2 grows. | T0.2 |
+| Does forge's autonomous flow hold up on real tasks as well as `/shipit:go` did on nebari? **Answered 2026-10-10: yes.** The owner has run forge's autonomous mode many times and it works well, so T0.2 grafts shipit's strengths onto it and does not rework it. | T0.2 |
 | How to pause a live agent session cleanly and resume it (§6.4). Spike on the VM. | T2.4 |
 | What exactly a session emits when it hits a usage limit (text, hook, whether a reset time is present). Never observed; capture it the first time it happens. | T2.4 |
 | Is the login-expiry warning detectable ahead of time, or only the logged-out state? | T2.4 |
@@ -691,6 +807,8 @@ with nobody at the keyboard.
 | Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? | T1.3 |
 | Nebari's health-check URL, and how to tell a deploy of *this* commit finished (as opposed to the old container still answering). | T4.1 |
 | Does a merge to nebari's main trigger the Coolify deploy today, or does a webhook need adding? | T4.1 |
+| What the 28k of extra start-up context in implementation and review agents consists of. | T1.5 |
+| How a subscription weights cache reads, cache writes and output against its limits. Unpublished; compare the token ledger with the usage percentages the governor records. | after T2.4 |
 | Licence for the open-source release. | before release |
 
 ## 11. Definition of done (every task)
