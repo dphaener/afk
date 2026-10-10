@@ -57,7 +57,7 @@ make            # build ./afk in the repo root
 make install    # build into ~/bin (PREFIX=... to override)
 make check      # fmt-check + vet + test + plugin-test + hook-test, run by .github/workflows/ci.yml
 make test       # go test ./...
-make plugin-test  # plugin node tests (plugins/afk and plugins/afk-opencode)
+make plugin-test  # Ruby parser test, prompt size-cap check, plugin node tests (plugins/afk and plugins/afk-opencode)
 make hook-test  # plugin hook shell tests
 make clean      # remove the local ./afk
 make help       # list targets
@@ -126,7 +126,7 @@ Packages are hermetic with injectable dependencies. Tests never create or modify
 
 ### Keeping the two plugins in step
 
-The plugin lives in `plugins/afk` and the OpenCode port in `plugins/afk-opencode`. They are kept in step by hand, using the glossary in `plugins/afk-opencode/PROVENANCE.md`: a prompt, workflow or schema change in one needs the matching change in the other in the same change.
+The plugin lives in `plugins/afk` and the OpenCode port in `plugins/afk-opencode`. They are meant to be kept in step by hand, using the glossary in `plugins/afk-opencode/PROVENANCE.md`, but right now they are not: the OpenCode port lags the T0.2 change to `plugins/afk` (three checks, QA scenarios, `afk plan check`, the autonomous policy, the `StopFailure` hook, the planner's project documents). The lag and the areas it covers are recorded in `PROVENANCE.md`, and the resync is deferred (`docs/PLAN.md` §9). Until it is done, do not assume the port matches `plugins/afk`; a change to `plugins/afk` still needs the matching change in the port, or an entry in that lag note.
 
 ## Rules that do not apply here
 

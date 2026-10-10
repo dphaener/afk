@@ -22,9 +22,12 @@ What to do, Must NOT do, Files, and Acceptance Criteria verbatim.]
 - Append issues to: `.afk/{plan-name}/issues.md`
 - NEVER overwrite notepad files — always append
 - Run verification command before declaring done
+- Run only the focused tests for the files you touched plus the task's Acceptance Criteria commands; never the whole suite
+- Never `sleep` or poll; no single command may run longer than about four minutes
+- Carry out each QA Scenario and save its evidence at the path the plan names
 
 ## 5. MUST NOT DO
-- Do NOT modify files outside: [list from plan's Files section + test files if applicable + `.afk/{plan-name}/*.md` notepad files]
+- Do NOT modify files outside: [list from plan's Files section + test files if applicable + `.afk/{plan-name}/*.md` notepad files + the task's evidence files under `.afk/{plan-name}/evidence/`]
 - Do NOT add dependencies without explicit justification
 - Do NOT leave stubs, TODOs, or placeholder implementations
 - Do NOT skip the notepad append step

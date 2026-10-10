@@ -7,7 +7,7 @@
 ## Checks
 - Compliance: PASS
 - Quality: PASS
-- Scope: PASS
+- QA: PASS
 
 ## Findings
 - none

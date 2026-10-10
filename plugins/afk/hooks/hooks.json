@@ -43,6 +43,17 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/on-stop-failure.sh"
+          }
+        ]
+      }
     ]
   }
 }

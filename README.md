@@ -401,6 +401,24 @@ Without `--target`, it lists the agent CLIs it finds on `PATH` and asks which on
 
 **Exit codes:** 0 when every selected target installed (or nothing was selected), 1 when any target failed or the prompt was cancelled, 2 on a flag error or a missing `--target` without a terminal.
 
+### `afk plan check` — Tick a task in a plan
+
+Record the outcome of one task in a session's plan. The agent plugin runs this itself after each task, so a plan's checkboxes are ticked by a command rather than by a helper agent. You can also run it by hand to correct a plan.
+
+```bash
+afk plan check [--project DIR] [--reason TEXT] <session> <task-id> done|failed
+```
+
+- `<session>` — The session (plan) name. The plan file is `.afk/plans/<session>.md` under the project.
+- `<task-id>` — The task, written `W1.T2` or `(W1.T2)`.
+- `done` — Turns the task's line into `- [x] (W1.T2) title`.
+- `failed` — Turns the line into `- [!] (W1.T2) title FAILED: reason` and adds a `## (W1.T2) FAILED` entry, with the time and reason, to `.afk/<session>/issues.md`. Needs `--reason`.
+- `--project DIR` — The project to work in. Defaults to the current directory.
+
+Running the same command twice changes nothing the second time, and a task already marked failed keeps its first reason. Several of these commands can run at once on one plan; they take turns using a lock file.
+
+**Exit codes:** 0 when the task was marked (or there was nothing to do), 1 when the plan or the task was not found or the file could not be written, 2 when the command was written wrongly (for example `failed` with no `--reason`).
+
 ---
 
 ## Session Model
@@ -516,7 +534,7 @@ None of these absences cause failures; the CLI degrades gracefully. The only har
 
 ## Building and Testing
 
-`make check` is the one command that says whether a change is good. It runs, in order: `gofmt` (formatting), `go vet`, the Go tests, the plugin's Node tests (`plugins/afk` workflows and the `plugins/afk-opencode` port), and the plugin's hook shell tests. It needs Go, Node, `bash` and `jq`. CI runs the same command.
+`make check` is the one command that says whether a change is good. It runs, in order: `gofmt` (formatting), `go vet`, the Go tests, the plugin's Ruby parser test, the prompt size check and Node tests (`plugins/afk` workflows and the `plugins/afk-opencode` port), and the plugin's hook shell tests. It needs Go, Node, `bash` and `jq`. CI runs the same command.
 
 ```bash
 # Build ./afk in the repo root

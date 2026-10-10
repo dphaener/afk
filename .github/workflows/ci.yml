@@ -24,8 +24,15 @@ jobs:
       with:
         node-version: '22'
 
+    # The repo has no .ruby-version, so the version is pinned here. The plan
+    # parser (plugins/afk/scripts/plan_to_args.rb) is stdlib only.
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.3'
+
     # `make check` is the single entry point: gofmt, vet, Go tests, the plugin
-    # node suites and the hook shell tests. It needs bash and jq, which the
-    # runner image provides.
+    # node and ruby suites, the prompt size check and the hook shell tests. It
+    # needs bash and jq, which the runner image provides, plus the Ruby above.
     - name: Run checks
       run: make check

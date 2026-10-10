@@ -2691,7 +2691,7 @@ func (overviewPanel) Render(ctx panelContext, width int) []string {
 				style = theme.verdictBad
 			}
 			facts = append(facts, overviewFact("Verdict", style.Render(string(v.Verdict))+
-				theme.dim.Render(fmt.Sprintf("  compliance %s · quality %s · scope %s", v.Compliance, v.Quality, v.Scope))))
+				theme.dim.Render(fmt.Sprintf("  compliance %s · quality %s · qa %s", v.Compliance, v.Quality, v.QA))))
 		default:
 			facts = append(facts, overviewFact("Verdict", theme.dim.Render("— not reviewed yet")))
 		}
@@ -3120,8 +3120,8 @@ func (verdictPanel) Render(ctx panelContext, width int) []string {
 		head += theme.errorText.Render("  (inconsistent with checks)")
 	}
 	out = append(out, head)
-	out = append(out, theme.dim.Render(fmt.Sprintf("  Compliance %s · Quality %s · Scope %s",
-		v.Compliance, v.Quality, v.Scope)))
+	out = append(out, theme.dim.Render(fmt.Sprintf("  Compliance %s · Quality %s · QA %s",
+		v.Compliance, v.Quality, v.QA)))
 	for _, f := range v.Findings {
 		line := fmt.Sprintf("  [%s] %s: %s", f.Severity, f.TaskID, f.Description)
 		out = append(out, theme.taskFailed.Render(truncate(line, width)))

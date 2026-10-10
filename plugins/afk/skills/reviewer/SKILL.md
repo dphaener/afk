@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: "Post-execution review agent that verifies completed work against the plan. Runs three parallel checks — plan compliance, code quality, and scope fidelity — each with an adversarial critic on the `reasoning` tier. Produces an APPROVE or REJECT verdict."
+description: "Post-execution review agent that verifies completed work against the plan. Runs three parallel checks — plan compliance, code quality, and hands-on QA — each with an adversarial critic on the `reasoning` tier when it finds a blocker or major. Produces an APPROVE or REJECT verdict."
 ---
 
 # Reviewer Skill
@@ -16,7 +16,7 @@ You are the final quality gate. Your role is adversarial by default — assume i
 - **NEVER auto-fix issues** — report them precisely so the author can address them, subject only to the CONTRACT CARVE-OUT below
 - **NEVER assume** a test framework, lint command, or build tool — read `CLAUDE.md` to discover them
 
-**CONTRACT CARVE-OUT** — this is a deliberate, narrow change to the reviewer's read-only contract above, mirroring the planner's light-path carve-out (`plugins/afk/skills/planner/SKILL.md`, "CONTRACT CARVE-OUT (light path)"): the two read-only constraint statements above ("NEVER modify code" and "NEVER auto-fix issues"), and their restatement in the Constraints Summary below, bind in **ALL** cases except two scoped exceptions. (a) After a REJECT verdict and explicit user confirmation through the fix gate, code fixes are DELEGATED to sub-agents via the Agent tool, per the `# Fix Rejections Flow` block injected into this command's context — the reviewer itself still never edits code, even trivially; every fix is an `Agent()` call, never an Edit or Write to a code file. (b) The reviewer may WRITE only `.afk/{plan-name}/` artifacts — `review-fixes.md` and `manual-testing.md` — never code, plan, or config files. Check and critic prompts are always emitted verbatim with only the Step 2 inputs appended; re-review passes change the diff command input, never a prompt's text.
+**CONTRACT CARVE-OUT** — this is a deliberate, narrow change to the reviewer's read-only contract above, mirroring the planner's light-path carve-out (`plugins/afk/skills/planner/SKILL.md`, "CONTRACT CARVE-OUT (light path)"): the two read-only constraint statements above ("NEVER modify code" and "NEVER auto-fix issues"), and their restatement in the Constraints Summary below, bind in **ALL** cases except two scoped exceptions. (a) After a REJECT verdict and explicit user confirmation through the fix gate, code fixes are DELEGATED to sub-agents via the Agent tool, per the `# Fix Rejections Flow` block injected into this command's context — the reviewer itself still never edits code, even trivially; every fix is an `Agent()` call, never an Edit or Write to a code file. (b) The reviewer may WRITE only `.afk/{plan-name}/` artifacts — `review-fixes.md`, `manual-testing.md`, and, for the hands-on QA check, files under `evidence/qa/` — never code, plan, or config files. Check and critic prompts are always emitted verbatim with only the Step 2 inputs appended; re-review passes change the diff command input, never a prompt's text.
 
 ---
 
@@ -36,7 +36,7 @@ Before dispatching, run the chosen command once with `--stat` to confirm it work
 Standalone `/afk:review` keeps its own diff logic: the initial review uses the default above, and each re-review pass passes `# Fix Rejections Flow` §4's working-tree diff command.
 
 ### Requested Checks
-The caller may request a subset of the three checks — `compliance` (Check 1), `quality` (Check 2), `scope` (Check 3) — for a re-review. Default: all three. Standalone `/afk:review` always runs all three (§4's full-rerun rule). A subset run requires an existing `.afk/{plan-name}/review-verdict.md`; without one, run all three.
+The caller may request a subset of the three checks — `compliance` (Check 1), `quality` (Check 2), `qa` (Check 3) — for a re-review. Default: all three. Standalone `/afk:review` always runs all three (§4's full-rerun rule). A subset run requires an existing `.afk/{plan-name}/review-verdict.md`; without one, run all three.
 
 ### Known Issues
 Do not read `.afk/{plan-name}/issues.md` or any notepad yourself, and never pass execution history, task summaries, or notepads to a check or critic. Check 1 reads `issues.md` itself, only to verify acknowledged `[!]` failures — it is a plan artifact, not execution history.
@@ -54,13 +54,15 @@ This is fix-loop history for the fix gate and fix delegation only — never pass
 
 ## Step 2: Run the Checks
 
-Each requested check runs as a fresh agent on the `balanced` tier, followed by its own **adversarial critic** on the `reasoning` tier. The critic challenges the check's findings, looks for missed issues, and returns the reconciled final result (verdict and severity-tagged findings) for that check. Checks are independent: run them in parallel, each check feeding only its own critic.
+Each requested check runs as a fresh agent on the `balanced` tier. Checks are independent: run them in parallel.
+
+**Lean-cycle rules** (PLAN §5.7 rules 2-4, stated once here): (2) there are three checks, not four; whether the change stayed in scope is one criterion inside compliance. (3) A critic runs only on a check that has a `blocker` or `major` finding, to confirm those findings before a fix loop starts; its survivors replace them, and the check's minors pass through. A check with no blocker or major gets no critic. (4) After a fix, re-review only the check that failed (a subset run, see Subset Merge).
 
 | Check | Name | Prompt file |
 |---|---|---|
 | Check 1 | `compliance` | `{plugin-root}/skills/reviewer/prompts/check-plan-compliance.md` |
 | Check 2 | `quality` | `{plugin-root}/skills/reviewer/prompts/check-code-quality.md` |
-| Check 3 | `scope` | `{plugin-root}/skills/reviewer/prompts/check-scope-fidelity.md` |
+| Check 3 | `qa` | `{plugin-root}/skills/reviewer/prompts/check-hands-on-qa.md` |
 | Critic | — | `{plugin-root}/skills/reviewer/prompts/adversarial-critic.md` |
 
 `{plugin-root}` is the plugin root captured by the invoking command (`/afk:review`'s Environment Capture block) or given by the caller.
@@ -79,18 +81,18 @@ Workflow({scriptPath: "{absolute project root}/.afk/{plan-name}/review.js", args
   planPath: "{absolute plan path}",
   pluginRoot: "{plugin-root}",
   diffCommand: "{diff command from Step 1}",
-  checks: ["compliance", "quality", "scope"],   // the requested checks
+  checks: ["compliance", "quality", "qa"],   // the requested checks
   checkModel: "{balanced alias}",
   criticModel: "{reasoning alias}",
   criticFallbackModel: "{reasoning Fallback alias}"
 }})
 ```
 
-It returns `{checks: {compliance|quality|scope: {verdict, findings: [{severity, taskId, text}]}}}` for the requested checks — each entry is the critic's reconciled result. If the Workflow call cannot start (the script is missing or the call is rejected), use the Agent path.
+It returns `{checks: {compliance|quality|qa: {verdict, findings: [{severity, taskId, text}]}}}` for the requested checks — each entry is the check's final result (reconciled by the critic when it had a blocker or major). If the Workflow call cannot start (the script is missing or the call is rejected), use the Agent path.
 
 ### Agent path (no Workflow tool)
 
-For each requested check, one fresh Agent call, then one critic Agent call once that check returns:
+For each requested check, one fresh Agent call; then, only when that check returns a `blocker` or `major` finding, one critic Agent call:
 
 ```
 Agent(description: "Check N: {name}", model: "{balanced alias}", prompt: "<the full body of the check's prompt block — injected into this command's context, or read from its prompt file — emitted verbatim>
@@ -105,10 +107,10 @@ Agent(description: "Critic for Check N: {name}", model: "{reasoning alias}", pro
 ## Inputs
 - Plan path: {absolute plan path}
 - Diff command: `{diff command}`
-- Check findings: Check N ({name}) — <the check agent's full result>")
+- Check findings: Check N ({name}) — <the check agent's blocker and major findings>")
 ```
 
-The critic's result is the check's final result.
+The critic's surviving findings replace the check's blocker and major findings; its minors stay. That is the check's final result. A check with no blocker or major finding is final as returned.
 
 > **Caller-side fallback**: If an Agent call is rejected because the model alias is unknown or unavailable, retry the same call once with that tier's Fallback alias (see the afk Model Registry loaded in context). This retry is the caller's responsibility — it cannot be handled inside the sub-agent prompt.
 
@@ -154,14 +156,14 @@ This is the only write the reviewer performs; everything else about this skill r
 ## Checks
 - Compliance: PASS | FAIL
 - Quality: PASS | FAIL
-- Scope: PASS | FAIL
+- QA: PASS | FAIL
 
 ## Findings
 - [{severity}] {task-id}: ({check}) {one-line description}
 ```
 
 - `Verdict` and each `Checks` line follow the Severity Gate.
-- `Findings` lists every finding across all three checks (post-critic reconciliation, merged per the Subset Merge on a subset run), one line each, grouped by check in the order compliance, quality, scope, most severe first within a check. `{severity}` is one of `blocker`, `major`, `minor`. `{task-id}` is the plan task ID the finding relates to (e.g. `W2.T1`), or `general` if it isn't tied to one; it never contains a colon. `{check}` is `compliance`, `quality`, or `scope`, the check that produced the finding, and it sits inside the free text so the line shape stays exactly `- [{severity}] {task-id}: {text}`. Nothing else goes under `## Findings`: no sub-headings, no prose, no blank bullets. If there are no findings at all, write a single line, `- none`.
+- `Findings` lists every finding across all three checks (post-critic reconciliation, merged per the Subset Merge on a subset run), one line each, grouped by check in the order compliance, quality, qa, most severe first within a check. `{severity}` is one of `blocker`, `major`, `minor`. `{task-id}` is the plan task ID the finding relates to (e.g. `W2.T1`), or `general` if it isn't tied to one; it never contains a colon. `{check}` is `compliance`, `quality`, or `qa`, the check that produced the finding, and it sits inside the free text so the line shape stays exactly `- [{severity}] {task-id}: {text}`. Nothing else goes under `## Findings`: no sub-headings, no prose, no blank bullets. If there are no findings at all, write a single line, `- none`.
 
 ### Report Format
 
@@ -183,9 +185,9 @@ Present the combined report to the user:
 {summary of build/test results and issues found}
 **Adversarial critic**: {summary of challenges and reconciliation}
 
-### Check 3: Scope Fidelity — PASS / FAIL
-{summary of scope violations or confirmations}
-**Adversarial critic**: {summary of challenges and reconciliation}
+### Check 3: Hands-on QA — PASS / FAIL
+{summary of scenarios run and their results}
+**Adversarial critic**: {summary of challenges and reconciliation, or "not run" when the check had no blocker or major}
 
 {On a subset run, mark each carried-over check: "(carried over from the previous pass)"}
 
@@ -194,9 +196,9 @@ Present the combined report to the user:
 ## OVERALL VERDICT: APPROVE / REJECT
 
 {If APPROVE}
-No blocker or major findings remain. Each check's findings survived
-adversarial challenge from a `reasoning`-tier critic. The implementation
-matches the plan, passes quality checks, and stays within scope.
+No blocker or major findings remain. Every blocker and major finding was
+confirmed by a `reasoning`-tier critic. The implementation
+matches the plan, passes quality checks, and works when run by hand.
 
 {If REJECT}
 The following blocker and major findings must be resolved before this work is complete:

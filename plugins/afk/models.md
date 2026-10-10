@@ -21,7 +21,7 @@ This registry is the ONLY place in the afk plugin where concrete model aliases a
 |------|------|
 | Codebase / web research | `balanced` |
 | Crucible plan review | `reasoning` |
-| Reviewer checks (compliance, quality, scope) | `balanced` |
+| Reviewer checks (compliance, quality, hands-on QA) | `balanced` |
 | Adversarial critics | `reasoning` |
 
 ---

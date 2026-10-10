@@ -15,6 +15,7 @@ var subcommands = map[string]func([]string){
 	"attach": cmdAttach,
 	"notify": cmdNotify,
 	"plugin": cmdPlugin,
+	"plan":   cmdPlan,
 	"_host":  cmdHost,
 }
 
@@ -166,6 +167,8 @@ Subcommands:
                  notification carries a Focus button that switches to the session's pane
   plugin install Install the afk plugin into Claude Code, Codex, and/or OpenCode;
                  asks which of the ones found on PATH unless --target is given
+  plan check     Mark one task of a session's plan done or failed:
+                 afk plan check <session> <task-id> done|failed [--reason TEXT]
 
 Use 'afk <subcommand> --help' for subcommand options.
 

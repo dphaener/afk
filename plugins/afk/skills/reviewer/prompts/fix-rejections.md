@@ -16,8 +16,8 @@ After presenting the REJECT report, open a **blocking** `AskUserQuestion`
 decline option: **"Don't fix — I'll handle these myself."** Option LABELS are
 short (task ID / file + a few words); the full rejection reason goes in the
 option DESCRIPTION. Frame the question so the user understands the cost: **each
-fix pass triggers a full re-review — all three checks plus their adversarial
-critics — not a spot-check of the fixed item.**
+fix pass triggers a full re-review — all three checks (compliance, quality, hands-on QA), with a critic
+wherever one finds a blocker or major — not a spot-check of the fixed item.**
 
 Follow the light-path Step 2 gate discipline exactly: the gate is **blocking**,
 has **no default**, and does **no auto-proceed**. No fix work begins until the
@@ -31,7 +31,7 @@ the 4th):
 1. Group by **task ID** first (all rejections for one `(WN.TM)` become one
    option). If still >3,
 2. group by **wave** (all `(WN.*)` together). If still >3,
-3. group by **check** (Check 1 / Check 2 / Check 3 buckets).
+3. group by **check** (Check 1 compliance / Check 2 quality / Check 3 hands-on QA buckets).
 
 A grouped option's DESCRIPTION enumerates its member rejections. If even
 check-level grouping yields more than 3 options, **split across multiple
@@ -54,7 +54,7 @@ sequential `AskUserQuestion` calls** — the decline option appears on the
 Map each selected rejection to a plan task so the fix agent gets the right
 task block and tier.
 
-- **Check 1 / Check 3** rejections key directly to `(WN.TM)`.
+- **Check 1 / Check 3** (compliance / hands-on QA) rejections key directly to `(WN.TM)`.
 - **Check 2** findings are keyed BY FILE (its output is `CODE ISSUES BY
   FILE`). So Step 3's synthesized Check 2 rejection bullets MUST always name
   the flagged file, using the deterministic additive variant:
@@ -136,8 +136,8 @@ them. Therefore, **before EACH re-review pass**, gather fresh evidence:
 Accepted risk (note it): `git diff {base}` also sweeps in any pre-existing,
 unrelated uncommitted user edits as evidence.
 
-Then re-run the **FULL** three-check review (all three checks + adversarial
-critics), not just the failed checks. This is a deliberate safety trade-off:
+Then re-run the **FULL** three-check review (all three checks, plus a critic on any
+check with a blocker or major), not just the failed checks. This is a deliberate safety trade-off:
 fixes can regress previously-passing checks. Do not optimize it away.
 
 Loop **gate → fix → re-review** until APPROVE. The **cap counts FIX passes**

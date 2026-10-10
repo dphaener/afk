@@ -1,7 +1,7 @@
 ---
 name: review
 disable-model-invocation: true
-description: "Review completed work — run plan compliance, code quality, and scope fidelity checks, each with an adversarial reasoning-tier critic"
+description: "Review completed work — run plan compliance, code quality, and hands-on QA checks, with an adversarial reasoning-tier critic on any blocker or major finding"
 argument-hint: "[plan-name]"
 allowed-tools:
   - Bash
@@ -17,7 +17,7 @@ allowed-tools:
 
 # afk:review
 
-Verifies that execution matches the plan. Runs plan compliance, code quality, and scope fidelity checks — each with an adversarial reasoning-tier critic sub-agent — against the completed implementation.
+Verifies that execution matches the plan. Runs plan compliance, code quality, and hands-on QA checks — with an adversarial reasoning-tier critic sub-agent on any blocker or major finding — against the completed implementation.
 
 ## Announcement
 
@@ -56,7 +56,7 @@ Plugin root — record this value; the reviewer substitutes it as `{plugin-root}
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/reviewer/prompts/adversarial-critic.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/reviewer/prompts/check-plan-compliance.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/reviewer/prompts/check-code-quality.md"`
-!`cat "${CLAUDE_PLUGIN_ROOT}/skills/reviewer/prompts/check-scope-fidelity.md"`
+!`cat "${CLAUDE_PLUGIN_ROOT}/skills/reviewer/prompts/check-hands-on-qa.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/reviewer/prompts/fix-rejections.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/reviewer/prompts/manual-testing-story.md"`
 

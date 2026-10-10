@@ -209,6 +209,25 @@ test_hook_log_unmatched_event() {
   check_cond "still no sidecar for the unmatched event" test ! -e "$wt/.afk/demo/.background-tasks"
 }
 
+# A matched Stop proves a turn completed after any StopFailure, so it removes
+# the rate-limit marker (status-schema.md section 10); an unmatched one must
+# leave it, since it belongs to a session this event is not about.
+test_matched_stop_removes_rate_limit_marker() {
+  local wt payload code out
+  wt=$(worktree_with_two_sessions rate-limit-marker)
+  printf '{"at":"2026-01-01T00:00:00Z"}\n' > "$wt/.afk/demo/.rate-limited"
+
+  payload=$(stop_payload "sid-9" "$wt" "[]")
+  out=$(run_stop "$payload"); code=$?
+  check_exit "unmatched Stop exits 0 with a marker present" 0 "$code" "$out"
+  check_cond "unmatched Stop leaves the rate-limit marker" test -f "$wt/.afk/demo/.rate-limited"
+
+  payload=$(stop_payload "sid-1" "$wt" "[]")
+  out=$(run_stop "$payload"); code=$?
+  check_exit "matched Stop exits 0 with a marker present" 0 "$code" "$out"
+  check_cond "matched Stop removes the rate-limit marker" test ! -e "$wt/.afk/demo/.rate-limited"
+}
+
 test_matched_session_one_task
 test_matched_session_empty_array
 test_matched_session_field_absent
@@ -216,6 +235,7 @@ test_unmatched_session_id
 test_invalid_json_stdin
 test_empty_stdin
 test_hook_log_unmatched_event
+test_matched_stop_removes_rate_limit_marker
 
 # The sidecar write is specified as "write .background-tasks.tmp.$$ then
 # mv -f", so a surviving temp file means the rename never happened or an

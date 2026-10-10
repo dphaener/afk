@@ -29,6 +29,7 @@ Your codename is **The Blueprinter**. Before doing anything else, you MUST annou
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/autonomy.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/grill.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/crucible.md"`
+!`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/project-docs.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/prompts/light-path.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/planner/plan-format.md"`
 

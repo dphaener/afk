@@ -345,6 +345,7 @@ export const TIERS = Object.freeze({
 })
 
 export const PLAN_PATH = '/repo/.afk/plans/sample.md'
+export const PROJECT_ROOT = '/repo'
 export const PLUGIN_ROOT = '/repo/plugins/afk'
 
 // Builds one task entry of the W1.T2 contract.
@@ -359,6 +360,7 @@ export function task(id, opts = {}) {
     status: opts.status || 'todo',
     dependsOn: opts.deps,
     files: opts.files || [`src/${id.replace('.', '_').toLowerCase()}.md`],
+    ...(opts.qa ? { qa: opts.qa } : {}),
     tier,
     model: TIERS[tier].model,
     fallbackModel: TIERS[tier].fallbackModel,
@@ -388,7 +390,7 @@ export function makeArgs(tasks, opts = {}) {
   }
   return {
     plan: 'sample',
-    planPath: PLAN_PATH,
+    planPath: opts.planPath || PLAN_PATH,
     pluginRoot: PLUGIN_ROOT,
     autonomous: Boolean(opts.autonomous),
     mode,
@@ -406,11 +408,25 @@ export function selfReport(status = 'done', checks = [{ command: 'bash check.sh'
 export const PASS = { verdict: 'PASS', discrepancies: [] }
 export const failVerdict = (...discrepancies) => ({ verdict: 'FAIL', discrepancies })
 
+// The three kinds of agent execute.js spawns. Anything that is not a verifier
+// or a fix is a task agent, whose label is the task ID and title.
+export const AGENT_KINDS = Object.freeze(['task', 'fix', 'verify'])
+
 export function kindOf(label) {
   if (label.startsWith('verify:')) return 'verify'
   if (label.startsWith('fix:')) return 'fix'
-  if (label.startsWith('bookkeep:')) return 'bookkeep'
   return 'task'
+}
+
+// The exact command execute.js tells an agent to run to tick a task's
+// checkbox (contract C1), for the fixture plan built by makeArgs.
+export function markDoneCommand(id) {
+  return `afk plan check --project ${PROJECT_ROOT} sample ${id} done`
+}
+
+// True when the prompt tells its agent to run the mark command for `id`.
+export function tellsToMark(call, id) {
+  return call.prompt.includes(markDoneCommand(id))
 }
 
 export function idOf(label) {
@@ -422,10 +438,8 @@ export function idOf(label) {
 // consumed in call order; when a queue is empty the default reply is used:
 //   task / fix → done self-report with one passing check
 //   verify     → PASS
-//   bookkeep   → 'ok'
-// `durations[id]` sets the default tick count for that task's task/fix calls;
-// `bookkeepTicks` sets the bookkeep duration.
-export function responder({ scripts = {}, durations = {}, bookkeepTicks = 1, onCall } = {}) {
+// `durations[id]` sets the default tick count for that task's task/fix calls.
+export function responder({ scripts = {}, durations = {}, onCall } = {}) {
   const queues = JSON.parse(JSON.stringify(scripts, (k, v) => (v instanceof Error ? { __error: v.message } : v)))
   return (call, rec) => {
     if (onCall) onCall(call, rec)
@@ -440,7 +454,6 @@ export function responder({ scripts = {}, durations = {}, bookkeepTicks = 1, onC
     const ticks = durations[id] || 1
     if (kind === 'task' || kind === 'fix') return ok(selfReport(), ticks)
     if (kind === 'verify') return ok(PASS, 1)
-    if (kind === 'bookkeep') return ok('ok', bookkeepTicks)
     return ok('ok')
   }
 }
@@ -456,7 +469,7 @@ export function attemptCalls(rec, id) {
 
 // Work span of a task: first start to last finish of its task/verify/fix calls.
 export function span(rec, id) {
-  const cs = rec.calls.filter((c) => idOf(c.label) === id && kindOf(c.label) !== 'bookkeep')
+  const cs = rec.calls.filter((c) => idOf(c.label) === id)
   if (cs.length === 0) return null
   return { start: Math.min(...cs.map((c) => c.start)), end: Math.max(...cs.map((c) => c.end)) }
 }
@@ -469,16 +482,16 @@ export function entry(list, id) {
   return (list || []).find((x) => (typeof x === 'string' ? x === id : x.id === id))
 }
 
-// Final checkbox state of each task in the simulated plan file, derived from
-// the bookkeep agents' prompts: `[!]` → failed, `[x]` → done, untouched →
-// the task's initial status.
-export function planState(rec, args) {
-  const state = Object.fromEntries(args.tasks.map((t) => [t.id, t.status]))
+// Which tasks an agent was told to mark done, and by which kind of agent,
+// read from the prompts: { 'W1.T1': ['task'], 'W1.T2': ['verify'] }. A task
+// no prompt told anyone to mark is absent. This is what stands in for the
+// plan file's [x] marks, which in a real run the agents write themselves.
+export function markers(rec) {
+  const out = {}
   for (const c of rec.calls) {
-    if (kindOf(c.label) !== 'bookkeep' || c.threw) continue
     const id = idOf(c.label)
-    if (c.prompt.includes('[!]')) state[id] = 'failed'
-    else if (c.prompt.includes('[x]')) state[id] = 'done'
+    if (!id || !tellsToMark(c, id)) continue
+    out[id] = (out[id] || []).concat(kindOf(c.label))
   }
-  return state
+  return out
 }

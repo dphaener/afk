@@ -21,6 +21,8 @@ Review the COMPLETE plan — every wave, every task, every constraint. Check for
 
 STRUCTURAL ISSUES:
 - Tasks with vague or unverifiable acceptance criteria
+- Tasks with a missing, `N/A`, or unrunnable QA scenario (no concrete steps, no expected result, or an evidence path outside `.afk/{plan-name}/evidence/`)
+- Vague file references: `**Files**` with a glob, `N/A`, a bare directory, or no exact file path
 - Missing 'Must NOT do' constraints where scope boundaries are needed
 - Wave ordering that creates unnecessary sequential dependencies
 - Tasks that should be split (too many concerns) or merged (too granular)

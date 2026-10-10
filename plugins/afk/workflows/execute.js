@@ -1,10 +1,7 @@
 export const meta = {
   name: 'afk-execute',
   description: 'afk DAG execution of a plan',
-  phases: [
-    { title: 'Execute', detail: 'DAG-scheduled tasks with tiered verification' },
-    { title: 'Bookkeep' },
-  ],
+  phases: [{ title: 'Execute', detail: 'DAG-scheduled tasks with tiered verification' }],
 }
 
 // afk execute engine. `args` is the JSON printed by
@@ -15,6 +12,11 @@ export const meta = {
 // reaches a terminal outcome and, in dag mode, all of them passed. Tasks whose
 // Files overlap run one at a time in plan order. Verification is tiered: the
 // independent verifier runs only when the task or its self-report is risky.
+//
+// The plan file: a Workflow script cannot run a command, and no agent is
+// spawned only to tick a checkbox. The agent whose result settles a task runs
+// `afk plan check ... done` as its last command; failed and blocked tasks are
+// returned in the result's `mark` list for the caller to mark. See settle().
 
 const MAX_ATTEMPTS = 3
 const ESCALATE = { light: 'balanced', balanced: 'heavy', heavy: 'reasoning', reasoning: 'reasoning' }
@@ -65,6 +67,32 @@ const MODE = args.mode === 'waves' ? 'waves' : 'dag'
 const AUTONOMOUS = args.autonomous === true
 const TIERS = args.tiers && typeof args.tiers === 'object' ? args.tiers : {}
 const NOTEPAD_DIR = `.afk/${PLAN}`
+const EVIDENCE_DIR = `${NOTEPAD_DIR}/evidence`
+
+// plan_to_args.rb emits an absolute planPath of the form
+// <project>/.afk/plans/<plan>.md, and `afk plan check` wants <project>. A
+// plan path of any other shape (relative, or outside .afk/plans/) gives ''
+// and the command is printed without --project, to be run from the project
+// root: a relative --project would resolve against whatever directory the
+// agent happens to be in.
+const PROJECT_ROOT = (() => {
+  const m = /^(\/.*)?\/\.afk\/plans\/[^/]+$/.exec(PLAN_PATH)
+  if (!m) return ''
+  return m[1] || '/'
+})()
+
+// Shell-quotes a word only when it holds a character the shell would act on,
+// so the common command stays readable in the prompt.
+function shq(word) {
+  const s = String(word)
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`
+}
+
+function markDoneCommand(t) {
+  return `afk plan check ${PROJECT_ROOT ? `--project ${shq(PROJECT_ROOT)} ` : ''}${shq(PLAN)} ${shq(t.id)} done`
+}
+
+const MARK_WHERE = PROJECT_ROOT ? '' : ' (run it from the project root, the folder that holds .afk/)'
 
 function tierEntry(tier) {
   const e = TIERS[tier] || {}
@@ -73,8 +101,6 @@ function tierEntry(tier) {
 
 const VERIFIER_MODEL = args.verifierModel || tierEntry('balanced').model
 const VERIFIER_FALLBACK = tierEntry('balanced').fallbackModel
-const BOOKKEEP_MODEL = tierEntry('light').model
-const BOOKKEEP_FALLBACK = tierEntry('light').fallbackModel
 
 const INDEX = {}
 TASKS.forEach((t, i) => {
@@ -169,11 +195,11 @@ function stopForBudget(why) {
 }
 
 // A null return or a thrown error is retried once on the tier's fallback
-// model; a second null or throw returns null (one failed attempt). `gated`
-// is false only for bookkeeping: the plan file must record an outcome reached
-// after the budget ran out, or the next run re-executes a finished task.
-async function callAgent(prompt, opts, fallbackModel, gated = true) {
-  if (gated && budgetExhausted()) {
+// model; a second null or throw returns null (one failed attempt). Every call
+// is refused once the budget is gone: nothing has to run after a task settles,
+// because the agent that settled it has already marked the plan file.
+async function callAgent(prompt, opts, fallbackModel) {
+  if (budgetExhausted()) {
     stopForBudget(`${opts.label}: budget.remaining() reached 0 before start`)
     return BUDGET_STOP
   }
@@ -189,7 +215,7 @@ async function callAgent(prompt, opts, fallbackModel, gated = true) {
     log(`${opts.label}: agent error on ${opts.model || 'default model'}: ${oneLine(e && e.message, 160)}`)
   }
   if (!fallbackModel || fallbackModel === opts.model) return null
-  if (gated && budgetExhausted()) {
+  if (budgetExhausted()) {
     stopForBudget(`${opts.label}: budget.remaining() reached 0 before the fallback retry`)
     return BUDGET_STOP
   }
@@ -219,27 +245,59 @@ const INPUT_RULE = AUTONOMOUS
   ? 'Input rule (autonomous mode): never return needs_input — decide, and record the decision and reason in decisions.md.'
   : 'Input rule: return status "needs_input" with a `question` only for a decision the plan, the code, and the notepads cannot settle. Do not use it for anything they settle.'
 
+// Shared by the task and fix prompts. The instruction to mark the task done
+// must never live here: a fix is always re-verified, so a fix agent that
+// ticked the checkbox would mark a task the script is still working on.
 function obligations(t) {
+  const evidence = (Array.isArray(t.qa) ? t.qa : [])
+    .map((sc) => oneLine(sc && sc.evidence, 200))
+    .filter((p, i, all) => p && all.indexOf(p) === i)
   return [
     'Obligations:',
-    `- Stay inside the task's Files list plus the three notepads in ${NOTEPAD_DIR}/. Do not edit the plan file; the engine marks checkboxes.`,
+    `- Stay inside the task's Files list, the three notepads in ${NOTEPAD_DIR}/, and the task's evidence files under ${EVIDENCE_DIR}/. Never edit the plan file by hand; \`afk plan check\` is its only writer, and you run it only if this prompt tells you to.`,
     '- Honor the task\'s Must NOT do. No stubs, TODOs, placeholders, or new dependencies.',
     '- Do not commit, stash, push, or switch branches. Other agents edit other files in this working tree at the same time.',
-    "- Run the lint and tests scoped to the task's Files and every Acceptance Criteria command; report each command with its exit code.",
-    `- Before finishing, APPEND (never overwrite) findings to ${NOTEPAD_DIR}/learnings.md, decisions to decisions.md, and issues to issues.md, each under a heading "## (${t.id}) <label>".`,
+    "- Run only the focused lint and tests for the files you touched and the task's Acceptance Criteria commands; never run the whole suite. Report each command with its exit code.",
+    '- Never sleep or poll. No single command may run longer than about four minutes.',
+    "- Carry out each of the task's QA Scenarios and save its evidence at the path the plan names" +
+      (evidence.length ? `: ${evidence.map((p) => `\`${p}\``).join(', ')}.` : '.'),
+    `- Before finishing, APPEND (never overwrite) findings to ${NOTEPAD_DIR}/learnings.md, decisions to decisions.md, and issues to issues.md, each under a heading "## (${t.id}) <label>". Never write a "## (ID) FAILED" heading in issues.md; \`afk plan check\` writes those.`,
   ].join('\n')
 }
 
-const DEPENDS_NOTE =
-  MODE === 'waves'
-    ? `ignore Depends on for scheduling: the previous wave has finished, but a task in it may have FAILED (marked [!] in the plan and listed in ${NOTEPAD_DIR}/issues.md), so check before building on its output`
-    : 'ignore Depends on for scheduling (every dependency has passed)'
+// Tasks that failed or were blocked in this run, in the order they settled.
+// A failure is written to the plan file only after the run returns, so in
+// waves mode, where a failed task does not stop the next wave, this list is
+// the only way a later task can learn that something it builds on failed.
+const failedInRun = []
 
-function taskPrompt(t, attempt, lastReason) {
+function dependsNote() {
+  if (MODE !== 'waves') return 'ignore Depends on for scheduling (every dependency has passed)'
+  const failed = failedInRun.length
+    ? `these tasks have failed so far in this run: ${failedInRun.map((f) => `${f.id} (${f.reason})`).join('; ')}`
+    : 'no task has failed so far in this run'
+  return `ignore Depends on for scheduling: the previous wave has finished, but a task in it may have failed. A failure in this run is written to the plan file only after the run ends, so the plan's checkboxes do not show it; ${failed}. Check that anything you build on exists and works before you use it`
+}
+
+// True when the verifier runs whatever the self-report says. The script knows
+// this before the task agent starts, which is what lets the task prompt say
+// who marks the task done.
+function verifierCertain(t, files) {
+  return ALWAYS_VERIFY_TIERS.includes(t.tier) || files.some(isRiskyFile)
+}
+
+// The condition here is needsVerify() restated for the agent: at least one
+// check, every check exit 0, status done. They must stay the same rule, or an
+// agent ticks a task that the script then sends to the verifier and may fail.
+function taskMarkRule(t) {
+  return `Marking the task done: if, and only if, you ran at least one check, every check you ran exited 0, and the status you are about to return is "done", run \`${markDoneCommand(t)}\` as your very last command${MARK_WHERE}. In every other case do not run it; an independent verifier then decides. It is not one of your checks: leave it out of \`checks\`, and if it fails say so in summary.`
+}
+
+function taskPrompt(t, files, attempt, lastReason) {
   const lines = [
     `afk plan "${PLAN}", task ${t.id}: ${t.title || ''}`,
     '',
-    `Your binding contract is the task block at ${location(t)}. Read it, and read ${NOTEPAD_DIR}/learnings.md, decisions.md, issues.md first. If those lines no longer hold the (${t.id}) task line, find it in the plan; the plan may have shifted. Also read the plan's ## Context and ## Assumptions sections. Its What to do, Must NOT do, Files, and Acceptance Criteria are binding; ${DEPENDS_NOTE}.`,
+    `Your binding contract is the task block at ${location(t)}. Read it, and read ${NOTEPAD_DIR}/learnings.md, decisions.md, issues.md first. If those lines no longer hold the (${t.id}) task line, find it in the plan; the plan may have shifted. Also read the plan's ## Context and ## Assumptions sections. Its What to do, Must NOT do, Files, and Acceptance Criteria are binding; ${dependsNote()}.`,
     '',
     `Read ${PLUGIN_ROOT}/skills/orchestrator/prompts/codename-announcement.md and apply its block for the ${t.tier || 'balanced'} tier.`,
   ]
@@ -249,7 +307,9 @@ function taskPrompt(t, attempt, lastReason) {
       `This is attempt ${attempt} of ${MAX_ATTEMPTS}. The previous attempt failed: ${lastReason}. Inspect the working tree for its partial work, then complete the task.`
     )
   }
-  lines.push('', obligations(t), '', INPUT_RULE, '', SELF_REPORT_RULES)
+  lines.push('', obligations(t))
+  if (!verifierCertain(t, files)) lines.push('', taskMarkRule(t))
+  lines.push('', INPUT_RULE, '', SELF_REPORT_RULES)
   return lines.join('\n')
 }
 
@@ -281,55 +341,30 @@ function verifyPrompt(t, report) {
   const checks = (Array.isArray(report.checks) ? report.checks : [])
     .map((c) => `- \`${c && c.command}\` reported exit ${c && c.exitCode}`)
     .join('\n')
+  // A PASS settles the task only when the self-report says done; on any other
+  // status the task agent runs again, so the verifier must not tick the box.
+  const mark =
+    report.status === 'done'
+      ? `Do not modify any file, with one exception: if, and only if, your verdict is PASS, run \`${markDoneCommand(t)}\` as your very last command${MARK_WHERE}. It ticks this task's checkbox in the plan file. Never run it on FAIL, and never edit the plan file by hand.`
+      : `Do not modify any file, and do not run \`afk plan check\`: the implementing agent did not report the task done, so it runs again whatever your verdict.`
   return [
     `Independent verification of afk plan "${PLAN}", task ${t.id}: ${t.title || ''}`,
     '',
-    `The task block is at ${location(t)}. Read it. Do not modify any file.`,
+    `The task block is at ${location(t)}. Read it. ${mark}`,
     '',
     `The implementing agent's self-report (status: ${report.status}):`,
     `Summary: ${report.summary || '(none)'}`,
     'Checks:',
     checks || '- (none reported)',
     '',
-    'Re-run every reported check command and every Acceptance Criteria command in the task block. Confirm each Files entry was changed as What to do says, nothing outside Files (other than the notepads) was changed for this task, Must NOT do holds, and no stubs, TODOs, or placeholders were left.',
+    `Re-run every reported check command and every Acceptance Criteria command in the task block. Confirm each Files entry was changed as What to do says, nothing outside Files (other than the notepads and the task's evidence files under ${EVIDENCE_DIR}/) was changed for this task, Must NOT do holds, and no stubs, TODOs, or placeholders were left.`,
     '',
     'Return verdict PASS only when every command passes and the work matches the task block. Otherwise return FAIL with discrepancies: each a concrete, actionable statement naming the file, command, or criterion.',
   ].join('\n')
 }
 
-function bookkeepPrompt(t, outcome) {
-  const head = [
-    `Edit only ${PLAN_PATH}. Find the task line for (${t.id}) (expected at line ${t.lineStart}; search for "(${t.id})" if it moved).`,
-  ]
-  if (outcome.kind === 'passed') {
-    head.push(`Change its checkbox from \`- [ ]\` to \`- [x]\`. Change nothing else on that line or in the file.`)
-  } else {
-    const reason = outcome.reason
-    head.push(
-      `Replace that line with exactly: \`- [!] (${t.id}) ${t.title || ''} FAILED: ${reason}\` keeping its indentation. Change nothing else in the plan file.`,
-      `Then append to ${NOTEPAD_DIR}/issues.md (never overwrite) a heading "## (${t.id}) FAILED" with one line: "${reason}".`
-    )
-  }
-  head.push('Keep the line count of the plan file unchanged. Return the word ok.')
-  return head.join('\n')
-}
-
-let bookQueue = Promise.resolve()
-
-function bookkeep(t, outcome) {
-  bookQueue = bookQueue.then(async () => {
-    const label = `bookkeep:${t.id}`
-    const r = await callAgent(bookkeepPrompt(t, outcome), { label, phase: 'Bookkeep', model: BOOKKEEP_MODEL }, BOOKKEEP_FALLBACK, false)
-    if (r == null || r === BUDGET_STOP) {
-      log(`${label}: could not update the plan file; mark (${t.id}) ${outcome.kind === 'passed' ? '[x]' : 'FAILED'} by hand`)
-    }
-  })
-  return bookQueue
-}
-
 function needsVerify(t, files, report) {
-  if (ALWAYS_VERIFY_TIERS.includes(t.tier)) return true
-  if (files.some(isRiskyFile)) return true
+  if (verifierCertain(t, files)) return true
   const checks = Array.isArray(report.checks) ? report.checks : []
   if (checks.length === 0) return true
   if (checks.some((c) => !c || c.exitCode !== 0)) return true
@@ -374,7 +409,7 @@ async function runTask(t, files) {
         )
       } else {
         report = await callAgent(
-          taskPrompt(t, attempt, lastReason),
+          taskPrompt(t, files, attempt, lastReason),
           { label: labelFor(t), phase: 'Execute', model, schema: SELF_REPORT_SCHEMA },
           fallbackModel
         )
@@ -435,7 +470,8 @@ function resolveDeps(t) {
   return Promise.all(deps.map((d) => outcomes[d].then((o) => ({ id: d, o }))))
 }
 
-// Class (a) blocks (permanent, bookkept [!]) beat class (b) stops (stay [ ]).
+// Class (a) blocks (permanent, returned in `mark` as failed) beat class (b)
+// stops (stay [ ]).
 function gate(depResults) {
   if (MODE === 'dag') {
     const bad = depResults.find((r) => ['failed', 'blocked'].includes(r.o.kind))
@@ -469,19 +505,18 @@ async function schedule(t, i) {
   return runTask(t, files)
 }
 
-// Marks the checkbox the moment a task reaches its terminal state, so the plan
-// file is the crash-recovery source of truth even while earlier tasks in plan
-// order are still running. The queue still serializes the bookkeep agents. A
-// failure's [!] mark is awaited before the outcome settles, so a task that
-// starts after it (a waves-mode dependent, a file-lock waiter) finds the
-// failure recorded in the plan and in issues.md.
+// Nothing here writes the plan file. A passed task was marked [x] by the agent
+// whose result settled it (the task agent when no verifier was certain, else
+// the verifier on PASS), as that agent's last command: a script cannot run a
+// command, and marking finished work the moment it finishes means a crashed
+// run never redoes it. A failed or blocked task is not marked during the run
+// at all; it is returned in the result's `mark` list and the caller runs
+// `afk plan check ... failed` for each entry. So all settle() does is record
+// the failure for dependsNote(), before the outcome reaches any task waiting
+// on this one.
 function settle(t, o) {
-  if (o.kind === 'passed' && !o.preexisting) {
-    bookkeep(t, o)
-    return o
-  }
-  if (o.kind === 'failed' && !o.preexisting) return bookkeep(t, o).then(() => o)
-  if (o.kind === 'blocked') return bookkeep(t, { kind: 'failed', reason: `blocked by ${o.by}` }).then(() => o)
+  if (o.kind === 'failed' && !o.preexisting) failedInRun.push({ id: t.id, reason: o.reason })
+  if (o.kind === 'blocked') failedInRun.push({ id: t.id, reason: `blocked by ${o.by}` })
   return o
 }
 
@@ -500,7 +535,11 @@ TASKS.forEach((t, i) => {
   terminal[t.id] = p.then(() => undefined)
 })
 
-const result = { passed: [], failed: [], skipped: [], needsInput: [] }
+// `mark` lists, in plan order, every task no agent could have marked: the ones
+// that failed or were blocked in this run. A task that was already [x] or [!]
+// when the run started is left out, so a re-run never replaces the reason
+// recorded for an earlier failure or adds a second issues.md entry for it.
+const result = { passed: [], failed: [], skipped: [], needsInput: [], mark: [] }
 
 for (const t of TASKS) {
   const o = await outcomes[t.id]
@@ -509,11 +548,13 @@ for (const t of TASKS) {
   } else if (o.kind === 'failed') {
     result.failed.push({ id: t.id, reason: o.reason })
     if (!o.preexisting) {
+      result.mark.push({ id: t.id, state: 'failed', reason: o.reason })
       log(`${t.id} failed: ${o.reason}`)
     }
   } else if (o.kind === 'blocked') {
     const reason = `blocked by ${o.by}`
     result.skipped.push({ id: t.id, reason: 'blocked', by: o.by })
+    result.mark.push({ id: t.id, state: 'failed', reason })
     log(`${t.id} skipped (blocked): ${reason}`)
   } else if (o.kind === 'needs_input') {
     result.needsInput.push({ id: t.id, question: o.question })
@@ -529,8 +570,6 @@ for (const t of TASKS) {
     log(`${t.id} skipped (budget): not started after the budget stop; stays [ ] for a re-run`)
   }
 }
-
-await bookQueue
 
 log(
   `Done: ${result.passed.length} passed, ${result.failed.length} failed, ${result.skipped.length} skipped, ${result.needsInput.length} need input`

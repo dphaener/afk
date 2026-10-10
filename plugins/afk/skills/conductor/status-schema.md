@@ -8,7 +8,7 @@ Consumers implement against it without inventing anything:
 |---|---|
 | `/afk:go` conductor (W3.T1, W3.T2) | creates (standalone) or adopts (launched) the file; owns the lifecycle fields |
 | Session hooks (W3.T3) | set/clear `awaiting_input`; fire desktop notifications |
-| Stop hook (`on-stop.sh`) | writes the `.background-tasks` sidecar (§10) — not a `status.json` field, but governed by this document |
+| Stop hook (`on-stop.sh`) | writes the `.background-tasks` sidecar (§10), not a `status.json` field |
 | `afk new` (W4.T3) | seeds the file when launching a session |
 | `afk` state parsers (W5.T1) | read and validate the file for the dashboard |
 
@@ -196,7 +196,7 @@ Each is a deliberate stop only the conductor can see, so at each of these
 writes the conductor invokes `{plugin-root}/hooks/notify.sh` directly (§9),
 best-effort. The Notification hook no longer toasts these moments; there is
 exactly one toast source per moment (hook *or* conductor, never both).
-Autonomous mode (conductor/prompts/autonomous.md): no S3 stop and no S4 relays.
+Autonomous mode (conductor/prompts/autonomous.md): no S3 stop; S4 only parks on something only the owner can do.
 
 ### CLEAR transitions (→ `false`)
 
@@ -436,33 +436,32 @@ body `{message} ({worktree})`.
 
 ## 10. Background-work sidecar (`.background-tasks`)
 
-Planning-phase `idle_prompt` (§5 S1b, §9) needs a signal distinguishing "user
-walked away" from "planner idle while background research/Crucible agents
-run" — the Stop payload's `background_tasks` array, kept in a sidecar file,
-not a `status.json` field.
+Planning-phase `idle_prompt` (§5 S1b, §9) must tell "user walked away" from
+"planner idle while background agents run": the Stop payload's
+`background_tasks` array, kept in a sidecar, not a `status.json` field.
 
-- **Path**: `.afk/{plan_name}/.background-tasks` — beside `status.json`,
-  dot-prefixed like `.awaiting-permission`.
+- **Path**: `.afk/{plan_name}/.background-tasks`, beside `status.json`.
 - **Content**: the `Stop` payload's `background_tasks` array, written as
   compact JSON — `jq -c '.background_tasks // []'`; a payload missing the
   field writes `[]`.
 - **Writer**: the `Stop` hook (`on-stop.sh`), on every §7-matched `Stop`
   event. Atomic: write `.background-tasks.tmp.$$` in the same directory,
-  then `mv -f` over the sidecar. No match → no write. Never touches
-  `status.json`.
+  then `mv -f`. No match → no write. Never touches `status.json`.
 - **Clearer**: the `UserPromptSubmit` hook (`on-user-prompt-submit.sh`) does
-  `rm -f` on the sidecar alongside its C1 `awaiting_input` clear — user
-  present → new turn → the next `Stop` rewrites it.
+  `rm -f` on the sidecar with its C1 clear; the next `Stop` rewrites it.
 - **Reader**: the `Notification` hook, read only in the `idle_prompt` +
-  `planning` branch (§5 S1b, §9). Pending = sidecar exists AND parses as a
-  JSON array AND `length > 0`. Pending → no write, no toast, no
-  `.awaiting-permission` sentinel. Missing or unparseable → not pending →
-  S1b's existing behavior (toast + write).
-- **Not a `status.json` field**: single writer, swept by `afk clean`
-  alongside other `.afk/{name}/` sentinels, never read by `afk`.
-- **Unchanged**: `permission_prompt` handling, non-planning `idle_prompt`
-  (still dropped), the `.awaiting-permission` sentinel, and `status.json`'s
-  nine fields.
+  `planning` branch (§5 S1b, §9). Pending = sidecar parses as a JSON array
+  with `length > 0`: no write, toast or `.awaiting-permission` sentinel.
+  Missing or unparseable → not pending → S1b's existing behavior.
+- **Not a `status.json` field**: single writer, swept by `afk clean`, never
+  read by `afk`. Other handling is unchanged.
+
+### Rate-limit marker (`.rate-limited`)
+
+- **Path/content**: `.afk/{plan_name}/.rate-limited`, one line `{"at":"<RFC 3339 UTC>"}`.
+- **Writer**: `StopFailure` hook (`on-stop-failure.sh`, matcher `rate_limit`), via temp file and `mv -f`, on a §7 match. Never touches `status.json`.
+- **Clearer**: `UserPromptSubmit` and a matched `Stop` do `rm -f`.
+- **Reader**: the daemon, which takes the reset time from its last usage snapshot, not the marker.
 
 ### Opt-in hook event log (`AFK_HOOK_LOG`)
 
@@ -474,7 +473,7 @@ A `hook_log` helper in `lib.sh`, opt-in via `AFK_HOOK_LOG`:
   ```
 - Called immediately after the payload passes `jq -e .` validation and
   **before** `find_target` runs, so unmatched events are logged too.
-- **Opt-in, deliberately**: the logged line is the raw payload, which can
-  contain prompt text (e.g. `UserPromptSubmit`). Never enabled by default.
+- **Opt-in, deliberately**: the line is the raw payload, which can contain
+  prompt text (e.g. `UserPromptSubmit`). Never enabled by default.
 - All failures are silent: unset → nothing written; a write failure (bad
   path, permissions) is swallowed, never surfaced, never fails the session.

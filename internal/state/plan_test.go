@@ -318,3 +318,99 @@ func TestParsePlan_DependsEdges(t *testing.T) {
 		}
 	})
 }
+
+// TestParsePlanFile_QA covers the qa.md fixture. Load-bearing rows: the
+// wrapped Steps value that contains a colon and the word "Expected" (it must
+// stay inside Steps, not open a field), the line range stripped from Files
+// but kept in FileRefs, a scenario missing fields parsed without error, and
+// N/A files yielding nil. The parser must never fail on these.
+func TestParsePlanFile_QA(t *testing.T) {
+	plan, err := ParsePlanFile(filepath.Join("testdata", "plan", "qa.md"))
+	if err != nil {
+		t.Fatalf("ParsePlanFile: %v", err)
+	}
+	tasks := plan.Waves[0].Tasks
+	if len(tasks) != 3 {
+		t.Fatalf("parsed %d tasks, want 3", len(tasks))
+	}
+
+	t1 := tasks[0]
+	wantFiles := []string{"internal/state/plan.go", "internal/state/plan_test.go", "internal/state/testdata/"}
+	if !reflect.DeepEqual(t1.Files, wantFiles) {
+		t.Errorf("T1 Files = %#v, want %#v", t1.Files, wantFiles)
+	}
+	wantRefs := []string{"internal/state/plan.go:107-125", "internal/state/plan_test.go", "internal/state/testdata/"}
+	if !reflect.DeepEqual(t1.FileRefs, wantRefs) {
+		t.Errorf("T1 FileRefs = %#v, want %#v", t1.FileRefs, wantRefs)
+	}
+	wantQA := []QAScenario{
+		{Tool: "Bash", Steps: "run `go test ./internal/state/ -count=1`", Expected: "exit 0 and an `ok` line", Evidence: ".afk/qa/evidence/w1-t1-tests.txt"},
+		{Tool: "Bash", Steps: "run the binary and note: Expected output is a table, then check the exit code", Expected: "exit 0", Evidence: ".afk/qa/evidence/w1-t1-run.txt"},
+	}
+	if !reflect.DeepEqual(t1.QA, wantQA) {
+		t.Errorf("T1 QA = %#v, want %#v", t1.QA, wantQA)
+	}
+	if !reflect.DeepEqual(t1.DependsOn, []string{}) || t1.Model != ModelBalanced {
+		t.Errorf("T1 Depends/Model disturbed: %#v %q", t1.DependsOn, t1.Model)
+	}
+
+	t2 := tasks[1]
+	if !reflect.DeepEqual(t2.QA, []QAScenario{{Tool: "Read", Steps: "open the file"}}) {
+		t.Errorf("T2 QA = %#v, want one partial scenario", t2.QA)
+	}
+	if t2.Model != ModelLight {
+		t.Errorf("T2 Model = %q", t2.Model)
+	}
+
+	t3 := tasks[2]
+	if t3.QA != nil || t3.Files != nil || t3.FileRefs != nil {
+		t.Errorf("T3 = QA %#v Files %#v FileRefs %#v, want all nil", t3.QA, t3.Files, t3.FileRefs)
+	}
+}
+
+// TestParsePlanFile_OldPlanUnchanged proves a six-subsection plan with no
+// QA Scenarios (valid.md) parses with nil QA on every task.
+func TestParsePlanFile_OldPlanUnchanged(t *testing.T) {
+	plan, err := ParsePlanFile(filepath.Join("testdata", "plan", "valid.md"))
+	if err != nil {
+		t.Fatalf("ParsePlanFile: %v", err)
+	}
+	for _, w := range plan.Waves {
+		for _, task := range w.Tasks {
+			if task.QA != nil {
+				t.Errorf("%s QA = %#v, want nil", task.ID, task.QA)
+			}
+		}
+	}
+}
+
+// TestParsePlan_QAEdges is table-driven over inline subsections. Load-bearing
+// rows: "stray lines before first Tool" (ignored, no error), "fenced example
+// ignored" (a code fence inside the subsection is not read as scenarios), and
+// "first QA label wins".
+func TestParsePlan_QAEdges(t *testing.T) {
+	const head = "# P\n\n## Waves\n\n### Wave 1: A\n\n- [ ] (W1.T1) One\n\n"
+	const tail = "\n  **Model**: light\n"
+	cases := []struct {
+		name string
+		body string
+		want []QAScenario
+	}{
+		{name: "absent", body: "", want: nil},
+		{name: "N/A value", body: "  **QA Scenarios**: N/A\n", want: nil},
+		{name: "stray lines before first Tool", body: "  **QA Scenarios**:\n  junk\n  - Tool: Bash\n    Steps: s\n", want: []QAScenario{{Tool: "Bash", Steps: "s"}}},
+		{name: "fenced example ignored", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Steps: s\n  ```\n  - Tool: Fake\n  ```\n", want: []QAScenario{{Tool: "Bash", Steps: "s"}}},
+		{name: "first QA label wins", body: "  **QA Scenarios**:\n  - Tool: A\n\n  **QA Scenarios**:\n  - Tool: B\n", want: []QAScenario{{Tool: "A"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := ParsePlan([]byte(head + tc.body + tail))
+			if err != nil {
+				t.Fatalf("ParsePlan: %v", err)
+			}
+			if got := plan.Waves[0].Tasks[0].QA; !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("QA = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
