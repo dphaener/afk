@@ -1,0 +1,239 @@
+// Package provider is the seam between afk and the agent CLI a session
+// host runs. Before it existed the choice of `claude` was hardcoded at three
+// places: childArgv in internal/session/create.go (launch argv),
+// resumeArgv in internal/host/restart.go (wedged-restart resume argv), and
+// the plugin preflight in internal/session/create.go that shells out to
+// `claude plugin list`. A provider owns all three so adding an agent CLI is
+// one new type here rather than a hunt through the session and host code.
+//
+// Every method is pure apart from Preflight, which reaches the outside world
+// only through the injected run func, so the whole matrix is table-testable
+// without any CLI installed.
+package provider
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+const (
+	// ClaudeName is the Claude Code provider's name.
+	ClaudeName = "claude"
+	// CodexName is the OpenAI Codex CLI provider's name.
+	CodexName = "codex"
+	// OpenCodeName is the OpenCode CLI provider's name.
+	OpenCodeName = "opencode"
+	// Default is the provider used when none is recorded for a session, so
+	// sessions that predate providers behave exactly as they always did.
+	Default = ClaudeName
+)
+
+// RunFunc runs a command in dir and returns its stdout. It matches the
+// signature of session's defaultRun so callers can pass it straight through.
+type RunFunc = func(dir, name string, args ...string) (string, error)
+
+// Provider describes how to launch, resume, and preflight one agent CLI.
+type Provider interface {
+	// Name is the stable identifier persisted in the provider sidecar and
+	// host.json, and accepted by `afk new --provider`.
+	Name() string
+	// LaunchArgv is the child argv for a new session host. scratch selects
+	// a bare one-off session with no conductor; autonomous selects the
+	// conductor's no-questions mode.
+	LaunchArgv(name string, scratch, autonomous bool) []string
+	// ResumeArgv is the child argv that resumes an existing agent session
+	// by its id, used when the host restarts a wedged child.
+	ResumeArgv(sessionID string) []string
+	// Preflight is a best-effort, non-fatal check that the afk plugin is
+	// reachable for this provider. It reports manual install steps when it
+	// is not. All process execution goes through run.
+	Preflight(dir string, run func(dir, name string, args ...string) (string, error)) (ok bool, manualSteps string)
+}
+
+// order is the stable listing order for Names.
+var order = []Provider{claude{}, codex{}, opencode{}}
+
+// Names returns the valid provider names in stable order, for usage text.
+func Names() []string {
+	names := make([]string, len(order))
+	for i, p := range order {
+		names[i] = p.Name()
+	}
+	return names
+}
+
+// Lookup resolves a provider by name. The empty string means Default, which
+// is how sessions with no recorded provider keep resolving to Claude.
+func Lookup(name string) (Provider, error) {
+	if name == "" {
+		name = Default
+	}
+	for _, p := range order {
+		if p.Name() == name {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("unknown provider %q (valid: %s)", name, strings.Join(Names(), ", "))
+}
+
+// CodexInteractiveConflictMsg is the exact usage error for the codex provider
+// with neither autonomous nor scratch. Codex's structured question tool exists
+// only in Plan mode, so the interactive planning conductor cannot run there;
+// only the autonomous conductor and one-off sessions can. It carries the
+// "afk new: " prefix because `afk new` prints it verbatim.
+const CodexInteractiveConflictMsg = "afk new: --provider codex requires --autonomous or --scratch: Codex sessions run autonomous-only"
+
+// CheckMode reports whether the named provider can run a session in the given
+// mode. It lives here, not in package main, so the dashboard's new-session form
+// can validate inline with the same rule and the same text `afk new` prints,
+// instead of duplicating the constraint and drifting. An unknown name returns
+// Lookup's error; "" and "claude" accept every mode.
+func CheckMode(name string, scratch, autonomous bool) error {
+	if _, err := Lookup(name); err != nil {
+		return err
+	}
+	if name == CodexName && !scratch && !autonomous {
+		return errors.New(CodexInteractiveConflictMsg)
+	}
+	return nil
+}
+
+// claude runs Claude Code. Its argv must stay byte-identical to what afk
+// built before providers existed.
+type claude struct{}
+
+func (claude) Name() string { return ClaudeName }
+
+func (claude) LaunchArgv(name string, scratch, autonomous bool) []string {
+	if scratch {
+		return []string{"claude"}
+	}
+	cmd := "/afk:go --session " + name
+	if autonomous {
+		cmd += " --autonomous"
+	}
+	return []string{"claude", cmd}
+}
+
+func (claude) ResumeArgv(sessionID string) []string {
+	return []string{"claude", "--resume", sessionID}
+}
+
+func (claude) Preflight(dir string, run func(dir, name string, args ...string) (string, error)) (bool, string) {
+	manual := "afk plugin / `/afk:go` not detected in this repo.\n" +
+		"      Install it, then re-run, or launch manually:\n" +
+		"        1. afk plugin install --target claude\n" +
+		"        2. Confirm /afk:go is listed via /help"
+	out, err := run(dir, "claude", "plugin", "list")
+	if err != nil {
+		return false, manual
+	}
+	if !strings.Contains(strings.ToLower(out), "afk") {
+		return false, manual
+	}
+	return true, ""
+}
+
+// codexConductorPrompt is the prompt prefix that invokes the afk conductor
+// skill in a Codex session. The `$skill` mention syntax is unverified against
+// Codex 0.146; it lives in this one const so correcting it is a one-line
+// change.
+const codexConductorPrompt = "$afk:conductor"
+
+// codex runs the OpenAI Codex CLI. Codex's structured question tool exists
+// only in Plan mode, so afk runs it for scratch and autonomous conductor
+// sessions only, and adds no approval, sandbox, or hook-trust bypass flags.
+type codex struct{}
+
+func (codex) Name() string { return CodexName }
+
+func (codex) LaunchArgv(name string, scratch, _ bool) []string {
+	if scratch {
+		return []string{"codex"}
+	}
+	// --autonomous is unconditional: a non-autonomous conductor would need
+	// to ask questions, which Codex cannot do outside Plan mode.
+	return []string{"codex", codexConductorPrompt + " --session " + name + " --autonomous"}
+}
+
+func (codex) ResumeArgv(sessionID string) []string {
+	return []string{"codex", "resume", sessionID}
+}
+
+func (codex) Preflight(dir string, run func(dir, name string, args ...string) (string, error)) (bool, string) {
+	manual := "afk plugin not detected in Codex.\n" +
+		"      Install it, then re-run:\n" +
+		"        afk plugin install --target codex\n" +
+		"      Codex sessions run autonomous-only (--autonomous or --scratch)."
+	out, err := run(dir, "codex", "plugin", "list")
+	if err != nil {
+		return false, manual
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.HasPrefix(fields[0], "afk@") {
+			continue
+		}
+		status := strings.ToLower(strings.Join(fields[1:], " "))
+		if strings.Contains(status, "not installed") {
+			continue
+		}
+		if strings.Contains(status, "installed") {
+			return true, ""
+		}
+	}
+	return false, manual
+}
+
+// opencodeConductorPrompt is the prompt prefix that invokes the afk
+// conductor in an OpenCode session. Passing it through the TUI's --prompt
+// flag is unverified against the real TUI; the afk port's prompt hook
+// expands a leading `/afk-go`, which covers it either way. It lives in this
+// one const so a correction is a one-line change.
+const opencodeConductorPrompt = "/afk-go"
+
+// opencode runs the OpenCode CLI. afk adds no permission-bypass flag
+// (never --auto): that stays the user's call.
+type opencode struct{}
+
+func (opencode) Name() string { return OpenCodeName }
+
+func (opencode) LaunchArgv(name string, scratch, autonomous bool) []string {
+	// --standalone keeps the session in the PTY child. Without it the
+	// OpenCode background service owns the session, so killing or restarting
+	// the child would not control the conversation.
+	if scratch {
+		return []string{"opencode", "--standalone"}
+	}
+	prompt := opencodeConductorPrompt + " --session " + name
+	if autonomous {
+		prompt += " --autonomous"
+	}
+	return []string{"opencode", "--standalone", "--prompt", prompt}
+}
+
+func (opencode) ResumeArgv(sessionID string) []string {
+	// --standalone for the same ownership reason as LaunchArgv.
+	return []string{"opencode", "--standalone", "-s", sessionID}
+}
+
+func (opencode) Preflight(dir string, run func(dir, name string, args ...string) (string, error)) (bool, string) {
+	manual := "afk plugin not detected in OpenCode.\n" +
+		"      Install it into ~/.config/opencode/plugins/afk/ with\n" +
+		"      `afk plugin install --target opencode`, then re-run.\n" +
+		"      Confirm it is listed via `opencode plugin list`."
+	out, err := run(dir, "opencode", "plugin", "list")
+	if err != nil {
+		return false, manual
+	}
+	// Rows are `ID VERSION SOURCE`; the header's first field is "ID", so an
+	// exact match on "afk" skips it, blank lines, and ids like afk-other.
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "afk" {
+			return true, ""
+		}
+	}
+	return false, manual
+}

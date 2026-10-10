@@ -1,0 +1,12 @@
+{
+  "session_id": "a9313053-40f5-4d3c-8081-1202a1520d34",
+  "plan_name": "trailing-garbage-session",
+  "phase": "executing",
+  "branch": "trailing-garbage-session",
+  "base_branch": "main",
+  "loop_count": 0,
+  "awaiting_input": false,
+  "tmux_window": "",
+  "updated_at": "2026-07-09T21:14:03Z"
+}
+garbage-after-object

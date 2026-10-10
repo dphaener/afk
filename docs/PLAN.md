@@ -480,6 +480,7 @@ T1.1, T1.2 and T1.3 are independent of each other. T2.2, T2.3 and T2.4 are indep
   only deliberate provenance notes; on the VM, `afk plugin install --target claude`, then
   `afk new --scratch` opens a pane in `afk dash`; `afk new --dry-run --base main x` prints the action
   list with `.afk/` paths.
+- **Amended 2026-10-10 (T0.1 done):** CI is `.github/workflows/ci.yml` (the old `go.yml` is gone) and runs only `make check`, which now also runs `plugin-test` and `hook-test`; the display name is lowercase `afk` everywhere; `docs/decisions.md` lists the other choices; `internal/host`'s `TestHostLifecycleEndToEnd` is a known flaky test (see its `## T0.1` entry).
 
 #### T0.2 — The afk plugin: forge's workflow plus shipit's strengths
 - **Depends on:** T0.1

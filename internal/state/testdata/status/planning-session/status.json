@@ -1,0 +1,11 @@
+{
+  "session_id": "",
+  "plan_name": "planning-session",
+  "phase": "planning",
+  "branch": "planning-session",
+  "base_branch": "main",
+  "loop_count": 0,
+  "awaiting_input": false,
+  "tmux_window": "",
+  "updated_at": "2026-07-09T21:14:03Z"
+}

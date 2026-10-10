@@ -1,2 +1,45 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Compiled binary (project-specific)
+/afk
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+/afk-pane
+/afk-test
+
+# afk session state (runtime, per-machine). Its presence is also what makes
+# this repo discoverable as a project in `afk dash`'s switcher.
+.afk/
+
+# Bootstrap: tasks before T0.2 run as forge sessions, so their state lives in
+# .forge/ and must never be committed.
+.forge/
+
 # The master plan is committed (overrides a global "PLAN.md" ignore)
 !/docs/PLAN.md
