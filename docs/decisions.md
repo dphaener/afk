@@ -169,5 +169,5 @@ T0.4 fixes the flaky `TestHostLifecycleEndToEnd`. These are the decisions the ma
 - **Forcing the ordering needs two waits in the client test.** Waiting for the read error is not enough, since a gap remains before the reader reports; the wrapper also waits for the connection to be closed by the client's teardown. The wrapper counts how often it forced the ordering and the detach rows assert it did.
 - **A detach within about 25ms of attaching hides the race,** because the host is still busy with its attach-time resize. A test must force the ordering.
 - **Not verified against a built binary.** It needs a terminal and a live agent session. The owner's check is: attach, press ctrl+\, expect `detached` and exit code 0.
-- **Known gaps.** No test drives `ui.AttachPane` to a user detach against a real host. A comment in `frameWriter.write` (`client.go`) still says a dead connection becomes `DetachExited`; it is now `DetachDropped` or `DetachUser`. The cross-process rate is unmeasured.
+- **Known gaps.** No test drives `ui.AttachPane` to a user detach against a real host. The cross-process rate is unmeasured.
 - **README unchanged.** It already describes ctrl+\ as exit 0 and code 13 as a drop; the fix makes the behaviour match.
