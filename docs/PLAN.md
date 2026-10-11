@@ -218,6 +218,20 @@ empty fields omitted. Unknown keys and unknown statuses are rejected. A missing 
 is pending; a damaged file is an error and is never read as empty. Writers take the lock file
 `.afk/build/.ledger.lock`.
 
+### 4.2a Daemon files (new)
+
+Amended 2026-10-11 (T2.1): three small files the build daemon adds, each with one writer and none
+inside `status.json`, the ledger or `usage.json`.
+
+| File | Writer | Shape |
+|---|---|---|
+| `.afk/build/paused` | `afk pause` (removed by `afk resume`) | `{"at":"<RFC 3339 UTC>"}`. The daemon reads only whether the file exists, so a damaged flag still pauses. |
+| `.afk/build/daemon.json` | the daemon | `{"at","kind","task","session","reason"}`, every key always present. It says what the daemon last did for the project and why, and `at` is when the project entered that state, not when it was last looked at. A missing or damaged file means "not looked at yet". |
+| `.afk/{session}/unattended` | session creation (`session.Config.Unattended`) | An empty file. Its existence means the session's agent runs in the provider's unattended permission mode; every host spawn and every restart of its agent reads it. |
+
+The machine also holds `daemon.lock` and `running.json` in afk's state folder (beside `usage.json`);
+they make the daemon one per machine and are not per project.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -278,11 +292,23 @@ ntfy_url = ""                   # set this in afk.local.toml, not here (see belo
 2026-10-11: an ntfy topic name works as a password, since anyone who knows it can read and post to
 it, so it must not sit in a committed file of a project that may be public. The loader reads
 `afk.toml`, then lays `afk.local.toml` over it key by key; either file may be missing. `afk.toml` is
-committed and `afk.local.toml` is gitignored. Until T2.1 lands this, `afk.toml` itself is gitignored
-in this repo as a stopgap.
+committed and `afk.local.toml` is gitignored.
+
+Amended 2026-10-11 (T2.1): the overlay is in. `internal/projectconfig` lays `afk.local.toml` over
+`afk.toml` key by key (a key set in the local file wins, even to an empty value), and this repo's
+`.gitignore` now lists `afk.local.toml` and no longer lists `afk.toml`. A project that already has an
+`afk.toml` holding an `ntfy_url` must move that line to `afk.local.toml` before committing the file.
 
 Machine config `~/.config/afk/config.toml`: projects the daemon runs, governor thresholds (§6.3), web
 bind address and token, provider choice.
+
+Amended 2026-10-11 (T2.1): T2.1 reads these keys from `config.toml` (in `$XDG_CONFIG_HOME/afk` when
+that is an absolute path, otherwise `~/.config/afk`): `provider` (the agent's name; empty means the
+default), `[daemon] tick` (default `"5s"`, at least `"1s"`), `[daemon] stall_after` (default `"10m"`)
+and one `[[project]]` per project with `path` (absolute, or starting with `~/`) and an optional `name`
+(defaults to the folder name, and must be unique). Unknown keys are ignored, so later tasks add the
+governor and web keys to the same file. The dashboard's `config.json` is a separate file with its own
+keys (`search_roots`, `scan_interval`, `max_depth`); the two are not merged.
 
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
@@ -334,6 +360,10 @@ Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason
 1. Governor says launching is allowed (§6.3), else wait.
 2. Create the session: branch `afk/t4-3`, its worktree, seeded `status.json`, and a description of
    `Implement T4.3 from docs/PLAN.md`. Ledger → `running`.
+   Amended 2026-10-11 (T2.1): the session and the branch are both `t4-3` (the task id in lower case
+   with the dot turned into a hyphen), not `afk/t4-3`. A session's name, its branch and its worktree
+   folder are one name everywhere else in afk (`afk attach t4-3`, `.afk/t4-3/`), and a name with a
+   slash is not a valid session name. A later attempt at the same task appends `-2`, `-3` and so on.
 3. Spawn the detached session host running the provider's CLI with the autonomous conductor, **in the
    provider's unattended permission mode, named on the command line** (Claude Code:
    `--permission-mode bypassPermissions`). Before the first launch, the provider's preflight checks
@@ -827,6 +857,7 @@ with nobody at the keyboard.
   restarted adopts the running session and starts no duplicate; pause honoured; the launch argv
   carries the unattended mode; a failed preflight raises an item and launches nothing; a finished
   task has ledger lines for each phase.
+- Amended 2026-10-11 (T2.1 done): later tasks may assume the following. (1) Session and branch are both the task id in lower case with a hyphen (`t4-3`, then `t4-3-2` on a later attempt), not `afk/t4-3`. (2) `internal/daemon` is a pure `Decide(Observation) Action` plus `Tick`/`Once`/`Run` with every outside call in `daemon.Deps`; there is no daemon object and nothing is kept between ticks, so T2.2 to T2.4 add a rule to `Decide` and a dep, not state. (3) At `phase: done` the ledger goes to `shipping` and stays there; `shipping` blocks every other launch for the project until T2.2 moves it (by hand: merge, then `afk ledger set <id> done`). (4) The provider has `Unattended(argv)` and `UnattendedPreflight`; a session is unattended when `session.Config.Unattended` is set or `.afk/{session}/unattended` exists, and the host's restart and the dashboard's relaunch keep the mode, so T2.3 need not pass it. (5) The daemon cannot type into a session: an un-parked task returns to `running` but its agent stays idle until T2.2 delivers a prompt, and a stall or a stopped host is reported once per attempt as a blocking `failure` item the task parks on (T2.3 replaces the stopped-host item with recovery). (6) Machine config is `config.toml` (`provider`, `[daemon] tick`, `stall_after`, `[[project]] path`), read by `internal/daemonconfig`; T2.4 adds its governor keys there. (7) `internal/decisionlog.Append` writes PLAN §4.4 lines and the daemon logs transitions only; `tokens.Record` and `notify.InboxMessage` are the shared helpers; `daemonstate` owns `.afk/build/paused`, `.afk/build/daemon.json` and the machine lock. (8) `afk pause` also holds back an un-park, and `afk resume` only removes the pause flag (T2.2 adds clearing a stopped line). (9) The daemon's real wiring (`realDaemonDeps`: preflight, `session.Create`, token recording, ntfy) has never run against a real agent; its first run is supervised (T4.2). See `## T2.1` in `docs/decisions.md`.
 
 #### T2.2 — Ship in code
 - **Depends on:** T2.1

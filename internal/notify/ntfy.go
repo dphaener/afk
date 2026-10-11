@@ -143,3 +143,31 @@ func cutBody(s string) string {
 	}
 	return s[:cut]
 }
+
+// InboxMessage decides whether a newly added inbox item sends a push
+// notification, and builds it. It is pure so the whole "who gets bothered,
+// and with what" table is testable without a server. It takes the item's
+// fields rather than an inbox.Item so this package does not import
+// internal/inbox.
+//
+// No address configured is silence, not an error: most projects have no
+// afk.toml. Which kinds notify, and how loudly, is NtfyPriority's table. The
+// message ends with the command that shows the item, because a notification
+// is read on a phone and acted on at a terminal later.
+func InboxMessage(id, task, kind, title, body string, blocking bool, ntfyURL string) (NtfyMessage, bool) {
+	if ntfyURL == "" {
+		return NtfyMessage{}, false
+	}
+	prio, ok := NtfyPriority(kind, blocking)
+	if !ok {
+		return NtfyMessage{}, false
+	}
+	if body != "" {
+		body += "\n\n"
+	}
+	body += "afk inbox show " + id
+	if task != "" {
+		body += " (" + task + ")"
+	}
+	return NtfyMessage{Title: "afk: " + title, Body: body, Priority: prio}, true
+}

@@ -93,6 +93,15 @@ type Config struct {
 	// on-disk footprint are byte-identical to sessions created before
 	// providers existed.
 	Provider string
+	// Unattended launches the agent in the provider's unattended permission
+	// mode, in which it never stops to ask whether it may act. The daemon
+	// sets it, because nobody is at the terminal. It adds the provider's
+	// option to the child argv and writes a .afk/{name}/unattended marker at
+	// seed time, so the mode survives a host relaunch and a child restart
+	// (see unattended.go). Build rejects it for a provider that has no such
+	// mode. Independent of Autonomous: that one tells the conductor not to
+	// ask the owner questions, this one tells the CLI not to ask permission.
+	Unattended bool
 }
 
 // Deps is the injectable seam for every environment-touching operation. Real
@@ -344,6 +353,12 @@ type HostSpawn struct {
 	// sidecar, because the dashboard's relaunch of a stopped host builds a
 	// HostSpawn with only Name and Worktree.
 	Provider string
+	// Unattended runs the child in the provider's unattended permission
+	// mode. SpawnHost also turns it on when the .afk/<name>/unattended
+	// marker exists, for the same reason it fills Provider: the dashboard's
+	// relaunch names only the session, and a daemon-run session relaunched
+	// without the mode would wait at a permission dialog nobody sees.
+	Unattended bool
 }
 
 // HostProcess describes a host started by SpawnHost. PID is captured before
@@ -399,17 +414,44 @@ func hostArgs(spec HostSpawn, socket string) []string {
 // socket path to give hostArgs yet; both callers share this one definition so
 // the printed command can never drift from the executed one. Pure.
 //
-// An unknown Provider falls back to Claude's argv rather than returning an
-// error: every path that reaches here has already validated the name (Build
-// for a new session, resolveSpawnProvider for SpawnHost), so the fallback is
-// unreachable in practice, and an error return would ripple into the pure
-// display helper childCommandLine for no benefit.
+// It cannot fail, and launchArgv can, so this is launchArgv with the error
+// dropped. That is safe only because every path that reaches here has already
+// called launchArgv and stopped on its error: Build for a new session (and so
+// for --dry-run), resolveSpawnUnattended for SpawnHost. An error return would
+// ripple into the pure display helper childCommandLine and into hostArgs for
+// no benefit. Keep that true when adding a caller: for an unattended spawn
+// the dropped error would mean a child started in the mode that asks
+// questions.
 func childArgv(spec HostSpawn) []string {
+	argv, _ := launchArgv(spec)
+	return argv
+}
+
+// launchArgv is the child command for spec: the provider's launch argv, passed
+// through the provider's unattended mode when the spawn asks for it. Pure.
+//
+// An unknown Provider falls back to the default provider's argv rather than
+// returning an error, as it always has: Build and resolveSpawnProvider have
+// validated the name before anything gets here.
+//
+// A provider with no unattended mode is an error, and the argv returned with
+// it is the plain one only so display code has something to print. Callers
+// that start a process must not use it. This package never names the option
+// or the provider that has it: the whole translation is p.Unattended.
+func launchArgv(spec HostSpawn) ([]string, error) {
 	p, err := provider.Lookup(spec.Provider)
 	if err != nil {
 		p, _ = provider.Lookup(provider.Default)
 	}
-	return p.LaunchArgv(spec.Name, spec.Scratch, spec.Autonomous)
+	argv := p.LaunchArgv(spec.Name, spec.Scratch, spec.Autonomous)
+	if !spec.Unattended {
+		return argv, nil
+	}
+	unattended, err := p.Unattended(argv)
+	if err != nil {
+		return argv, fmt.Errorf("session %q cannot run unattended with provider %q, so afk will not start it with nobody at the terminal: %w", spec.Name, p.Name(), err)
+	}
+	return unattended, nil
 }
 
 // hostProviderNote names the --provider flag hostArgs passes to the host, so
@@ -441,6 +483,31 @@ func resolveSpawnProvider(spec HostSpawn) (HostSpawn, error) {
 	}
 	if p.Name() == provider.Default {
 		spec.Provider = ""
+	}
+	return spec, nil
+}
+
+// resolveSpawnUnattended settles whether a host spawn runs the child in the
+// provider's unattended mode: on when the caller set it or when the session's
+// unattended marker exists. It sits beside resolveSpawnProvider because it is
+// the same problem: the dashboard's relaunch of a stopped host passes only
+// Name and Worktree, so the marker is the only carrier of the mode. It must
+// run after resolveSpawnProvider, which settles the provider being asked.
+//
+// Go reads this marker itself, unlike the autonomous one, which the plugin's
+// conductor reads: the mode is an option on the CLI's command line and cannot
+// be recovered once the CLI has started.
+//
+// A provider with no unattended mode is an error here, before anything is
+// forked, and never a plain launch. A session that was meant to run with
+// nobody watching and is started in the mode that asks questions waits at a
+// permission dialog inside a detached host, where it looks alive for ever.
+func resolveSpawnUnattended(spec HostSpawn) (HostSpawn, error) {
+	if !spec.Unattended {
+		spec.Unattended = IsUnattended(spec.Worktree, spec.Name)
+	}
+	if _, err := launchArgv(spec); err != nil {
+		return spec, err
 	}
 	return spec, nil
 }
@@ -498,6 +565,10 @@ func SpawnHost(spec HostSpawn, in Deps) (HostProcess, error) {
 		return HostProcess{}, fmt.Errorf("spawning session host %q: worktree is required", spec.Name)
 	}
 	spec, err := resolveSpawnProvider(spec)
+	if err != nil {
+		return HostProcess{}, fmt.Errorf("spawning session host: %w", err)
+	}
+	spec, err = resolveSpawnUnattended(spec)
 	if err != nil {
 		return HostProcess{}, fmt.Errorf("spawning session host: %w", err)
 	}
@@ -706,6 +777,17 @@ func Build(cfg Config, in Deps) (*Plan, error) {
 	}
 	if prov.Name() == provider.Default {
 		cfg.Provider = ""
+	}
+	// Checked here, where the provider is already resolved, so a provider
+	// with no unattended mode aborts before any side effect: no branch, no
+	// worktree, and the same in dry-run. Left to the launch step it would
+	// fail last, after everything else had been created and had to be rolled
+	// back.
+	if cfg.Unattended {
+		spawn := HostSpawn{Name: cfg.Name, Scratch: cfg.Scratch, Autonomous: cfg.Autonomous && !cfg.Scratch, Provider: cfg.Provider, Unattended: true}
+		if _, err := launchArgv(spawn); err != nil {
+			return nil, err
+		}
 	}
 
 	st := &execState{}
@@ -1257,11 +1339,15 @@ func (p *Plan) assembleSteps(leadDesc string) {
 		steps = append(steps, providerMarkerStep(name, cfg.Provider, func() string { return statusDir(st.worktree, name) }))
 	}
 
+	if cfg.Unattended {
+		steps = append(steps, unattendedMarkerStep(name, func() string { return statusDir(st.worktree, name) }))
+	}
+
 	// Launch the detached host that owns the session's PTY. Unconditional:
 	// the host is the terminal multiplexer now, so nothing here depends on
 	// this process staying alive. `afk dash` and `afk attach` connect to
 	// it afterwards.
-	spawn := HostSpawn{Name: name, Autonomous: cfg.Autonomous, Provider: cfg.Provider}
+	spawn := HostSpawn{Name: name, Autonomous: cfg.Autonomous, Provider: cfg.Provider, Unattended: cfg.Unattended}
 	steps = append(steps, Step{
 		Desc: "Launch detached session host running: " + childCommandLine(spawn) + hostProviderNote(spawn),
 		run: func() error {
@@ -1296,6 +1382,22 @@ func providerMarkerStep(name, providerName string, dir func() string) Step {
 		Desc: fmt.Sprintf("Write provider marker .afk/%s/provider (%s)", name, providerName),
 		run: func() error {
 			return WriteProviderMarker(dir(), providerName)
+		},
+	}
+}
+
+// unattendedMarkerStep writes the .afk/<name>/unattended marker. Its own
+// step, like the autonomous and provider markers, so --dry-run lists the
+// write. It runs after the session dir exists and before the host launch: the
+// first spawn sets the mode itself, but every later one (a dashboard
+// relaunch, a child restart) has only this file to go by, so it must be on
+// disk before a host exists that could be restarted. No undo: rollback
+// removes the session dir and the marker with it.
+func unattendedMarkerStep(name string, dir func() string) Step {
+	return Step{
+		Desc: fmt.Sprintf("Write unattended marker .afk/%s/unattended", name),
+		run: func() error {
+			return WriteUnattendedMarker(dir())
 		},
 	}
 }
@@ -1380,7 +1482,13 @@ func (p *Plan) assembleScratchSteps(leadDesc string) {
 		steps = append(steps, providerMarkerStep(name, cfg.Provider, func() string { return dir }))
 	}
 
-	spawn := HostSpawn{Name: name, Worktree: repo, Scratch: true, Provider: cfg.Provider}
+	// Unlike Autonomous, which a one-off ignores because it has no conductor,
+	// the unattended mode is the CLI's own and applies to a bare one-off too.
+	if cfg.Unattended {
+		steps = append(steps, unattendedMarkerStep(name, func() string { return dir }))
+	}
+
+	spawn := HostSpawn{Name: name, Worktree: repo, Scratch: true, Provider: cfg.Provider, Unattended: cfg.Unattended}
 	steps = append(steps, Step{
 		Desc: fmt.Sprintf("Launch detached session host running: %s (one-off, in %s)%s", childCommandLine(spawn), repo, hostProviderNote(spawn)),
 		run: func() error {

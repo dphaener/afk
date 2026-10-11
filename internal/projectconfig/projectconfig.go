@@ -1,5 +1,5 @@
-// Package projectconfig reads the committed project file, afk.toml
-// (docs/PLAN.md section 4.6).
+// Package projectconfig reads the project file, afk.toml, and the private
+// afk.local.toml laid over it (docs/PLAN.md section 4.6).
 //
 // It understands two things: the top-level plan key (the master plan's path)
 // and the ntfy address under [notify]. Every other key and table ([ship],
@@ -9,7 +9,7 @@
 // reader were written separately and are folded into this one loader so the
 // file is read and parsed once.
 //
-// It reads one file under the root it is given. It does not read the machine
+// It reads two files under the root it is given. It does not read the machine
 // config, the user's config directory or the environment.
 package projectconfig
 
@@ -27,6 +27,10 @@ import (
 
 // FileName is the project config file, at the project root.
 const FileName = "afk.toml"
+
+// LocalFileName is the private overlay beside FileName. It is git-ignored and
+// holds values that must not be committed, such as the ntfy topic.
+const LocalFileName = "afk.local.toml"
 
 // DefaultPlan is the master plan path used when the file or the plan key is absent.
 const DefaultPlan = "docs/PLAN.md"
@@ -51,30 +55,71 @@ func (c Config) PlanPath(root string) string {
 }
 
 // file mirrors the TOML layout. It declares only what Config carries; the
-// decoder skips every other key without complaint.
+// decoder skips every other key without complaint. Fields are pointers or
+// any so a key that is absent differs from one set to an empty value: the
+// overlay needs that, because a local ntfy_url = "" must beat a committed
+// address.
 type file struct {
 	// Plan is decoded as any so a wrong type is reported by us, with advice,
-	// rather than as a decoder message.
+	// rather than as a decoder message. nil means the key is absent.
 	Plan   any `toml:"plan"`
 	Notify struct {
-		NtfyURL string `toml:"ntfy_url"`
+		NtfyURL *string `toml:"ntfy_url"`
 	} `toml:"notify"`
 }
 
-// Load reads {root}/afk.toml. A missing file, or a file without a plan key,
-// gives the default plan; a missing [notify] ntfy_url gives an empty address.
+// Load reads {root}/afk.toml, then {root}/afk.local.toml, and lays the second
+// over the first key by key (docs/PLAN.md section 4.6): a key present in the
+// local file wins, even when empty; a key absent from it keeps the committed
+// value. Either file may be missing. With both missing, or without a plan
+// key in either, the plan is the default; a missing ntfy_url gives an empty
+// address.
 //
-// The plan path must stay inside the project. The daemon reads and acts on
-// whatever file it names, so an absolute path or one climbing out with ".."
-// would let a committed config point it at files outside the checkout.
+// The local file exists because the committed one is shared: a private value
+// such as the ntfy topic belongs in the git-ignored afk.local.toml.
+//
+// Each file is checked on its own, so an error names the file the bad value
+// came from. The plan path must stay inside the project. The daemon reads and
+// acts on whatever file it names, so an absolute path or one climbing out with
+// ".." would let a config point it at files outside the checkout.
 func Load(root string) (Config, error) {
-	path := filepath.Join(root, FileName)
+	base, err := readFile(filepath.Join(root, FileName))
+	if err != nil {
+		return Config{}, err
+	}
+	local, err := readFile(filepath.Join(root, LocalFileName))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := Config{Plan: DefaultPlan}
+	for _, f := range []*checked{base, local} {
+		if f == nil {
+			continue
+		}
+		if f.plan != nil {
+			cfg.Plan = *f.plan
+		}
+		if f.ntfy != nil {
+			cfg.Notify.NtfyURL = *f.ntfy
+		}
+	}
+	return cfg, nil
+}
+
+// checked holds one file's validated values; nil means the key was absent.
+type checked struct {
+	plan *string
+	ntfy *string
+}
+
+// readFile reads and validates one config file. A missing file is nil, nil.
+func readFile(path string) (*checked, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Config{Plan: DefaultPlan}, nil
+		return nil, nil
 	}
 	if err != nil {
-		return Config{}, fmt.Errorf("cannot read %s: %w. Check the file's permissions.", path, err)
+		return nil, fmt.Errorf("cannot read %s: %w. Check the file's permissions.", path, err)
 	}
 
 	var raw file
@@ -85,20 +130,27 @@ func Load(root string) (Config, error) {
 		// names types, not values (MetaData.badtype). Its syntax messages
 		// are not audited here; TestLoad's "broken toml" row checks only
 		// that a value written next to a syntax error is not echoed.
-		return Config{}, fmt.Errorf("%s is not valid TOML: %v. Fix the syntax and try again.", path, err)
+		return nil, fmt.Errorf("%s is not valid TOML: %v. Fix the syntax and try again.", path, err)
 	}
 
-	plan, err := checkPlan(path, raw.Plan)
-	if err != nil {
-		return Config{}, err
-	}
-	ntfy := strings.TrimSpace(raw.Notify.NtfyURL)
-	if ntfy != "" {
-		if err := checkURL(ntfy); err != nil {
-			return Config{}, err
+	var out checked
+	if raw.Plan != nil {
+		plan, err := checkPlan(path, raw.Plan)
+		if err != nil {
+			return nil, err
 		}
+		out.plan = &plan
 	}
-	return Config{Plan: plan, Notify: Notify{NtfyURL: ntfy}}, nil
+	if raw.Notify.NtfyURL != nil {
+		ntfy := strings.TrimSpace(*raw.Notify.NtfyURL)
+		if ntfy != "" {
+			if err := checkURL(filepath.Base(path), ntfy); err != nil {
+				return nil, err
+			}
+		}
+		out.ntfy = &ntfy
+	}
+	return &out, nil
 }
 
 // checkPlan validates the decoded plan value and returns the cleaned path, or
@@ -130,8 +182,8 @@ func checkPlan(path string, v any) (string, error) {
 // checkURL requires an http or https address with a host. The error never
 // repeats the address: url.Parse echoes its input, and the address may carry a
 // password.
-func checkURL(raw string) error {
-	const bad = "afk.toml: [notify] ntfy_url must be a web address that starts with http:// or https:// and names a server, for example https://ntfy.sh/my-topic"
+func checkURL(name, raw string) error {
+	bad := name + ": [notify] ntfy_url must be a web address that starts with http:// or https:// and names a server, for example https://ntfy.sh/my-topic"
 	u, err := url.Parse(raw)
 	if err != nil {
 		return errors.New(bad)

@@ -52,3 +52,14 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **First call**: an agent's first model call; its input is the start-up context plus the prompt it was given.
 - **Agent definition**: a file under `plugins/afk/agents/` that names an agent type and the tools it may use, so an agent starts with only what its role needs.
 - **Agent type**: the name a spawn uses to pick an agent definition; a spawn with no type, or a type the session does not know, gets the default agent with every tool.
+- **Build loop**: the daemon's repeated pass over each project: look at what is on disk, decide one thing to do, do it, wait for the next tick.
+- **Daemon**: `afk daemon`, the always-on process that runs the build loop; it keeps nothing in memory that is not on disk, so it can be killed and restarted at any point.
+- **Tick**: one pass of the build loop over every project, every few seconds.
+- **Unattended mode**: the agent CLI's permission mode that never stops to ask, named on the command line when the daemon starts an agent.
+- **Unattended preflight**: the check, before the daemon starts an agent, that this machine can run unattended mode without a dialog; when it fails an inbox item says what to do and nothing starts.
+- **Stall**: a session that has been asking something at the terminal for longer than the stall limit with no inbox item explaining why.
+- **Pause flag**: `.afk/build/paused`, written by `afk pause`; while it exists the daemon starts no new task for that project.
+- **Decision log**: `.afk/log/decisions.jsonl`, one line for every decision made in the loop and who or what made it.
+- **Machine config**: `config.toml` in afk's config folder, listing the projects the daemon runs and its timings; one per machine.
+- **Local config**: `afk.local.toml`, laid over `afk.toml` key by key and never committed; where private values such as the ntfy address go.
+- **Un-park**: to return a parked task to `running` once every item it waited for has been answered.

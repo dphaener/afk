@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/nexttask"
@@ -38,17 +39,37 @@ func cmdNext(args []string) {
 // start is a normal answer, not a failure, so every decision exits 0; only an
 // unusable plan, ledger or config exits 1.
 //
-// The open-inbox filter is nil, which nexttask.Next reads as "every inbox item
-// is open", until the inbox exists (T1.2). A parked task therefore stays
-// parked here unless it has no recorded items.
+// The open-inbox filter comes from the project's real inbox (openItemsFunc),
+// so a parked task whose items are all answered is the next task. An inbox
+// that cannot be listed gives nil, which nexttask.Next reads as "every item
+// is open": the task stays parked rather than starting on a guess.
 func runNext(args []string, stdout, stderr io.Writer, cwd, home string, gitCommonDir func(string) string) int {
 	state, code, proceed := loadBuildForCommand("afk next", nextUsageLine, printNextUsage, args, stderr, cwd, home, gitCommonDir)
 	if !proceed {
 		return code
 	}
-	d := nexttask.Next(state.Tasks, state.Ledger, nil)
+	d := nexttask.Next(state.Tasks, state.Ledger, openItemsFunc(inbox.Store{Dir: inbox.Dir(state.Root)}))
 	fmt.Fprintln(stdout, nextLine(d, state.Tasks, state.Ledger))
 	return 0
+}
+
+// openItemsFunc builds nexttask's open-items question from an inbox. It returns
+// nil when the inbox cannot be listed. An id the inbox does not hold counts as
+// open: an item that was deleted or cannot be read has not been answered, and
+// releasing a parked task on missing evidence would start work the owner never
+// approved. Unreadable files are not listed, so they land in that same case.
+func openItemsFunc(store inbox.Store) func(string) bool {
+	items, _, err := store.List()
+	if err != nil {
+		return nil
+	}
+	answered := make(map[string]bool, len(items))
+	for _, it := range items {
+		if !it.Open() {
+			answered[it.ID] = true
+		}
+	}
+	return func(id string) bool { return !answered[id] }
 }
 
 // nextLine turns a decision into the single line afk next prints. It is pure

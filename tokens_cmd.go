@@ -275,31 +275,56 @@ func runTokensSession(name string, record bool, project string, stdout, stderr i
 		fmt.Fprintf(stderr, "afk tokens: %v\n", err)
 		return 1
 	}
-	records, err := p.SessionTokens(provider.TokenQuery{Home: home, SessionID: sess.SessionID})
+	task := readTaskID(filepath.Join(sess.Worktree, ".afk", name, "description.md"))
+	var lines []tokens.Line
+	var records []provider.TokenRecord
+	var calls int
+	var res tokens.RecordResult
+	var err2 error
+	if record {
+		res, err2 = tokens.Record(tokens.RecordInput{Provider: p, Home: home, MainCheckout: sess.MainCheckout, Task: task, Session: name, SessionID: sess.SessionID, Now: now()})
+		lines, calls, records = res.Lines, res.Calls, res.Records
+	} else {
+		records, err2 = p.SessionTokens(provider.TokenQuery{Home: home, SessionID: sess.SessionID})
+		if err2 == nil && len(records) == 0 {
+			err2 = tokens.ErrNoCalls
+		}
+		if err2 == nil {
+			lines, calls = tokens.Aggregate(records, task, name, now()), len(records)
+		}
+	}
+	path := tokens.LedgerPath(sess.MainCheckout)
+	var appendErr *tokens.AppendError
+	var readErr *tokens.LedgerReadError
 	switch {
-	case errors.Is(err, provider.ErrTokensUnsupported):
+	case errors.Is(err2, provider.ErrTokensUnsupported):
 		fmt.Fprintf(stderr, "afk tokens: token use cannot be read for this session's agent CLI yet.\n")
 		return 1
-	case errors.Is(err, provider.ErrNoTranscript):
-		fmt.Fprintf(stderr, "afk tokens: no transcript found for session %q (session id %s).\nThe transcripts may be on another machine or have been deleted. Details: %v\n", name, sess.SessionID, err)
+	case errors.Is(err2, provider.ErrNoTranscript):
+		fmt.Fprintf(stderr, "afk tokens: no transcript found for session %q (session id %s).\nThe transcripts may be on another machine or have been deleted. Details: %v\n", name, sess.SessionID, err2)
 		return 1
-	case err != nil:
-		fmt.Fprintf(stderr, "afk tokens: could not read the transcripts of session %q: %v\n", name, err)
-		return 1
-	}
-	if len(records) == 0 {
+	case errors.Is(err2, tokens.ErrNoCalls):
 		fmt.Fprintf(stderr, "afk tokens: session %q has no model calls in its transcript yet.\nRun this again once the session has done some work.\n", name)
 		return 1
+	case errors.As(err2, &appendErr):
+		// The table is not printed: Record found the ledger unwritable
+		// before anything could be shown, and asking the provider again
+		// to rebuild it would read the transcripts twice.
+		fmt.Fprintf(stderr, "afk tokens: could not write the ledger at %s: %v\nNothing was recorded. Fix the problem above and run the command again.\n", appendErr.Path, appendErr.Err)
+		return 1
+	case errors.As(err2, &readErr):
+		fmt.Fprintf(stderr, "afk tokens: %v\nNothing was recorded.\n", err2)
+		return 1
+	case err2 != nil:
+		fmt.Fprintf(stderr, "afk tokens: could not read the transcripts of session %q: %v\n", name, err2)
+		return 1
 	}
-
-	task := readTaskID(filepath.Join(sess.Worktree, ".afk", name, "description.md"))
-	lines := tokens.Aggregate(records, task, name, now())
 
 	taskLabel := task
 	if taskLabel == "" {
 		taskLabel = "no task"
 	}
-	fmt.Fprintf(stdout, "Session %s, task %s, %d calls\n", name, taskLabel, len(records))
+	fmt.Fprintf(stdout, "Session %s, task %s, %d calls\n", name, taskLabel, calls)
 	if err := tokens.RenderTable(stdout, lines); err != nil {
 		fmt.Fprintf(stderr, "afk tokens: could not print the table: %v\n", err)
 		return 1
@@ -321,20 +346,9 @@ func runTokensSession(name string, record bool, project string, stdout, stderr i
 	if !record {
 		return 0
 	}
-
-	path := tokens.LedgerPath(sess.MainCheckout)
-	existing, err := tokens.Read(path)
-	if err != nil {
-		fmt.Fprintf(stderr, "afk tokens: %v\nNothing was recorded.\n", err)
-		return 1
-	}
-	if tokens.HasSession(existing, name) {
+	if res.AlreadyRecorded {
 		fmt.Fprintf(stdout, "already recorded: the ledger at %s has lines for session %s, so nothing was added.\n", path, name)
 		return 0
-	}
-	if err := tokens.Append(path, lines); err != nil {
-		fmt.Fprintf(stderr, "afk tokens: could not write the ledger at %s: %v\nNothing was recorded. Fix the problem above and run the command again.\n", path, err)
-		return 1
 	}
 	fmt.Fprintf(stdout, "Recorded %d lines for session %s in %s\n", len(lines), name, path)
 	return 0

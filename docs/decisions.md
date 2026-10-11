@@ -563,3 +563,76 @@ start-up (the first call of each agent)
 - **The QA check's browser tools.** No browser or connector tool was used in any run. `afk:qa` keeps `Skill` and `ToolSearch`, which is how those tools are reached.
 - **A real web fetch.** `afk:web-research` had the tools but was not asked to use them.
 - **The plugin was installed for every session on this machine** (`afk plugin install --target claude`, version 5.2.0). A session that was already running keeps working: a spawn with a type it does not know is made again without the type.
+
+## T2.1
+
+T2.1 adds `afk daemon`, the build loop of PLAN §5.3, with `afk daemon status`, `afk pause`, `afk resume`, the decision log, the `afk.local.toml` overlay and a systemd unit. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Session and branch names (A1).** The plan says the branch is `afk/t4-3`. It is built as `t4-3` for both the session and the branch: the task id in lower case with the dot as a hyphen, so `T4.2a` gives `t4-2a`. A second attempt is `t4-3-2`. A session's name is also its branch, its worktree folder and its plan file everywhere in afk, and a name cannot contain `/`. Giving a session a separately named branch would have meant changing creation, discovery, worktree matching and clean-up. This would normally have gone to the owner.
+- **How the unattended mode gets onto the command line (A2, A4).** The provider gains two methods. `Unattended` takes a launch or resume command and returns it with the provider's no-questions permission mode added. `UnattendedPreflight` says whether this machine can run that mode without a dialog: the user is not root, and user settings show the bypass warning was accepted. A provider with no such mode says so, and the daemon starts nothing for it.
+- **Keeping the mode after a restart (A3, A29).** An empty file, `.afk/{session}/unattended`, marks the session. Session start and the host's restart both read it. Without it, a session restarted from the dashboard or by the host would come back in a mode that stops to ask, with nobody there. Go has to read this marker itself; the autonomous marker is read by the plugin, and a command-line flag cannot be recovered that way.
+- **Machine config (A5).** The daemon reads a new file, `config.toml` in afk's config folder: `provider`, `[daemon] tick` and `stall_after`, and one `[[project]]` with a `path` per project. The dashboard's `config.json` is left alone. The master plan chose TOML; joining the two files is a later clean-up.
+- **Shape of the loop (A6, A13).** One pure function looks at a snapshot of the disk and returns one action. A second part carries it out. Sessions are read through the same discovery code the dashboard uses, which never touches the network. The ledger is marked `running` before the session is created, so a restart never starts a second session for a task.
+- **A stalled session (A7, A9, A30).** If a session has been asking at the terminal for longer than the stall limit and no blocking inbox item explains it, the daemon adds a blocking `failure` item and parks the task on it. The clock runs from the later of the session's last status write and the newest answer to one of its items. It is reported once per attempt.
+- **A session whose host is gone (A8, A38).** After a minute's grace, a blocking `failure` item, and the task parks. The item says to open the session in `afk dash`, which starts a stopped host again. T2.3 replaces this with automatic recovery.
+- **Un-parking (A10).** When every item a task waited for is answered, the task goes back to `running` with the same session. afk cannot yet type into a session, so someone has to resume it by hand; delivering a prompt is T2.2's.
+- **A launch that fails (A11, A12, A35).** The task becomes `failed` with an item giving the error and the two commands that put it right. A `running` task with no session on disk gets its session created again without counting another attempt. A worktree that exists without a session folder counts as no session.
+- **Pause (A14).** `afk pause` writes `.afk/build/paused`; `afk resume` removes it. A paused project starts nothing new. A running task carries on.
+- **What `afk daemon status` reads (A15, A16).** The daemon writes `.afk/build/daemon.json` for each project when its state or reason changes. Status reads that, the ledger and the pause flag. Notifications for "waiting on owner" and "blocked" are sent when the reason changes, which is how they are sent once and not on every tick. One daemon per machine is enforced with a lock file in afk's state folder.
+- **Decision log (A17, A31).** A new package appends one line per transition to `.afk/log/decisions.jsonl`. A state that merely persists adds nothing.
+- **Token recording and notification text (A18, A19, A36).** Both moved out of the command files into `internal/tokens` and `internal/notify`, so the daemon and the commands share them. A provider that cannot report tokens never fails a task.
+- **Overlay (A20).** A key present in `afk.local.toml` wins, even when empty. Either file may be missing. Every error names its file.
+- **systemd (A21).** A user unit with `KillMode=process`, so stopping the daemon never ends a session, and no private temp folder, so `afk attach` still finds the sockets.
+- **Defaults (A22).** A 5-second tick, a 10-minute stall limit, and `afk daemon --once` for a single pass.
+- **A project that cannot be read (A23, A33, A34).** A broken plan or a damaged ledger raises one `failure` item and the project is skipped; the daemon answers the item itself once the project reads again. A project folder that does not exist gets nothing written under it.
+- **Plain git only (A37).** The daemon creates sessions without git-spice, so an unattended launch does not depend on how the main checkout is set up.
+- **`afk next` (A24, A39).** It now knows which inbox items are answered, so an answered parked task is named first. `afk tasks` is unchanged.
+- **Tests, prerequisites, install (A25, A26, A27).** Tests were written with each change. Nothing had to be in place first. The conductor runs `make install` after the review approves.
+- **Shipping this session (A28).** As the session description asks: push, open a draft PR, mark it ready, wait for CI and merge on green. This would normally have gone to the owner; the master plan's bootstrap section prescribes it.
+- **Planning process (A40).** The work plan went through three review passes. The two critical findings left in pass 3 were mistakes in the plan's wording and were fixed, so none remained open.
+
+### Accepted risks
+
+- **The unattended launch was not run against the real agent CLI.** Tests compare command lines. The flag was read from the CLI's help (version 2.1.296) and the settings key from this machine's settings. That the CLI really starts without a dialog is first shown by the supervised run of T4.2.
+- **A daemon killed while a session is being created** leaves a half-made session. The next pass marks the task `failed` and says how to clean up. Automatic recovery is T2.3's.
+- **A parked session stays idle after its item is answered** until someone resumes it by hand.
+
+### Decided while building
+
+- **Item titles.** A stall item's title starts "Session waiting at the terminal: " and a stopped-host item's "Session stopped running: ", each followed by the task and session. The fixed opening words are how the daemon recognises its own earlier report.
+- **An item cannot name its own id.** The inbox picks the id when it writes the item, so the stall and stopped-host texts say to answer "this item" using the id `afk inbox` shows. The push notification carries the id.
+- **Pause also holds back an un-park.** A parked task whose item is answered stays parked until `afk resume`. A paused project starts and resumes nothing.
+- **A running task the plan no longer has** stops the project with advice to put the task back in the plan. `afk ledger set` refuses an id that is not in the plan, so the ledger cannot be corrected first.
+- **A session whose status file cannot be read and whose host is dead** gets its minute of grace from the task's start time only.
+- **`afk daemon status`** decides "running" from the recorded process id. A reused id can make a dead daemon read as running; only the lock is proof.
+- **`afk daemon --once`** takes the same lock as the service, so it exits 1 while the service runs.
+- **A notification is sent inside a pass.** An ntfy server that never answers holds that pass for up to 10 seconds per message.
+- **Inbox files that cannot be read** are not reported by the loop. A task parked on one stays parked.
+- **The plan-error item is answered by the daemon** with the text "fixed" once the project reads again. The inbox records it as answered from the command line, because it has no fourth source.
+- **The `afk.toml` address check** now names whichever file the bad value came from.
+
+### Checked, and not checked
+
+- **Checked against a built binary** (never `~/bin`): `afk help` lists the three commands; in a throwaway repo, `pause`, `daemon --once`, `daemon status` and `resume` behaved as the README says, a paused project launched nothing, and bad input gave the documented exit codes. The review ran the whole of `make check` once, green.
+- **Not checked: a real launch.** No test and no manual check starts an agent. Owner check: on the VM, add one project to `config.toml`, run `afk pause <project>`, `afk daemon --once`, `afk daemon status`, then `afk resume <project>` and one supervised `afk daemon --once` while watching `afk dash`. Expect a session named after the task, started with no permission dialog.
+- **Owner check: the main checkout's `afk.toml`.** It is untracked and holds the ntfy address, and it is no longer ignored. Run `mv afk.toml afk.local.toml` there.
+- **Not installed: the systemd unit.** `contrib/README.md` has the commands.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes: this file and `CONTEXT.md` were edited outside the work plan's tasks (the planner and conductor write both, by design), and the notification test was mirrored into `internal/notify` rather than moved.
+
+### Ideas left out
+
+- Let `afk ledger set` change an entry for a task the plan no longer has.
+- Show the count of unreadable inbox files in `afk daemon status`.
+- Send notifications outside the pass, so a slow ntfy server cannot delay it.
+- An `afk new --unattended` flag. The mode is reachable only through the daemon today.
+
+### Merging with T1.5
+
+- **T1.5 landed on main first**, so main was merged into this branch (a merge commit, no rebase). `CONTEXT.md` and this file conflicted and both sides were kept.
+- **One break git did not flag.** T1.5's start-up section in `afk tokens` reads the per-call records, which this task had moved inside `tokens.Record`. `RecordResult` now hands the records back, so the transcripts are still read once.
+- **Not reviewed by the three checks.** The join was made after the verdict. It was checked with the full `make check`, green, and by CI.

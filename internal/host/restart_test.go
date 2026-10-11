@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/dphaener/afk/internal/provider"
 )
 
 // restart_test.go drives in-place recovery from both directions, the way
@@ -198,7 +200,7 @@ func TestResumeArgv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := resumeArgv(tc.provider, id)
+			got, err := resumeArgv(tc.provider, id, false)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("resumeArgv(%q) = %q, want an error", tc.provider, got)
@@ -306,6 +308,265 @@ func TestRestartArgvRefusesAnUnknownProvider(t *testing.T) {
 				t.Errorf("restartArgv() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// unattendedResume is what the default provider says an unattended resume
+// looks like. The tests compare against it rather than spelling the option
+// out: this package must not know any provider's option, and the only thing
+// under test here is that the host hands the resume argv to p.Unattended.
+func unattendedResume(t *testing.T, sessionID string) []string {
+	t.Helper()
+	p, err := provider.Lookup("")
+	if err != nil {
+		t.Fatalf("provider.Lookup(\"\"): %v", err)
+	}
+	plain := p.ResumeArgv(sessionID)
+	argv, err := p.Unattended(plain)
+	if err != nil {
+		t.Fatalf("the default provider has no unattended mode: %v", err)
+	}
+	if strings.Join(argv, "\x00") == strings.Join(plain, "\x00") {
+		t.Fatalf("the default provider's unattended resume equals its plain one (%q); these tests would prove nothing", argv)
+	}
+	return argv
+}
+
+// providerWithoutUnattended finds a provider that reports
+// ErrUnattendedUnsupported by asking each one, rather than by name.
+func providerWithoutUnattended(t *testing.T) string {
+	t.Helper()
+	for _, name := range provider.Names() {
+		p, err := provider.Lookup(name)
+		if err != nil {
+			t.Fatalf("provider.Lookup(%q): %v", name, err)
+		}
+		if _, err := p.Unattended(p.ResumeArgv("probe")); errors.Is(err, provider.ErrUnattendedUnsupported) {
+			return name
+		}
+	}
+	t.Skip("every provider has an unattended mode; nothing to refuse")
+	return ""
+}
+
+// TestRestartArgvCarriesTheUnattendedMode drives the mode through the host's
+// own path, the one beginRestart takes before touching the child, with the
+// marker as the only input.
+//
+// Load-bearing rows: "marker" is the reason the code exists (a daemon-run
+// session whose child is restarted must come back in the same mode, or it
+// stops at a permission dialog nobody sees); "no marker" is every session
+// that exists today, whose resume argv must be exactly what it was; "marker,
+// provider with no mode" must refuse, because the alternative is the silent
+// fall back to a mode that asks questions; "cannot tell" must refuse for the
+// same reason. The last two rows change the marker between two calls on ONE
+// host value, which is what proves it is read on disk each time and not
+// remembered.
+func TestRestartArgvCarriesTheUnattendedMode(t *testing.T) {
+	without := providerWithoutUnattended(t)
+	plain, err := provider.Lookup("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPlain := plain.ResumeArgv(restartSessionID)
+	wantUnattended := unattendedResume(t, restartSessionID)
+
+	newHost := func(t *testing.T, providerName string) (*hostRuntime, string) {
+		dir := filepath.Join(t.TempDir(), ".afk", "sess")
+		writeStatusFile(t, dir, "executing", restartSessionID)
+		return &hostRuntime{cfg: ServeConfig{
+			Name:     "sess",
+			MetaPath: filepath.Join(dir, "host.json"),
+			Provider: providerName,
+		}}, dir
+	}
+	mark := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, UnattendedMarkerName), nil, 0o644); err != nil {
+			t.Fatalf("writing the marker: %v", err)
+		}
+	}
+	check := func(t *testing.T, h *hostRuntime, want []string) {
+		t.Helper()
+		got, err := h.restartArgv()
+		if err != nil {
+			t.Fatalf("restartArgv() error = %v", err)
+		}
+		t.Logf("resume argv: %q", got)
+		if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("restartArgv() = %q, want %q", got, want)
+		}
+	}
+
+	t.Run("no marker", func(t *testing.T) {
+		h, _ := newHost(t, "")
+		check(t, h, wantPlain)
+	})
+	t.Run("marker", func(t *testing.T) {
+		h, dir := newHost(t, "")
+		mark(t, dir)
+		check(t, h, wantUnattended)
+	})
+	t.Run("a directory at the marker path counts", func(t *testing.T) {
+		h, dir := newHost(t, "")
+		if err := os.Mkdir(filepath.Join(dir, UnattendedMarkerName), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		check(t, h, wantUnattended)
+	})
+	t.Run("no marker, provider with no mode", func(t *testing.T) {
+		h, _ := newHost(t, without)
+		p, err := provider.Lookup(without)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, h, p.ResumeArgv(restartSessionID))
+	})
+	t.Run("marker, provider with no mode", func(t *testing.T) {
+		h, dir := newHost(t, without)
+		mark(t, dir)
+		got, err := h.restartArgv()
+		if !errors.Is(err, provider.ErrUnattendedUnsupported) {
+			t.Fatalf("restartArgv() = %q, err %v; want ErrUnattendedUnsupported and no argv", got, err)
+		}
+		t.Logf("refused with: %v", err)
+		if got != nil {
+			t.Errorf("restartArgv() returned argv %q with its error; a caller could run it", got)
+		}
+		if !strings.Contains(err.Error(), without) {
+			t.Errorf("error %q does not name the provider", err)
+		}
+	})
+	t.Run("cannot tell whether the marker exists", func(t *testing.T) {
+		// The session directory is a plain file, so stat of the marker fails
+		// with "not a directory", which is not "does not exist". status.json
+		// lives elsewhere so the session id still resolves and the marker is
+		// the only thing that can fail.
+		root := t.TempDir()
+		notADir := filepath.Join(root, "file")
+		if err := os.WriteFile(notADir, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := unattendedMarker(filepath.Join(notADir, UnattendedMarkerName))
+		if err == nil {
+			t.Fatalf("unattendedMarker = %v with no error, want a refusal", got)
+		}
+		t.Logf("refused with: %v", err)
+		if got {
+			t.Error("unattendedMarker reported true alongside its error")
+		}
+	})
+	t.Run("marker added after the host started is seen", func(t *testing.T) {
+		h, dir := newHost(t, "")
+		check(t, h, wantPlain)
+		mark(t, dir)
+		check(t, h, wantUnattended)
+	})
+	t.Run("marker removed after the host started is seen", func(t *testing.T) {
+		h, dir := newHost(t, "")
+		mark(t, dir)
+		check(t, h, wantUnattended)
+		if err := os.Remove(filepath.Join(dir, UnattendedMarkerName)); err != nil {
+			t.Fatal(err)
+		}
+		check(t, h, wantPlain)
+	})
+}
+
+// TestResumeArgvUnattended is the pure half: every provider, mode on. A
+// provider either returns exactly what its own Unattended makes of its own
+// resume argv, or the call fails with ErrUnattendedUnsupported and no argv.
+// There is no third outcome, and in particular no plain resume argv handed
+// back with the mode requested: that row shape is the load-bearing one.
+func TestResumeArgvUnattended(t *testing.T) {
+	for _, name := range append([]string{""}, provider.Names()...) {
+		t.Run("provider="+name, func(t *testing.T) {
+			p, err := provider.Lookup(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, wantErr := p.Unattended(p.ResumeArgv(restartSessionID))
+			got, err := resumeArgv(name, restartSessionID, true)
+			if wantErr != nil {
+				if !errors.Is(err, wantErr) {
+					t.Fatalf("resumeArgv = %q, err %v; want %v", got, err, wantErr)
+				}
+				if got != nil {
+					t.Errorf("resumeArgv returned argv %q with its error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resumeArgv error = %v", err)
+			}
+			if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("resumeArgv = %q, want %q", got, want)
+			}
+			// The session id still travels, and the bans of TestResumeArgv
+			// still hold with the mode on.
+			if !strings.Contains(strings.Join(got, " "), restartSessionID) {
+				t.Errorf("resumeArgv = %q lost the session id", got)
+			}
+			for _, banned := range []string{"--fork-session", "/afk:go", "--session", "--last"} {
+				for _, arg := range got {
+					if strings.Contains(arg, banned) {
+						t.Errorf("resumeArgv = %q, which must never carry %q", got, banned)
+					}
+				}
+			}
+		})
+	}
+	t.Run("unknown provider is refused", func(t *testing.T) {
+		if got, err := resumeArgv("nope", restartSessionID, true); err == nil {
+			t.Fatalf("resumeArgv = %q, want an error", got)
+		}
+	})
+}
+
+// TestRestartKeepsTheUnattendedMode is the marker end to end: a real Serve, a
+// wedged child, the marker beside status.json, a Restart frame, and a fake
+// agent CLI on PATH that records the argv it was started with. The host was
+// given no hint of the mode at start (ServeConfig has no field for it), so
+// the recorded argv can only have come from the marker read at restart.
+// TestRestartResumesTheWedgedChildInPlace is the same run without the marker
+// and pins the plain argv.
+func TestRestartKeepsTheUnattendedMode(t *testing.T) {
+	requireUnixBind(t)
+
+	f := newRestartFixture(t)
+	f.writeStatus(t, "executing", restartSessionID)
+	if err := os.WriteFile(filepath.Join(f.dir, UnattendedMarkerName), nil, 0o644); err != nil {
+		t.Fatalf("writing the marker: %v", err)
+	}
+	compressRestartLiveness(t)
+	compressRestartLadder(t)
+
+	h := startServeWithConfig(t, f.cfg)
+	oldPID := readPIDFile(t, f.oldPIDPath)
+	conn := h.dial(t)
+	buf := drainClient(t, conn)
+	awaitBuffer(t, buf, restartOldBanner)
+
+	sendFrame(t, conn, Restart, nil)
+
+	resumedPID := readPIDFile(t, f.resumedPIDPath)
+	if resumedPID == oldPID {
+		t.Fatalf("the resumed child has the old pid %d; nothing was actually restarted", oldPID)
+	}
+	awaitDead(t, oldPID)
+
+	want := unattendedResume(t, restartSessionID)
+	if got := waitForFile(t, f.resumedArgsPath); got != strings.Join(want[1:], " ") {
+		t.Errorf("the resumed child was run with %q, want exactly %q", got, strings.Join(want[1:], " "))
+	}
+	// host.json names the argv actually running, mode included, so what the
+	// dashboard shows is what was started.
+	m := awaitHostMeta(t, f.cfg, "published the resumed child's argv", func(m hostMeta) bool { return m.ChildPID == resumedPID })
+	if got := strings.Join(m.Argv, "\x00"); got != strings.Join(want, "\x00") {
+		t.Errorf("host.json argv = %q, want %q", m.Argv, want)
+	}
+	if h.returned() {
+		t.Fatalf("Serve returned across the restart: %v", h.err)
 	}
 }
 
