@@ -518,7 +518,7 @@ M0 Foundation ──▶ M1 Primitives ──▶ M2 Daemon ──▶ M3 Surfaces 
  T0.0 VM          T1.1 ledger        T2.1 loop     T3.1 web        T4.1 nebari on the VM
  T0.1 seed        T1.2 inbox         T2.2 ship     T3.2 dash       T4.2 supervised, then unattended
  T0.2 plugin      T1.3 usage         T2.3 recover
-                  T1.4 tokens        T2.4 govern
+ T0.3 QA parity   T1.4 tokens        T2.4 govern
                   T1.5 start-up
 ```
 
@@ -613,6 +613,42 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   (8) The supervised scratch-repo run in this entry's acceptance is still owed by the owner; see
   `## T0.2` in `docs/decisions.md`. The OpenCode port lags this change.
 
+#### T0.3 — QA parity with shipit
+- **Depends on:** T0.2
+- **Goal:** close the two gaps left because T0.2 ran without shipit's text, and fix two defects its
+  review reported.
+- **Background:** shipit is not on the VM and is not needed. Its relevant text is quoted here in full.
+  Its plan template gives every task two scenarios, `Scenario: [Happy path]` and `Scenario:
+  [Failure/edge case]` ("Trigger error condition", "Assert handled correctly", expected result
+  "Graceful failure"). Its QA reviewer's criteria are: "Start from a clean state. Execute EVERY QA
+  scenario from EVERY task. Test cross-task integration. Test edge cases: empty state, invalid input,
+  error conditions, rapid actions."
+- **Scope:**
+  - **Failure scenarios.** Each scenario gains a fifth field, `Case: happy | failure`, written after
+    `Tool`. Every task needs at least one `happy` scenario, and at least one `failure` scenario
+    (invalid input, a missing file, an error path) unless its QA Scenarios carry the line
+    `No failure case: {reason}`, for a task with nothing that can fail (docs only, a rename). Update
+    `plan-format.md`, the planner prompt, `plan_to_args.rb` (rejects a task that has neither) and the
+    Go plan parser (stays lenient) together.
+  - **Exploratory QA.** In `check-hands-on-qa.md`: start from a clean state (a fresh build in a
+    scratch path, no state left by the task agents); after the scenarios, try the tasks together where
+    one task's output feeds another; then try the edge cases that apply to this change, from shipit's
+    list above. Keep it bounded, per §5.7: what a person would try in a few minutes, no new test
+    files, and a finding only for behaviour that is broken, each with its evidence file.
+  - **The critic cannot add findings.** `review.js` keeps only the critic's findings that were among
+    the ones it was given, and never lets a severity rise.
+  - **Fenced task lines.** `internal/state/plan.go` ignores a `- [ ] (ID)` line inside a fenced block,
+    as `plancheck` and `plan_to_args.rb` already do; remove the `noParseBack` exception in
+    `plancheck_test.go`.
+- **Not in scope:** the OpenCode port; the other minor follow-ups listed on pull request #2.
+- **Acceptance:** `make check` green. New cases: `plan_to_args.rb` rejects a task with no failure
+  scenario and no waiver line, and accepts each alone; the Go parser reads `Case`; `review.js` drops a
+  finding the critic invented and a severity the critic raised; a fenced task line is not a task in any
+  of the three parsers. Plugin version bumped in both manifests.
+- **Note:** this is the first task run with afk's own plugin (bootstrap stage 2). Watching it end to
+  end is the supervised run still owed from T0.2: it should finish with evidence files, a verdict file
+  and no terminal questions. Record the result in `docs/decisions.md`.
+
 ---
 
 ### M1 — Primitives
@@ -690,7 +726,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
 with nobody at the keyboard.
 
 #### T2.1 — The build loop
-- **Depends on:** T0.2, T1.1, T1.2, T1.4
+- **Depends on:** T0.2, T0.3, T1.1, T1.2, T1.4
 - **Scope:** `afk daemon` implementing §5.3 for the projects in machine config, one task at a time per
   project, launching each agent in the provider's unattended permission mode after the preflight of
   §5.3 step 3. Decision log (§4.4). Token ledger entry for every finished task (§4.7). `afk daemon status` (what it is doing and why). `afk pause <project>`
