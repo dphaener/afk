@@ -31,3 +31,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Next task**: the one task the build loop would start now, chosen from the ready tasks in plan order, or the reason there is none.
 - **Superseded**: a ledger status for a task kept in the master plan only as history; its entry lists the tasks that replace it, and a dependency on it waits for all of them.
 - **Seeding**: recording an existing project's finished tasks in the ledger by hand with `afk ledger set`.
+- **Usage window**: one of the subscription's limits that fills up and resets on a schedule: the session window, the weekly window, or a weekly window for one model.
+- **Usage probe**: the zero-cost agent CLI call that reports how much of each usage window is spent and when it resets.
+- **Usage snapshot**: one probe's result (windows, reset times, whether extra usage is on), kept per machine in `usage.json`.
+- **Extra usage**: paid overage beyond the subscription; afk refuses to run while it is on.
+- **Governor**: the pure decision that turns a usage snapshot into one action: run, launch nothing new, pause, hold, or refuse.

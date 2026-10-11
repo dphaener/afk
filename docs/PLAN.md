@@ -242,8 +242,10 @@ verdicts, fix-loop outcomes, governor actions, ship results. This is the raw mat
 
 ### 4.5 Usage snapshot — `~/.local/state/afk/usage.json` (new; per machine, not per project)
 
-Written by the governor: `{at, provider, windows: [{kind, used_pct, resets_at}], overage_enabled,
-source}`. The dashboard and web page read it; nobody else probes.
+Written by the governor: `{at, provider, windows: [{kind, scope, used_pct, resets_at}], overage_enabled,
+source}`. `scope` is the model's name on a per-model weekly window and empty otherwise. The path is
+`$XDG_STATE_HOME/afk/usage.json` when `XDG_STATE_HOME` is set to an absolute path, otherwise
+`~/.local/state/afk/usage.json`. The dashboard and web page read it; nobody else probes.
 
 ### 4.6 Project config — `afk.toml` (committed)
 
@@ -427,12 +429,15 @@ Rules for the plugin, each tied to a measurement in §1. They apply in every mod
 
 ```go
 // Usage reports how much of each of the provider's usage windows is spent.
-// ErrUsageUnsupported means this provider has no way to tell.
-Usage(ctx context.Context) (UsageSnapshot, error)
+// ErrUsageUnsupported means this provider has no way to tell;
+// ErrNoUsageReport means the probe ran but its output held no usable report.
+// UsageDeps carries the command runner and the clock, as the provider's other
+// calls that reach outside do.
+Usage(ctx context.Context, d UsageDeps) (UsageSnapshot, error)
 
 type UsageSnapshot struct {
     At             time.Time
-    Windows        []Window      // Kind: "session" | "weekly" | "weekly_model"; UsedPct 0–100; ResetsAt
+    Windows        []Window      // Kind: "session" | "weekly" | "weekly_model" | "unknown"; Scope; UsedPct 0–100; ResetsAt
     OverageEnabled bool
 }
 ```
@@ -455,6 +460,11 @@ experimental.
   `rate_limits` may be null.
 - **Units differ between Claude Code surfaces** (0–100 vs 0–1; ISO vs epoch seconds). Normalise at the
   provider boundary; nothing above it sees raw values.
+- **Stream details found while building (T1.3).** The `limits[]` rows also carry `group`,
+  `scope.model.display_name` (the model name on a `weekly_scoped` row), `severity` and `is_active`; only
+  `kind`, `percent`, `resets_at` and the model name are used. A `kind` afk does not know is kept as
+  `unknown`, with the CLI's word in `Scope`. Run the probe outside a project directory (afk runs it from
+  its state directory): the CLI records every run under the directory it starts in.
 - **Not used:** the undocumented `api/oauth/usage` endpoint, raw response headers, or token estimates
   from local transcripts.
 
@@ -470,6 +480,8 @@ Inputs: latest snapshot (or its absence and age), thresholds, whether a session 
 | Session window ≥ `launch_below` (default 75), or weekly ≥ `pause_at` − 5 | Launch nothing new; a running session continues. |
 | Otherwise | Run. |
 | Provider returns `ErrUsageUnsupported` | Follow `on_unknown_usage`: `run` (default) or `hold`. |
+
+As built, the unsupported row is checked first, because such a provider never has a snapshot and "no snapshot" would otherwise always win.
 
 Every action is logged (§4.4) and reflected in `usage.json`.
 
@@ -719,6 +731,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   missing window, unknown `kind`, no `usage_report` at all); the decision table of §6.3 as a table
   test, one row per condition and each boundary value; Codex and OpenCode return
   `ErrUsageUnsupported`; `afk usage` works on the VM.
+- Amended 2026-10-11 (T1.3 done): the method is `Usage(ctx, UsageDeps)` with the runner and clock passed in; a window also has `scope` and may have kind `unknown`; `governor.Decide` checks "unsupported" first and its thresholds are code defaults (`governor.DefaultThresholds()`), so T2.4 adds the config keys and decides whether the action is stored in `usage.json`; `internal/usagestate` owns that file (it follows `XDG_STATE_HOME`); a failed probe returns an error, not a snapshot, and callers fall back to the stored one; run the probe from afk's state directory, never a project.
 
 #### T1.4 — Token ledger
 - **Depends on:** T0.1
@@ -896,7 +909,7 @@ with nobody at the keyboard.
 | What exactly a session emits when it hits a usage limit (text, hook, whether a reset time is present). Never observed; capture it the first time it happens. | T2.4 |
 | Is the login-expiry warning detectable ahead of time, or only the logged-out state? | T2.4 |
 | Liveness with no client: host-side schedule, or daemon holds the client slot? | T2.3 |
-| Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? | T1.3 |
+| Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? **Answered 2026-10-11:** not observed. The probe was run three times back to back (Claude Code 2.1.296) and each time exited 0 with a full report, in about 1.5 seconds. Nobody tried to provoke throttling, because tripping a rate limit on the owner's account on purpose is not a machine's call, so what it does when throttled is still unknown. `afk usage` reuses a reading under 5 minutes old, and the governor treats a reading over 30 minutes old as stale and holds. | T1.3 |
 | Nebari's health-check URL, and how to tell a deploy of *this* commit finished (as opposed to the old container still answering). | T4.1 |
 | Does a merge to nebari's main trigger the Coolify deploy today, or does a webhook need adding? | T4.1 |
 | What the 28k of extra start-up context in implementation and review agents consists of. | T1.5 |

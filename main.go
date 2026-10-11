@@ -19,6 +19,7 @@ var subcommands = map[string]func([]string){
 	"tasks":  cmdTasks,
 	"next":   cmdNext,
 	"ledger": cmdLedger,
+	"usage":  cmdUsage,
 	"_host":  cmdHost,
 }
 
@@ -176,6 +177,9 @@ Subcommands:
   next           Show the task that would run next, or why none
   ledger set     Record a task's status by hand:
                  afk ledger set <task-id> <status> [--replaced-by IDS]
+  usage          Show how much of the agent's usage windows is spent, when they
+                 reset, and what the usage governor would do:
+                 afk usage [--provider NAME] [--refresh]
 
 Use 'afk <subcommand> --help' for subcommand options.
 

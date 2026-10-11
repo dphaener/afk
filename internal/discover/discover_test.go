@@ -1783,8 +1783,8 @@ func TestDiscoverNeverBlocks(t *testing.T) {
 		"sort":                                  true,
 		"strings":                               true,
 		"github.com/dphaener/afk/internal/host": true,
-		// internal/provider is pure (fmt and strings only); discover uses
-		// only its Default constant to canonicalize claude to "".
+		// internal/provider does no I/O of its own (its Preflight and Usage take
+		// injected runners); discover uses only its Default constant to canonicalize claude to "".
 		"github.com/dphaener/afk/internal/provider": true,
 		"github.com/dphaener/afk/internal/session":  true,
 		"github.com/dphaener/afk/internal/state":    true,

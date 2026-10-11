@@ -116,7 +116,7 @@ The design constraint throughout is that **a wedged client must never stall the 
 
 ### Package roles
 
-`internal/session` (create/clean), `internal/state` (parsers for plan, status, verdict), `internal/spice` (git-spice topology), `internal/probe` (tool detection), `internal/ui` (Bubble Tea dashboard), `internal/termpane` (PTY ↔ terminal-emulator bridge that renders a live session inside the dashboard — an experimental spike, not production-hardened), `internal/pluginstall` (`afk plugin install`).
+`internal/session` (create/clean), `internal/state` (parsers for plan, status, verdict), `internal/spice` (git-spice topology), `internal/probe` (tool detection), `internal/ui` (Bubble Tea dashboard), `internal/termpane` (PTY ↔ terminal-emulator bridge that renders a live session inside the dashboard — an experimental spike, not production-hardened), `internal/pluginstall` (`afk plugin install`), `internal/governor` (the pure usage decision: run, no_launch, pause, hold or refuse), `internal/usagestate` (reads and writes `usage.json`, the last usage reading), `internal/masterplan` (reads a master plan's task headings and dependencies), `internal/ledger` (reads and writes `.afk/build/ledger.json`, each master-plan task's status), `internal/nexttask` (the pure choice of the next task to run, or why none), `internal/projectconfig` (loads `afk.toml`).
 
 ### The agent plugins (`plugins/`)
 
