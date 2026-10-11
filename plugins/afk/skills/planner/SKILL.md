@@ -270,6 +270,7 @@ What will change? 1-3 paragraphs.]
 
   **QA Scenarios**:
   - Tool: [Bash | Read | Playwright | ...]
+    Case: happy | failure
     Steps: [What to run or do]
     Expected: [What a pass looks like]
     Evidence: `.afk/{plan-name}/evidence/{file}`
@@ -297,7 +298,7 @@ What will change? 1-3 paragraphs.]
 - **One task = one module/concern**. Split on 2+ unrelated concerns or when the Files list grows past what one agent can hold.
 - **Target: 3-6 tasks per wave**. More than 8 = signal to split.
 - **Extract shared dependencies** (types, interfaces, shared configs) as Wave 1 tasks to unblock parallel work.
-- **Derive wave numbers from `**Depends on**`**: a task with no dependencies is Wave 1; every other task sits one wave above its highest dependency. So no task depends on its own wave, and a test, docs, or wiring task that depends on Wave N work goes in Wave N+1 even when it "belongs" with that work; `plan_to_args.rb` rejects a same- or later-wave dependency. Waves are readable groups (plan-format.md).
+- **Derive wave numbers from `**Depends on**`**: a task with no dependencies is Wave 1; every other task sits one wave above its highest dependency. So no task depends on its own wave; a test, docs, or wiring task that depends on Wave N work goes in Wave N+1 even when it "belongs" with that work; `plan_to_args.rb` rejects a same- or later-wave dependency. Waves are readable groups (plan-format.md).
 - Empty waves are not allowed.
 
 ### All Seven Task Subsections Are Required
@@ -311,7 +312,7 @@ What will change? 1-3 paragraphs.]
 | `**Files**` | Exact paths to create or modify (comma-separated), line ranges where they help; no globs. A directory only as `dir/` beside at least one exact file |
 | `**Depends on**` | Task IDs from earlier waves this task needs (never the same wave), or `none`. Required on every task |
 | `**Acceptance Criteria**` | How to verify the task is done correctly |
-| `**QA Scenarios**` | One or more scenarios, each `Tool`, `Steps`, `Expected`, `Evidence` (path under `.afk/{plan-name}/evidence/`), no blank line between them |
+| `**QA Scenarios**` | One or more scenarios, each `Tool`, `Case` (`happy`/`failure`), `Steps`, `Expected`, `Evidence` (path under `.afk/{plan-name}/evidence/`), no blank line between them; needs a `failure` one or `No failure case: {reason}` |
 | `**Model**` | Model tier for execution: `light`, `balanced`, `heavy`, or `reasoning` |
 
 ### Model Assignment Heuristics
@@ -389,7 +390,7 @@ Before showing the handoff or deleting the draft, derive the TLDR from three sou
 - `## Constraints (MUST / MUST NOT)` missing or empty → render `**Risk**: {level} — no hard constraints recorded`. Never invented constraints.
 - Both empty → both fallbacks apply: `**Risk**: UNASSESSED — no hard constraints recorded`.
 
-An empty constraints section is ordinary, not exotic. The grill loop appends a constraint only when a resolution establishes a hard boundary, so a run can resolve every node and record none.
+An empty constraints section is ordinary: the grill loop appends a constraint only when a resolution sets a hard boundary.
 
 ### Step 2: Render Handoff (with TLDR)
 

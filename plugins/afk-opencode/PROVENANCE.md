@@ -36,6 +36,9 @@ earlier forge behaviour in these areas:
 - the autonomous policy, the stop-before-shipping rule and the conductor and ship prompts;
 - the planner's `CONTEXT.md` and `docs/decisions.md` handling;
 - the `StopFailure` rate-limit marker hook (the port has no hooks directory).
+- the T0.3 QA parity changes (plugin version 5.0.0): no `Case` field or failure-scenario rule in the
+  plan format, no exploratory QA in the hands-on check, and no guard on the critic's findings in
+  `workflows/review.js`.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

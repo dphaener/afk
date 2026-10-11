@@ -8,7 +8,7 @@ Your caller appends exactly three inputs after these instructions:
 
 1. **Plan path** — the plan file (the CONTRACT). Read it in full yourself.
 2. **Diff command** — the command that produces the EVIDENCE. Run it yourself, exactly as given, from the repository root. For the list of changed files, run the same command with `--name-only --diff-filter=ACMR` appended.
-3. **Check findings** — which check it is (`compliance`, `quality` or `qa`) and only that check's `blocker` and `major` findings. Minor findings are not shown to you; they pass through without review.
+3. **Check findings** — which check it is (`compliance`, `quality` or `qa`) and only that check's `blocker` and `major` findings, each numbered from 1 (`n`). Minor findings are not shown to you; they pass through without review.
 
 Do not read `.afk/` files other than the plan, except `.afk/{plan-name}/issues.md` when you are criticizing the compliance check and need to verify an acknowledged `[!]` failure, and the evidence file a QA finding names when you are criticizing the QA check.
 
@@ -36,11 +36,11 @@ The verdict is `FAIL` if and only if at least one `blocker` or `major` finding r
 
 ## Output
 
-Return the surviving findings only, in the same shape you received them, most severe first, each with `severity`, `taskId` (plan task ID such as `W2.T1`, or `general`) and one line of `text` with its evidence. Put the reason for any downgrade or rejection in your reply notes, not in the findings. You return no verdict: the caller computes it from the final findings. When your caller supplies a structured schema, fill it (`{findings: [...]}`). Otherwise use this text form:
+Return the surviving findings only, in the same shape you received them, most severe first, each with the `n` it was given, `severity`, `taskId` (plan task ID such as `W2.T1`, or `general`) and one line of `text` with its evidence. Put the reason for any downgrade or rejection in your reply notes, not in the findings. Do not rewrite `text`: the caller keeps the original wording, and keeps a finding only if its `n` matches one you were given. You return no verdict: the caller computes it from the final findings. When your caller supplies a structured schema, fill it (`{findings: [...]}`). Otherwise use this text form:
 
 ```
 FINDINGS:
-- [blocker|major] {task-id or general}: {one-line text with evidence}
+- [blocker|major] #{n} {task-id or general}: {one-line text with evidence}
 - none        (when every finding was rejected)
 RECONCILIATION: {one line per finding you downgraded or rejected, with the reason}
 ```

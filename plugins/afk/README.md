@@ -81,7 +81,7 @@ Orchestrated task delegation with **real model selection**. The **Workflow engin
 
 **No bookkeeping agent.** The engine does not spawn an agent to tick checkboxes. The task agent (or the verifier, when it certifies the task) runs `afk plan check --project {root} {plan} {task-id} done`, and a task that fails is recorded by `... failed --reason "{why}"`, which also adds an entry to `.afk/{plan-name}/issues.md`. The command takes a lock, so tasks that finish together cannot overwrite each other's ticks. If the run finishes and a tick did not land, the conductor's reconcile step corrects it from the run result.
 
-**Tiered verification.** Each task agent runs its own acceptance commands and the task's QA scenarios, saves each scenario's evidence under `.afk/{plan-name}/evidence/`, ticks its own checkbox with `afk plan check` and self-reports `{status, checks, summary}`. A separate verifier agent runs only when the task is `heavy` or `reasoning` tier, touches a risky path (`.github/`, a `hooks/` directory, a test path), reported no checks, reported a non-zero exit code, or reported anything but `done`. Everything else passes on its self-report. A verifier FAIL triggers a fix agent, and the fix is re-verified. The Agent-loop keeps its orchestrator-run verification of every output.
+**Tiered verification.** Each task agent runs its own acceptance commands and the task's QA scenarios (happy and failure cases), saves each scenario's evidence under `.afk/{plan-name}/evidence/`, ticks its own checkbox with `afk plan check` and self-reports `{status, checks, summary}`. A separate verifier agent runs only when the task is `heavy` or `reasoning` tier, touches a risky path (`.github/`, a `hooks/` directory, a test path), reported no checks, reported a non-zero exit code, or reported anything but `done`. Everything else passes on its self-report. A verifier FAIL triggers a fix agent, and the fix is re-verified. The Agent-loop keeps its orchestrator-run verification of every output.
 
 Either engine sets the `model` parameter to the tier assigned during planning, and each sub-agent runs on the model corresponding to its tier per the afk Model Registry (see `plugins/afk/models.md` for current tier→model mappings), with behavioral guidance tuned to its tier's strengths. The orchestrator never writes code directly. If a task fails, the tier automatically escalates on retry (3 attempts): light → balanced → heavy → reasoning, with reasoning as the ceiling. On fallback, the caller retries with the tier's fallback alias per the registry.
 
@@ -93,7 +93,7 @@ Three-check verification:
 
 1. **Plan compliance** — did the implementation match the plan, and was nothing extra built?
 2. **Code quality** — does it meet your repo's standards?
-3. **Hands-on QA** — does it work when run? This check runs the plan's QA scenarios and each task's acceptance commands itself, and writes its own evidence under `.afk/{plan-name}/evidence/qa/` rather than trusting the task agents' files.
+3. **Hands-on QA** — does it work when run? This check runs the plan's QA scenarios and each task's acceptance commands itself, and writes its own evidence under `.afk/{plan-name}/evidence/qa/` rather than trusting the task agents' files. It also tries the tasks together and a few edge cases the plan did not list.
 
 Each check runs on the `balanced` tier. **The critic rule:** an adversarial critic on the `reasoning` tier (per the afk Model Registry) runs for a check only when that check returned at least one `blocker` or `major` finding. The critic sees only those findings and confirms, downgrades or rejects each one; `minor` findings pass through untouched. Ends with an explicit **APPROVE** or **REJECT** verdict.
 
@@ -256,7 +256,7 @@ afk clean session-name     # Archive and remove the worktree; keep the branch
 
 Plan files are structured markdown documents that capture the full context of a feature: goals, constraints, tasks, acceptance criteria, and file scope.
 
-Every task carries seven subsections: `**What to do**`, `**Must NOT do**`, `**Files**`, `**Depends on**`, `**Acceptance Criteria**`, `**QA Scenarios**` and `**Model**`. `**Files**` must name exact file paths. Each QA scenario gives a tool, steps, the expected result and an evidence path under `.afk/{plan-name}/evidence/`; `N/A` is not allowed for Files or QA Scenarios, and the plan parser rejects a plan that breaks these rules.
+Every task carries seven subsections: `**What to do**`, `**Must NOT do**`, `**Files**`, `**Depends on**`, `**Acceptance Criteria**`, `**QA Scenarios**` and `**Model**`. `**Files**` must name exact file paths. Each QA scenario gives a tool, a case (`happy` or `failure`), steps, the expected result and an evidence path under `.afk/{plan-name}/evidence/`. Every task needs at least one failure scenario (bad input, a missing file, an error path), or a line `No failure case: {reason}` for a task with nothing that can fail, such as a docs-only change; `N/A` is not allowed for Files or QA Scenarios, and the plan parser rejects a plan that breaks these rules.
 
 The planner also keeps two project documents. It reads `CONTEXT.md` (the project's glossary) during research and adds each new domain term as one line, and when your description names a master-plan task it writes that task's decisions into `docs/decisions.md`. Those are the only files it writes outside `.afk/`.
 
@@ -319,7 +319,7 @@ Drop markdown files in `.claude/rules/` to encode repo-specific conventions. afk
 Run from the repo root:
 
 ```bash
-ruby plugins/afk/scripts/test/plan_to_args_test.rb       # plan_to_args.rb parser: DAG, legacy waves, QA scenarios, errors
+ruby plugins/afk/scripts/test/plan_to_args_test.rb       # plan_to_args.rb parser: DAG, legacy waves, QA scenarios and the failure-case waiver, errors
 node --test plugins/afk/workflows/test/*.test.mjs        # execute.js and review.js on a virtual clock
 for t in plugins/afk/hooks/*.test.sh; do bash "$t"; done # hook scripts
 ```

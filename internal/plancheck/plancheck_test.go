@@ -17,10 +17,9 @@ import (
 // basePlan is a small plan with one task in each checkbox state, a fenced
 // example that quotes a task line, and a task line outside `## Waves`.
 //
-// The fenced example carries its own **Model** line, and W1.T1's Model sits
-// above the fence, because state.ParsePlan does not know about code fences:
-// it reads the quoted line as a task. Laid out this way the fixture still
-// parses there, so every row can be checked through the real reader.
+// The fenced example quotes a task line and a **Model** line. Mark,
+// state.ParsePlan and plan_to_args.rb all skip fenced lines, so none of it is
+// plan structure, and every row can be checked through the real reader.
 const basePlan = `# Demo plan
 
 ## Context
@@ -135,11 +134,6 @@ func TestPlanMark(t *testing.T) {
 		wantState   state.CheckState
 		wantTitle   string
 		wantReason  string
-		// noParseBack skips the state.ParsePlan check for the one fixture
-		// that parser cannot read: it is blind to code fences, so a fenced
-		// example followed by the real task with the same id is a duplicate
-		// id to it. plan_to_args.rb does skip fences, and Mark sides with it.
-		noParseBack bool
 	}{
 		{name: "todo to done", plan: basePlan, id: "W1.T1", target: Done,
 			wantChanged: true, wantLine: "- [x] (W1.T1) Add the thing",
@@ -179,7 +173,8 @@ func TestPlanMark(t *testing.T) {
 			wantErr: ErrUnknownTask},
 		{name: "fenced example is not ticked", plan: basePlan, id: "W1.T2", target: Done, wantErr: ErrUnknownTask},
 		{name: "real task after a fenced example", plan: fencedThenReal, id: "W1.T2", target: Done,
-			wantChanged: true, wantLine: "- [x] (W1.T2) The real second task", noParseBack: true},
+			wantChanged: true, wantLine: "- [x] (W1.T2) The real second task",
+			wantState: state.CheckComplete, wantTitle: "The real second task"},
 		{name: "line outside Waves is not ticked", plan: basePlan, id: "W1.T1", target: Done,
 			wantChanged: true, wantLine: "- [x] (W1.T1) Add the thing",
 			wantState: state.CheckComplete, wantTitle: "Add the thing"},
@@ -235,9 +230,6 @@ func TestPlanMark(t *testing.T) {
 				}
 			}
 
-			if tt.noParseBack {
-				return
-			}
 			id, _ := NormalizeID(tt.id)
 			task := parsedTask(t, out, id)
 			if task.State != tt.wantState || task.Title != tt.wantTitle || task.FailureReason != tt.wantReason {

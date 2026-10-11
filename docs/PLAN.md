@@ -648,6 +648,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
 - **Note:** this is the first task run with afk's own plugin (bootstrap stage 2). Watching it end to
   end is the supervised run still owed from T0.2: it should finish with evidence files, a verdict file
   and no terminal questions. Record the result in `docs/decisions.md`.
+- **Amended 2026-10-11 (T0.3 done):** later tasks may assume the following. (1) A QA scenario has five fields; `Case: happy | failure` follows `Tool`, and `plan_to_args.rb` rejects a task without a `happy` scenario, or with neither a `failure` scenario nor the line `No failure case: {reason}`, so a work plan written for plugin 4.0.0 no longer parses. (2) The plugin is 5.0.0; a machine picks it up only after `make install` and `afk plugin install`. (3) `review.js` numbers the findings it gives a critic and keeps only numbered survivors with their original text, never at a higher severity. (4) All three plan parsers skip everything inside a code fence, and in the Go parser an unclosed fence hides the rest of the file. (5) `state.QAScenario.Case` and `state.Task.NoFailureCase` exist and are not validated in Go. (6) The supervised run owed from T0.2 was this session; its result is under `## T0.3` in `docs/decisions.md`. The OpenCode port lags this change too.
 
 ---
 

@@ -23,10 +23,12 @@ Tasks name exact files and carry QA scenarios.
 
   **QA Scenarios**:
   - Tool: Bash
+    Case: happy
     Steps: run `go test ./internal/state/ -count=1`
     Expected: exit 0 and an `ok` line
     Evidence: `.afk/qa/evidence/w1-t1-tests.txt`
   - Tool: Bash
+    Case: failure
     Steps: run the binary and note: Expected output is a table,
       then check the exit code
     Expected: exit 0

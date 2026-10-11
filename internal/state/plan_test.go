@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -323,7 +324,9 @@ func TestParsePlan_DependsEdges(t *testing.T) {
 // wrapped Steps value that contains a colon and the word "Expected" (it must
 // stay inside Steps, not open a field), the line range stripped from Files
 // but kept in FileRefs, a scenario missing fields parsed without error, and
-// N/A files yielding nil. The parser must never fail on these.
+// N/A files yielding nil. The parser must never fail on these. The Case values
+// on T1 pin the fifth field in its documented place (after Tool); T2 has no
+// Case line and must come back with an empty Case, not an error.
 func TestParsePlanFile_QA(t *testing.T) {
 	plan, err := ParsePlanFile(filepath.Join("testdata", "plan", "qa.md"))
 	if err != nil {
@@ -344,11 +347,14 @@ func TestParsePlanFile_QA(t *testing.T) {
 		t.Errorf("T1 FileRefs = %#v, want %#v", t1.FileRefs, wantRefs)
 	}
 	wantQA := []QAScenario{
-		{Tool: "Bash", Steps: "run `go test ./internal/state/ -count=1`", Expected: "exit 0 and an `ok` line", Evidence: ".afk/qa/evidence/w1-t1-tests.txt"},
-		{Tool: "Bash", Steps: "run the binary and note: Expected output is a table, then check the exit code", Expected: "exit 0", Evidence: ".afk/qa/evidence/w1-t1-run.txt"},
+		{Tool: "Bash", Case: "happy", Steps: "run `go test ./internal/state/ -count=1`", Expected: "exit 0 and an `ok` line", Evidence: ".afk/qa/evidence/w1-t1-tests.txt"},
+		{Tool: "Bash", Case: "failure", Steps: "run the binary and note: Expected output is a table, then check the exit code", Expected: "exit 0", Evidence: ".afk/qa/evidence/w1-t1-run.txt"},
 	}
 	if !reflect.DeepEqual(t1.QA, wantQA) {
 		t.Errorf("T1 QA = %#v, want %#v", t1.QA, wantQA)
+	}
+	if t1.NoFailureCase != "" {
+		t.Errorf("T1 NoFailureCase = %q, want empty (the fixture has no waiver line)", t1.NoFailureCase)
 	}
 	if !reflect.DeepEqual(t1.DependsOn, []string{}) || t1.Model != ModelBalanced {
 		t.Errorf("T1 Depends/Model disturbed: %#v %q", t1.DependsOn, t1.Model)
@@ -386,21 +392,53 @@ func TestParsePlanFile_OldPlanUnchanged(t *testing.T) {
 
 // TestParsePlan_QAEdges is table-driven over inline subsections. Load-bearing
 // rows: "stray lines before first Tool" (ignored, no error), "fenced example
-// ignored" (a code fence inside the subsection is not read as scenarios), and
-// "first QA label wins".
+// ignored" (a code fence inside the subsection is not read as scenarios),
+// "first QA label wins", and the Case and waiver rows:
+//   - "no Case" and "unknown Case kept verbatim": the parser records and never
+//     judges, so the dashboard still shows a plan plan_to_args.rb would refuse.
+//     A row that started returning an error here would blank that plan.
+//   - "waiver after the last scenario": the waiver line sits right under an
+//     Evidence line, and without its own match it is a continuation, so the
+//     evidence path would silently grow " No failure case: ..." on the end.
+//   - "text after the waiver is not evidence": the waiver ends the open
+//     field, so a wrapped reason cannot be glued onto Evidence either.
+//   - "waiver with no scenarios": the line is read before any `- Tool:`,
+//     where every other line is dropped.
 func TestParsePlan_QAEdges(t *testing.T) {
 	const head = "# P\n\n## Waves\n\n### Wave 1: A\n\n- [ ] (W1.T1) One\n\n"
 	const tail = "\n  **Model**: light\n"
 	cases := []struct {
-		name string
-		body string
-		want []QAScenario
+		name       string
+		body       string
+		want       []QAScenario
+		wantWaiver string
 	}{
 		{name: "absent", body: "", want: nil},
 		{name: "N/A value", body: "  **QA Scenarios**: N/A\n", want: nil},
 		{name: "stray lines before first Tool", body: "  **QA Scenarios**:\n  junk\n  - Tool: Bash\n    Steps: s\n", want: []QAScenario{{Tool: "Bash", Steps: "s"}}},
 		{name: "fenced example ignored", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Steps: s\n  ```\n  - Tool: Fake\n  ```\n", want: []QAScenario{{Tool: "Bash", Steps: "s"}}},
 		{name: "first QA label wins", body: "  **QA Scenarios**:\n  - Tool: A\n\n  **QA Scenarios**:\n  - Tool: B\n", want: []QAScenario{{Tool: "A"}}},
+		{name: "all five fields", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Case: happy\n    Steps: s\n    Expected: e\n    Evidence: `x.txt`\n",
+			want: []QAScenario{{Tool: "Bash", Case: "happy", Steps: "s", Expected: "e", Evidence: "x.txt"}}},
+		{name: "no Case", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Steps: s\n    Expected: e\n    Evidence: `x.txt`\n",
+			want: []QAScenario{{Tool: "Bash", Steps: "s", Expected: "e", Evidence: "x.txt"}}},
+		{name: "unknown Case kept verbatim", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Case: Sad path\n    Steps: s\n",
+			want: []QAScenario{{Tool: "Bash", Case: "Sad path", Steps: "s"}}},
+		{name: "wrapped Case value", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Case: happy\n      path\n    Steps: s\n",
+			want: []QAScenario{{Tool: "Bash", Case: "happy path", Steps: "s"}}},
+		{name: "waiver after the last scenario", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Case: happy\n    Steps: s\n    Expected: e\n    Evidence: `x.txt`\n  No failure case: it only renames a file\n",
+			want:       []QAScenario{{Tool: "Bash", Case: "happy", Steps: "s", Expected: "e", Evidence: "x.txt"}},
+			wantWaiver: "it only renames a file"},
+		{name: "waiver written as a list item", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Evidence: `x.txt`\n  - No failure case: docs only\n",
+			want:       []QAScenario{{Tool: "Bash", Evidence: "x.txt"}},
+			wantWaiver: "docs only"},
+		{name: "text after the waiver is not evidence", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Evidence: `x.txt`\n  No failure case: docs only\n    and nothing runs\n",
+			want:       []QAScenario{{Tool: "Bash", Evidence: "x.txt"}},
+			wantWaiver: "docs only"},
+		{name: "waiver with no scenarios", body: "  **QA Scenarios**:\n  No failure case: nothing runs\n", want: nil, wantWaiver: "nothing runs"},
+		{name: "waiver with an empty reason", body: "  **QA Scenarios**:\n  - Tool: Bash\n    Evidence: `x.txt`\n  No failure case:\n",
+			want: []QAScenario{{Tool: "Bash", Evidence: "x.txt"}}},
+		{name: "waiver outside QA Scenarios is not read", body: "  **Acceptance Criteria**: ok\n  No failure case: wrong place\n", want: nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,8 +446,98 @@ func TestParsePlan_QAEdges(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParsePlan: %v", err)
 			}
-			if got := plan.Waves[0].Tasks[0].QA; !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("QA = %#v, want %#v", got, tc.want)
+			task := plan.Waves[0].Tasks[0]
+			if !reflect.DeepEqual(task.QA, tc.want) {
+				t.Fatalf("QA = %#v, want %#v", task.QA, tc.want)
+			}
+			if task.NoFailureCase != tc.wantWaiver {
+				t.Fatalf("NoFailureCase = %q, want %q", task.NoFailureCase, tc.wantWaiver)
+			}
+		})
+	}
+}
+
+// TestParsePlan_Fences pins that nothing inside a fenced code block is plan
+// structure: not a task line, a wave heading or a section heading. Mark in
+// internal/plancheck and plan_to_args.rb read fences the same way, and the
+// three must agree or `afk plan check` ticks a task the dashboard cannot see.
+//
+// Load-bearing rows:
+//   - "fenced task line inside a task body": the quoted W1.T2 has no Model, so
+//     reading it as a task fails the whole plan ("missing a **Model** tier").
+//   - "fenced task line before the first real task": no task is open yet, which
+//     is where the fence used to go untracked.
+//   - "fenced wave heading": read as structure it opens an empty Wave 2, which
+//     is an error, and W1.T2 would land in the wrong wave.
+//   - "fenced section heading": read as structure it ends the Waves section
+//     and W1.T2 disappears without any error.
+//   - "fence stays open across a task line": the fence state is not reset by
+//     a new task, so a fence that opens before a task and closes after it
+//     hides that task.
+//   - "unclosed fence hides the rest": matches Mark, which also never closes
+//     it; the parser must return what came before, not panic or error.
+func TestParsePlan_Fences(t *testing.T) {
+	const head = "# P\n\n## Waves\n\n### Wave 1: A\n\n"
+	const t1 = "- [ ] (W1.T1) One\n\n  **Model**: light\n\n"
+	const t2 = "- [x] (W1.T2) Two\n\n  **Model**: heavy\n"
+	cases := []struct {
+		name string
+		src  string
+		// want is "wave:id" for every task the parser must report, in order.
+		want []string
+	}{
+		{name: "no fence", src: head + t1 + t2, want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "fenced task line inside a task body",
+			src:  head + t1 + "  ```\n- [ ] (W1.T2) A quoted example\n  ```\n\n" + t2,
+			want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "fenced task line before the first real task",
+			src:  head + "```\n- [ ] (W1.T2) A quoted example\n```\n\n" + t1 + t2,
+			want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "fenced task line before any wave",
+			src:  "# P\n\n## Waves\n\n```\n- [ ] (W1.T2) A quoted example\n```\n\n### Wave 1: A\n\n" + t1 + t2,
+			want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "fenced wave heading",
+			src:  head + t1 + "  ```\n### Wave 2: Quoted\n  ```\n\n" + t2,
+			want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "fenced section heading",
+			src:  head + t1 + "  ```\n## Success Criteria\n  ```\n\n" + t2,
+			want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "tilde fence",
+			src:  head + t1 + "  ~~~\n- [ ] (W1.T2) A quoted example\n### Wave 2: Quoted\n  ~~~\n\n" + t2,
+			want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "fence with an info string",
+			src:  head + t1 + "  ```markdown\n- [ ] (W1.T2) A quoted example\n  ```\n\n" + t2,
+			want: []string{"1:W1.T1", "1:W1.T2"}},
+		{name: "fenced Model line is not the task's tier",
+			src:  head + "- [ ] (W1.T1) One\n\n  ```\n  **Model**: bogus\n  ```\n\n  **Model**: light\n",
+			want: []string{"1:W1.T1"}},
+		{name: "fence stays open across a task line",
+			src:  head + t1 + "```\n" + t2 + "```\n",
+			want: []string{"1:W1.T1"}},
+		{name: "fence outside Waves still counts",
+			src:  "# P\n\n## Context\n\n```\n## Waves\n### Wave 1: Quoted\n- [ ] (W1.T9) A quoted example\n```\n\n## Waves\n\n### Wave 1: A\n\n" + t1,
+			want: []string{"1:W1.T1"}},
+		{name: "unclosed fence hides the rest",
+			src:  head + t1 + "  ```\n" + t2 + "\n### Wave 2: B\n\n- [ ] (W2.T1) Three\n\n  **Model**: bogus\n",
+			want: []string{"1:W1.T1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := ParsePlan([]byte(tc.src))
+			if err != nil {
+				t.Fatalf("ParsePlan: %v", err)
+			}
+			var got []string
+			for _, w := range plan.Waves {
+				for _, task := range w.Tasks {
+					got = append(got, fmt.Sprintf("%d:%s", w.Number, task.ID))
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("tasks = %v, want %v", got, tc.want)
+			}
+			if plan.Waves[0].Tasks[0].Model != ModelLight {
+				t.Errorf("W1.T1 Model = %q, want light", plan.Waves[0].Tasks[0].Model)
 			}
 		})
 	}

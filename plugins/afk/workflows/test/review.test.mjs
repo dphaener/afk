@@ -41,7 +41,8 @@ function makeReviewArgs(checks = ['compliance', 'quality', 'qa']) {
 const MAJOR = (name) => ({ severity: 'major', taskId: 'W1.T1', text: `SENTINEL-FINDING-${name}` })
 const MINOR = (name) => ({ severity: 'minor', taskId: 'W1.T2', text: `minor-${name}` })
 
-// Without a scripted reply the critic keeps every finding it was given.
+// Without a scripted reply the critic keeps every finding it was given,
+// numbered as the prompt numbered them.
 const criticOutput = (findings) => ({ findings })
 
 const nameOf = (label) => label.split(':')[1]
@@ -158,7 +159,7 @@ describe('review.js schemas and result', () => {
 
   it('a critic that downgrades a major finding to minor makes the check PASS and keeps the finding', async () => {
     const down = { ...MAJOR('quality'), severity: 'minor' }
-    const rec = await review(makeReviewArgs(['quality']), { 'critic:quality': [ok({ findings: [down] })] }, {}, { quality: [MAJOR('quality')] })
+    const rec = await review(makeReviewArgs(['quality']), { 'critic:quality': [ok({ findings: [{ n: 1, ...down }] })] }, {}, { quality: [MAJOR('quality')] })
     assert.deepEqual(rec.result.checks.quality, { verdict: 'PASS', findings: [down] })
   })
 
@@ -185,6 +186,72 @@ describe('review.js schemas and result', () => {
     })
     assert.deepEqual(rec.result.checks.quality, { verdict: 'PASS', findings: [MINOR('quality')] })
     assert.equal(callsOf(rec, 'critic:quality').length, 0)
+  })
+})
+
+// Load-bearing: the invented-finding, raised-severity, out-of-range, repeated
+// and missing-n rows. They prove the script, not the critic's prompt, keeps a
+// critic from adding or raising a finding that would start a fix cycle.
+describe('review.js critic survivors', () => {
+  const Q = ['quality']
+  const found = { quality: [MAJOR('quality')] }
+  const run = (findings, given = found) =>
+    review(makeReviewArgs(Q), { 'critic:quality': [ok({ findings })] }, {}, given)
+
+  it('numbers the findings the critic is shown from 1, in order', async () => {
+    const two = { quality: [MAJOR('a'), { severity: 'blocker', taskId: 'W1.T3', text: 'second' }] }
+    const rec = await review(makeReviewArgs(Q), {}, {}, two)
+    const shown = JSON.parse(callsOf(rec, 'critic:quality')[0].prompt.match(/Check findings \(JSON\): (.*)/)[1])
+    assert.deepEqual(shown.map((f) => f.n), [1, 2])
+    assert.equal(shown[1].text, 'second')
+  })
+
+  it('critic: a finding with no n is dropped', async () => {
+    const rec = await run([MAJOR('quality')])
+    assert.deepEqual(rec.result.checks.quality, { verdict: 'PASS', findings: [] })
+  })
+
+  it('critic: an n out of range is dropped', async () => {
+    const rec = await run([{ n: 2, ...MAJOR('quality') }, { n: 0, ...MAJOR('quality') }, { n: 1.5, ...MAJOR('quality') }])
+    assert.deepEqual(rec.result.checks.quality, { verdict: 'PASS', findings: [] })
+  })
+
+  it('critic: a repeated n is kept once', async () => {
+    const rec = await run([{ n: 1, ...MAJOR('quality') }, { n: 1, ...MAJOR('quality') }])
+    assert.deepEqual(rec.result.checks.quality, { verdict: 'FAIL', findings: [MAJOR('quality')] })
+  })
+
+  it('critic: a blocker returned for a major finding comes back as major', async () => {
+    const rec = await run([{ n: 1, ...MAJOR('quality'), severity: 'blocker' }])
+    assert.deepEqual(rec.result.checks.quality, { verdict: 'FAIL', findings: [MAJOR('quality')] })
+  })
+
+  it('critic: a downgrade to minor keeps the finding and the check passes', async () => {
+    const rec = await run([{ n: 1, ...MAJOR('quality'), severity: 'minor' }])
+    assert.deepEqual(rec.result.checks.quality, { verdict: 'PASS', findings: [{ ...MAJOR('quality'), severity: 'minor' }] })
+  })
+
+  it('critic: an unrecognised severity keeps the original', async () => {
+    const rec = await run([{ n: 1, ...MAJOR('quality'), severity: 'critical' }])
+    assert.deepEqual(rec.result.checks.quality, { verdict: 'FAIL', findings: [MAJOR('quality')] })
+  })
+
+  it('critic: a changed taskId is kept', async () => {
+    const rec = await run([{ n: 1, ...MAJOR('quality'), taskId: 'W2.T2' }])
+    assert.deepEqual(rec.result.checks.quality.findings, [{ ...MAJOR('quality'), taskId: 'W2.T2' }])
+  })
+
+  it('critic: a changed text is replaced by the original', async () => {
+    const rec = await run([{ n: 1, ...MAJOR('quality'), text: 'rewritten by the critic' }])
+    assert.deepEqual(rec.result.checks.quality.findings, [MAJOR('quality')])
+  })
+
+  it('critic: only an invented finding leaves the minors and a PASS verdict', async () => {
+    const rec = await run(
+      [{ n: 7, severity: 'blocker', taskId: 'general', text: 'invented' }],
+      { quality: [MAJOR('quality'), MINOR('quality')] }
+    )
+    assert.deepEqual(rec.result.checks.quality, { verdict: 'PASS', findings: [MINOR('quality')] })
   })
 })
 
