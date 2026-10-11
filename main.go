@@ -16,6 +16,7 @@ var subcommands = map[string]func([]string){
 	"notify": cmdNotify,
 	"plugin": cmdPlugin,
 	"plan":   cmdPlan,
+	"tokens": cmdTokens,
 	"_host":  cmdHost,
 }
 
@@ -169,6 +170,8 @@ Subcommands:
                  asks which of the ones found on PATH unless --target is given
   plan check     Mark one task of a session's plan done or failed:
                  afk plan check <session> <task-id> done|failed [--reason TEXT]
+  tokens         Show how many tokens a task or session used:
+                 afk tokens [--project PATH] [--record] [SESSION|TASK]
 
 Use 'afk <subcommand> --help' for subcommand options.
 

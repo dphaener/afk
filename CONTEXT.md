@@ -25,3 +25,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Detach**: a client leaving a session on purpose (ctrl-\ in `afk attach`, or closing a dashboard pane); the session keeps running.
 - **Steal**: a second client connecting to a session host, which takes the session from the client already attached.
 - **Dropped**: a client's connection ending without the host saying the session ended; the session may still be running.
+- **Token ledger**: `.afk/log/tokens.jsonl` in the project's main checkout, one line per task, phase, role and model, recording how many tokens that part of a task used.
+- **Weighted cost**: one number for a set of model calls, `input + 5×output + 1.25×cache_write + 0.1×cache_read`, in input-token equivalents; a proxy from API price ratios.
+- **Token record**: one model call's usage as a provider reports it: when, which model, which role and phase, and the four token counts.
+- **Role**: who made a model call inside a session: `conductor`, `planner`, `research`, `crucible`, `task`, `fix`, `verifier`, a `review:` check, `critic`, or `unknown`/`other` when it cannot be told.
+- **Transcript**: the file an agent CLI keeps of one conversation, one JSON object per line; the source of token records.
