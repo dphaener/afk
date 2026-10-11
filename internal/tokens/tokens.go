@@ -284,6 +284,106 @@ func RenderTable(w io.Writer, lines []Line) error {
 	return tw.Flush()
 }
 
+// StartUpRow is the start-up cost of one role: the first model call of each of
+// its agents.
+type StartUpRow struct {
+	Role string
+	// Agents is the number of agents of the role, which is the number of
+	// first calls.
+	Agents int64
+	// AvgTokens is the average start-up size per agent: input + cache write +
+	// cache read of the first call, rounded to a whole token.
+	AvgTokens int64
+	// Tokens is the sum behind AvgTokens, kept so the total row can average
+	// across roles without rounding twice.
+	Tokens int64
+	// Weighted is the weighted cost of those first calls.
+	Weighted float64
+}
+
+// StartUp returns one row per role from the records marked First. The first
+// call of an agent carries its whole start-up context, so its input side is
+// the start-up size: a fresh agent has nothing in its conversation yet, and
+// whatever it sends is the system prompt, tools, skills list and CLAUDE.md.
+// Output is left out of the size but not out of the weighted cost, which is
+// the existing Weighted of the whole call.
+//
+// Rows follow the table's order: the earliest phase a role appears in, then
+// the role name. A role is placed by the phase of its first-call records only,
+// because those are the records this function sees.
+func StartUp(records []provider.TokenRecord) []StartUpRow {
+	type acc struct {
+		row   StartUpRow
+		phase string
+	}
+	byRole := map[string]*acc{}
+	var order []string
+	for _, r := range records {
+		if !r.First {
+			continue
+		}
+		a := byRole[r.Role]
+		if a == nil {
+			a = &acc{row: StartUpRow{Role: r.Role}, phase: r.Phase}
+			byRole[r.Role] = a
+			order = append(order, r.Role)
+		}
+		if phaseLess(r.Phase, a.phase) {
+			a.phase = r.Phase
+		}
+		a.row.Agents++
+		a.row.Tokens += r.Input + r.CacheWrite + r.CacheRead
+		a.row.Weighted += Weighted(r.Input, r.Output, r.CacheWrite, r.CacheRead)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := byRole[order[i]], byRole[order[j]]
+		if a.phase != b.phase {
+			return phaseLess(a.phase, b.phase)
+		}
+		return order[i] < order[j]
+	})
+	rows := make([]StartUpRow, 0, len(order))
+	for _, role := range order {
+		row := byRole[role].row
+		row.AvgTokens = avgTokens(row.Tokens, row.Agents)
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func avgTokens(sum, n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(float64(sum)/float64(n) + 0.5)
+}
+
+// RenderStartUp prints the start-up section: a heading, one row per role and a
+// total row whose share is the start-up part of the whole session
+// (totalWeighted is the weighted total of the session's table). With no rows
+// it prints nothing, so a session read from a transcript without first-call
+// marks shows no empty heading.
+func RenderStartUp(w io.Writer, rows []StartUpRow, totalWeighted float64) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(w, "start-up (the first call of each agent)"); err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprintln(tw, "role\tagents\taverage tokens\tweighted\tshare\t")
+	var agents, tokens int64
+	var weighted float64
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%s\t%s\t\n", r.Role, r.Agents, r.AvgTokens, whole(r.Weighted), pct(r.Weighted, totalWeighted))
+		agents += r.Agents
+		tokens += r.Tokens
+		weighted += r.Weighted
+	}
+	fmt.Fprintf(tw, "total\t%d\t%d\t%s\t%s\t\n", agents, avgTokens(tokens, agents), whole(weighted), pct(weighted, totalWeighted))
+	return tw.Flush()
+}
+
 // RenderTasks prints one row per task: the number of distinct sessions, calls,
 // weighted cost and share of the ledger's total. Tasks are listed in order of
 // first appearance; a line with no task id is listed as "(none)".

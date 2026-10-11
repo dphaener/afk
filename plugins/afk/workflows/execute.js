@@ -194,17 +194,45 @@ function stopForBudget(why) {
   }
 }
 
+// The plugin's agent definitions (plugins/afk/agents/). A definition limits
+// the tools its agent starts with, which is most of what a fresh agent
+// carries. The fix agent does the task agent's job, so it shares its type.
+const AGENT_TYPES = { task: 'afk:task', fix: 'afk:task', verify: 'afk:verifier' }
+
+// One agent() call. A session that started before the plugin was updated, or
+// an agent CLI without plugin agents, does not know the type, and agent() then
+// throws before any agent starts. The wording of that refusal is not a
+// contract, so any thrown error other than the budget ceiling gets the same
+// call once more without the type, on the default agent: the cost of guessing
+// wrong is one extra call, the cost of not retrying is every task failing.
+// A null return is not retried here: the agent ran and returned nothing, which
+// a refused type never does, and repeating it would double every real failure.
+async function spawn(prompt, opts) {
+  if (!opts.agentType) return agent(prompt, opts)
+  try {
+    return await agent(prompt, opts)
+  } catch (e) {
+    if (isBudgetError(e) || budgetExhausted()) throw e
+    log(`${opts.label}: agent type ${opts.agentType} failed (${oneLine(e && e.message, 160)}); retrying once without it, on the default agent`)
+    const plain = Object.assign({}, opts)
+    delete plain.agentType
+    return agent(prompt, plain)
+  }
+}
+
 // A null return or a thrown error is retried once on the tier's fallback
 // model; a second null or throw returns null (one failed attempt). Every call
 // is refused once the budget is gone: nothing has to run after a task settles,
-// because the agent that settled it has already marked the plan file.
+// because the agent that settled it has already marked the plan file. The
+// retry without the agent type happens inside spawn(), so it comes before the
+// fallback model and never counts as an attempt.
 async function callAgent(prompt, opts, fallbackModel) {
   if (budgetExhausted()) {
     stopForBudget(`${opts.label}: budget.remaining() reached 0 before start`)
     return BUDGET_STOP
   }
   try {
-    const result = await agent(prompt, opts)
+    const result = await spawn(prompt, opts)
     if (result != null) return result
     log(`${opts.label}: agent returned nothing on ${opts.model || 'default model'}`)
   } catch (e) {
@@ -221,7 +249,7 @@ async function callAgent(prompt, opts, fallbackModel) {
   }
   log(`${opts.label}: retrying once on fallback model ${fallbackModel}`)
   try {
-    const result = await agent(prompt, Object.assign({}, opts, { model: fallbackModel }))
+    const result = await spawn(prompt, Object.assign({}, opts, { model: fallbackModel }))
     return result == null ? null : result
   } catch (e) {
     if (isBudgetError(e)) {
@@ -404,13 +432,13 @@ async function runTask(t, files) {
         fixes += 1
         report = await callAgent(
           fixPrompt(t, discrepancies, attempt),
-          { label: `fix:${t.id}#${fixes}`, phase: 'Execute', model, schema: SELF_REPORT_SCHEMA },
+          { label: `fix:${t.id}#${fixes}`, phase: 'Execute', model, schema: SELF_REPORT_SCHEMA, agentType: AGENT_TYPES.fix },
           fallbackModel
         )
       } else {
         report = await callAgent(
           taskPrompt(t, files, attempt, lastReason),
-          { label: labelFor(t), phase: 'Execute', model, schema: SELF_REPORT_SCHEMA },
+          { label: labelFor(t), phase: 'Execute', model, schema: SELF_REPORT_SCHEMA, agentType: AGENT_TYPES.task },
           fallbackModel
         )
       }
@@ -438,7 +466,7 @@ async function runTask(t, files) {
 
     const verdict = await callAgent(
       verifyPrompt(t, report),
-      { label: `verify:${t.id}`, phase: 'Execute', model: VERIFIER_MODEL, schema: VERDICT_SCHEMA },
+      { label: `verify:${t.id}`, phase: 'Execute', model: VERIFIER_MODEL, schema: VERDICT_SCHEMA, agentType: AGENT_TYPES.verify },
       VERIFIER_FALLBACK
     )
     if (verdict === BUDGET_STOP) return { kind: 'budget' }
