@@ -277,14 +277,14 @@ func runTokensSession(name string, record bool, project string, stdout, stderr i
 	}
 	task := readTaskID(filepath.Join(sess.Worktree, ".afk", name, "description.md"))
 	var lines []tokens.Line
+	var records []provider.TokenRecord
 	var calls int
 	var res tokens.RecordResult
 	var err2 error
 	if record {
 		res, err2 = tokens.Record(tokens.RecordInput{Provider: p, Home: home, MainCheckout: sess.MainCheckout, Task: task, Session: name, SessionID: sess.SessionID, Now: now()})
-		lines, calls = res.Lines, res.Calls
+		lines, calls, records = res.Lines, res.Calls, res.Records
 	} else {
-		var records []provider.TokenRecord
 		records, err2 = p.SessionTokens(provider.TokenQuery{Home: home, SessionID: sess.SessionID})
 		if err2 == nil && len(records) == 0 {
 			err2 = tokens.ErrNoCalls
@@ -328,6 +328,20 @@ func runTokensSession(name string, record bool, project string, stdout, stderr i
 	if err := tokens.RenderTable(stdout, lines); err != nil {
 		fmt.Fprintf(stderr, "afk tokens: could not print the table: %v\n", err)
 		return 1
+	}
+	// The start-up section comes from the First marks on the records, so it
+	// exists only for a session read from its transcripts; the ledger keeps
+	// no such field and the ledger forms never print it.
+	var total float64
+	for _, l := range lines {
+		total += l.Weighted
+	}
+	if rows := tokens.StartUp(records); len(rows) > 0 {
+		fmt.Fprintln(stdout)
+		if err := tokens.RenderStartUp(stdout, rows, total); err != nil {
+			fmt.Fprintf(stderr, "afk tokens: could not print the start-up section: %v\n", err)
+			return 1
+		}
 	}
 	if !record {
 		return 0

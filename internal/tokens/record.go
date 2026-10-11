@@ -50,8 +50,12 @@ type RecordInput struct {
 // whenever the transcript was read, including when AlreadyRecorded is true
 // (nothing was appended then).
 type RecordResult struct {
-	Lines           []Line
-	Calls           int
+	Lines []Line
+	Calls int
+	// Records are the per-call records the lines were built from. The
+	// command's start-up section is computed from them, and handing them
+	// back saves reading the transcripts a second time.
+	Records         []provider.TokenRecord
 	AlreadyRecorded bool
 }
 
@@ -69,8 +73,9 @@ func Record(in RecordInput) (RecordResult, error) {
 		return RecordResult{}, ErrNoCalls
 	}
 	res := RecordResult{
-		Lines: Aggregate(records, in.Task, in.Session, in.Now),
-		Calls: len(records),
+		Lines:   Aggregate(records, in.Task, in.Session, in.Now),
+		Calls:   len(records),
+		Records: records,
 	}
 	path := LedgerPath(in.MainCheckout)
 	existing, err := Read(path)

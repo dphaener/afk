@@ -48,6 +48,10 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Token record**: one model call's usage as a provider reports it: when, which model, which role and phase, and the four token counts.
 - **Role**: who made a model call inside a session: `conductor`, `planner`, `research`, `crucible`, `task`, `fix`, `verifier`, a `review:` check, `critic`, or `unknown`/`other` when it cannot be told.
 - **Transcript**: the file an agent CLI keeps of one conversation, one JSON object per line; the source of token records.
+- **Start-up context**: everything an agent is sent before it does anything: the system prompt, tool definitions, the skills list, connector listings and `CLAUDE.md`. It is the size of the agent's first call.
+- **First call**: an agent's first model call; its input is the start-up context plus the prompt it was given.
+- **Agent definition**: a file under `plugins/afk/agents/` that names an agent type and the tools it may use, so an agent starts with only what its role needs.
+- **Agent type**: the name a spawn uses to pick an agent definition; a spawn with no type, or a type the session does not know, gets the default agent with every tool.
 - **Build loop**: the daemon's repeated pass over each project: look at what is on disk, decide one thing to do, do it, wait for the next tick.
 - **Daemon**: `afk daemon`, the always-on process that runs the build loop; it keeps nothing in memory that is not on disk, so it can be killed and restarted at any point.
 - **Tick**: one pass of the build loop over every project, every few seconds.

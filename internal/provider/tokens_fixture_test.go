@@ -89,6 +89,23 @@ func TestSessionTokensFixture(t *testing.T) {
 		sort.Strings(keys)
 		t.Errorf("got %d phase/role/model rows, want %d: %v", len(got), len(want), keys)
 	}
+	// One First record per agent: the fixture has 13 transcript files (the
+	// main session and 12 sub-agents), so 13 agents and 13 first calls.
+	firsts := map[string]int{}
+	for _, r := range records {
+		if r.First {
+			firsts[r.AgentID]++
+		}
+	}
+	if len(firsts) != 13 {
+		t.Errorf("agents with a first call = %d, want 13", len(firsts))
+	}
+	for agent, n := range firsts {
+		if n != 1 {
+			t.Errorf("agent %q has %d first calls, want 1", agent, n)
+		}
+	}
+
 	var calls int
 	var in, out, cw, cr int64
 	for _, w := range want {

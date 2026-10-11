@@ -13,11 +13,21 @@ import (
 // pattern without `all:` silently drops them), both marketplaces carrying
 // pluginstall.MarketplaceName (the install commands name afk@afk),
 // and the Claude and Codex manifests agreeing on a version (Codex caches the
-// plugin by version, so a stale one never refreshes).
+// plugin by version, so a stale one never refreshes). The six agent
+// definitions are listed because the workflow scripts and the skills name them
+// as agent types: one missing from the binary is not an error anywhere, every
+// spawn of that type just falls back to the default agent and its full tool
+// set, so only this test would notice.
 func TestPluginAssets(t *testing.T) {
 	for _, p := range []string{
 		"plugins/afk/.claude-plugin/plugin.json",
 		"plugins/afk/.codex-plugin/plugin.json",
+		"plugins/afk/agents/qa.md",
+		"plugins/afk/agents/research.md",
+		"plugins/afk/agents/reviewer.md",
+		"plugins/afk/agents/task.md",
+		"plugins/afk/agents/verifier.md",
+		"plugins/afk/agents/web-research.md",
 		"plugins/afk/hooks/hooks.json",
 		"plugins/afk/skills/conductor/status-schema.md",
 		"plugins/afk-opencode/index.ts",

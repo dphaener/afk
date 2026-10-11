@@ -96,6 +96,12 @@ type TokenRecord struct {
 	Phase string
 	// AgentID is the sub-agent's id, empty for the main session.
 	AgentID string
+	// First is true on exactly one record per agent: its earliest call. The
+	// first call of an agent carries its whole start-up context (system
+	// prompt, tool definitions, skills list, CLAUDE.md), and afk tokens
+	// reports that share, so the reader marks it here rather than leaving
+	// every caller to redo the ordering.
+	First bool
 	// Input, Output, CacheWrite and CacheRead are the raw usage fields. They
 	// are kept raw, not weighted, so a cost proxy can be recomputed later.
 	Input, Output, CacheWrite, CacheRead int64
@@ -643,5 +649,30 @@ func (c *tokenCounter) finish() []TokenRecord {
 			r.Role = RolePlanner
 		}
 	}
+	c.markFirst()
 	return c.records
+}
+
+// markFirst sets First on one record per agent id (the empty id is the main
+// session): the one with the earliest timestamp. A record without a timestamp
+// never beats one with a timestamp, and on a tie, or when no call of the agent
+// has a timestamp, the record seen first in file order wins. Ordering by file
+// position alone would be wrong because the main transcript and the sub-agent
+// files are read in path order, not time order.
+func (c *tokenCounter) markFirst() {
+	best := map[string]int{}
+	for i, r := range c.records {
+		b, ok := best[r.AgentID]
+		if !ok {
+			best[r.AgentID] = i
+			continue
+		}
+		cur := c.records[b].At
+		if !r.At.IsZero() && (cur.IsZero() || r.At.Before(cur)) {
+			best[r.AgentID] = i
+		}
+	}
+	for _, i := range best {
+		c.records[i].First = true
+	}
 }

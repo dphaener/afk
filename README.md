@@ -603,6 +603,21 @@ afk tokens [--project PATH] [--record] [SESSION|TASK]
 
 **The columns:** one row per phase (`plan`, `execute`, `review`, `fix`, `ship`), role (for example `conductor`, `task`, `verifier`, `review:qa`) and model. `calls` is the number of model calls, `input`, `output`, `cache write` and `cache read` are the token counts the agent CLI reports, and `share` is the row's part of the table's weighted total. Each phase has a `(subtotal)` row and the table ends with a `total` row.
 
+**The start-up section:** when a session is read from its transcripts, a second table follows the first: `start-up (the first call of each agent)`. Every agent begins with a block of context (its instructions, tool list, skills and `CLAUDE.md`) before it does anything, and the first call of each agent carries all of it. The section shows, per role, how many agents there were, the average size of that first call in tokens (`input + cache write + cache read`), its weighted cost, and its share of the whole session. The `total` row's share is how much of the session went on starting agents. It is not shown for a task read from the ledger, because the ledger does not keep it.
+
+```
+start-up (the first call of each agent)
+               role  agents  average tokens  weighted  share
+            planner       1          121269    120841   4.2%
+           research       1           34921     44366   1.5%
+               task       5           35927    165003   5.7%
+           verifier       3           37087     97801   3.4%
+  review:compliance       1           35151     45273   1.6%
+          review:qa       1           35152     22699   0.8%
+     review:quality       1           35149     22716   0.8%
+              total      13           42503    518699  18.1%
+```
+
 **Weighted cost** is `input + 5 x output + 1.25 x cache write + 0.1 x cache read`. It is a proxy built from the usual ratios between token prices, not a bill, and a subscription is not metered per token; use it to compare tasks with each other. The raw counts are kept in the ledger, so the weights can be changed later.
 
 **The ledger** is `.afk/log/tokens.jsonl` in the project's main checkout, one JSON line per task, phase, role and model. It is added to only by `--record`. Several recordings can run at once; they take turns using a lock file beside the ledger.
