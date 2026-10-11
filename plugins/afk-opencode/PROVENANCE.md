@@ -39,6 +39,8 @@ earlier forge behaviour in these areas:
 - the T0.3 QA parity changes (plugin version 5.0.0): no `Case` field or failure-scenario rule in the
   plan format, no exploratory QA in the hands-on check, and no guard on the critic's findings in
   `workflows/review.js`.
+- the autonomous prompt's use of `afk inbox add` (plugin version 5.1.0): the port's autonomous prompt
+  does not call it.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

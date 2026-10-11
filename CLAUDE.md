@@ -116,7 +116,7 @@ The design constraint throughout is that **a wedged client must never stall the 
 
 ### Package roles
 
-`internal/session` (create/clean), `internal/state` (parsers for plan, status, verdict), `internal/spice` (git-spice topology), `internal/probe` (tool detection), `internal/ui` (Bubble Tea dashboard), `internal/termpane` (PTY ↔ terminal-emulator bridge that renders a live session inside the dashboard — an experimental spike, not production-hardened), `internal/pluginstall` (`afk plugin install`).
+`internal/session` (create/clean), `internal/state` (parsers for plan, status, verdict), `internal/spice` (git-spice topology), `internal/probe` (tool detection), `internal/ui` (Bubble Tea dashboard), `internal/termpane` (PTY ↔ terminal-emulator bridge that renders a live session inside the dashboard — an experimental spike, not production-hardened), `internal/pluginstall` (`afk plugin install`). `internal/inbox` holds owner inbox items, written only through `afk inbox`. `internal/projectconfig` is the `afk.toml` reader (`[notify]` only for now). `internal/notify` also holds the ntfy sender.
 
 ### The agent plugins (`plugins/`)
 
