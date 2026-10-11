@@ -6,12 +6,13 @@
 // `claude plugin list`. A provider owns all three so adding an agent CLI is
 // one new type here rather than a hunt through the session and host code.
 //
-// Every method is pure apart from Preflight, which reaches the outside world
-// only through the injected run func, so the whole matrix is table-testable
+// Every method is pure apart from Preflight and Usage, which reach the outside
+// world only through an injected runner, so the whole matrix is table-testable
 // without any CLI installed.
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -49,6 +50,11 @@ type Provider interface {
 	// reachable for this provider. It reports manual install steps when it
 	// is not. All process execution goes through run.
 	Preflight(dir string, run func(dir, name string, args ...string) (string, error)) (ok bool, manualSteps string)
+	// Usage reports how much of each usage window is spent. The command
+	// runner is a parameter, not an import of os/exec, for the same reason
+	// as Preflight: tests inject a fake and never touch a real CLI. A
+	// provider with no way to report returns ErrUsageUnsupported.
+	Usage(ctx context.Context, d UsageDeps) (UsageSnapshot, error)
 }
 
 // order is the stable listing order for Names.
