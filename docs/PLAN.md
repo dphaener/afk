@@ -271,8 +271,15 @@ Live API calls are allowed for smoke checks and recording fixtures. Log each one
 """
 
 [notify]
-ntfy_url = ""                   # e.g. https://ntfy.example/afk-nebari
+ntfy_url = ""                   # set this in afk.local.toml, not here (see below)
 ```
+
+**Private values go in `afk.local.toml`** (same folder, same keys, never committed). Amended
+2026-10-11: an ntfy topic name works as a password, since anyone who knows it can read and post to
+it, so it must not sit in a committed file of a project that may be public. The loader reads
+`afk.toml`, then lays `afk.local.toml` over it key by key; either file may be missing. `afk.toml` is
+committed and `afk.local.toml` is gitignored. Until T2.1 lands this, `afk.toml` itself is gitignored
+in this repo as a stopgap.
 
 Machine config `~/.config/afk/config.toml`: projects the daemon runs, governor thresholds (§6.3), web
 bind address and token, provider choice.
@@ -778,7 +785,11 @@ with nobody at the keyboard.
   project, launching each agent in the provider's unattended permission mode after the preflight of
   §5.3 step 3. Decision log (§4.4). Token ledger entry for every finished task (§4.7). `afk daemon status` (what it is doing and why). `afk pause <project>`
   and `afk resume <project>` (a flag file the loop honours between tasks). A systemd unit file in
-  `contrib/`. The daemon holds no state in memory that is not on disk; killing and restarting it at
+  `contrib/`. The `afk.local.toml` overlay of §4.6, in the one loader every command uses
+  (`internal/projectconfig`), with table tests for: local only, committed only, a local key
+  overriding a committed one, and a local file that does not parse (an error naming the file). In
+  this repo's `.gitignore`, replace `afk.toml` with `afk.local.toml`, and say in the README where
+  `ntfy_url` belongs and why. The daemon holds no state in memory that is not on disk; killing and restarting it at
   any point must be safe. Shipping is a stub here: at `phase: done` the task goes to `shipping` and
   waits.
 - **Acceptance:** with a fake provider whose "agent" is a script that writes `status.json`
