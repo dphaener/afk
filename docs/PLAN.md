@@ -519,7 +519,7 @@ M0 Foundation ──▶ M1 Primitives ──▶ M2 Daemon ──▶ M3 Surfaces 
  T0.1 seed        T1.2 inbox         T2.2 ship     T3.2 dash       T4.2 supervised, then unattended
  T0.2 plugin      T1.3 usage         T2.3 recover
  T0.3 QA parity   T1.4 tokens        T2.4 govern
-                  T1.5 start-up
+ T0.4 flaky test  T1.5 start-up
 ```
 
 T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent once T2.1 is in.
@@ -650,6 +650,28 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   and no terminal questions. Record the result in `docs/decisions.md`.
 - **Amended 2026-10-11 (T0.3 done):** later tasks may assume the following. (1) A QA scenario has five fields; `Case: happy | failure` follows `Tool`, and `plan_to_args.rb` rejects a task without a `happy` scenario, or with neither a `failure` scenario nor the line `No failure case: {reason}`, so a work plan written for plugin 4.0.0 no longer parses. (2) The plugin is 5.0.0; a machine picks it up only after `make install` and `afk plugin install`. (3) `review.js` numbers the findings it gives a critic and keeps only numbered survivors with their original text, never at a higher severity. (4) All three plan parsers skip everything inside a code fence, and in the Go parser an unclosed fence hides the rest of the file. (5) `state.QAScenario.Case` and `state.Task.NoFailureCase` exist and are not validated in Go. (6) The supervised run owed from T0.2 was this session; its result is under `## T0.3` in `docs/decisions.md`. The OpenCode port lags this change too.
 
+#### T0.4 — Fix the flaky host lifecycle test
+- **Depends on:** T0.1
+- **Goal:** `TestHostLifecycleEndToEnd` passes every time, so a red CI run always means a real fault.
+- **Background:** the test fails at `internal/host/lifecycle_test.go:365` with `third attach =
+  (connection dropped, <nil>), want (DetachUser, nil)`: a client that stole the session from another
+  client, typed, then detached with ctrl-\ is told its connection dropped. T0.1 measured 6 failures
+  in 40 runs on forge's untouched source, more often on a busy machine. On 2026-10-11 it failed CI on
+  `main` for a docs-only commit and failed T0.3's QA run. Under merge-on-green (§5.4) a flaky test
+  either blocks a good change or teaches the loop to re-run until green.
+- **Scope:** reproduce it first (`go test -count=200 -run TestHostLifecycleEndToEnd ./internal/host/`,
+  with `-race`, and under CPU load) and find the cause before changing anything. Decide from the
+  evidence whether the fault is in the host or attach code (a detach racing the steal, or the host
+  closing the connection before the client reads the detach result) or only in the test's timing. Fix
+  it where it is. If it is in the host, a user can hit it too, so add a test that pins the corrected
+  ordering. Record the cause in `docs/decisions.md` and remove the "known flaky test" notes from
+  `CLAUDE.md`, `docs/decisions.md` (`## T0.1`) and the amendment on T0.1 above.
+- **Must not:** add a retry, a sleep, a longer timeout or a skip to make the test pass; weaken what
+  the test asserts; break the rule that a wedged client never stalls the child (`CLAUDE.md`).
+- **Acceptance:** 500 consecutive runs of the test pass with `-race`, and 200 pass while the machine
+  is under CPU load, with the commands and counts saved as evidence; `make check` green; the decision
+  entry names the cause and says whether a user could have hit it.
+
 ---
 
 ### M1 — Primitives
@@ -755,7 +777,7 @@ with nobody at the keyboard.
   private GitHub repo with a trivial CI workflow, recorded in `docs/decisions.md`.
 
 #### T2.3 — Automatic recovery
-- **Depends on:** T2.1
+- **Depends on:** T0.4, T2.1
 - **Scope:** §5.6. Wedge detection with no client attached; automatic restart with a cap and backoff;
   host relaunch after a reboot; a "continue" prompt after a restart when the session comes back idle
   mid-task.
