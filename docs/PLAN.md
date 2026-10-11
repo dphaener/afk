@@ -560,7 +560,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   only deliberate provenance notes; on the VM, `afk plugin install --target claude`, then
   `afk new --scratch` opens a pane in `afk dash`; `afk new --dry-run --base main x` prints the action
   list with `.afk/` paths.
-- **Amended 2026-10-10 (T0.1 done):** CI is `.github/workflows/ci.yml` (the old `go.yml` is gone) and runs only `make check`, which now also runs `plugin-test` and `hook-test`; the display name is lowercase `afk` everywhere; `docs/decisions.md` lists the other choices; `internal/host`'s `TestHostLifecycleEndToEnd` is a known flaky test (see its `## T0.1` entry).
+- **Amended 2026-10-10 (T0.1 done):** CI is `.github/workflows/ci.yml` (the old `go.yml` is gone) and runs only `make check`, which now also runs `plugin-test` and `hook-test`; the display name is lowercase `afk` everywhere; `docs/decisions.md` lists the other choices.
 
 #### T0.2 — The afk plugin: forge's workflow plus shipit's strengths
 - **Depends on:** T0.1
@@ -671,6 +671,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
 - **Acceptance:** 500 consecutive runs of the test pass with `-race`, and 200 pass while the machine
   is under CPU load, with the commands and counts saved as evidence; `make check` green; the decision
   entry names the cause and says whether a user could have hit it.
+- **Amended 2026-10-11 (T0.4 done):** later tasks may assume the following. (1) `TestHostLifecycleEndToEnd` is no longer flaky, so a red run of it is a real fault. (2) The fault was in the client, not the host: a user detach could be reported as a dropped connection, in `host.Attach` and in the dashboard pane that `afk attach` really uses (`internal/ui/hostpane.go`); both readers now check whether the user asked to leave. The host still answers a detach with a bare close, and the frame protocol is unchanged. (3) `host.Attach` has no caller in afk; the live client path is `hostChild` in `internal/ui`, and no test yet drives `ui.AttachPane` to a detach against a real host. See `## T0.4` in `docs/decisions.md`.
 
 ---
 

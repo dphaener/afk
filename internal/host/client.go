@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -371,6 +372,14 @@ type attachSession struct {
 	out      *frameWriter
 	done     chan struct{}
 	outcomes chan attachOutcome
+	// detaching is set by pumpInput just BEFORE it sends a Detach frame, and
+	// read by pumpOutput when the connection ends. The host closes the
+	// connection the moment it reads Detach, with no frame of its own, so
+	// that close can reach pumpOutput before pumpInput has even returned
+	// from the write. Without this flag pumpOutput cannot tell that close
+	// from a host that died, and a user who pressed ctrl-\ was told
+	// "connection dropped" (see markDetaching).
+	detaching atomic.Bool
 }
 
 // pumpInput copies terminal input to the host as Data frames, watching for
@@ -396,6 +405,7 @@ func (s *attachSession) pumpInput() {
 				if i > 0 && !s.send(Data, chunk[:i]) {
 					return
 				}
+				s.markDetaching()
 				if !s.send(Detach, nil) {
 					return
 				}
@@ -411,6 +421,7 @@ func (s *attachSession) pumpInput() {
 				// The terminal's input side is gone. Treat it as an
 				// explicit detach: leave the session running rather than
 				// ending it out from under the user.
+				s.markDetaching()
 				_ = s.send(Detach, nil)
 				s.report(attachOutcome{reason: DetachUser})
 				return
@@ -424,10 +435,33 @@ func (s *attachSession) pumpInput() {
 	}
 }
 
+// markDetaching records that the user asked to leave. It must be called
+// BEFORE the Detach frame is sent, not after, and the order looks backwards
+// until you see the race it closes: the host answers Detach by closing the
+// connection, so pumpOutput can read that close while this goroutine is still
+// inside the write. Whichever loop reports first names the outcome, and
+// pumpOutput reporting first used to turn a clean detach into DetachDropped
+// (exit 13) on roughly one run in seven of the lifecycle test. Recording the
+// intent first means that whichever loop wins, it says the same thing.
+//
+// A flag and not simply an early report(DetachUser): attach returns on the
+// first outcome and its teardown closes the connection, which could cut off
+// the Detach frame that is about to be written. The flag is a memory write,
+// so it adds nothing that can block the pump.
+func (s *attachSession) markDetaching() {
+	s.detaching.Store(true)
+}
+
 // pumpOutput writes the host's Data payloads to the terminal verbatim and
 // turns the control frames into outcomes. It is the SINGLE authority on the
 // connection being gone, which is why the other loops can ignore their own
-// write errors instead of racing to report a reason.
+// write errors instead of racing to report a reason. Being the authority on
+// THAT it is gone does not tell it WHY, so it asks: if pumpInput had already
+// recorded a detach (markDetaching), the close is the host's answer to it and
+// the outcome is DetachUser; otherwise nobody here asked for it and it is a
+// drop. A Stolen or Exit frame read before the close is reported from the
+// switch below and still wins, because this loop returns on it and never
+// reaches the read that fails.
 func (s *attachSession) pumpOutput() {
 	for {
 		typ, payload, err := ReadFrame(s.conn)
@@ -435,6 +469,14 @@ func (s *attachSession) pumpOutput() {
 			if s.stopping() {
 				// attach is already returning for some other reason; this
 				// read failed because it closed the connection.
+				return
+			}
+			if s.detaching.Load() {
+				// The user asked to detach and the host closed on reading
+				// the frame, as it is designed to. This also covers a
+				// Detach write that failed or timed out (frameWriter closes
+				// the connection then): the user still asked to leave.
+				s.report(attachOutcome{reason: DetachUser})
 				return
 			}
 			// EOF, a reset, or a torn frame with no Exit before it: the host
@@ -485,7 +527,10 @@ func (s *attachSession) forwardResizes(winch <-chan os.Signal) {
 // send writes one frame. false means the write failed — the connection is
 // gone, so the caller stops without reporting an outcome and lets pumpOutput
 // name the reason. Reporting here instead would race pumpOutput and make the
-// process's exit code nondeterministic.
+// process's exit code nondeterministic. The one sender whose reason pumpOutput
+// could not work out for itself is a detach, which is why pumpInput calls
+// markDetaching before it sends Detach: the reason is on record before the
+// write that can fail, or that the host can answer by closing.
 func (s *attachSession) send(typ MessageType, payload []byte) bool {
 	return s.out.write(typ, payload) == nil
 }
