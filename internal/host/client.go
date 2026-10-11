@@ -582,10 +582,13 @@ func (fw *frameWriter) write(typ MessageType, payload []byte) error {
 		// here — rather than just returning the error — is what makes the
 		// timeout actually surface: it unblocks pumpOutput's Read on the
 		// same connection, which is the one path that already turns a dead
-		// connection into a reported DetachExited outcome. Without this,
-		// send()'s callers (pumpInput, forwardResizes) drop the error on
-		// the floor by design, trusting pumpOutput to notice — but
-		// pumpOutput has nothing to notice from a write timeout alone.
+		// connection into a reported outcome: DetachDropped, or DetachUser
+		// when the frame that timed out was the user's own Detach (see
+		// pumpOutput). Never DetachExited, which needs an Exit frame from
+		// the host. Without this, send()'s callers (pumpInput,
+		// forwardResizes) drop the error on the floor by design, trusting
+		// pumpOutput to notice — but pumpOutput has nothing to notice from a
+		// write timeout alone.
 		_ = fw.w.Close()
 	}
 	return err
