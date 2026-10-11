@@ -546,6 +546,7 @@ M0 Foundation ──▶ M1 Primitives ──▶ M2 Daemon ──▶ M3 Surfaces 
  T0.2 plugin      T1.3 usage         T2.3 recover
  T0.3 QA parity   T1.4 tokens        T2.4 govern
  T0.4 flaky test  T1.5 start-up
+ T0.5 host tests
 ```
 
 T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent once T2.1 is in.
@@ -699,6 +700,33 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   entry names the cause and says whether a user could have hit it.
 - **Amended 2026-10-11 (T0.4 done):** later tasks may assume the following. (1) `TestHostLifecycleEndToEnd` is no longer flaky, so a red run of it is a real fault. (2) The fault was in the client, not the host: a user detach could be reported as a dropped connection, in `host.Attach` and in the dashboard pane that `afk attach` really uses (`internal/ui/hostpane.go`); both readers now check whether the user asked to leave. The host still answers a detach with a bare close, and the frame protocol is unchanged. (3) `host.Attach` has no caller in afk; the live client path is `hostChild` in `internal/ui`, and no test yet drives `ui.AttachPane` to a detach against a real host. See `## T0.4` in `docs/decisions.md`.
 
+#### T0.5 — Make every host test reliable
+- **Depends on:** T0.4
+- **Goal:** no test in `internal/host` or `internal/ui` fails without a real fault, so merge-on-green
+  (§5.4) can trust a red run.
+- **Background:** `TestServeSIGTERMBehavesLikeExit` (`internal/host/host_test.go`) failed CI on `main`
+  after T1.3's merge and once in T1.3's QA run, on changes that do not touch the package. The test
+  dials the host, sends the process SIGTERM, then expects an `Exit` frame and after it end of file.
+  It has been seen to get `reading frame header: EOF` and `connection reset by peer` in place of the
+  frame. That would mean the host can close a client's connection on shutdown before the `Exit` frame
+  is delivered, or the dial can race the signal. This is the second timing failure in the package;
+  the first (T0.4) was a real bug that users could hit.
+- **Scope:** find the others first, then fix. Run each test package many times
+  (`go test -count=100 -race ./internal/host/`, and again under CPU load; `internal/ui` with `-short`
+  for the stress runs, since its end-to-end test takes about 40 seconds) and list every test that
+  fails even once, with its failure text and rate. For each, prove the cause with a run before
+  changing anything, as T0.4 did, and fix it where it is: in the host or client if a user could hit
+  it, with a test that forces the bad ordering, or in the test if only the test is wrong. Record each
+  cause in `docs/decisions.md`, saying whether a user could have hit it.
+- **Must not:** add a retry, a sleep, a longer timeout or a skip to make a test pass; weaken what a
+  test asserts; break the rule that a wedged client never stalls the child (`CLAUDE.md`); change the
+  frame protocol without recording why in `docs/decisions.md` and the plugin's schema if it is
+  affected.
+- **Acceptance:** `TestServeSIGTERMBehavesLikeExit` passes 500 of 500 runs with `-race` and 200 of 200
+  under CPU load; the whole `internal/host` package passes 100 of 100 with `-race` and 50 of 50 under
+  load; `internal/ui -short` passes 50 of 50 with `-race`. Commands and counts saved as evidence.
+  `make check` green.
+
 ---
 
 ### M1 — Primitives
@@ -812,7 +840,7 @@ with nobody at the keyboard.
   private GitHub repo with a trivial CI workflow, recorded in `docs/decisions.md`.
 
 #### T2.3 — Automatic recovery
-- **Depends on:** T0.4, T2.1
+- **Depends on:** T0.4, T0.5, T2.1
 - **Scope:** §5.6. Wedge detection with no client attached; automatic restart with a cap and backoff;
   host relaunch after a reboot; a "continue" prompt after a restart when the session comes back idle
   mid-task.
