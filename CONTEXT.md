@@ -25,3 +25,9 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Detach**: a client leaving a session on purpose (ctrl-\ in `afk attach`, or closing a dashboard pane); the session keeps running.
 - **Steal**: a second client connecting to a session host, which takes the session from the client already attached.
 - **Dropped**: a client's connection ending without the host saying the session ended; the session may still be running.
+- **Project config**: `afk.toml` at the root of a project's main checkout; hand-edited TOML that names the master plan and, later, the ship and notification settings.
+- **Main checkout**: the project directory that holds the repository's `.git` directory, as opposed to a session's worktree; the daemon's state and the ledger live under its `.afk/`.
+- **Ready**: a master-plan task that is `pending` in the ledger with every dependency satisfied, so it could run now.
+- **Next task**: the one task the build loop would start now, chosen from the ready tasks in plan order, or the reason there is none.
+- **Superseded**: a ledger status for a task kept in the master plan only as history; its entry lists the tasks that replace it, and a dependency on it waits for all of them.
+- **Seeding**: recording an existing project's finished tasks in the ledger by hand with `afk ledger set`.

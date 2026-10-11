@@ -419,6 +419,77 @@ Running the same command twice changes nothing the second time, and a task alrea
 
 **Exit codes:** 0 when the task was marked (or there was nothing to do), 1 when the plan or the task was not found or the file could not be written, 2 when the command was written wrongly (for example `failed` with no `--reason`).
 
+### `afk tasks` — List the master plan's tasks
+
+Show every task in the project's master plan, with its status and what it is still waiting for.
+
+```bash
+afk tasks [--project DIR]
+```
+
+A master plan is a markdown file where each task is a heading that starts with its id, followed by a `- **Depends on:**` line:
+
+```markdown
+#### T4.3 — Care reminders
+- **Depends on:** T4.2a, T4.2b
+```
+
+- Dependencies are the task ids on that line (`T4.2a, T4.2b`). Text in parentheses is ignored. `all prior` means every task listed earlier in the plan. Any other text with no task ids in it (for example `none` or `M3–M8 as available`) counts as no dependencies, and `afk tasks` prints a note so you can check it.
+- Each task has one of seven statuses: `pending` (the default, for a task the ledger does not mention), `running`, `shipping`, `parked` (waiting for you to answer something), `done`, `failed` and `superseded` (kept in the plan only as history, replaced by other tasks).
+- The last column lists the dependencies not yet finished. A dependency on a superseded task is finished only when every task that replaced it is.
+- `--project DIR` — The project to read. Defaults to the current directory.
+
+The commands read the project's main checkout, so they give the same answer when you run them inside a session's worktree.
+
+**Where the plan is.** The plan path comes from `plan` in the project's `afk.toml` and defaults to `docs/PLAN.md`:
+
+```toml
+# afk.toml, in the project's root folder
+plan = "docs/PLAN.md"
+```
+
+**Where the statuses are kept.** In `.afk/build/ledger.json` under the project. If the file is missing, every task is `pending`. If it is damaged (for example, half-written by hand), the commands stop with a message naming the file instead of guessing; fix the file, or delete it to start again from every task pending.
+
+**Exit codes:** 0 when the table was printed, 1 when the plan, `afk.toml` or the ledger could not be used, 2 when the command was written wrongly.
+
+### `afk next` — Show the task that would run next
+
+Print the one task afk would start now, or say why there is none.
+
+```bash
+afk next [--project DIR]
+```
+
+When there is a task, the line starts with its id and title, for example `T4.2b  Task UI`. Otherwise the line says what is in the way: something is already running, everything is done, a task waits for you, a task failed and blocks the rest, or the plan can never finish (for example a replaced task whose replacement is missing). Having nothing to start is a normal answer, not an error.
+
+**Exit codes:** 0 whenever it printed an answer (including "nothing to start"), 1 when the plan, `afk.toml` or the ledger could not be used, 2 when the command was written wrongly.
+
+### `afk ledger set` — Record a task's status by hand
+
+Set one task's status in the ledger. This is how you tell afk about work that was done before it was running, and how you correct a mistake.
+
+```bash
+afk ledger set [--project DIR] [--replaced-by IDS] <task-id> <status>
+```
+
+- `<task-id>` — Must be a task in the plan, so a typo is refused instead of being recorded for no task.
+- `<status>` — One of `pending`, `running`, `shipping`, `parked`, `done`, `failed`, `superseded`.
+- `--replaced-by IDS` — Comma-separated task ids that replace the task. Required with `superseded`, and refused with any other status.
+- `--project DIR` — The project to work in. Defaults to the current directory.
+
+To seed a project that is already part way through its plan:
+
+```bash
+afk ledger set T1.1 done
+afk ledger set T1.2 done
+afk ledger set T4.2 superseded --replaced-by T4.2a,T4.2b
+afk next        # names the first task still to do
+```
+
+Running the same command twice changes nothing the second time. Several of these commands can run at once; they take turns using a lock file.
+
+**Exit codes:** 0 when the task has the status (changed now or already), 1 when the plan or ledger could not be used or the task is not in the plan, 2 when the command was written wrongly (for example an unknown status).
+
 ---
 
 ## Session Model
