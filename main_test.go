@@ -23,6 +23,9 @@ import (
 //     Claude Code hook, which has no terminal at all, so a stdout gate on this
 //     name would mean zero notifications in exactly the case the command exists
 //     for.
+//   - `inbox` with stdout PIPED must dispatch for the same reason: `afk inbox
+//     add` is typed by an agent with no terminal, and its words and flags must
+//     reach cmdInbox untouched.
 //   - []string{""} (`afk ""`) is routeUnknownSubcommand with an EMPTY name, not
 //     routeUsageError and not the dashboard. An earlier revision used a
 //     `name != ""` sentinel to decide whether to print the diagnostic, which
@@ -121,6 +124,14 @@ func TestRouteArgs(t *testing.T) {
 			wantKind:  routeUsage,
 		},
 		{
+			name:      "inbox with stdout piped -> subcommand, args passed through",
+			args:      []string{"inbox", "add", "--kind", "notice", "--title", "x", "--no-block"},
+			stdoutTTY: false,
+			wantKind:  routeSubcommand,
+			wantName:  "inbox",
+			wantArgs:  []string{"add", "--kind", "notice", "--title", "x", "--no-block"},
+		},
+		{
 			name:      "dash -> subcommand, no args",
 			args:      []string{"dash"},
 			stdoutTTY: true,
@@ -183,6 +194,30 @@ func TestRouteArgs(t *testing.T) {
 			wantKind:  routeSubcommand,
 			wantName:  "notify",
 			wantArgs:  []string{"--plan", "my-session"},
+		},
+		{
+			name:      "tasks -> subcommand",
+			args:      []string{"tasks"},
+			stdoutTTY: false,
+			wantKind:  routeSubcommand,
+			wantName:  "tasks",
+			wantArgs:  nil,
+		},
+		{
+			name:      "next -> subcommand carrying its words",
+			args:      []string{"next", "--project", "/p"},
+			stdoutTTY: false,
+			wantKind:  routeSubcommand,
+			wantName:  "next",
+			wantArgs:  []string{"--project", "/p"},
+		},
+		{
+			name:      "ledger -> subcommand carrying its words",
+			args:      []string{"ledger", "set", "T1.1", "done"},
+			stdoutTTY: false,
+			wantKind:  routeSubcommand,
+			wantName:  "ledger",
+			wantArgs:  []string{"set", "T1.1", "done"},
 		},
 		{
 			name:      "_host stays routable though undocumented",

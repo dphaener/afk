@@ -213,6 +213,11 @@ an entry carries `replaced_by: ["T4.2a", "T4.2b"]`, because other tasks may stil
 dependency (nebari's T6.1 depends on T4.2). A task absent from the ledger is `pending`. `afk ledger set <id> <status>` edits it by hand; that is how an
 existing project (nebari's 21 finished tasks) is seeded.
 
+File shape: `{"tasks": [ … ]}`, entries sorted by id, `pr` a pull request number, times RFC 3339 UTC,
+empty fields omitted. Unknown keys and unknown statuses are rejected. A missing file means every task
+is pending; a damaged file is an error and is never read as empty. Writers take the lock file
+`.afk/build/.ledger.lock`.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -228,6 +233,8 @@ existing project (nebari's 21 finished tasks) is seeded.
 Agents never write these files directly. They call `afk inbox add …`, which validates and writes
 atomically. The daemon also adds items (CI failed twice, deploy unhealthy, login expiring).
 
+Amended 2026-10-11 (T1.2 done): every key is always present (`""`, `[]` or `false` when unset), times are RFC 3339 UTC strings, the id is six characters, and only `{id}.json` files in the folder are items.
+
 ### 4.4 Decision log — `.afk/log/decisions.jsonl` (new; append-only)
 
 One line per decision anyone or anything made in the loop: `{at, task, session, kind, question,
@@ -237,8 +244,10 @@ verdicts, fix-loop outcomes, governor actions, ship results. This is the raw mat
 
 ### 4.5 Usage snapshot — `~/.local/state/afk/usage.json` (new; per machine, not per project)
 
-Written by the governor: `{at, provider, windows: [{kind, used_pct, resets_at}], overage_enabled,
-source}`. The dashboard and web page read it; nobody else probes.
+Written by the governor: `{at, provider, windows: [{kind, scope, used_pct, resets_at}], overage_enabled,
+source}`. `scope` is the model's name on a per-model weekly window and empty otherwise. The path is
+`$XDG_STATE_HOME/afk/usage.json` when `XDG_STATE_HOME` is set to an absolute path, otherwise
+`~/.local/state/afk/usage.json`. The dashboard and web page read it; nobody else probes.
 
 ### 4.6 Project config — `afk.toml` (committed)
 
@@ -422,12 +431,15 @@ Rules for the plugin, each tied to a measurement in §1. They apply in every mod
 
 ```go
 // Usage reports how much of each of the provider's usage windows is spent.
-// ErrUsageUnsupported means this provider has no way to tell.
-Usage(ctx context.Context) (UsageSnapshot, error)
+// ErrUsageUnsupported means this provider has no way to tell;
+// ErrNoUsageReport means the probe ran but its output held no usable report.
+// UsageDeps carries the command runner and the clock, as the provider's other
+// calls that reach outside do.
+Usage(ctx context.Context, d UsageDeps) (UsageSnapshot, error)
 
 type UsageSnapshot struct {
     At             time.Time
-    Windows        []Window      // Kind: "session" | "weekly" | "weekly_model"; UsedPct 0–100; ResetsAt
+    Windows        []Window      // Kind: "session" | "weekly" | "weekly_model" | "unknown"; Scope; UsedPct 0–100; ResetsAt
     OverageEnabled bool
 }
 ```
@@ -450,6 +462,11 @@ experimental.
   `rate_limits` may be null.
 - **Units differ between Claude Code surfaces** (0–100 vs 0–1; ISO vs epoch seconds). Normalise at the
   provider boundary; nothing above it sees raw values.
+- **Stream details found while building (T1.3).** The `limits[]` rows also carry `group`,
+  `scope.model.display_name` (the model name on a `weekly_scoped` row), `severity` and `is_active`; only
+  `kind`, `percent`, `resets_at` and the model name are used. A `kind` afk does not know is kept as
+  `unknown`, with the CLI's word in `Scope`. Run the probe outside a project directory (afk runs it from
+  its state directory): the CLI records every run under the directory it starts in.
 - **Not used:** the undocumented `api/oauth/usage` endpoint, raw response headers, or token estimates
   from local transcripts.
 
@@ -465,6 +482,8 @@ Inputs: latest snapshot (or its absence and age), thresholds, whether a session 
 | Session window ≥ `launch_below` (default 75), or weekly ≥ `pause_at` − 5 | Launch nothing new; a running session continues. |
 | Otherwise | Run. |
 | Provider returns `ErrUsageUnsupported` | Follow `on_unknown_usage`: `run` (default) or `hold`. |
+
+As built, the unsupported row is checked first, because such a provider never has a snapshot and "no snapshot" would otherwise always win.
 
 Every action is logged (§4.4) and reflected in `usage.json`.
 
@@ -690,6 +709,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   replacements, unknown dependency, cycle, a task added between two
   reads; with the nebari ledger seeded (21 done, T4.2 superseded, T4.2b pending), `afk next` prints
   `T4.2b`.
+- **Amended 2026-10-11 (T1.1 done):** later tasks may assume the following. (1) `masterplan.ParseFile` then `masterplan.Validate` give the ordered tasks; a malformed heading, a duplicate id, a task with no `- **Depends on:**` line, an unknown dependency and a cycle are errors, `all prior` means every earlier task, and other text with no ids means no dependencies and is kept in `Task.Note`. (2) `ledger.Update(project, fn)` is the only writer of `.afk/build/ledger.json` (lock, re-read, rename) and the daemon must use it; `ledger.Load` returns an error wrapping `ErrCorrupt` for a damaged file, never an empty ledger. (3) `nexttask.Next(tasks, ledger, openItems)` returns no task with reason `in progress` while any task is `running` or `shipping`, and takes the open inbox item ids as a function; the commands pass nil (every item open), so T2.1 must pass the real one from `internal/inbox`. (4) `afk tasks`, `afk next` and `afk ledger set` work on the project's main checkout even when run inside a session's worktree; `loadBuildState` in `buildstate.go` is the shared loader. (5) `projectconfig.Load` is the one `afk.toml` reader: it was folded with T1.2's at merge and returns `plan` (default `docs/PLAN.md`) and `[notify] ntfy_url`, ignoring other keys, so agents still read `[policy] notes` themselves and T2.2 adds `[ship]` to it; likewise there is one `mainCheckout(dir, commonDir)`, in `maincheckout.go`. (6) On this repo `afk next` names T0.0, an owner task, until the ledger is seeded with the finished tasks. See `## T1.1` in `docs/decisions.md`.
 
 #### T1.2 — Inbox and notifications
 - **Depends on:** T0.1
@@ -701,6 +721,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
 - **Acceptance:** table tests for validation and for which items notify at which priority; the ntfy
   client is tested against an `httptest` server; adding a blocking item with `ntfy_url` set posts once;
   no notifier configured is not an error.
+- **Amended 2026-10-11 (T1.2 done):** later tasks may assume the following. (1) `afk inbox`, `afk inbox show <id>`, `afk inbox answer <id> <text|number>` and `afk inbox add --kind … --title … --block|--no-block [--task --body --option… --recommended --assumed --session --project]` exist; exit 0 done, 1 not found or already answered, 2 written wrongly; exactly one of `--block`/`--no-block` is required. (2) Items live in the **main checkout's** `.afk/inbox/{id}.json` even when the command runs in a session worktree; go through `internal/inbox` (`Store.Add/List/Get/Answer`), never the files. (3) `internal/projectconfig` reads only `[notify] ntfy_url` from `afk.toml`; fold it together with T1.1's loader. (4) `internal/notify` has `NtfyPriority(kind, blocking)` and `Ntfy.Send`; a non-blocking `question` or `notice` sends nothing, and a notification problem never fails `afk inbox add`. (5) The autonomous prompt parks with a blocking inbox item **and still sets `awaiting_input`**, so T2.1's stall rule (§5.3) must skip a session that has an open blocking item. (6) Plugin version is 5.1.0; the OpenCode port lags. See `## T1.2` in `docs/decisions.md`.
 
 #### T1.3 — Usage probe and governor decision
 - **Depends on:** T0.1
@@ -713,6 +734,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   missing window, unknown `kind`, no `usage_report` at all); the decision table of §6.3 as a table
   test, one row per condition and each boundary value; Codex and OpenCode return
   `ErrUsageUnsupported`; `afk usage` works on the VM.
+- Amended 2026-10-11 (T1.3 done): the method is `Usage(ctx, UsageDeps)` with the runner and clock passed in; a window also has `scope` and may have kind `unknown`; `governor.Decide` checks "unsupported" first and its thresholds are code defaults (`governor.DefaultThresholds()`), so T2.4 adds the config keys and decides whether the action is stored in `usage.json`; `internal/usagestate` owns that file (it follows `XDG_STATE_HOME`); a failed probe returns an error, not a snapshot, and callers fall back to the stored one; run the probe from afk's state directory, never a project.
 
 #### T1.4 — Token ledger
 - **Depends on:** T0.1
@@ -891,7 +913,7 @@ with nobody at the keyboard.
 | What exactly a session emits when it hits a usage limit (text, hook, whether a reset time is present). Never observed; capture it the first time it happens. | T2.4 |
 | Is the login-expiry warning detectable ahead of time, or only the logged-out state? | T2.4 |
 | Liveness with no client: host-side schedule, or daemon holds the client slot? | T2.3 |
-| Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? | T1.3 |
+| Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? **Answered 2026-10-11:** not observed. The probe was run three times back to back (Claude Code 2.1.296) and each time exited 0 with a full report, in about 1.5 seconds. Nobody tried to provoke throttling, because tripping a rate limit on the owner's account on purpose is not a machine's call, so what it does when throttled is still unknown. `afk usage` reuses a reading under 5 minutes old, and the governor treats a reading over 30 minutes old as stale and holds. | T1.3 |
 | Nebari's health-check URL, and how to tell a deploy of *this* commit finished (as opposed to the old container still answering). | T4.1 |
 | Does a merge to nebari's main trigger the Coolify deploy today, or does a webhook need adding? | T4.1 |
 | What the 28k of extra start-up context in implementation and review agents consists of. | T1.5 |

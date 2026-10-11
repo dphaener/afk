@@ -25,6 +25,24 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Detach**: a client leaving a session on purpose (ctrl-\ in `afk attach`, or closing a dashboard pane); the session keeps running.
 - **Steal**: a second client connecting to a session host, which takes the session from the client already attached.
 - **Dropped**: a client's connection ending without the host saying the session ended; the session may still be running.
+- **Project config**: `afk.toml` at the root of a project's main checkout; hand-edited TOML that names the master plan and, later, the ship and notification settings.
+- **Main checkout**: the project directory that holds the repository's `.git` directory, as opposed to a session's worktree; the daemon's state and the ledger live under its `.afk/`.
+- **Ready**: a master-plan task that is `pending` in the ledger with every dependency satisfied, so it could run now.
+- **Next task**: the one task the build loop would start now, chosen from the ready tasks in plan order, or the reason there is none.
+- **Superseded**: a ledger status for a task kept in the master plan only as history; its entry lists the tasks that replace it, and a dependency on it waits for all of them.
+- **Seeding**: recording an existing project's finished tasks in the ledger by hand with `afk ledger set`.
+- **Usage window**: one of the subscription's limits that fills up and resets on a schedule: the session window, the weekly window, or a weekly window for one model.
+- **Usage probe**: the zero-cost agent CLI call that reports how much of each usage window is spent and when it resets.
+- **Usage snapshot**: one probe's result (windows, reset times, whether extra usage is on), kept per machine in `usage.json`.
+- **Extra usage**: paid overage beyond the subscription; afk refuses to run while it is on.
+- **Governor**: the pure decision that turns a usage snapshot into one action: run, launch nothing new, pause, hold, or refuse.
+- **Inbox item**: one JSON file in the inbox, written only by `afk inbox add` (or, later, the daemon), with a kind, a title and whether it blocks.
+- **Kind**: what an inbox item is: `question`, `env_var`, `external_action`, `verification`, `failure` or `notice`.
+- **Blocking**: an inbox item the task cannot go on without; the task parks until the owner answers it.
+- **Open**: an inbox item nobody has answered yet.
+- **Assumed**: on a non-blocking question, the answer the agent went ahead with instead of waiting.
+- **ntfy**: the push-notification service afk posts to when an inbox item needs the owner, set by `[notify] ntfy_url` in `afk.toml`.
+- **Main checkout**: the project's original folder, as opposed to a session's worktree; `.afk/inbox/` lives there.
 - **Token ledger**: `.afk/log/tokens.jsonl` in the project's main checkout, one line per task, phase, role and model, recording how many tokens that part of a task used.
 - **Weighted cost**: one number for a set of model calls, `input + 5×output + 1.25×cache_write + 0.1×cache_read`, in input-token equivalents; a proxy from API price ratios.
 - **Token record**: one model call's usage as a provider reports it: when, which model, which role and phase, and the four token counts.
