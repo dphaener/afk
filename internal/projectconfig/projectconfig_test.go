@@ -187,6 +187,73 @@ func TestLoadBothKeys(t *testing.T) {
 	}
 }
 
+// TestLoadOverlay: the load-bearing rows are "local overrides committed" (the
+// reason the overlay exists), "local sets only ntfy while committed sets only
+// plan" (the merge is per key, not per file), "empty local ntfy wins" (present
+// but empty must beat a committed address, so a private file can switch
+// notifications off) and the two parse-error rows (each error must name the
+// file that is broken, not its sibling). The bad-local row logs the error text
+// for the QA evidence.
+func TestLoadOverlay(t *testing.T) {
+	tests := []struct {
+		name      string
+		committed *string
+		local     *string
+		want      Config
+		errHas    string
+		errNot    string
+	}{
+		{name: "both missing", want: Config{Plan: DefaultPlan}},
+		{name: "committed only", committed: ptr("plan = \"a.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), want: Config{Plan: "a.md", Notify: Notify{NtfyURL: "https://ntfy.sh/c"}}},
+		{name: "local only", local: ptr("plan = \"b.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/l\"\n"), want: Config{Plan: "b.md", Notify: Notify{NtfyURL: "https://ntfy.sh/l"}}},
+		{name: "local overrides committed", committed: ptr("plan = \"a.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("plan = \"b.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/l\"\n"), want: Config{Plan: "b.md", Notify: Notify{NtfyURL: "https://ntfy.sh/l"}}},
+		{name: "local sets only ntfy, committed only plan", committed: ptr("plan = \"a.md\"\n"), local: ptr("[notify]\nntfy_url = \"https://ntfy.sh/l\"\n"), want: Config{Plan: "a.md", Notify: Notify{NtfyURL: "https://ntfy.sh/l"}}},
+		{name: "empty local ntfy wins over committed address", committed: ptr("[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("[notify]\nntfy_url = \"\"\n"), want: Config{Plan: DefaultPlan}},
+		{name: "empty local file keeps committed", committed: ptr("plan = \"a.md\"\n"), local: ptr(""), want: Config{Plan: "a.md"}},
+		{name: "local file does not parse", committed: ptr("plan = \"a.md\"\n"), local: ptr("plan = \n[[["), errHas: LocalFileName},
+		{name: "committed file does not parse", committed: ptr("plan = \n[[["), local: ptr("plan = \"b.md\"\n"), errHas: FileName, errNot: LocalFileName},
+		{name: "bad address in local names local", committed: ptr("[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("[notify]\nntfy_url = \"ftp://user:hunter2@ntfy.sh/t\"\n"), errHas: LocalFileName + ": [notify] ntfy_url"},
+		{name: "bad address in committed names committed", committed: ptr("[notify]\nntfy_url = \"ntfy.sh/t\"\n"), local: ptr("plan = \"b.md\"\n"), errHas: FileName + ": [notify] ntfy_url", errNot: LocalFileName},
+		{name: "bad plan in local names local", local: ptr("plan = \"../x.md\"\n"), errHas: LocalFileName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, content := range map[string]*string{FileName: tt.committed, LocalFileName: tt.local} {
+				if content == nil {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(root, name), []byte(*content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := Load(root)
+			if tt.errHas != "" {
+				if err == nil {
+					t.Fatalf("Load = %+v, want an error", got)
+				}
+				t.Log(err)
+				if !strings.Contains(err.Error(), tt.errHas) {
+					t.Errorf("error %q lacks %q", err, tt.errHas)
+				}
+				if tt.errNot != "" && strings.Contains(err.Error(), tt.errNot) {
+					t.Errorf("error %q wrongly names %q", err, tt.errNot)
+				}
+				if strings.Contains(err.Error(), "hunter2") {
+					t.Errorf("error leaks the URL password: %q", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("Load = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestLoadUnreadable: a directory where the file should be makes the read
 // fail with an error that is not "does not exist"; it must name the file.
 func TestLoadUnreadable(t *testing.T) {

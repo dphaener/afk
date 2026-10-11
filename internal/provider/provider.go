@@ -62,6 +62,17 @@ type Provider interface {
 	// finds nothing for the session returns ErrNoTranscript. It reads files
 	// under q.Home only and runs nothing.
 	SessionTokens(q TokenQuery) ([]TokenRecord, error)
+	// Unattended returns a copy of a launch or resume argv with the
+	// provider's unattended permission mode named on the command line, so a
+	// daemon-run session never stops at a permission prompt nobody is there
+	// to answer. A provider with no such mode afk knows returns
+	// ErrUnattendedUnsupported. See unattended.go.
+	Unattended(argv []string) ([]string, error)
+	// UnattendedPreflight is a best-effort, non-fatal check that the
+	// unattended mode will actually be accepted on this machine. It reads
+	// only through d and reports plain-language manual steps when it will
+	// not be. See unattended.go.
+	UnattendedPreflight(d UnattendedDeps) (ok bool, manualSteps string)
 }
 
 // order is the stable listing order for Names.

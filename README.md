@@ -564,9 +564,10 @@ The six kinds:
 
 **Where items live.** One file per item, `.afk/inbox/<id>.json`, in the project's main folder, even when the command runs inside a session's worktree (so an item is never lost when the worktree is removed). The files are written by this command, not by hand.
 
-**Push notifications.** To get a push on your phone, put your [ntfy](https://ntfy.sh) topic in `afk.toml` in the project's top folder:
+**Push notifications.** To get a push on your phone, put your [ntfy](https://ntfy.sh) topic in `afk.local.toml` in the project's top folder, not in `afk.toml`: the topic name works as a password and `afk.toml` is committed (see [`afk.local.toml`](#afklocaltoml--private-project-settings)):
 
 ```toml
+# afk.local.toml
 [notify]
 ntfy_url = "https://ntfy.sh/your-topic"
 ```
@@ -582,7 +583,7 @@ Only items that need you send one, and how loudly depends on the kind (ntfy prio
 | `verification`, does not stop | 2 |
 | `question` or `notice`, does not stop | no notification |
 
-With no `afk.toml`, or no `ntfy_url` in it, afk sends nothing and that is not an error. The item is always written first. If `afk.toml` cannot be read, or the notification fails, afk prints a warning (`the item was added, but ...`) and still exits 0, so an agent never thinks the item was lost. A notification waits at most 10 seconds and is not retried.
+With no `ntfy_url` in `afk.local.toml` or `afk.toml`, afk sends nothing and that is not an error. The item is always written first. If those files cannot be read, or the notification fails, afk prints a warning (`the item was added, but ...`) and still exits 0, so an agent never thinks the item was lost. A notification waits at most 10 seconds and is not retried.
 
 **Exit codes:** 0 when the command did what was asked (including an added item whose notification failed), 1 when the item was not found, was already answered, or a file could not be read or written, 2 when the command was written wrongly (for example neither `--block` nor `--no-block`).
 
@@ -607,6 +608,120 @@ afk tokens [--project PATH] [--record] [SESSION|TASK]
 **The ledger** is `.afk/log/tokens.jsonl` in the project's main checkout, one JSON line per task, phase, role and model. It is added to only by `--record`. Several recordings can run at once; they take turns using a lock file beside the ledger.
 
 **Exit codes:** 0 when the table was printed (or the session was already recorded), 1 when there was nothing to show or the session could not be read (no such session, it has not started, no transcript found, the agent CLI is not supported yet, or the ledger has nothing for the task), 2 when the command was written wrongly. `-h` and `--help` print the usage and exit 0.
+
+### `afk daemon` — Build the master plan unattended
+
+The daemon works through a project's master plan on its own. It runs one task at a time: it starts a session for the next task that is ready, watches that session, and when the session finishes it records the result and moves on. Nobody has to be at the keyboard.
+
+```bash
+afk daemon            # run until stopped
+afk daemon --once     # look at every project once, do what is due, and exit
+afk daemon status     # say what it is doing in each project, and why
+```
+
+**On each pass** (every 5 seconds by default) the daemon reads the project's files from scratch and does the first thing that applies:
+
+- If the plan, the ledger or `afk.toml` cannot be used, it stops for that project and says what to fix. It carries on by itself once the file is fixed.
+- If a task is running, it watches that task's session. A finished session moves the task on (see "Shipping" below). A session that ended as failed marks the task `failed` and adds a `failure` item to your inbox. An open blocking inbox item for the task parks it (see "What parks a task").
+- If the session has been asking a question at the terminal for longer than `stall_after`, or its host process has stopped running, it adds an inbox item saying so, once.
+- If nothing is running and the project is not paused, it picks the next ready task (the same answer as `afk next`), checks that this machine can start the agent unattended, and starts a session for it. The session and the branch are both named after the task: `T4.3` becomes `t4-3`.
+- If nothing can start, it says why (waiting on you, blocked by a failed task, or all done) and sends one push notification for that, not one per pass.
+
+Stopping the daemon (ctrl-c, or `systemctl --user stop afkd`) never stops a session. Every session keeps running, and the next start picks them up again, because everything the daemon knows is in files. Only one daemon can run on a machine; a second one exits with code 1.
+
+**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. A missing file is not an error, but with no `[[project]]` the daemon has nothing to build and `afk daemon` exits 1. Keys it does not know are ignored.
+
+```toml
+# ~/.config/afk/config.toml
+provider = "claude"            # the agent to run; leave out for the default
+
+[daemon]
+tick = "5s"                    # how often to look at each project (1s or more)
+stall_after = "10m"            # how long a session may ask a question at the terminal
+
+[[project]]
+path = "~/code/my-app"         # an absolute path, or one starting with ~/
+name = "my-app"                # optional; defaults to the folder name
+
+[[project]]
+path = "/srv/another-app"
+```
+
+**Pausing.** `afk pause [project]` stops the daemon from starting new tasks in a project; a task that is already running carries on and finishes. `afk resume [project]` lets it start again. See [`afk pause` and `afk resume`](#afk-pause-and-afk-resume--hold-and-release-the-daemon). Neither needs the daemon restarted.
+
+**What parks a task.** When the agent adds a blocking inbox item for a task (a credential to set, a choice only you can make), the daemon marks the task `parked` and leaves its session alone. It is waiting for you, so it is not counted as stalled. To un-park it, answer the item:
+
+```bash
+afk inbox                          # find the item
+afk inbox answer <id> <text>       # answer it
+```
+
+On its next pass the daemon sees every item answered and marks the task `running` again. A stall or host-stopped report works differently: answering it silences the report and leaves the task `running`, so resume the session by hand if it needs it.
+
+**Shipping.** A finished task stops at `shipping`: afk does not push, open a pull request or merge for you yet. Until that is built, do it by hand. Merge the task's branch yourself, then tell afk:
+
+```bash
+afk ledger set T4.3 done
+```
+
+The daemon then starts the next task. `afk clean t4-3` removes the finished session; if you leave it, its agent sits idle with nothing to do.
+
+**Unattended agents.** Nobody can answer a permission prompt, so the daemon starts each agent with permissions bypassed (for Claude Code, `--permission-mode bypassPermissions`). The agent can then run any command in its worktree without asking, so run the daemon only on a machine and a project you are happy to give that to. Before it starts a task, the daemon checks that:
+
+- it is not running as root (the agent refuses this mode for root);
+- you have run the agent once by hand in that mode and accepted its warning, so that it is remembered in `~/.claude/settings.json`;
+- the afk plugin is installed for the agent.
+
+If a check fails, the daemon adds a blocking `failure` item to your inbox that says what to do, and starts nothing until you answer it. A provider with no unattended mode afk knows (Codex and OpenCode today) cannot be used with the daemon.
+
+**What it writes.** In each project's main checkout: `.afk/build/daemon.json` (what it last did and why), `.afk/build/paused` (the pause flag), `.afk/build/ledger.json` (each task's status) and `.afk/log/decisions.jsonl` (one line for each decision). Each unattended session also has an empty file, `.afk/<session>/unattended`, that keeps the unattended mode on when its host restarts the agent. In afk's state folder, `daemon.lock` and `running.json` enforce the one-daemon rule. The daemon logs to stderr, one line each with a time; under systemd that is the journal.
+
+**`afk daemon --once`** does a single pass over every project and prints one line each: `<project>: <what it did> (<task>, session <session>): <why>`. It takes the same lock as the daemon, so it exits 1 while a daemon is running. Use it to try a setup, or from cron.
+
+**`afk daemon status`** prints a line about the daemon (running or not, and since when), then a block for each project:
+
+```text
+The afk daemon is running (pid 4121, started Sun 11 Oct 08:02).
+
+my-app (/home/you/code/my-app)
+  Doing:   waiting
+  Task:    T4.3, in session t4-3
+  Why:     running T4.3; its status file cannot be read right now
+  Since:   Sun 11 Oct 09:30 (12m ago)
+  Running: session t4-3 has been in this state for 12m
+  Tasks:   3 done, 1 running
+```
+
+A paused project gets a `Paused:` line first. `Doing:` becomes `Last:` when no daemon is running, because then the file is only a record of how things were left. `Problem:` replaces `Tasks:` when the ledger cannot be read, and with nothing configured it prints how to add a project.
+
+To run the daemon as a service on Linux, see [`contrib/README.md`](contrib/README.md).
+
+**Exit codes:** `afk daemon` returns 0 when it was stopped or `--once` finished, 1 when `config.toml` could not be used, no project is configured, or a daemon is already running, and 2 when the command was written wrongly. `afk daemon status` returns 0 when the report was printed, 1 when `config.toml` itself cannot be read, and 2 when the command was written wrongly.
+
+### `afk pause` and `afk resume` — Hold and release the daemon
+
+```bash
+afk pause [project]
+afk resume [project]
+```
+
+`afk pause` writes `.afk/build/paused` in the project's main checkout, so the daemon starts no new task there. A task that is running finishes, and a parked task is not started again until you resume. `afk resume` removes the file. `project` is a project name from `config.toml` or a folder; with nothing given it is the current folder's main checkout, even from inside a session's worktree.
+
+**Exit codes:** 0 when done (resuming a project that was not paused is still 0), 1 when the project or the config could not be used or the file could not be written or removed, 2 when the command was written wrongly.
+
+### `afk.local.toml` — Private project settings
+
+Put private values in `afk.local.toml`, next to `afk.toml` in the project's top folder. The main case is `ntfy_url`: an ntfy topic name works as a password, because anyone who knows it can read and post to it, and `afk.toml` is committed.
+
+```toml
+# afk.local.toml (never committed)
+[notify]
+ntfy_url = "https://ntfy.sh/your-topic"
+```
+
+afk reads `afk.toml` first and then lays `afk.local.toml` over it key by key: a key in the local file wins, and every key it leaves out keeps the committed value. Either file may be missing. This repo's `.gitignore` lists `afk.local.toml`, so it is never committed; add the same line to your own project's `.gitignore`.
+
+**If your project already has an `afk.toml` with an `ntfy_url` in it,** move that line to `afk.local.toml` before you commit `afk.toml`. This repo used to ignore `afk.toml`; it no longer does, so committing the file as it is would publish your topic.
 
 ---
 
@@ -717,7 +832,7 @@ A directory counts as a project only if it's a git repo root (a main checkout, n
 | **worktrunk** (`wt`) | **When present (with git-spice also installed):** Branches are created via `wt switch --create` and are tracked in git-spice best-effort. The base picker shows all local branches (trunk, tracked stack, every other local branch). When absent, git-spice creates and tracks the branch when the base is tracked, and falls back to a plain git branch with a warning otherwise. | Worktrees are created at `.claude/worktrees/`. |
 | **notifier** (`alerter`, `osascript`) | Session state updates silently (no desktop notifications). Awaiting-input state is still recorded in status.json and visible in the dashboard. Desktop notifications are **macOS-only**. `alerter` provides full-fidelity notifications (sound, per-session replacement, click-to-focus); `osascript` is the reduced-fidelity fallback (formatting only — no click-to-focus). | Install alerter: `brew install vjeantet/tap/alerter` (note: this is a **tap**, not homebrew-core). If a toast vanishes before you can click it, the setting to look at is System Settings → Notifications → **Terminal** (alerter delivers under Terminal's identity, so look for Terminal, not alerter) → style Alerts rather than Banners. **Unverified:** whether that makes these toasts persist was never observed — System Settings cannot be driven programmatically, so it is yours to confirm, and on at least one machine `com.apple.Terminal` is absent from `com.apple.ncprefs.plist` entirely (while delivery still works), so the row may not appear until macOS registers it. Click-to-focus requires a running `afk dash` (which records the pane metadata); without it the toast still appears with formatting, sound, and grouping but has no Focus button. |
 
-**Push notifications** (`afk inbox`) use `ntfy_url` in `afk.toml` and need no desktop notifier, so they work on Linux; with no `ntfy_url` they are silent.
+**Push notifications** (`afk inbox`) use `ntfy_url` (from `afk.local.toml`, or `afk.toml`) and need no desktop notifier, so they work on Linux; with no `ntfy_url` they are silent.
 
 None of these absences cause failures; the CLI degrades gracefully. The only hard requirement is **git** (and **Claude Code CLI**, for `/afk:go`; **Codex CLI**, for `--provider codex` sessions; **OpenCode CLI**, for `--provider opencode` sessions).
 
@@ -761,7 +876,11 @@ The binary is organized into packages:
 - **internal/ui** — Bubble Tea dashboard (TUI, keybindings, panels)
 - **internal/governor** — The usage governor's decision: one pure function from a usage reading to `run`, `no_launch`, `pause`, `hold` or `refuse`
 - **internal/usagestate** — Reads and writes `usage.json`, the last usage reading, under afk's per-machine state directory
-- **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` reader (`[notify]` only), and the desktop and ntfy notification senders
+- **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` and `afk.local.toml` reader (`plan` and `[notify]`), and the desktop and ntfy notification senders
+- **internal/daemon** — The build loop behind `afk daemon`: one pure function (`Decide`) picks what to do on a pass, and an executor carries it out
+- **internal/daemonconfig** — Reads `config.toml`, the daemon's machine config (projects, tick, stall limit)
+- **internal/daemonstate** — The pause flag, each project's `daemon.json` and the one-daemon-per-machine lock
+- **internal/decisionlog** — The append-only record of every decision, `.afk/log/decisions.jsonl`
 - **internal/pluginstall** — `afk plugin install`: writes the embedded plugins and drives each agent CLI's install
 - **plugins/afk** — The Claude Code and Codex plugin (skills, hooks, Workflow scripts). `plugins/afk/skills/conductor/status-schema.md` is the binding status.json contract.
 - **plugins/afk-opencode** — The OpenCode V2 port of the same plugin; see its `PROVENANCE.md` for the porting glossary

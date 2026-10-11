@@ -1,7 +1,10 @@
 package host
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -115,12 +118,69 @@ func escalate(ladder []rung, exited <-chan struct{}, send func(syscall.Signal)) 
 // (status-schema.md §7 matches hooks on session_id equality), killing that
 // session's notifications and awaiting_input writes. Plain --resume reuses the
 // recorded id, which is also why a restart never writes to status.json at all.
-func resumeArgv(providerName, sessionID string) ([]string, error) {
+//
+// unattended passes the resume command through the provider's unattended
+// permission mode. A provider that has no such mode is an error here, never a
+// plain resume: a session that was running with nobody at the terminal and is
+// resumed in a mode that asks questions stops at the first permission dialog,
+// inside a host nobody is attached to, and looks alive for ever.
+func resumeArgv(providerName, sessionID string, unattended bool) ([]string, error) {
 	p, err := provider.Lookup(providerName)
 	if err != nil {
 		return nil, err
 	}
-	return p.ResumeArgv(sessionID), nil
+	argv := p.ResumeArgv(sessionID)
+	if !unattended {
+		return argv, nil
+	}
+	argv, err = p.Unattended(argv)
+	if err != nil {
+		return nil, fmt.Errorf("this session runs unattended, and provider %q cannot be resumed that way: %w", p.Name(), err)
+	}
+	return argv, nil
+}
+
+// UnattendedMarkerName is the file name of the unattended marker: an empty
+// file .afk/<name>/unattended, a sibling of status.json and host.json, whose
+// existence means the session's child runs in the provider's unattended
+// permission mode. internal/session writes it at creation and reads it when
+// it spawns a host; this package reads it when it restarts a child.
+//
+// The name is exported from here because both packages need it and this one
+// cannot import internal/session (session imports host). It is a file and
+// not a host.json or status.json field on purpose: status.json's keys are an
+// external contract, and host.json is deleted when a host stops, which is
+// exactly when the dashboard's relaunch needs to know the mode.
+const UnattendedMarkerName = "unattended"
+
+// unattendedMarkerPath is the marker's location, derived from MetaPath for
+// the reason statusPath gives: the session directory is configuration, and a
+// second derivation of it could disagree with the first.
+func (h *hostRuntime) unattendedMarkerPath() string {
+	return filepath.Join(filepath.Dir(h.cfg.MetaPath), UnattendedMarkerName)
+}
+
+// unattendedMarker reports whether the marker at path exists. It is read ON
+// DISK at every restart, like resumeSessionID's id and for a related reason:
+// the host has no other carrier for the mode. The host's flags do not name it
+// (the child argv it was started with is opaque to the host, which must not
+// know any provider's flag), and a value cached at start would be wrong for a
+// session whose marker was added or removed since by the owner.
+//
+// Anything that exists at the path counts, matching internal/session's
+// reader. A stat failure other than "not there" is an error rather than
+// "attended": when the host cannot tell which mode the session runs in,
+// guessing the mode that asks questions is the one wrong answer that hangs
+// without a trace.
+func unattendedMarker(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("cannot tell whether this session runs unattended: %w", err)
 }
 
 // statusPath is the session's status.json: host.json's documented sibling,
@@ -204,14 +264,21 @@ func (h *hostRuntime) beginRestart() {
 }
 
 // restartArgv resolves everything a restart needs before the child is
-// touched: the recorded session id and the configured provider's resume
-// command for it. Either failing is a refusal, reported by beginRestart.
+// touched: the recorded session id, whether the session runs unattended, and
+// the configured provider's resume command for both. Any of them failing is a
+// refusal, reported by beginRestart, which leaves the child as it was. That
+// holds for the unattended mode too: there is no fall back to a plain resume
+// (see resumeArgv).
 func (h *hostRuntime) restartArgv() ([]string, error) {
 	sessionID, err := resumeSessionID(h.statusPath())
 	if err != nil {
 		return nil, err
 	}
-	return resumeArgv(h.cfg.Provider, sessionID)
+	unattended, err := unattendedMarker(h.unattendedMarkerPath())
+	if err != nil {
+		return nil, err
+	}
+	return resumeArgv(h.cfg.Provider, sessionID, unattended)
 }
 
 // finishRestart is the serve-loop half of a restart: retire the reaped

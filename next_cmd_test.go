@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/nexttask"
@@ -88,6 +89,65 @@ func TestNextOutcomes(t *testing.T) {
 			}
 			if stdout != tt.want {
 				t.Errorf("stdout %q want %q", stdout, tt.want)
+			}
+		})
+	}
+}
+
+// TestNextWithInbox runs afk next against a real inbox folder.
+//
+// Load-bearing rows: "answered item" releases the parked task (the whole point
+// of reading the inbox); "open item" keeps it parked; "item missing" keeps it
+// parked, since a deleted item is not an answer.
+func TestNextWithInbox(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer bool
+		add    bool
+		want   string
+	}{
+		{name: "answered item", add: true, answer: true, want: "T1.1  First\n"},
+		{name: "open item", add: true, want: "Nothing to start: waiting on you for T1.1 (inbox items ITEM).\n"},
+		{name: "item missing", want: "Nothing to start: waiting on you for T1.1 (inbox items abcd23).\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := ledgerCmdProject(t, ledgerCmdPlan)
+			id := "abcd23"
+			if tt.add {
+				store := inbox.Store{Dir: inbox.Dir(project)}
+				it, err := store.Add(inbox.NewItem{Task: "T1.1", Kind: "question", Blocking: true, Title: "Which?"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				id = it.ID
+				if tt.answer {
+					if _, err := store.Answer(id, "yes", "cli"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := ledger.Update(project, func(l *ledger.Ledger) error {
+				if _, err := l.Set("T1.1", ledger.Parked, nil); err != nil {
+					return err
+				}
+				for i := range l.Tasks {
+					if l.Tasks[i].ID == "T1.1" {
+						l.Tasks[i].ParkedOn = []string{id}
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := runNextCmd(t, project)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			want := strings.ReplaceAll(tt.want, "ITEM", id)
+			if stdout != want {
+				t.Errorf("stdout %q want %q", stdout, want)
 			}
 		})
 	}

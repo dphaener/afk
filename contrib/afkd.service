@@ -1,0 +1,34 @@
+# afkd.service: runs `afk daemon` as a systemd USER unit.
+#
+# Install it as your normal user, never as root. The agent CLI refuses its
+# unattended mode for root, so a root daemon can never start a task. See
+# contrib/README.md for the install commands.
+
+[Unit]
+Description=afk build daemon
+# There is no After=network-online.target here on purpose. That is a system
+# target, and a user unit cannot order itself against it.
+
+[Service]
+ExecStart=%h/bin/afk daemon
+
+# The agent CLI, git and gh must be on the daemon's PATH, and a user unit does
+# not read your shell profile. Uncomment and edit this line to match where
+# they are installed on your machine.
+#Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# A bad config.toml makes the daemon exit 1. Waiting 30 seconds before each
+# restart keeps that from flooding the journal while you fix the file.
+Restart=on-failure
+RestartSec=30
+
+# Session hosts must outlive the daemon. The default (control-group) would kill
+# every agent session when the daemon stops or restarts; with "process" only
+# the daemon itself is stopped and the next start picks the sessions up again.
+KillMode=process
+
+# Private temporary folders are left off on purpose. Session sockets live
+# under the temporary folder, and `afk attach` must be able to find them.
+
+[Install]
+WantedBy=default.target

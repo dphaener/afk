@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dphaener/afk/internal/host"
+	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/spice"
 )
 
@@ -2115,6 +2116,470 @@ func buildServeConfigLike(flags, child []string) (map[string]string, error) {
 		out[rest[i]] = rest[i+1]
 	}
 	return out, nil
+}
+
+// --- unattended mode ------------------------------------------------------
+
+// unattendedLaunch is what the default provider says an unattended launch
+// looks like. The tests below compare against it instead of spelling the
+// option out, because this package must not know any provider's option: the
+// whole translation is p.Unattended.
+func unattendedLaunch(t *testing.T, name string, scratch, autonomous bool) []string {
+	t.Helper()
+	p, err := provider.Lookup("")
+	if err != nil {
+		t.Fatalf("provider.Lookup(\"\"): %v", err)
+	}
+	plain := p.LaunchArgv(name, scratch, autonomous)
+	argv, err := p.Unattended(plain)
+	if err != nil {
+		t.Fatalf("the default provider has no unattended mode: %v", err)
+	}
+	if reflect.DeepEqual(argv, plain) {
+		t.Fatalf("the default provider's unattended argv equals its plain one (%q); these tests would prove nothing", argv)
+	}
+	return argv
+}
+
+// providerWithoutUnattended finds a provider that reports
+// ErrUnattendedUnsupported by asking each one, so no provider is named here.
+func providerWithoutUnattended(t *testing.T) string {
+	t.Helper()
+	for _, name := range provider.Names() {
+		p, err := provider.Lookup(name)
+		if err != nil {
+			t.Fatalf("provider.Lookup(%q): %v", name, err)
+		}
+		if _, err := p.Unattended(p.LaunchArgv("probe", false, false)); errors.Is(err, provider.ErrUnattendedUnsupported) {
+			return name
+		}
+	}
+	t.Skip("every provider has an unattended mode; nothing to refuse")
+	return ""
+}
+
+// childOf returns the child argv of a host argv: everything after `--`.
+func childOf(t *testing.T, args []string) []string {
+	t.Helper()
+	for i, a := range args {
+		if a == "--" {
+			return args[i+1:]
+		}
+	}
+	t.Fatalf("host argv has no `--` separator: %v", args)
+	return nil
+}
+
+// TestHostArgsUnattended pins the child argv of an unattended spawn against
+// what the provider itself returns. Load-bearing rows: the three "unattended"
+// rows show the mode reaches every launch shape (planned, autonomous,
+// one-off), and "off" is the row that keeps today's sessions as they are: the
+// same spec with the field clear must give exactly the plain provider argv.
+// TestHostArgs above pins those plain bytes literally and is left untouched.
+func TestHostArgsUnattended(t *testing.T) {
+	plain, err := provider.Lookup("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		spec HostSpawn
+		want []string
+	}{
+		{
+			name: "unattended planned session",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing", Unattended: true},
+			want: unattendedLaunch(t, "billing", false, false),
+		},
+		{
+			name: "unattended autonomous session",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing", Autonomous: true, Unattended: true},
+			want: unattendedLaunch(t, "billing", false, true),
+		},
+		{
+			name: "unattended one-off",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing", Scratch: true, Unattended: true},
+			want: unattendedLaunch(t, "billing", true, false),
+		},
+		{
+			name: "off",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing", Autonomous: true},
+			want: plain.LaunchArgv("billing", false, true),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := hostArgs(tt.spec, "/sock")
+			got := childOf(t, args)
+			t.Logf("child argv: %q", got)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("child argv = %#v\nwant %#v", got, tt.want)
+			}
+			// The mode changes the child argv only: the host's own flags are
+			// the same with it on or off.
+			off := tt.spec
+			off.Unattended = false
+			offArgs := hostArgs(off, "/sock")
+			hostFlags := args[:len(args)-len(got)]
+			offFlags := offArgs[:len(offArgs)-len(childOf(t, offArgs))]
+			if !reflect.DeepEqual(hostFlags, offFlags) {
+				t.Errorf("host flags changed with the mode:\n on  %#v\n off %#v", hostFlags, offFlags)
+			}
+			if line := childCommandLine(tt.spec); !strings.HasPrefix(line, got[0]) || strings.Count(line, `"`) != 2*(len(got)-1) {
+				t.Errorf("childCommandLine = %q does not render the %d-word child argv", line, len(got))
+			}
+		})
+	}
+}
+
+// TestResolveSpawnUnattended pins how SpawnHost settles a spawn's mode.
+// Load-bearing rows: "marker, field clear" is the dashboard's relaunch of a
+// stopped host, which builds a HostSpawn with only Name and Worktree: without
+// that row passing, a daemon-run session relaunched from the dashboard would
+// wait at a permission dialog nobody sees. "no marker, field clear" is every
+// session that exists today and must come out untouched. The two "no mode"
+// rows must be errors, never a plain launch, whichever way the mode was asked
+// for.
+func TestResolveSpawnUnattended(t *testing.T) {
+	without := providerWithoutUnattended(t)
+	const name = "relaunch"
+	cases := []struct {
+		name      string
+		marker    bool
+		field     bool
+		provider  string
+		want      bool
+		wantError bool
+	}{
+		{name: "no marker, field clear", want: false},
+		{name: "marker, field clear", marker: true, want: true},
+		{name: "no marker, field set", field: true, want: true},
+		{name: "marker and field", marker: true, field: true, want: true},
+		{name: "provider with no mode, field clear and no marker", provider: without, want: false},
+		{name: "provider with no mode, field set", provider: without, field: true, wantError: true},
+		{name: "provider with no mode, marker", provider: without, marker: true, wantError: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			wt := t.TempDir()
+			dir := filepath.Join(wt, ".afk", name)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.marker {
+				if err := WriteUnattendedMarker(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			spec := HostSpawn{Name: name, Worktree: wt, Provider: tt.provider, Unattended: tt.field}
+			got, err := resolveSpawnUnattended(spec)
+			if tt.wantError {
+				if !errors.Is(err, provider.ErrUnattendedUnsupported) {
+					t.Fatalf("resolveSpawnUnattended = %+v, err %v; want ErrUnattendedUnsupported", got, err)
+				}
+				t.Logf("refused with: %v", err)
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveSpawnUnattended: %v", err)
+			}
+			if got.Unattended != tt.want {
+				t.Fatalf("Unattended = %v, want %v", got.Unattended, tt.want)
+			}
+			child := childOf(t, hostArgs(got, "/sock"))
+			t.Logf("child argv: %q", child)
+			p, err := provider.Lookup(tt.provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := p.LaunchArgv(name, false, false)
+			if tt.want {
+				want = unattendedLaunch(t, name, false, false)
+			}
+			if !reflect.DeepEqual(child, want) {
+				t.Errorf("child argv = %#v\nwant %#v", child, want)
+			}
+		})
+	}
+}
+
+// TestSpawnHostCarriesTheUnattendedMarker runs the dashboard's relaunch for
+// real: SpawnHost is given only Name and Worktree, the stand-in for the afk
+// binary records the argv it was started with, and the child argv in it must
+// be the provider's unattended launch when the marker exists and the plain
+// one when it does not. TestResolveSpawnUnattended proves the resolution;
+// this proves SpawnHost actually runs it before building the host command.
+func TestSpawnHostCarriesTheUnattendedMarker(t *testing.T) {
+	plain, err := provider.Lookup("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "relaunch"
+	for _, marker := range []bool{true, false} {
+		t.Run(fmt.Sprintf("marker=%v", marker), func(t *testing.T) {
+			shortTmpDir(t)
+			wt := t.TempDir()
+			dir := filepath.Join(wt, ".afk", name)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if marker {
+				if err := WriteUnattendedMarker(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Written to a temp name and renamed, so the file is whole the
+			// moment it appears.
+			record := filepath.Join(t.TempDir(), "argv")
+			script := filepath.Join(t.TempDir(), "fake-afk")
+			body := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '" + record + ".tmp'\nmv '" + record + ".tmp' '" + record + "'\n"
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			d := Deps{Executable: func() (string, error) { return script, nil }}
+			if _, err := SpawnHost(HostSpawn{Name: name, Worktree: wt}, d); err != nil {
+				t.Fatalf("SpawnHost: %v", err)
+			}
+			var raw []byte
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				raw, err = os.ReadFile(record)
+				if err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the stand-in host never recorded its argv: %v", err)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			child := childOf(t, strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n"))
+			t.Logf("child argv handed to the host: %q", child)
+			want := plain.LaunchArgv(name, false, false)
+			if marker {
+				want = unattendedLaunch(t, name, false, false)
+			}
+			if !reflect.DeepEqual(child, want) {
+				t.Fatalf("child argv = %#v\nwant %#v", child, want)
+			}
+		})
+	}
+}
+
+// TestSpawnHostRefusesUnattendedWithoutAMode: a direct spawn of an unattended
+// session under a provider with no unattended mode fails with a plain message
+// before the afk binary is even located, so no host process is started.
+// Both rows are load-bearing: "field" is a caller asking outright, "marker"
+// is a relaunch of a session whose files say it runs unattended.
+func TestSpawnHostRefusesUnattendedWithoutAMode(t *testing.T) {
+	without := providerWithoutUnattended(t)
+	const name = "relaunch"
+	for _, how := range []string{"field", "marker"} {
+		t.Run(how, func(t *testing.T) {
+			wt := t.TempDir()
+			dir := filepath.Join(wt, ".afk", name)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// The provider comes from its sidecar, as it does on a relaunch.
+			if err := WriteProviderMarker(dir, without); err != nil {
+				t.Fatal(err)
+			}
+			spec := HostSpawn{Name: name, Worktree: wt}
+			if how == "field" {
+				spec.Unattended = true
+			} else if err := WriteUnattendedMarker(dir); err != nil {
+				t.Fatal(err)
+			}
+			called := 0
+			d := Deps{Executable: func() (string, error) { called++; return exec.LookPath("true") }}
+			h, err := SpawnHost(spec, d)
+			if !errors.Is(err, provider.ErrUnattendedUnsupported) {
+				t.Fatalf("SpawnHost = %+v, err %v; want ErrUnattendedUnsupported", h, err)
+			}
+			t.Logf("SpawnHost refused with: %v", err)
+			for _, want := range []string{name, without, "unattended"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+			if called != 0 {
+				t.Errorf("Executable called %d times; the refusal must come before anything is forked", called)
+			}
+			if h.PID != 0 {
+				t.Errorf("a host process was started (pid %d)", h.PID)
+			}
+		})
+	}
+}
+
+// TestBuildRejectsUnattendedWithoutAMode: Build's promise is that an error
+// aborts before any side effect. For a provider with no unattended mode that
+// means no git command at all is recorded (no branch, no worktree) and
+// nothing is written, in every mode including dry-run. The "supported" row is
+// the control: the same config under the default provider must build.
+func TestBuildRejectsUnattendedWithoutAMode(t *testing.T) {
+	without := providerWithoutUnattended(t)
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"planned", Config{}},
+		{"autonomous", Config{Autonomous: true}},
+		{"one-off", Config{Scratch: true}},
+		{"dry-run", Config{DryRun: true}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			fr := &fakeRunner{}
+			d := baseDeps(t, fr)
+			cfg := tt.cfg
+			cfg.Name, cfg.RepoDir, cfg.Provider, cfg.Unattended = "no-mode", repo, without, true
+			p, err := Build(cfg, d)
+			if !errors.Is(err, provider.ErrUnattendedUnsupported) {
+				t.Fatalf("Build = %v, err %v; want ErrUnattendedUnsupported", p, err)
+			}
+			t.Logf("Build refused with: %v", err)
+			if len(fr.calls) != 0 {
+				t.Errorf("Build ran commands before refusing: %+v", fr.calls)
+			}
+			if entries, _ := os.ReadDir(repo); len(entries) != 0 {
+				t.Errorf("Build left files behind: %v", entries)
+			}
+			// Create is Build then Run, so it must refuse the same way.
+			if err := Create(cfg, d); !errors.Is(err, provider.ErrUnattendedUnsupported) {
+				t.Errorf("Create err = %v, want ErrUnattendedUnsupported", err)
+			}
+		})
+	}
+	t.Run("supported", func(t *testing.T) {
+		fr := &fakeRunner{}
+		d := baseDeps(t, fr)
+		if _, err := Build(Config{Name: "has-mode", RepoDir: t.TempDir(), Unattended: true}, d); err != nil {
+			t.Fatalf("Build under the default provider: %v", err)
+		}
+	})
+}
+
+// TestUnattendedStepOrder asserts, on the assembled steps, that the marker is
+// its own step after the session directory exists and before the host
+// launch, in both creation modes. Load-bearing: the order (every spawn after
+// the first has only the marker to go by, so it must be on disk before a host
+// exists) and the absence rows, since a plan without the mode must gain no
+// step.
+func TestUnattendedStepOrder(t *testing.T) {
+	const name = "unatt-order"
+	const markerDesc = "Write unattended marker .afk/" + name + "/unattended"
+	for _, scratch := range []bool{false, true} {
+		for _, unattended := range []bool{true, false} {
+			t.Run(fmt.Sprintf("scratch=%v/unattended=%v", scratch, unattended), func(t *testing.T) {
+				fr := &fakeRunner{}
+				d := baseDeps(t, fr)
+				p, err := Build(Config{Name: name, RepoDir: t.TempDir(), Scratch: scratch, Unattended: unattended}, d)
+				if err != nil {
+					t.Fatalf("Build: %v", err)
+				}
+				after := "Seed .afk/" + name + "/status.json"
+				if scratch {
+					after = "for the session host's files"
+				}
+				dir := stepIndex(p.Steps, after)
+				marker := stepIndex(p.Steps, markerDesc)
+				host := stepIndex(p.Steps, "Launch detached session host")
+				if dir < 0 || host < 0 {
+					t.Fatalf("dir=%d host=%d; steps missing", dir, host)
+				}
+				if !unattended {
+					if marker != -1 {
+						t.Fatalf("marker step present without Unattended at %d", marker)
+					}
+					return
+				}
+				if !(dir < marker && marker < host) {
+					t.Fatalf("order dir=%d marker=%d host=%d, want dir < marker < host", dir, marker, host)
+				}
+				if p.Steps[marker].undo != nil {
+					t.Errorf("marker step has an undo; rollback removes the session dir and the marker with it")
+				}
+			})
+		}
+	}
+}
+
+// TestCreateUnattended runs the plan, live and as a dry run. Load-bearing:
+// live, the marker exists exactly when Unattended is set (and the autonomous
+// marker is independent of it); dry, the plan lists the marker write and the
+// launch line is the provider's unattended argv, and nothing is created. The
+// "off" rows print exactly the plain launch line.
+func TestCreateUnattended(t *testing.T) {
+	const name = "unatt-live"
+	quoted := func(argv []string) string {
+		parts := []string{argv[0]}
+		for _, a := range argv[1:] {
+			parts = append(parts, fmt.Sprintf("%q", a))
+		}
+		return strings.Join(parts, " ")
+	}
+	plain, err := provider.Lookup("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		unattended bool
+		autonomous bool
+		dry        bool
+	}{
+		{name: "live unattended", unattended: true},
+		{name: "live unattended autonomous", unattended: true, autonomous: true},
+		{name: "live off"},
+		{name: "live autonomous only", autonomous: true},
+		{name: "dry unattended", unattended: true, dry: true},
+		{name: "dry off", dry: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			shortTmpDir(t)
+			repo := t.TempDir()
+			fr := &fakeRunner{}
+			d := baseDeps(t, fr)
+			var out strings.Builder
+			d.Stdout = &out
+			cfg := Config{Name: name, RepoDir: repo, Unattended: tt.unattended, Autonomous: tt.autonomous, DryRun: tt.dry}
+			if err := Create(cfg, d); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			printed := out.String()
+			want := plain.LaunchArgv(name, false, tt.autonomous)
+			if tt.unattended {
+				want = unattendedLaunch(t, name, false, tt.autonomous)
+			}
+			launch := "Launch detached session host running: " + quoted(want) + "\n"
+			if !strings.Contains(printed, launch) {
+				t.Errorf("launch line missing %q:\n%s", launch, printed)
+			}
+			markerLine := "Write unattended marker .afk/" + name + "/unattended"
+			if got := strings.Contains(printed, markerLine); got != tt.unattended {
+				t.Errorf("marker line present = %v, want %v:\n%s", got, tt.unattended, printed)
+			}
+			if tt.dry {
+				if _, err := os.Stat(filepath.Join(repo, ".afk")); !os.IsNotExist(err) {
+					t.Errorf(".afk created during dry-run (err=%v)", err)
+				}
+				if _, err := os.Stat(filepath.Join(repo, ".claude")); !os.IsNotExist(err) {
+					t.Errorf("a worktree folder was created during dry-run (err=%v)", err)
+				}
+				return
+			}
+			wt := filepath.Join(repo, ".claude", "worktrees", name)
+			if got := IsUnattended(wt, name); got != tt.unattended {
+				t.Errorf("IsUnattended = %v, want %v", got, tt.unattended)
+			}
+			if got := IsAutonomous(wt, name); got != tt.autonomous {
+				t.Errorf("IsAutonomous = %v, want %v", got, tt.autonomous)
+			}
+		})
+	}
 }
 
 // TestBuildHostCmdStdioAndSetsid is the compile-time half of the TUI-freeze

@@ -26,6 +26,9 @@ import (
 //   - `inbox` with stdout PIPED must dispatch for the same reason: `afk inbox
 //     add` is typed by an agent with no terminal, and its words and flags must
 //     reach cmdInbox untouched.
+//   - `daemon` with stdout PIPED must dispatch: under a service manager it has
+//     no terminal, ever. A stdout gate on this name would stop the build loop
+//     in exactly the place it is meant to run.
 //   - []string{""} (`afk ""`) is routeUnknownSubcommand with an EMPTY name, not
 //     routeUsageError and not the dashboard. An earlier revision used a
 //     `name != ""` sentinel to decide whether to print the diagnostic, which
@@ -130,6 +133,38 @@ func TestRouteArgs(t *testing.T) {
 			wantKind:  routeSubcommand,
 			wantName:  "inbox",
 			wantArgs:  []string{"add", "--kind", "notice", "--title", "x", "--no-block"},
+		},
+		{
+			name:      "daemon --once with stdout piped -> subcommand, flag passed through",
+			args:      []string{"daemon", "--once"},
+			stdoutTTY: false,
+			wantKind:  routeSubcommand,
+			wantName:  "daemon",
+			wantArgs:  []string{"--once"},
+		},
+		{
+			name:      "daemon status -> subcommand carrying the word",
+			args:      []string{"daemon", "status"},
+			stdoutTTY: true,
+			wantKind:  routeSubcommand,
+			wantName:  "daemon",
+			wantArgs:  []string{"status"},
+		},
+		{
+			name:      "pause with a project -> subcommand carrying the project",
+			args:      []string{"pause", "demo"},
+			stdoutTTY: true,
+			wantKind:  routeSubcommand,
+			wantName:  "pause",
+			wantArgs:  []string{"demo"},
+		},
+		{
+			name:      "resume with no project -> subcommand, no args",
+			args:      []string{"resume"},
+			stdoutTTY: false,
+			wantKind:  routeSubcommand,
+			wantName:  "resume",
+			wantArgs:  []string{},
 		},
 		{
 			name:      "dash -> subcommand, no args",
