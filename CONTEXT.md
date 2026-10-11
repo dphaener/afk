@@ -30,3 +30,10 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Usage snapshot**: one probe's result (windows, reset times, whether extra usage is on), kept per machine in `usage.json`.
 - **Extra usage**: paid overage beyond the subscription; afk refuses to run while it is on.
 - **Governor**: the pure decision that turns a usage snapshot into one action: run, launch nothing new, pause, hold, or refuse.
+- **Inbox item**: one JSON file in the inbox, written only by `afk inbox add` (or, later, the daemon), with a kind, a title and whether it blocks.
+- **Kind**: what an inbox item is: `question`, `env_var`, `external_action`, `verification`, `failure` or `notice`.
+- **Blocking**: an inbox item the task cannot go on without; the task parks until the owner answers it.
+- **Open**: an inbox item nobody has answered yet.
+- **Assumed**: on a non-blocking question, the answer the agent went ahead with instead of waiting.
+- **ntfy**: the push-notification service afk posts to when an inbox item needs the owner, set by `[notify] ntfy_url` in `afk.toml`.
+- **Main checkout**: the project's original folder, as opposed to a session's worktree; `.afk/inbox/` lives there.

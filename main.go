@@ -17,6 +17,7 @@ var subcommands = map[string]func([]string){
 	"plugin": cmdPlugin,
 	"plan":   cmdPlan,
 	"usage":  cmdUsage,
+	"inbox":  cmdInbox,
 	"_host":  cmdHost,
 }
 
@@ -173,6 +174,9 @@ Subcommands:
   usage          Show how much of the agent's usage windows is spent, when they
                  reset, and what the usage governor would do:
                  afk usage [--provider NAME] [--refresh]
+  inbox          List the things that need you; 'inbox show <id>' shows one,
+                 'inbox answer <id> <text>' answers it, and 'inbox add' (mostly run
+                 by the agent) adds one and sends a push notification if set up
 
 Use 'afk <subcommand> --help' for subcommand options.
 

@@ -1,0 +1,231 @@
+package notify
+
+import (
+	"context"
+	"io"
+	"mime"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"unicode/utf8"
+)
+
+// TestNtfyPriority pins the whole kind x blocking table. Load-bearing rows:
+// every blocking row notifies (a parked task must never be silent), and the
+// non-blocking question and notice rows do not (assumed answers arrive by the
+// dozen, so notifying on them would train the owner to ignore the topic). The
+// unknown-kind rows keep a future kind from going quiet when it blocks.
+func TestNtfyPriority(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     string
+		blocking bool
+		wantPrio int
+		wantSend bool
+	}{
+		{"failure blocking", "failure", true, 5, true},
+		{"failure not blocking", "failure", false, 4, true},
+		{"question blocking", "question", true, 4, true},
+		{"question not blocking", "question", false, 0, false},
+		{"env_var blocking", "env_var", true, 4, true},
+		{"env_var not blocking", "env_var", false, 3, true},
+		{"external_action blocking", "external_action", true, 4, true},
+		{"external_action not blocking", "external_action", false, 3, true},
+		{"verification blocking", "verification", true, 4, true},
+		{"verification not blocking", "verification", false, 2, true},
+		{"notice blocking", "notice", true, 4, true},
+		{"notice not blocking", "notice", false, 0, false},
+		{"unknown blocking", "mystery", true, 4, true},
+		{"unknown not blocking", "mystery", false, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, ok := NtfyPriority(tt.kind, tt.blocking)
+			if p != tt.wantPrio || ok != tt.wantSend {
+				t.Errorf("NtfyPriority(%q, %v) = (%d, %v), want (%d, %v)", tt.kind, tt.blocking, p, ok, tt.wantPrio, tt.wantSend)
+			}
+		})
+	}
+}
+
+type ntfyRecorded struct {
+	method, path, contentType, priority, title string
+	body                                       string
+}
+
+func ntfyServer(t *testing.T, status int, reply string) (*httptest.Server, *[]ntfyRecorded, *int32) {
+	t.Helper()
+	var got []ntfyRecorded
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&count, 1)
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, ntfyRecorded{
+			method: r.Method, path: r.URL.Path,
+			contentType: r.Header.Get("Content-Type"),
+			priority:    r.Header.Get("Priority"),
+			title:       r.Header.Get("Title"),
+			body:        string(b),
+		})
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, reply)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &got, &count
+}
+
+// TestNtfySend checks the one request that goes out. Load-bearing rows: the
+// exact-one-request assertion (no retry), the RFC 2047 title (a raw UTF-8
+// header is not reliably read by ntfy), the newline strip (a CR or LF in a
+// header value is header injection), the 3,500 byte cut on a rune boundary
+// (ntfy turns a message over 4,096 bytes into an attachment), and the
+// priority clamp.
+func TestNtfySend(t *testing.T) {
+	tests := []struct {
+		name      string
+		msg       NtfyMessage
+		wantPrio  string
+		wantTitle string // decoded
+		wantBody  func(string) bool
+	}{
+		{"plain", NtfyMessage{Title: "afk: Set KEY", Body: "hello", Priority: 4}, "4", "afk: Set KEY",
+			func(b string) bool { return b == "hello" }},
+		{"newline in title", NtfyMessage{Title: "a\r\nb\nc", Body: "x", Priority: 5}, "5", "a  b c",
+			func(b string) bool { return b == "x" }},
+		{"non-ascii title", NtfyMessage{Title: "afk: déploiement ✓", Body: "x", Priority: 3}, "3", "afk: déploiement ✓",
+			func(b string) bool { return b == "x" }},
+		{"priority zero becomes 3", NtfyMessage{Title: "t", Body: "x", Priority: 0}, "3", "t",
+			func(b string) bool { return true }},
+		{"priority six becomes 3", NtfyMessage{Title: "t", Body: "x", Priority: 6}, "3", "t",
+			func(b string) bool { return true }},
+		{"long multibyte body", NtfyMessage{Title: "t", Body: strings.Repeat("é✓", 1250), Priority: 3}, "3", "t",
+			func(b string) bool { return len(b) <= 3500 && len(b) > 3490 && utf8.ValidString(b) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, got, count := ntfyServer(t, 200, "{}")
+			if err := (Ntfy{URL: srv.URL + "/topic"}).Send(context.Background(), tt.msg); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if *count != 1 {
+				t.Fatalf("requests = %d, want exactly 1", *count)
+			}
+			r := (*got)[0]
+			if r.method != "POST" || r.path != "/topic" {
+				t.Errorf("got %s %s", r.method, r.path)
+			}
+			if r.contentType != "text/plain; charset=utf-8" {
+				t.Errorf("Content-Type = %q", r.contentType)
+			}
+			if r.priority != tt.wantPrio {
+				t.Errorf("Priority = %q, want %q", r.priority, tt.wantPrio)
+			}
+			dec, err := new(mime.WordDecoder).DecodeHeader(r.title)
+			if err != nil || dec != tt.wantTitle {
+				t.Errorf("Title %q decodes to %q (%v), want %q", r.title, dec, err, tt.wantTitle)
+			}
+			if tt.name == "non-ascii title" && !strings.HasPrefix(r.title, "=?UTF-8?b?") {
+				t.Errorf("non-ASCII title not RFC 2047 B-encoded: %q", r.title)
+			}
+			if !tt.wantBody(r.body) {
+				t.Errorf("unexpected body (len %d)", len(r.body))
+			}
+		})
+	}
+}
+
+// TestNtfySendStatusError: a non-2xx answer is an error carrying the status and
+// the server's own words when the body is JSON with an "error" string; a
+// non-JSON body adds nothing, and a 2xx other than 200 is still success.
+func TestNtfySendStatusError(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		reply   string
+		wantErr bool
+		want    []string
+	}{
+		{"429 json error", 429, `{"code":42908,"error":"limit reached: too many requests"}`, true, []string{"429", "limit reached: too many requests"}},
+		{"500 plain body", 500, "oops", true, []string{"500"}},
+		{"202 accepted", 202, "", false, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _, count := ntfyServer(t, tt.status, tt.reply)
+			err := (Ntfy{URL: srv.URL + "/t"}).Send(context.Background(), NtfyMessage{Title: "t", Body: "b", Priority: 3})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q lacks %q", err, w)
+				}
+			}
+			if *count != 1 {
+				t.Errorf("requests = %d, want 1 (no retry)", *count)
+			}
+		})
+	}
+}
+
+// TestNtfySendClosedServer: a server that is gone gives an error, not a panic.
+func TestNtfySendClosedServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	if err := (Ntfy{URL: url + "/t"}).Send(context.Background(), NtfyMessage{Title: "t", Priority: 3}); err == nil {
+		t.Fatal("want an error for a closed server")
+	}
+}
+
+// TestNtfySendBadURL: nothing is requested for an unusable address. The empty
+// and scheme rows are load-bearing because an unset ntfy_url must never turn
+// into a request to some default host.
+func TestNtfySendBadURL(t *testing.T) {
+	tests := []struct{ name, url string }{
+		{"empty", ""},
+		{"ftp scheme", "ftp://example.com/t"},
+		{"no scheme", "example.com/t"},
+		{"unparseable", "http://[::1"},
+		{"no host", "http:///t"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := (Ntfy{URL: tt.url}).Send(context.Background(), NtfyMessage{Title: "t", Priority: 3}); err == nil {
+				t.Fatalf("want an error for %q", tt.url)
+			}
+		})
+	}
+}
+
+// TestNtfySendRedact: the password in a URL must not appear in any error, for
+// a refused connection, a bad status and a malformed URL alike. The malformed
+// row matters because *url.Error prints the raw input.
+func TestNtfySendRedact(t *testing.T) {
+	srv, _, _ := ntfyServer(t, 403, `{"error":"forbidden"}`)
+	creds := strings.Replace(srv.URL, "http://", "http://user:secret@", 1)
+
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := strings.Replace(closed.URL, "http://", "http://user:secret@", 1)
+	closed.Close()
+
+	tests := []struct{ name, url string }{
+		{"bad status", creds + "/t"},
+		{"closed server", closedURL + "/t"},
+		{"malformed", "http://user:secret@[::1"},
+		{"bad scheme", "ftp://user:secret@example.com/t"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (Ntfy{URL: tt.url}).Send(context.Background(), NtfyMessage{Title: "t", Priority: 3})
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Errorf("error leaks the password: %v", err)
+			}
+		})
+	}
+}

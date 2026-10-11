@@ -228,6 +228,8 @@ existing project (nebari's 21 finished tasks) is seeded.
 Agents never write these files directly. They call `afk inbox add …`, which validates and writes
 atomically. The daemon also adds items (CI failed twice, deploy unhealthy, login expiring).
 
+Amended 2026-10-11 (T1.2 done): every key is always present (`""`, `[]` or `false` when unset), times are RFC 3339 UTC strings, the id is six characters, and only `{id}.json` files in the folder are items.
+
 ### 4.4 Decision log — `.afk/log/decisions.jsonl` (new; append-only)
 
 One line per decision anyone or anything made in the loop: `{at, task, session, kind, question,
@@ -713,6 +715,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
 - **Acceptance:** table tests for validation and for which items notify at which priority; the ntfy
   client is tested against an `httptest` server; adding a blocking item with `ntfy_url` set posts once;
   no notifier configured is not an error.
+- **Amended 2026-10-11 (T1.2 done):** later tasks may assume the following. (1) `afk inbox`, `afk inbox show <id>`, `afk inbox answer <id> <text|number>` and `afk inbox add --kind … --title … --block|--no-block [--task --body --option… --recommended --assumed --session --project]` exist; exit 0 done, 1 not found or already answered, 2 written wrongly; exactly one of `--block`/`--no-block` is required. (2) Items live in the **main checkout's** `.afk/inbox/{id}.json` even when the command runs in a session worktree; go through `internal/inbox` (`Store.Add/List/Get/Answer`), never the files. (3) `internal/projectconfig` reads only `[notify] ntfy_url` from `afk.toml`; fold it together with T1.1's loader. (4) `internal/notify` has `NtfyPriority(kind, blocking)` and `Ntfy.Send`; a non-blocking `question` or `notice` sends nothing, and a notification problem never fails `afk inbox add`. (5) The autonomous prompt parks with a blocking inbox item **and still sets `awaiting_input`**, so T2.1's stall rule (§5.3) must skip a session that has an open blocking item. (6) Plugin version is 5.1.0; the OpenCode port lags. See `## T1.2` in `docs/decisions.md`.
 
 #### T1.3 — Usage probe and governor decision
 - **Depends on:** T0.1

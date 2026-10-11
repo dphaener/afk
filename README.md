@@ -453,6 +453,68 @@ A provider with no way to report usage prints "Usage is unknown" and exits 0; th
 
 **Exit codes:** 0 when the report was printed, 1 when usage could not be read or the reading could not be saved, 2 when the command was written wrongly (an unknown flag, provider or extra word).
 
+### `afk inbox` — Things that need you
+
+The inbox is where afk puts anything only you can do: a credential to set, a dashboard to click through, a choice to make, something to check by hand. Instead of stopping a whole session to wait for you, the agent adds an item and either waits on that one task (a blocking item) or carries on (a non-blocking one). You read the list when you are ready.
+
+```bash
+afk inbox                                 # list the items
+afk inbox show <id>                       # show one item in full
+afk inbox answer <id> <text or number>    # answer an item
+afk inbox add --kind KIND --title "one line" --block|--no-block [flags]
+```
+
+`add` is mostly run by the agent, but you can run it too. It prints `Added inbox item <id>.` Every added item must say whether it stops the task, with exactly one of `--block` or `--no-block`; leaving both out, or giving both, is refused so a forgotten flag never parks a task by accident.
+
+- `--kind KIND` — Required. One of the six kinds below.
+- `--title TEXT` — Required. One line, at most 200 characters, saying what you have to do or know.
+- `--block` — The task waits for you.
+- `--no-block` — The task carries on.
+- `--body TEXT` — The detail.
+- `--task ID` — The master-plan task the item belongs to, like `T1.2`.
+- `--session NAME` — The session the item came from. When left out, afk uses the session whose `.afk/<name>/status.json` is in the folder you run the command from.
+- `--option TEXT` — One choice for a question. Repeat it for each choice (at least two). Only with `--kind question`.
+- `--recommended TEXT` — The option the agent recommends. It must match one of the options. Only with `--kind question`.
+- `--assumed TEXT` — The answer the agent went ahead with. Only with `--no-block`.
+- `--project DIR` — The project to work in. Works with every form and defaults to the current project.
+
+The six kinds:
+
+- `question` — A choice only you can make.
+- `env_var` — A credential or variable you must set.
+- `external_action` — Something to do outside the code: a dashboard, a device, a payment.
+- `verification` — Something to check by hand.
+- `failure` — Something went wrong and was not fixed.
+- `notice` — Something to know; nothing to do.
+
+**The list.** Each line is a marker, the id, the kind, the task (when any item has one) and the title. `!` is an open item that stops a task, `·` is an open item that does not, and `✓` is an answered one. Items that stop a task come first. A file in the inbox folder that afk cannot read is counted on a last line and never stops the list.
+
+**Answering.** Everything after the id is the answer, so quotes are not needed. On an item with options, a whole number in range picks that option; anything else is kept as you typed it. An empty answer is refused. The first answer is kept: answering an item twice changes nothing and exits 1.
+
+**Where items live.** One file per item, `.afk/inbox/<id>.json`, in the project's main folder, even when the command runs inside a session's worktree (so an item is never lost when the worktree is removed). The files are written by this command, not by hand.
+
+**Push notifications.** To get a push on your phone, put your [ntfy](https://ntfy.sh) topic in `afk.toml` in the project's top folder:
+
+```toml
+[notify]
+ntfy_url = "https://ntfy.sh/your-topic"
+```
+
+Only items that need you send one, and how loudly depends on the kind (ntfy priority 5 is the loudest):
+
+| Item | Priority |
+|---|---|
+| `failure`, stops a task | 5 |
+| `failure`, does not stop | 4 |
+| any other kind that stops a task | 4 |
+| `env_var` or `external_action`, does not stop | 3 |
+| `verification`, does not stop | 2 |
+| `question` or `notice`, does not stop | no notification |
+
+With no `afk.toml`, or no `ntfy_url` in it, afk sends nothing and that is not an error. The item is always written first. If `afk.toml` cannot be read, or the notification fails, afk prints a warning (`the item was added, but ...`) and still exits 0, so an agent never thinks the item was lost. A notification waits at most 10 seconds and is not retried.
+
+**Exit codes:** 0 when the command did what was asked (including an added item whose notification failed), 1 when the item was not found, was already answered, or a file could not be read or written, 2 when the command was written wrongly (for example neither `--block` nor `--no-block`).
+
 ---
 
 ## Session Model
@@ -562,6 +624,8 @@ A directory counts as a project only if it's a git repo root (a main checkout, n
 | **worktrunk** (`wt`) | **When present (with git-spice also installed):** Branches are created via `wt switch --create` and are tracked in git-spice best-effort. The base picker shows all local branches (trunk, tracked stack, every other local branch). When absent, git-spice creates and tracks the branch when the base is tracked, and falls back to a plain git branch with a warning otherwise. | Worktrees are created at `.claude/worktrees/`. |
 | **notifier** (`alerter`, `osascript`) | Session state updates silently (no desktop notifications). Awaiting-input state is still recorded in status.json and visible in the dashboard. Desktop notifications are **macOS-only**. `alerter` provides full-fidelity notifications (sound, per-session replacement, click-to-focus); `osascript` is the reduced-fidelity fallback (formatting only — no click-to-focus). | Install alerter: `brew install vjeantet/tap/alerter` (note: this is a **tap**, not homebrew-core). If a toast vanishes before you can click it, the setting to look at is System Settings → Notifications → **Terminal** (alerter delivers under Terminal's identity, so look for Terminal, not alerter) → style Alerts rather than Banners. **Unverified:** whether that makes these toasts persist was never observed — System Settings cannot be driven programmatically, so it is yours to confirm, and on at least one machine `com.apple.Terminal` is absent from `com.apple.ncprefs.plist` entirely (while delivery still works), so the row may not appear until macOS registers it. Click-to-focus requires a running `afk dash` (which records the pane metadata); without it the toast still appears with formatting, sound, and grouping but has no Focus button. |
 
+**Push notifications** (`afk inbox`) use `ntfy_url` in `afk.toml` and need no desktop notifier, so they work on Linux; with no `ntfy_url` they are silent.
+
 None of these absences cause failures; the CLI degrades gracefully. The only hard requirement is **git** (and **Claude Code CLI**, for `/afk:go`; **Codex CLI**, for `--provider codex` sessions; **OpenCode CLI**, for `--provider opencode` sessions).
 
 ---
@@ -604,6 +668,7 @@ The binary is organized into packages:
 - **internal/ui** — Bubble Tea dashboard (TUI, keybindings, panels)
 - **internal/governor** — The usage governor's decision: one pure function from a usage reading to `run`, `no_launch`, `pause`, `hold` or `refuse`
 - **internal/usagestate** — Reads and writes `usage.json`, the last usage reading, under afk's per-machine state directory
+- **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` reader (`[notify]` only), and the desktop and ntfy notification senders
 - **internal/pluginstall** — `afk plugin install`: writes the embedded plugins and drives each agent CLI's install
 - **plugins/afk** — The Claude Code and Codex plugin (skills, hooks, Workflow scripts). `plugins/afk/skills/conductor/status-schema.md` is the binding status.json contract.
 - **plugins/afk-opencode** — The OpenCode V2 port of the same plugin; see its `PROVENANCE.md` for the porting glossary
