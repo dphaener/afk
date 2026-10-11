@@ -6,6 +6,10 @@
 #
 # Usage: plan_to_args.rb PLAN_PATH [--autonomous] [--models PATH]
 #
+# Each task's QA scenarios carry Tool, Case (happy | failure), Steps, Expected
+# and Evidence. A task needs a happy scenario and a failure scenario, or the
+# line `No failure case: {reason}` inside its QA Scenarios.
+#
 # Prints one JSON object to stdout and exits 0. On an invalid plan or
 # unreadable input, prints `plan_to_args: <reason>` to stderr and exits 1.
 
@@ -22,7 +26,11 @@ QA_LABEL = 'QA Scenarios'
 # opens or switches a field; any other line continues the field above it, so a
 # colon or the word "Expected" inside a step cannot split a scenario.
 QA_TOOL_LINE = /\A\s*-\s+Tool:\s*(.*?)\s*\z/.freeze
-QA_FIELD_LINE = /\A\s*(Steps|Expected|Evidence):\s*(.*?)\s*\z/.freeze
+# The waiver for a task that cannot fail; matched before the continuation
+# branch in parse_qa, or its reason would be glued onto the last Evidence.
+QA_WAIVER_LINE = /\A\s*(?:-\s+)?No failure case:\s*(.*?)\s*\z/i.freeze
+QA_CASES = %w[happy failure].freeze
+QA_FIELD_LINE = /\A\s*(Steps|Case|Expected|Evidence):\s*(.*?)\s*\z/.freeze
 
 TASK_LINE = /\A- \[([ x!])\] \((W(\d+)\.T(\d+))\) (.*?)\s*\z/.freeze
 WAVE_LINE = /\A### Wave (\d+):\s*(.*?)\s*\z/.freeze
@@ -124,9 +132,12 @@ end
 # Reads the QA scenarios of one task from its raw block lines (not from the
 # joined subsection value, which loses line boundaries). The scenarios are the
 # lines after the **QA Scenarios**: label up to the next label or blank line.
-# Returns [{ 'tool', 'steps', 'expected', 'evidence' }] with missing fields as ''.
+# Returns [scenarios, waiver]: scenarios are [{ 'tool', 'case', 'steps',
+# 'expected', 'evidence' }] with missing fields as ''; waiver is the reason
+# after `No failure case:` ('' when empty), or nil when there is no such line.
 def parse_qa(block_lines)
   scenarios = []
+  waiver = nil
   field = nil
   in_section = false
   in_fence = false
@@ -148,8 +159,11 @@ def parse_qa(block_lines)
     end
     next unless in_section
 
-    if (m = QA_TOOL_LINE.match(line))
-      scenarios << { 'tool' => m[1], 'steps' => '', 'expected' => '', 'evidence' => '' }
+    if (m = QA_WAIVER_LINE.match(line))
+      waiver = m[1]
+      field = nil
+    elsif (m = QA_TOOL_LINE.match(line))
+      scenarios << { 'tool' => m[1], 'case' => '', 'steps' => '', 'expected' => '', 'evidence' => '' }
       field = 'tool'
     elsif scenarios.any? && (m = QA_FIELD_LINE.match(line))
       field = m[1].downcase
@@ -158,29 +172,50 @@ def parse_qa(block_lines)
       scenarios.last[field] = "#{scenarios.last[field]} #{line.strip}".strip
     end
   end
-  scenarios.each { |sc| sc['evidence'] = sc['evidence'].delete('`').strip }
-  scenarios
+  scenarios.each do |sc|
+    sc['evidence'] = sc['evidence'].delete('`').strip
+    sc['case'] = sc['case'].delete('`').strip
+  end
+  [scenarios, waiver]
 end
 
 # Enforces contract C2 for **QA Scenarios**: at least one scenario, every field
-# present, evidence under .afk/{plan}/evidence/.
-def check_qa(id, plan, scenarios)
+# present, Case valid, evidence under .afk/{plan}/evidence/, and a happy
+# scenario plus a failure scenario or a `No failure case:` waiver.
+def check_qa(id, plan, scenarios, waiver)
   if scenarios.empty?
     raise PlanError, "(#{id}) has no **QA Scenarios**; add at least one scenario starting with '- Tool:' (N/A is not allowed)"
   end
 
   prefix = ".afk/#{plan}/evidence/"
   scenarios.each_with_index do |sc, i|
-    %w[tool steps expected evidence].each do |f|
+    %w[tool case steps expected evidence].each do |f|
       next unless sc[f].empty?
 
       raise PlanError, "(#{id}) QA scenario #{i + 1} is missing '#{f.capitalize}:'"
     end
+  end
+  scenarios.each_with_index do |sc, i|
+    next if QA_CASES.include?(sc['case'])
+
+    raise PlanError, "(#{id}) QA scenario #{i + 1} case '#{sc['case']}' must be happy or failure"
+  end
+  scenarios.each_with_index do |sc, i|
     ev = sc['evidence']
     if !ev.start_with?(prefix) || ev == prefix || ev.split('/').include?('..')
       raise PlanError, "(#{id}) QA scenario #{i + 1} evidence '#{ev}' must be a file under #{prefix}"
     end
   end
+
+  cases = scenarios.map { |sc| sc['case'] }
+  raise PlanError, "(#{id}) has no happy QA scenario; add one with 'Case: happy'" unless cases.include?('happy')
+  if waiver && waiver.empty?
+    raise PlanError, "(#{id}) 'No failure case:' needs a reason; say why nothing can fail"
+  end
+  return if cases.include?('failure') || waiver
+
+  raise PlanError, "(#{id}) has no failure QA scenario; add one with 'Case: failure', " \
+                   "or the line 'No failure case: {reason}' when nothing can fail"
 end
 
 def parse_depends(value)
@@ -273,8 +308,8 @@ def build_tasks(raw_tasks, tiers, plan)
 
     refs = parse_file_refs(values['Files'])
     check_file_refs(t[:id], refs)
-    qa = parse_qa(t[:lines])
-    check_qa(t[:id], plan, qa)
+    qa, waiver = parse_qa(t[:lines])
+    check_qa(t[:id], plan, qa, waiver)
 
     {
       'id' => t[:id],

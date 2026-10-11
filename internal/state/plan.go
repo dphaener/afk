@@ -10,15 +10,26 @@
 // extracts exactly what that schema defines — waves, task IDs, titles,
 // checkbox states, Model tiers, `**Depends on**` task dependencies, the files
 // a task names (`**Files**`: Files and FileRefs) and its `**QA Scenarios**`
-// (QA: tool, steps, expected, evidence) — and invents nothing beyond it.
+// (QA: tool, case, steps, expected, evidence, plus the `No failure case:`
+// waiver line in NoFailureCase) — and invents nothing beyond it.
 //
 // The Files and QA fields are read leniently: a plan without them, with a
-// malformed scenario, or with `N/A` files parses without error and yields
-// empty or partial values. The strict check (every task has scenarios with
-// all four fields, exact file paths, evidence under `.afk/{plan}/evidence/`)
-// lives in plugins/afk/scripts/plan_to_args.rb, which runs before a plan is
-// executed; the dashboard must still show progress for a plan that check
-// would refuse.
+// malformed scenario, with a scenario that has no Case or an unknown one, or
+// with `N/A` files parses without error and yields empty or partial values.
+// The strict check (every task has scenarios with all five fields, a Case
+// that is `happy` or `failure`, a failure scenario or the waiver, exact file
+// paths, evidence under `.afk/{plan}/evidence/`) lives in
+// plugins/afk/scripts/plan_to_args.rb, which runs before a plan is executed;
+// the dashboard must still show progress for a plan that check would refuse,
+// so nothing here turns one of those faults into an error.
+//
+// Nothing inside a fenced code block (``` or ~~~) is plan structure. The
+// fence is tracked before any other line is looked at, the way Mark in
+// internal/plancheck and plan_to_args.rb do it, so the three parsers give one
+// reading of a plan that quotes a task line or a heading in an example. If
+// this one read a quoted `- [ ] (W1.T2)` as a task, `afk plan check` would
+// tick a task the dashboard counts differently, or the dashboard would refuse
+// a plan the engine runs.
 package state
 
 import (
@@ -119,12 +130,24 @@ type Task struct {
 	// the subsection is absent. A scenario missing a field keeps that field
 	// as the empty string.
 	QA []QAScenario
+	// NoFailureCase is the reason from a `No failure case: {reason}` line in
+	// the QA Scenarios subsection: the plan's statement that the task has
+	// nothing that can fail, which stands in for a `Case: failure` scenario.
+	// Empty when the line is absent, and also when it is there with no
+	// reason. The parser does not check that a task has one or the other;
+	// plan_to_args.rb does.
+	NoFailureCase string
 }
 
-// QAScenario is one `- Tool:` entry of a task's `**QA Scenarios**`. Evidence
-// has its backticks removed, as plan_to_args.rb emits it.
+// QAScenario is one `- Tool:` entry of a task's `**QA Scenarios**`, with its
+// five fields in the order plan-format.md writes them. Evidence has its
+// backticks removed, as plan_to_args.rb emits it. Case is `happy` or
+// `failure` in a plan the engine accepts, but it is kept here as written and
+// never validated: the dashboard reads plans the engine would reject, and a
+// plan written before the field existed has no Case at all.
 type QAScenario struct {
 	Tool     string
+	Case     string
 	Steps    string
 	Expected string
 	Evidence string
@@ -171,7 +194,14 @@ var (
 	// word "Expected" inside a step cannot split a scenario: only a line that
 	// STARTS with a key is a field (same rule as plan_to_args.rb).
 	qaToolRE  = regexp.MustCompile(`^\s*-\s+Tool:\s*(.*?)\s*$`)
-	qaFieldRE = regexp.MustCompile(`^\s*(Steps|Expected|Evidence):\s*(.*?)\s*$`)
+	qaFieldRE = regexp.MustCompile(`^\s*(Case|Steps|Expected|Evidence):\s*(.*?)\s*$`)
+	// qaWaiverRE is the `No failure case: {reason}` line, with or without a
+	// list dash. It is the same pattern as QA_WAIVER_LINE in
+	// plan_to_args.rb, case-insensitive included, so both read the same
+	// lines as a waiver. It has to be matched before a line is treated as a
+	// continuation: the waiver normally sits right under the last Evidence
+	// line and would otherwise be appended to that evidence path.
+	qaWaiverRE = regexp.MustCompile(`(?i)^\s*(?:-\s+)?No failure case:\s*(.*?)\s*$`)
 	// lineRangeRE is the optional trailing `:107-125` or `:107` on a file
 	// reference.
 	lineRangeRE = regexp.MustCompile(`:\d+(?:-\d+)?$`)
@@ -210,16 +240,36 @@ func ParsePlan(data []byte) (*Plan, error) {
 	// filesRaw/filesOpen/filesSeen do for `**Files**` what the depends
 	// trio does for Depends on (first label wins, wrapped value ends at a
 	// blank or label line). qaIn says the lines now being read belong to
-	// the first `**QA Scenarios**` subsection, qaField is the scenario
-	// field a continuation line extends, and inFence skips fenced lines so
-	// an example block inside a task is not read as scenarios.
+	// the first `**QA Scenarios**` subsection, and qaField is the scenario
+	// field a continuation line extends.
 	var filesRaw, qaField string
-	filesOpen, filesSeen, qaIn, qaSeen, inFence := false, false, false, false, false
+	filesOpen, filesSeen, qaIn, qaSeen := false, false, false, false
+	// inFence is true between a fence line and the next one. It belongs to
+	// the file, not to a task: it is never reset when a section, wave or
+	// task starts, because a line that would start one is not seen while it
+	// is true.
+	inFence := false
 
 	lines := strings.Split(string(data), "\n")
 	for i, raw := range lines {
 		lineNo := i + 1
 		line := strings.TrimRight(raw, " \t\r")
+
+		// The fence check comes before everything else, the title included,
+		// and mirrors Mark in internal/plancheck: a line whose left-trimmed
+		// text starts with ``` or ~~~ toggles the fence, and no line inside
+		// one is a title, section, wave, task, label or scenario. A fence
+		// that is never closed therefore hides the rest of the file, which
+		// is also what Mark and plan_to_args.rb make of it. Skipping here
+		// also keeps fenced lines out of wrapped Files, Depends on and QA
+		// values, and leaves those values open across the fence.
+		if lead := strings.TrimLeft(line, " \t"); strings.HasPrefix(lead, "```") || strings.HasPrefix(lead, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
 
 		if plan.Title == "" {
 			if m := planTitleRE.FindStringSubmatch(line); m != nil {
@@ -270,7 +320,7 @@ func ParsePlan(data []byte) (*Plan, error) {
 			dependsOpen = false
 			dependsSeen = false
 			filesRaw, qaField = "", ""
-			filesOpen, filesSeen, qaIn, qaSeen, inFence = false, false, false, false, false
+			filesOpen, filesSeen, qaIn, qaSeen = false, false, false, false
 			continue
 		}
 
@@ -283,13 +333,6 @@ func ParsePlan(data []byte) (*Plan, error) {
 
 		if curWave != nil && curTask != nil {
 			t := &plan.Waves[*curWave].Tasks[*curTask]
-			if strings.HasPrefix(strings.TrimSpace(line), "```") || strings.HasPrefix(strings.TrimSpace(line), "~~~") {
-				inFence = !inFence
-				continue
-			}
-			if inFence {
-				continue
-			}
 			if m := labelRE.FindStringSubmatch(line); m != nil {
 				label := strings.TrimSpace(m[1])
 				qaIn = label == "QA Scenarios" && !qaSeen
@@ -378,14 +421,26 @@ func parseFileRefs(raw string) (files, refs []string) {
 var onlyIfRE = regexp.MustCompile(`(?i)\s*\(only if[^)]*\)`)
 
 // parseQALine applies one non-blank line of a QA Scenarios subsection to t.
-// `- Tool:` opens a scenario; a Steps/Expected/Evidence line sets that field
-// of the open scenario; any other line continues the field above it. Lines
-// before the first `- Tool:` are ignored, so a malformed subsection yields
-// partial values rather than an error.
+// `- Tool:` opens a scenario; a Case/Steps/Expected/Evidence line sets that
+// field of the open scenario; any other line continues the field above it.
+// Lines before the first `- Tool:` are ignored, so a malformed subsection
+// yields partial values rather than an error.
+//
+// The one line that is none of those is the waiver, `No failure case:
+// {reason}`. It belongs to the task, not to a scenario, so it is read even
+// before the first `- Tool:`, and it closes the open field: whatever follows
+// it is a wrapped reason or stray text, and must not be glued onto the last
+// scenario's Evidence. When a task repeats the line the last one is kept, as
+// plan_to_args.rb keeps it.
 func parseQALine(t *Task, line string, field *string) {
 	if m := qaToolRE.FindStringSubmatch(line); m != nil {
 		t.QA = append(t.QA, QAScenario{Tool: m[1]})
 		*field = "tool"
+		return
+	}
+	if m := qaWaiverRE.FindStringSubmatch(line); m != nil {
+		t.NoFailureCase = m[1]
+		*field = ""
 		return
 	}
 	if len(t.QA) == 0 {
@@ -402,10 +457,15 @@ func parseQALine(t *Task, line string, field *string) {
 	}
 }
 
+// qaFieldValue and setQAField both fall through to Evidence, so every other
+// field needs its own arm in both: a field named in qaFieldRE but missing
+// here would be written into the evidence path.
 func qaFieldValue(sc *QAScenario, field string) string {
 	switch field {
 	case "tool":
 		return sc.Tool
+	case "case":
+		return sc.Case
 	case "steps":
 		return sc.Steps
 	case "expected":
@@ -419,6 +479,8 @@ func setQAField(sc *QAScenario, field, v string) {
 	switch field {
 	case "tool":
 		sc.Tool = v
+	case "case":
+		sc.Case = v
 	case "steps":
 		sc.Steps = v
 	case "expected":

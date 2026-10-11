@@ -22,10 +22,21 @@ const FINDING_SCHEMA = {
 
 // The critic returns only the surviving subset of the findings it was given,
 // so it has no verdict: the script computes every verdict itself.
+const CRITIC_FINDING_SCHEMA = {
+  type: 'object',
+  properties: {
+    n: { type: 'integer' },
+    severity: { type: 'string', enum: ['blocker', 'major', 'minor'] },
+    taskId: { type: 'string' },
+    text: { type: 'string' },
+  },
+  required: ['n', 'severity', 'taskId', 'text'],
+}
+
 const CRITIC_SCHEMA = {
   type: 'object',
   properties: {
-    findings: { type: 'array', items: FINDING_SCHEMA },
+    findings: { type: 'array', items: CRITIC_FINDING_SCHEMA },
   },
   required: ['findings'],
 }
@@ -45,7 +56,7 @@ const OUTPUT_FORMAT =
   'Return the structured result: verdict PASS or FAIL, and findings, each with severity (blocker, major, or minor), taskId (the plan task ID, or "general"), and text. Use the severity definitions in your prompt file.'
 
 const CRITIC_OUTPUT_FORMAT =
-  'Return the structured result: findings only, no verdict. Return the findings that survive, in the shape you were given (severity, taskId, text). A downgrade changes severity; a rejected finding is left out; never add a finding.'
+  'Return the structured result: findings only, no verdict. Return the findings that survive, each with the n it was given, in the shape you were given (n, severity, taskId, text). A downgrade changes severity; a rejected finding is left out; never add a finding, never raise a severity, never rewrite text.'
 
 if (!args || typeof args.planPath !== 'string' || typeof args.diffCommand !== 'string' || typeof args.pluginRoot !== 'string') {
   throw new Error('review.js: args must include planPath, diffCommand, and pluginRoot')
@@ -94,7 +105,7 @@ function criticPrompt(name, findings) {
     planNameLine(),
     '- Plan path: ' + args.planPath,
     '- Diff command: ' + args.diffCommand,
-    '- Check findings (JSON): ' + JSON.stringify(findings),
+    '- Check findings (JSON): ' + JSON.stringify(findings.map((f, i) => ({ n: i + 1, severity: f.severity, taskId: f.taskId, text: f.text }))),
     '- Output format: ' + CRITIC_OUTPUT_FORMAT,
   ].join('\n')
 }
@@ -108,6 +119,31 @@ function isGated(f) {
 // blocker and a stray FAIL cannot block on minors alone.
 function verdictOf(findings) {
   return findings.some(isGated) ? 'FAIL' : 'PASS'
+}
+
+const SEVERITY_RANK = { blocker: 3, major: 2, minor: 1 }
+
+// Keeps only what the critic was shown. The critic's prompt forbids adding a
+// finding or raising a severity, but a prompt is not a guarantee, and a
+// critic-invented blocker would start a fix cycle nobody checked. So a
+// returned finding counts only when its number matches a gated finding not
+// already kept, and it carries the original text, the original severity
+// unless the critic lowered it, and the critic's task ID when it gave one.
+function survivors(gated, returned) {
+  const kept = []
+  const seen = new Set()
+  for (const r of listOf(returned)) {
+    if (!r || !Number.isInteger(r.n) || r.n < 1 || r.n > gated.length || seen.has(r.n)) continue
+    seen.add(r.n)
+    const orig = gated[r.n - 1]
+    const lowered = SEVERITY_RANK[r.severity] < SEVERITY_RANK[orig.severity] ? r.severity : orig.severity
+    kept.push({
+      severity: lowered,
+      taskId: typeof r.taskId === 'string' && r.taskId ? r.taskId : orig.taskId,
+      text: orig.text,
+    })
+  }
+  return kept
 }
 
 function blocker(text) {
@@ -159,7 +195,7 @@ const entries = await pipeline(
       const findings = checkFindings.concat([blocker('Critic for ' + name + ' failed to run: ' + critic.error)])
       return { name: name, verdict: verdictOf(findings), findings: findings }
     }
-    const findings = listOf(critic.out.findings).concat(minors)
+    const findings = survivors(gated, critic.out.findings).concat(minors)
     return { name: name, verdict: verdictOf(findings), findings: findings }
   }
 )

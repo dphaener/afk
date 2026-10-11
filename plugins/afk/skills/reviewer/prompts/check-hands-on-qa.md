@@ -14,21 +14,32 @@ Do not read other `.afk/` files (notepads, review history, status files). Do not
 
 ## What to do
 
-You have three duties, in this order.
+You have four duties, in this order.
 
-### 1. Run the app
+### 1. Start from a clean state and run the app
 
-Build what changed, to a scratch path, and run that build. Never install a binary onto `$PATH` (no `make install`, no `cp` onto `$PATH`), and never write anywhere except the scratch path and `.afk/{plan}/evidence/qa/`. Use the plan's **Verification Strategy** and the project's own instructions (`CLAUDE.md` or equivalent) for the build command, and use a scratch directory such as the system temp directory for the output.
+Start from a clean state, before any scenario. Build fresh. Use no state left by the task agents: no binary, database, server or temp directory they created. Their evidence files under `.afk/{plan}/evidence/` are not read as a result and never reused as one.
+
+Build what changed, to a scratch path outside `$PATH` and outside the repository's tracked files, and run that build. Never install a binary onto `$PATH` (no `make install`, no `cp` onto `$PATH`), and never write anywhere except the scratch path and `.afk/{plan}/evidence/qa/`. Use the plan's **Verification Strategy** and the project's own instructions (`CLAUDE.md` or equivalent) for the build command, and use a scratch directory such as the system temp directory for the output.
 
 ### 2. Exercise the change
 
-For EVERY task in the plan, carry out each scenario in its **QA Scenarios** yourself: run its `Steps` with its `Tool`, and compare what happens with its `Expected`. Save your own evidence for each scenario under `.afk/{plan}/evidence/qa/`, named after the task and the scenario (for example `w1-t2-scenario-1.txt`): the command, its exit code and the output that matters. Do not write to the path in the scenario's `Evidence:` field; that one belongs to the task agent.
+For EVERY task in the plan, carry out each scenario in its **QA Scenarios** yourself: run its `Steps` with its `Tool`, and compare what happens with its `Expected`. Run the `Case: failure` scenarios too, not only the happy ones. A failure scenario passes when the error is handled the way its `Expected` says: a clear message, a non-zero exit, nothing half-written. A task whose QA Scenarios carry `No failure case: {reason}` has no failure scenario to run. Save your own evidence for each scenario under `.afk/{plan}/evidence/qa/`, named after the task and the scenario (for example `w1-t2-scenario-1.txt`): the command, its exit code and the output that matters. Do not write to the path in the scenario's `Evidence:` field; that one belongs to the task agent.
 
 - Expected result does not occur → `blocker` when the task's core behavior is broken, `major` when part of it is. Name the task and your evidence file.
 - A scenario that cannot be run on this machine (a real phone, a third-party dashboard, a service you cannot reach) → `minor`, worded as verification the owner must do by hand, with the step they should take.
 - A task with no QA scenarios, or a scenario missing a field → `major` (the plan breaks its own format); still exercise the task's **Acceptance Criteria** commands in its place.
 
-### 3. Run the full suite once
+### 3. Explore beyond the scenarios
+
+After the scenarios, do exploratory QA, and keep it bounded: try what a person would try in a few minutes, and write no new test files.
+
+- First try the tasks together wherever one task's output feeds another. Name the pairs from the plan's `Depends on` lines, and run the second task on what the first one produced.
+- Then try the edge cases that apply to this change, from this list: empty state, invalid input, error conditions, rapid or repeated actions. Skip an edge case that does not apply, and do not report having skipped it.
+
+Report a finding only for behavior that is broken, never for a missing test or a style point. Each finding names its evidence file, saved under `.afk/{plan}/evidence/qa/`. Behavior that is broken in a task's core is a `blocker`, and in part of it a `major`.
+
+### 4. Run the full suite once
 
 Run the project's full test suite exactly once, using the command in the plan's **Verification Strategy**. If it can run for minutes, start it in the background, redirect its output to a file under `.afk/{plan}/evidence/qa/`, and wait for it once; do not sleep and poll in a loop. Save the exit code and the failing tests.
 

@@ -112,6 +112,8 @@ Agent(description: "Critic for Check N: {name}", model: "{reasoning alias}", pro
 
 The critic's surviving findings replace the check's blocker and major findings; its minors stay. That is the check's final result. A check with no blocker or major finding is final as returned.
 
+When you apply this by hand, number the findings you give the critic from 1 and keep only the survivors whose number you gave. Never accept a finding without a number from your list, never accept a raised severity (keep the lower of the two), and keep your own wording of the text.
+
 > **Caller-side fallback**: If an Agent call is rejected because the model alias is unknown or unavailable, retry the same call once with that tier's Fallback alias (see the afk Model Registry loaded in context). This retry is the caller's responsibility — it cannot be handled inside the sub-agent prompt.
 
 ### Check Output Format

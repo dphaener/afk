@@ -18,3 +18,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Park**: to stop a task because only the owner can do something, setting `awaiting_input` (and, from T1.2, adding an inbox item) rather than guessing.
 - **Ledger**: `.afk/build/ledger.json`, the daemon's record of each master-plan task's status; the daemon is its only writer.
 - **Inbox**: `.afk/inbox/{id}.json`, the items an agent or the daemon raises for the owner (questions, env vars, external actions); planned for T1.2.
+- **Case**: the fifth field of a QA scenario, `happy` for the normal path or `failure` for an error path such as invalid input or a missing file.
+- **Failure scenario**: a QA scenario whose case is `failure`; every work-plan task needs one unless it carries a failure waiver.
+- **Failure waiver**: the line `No failure case: {reason}` in a task's QA Scenarios, for a task with nothing that can fail (docs only, a rename).
+- **Exploratory QA**: the bounded part of the hands-on QA check that follows the scenarios: tasks tried together, then the edge cases that apply to the change.

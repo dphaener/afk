@@ -215,6 +215,7 @@ Each task specifies a **Model** tier that tells the orchestrator which model to 
 
   **QA Scenarios**:
   - Tool: [Bash | Read | Playwright | ...]
+    Case: happy | failure
     Steps: [What to run or do]
     Expected: [What a pass looks like]
     Evidence: `.afk/{plan-name}/evidence/{file}`
@@ -256,7 +257,7 @@ Task IDs must be unique within a plan. They do not need to be globally unique ac
 | `**Files**` | Yes | Exact file paths to create or modify |
 | `**Depends on**` | Yes (new plans) | Task IDs this task needs, or `none` |
 | `**Acceptance Criteria**` | Yes | How to verify the task is done |
-| `**QA Scenarios**` | Yes | Hands-on checks the task agent runs, each with saved evidence |
+| `**QA Scenarios**` | Yes | Hands-on checks (happy and failure) the task agent runs, each with saved evidence |
 | `**Model**` | Yes | Which model tier (`light`, `balanced`, `heavy`, `reasoning`) the orchestrator should use for this task |
 
 All seven subsections are required. If `**What to do**`, `**Must NOT do**` or `**Acceptance Criteria**` has nothing meaningful to say, write `N/A` rather than omitting it. `**Depends on**` takes `none` instead of `N/A`. `**Files**` and `**QA Scenarios**` never take `N/A`.
@@ -269,9 +270,10 @@ A directory may be listed only with a trailing `/`, and only in addition to at l
 
 ### QA Scenarios
 
-`**QA Scenarios**` is one or more scenarios with no blank line between them. Each scenario has four fields:
+`**QA Scenarios**` is one or more scenarios with no blank line between them. Each scenario has five fields:
 
 - `Tool`: what drives the check (`Bash`, `Read`, `Playwright`, `curl`, ...).
+- `Case`: `happy` or `failure`. A `happy` scenario shows the normal path working. A `failure` scenario feeds invalid input, a missing file or some other error path, and its `Expected` says how the error is handled (a message, an exit code, nothing written).
 - `Steps`: what to run or do, concrete enough to repeat.
 - `Expected`: what a pass looks like.
 - `Evidence`: the file the task agent saves the output to. It must be under `.afk/{plan-name}/evidence/`.
@@ -279,12 +281,26 @@ A directory may be listed only with a trailing `/`, and only in addition to at l
 ```markdown
   **QA Scenarios**:
   - Tool: Bash
+    Case: happy
     Steps: run `go test ./internal/plancheck/ -count=1`
     Expected: exit 0 and an `ok` line
     Evidence: `.afk/{plan-name}/evidence/w1-t1-tests.txt`
+  - Tool: Bash
+    Case: failure
+    Steps: run `go run . plan check --project /nonexistent {plan-name} W1.T1 done`
+    Expected: a non-zero exit and a message that the project was not found
+    Evidence: `.afk/{plan-name}/evidence/w1-t1-missing.txt`
 ```
 
-The task agent runs each scenario and saves the evidence at that path, and the QA review check reads it. Scenarios are different from `**Acceptance Criteria**`: the criteria say what must be true, the scenarios say how a person would see it with their own eyes. `N/A` is not allowed; a task with nothing to run still has a scenario that reads the result back, such as `Read` of the changed file. A line starting `- Tool:` opens a scenario, and the `Steps:`, `Expected:` and `Evidence:` lines after it are its fields. A line starting with none of those keys continues the field above, so a step may contain colons or the word "Expected".
+Every task needs at least one `happy` and one `failure` scenario. A task with nothing that can fail (docs only, a rename) instead ends its QA Scenarios with a waiver on its own line, after the scenarios, with a reason:
+
+```markdown
+  - No failure case: docs only, nothing can fail at runtime
+```
+
+`plan_to_args.rb` rejects a task that has neither a `failure` scenario nor the waiver, and a waiver with no reason.
+
+The task agent runs each scenario and saves the evidence at that path, and the QA review check reads it. Scenarios are different from `**Acceptance Criteria**`: the criteria say what must be true, the scenarios say how a person would see it with their own eyes. `N/A` is not allowed; a task with nothing to run still has a scenario that reads the result back, such as `Read` of the changed file. A line starting `- Tool:` opens a scenario, and the `Case:`, `Steps:`, `Expected:` and `Evidence:` lines after it are its fields. A line starting `No failure case:` (with or without a leading `- `) is the waiver, not a field, and ends the scenario above it. A line starting with none of those keys continues the field above, so a step may contain colons or the word "Expected".
 
 ### Depends on
 
@@ -377,9 +393,15 @@ screen and the backend logic to respect those preferences when sending.
 
   **QA Scenarios**:
   - Tool: Bash
+    Case: happy
     Steps: run the migration against a scratch database and describe the table
     Expected: the table has the four columns with the stated defaults
     Evidence: `.afk/add-user-notification-preferences/evidence/w1-t1-schema.txt`
+  - Tool: Bash
+    Case: failure
+    Steps: run the migration a second time against the same database
+    Expected: it stops with a clear "table already exists" error and changes nothing
+    Evidence: `.afk/add-user-notification-preferences/evidence/w1-t1-rerun.txt`
 
   **Model**: light
 
@@ -399,6 +421,12 @@ screen and the backend logic to respect those preferences when sending.
 
   **QA Scenarios**:
   - Tool: Bash
+    Case: happy
+    Steps: save one preferences row for a user in a console
+    Expected: the save succeeds and the row can be read back
+    Evidence: `.afk/add-user-notification-preferences/evidence/w1-t2-save.txt`
+  - Tool: Bash
+    Case: failure
     Steps: save two preferences rows with the same `user_id` in a console
     Expected: the second save raises a validation error
     Evidence: `.afk/add-user-notification-preferences/evidence/w1-t2-unique.txt`
@@ -429,10 +457,12 @@ screen and the backend logic to respect those preferences when sending.
 
   **QA Scenarios**:
   - Tool: Bash
+    Case: happy
     Steps: curl `PATCH` with `{ "email_enabled": false }`, then `GET`
     Expected: PATCH returns 200 and GET shows `email_enabled` false
     Evidence: `.afk/add-user-notification-preferences/evidence/w2-t1-patch.txt`
   - Tool: Bash
+    Case: failure
     Steps: curl `PATCH` with an unknown field
     Expected: 400 response
     Evidence: `.afk/add-user-notification-preferences/evidence/w2-t1-unknown.txt`
@@ -457,9 +487,11 @@ screen and the backend logic to respect those preferences when sending.
 
   **QA Scenarios**:
   - Tool: Bash
+    Case: happy
     Steps: run `npm test -- notificationPreferences`
     Expected: exit 0 with the new tests listed as passing
     Evidence: `.afk/add-user-notification-preferences/evidence/w2-t2-tests.txt`
+  - No failure case: the task only adds tests, and running them is its only check
 
   **Model**: balanced
 
@@ -487,9 +519,15 @@ screen and the backend logic to respect those preferences when sending.
 
   **QA Scenarios**:
   - Tool: Playwright
+    Case: happy
     Steps: open `/settings/notifications`, toggle email off, reload
     Expected: the toggle stays off after the reload
     Evidence: `.afk/add-user-notification-preferences/evidence/w3-t1-toggle.txt`
+  - Tool: Playwright
+    Case: failure
+    Steps: make the PATCH request fail, then toggle email off
+    Expected: the toggle reverts and an error toast appears
+    Evidence: `.afk/add-user-notification-preferences/evidence/w3-t1-rollback.txt`
 
   **Model**: balanced
 
@@ -514,9 +552,15 @@ screen and the backend logic to respect those preferences when sending.
 
   **QA Scenarios**:
   - Tool: Bash
+    Case: happy
     Steps: send an email event for a user with `email_enabled` false and read the debug log
     Expected: no email is sent and a skip line is logged
     Evidence: `.afk/add-user-notification-preferences/evidence/w3-t2-skip.txt`
+  - Tool: Bash
+    Case: failure
+    Steps: send an email event for a user who has no preferences row
+    Expected: the defaults apply, the email is sent and nothing crashes
+    Evidence: `.afk/add-user-notification-preferences/evidence/w3-t2-nodefault.txt`
 
   **Model**: reasoning
 

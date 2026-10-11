@@ -14,9 +14,13 @@ require 'tmpdir'
 SCRIPT = File.expand_path('../plan_to_args.rb', __dir__)
 PLAN_NAME = 'demo'
 
+# Scenario fragments. Evidence paths differ so a rejection names the right one.
+HAPPY = "  - Tool: Bash\n    Case: happy\n    Steps: run `go test ./...`\n    Expected: exit 0\n    Evidence: `.afk/#{PLAN_NAME}/evidence/a.txt`"
+FAILURE = "  - Tool: Bash\n    Case: failure\n    Steps: run it with bad input\n    Expected: exit 1\n    Evidence: `.afk/#{PLAN_NAME}/evidence/f.txt`"
+
 # One task block. Keyword arguments override a subsection; nil omits it.
 def task(id: 'W1.T1', mark: ' ', files: '`src/a.go`', depends: 'none', model: 'light',
-         qa: "  - Tool: Bash\n    Steps: run `go test ./...`\n    Expected: exit 0\n    Evidence: `.afk/#{PLAN_NAME}/evidence/a.txt`")
+         qa: "#{HAPPY}\n#{FAILURE}")
   out = +"- [#{mark}] (#{id}) Do the thing\n\n"
   out << "  **What to do**: work\n\n  **Must NOT do**: nothing\n\n"
   out << "  **Files**: #{files}\n\n" if files
@@ -51,15 +55,15 @@ class PlanToArgsTest < Minitest::Test
   # Load-bearing: the emitted shape execute.js and the QA check depend on, with
   # a range stripped from `files` but kept in `fileRefs`, and two scenarios.
   def test_valid_plan_emits_qa_files_and_refs
-    qa = "  - Tool: Bash\n    Steps: run `go test`\n    Expected: ok\n    Evidence: `.afk/demo/evidence/one.txt`\n" \
-         "  - Tool: Read\n    Steps: open the file and\n      look at the header\n    Expected: header present\n    Evidence: .afk/demo/evidence/two.txt"
+    qa = "  - Tool: Bash\n    Case: happy\n    Steps: run `go test`\n    Expected: ok\n    Evidence: `.afk/demo/evidence/one.txt`\n" \
+         "  - Tool: Read\n    Case: failure\n    Steps: open the file and\n      look at the header\n    Expected: header present\n    Evidence: .afk/demo/evidence/two.txt"
     code, out, err = run_plan(plan(task(files: '`internal/state/plan.go:107-125`, `internal/state/testdata/`', qa: qa)))
     assert_equal 0, code, err
     t = JSON.parse(out)['tasks'].first
     assert_equal ['internal/state/plan.go', 'internal/state/testdata/'], t['files']
     assert_equal ['internal/state/plan.go:107-125', 'internal/state/testdata/'], t['fileRefs']
     assert_equal 2, t['qa'].size
-    assert_equal({ 'tool' => 'Bash', 'steps' => 'run `go test`', 'expected' => 'ok',
+    assert_equal({ 'tool' => 'Bash', 'case' => 'happy', 'steps' => 'run `go test`', 'expected' => 'ok',
                    'evidence' => '.afk/demo/evidence/one.txt' }, t['qa'][0])
     assert_equal 'open the file and look at the header', t['qa'][1]['steps']
     assert_equal '.afk/demo/evidence/two.txt', t['qa'][1]['evidence']
@@ -68,10 +72,10 @@ class PlanToArgsTest < Minitest::Test
   # Load-bearing: a colon and the word "Expected" inside a step must not split
   # the scenario, because fields are read line by line.
   def test_step_text_with_colon_and_expected_word
-    qa = "  - Tool: Bash\n    Steps: run `x`; Expected: a prompt, then see: nothing\n    Expected: exit 0\n    Evidence: .afk/demo/evidence/a.txt"
+    qa = "#{FAILURE}\n  - Tool: Bash\n    Case: happy\n    Steps: run `x`; Expected: a prompt, then see: nothing\n    Expected: exit 0\n    Evidence: .afk/demo/evidence/a.txt"
     code, out, err = run_plan(plan(task(qa: qa)))
     assert_equal 0, code, err
-    sc = JSON.parse(out)['tasks'].first['qa'].first
+    sc = JSON.parse(out)['tasks'].first['qa'].last
     assert_equal 'run `x`; Expected: a prompt, then see: nothing', sc['steps']
     assert_equal 'exit 0', sc['expected']
   end
@@ -86,11 +90,11 @@ class PlanToArgsTest < Minitest::Test
     {
       'missing QA Scenarios subsection' => [plan(task(qa: nil)), '(W1.T1) has no **QA Scenarios**'],
       'QA Scenarios N/A' => [plan(task(qa: '  N/A')), 'N/A is not allowed'],
-      'scenario missing Expected' => [plan(task(qa: "  - Tool: Bash\n    Steps: s\n    Evidence: .afk/demo/evidence/a.txt")), "missing 'Expected:'"],
-      'scenario missing Evidence' => [plan(task(qa: "  - Tool: Bash\n    Steps: s\n    Expected: e")), "missing 'Evidence:'"],
-      'evidence outside the plan dir' => [plan(task(qa: "  - Tool: Bash\n    Steps: s\n    Expected: e\n    Evidence: /tmp/a.txt")), 'must be a file under .afk/demo/evidence/'],
-      'evidence for another plan' => [plan(task(qa: "  - Tool: Bash\n    Steps: s\n    Expected: e\n    Evidence: .afk/other/evidence/a.txt")), 'must be a file under .afk/demo/evidence/'],
-      'evidence escaping with ..' => [plan(task(qa: "  - Tool: Bash\n    Steps: s\n    Expected: e\n    Evidence: .afk/demo/evidence/../x.txt")), 'must be a file under'],
+      'scenario missing Expected' => [plan(task(qa: "  - Tool: Bash\n    Case: happy\n    Steps: s\n    Evidence: .afk/demo/evidence/a.txt")), "missing 'Expected:'"],
+      'scenario missing Evidence' => [plan(task(qa: "  - Tool: Bash\n    Case: happy\n    Steps: s\n    Expected: e")), "missing 'Evidence:'"],
+      'evidence outside the plan dir' => [plan(task(qa: "  - Tool: Bash\n    Case: happy\n    Steps: s\n    Expected: e\n    Evidence: /tmp/a.txt")), 'must be a file under .afk/demo/evidence/'],
+      'evidence for another plan' => [plan(task(qa: "  - Tool: Bash\n    Case: happy\n    Steps: s\n    Expected: e\n    Evidence: .afk/other/evidence/a.txt")), 'must be a file under .afk/demo/evidence/'],
+      'evidence escaping with ..' => [plan(task(qa: "  - Tool: Bash\n    Case: happy\n    Steps: s\n    Expected: e\n    Evidence: .afk/demo/evidence/../x.txt")), 'must be a file under'],
       'Files subsection missing' => [plan(task(files: nil)), '(W1.T1) **Files** is empty'],
       'Files N/A' => [plan(task(files: 'N/A')), "not 'N/A'"],
       'Files glob' => [plan(task(files: '`src/*.go`')), 'is a glob'],
@@ -98,6 +102,60 @@ class PlanToArgsTest < Minitest::Test
     }.each_value do |(text, fragment)|
       assert_rejected(text, fragment)
     end
+  end
+
+  WAIVER = '  No failure case: a pure formatter cannot fail'
+
+  # Load-bearing: the coverage rule. Each accepted row proves one way out
+  # (failure scenario, waiver, both) and each rejected row names what to add,
+  # so a task cannot pass with only the happy path and no stated reason.
+  def test_case_coverage
+    accepted = {
+      'happy plus failure' => "#{HAPPY}\n#{FAILURE}",
+      'happy plus waiver' => "#{HAPPY}\n#{WAIVER}",
+      'happy, failure and waiver' => "#{HAPPY}\n#{FAILURE}\n#{WAIVER}"
+    }
+    accepted.each do |name, qa|
+      code, out, err = run_plan(plan(task(qa: qa)))
+      assert_equal 0, code, "#{name}: #{err}"
+      assert(JSON.parse(out)['tasks'].first['qa'].all? { |sc| %w[happy failure].include?(sc['case']) }, name)
+    end
+
+    assert_rejected(plan(task(qa: HAPPY)), "(W1.T1) has no failure QA scenario; add one with 'Case: failure', or the line 'No failure case: {reason}'")
+    assert_rejected(plan(task(qa: FAILURE)), "(W1.T1) has no happy QA scenario; add one with 'Case: happy'")
+    assert_rejected(plan(task(qa: "#{HAPPY}\n#{FAILURE}\n  No failure case:")), "'No failure case:' needs a reason")
+  end
+
+  def test_scenario_missing_case
+    qa = "  - Tool: Bash\n    Steps: s\n    Expected: e\n    Evidence: .afk/demo/evidence/a.txt"
+    assert_rejected(plan(task(qa: qa)), "QA scenario 1 is missing 'Case:'")
+  end
+
+  def test_invalid_case_value
+    qa = HAPPY.sub('Case: happy', 'Case: sad')
+    assert_rejected(plan(task(qa: qa)), "(W1.T1) QA scenario 1 case 'sad' must be happy or failure")
+  end
+
+  # Load-bearing: the waiver line must be matched before the continuation
+  # branch, or its reason would be appended to the last scenario's evidence and
+  # break the path check (or silently change it).
+  def test_waiver_does_not_change_evidence
+    code, out, err = run_plan(plan(task(qa: "#{HAPPY}\n  - #{WAIVER.strip}")))
+    assert_equal 0, code, err
+    qa = JSON.parse(out)['tasks'].first['qa']
+    assert_equal 1, qa.size
+    assert_equal '.afk/demo/evidence/a.txt', qa.first['evidence']
+    refute_includes out, 'a pure formatter'
+  end
+
+  # The fence rule exists in the parser but had no test: a task line inside a
+  # fenced example in a task body must not become a second task.
+  def test_fenced_task_line_is_not_a_task
+    body = "\n  ```\n- [ ] (W1.T2) fenced example\n  ```\n"
+    text = plan(task.sub("  **Model**: light\n", "  **Model**: light\n#{body}"))
+    code, out, err = run_plan(text)
+    assert_equal 0, code, err
+    assert_equal ['W1.T1'], JSON.parse(out)['tasks'].map { |t| t['id'] }
   end
 
   # The pre-existing rules must keep holding after the QA change.
