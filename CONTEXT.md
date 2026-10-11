@@ -25,6 +25,11 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Detach**: a client leaving a session on purpose (ctrl-\ in `afk attach`, or closing a dashboard pane); the session keeps running.
 - **Steal**: a second client connecting to a session host, which takes the session from the client already attached.
 - **Dropped**: a client's connection ending without the host saying the session ended; the session may still be running.
+- **Usage window**: one of the subscription's limits that fills up and resets on a schedule: the session window, the weekly window, or a weekly window for one model.
+- **Usage probe**: the zero-cost agent CLI call that reports how much of each usage window is spent and when it resets.
+- **Usage snapshot**: one probe's result (windows, reset times, whether extra usage is on), kept per machine in `usage.json`.
+- **Extra usage**: paid overage beyond the subscription; afk refuses to run while it is on.
+- **Governor**: the pure decision that turns a usage snapshot into one action: run, launch nothing new, pause, hold, or refuse.
 - **Inbox item**: one JSON file in the inbox, written only by `afk inbox add` (or, later, the daemon), with a kind, a title and whether it blocks.
 - **Kind**: what an inbox item is: `question`, `env_var`, `external_action`, `verification`, `failure` or `notice`.
 - **Blocking**: an inbox item the task cannot go on without; the task parks until the owner answers it.
