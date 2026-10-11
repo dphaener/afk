@@ -419,6 +419,40 @@ Running the same command twice changes nothing the second time, and a task alrea
 
 **Exit codes:** 0 when the task was marked (or there was nothing to do), 1 when the plan or the task was not found or the file could not be written, 2 when the command was written wrongly (for example `failed` with no `--reason`).
 
+### `afk usage` — Show how much of your usage is spent
+
+Print how full each of the agent subscription's usage windows is (the current session, the week, and the week for each model), when each one resets, and what afk's usage governor would do about it.
+
+```bash
+afk usage [--provider NAME] [--refresh]
+```
+
+```
+Usage read just now:
+  Session                 36% used, resets Sun 11 Oct 14:49 (in 1h 41m)
+  Week (all models)       72% used, resets Mon 12 Oct 06:59 (in 17h 51m)
+  Week (Fable)            13% used, resets Mon 12 Oct 06:59 (in 17h 51m)
+  Extra usage             off
+Governor: run. Usage is within the limits, so afk is running.
+```
+
+- `--provider NAME` — Which agent to read. Defaults to the default provider.
+- `--refresh` — Read the numbers again even if a recent reading is stored.
+
+A reading less than 5 minutes old is reused, and the report then says how long ago it was read ("less than a minute ago", "3 min ago"). Anything older, or `--refresh`, asks the agent again; that costs no model usage. The probe runs from afk's state directory, not from the folder you ran `afk usage` in, so it leaves no records in your project. The last reading is saved per machine in `usage.json` under `$XDG_STATE_HOME/afk/` when that is set to an absolute path, otherwise `~/.local/state/afk/`. If a probe fails and an earlier reading exists, the report shows that one and exits 1.
+
+The `Governor:` line is the decision afk would make from the reading:
+
+- `run` — Usage is within the limits; afk runs as normal.
+- `no_launch` — A window is past the limit for starting new work (75% for the session, 85% for the week). Nothing new starts; a running session carries on.
+- `pause` — A window is at or past 90%. A running session would be paused until the window resets, and the line says when.
+- `hold` — The reading is missing or more than 30 minutes old. Nothing new starts and a running session is left alone.
+- `refuse` — Extra usage is switched on for the account. afk will not run until you turn it off.
+
+A provider with no way to report usage prints "Usage is unknown" and exits 0; the governor then says `run`.
+
+**Exit codes:** 0 when the report was printed, 1 when usage could not be read or the reading could not be saved, 2 when the command was written wrongly (an unknown flag, provider or extra word).
+
 ---
 
 ## Session Model
@@ -568,6 +602,8 @@ The binary is organized into packages:
 - **internal/spice** — Git-spice detection and stack topology (`gs log short --json`)
 - **internal/probe** — Tool availability detection (git-spice, worktrunk, notifiers)
 - **internal/ui** — Bubble Tea dashboard (TUI, keybindings, panels)
+- **internal/governor** — The usage governor's decision: one pure function from a usage reading to `run`, `no_launch`, `pause`, `hold` or `refuse`
+- **internal/usagestate** — Reads and writes `usage.json`, the last usage reading, under afk's per-machine state directory
 - **internal/pluginstall** — `afk plugin install`: writes the embedded plugins and drives each agent CLI's install
 - **plugins/afk** — The Claude Code and Codex plugin (skills, hooks, Workflow scripts). `plugins/afk/skills/conductor/status-schema.md` is the binding status.json contract.
 - **plugins/afk-opencode** — The OpenCode V2 port of the same plugin; see its `PROVENANCE.md` for the porting glossary
