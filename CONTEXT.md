@@ -22,3 +22,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Failure scenario**: a QA scenario whose case is `failure`; every work-plan task needs one unless it carries a failure waiver.
 - **Failure waiver**: the line `No failure case: {reason}` in a task's QA Scenarios, for a task with nothing that can fail (docs only, a rename).
 - **Exploratory QA**: the bounded part of the hands-on QA check that follows the scenarios: tasks tried together, then the edge cases that apply to the change.
+- **Detach**: a client leaving a session on purpose (ctrl-\ in `afk attach`, or closing a dashboard pane); the session keeps running.
+- **Steal**: a second client connecting to a session host, which takes the session from the client already attached.
+- **Dropped**: a client's connection ending without the host saying the session ended; the session may still be running.

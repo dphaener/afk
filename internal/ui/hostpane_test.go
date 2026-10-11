@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,6 +103,13 @@ func TestHostChildWriteFrameTimesOutInsteadOfBlockingForever(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Wait never unblocked after the timed-out write tore the connection down")
 	}
+
+	// Nobody asked to leave here, so this is a drop. It guards the rule
+	// Read's reason depends on: a failed live write closes the connection
+	// without marking the pane closed by the user.
+	if got := c.detachReason(); got != host.DetachDropped {
+		t.Fatalf("detachReason after a timed-out write = %v, want %v", got, host.DetachDropped)
+	}
 }
 
 // TestHostChildCloseDoesNotBlockOnAPeerThatStopsReading covers the second
@@ -160,6 +168,172 @@ func TestHostChildStateIsNotPinnedByABlockedSocketWrite(t *testing.T) {
 	case <-writeDone:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("the blocked write never returned after its connection was closed")
+	}
+}
+
+// heldWriteConn is a net.Conn whose Write does not return until hold closes.
+// The bytes go out first, so the peer can act on them while the writer is
+// still inside Write. That is the one thing a plain net.Pipe cannot be made
+// to do on demand, and it is the whole of the detach race: the host's close
+// arriving at the reader before the writer gets to its next statement.
+type heldWriteConn struct {
+	net.Conn
+	hold <-chan struct{}
+	// gaveUp records that hold never closed. Write still returns then, so a
+	// broken test fails with a message instead of hanging.
+	gaveUp atomic.Bool
+}
+
+func (c *heldWriteConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	select {
+	case <-c.hold:
+	case <-time.After(2 * time.Second):
+		c.gaveUp.Store(true)
+	}
+	return n, err
+}
+
+// TestHostChildDetachReason pins which reason a pane reports for each way its
+// connection can end. `afk attach` prints that reason and picks its exit code
+// from it, so a wrong one tells a user who pressed ctrl+\ that their
+// connection dropped (exit 13 where 0 was owed).
+//
+// Load-bearing rows:
+//
+//   - "user detach, host closes before the Detach write returns" is the bug
+//     this test exists for. The host answers Detach by closing the connection
+//     with no frame in front of the close, so the read pump can see that close
+//     while Close is still inside its write. Left to chance over a net.Pipe
+//     the ordering turns up about once in 2000 detaches, which is why
+//     heldWriteConn forces it: Close's write is held until Read has returned.
+//     On code that records DetachUser only after the write, this row reports
+//     DetachDropped every time.
+//   - "host closes with no detach asked for" keeps the fix honest. A fix that
+//     reported DetachUser for every bare close would pass the row above and
+//     hide every real drop, and the late Close that follows (the dashboard
+//     closes a pane after it has ended) must not rewrite the reason either.
+//   - The Stolen and Exit rows hold first-wins: a frame Read has already acted
+//     on is not overwritten by the Close that tears the pane down afterwards.
+//     Without them the session-ended and taken-over messages could both
+//     degrade to "detached".
+func TestHostChildDetachReason(t *testing.T) {
+	tests := []struct {
+		name string
+		// peerSends are the frames the host side writes before it does
+		// anything else.
+		peerSends []host.MessageType
+		// closeWhileReading has the user close the pane while the read pump is
+		// still live, with the peer closing as soon as it has read Detach and
+		// Close's write held until Read has seen that. When false, the peer
+		// closes on its own and Close runs only after Read has finished, which
+		// is the ordinary teardown of a pane that already ended.
+		closeWhileReading bool
+		want              host.DetachReason
+	}{
+		{
+			name:              "user detach, host closes before the Detach write returns",
+			closeWhileReading: true,
+			want:              host.DetachUser,
+		},
+		{
+			name: "host closes with no detach asked for",
+			want: host.DetachDropped,
+		},
+		{
+			name:      "Stolen read before Close",
+			peerSends: []host.MessageType{host.Stolen},
+			want:      host.DetachStolen,
+		},
+		{
+			name:      "Exit read before Close",
+			peerSends: []host.MessageType{host.Exit},
+			want:      host.DetachExited,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			shortHostFrameTimeout(t, time.Second)
+			local, remote := net.Pipe()
+			t.Cleanup(func() {
+				_ = local.Close()
+				_ = remote.Close()
+			})
+
+			readDone := make(chan struct{})
+			conn := &heldWriteConn{Conn: local, hold: readDone}
+			c := &hostChild{conn: conn, exited: make(chan struct{})}
+
+			// The host side. It closes with no frame in front of the close,
+			// which is what a real host does on Detach and on a drop alike.
+			peerDone := make(chan struct{})
+			go func() {
+				defer close(peerDone)
+				defer remote.Close()
+				for _, typ := range tc.peerSends {
+					if err := host.WriteFrame(remote, typ, nil); err != nil {
+						return
+					}
+				}
+				if !tc.closeWhileReading {
+					return
+				}
+				for {
+					typ, _, err := host.ReadFrame(remote)
+					if err != nil || typ == host.Detach {
+						return
+					}
+				}
+			}()
+
+			// The read pump: termpane reads a child until it errors.
+			go func() {
+				defer close(readDone)
+				buf := make([]byte, 64)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						return
+					}
+				}
+			}()
+
+			if !tc.closeWhileReading {
+				select {
+				case <-readDone:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("the read pump never saw the connection end")
+				}
+			}
+
+			closed := make(chan error, 1)
+			go func() { closed <- c.Close() }()
+			select {
+			case <-closed:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Close never returned")
+			}
+			if conn.gaveUp.Load() {
+				t.Fatalf("the read pump never saw the host's close, so the ordering under test was not forced")
+			}
+			// Join both goroutines before the cleanup restores the write
+			// timeout and before reading the reason they may still be writing.
+			for name, done := range map[string]chan struct{}{"read pump": readDone, "peer": peerDone} {
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("the %s never finished", name)
+				}
+			}
+
+			select {
+			case <-c.exited:
+			default:
+				t.Fatalf("Wait is still blocked after the connection ended")
+			}
+			if got := c.detachReason(); got != tc.want {
+				t.Fatalf("detachReason = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

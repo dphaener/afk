@@ -374,7 +374,12 @@ type hostChild struct {
 
 	writeMu sync.Mutex
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// closed means the user asked to leave: only Close sets it, and it sets
+	// it before writing the Detach frame. Read relies on both halves of that
+	// to name the reason for a connection that then closes (see Close). A
+	// failed live write closes the connection WITHOUT setting it, so that
+	// case still reads as a drop.
 	closed bool
 
 	// exited closes when the connection ends, from whichever side notices
@@ -387,8 +392,8 @@ type hostChild struct {
 	// Stolen and Exit into io.EOF because that is what a terminal child looks
 	// like when it goes away, so the distinction has to be preserved here or it
 	// is lost — and `afk attach` owes its process the exit code that
-	// distinction selects. The zero value means Close got there first, which is
-	// a user detach.
+	// distinction selects. The zero value means nothing has ended the
+	// connection yet, which detachReason reads as a user detach.
 	reason host.DetachReason
 
 	// pending holds the unread tail of the current Data frame. A frame can
@@ -409,10 +414,20 @@ func (c *hostChild) Read(p []byte) (int, error) {
 		}
 		typ, payload, err := host.ReadFrame(c.conn)
 		if err != nil {
-			// No Exit frame came first, so the session never said it ended:
-			// the host dropped this client, or died too abruptly to say so.
-			// Either way it is not proof of death (see host.DetachDropped).
-			c.markExited(host.DetachDropped)
+			// No Exit frame came first, so the session never said it ended.
+			// Which of two things happened depends on whether the user has
+			// asked to leave. If Close has started, this is the host's answer
+			// to our own Detach frame: it closes the connection with nothing
+			// in front of the close, and that can be read here before Close
+			// gets back from its write. Calling that a drop told a user who
+			// pressed ctrl+\ that their connection dropped. Otherwise the
+			// host dropped this client, or died too abruptly to say so, which
+			// is not proof of death either (see host.DetachDropped).
+			reason := host.DetachDropped
+			if c.isClosed() {
+				reason = host.DetachUser
+			}
+			c.markExited(reason)
 			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 				return 0, io.EOF
 			}
@@ -472,6 +487,19 @@ func (c *hostChild) Wait() error {
 // frees this client slot immediately rather than discovering a dead
 // connection on its next write — and so a host that has stopped reading
 // cannot pin pane teardown (and with it, quitting the dashboard).
+//
+// closed is set BEFORE the Detach frame is written, and that order is what
+// makes the reported reason right. The host answers Detach by closing the
+// connection, so Read can see that close while this function is still inside
+// its write. Read consults closed to tell "the user left" from "the host
+// dropped us"; were the flag set after the write, or the markExited below the
+// only record of the user's intent, Read would win the race and report a
+// user detach as a dropped connection (`afk attach: connection dropped`,
+// exit 13). TestHostChildDetachReason forces that ordering.
+//
+// markExited is deliberately NOT moved ahead of the write to get the same
+// effect: it also unblocks Wait, which would then report the connection as
+// ended before the Detach frame had been given its chance to go out.
 func (c *hostChild) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -533,6 +561,12 @@ func (c *hostChild) isClosed() bool {
 // First-wins: Close runs after Read has already seen a Stolen or Exit frame in
 // the ordinary teardown, and overwriting that with DetachUser would report a
 // stolen or finished session as a plain detach.
+//
+// First-wins is only safe because every caller passes a reason that is right
+// whenever it happens to run first. Read and Close race after a Detach frame
+// is written, and nothing orders them, so Read's error path works out the
+// reason from the closed flag and never assumes a bare close is a drop (see
+// Close).
 func (c *hostChild) markExited(reason host.DetachReason) {
 	c.exitOnce.Do(func() {
 		c.mu.Lock()

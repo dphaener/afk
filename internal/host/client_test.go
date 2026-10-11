@@ -416,6 +416,207 @@ func TestAttachOutcomes(t *testing.T) {
 	}
 }
 
+// detachRaceConn is the client's end of the connection with one scheduling
+// decision taken away from the runtime. When the client writes a Detach frame
+// it lets the frame through, closes the host's end (which is what a real host
+// does on Detach), and then holds the Write open until the client's own read
+// loop has seen the connection end AND attach has started tearing down. That
+// is the losing interleaving of the detach race, made certain: the input loop
+// is still inside its Detach write when the outcome is decided, so the only
+// thing that can name the outcome is the read loop.
+//
+// Waiting for the read error alone would not be enough. Between Read
+// returning its error and the read loop reporting an outcome there is still a
+// gap the input loop could win, and the test would pass on broken code some
+// of the time. Close is called only by attach's teardown, which runs only
+// after an outcome has landed, so waiting for it closes that gap.
+//
+// The blocking here is the test's, and is bounded by testBudget so a client
+// that never gets there fails the test instead of hanging it. Shipped code
+// must not wait like this.
+type detachRaceConn struct {
+	net.Conn
+	// hostSide is the fake host's end, closed once the Detach frame is in.
+	hostSide net.Conn
+
+	readFailed     chan struct{}
+	readFailedOnce sync.Once
+	closed         chan struct{}
+	closedOnce     sync.Once
+
+	// forced counts Detach writes that were held until both events arrived;
+	// gaveUp counts ones that ran out of budget first. A row that expects the
+	// race asserts forced == 1 and gaveUp == 0, so it cannot pass by never
+	// reaching the ordering it claims to pin.
+	forced atomic.Int32
+	gaveUp atomic.Int32
+}
+
+func newDetachRaceConn(clientSide, hostSide net.Conn) *detachRaceConn {
+	return &detachRaceConn{
+		Conn:       clientSide,
+		hostSide:   hostSide,
+		readFailed: make(chan struct{}),
+		closed:     make(chan struct{}),
+	}
+}
+
+func (c *detachRaceConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		c.readFailedOnce.Do(func() { close(c.readFailed) })
+	}
+	return n, err
+}
+
+func (c *detachRaceConn) Close() error {
+	c.closedOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+func (c *detachRaceConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	// WriteFrame sends the header in a Write of its own, and a Detach frame
+	// has no payload, so a header-sized write whose first byte is Detach is
+	// the whole frame. No payload in this file is header-sized and starts
+	// with that byte (a Resize payload is one byte shorter).
+	if err != nil || len(p) != frameHeaderLen || MessageType(p[0]) != Detach {
+		return n, err
+	}
+	// net.Pipe's Write returns only once the peer has read the bytes, so the
+	// fake host already holds the frame and closing cannot lose it.
+	_ = c.hostSide.Close()
+	for _, event := range []<-chan struct{}{c.readFailed, c.closed} {
+		select {
+		case <-event:
+		case <-time.After(testBudget):
+			c.gaveUp.Add(1)
+			return n, err
+		}
+	}
+	c.forced.Add(1)
+	return n, err
+}
+
+// TestAttachDetachIsNotReportedAsDropped pins the fix for the detach race:
+// the host closes the connection as soon as it reads Detach, and the client's
+// read loop used to report that close as DetachDropped whenever it ran before
+// the input loop got back from the write to report DetachUser. The user asked
+// to leave and was told the connection dropped (exit 13). It showed up as
+// TestHostLifecycleEndToEnd failing about one run in seven.
+//
+// The first two rows are load-bearing, and each fails on the old ordering.
+// They are separate rows because the two detach paths are separate code: the
+// ctrl-\ path and the stdin-EOF path each send their own Detach frame, and
+// fixing one leaves the other broken. Left to the scheduler the race is rare
+// over net.Pipe (about 1 in 2000), so these rows force it with
+// detachRaceConn; a version that merely hoped for it would be a second flaky
+// test.
+//
+// The last row guards the fix from the other side. It runs through the same
+// wrapper with no detach asked for, and must still be a drop: a fix that
+// reported every closed connection as a user detach would pass the first two
+// rows and hide a dead host from the caller.
+func TestAttachDetachIsNotReportedAsDropped(t *testing.T) {
+	tests := []struct {
+		name string
+		// end drives the session to its conclusion.
+		end        func(t *testing.T, h *fakeHost, stub *attachStub)
+		wantReason DetachReason
+		// wantSent are the frames the host must see after the initial
+		// Resize, in order.
+		wantSent []MessageType
+		// wantForced is how many Detach writes must have been held until
+		// the read loop saw the close and attach began tearing down.
+		wantForced int32
+	}{
+		{
+			name: "ctrl-backslash, host close seen before the Detach write returns",
+			end: func(t *testing.T, h *fakeHost, stub *attachStub) {
+				stub.typeKeys(t, "ab\x1c")
+			},
+			wantReason: DetachUser,
+			wantSent:   []MessageType{Data, Detach},
+			wantForced: 1,
+		},
+		{
+			name: "terminal input ending, host close seen before the Detach write returns",
+			end: func(t *testing.T, h *fakeHost, stub *attachStub) {
+				if err := stub.stdinW.Close(); err != nil {
+					t.Fatalf("closing the stub stdin: %v", err)
+				}
+			},
+			wantReason: DetachUser,
+			wantSent:   []MessageType{Detach},
+			wantForced: 1,
+		},
+		{
+			name: "host close with no detach asked for is still a drop",
+			end: func(t *testing.T, h *fakeHost, stub *attachStub) {
+				if err := h.conn.Close(); err != nil {
+					t.Fatalf("closing the fake host's side: %v", err)
+				}
+			},
+			wantReason: DetachDropped,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, clientSide := newFakeHost(t)
+			conn := newDetachRaceConn(clientSide, h.conn)
+			stub := newAttachStub(t, conn)
+			results := runAttach(stub, "/unused.sock", time.Second)
+
+			assertResize(t, h.nextSent(t), 24, 80)
+			tt.end(t, h, stub)
+
+			r := awaitAttach(t, results)
+			if r.err != nil {
+				t.Fatalf("attach error = %v, want nil", r.err)
+			}
+			if r.reason != tt.wantReason {
+				t.Errorf("attach reason = %v, want %v", r.reason, tt.wantReason)
+			}
+			if got, want := stub.made.Load(), int32(1); got != want {
+				t.Errorf("raw mode entered %d times, want %d", got, want)
+			}
+			if got, want := stub.restored.Load(), int32(1); got != want {
+				t.Errorf("terminal restored %d times, want %d", got, want)
+			}
+			if got := stub.stopped.Load(); got != 1 {
+				t.Errorf("SIGWINCH handler stopped %d times, want 1", got)
+			}
+
+			// The frame still has to reach the host: recording the intent
+			// first must not turn into skipping the send.
+			for i, want := range tt.wantSent {
+				if got := h.nextSent(t).typ; got != want {
+					t.Fatalf("frame %d after the initial Resize = %v, want %v", i, got, want)
+				}
+			}
+			h.awaitClientGone(t)
+
+			// attach returned while the Detach write was still held, and the
+			// write is released only by attach's own teardown, so by the time
+			// the host side has drained the counters are settled or about to
+			// be; the row's verdict above does not depend on them.
+			if tt.wantForced > 0 {
+				deadline := time.Now().Add(testBudget)
+				for conn.forced.Load()+conn.gaveUp.Load() < tt.wantForced && time.Now().Before(deadline) {
+					time.Sleep(testPollStep)
+				}
+			}
+			if got := conn.gaveUp.Load(); got != 0 {
+				t.Errorf("%d Detach writes gave up waiting for the forced ordering, want 0", got)
+			}
+			if got := conn.forced.Load(); got != tt.wantForced {
+				t.Errorf("forced the ordering %d times, want %d", got, tt.wantForced)
+			}
+		})
+	}
+}
+
 func TestAttachForwardsSIGWINCHAsResize(t *testing.T) {
 	h, conn := newFakeHost(t)
 	stub := newAttachStub(t, conn)
