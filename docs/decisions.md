@@ -389,3 +389,177 @@ T1.4 adds the token ledger of PLAN §4.7: a provider method that reads a session
 - **All three landed on main first**, so main was merged into this branch (a merge commit, no rebase). Five files conflicted and both sides were kept in each: the command table and help text in `main.go`, the provider interface (it now has both `Usage` and `SessionTokens`), and the three documents.
 - **One test fake needed the new method.** The fake provider in `usage_cmd_test.go` gained a `SessionTokens` that returns `ErrTokensUnsupported`. A later fake of `provider.Provider` needs both methods.
 - **Two ways to find the main checkout now exist.** `afk tokens` takes the first worktree git lists; `maincheckout.go` (from T1.2) works it out from git's common directory. They give the same answer and were left as they are; folding them is a small clean-up for later.
+
+## T1.5
+
+T1.5 measures what a fresh agent carries before its first action and trims what it does not need. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **How the first call is captured (A1).** From the agent's own transcript. The first model call's usage gives the total size. The attachment lines before it give the parts (the skills list, `CLAUDE.md`, connector listings). `claude -p "/context"`, which costs no model usage, gives the split between system prompt, tools, connectors and skills. Nothing is put between the agent CLI and its service, so no login passes through new code.
+- **How agents are trimmed (A2, A3).** The plugin gains agent definitions under `plugins/afk/agents/`, each with the tools its role uses: `task` (task and fix agents), `verifier`, `reviewer` (the compliance and quality checks, the critic and the plan review), `qa`, `research` and `web-research`. The hands-on QA check gets a deny list, not an allow list, so every browser tool stays.
+- **An unknown agent type falls back (A4).** A session that started before a plugin update does not know the new types. A spawn that is refused for that reason is made again once without a type.
+- **Start-up share in `afk tokens` (A5).** A section under the table, for a session read from its transcripts. The token ledger file keeps its shape, so a task read from the ledger shows no start-up section.
+- **The baseline is the finished T1.4 session (A6).** It ran on this VM with the afk plugin and has all three agent types, so no new run was paid for to get the before numbers.
+- **A trim is kept only if it measures smaller (A7).** A definition that saves nothing is dropped and the reason is recorded here.
+- **`CLAUDE.md` stays in every agent (A8).** The plan requires it for agents that write code. Review checks keep it too, because they judge the code against the project's rules.
+- **OpenCode is not changed (A9).** Its lag note gains an entry.
+- **Plugin version 5.2.0 (A10).**
+- **The scratch-repo run is done by the conductor, last (A11).** After the review approves, it runs `make install` and `afk plugin install --target claude`, then one tiny autonomous task in a scratch repo. Installing the plugin swaps it for every session on this machine, which is why it is left to the end. This would normally have gone to the owner.
+- **Shipping (A12).** As the session description asks: push, open a draft PR, mark it ready, wait for CI and merge on green. This would normally have gone to the owner; the master plan's bootstrap section prescribes it.
+- **Tests and prerequisites (A13, A14).** Tests are written first for the Go and workflow-script changes. Nothing had to be in place before the work started.
+- **No web research (A15).** The task names no new library or API.
+
+### Start-up context, before
+
+Measured on the finished T1.4 session (`1a10f95c-966b-434c-b2a9-996c9abf3bec`, agent CLI 2.1.296, all three agents on `claude-sonnet-5-5`). Its 13 sub-agents each started at 35,151 to 36,622 tokens, 465,407 in all. The main session's first call was 121,273 tokens, most of it the skill it was started with.
+
+| | Task agent | Review agent (`review:qa`) | Research agent |
+|---|---|---|---|
+| Agent type | `workflow-subagent` | `workflow-subagent` | `general-purpose` |
+| **Start-up size, tokens (measured)** | **35,937** | **35,154** | **35,450** |
+| read from cache (measured) | 19,257 | 19,261 | 17,655 |
+| written to cache (measured) | 16,678 | 15,891 | 17,793 |
+| Total characters (measured) | 130,761 | 128,678 | 127,923 |
+
+The parts, largest first. Characters are measured. Tokens are estimated from each agent's own characters per token (3.61 to 3.66), good to about 20%.
+
+| Part | Task: chars | Task: tokens (est.) | Review: chars | Review: tokens (est.) | Research: chars | Research: tokens (est.) |
+|---|---|---|---|---|---|---|
+| Tool definitions, all | 84,994 | 23,359 | 84,980 | 23,216 | 78,081 | 21,638 |
+| of which the `Artifact` tool | 54,855 | 15,076 | 54,855 | 14,986 | 54,855 | 15,201 |
+| of which `SendFeedback` | 9,090 | 2,498 | 9,090 | 2,483 | absent | absent |
+| of which the `Agent` tool | absent | absent | absent | absent | 7,873 | 2,182 |
+| of which `Bash` | 4,412 | 1,213 | 4,412 | 1,205 | 4,412 | 1,223 |
+| of which `Skill` | 3,302 | 907 | 3,302 | 902 | 3,302 | 915 |
+| of which `ReportFindings` | 2,832 | 778 | 2,832 | 774 | absent | absent |
+| of which `Read` | 2,790 | 767 | 2,790 | 762 | 2,790 | 773 |
+| of which `ToolSearch` | 2,497 | 686 | 2,497 | 682 | 2,497 | 692 |
+| of which `ListAgents` | 2,009 | 552 | 2,009 | 549 | absent | absent |
+| of which `Edit`, `Write`, `StructuredOutput` | 3,207 | 881 | 3,193 | 872 | 2,352 | 652 |
+| The skills list | 19,915 | 5,473 | 19,915 | 5,441 | 19,915 | 5,519 |
+| `CLAUDE.md` and memory | 14,373 | 3,950 | 14,373 | 3,927 | 14,373 | 3,983 |
+| The agent's own prompt | 2,908 | 799 | 1,011 | 276 | 6,418 | 1,779 |
+| Connector and on-demand tool names | 2,698 | 741 | 2,698 | 737 | 2,625 | 727 |
+| Environment, session and date notes | 4,003 | 1,100 | 3,831 | 1,046 | 3,846 | 1,067 |
+| System prompt | 1,870 | 514 | 1,870 | 511 | 2,665 | 739 |
+
+**What the "extra" context turned out to be.** Tools and listings the agents never use.
+
+- **The `Artifact` tool definition: about 15,000 tokens, 42% of every agent's start-up.** One tool that no task, review or research agent uses.
+- **The skills list: about 5,500 tokens, 15%.** 42 skills, none of which a sub-agent is meant to invoke.
+- **`SendFeedback`: about 2,500 tokens, 7%** (workflow agents only).
+- **Other unused tools and the connector names: about 3,700 tokens** (`Skill`, `ReportFindings`, `ToolSearch`, `ListAgents` and the name listing).
+
+That is about 26,700 of the task agent's 35,937 tokens, or 74%. What an agent needs is small: `CLAUDE.md` is about 4,000 tokens, and the tools a task agent works with (`Bash`, `Read`, `Edit`, `Write`, `StructuredOutput`) about 2,900.
+
+### What was trimmed
+
+Six agent definitions in `plugins/afk/agents/`, named `afk:<name>`. All six were kept: each measured smaller than the default agent.
+
+| Definition | Used by | Tool rule | Tools it got in the measurement |
+|---|---|---|---|
+| `afk:task` | task and fix agents | allow `Read, Edit, Write, Glob, Grep, Bash` | `Bash`, `Read`, `Edit`, `Write` |
+| `afk:verifier` | the verifier | allow `Read, Glob, Grep, Bash` | `Bash`, `Read` |
+| `afk:reviewer` | the compliance and quality checks, the critic, the plan review | allow `Read, Glob, Grep, Bash` | `Bash`, `Read` |
+| `afk:qa` | the hands-on QA check | deny `Agent, NotebookEdit, Artifact, SendFeedback, ReportFindings, ListAgents` | `Bash`, `Skill`, `Read`, `ToolSearch`, `Edit`, `Write` |
+| `afk:research` | the planner's codebase research | allow `Read, Glob, Grep, Bash` | `Bash`, `Read` |
+| `afk:web-research` | the planner's web research | allow `WebSearch, WebFetch, Read` | `Read`, `WebSearch`, `WebFetch` |
+
+- **An allow list also removes the skills list and the connector names.** They come with the `Skill` and `ToolSearch` tools, which the lists leave out.
+- **`Glob` and `Grep` are in the lists but this agent CLI version has neither.** A name it does not know is dropped with no warning. Searching goes through `Bash`. The names stay for a version that has them.
+- **`StructuredOutput` is in no list.** A workflow call with a schema adds it by itself.
+- **The QA deny list is longer than first planned.** A workflow agent has no `Agent` or `NotebookEdit` tool to begin with, so denying only those would have saved nothing. The four other names are the unused tools from the before table. `Skill` and `ToolSearch` stay, because the browser skills and connector tools need them.
+- **Never deny `ToolSearch`.** In the try-out, a deny list that included it made every on-demand tool load in full: 58 tools and a first call of 43,258 tokens, against 15,813 for the default agent.
+- **`CLAUDE.md` still reaches every type.** Nothing was removed from it.
+- **A refused type falls back.** The workflow scripts make the call again once without the type. The skills tell the session to do the same.
+
+### Start-up context, after
+
+Each type was spawned once through the Agent tool with a small real job, and the default `general-purpose` agent was given the same six jobs as the control. All on `claude-sonnet-5-5`, in a scratch project.
+
+| Agent type | Start-up, tokens (measured) | Control, tokens (measured) | Saving | Did its job | `CLAUDE.md` present |
+|---|---|---|---|---|---|
+| `afk:task` | 4,547 | 15,984 | 11,437 (71.6%) | yes: wrote a file, ran a command | yes |
+| `afk:verifier` | 3,961 | 15,965 | 12,004 (75.2%) | yes: read a file, ran `git status` | yes |
+| `afk:reviewer` | 3,961 | 15,965 | 12,004 (75.2%) | yes: read a file, ran `git status` | yes |
+| `afk:qa` | 14,075 | 15,979 | 1,904 (11.9%) | yes: ran a command, wrote a file | yes |
+| `afk:research` | 3,967 | 15,968 | 12,001 (75.2%) | yes: found the string in both files | yes |
+| `afk:web-research` | 3,422 | 15,982 | 12,560 (78.6%) | yes: read a file, no fetch asked | yes |
+
+- **`CLAUDE.md` was checked two ways.** Every agent carried the instructions attachment at the same size as the control (693 characters). The scratch `CLAUDE.md` also held a rule to end the reply with a marker line, and all twelve agents followed it.
+- **No tool call failed** in any of the twelve agents.
+- **`afk:web-research` does get its web tools.** It had `WebSearch` and `WebFetch` loaded without `ToolSearch`. No page was fetched.
+- **These numbers are not the before numbers' twin.** The measurement ran with `claude -p`, as a task agent must. A `-p` session has no `Artifact` or `SendFeedback` tool, and the scratch `CLAUDE.md` is small. That is why the control is about 16,000 tokens here and not 35,000. Compare each type with its control, not with the before table.
+- **The QA saving looks small for the same reason.** Most of what its deny list removes does not exist in a `-p` session. Here it lost little more than the `Agent` tool.
+
+What a real afk session should show, worked out from the before table by taking away the parts each definition removes. These are estimates, not measurements:
+
+| Agent | Before (measured) | After (estimated) | Saving (estimated) |
+|---|---|---|---|
+| Task agent, `afk:task` | 35,937 | about 9,200 | 26,711 (74%) |
+| Review agent, `afk:qa` | 35,154 | about 16,400 | 18,792 (53%) |
+| Research agent, `afk:research` | 35,450 | about 9,600 | 25,888 (73%) |
+
+### How it was measured
+
+- **The script.** `bash scripts/startup-context.sh [PROJECTS_DIR] SESSION_ID` reads a session's transcripts and prints, for the main session and each sub-agent, the first model call's usage and the size of each part. It prints sizes and names only, never content.
+- **What is measured.** Start-up tokens (the first call's input, cache write and cache read, taking the largest value of each over the lines that share the message id) and every part's size in characters.
+- **What is estimated.** A part's tokens: its characters divided by that agent's characters per token. The transcripts give tokens only for the whole call. The "after" figures for a real afk session are estimates too.
+- **Tool definitions are counted** though the transcript records them just after the first call. They are sent with it.
+- **Sessions.** Before: `1a10f95c-966b-434c-b2a9-996c9abf3bec` (T1.4). Try-out: `5e4594c1-446a-49db-924b-d635ddbe08bf` and `d74170c6-0938-4986-aa2d-a772e05f26b0`. After: `a3f299ff-9501-46cf-93c8-1132dcd7b3f9` (the six types) and `2d787edb-164e-4b04-8936-64b7885cebe9` (the control). Unknown type: `da45a97a-85f3-4a58-961e-4ecd3407ef8a`.
+- **How the after runs were made.** From a scratch directory outside the repo, with this branch's plugin loaded for that run only: `claude -p "<prompt>" --model sonnet --plugin-dir <worktree>/plugins/afk --permission-mode bypassPermissions --output-format stream-json --verbose`. The installed plugin did not get in the way: the session listed the six `afk:` types and plugin version 5.2.0. Nothing was installed.
+- **An unknown type is refused by name.** Asking for `afk:no-such-agent` returned `Agent type 'afk:no-such-agent' not found`, with the list of known types. Nothing was spawned and the session carried on.
+
+Live calls made for the after measurement:
+
+| # | Call | Purpose | Cost |
+|---|---|---|---|
+| 1 | `claude -p "/context"` with `--plugin-dir` | check that the six types load | 0 tokens |
+| 2 | run A, session `a3f299ff…` | the six types, one job each | $0.23: 57,658 cache write, 154,899 cache read, 3,719 output |
+| 3 | run B, session `2d787edb…` | the same six jobs on the default agent | $0.38: 106,175 cache write, 266,074 cache read, 5,849 output |
+| 4 | session `da45a97a…` | the unknown type | $0.05: 11,931 cache write, 37,335 cache read, 263 output |
+| 5 | one session under a pseudo-terminal | measure where `Artifact` exists | 0 tokens: it stopped at the "do you trust this folder" question and was left unanswered |
+
+The try-out's four calls ($0.39 in all) are listed in the evidence. Evidence for every number here is under `.afk/t1-5/evidence/`: `w1-t2-baseline.md`, `w1-t2-script.txt`, `w1-t2-tryout.txt`, `w3-t1-after.txt` and `w3-t1-unknown-type.txt`.
+
+### The run after the trim
+
+After the review approved, the conductor ran `make install` and `afk plugin install --target claude` (plugin 5.2.0), then one throw-away autonomous task as a session of this repo: add `scripts/hello.sh` and its test on a branch that is never merged (session `t1-5-scratch2`, id `8784aa47-531b-492b-90ef-2a5c25e4d7c8`).
+
+- **It ended `phase: done`** with a verdict of APPROVE: `Compliance`, `Quality` and `QA` all ran and all passed. It asked nothing at the terminal.
+- **Every agent used its new type**: `afk:task`, `afk:verifier`, `afk:reviewer` (compliance and quality) and `afk:qa`. No call fell back to the default agent.
+- **Start-up sizes in a real session, measured.** These replace the estimates above.
+
+| Agent | Before (T1.4 session) | After (this run) | Saving |
+|---|---|---|---|
+| Task agent, `afk:task` | 35,937 | 11,787 | 24,150 (67%) |
+| Verifier, `afk:verifier` | about 36,000 | 11,273 | about 24,700 (69%) |
+| Review, compliance and quality, `afk:reviewer` | about 35,150 | 10,300 | about 24,850 (71%) |
+| Review, hands-on QA, `afk:qa` | 35,154 | 20,955 | 14,199 (40%) |
+
+- **`afk tokens t1-5-scratch2` shows the start-up share**: 27.2% of the session's weighted cost. Most of that is the main session's own first call (16.9%), which this task does not trim. The five sub-agents' first calls together are 10.3%.
+
+```
+start-up (the first call of each agent)
+               role  agents  average tokens  weighted  share
+            planner       1          122579    122193  16.9%
+               task       1           11787     12372   1.7%
+           verifier       1           11273     15356   2.1%
+  review:compliance       1           10302     14327   2.0%
+          review:qa       1           20955     21821   3.0%
+     review:quality       1           10300     10514   1.5%
+              total       6           31199    196583  27.2%
+```
+
+- **The whole run cost about 724,000 weighted tokens** in 38 model calls.
+- **A scratch repo did not work, and why.** The first try used a new repository in a scratch folder. The agent CLI stopped at its "do you trust this folder?" question, which is the owner's to answer, so that session was stopped and removed. A session of this repo is already trusted.
+- **A first run saved no transcripts.** A session started from inside another agent's shell inherits `CLAUDE_CODE_CHILD_SESSION=1` and keeps no transcript, so `afk tokens` had nothing to read. It still ended `done` with all three checks passed. The run above was started with those variables removed. The daemon will start sessions from its own clean environment, so it is not affected, but anything that starts `afk new` from an agent's shell must clear them.
+- **The main session's first call is 122,579 tokens.** That is the conductor's own start-up: the skills it loads in full. It is now the largest single start-up cost and is outside this task.
+
+### Not verified, owner check
+
+- **The research agents in a real session.** The run above planned a tiny task and spawned no research agent, so `afk:research` and `afk:web-research` have only the `claude -p` numbers.
+- **The QA check's browser tools.** No browser or connector tool was used in any run. `afk:qa` keeps `Skill` and `ToolSearch`, which is how those tools are reached.
+- **A real web fetch.** `afk:web-research` had the tools but was not asked to use them.
+- **The plugin was installed for every session on this machine** (`afk plugin install --target claude`, version 5.2.0). A session that was already running keeps working: a spawn with a type it does not know is made again without the type.

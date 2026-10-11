@@ -57,6 +57,12 @@ afk runs in one of two modes. Both avoid stops that exist only to ask permission
 
 ---
 
+## Agent definitions
+
+afk ships six agent definitions in `agents/`: `afk:task` (executes and fixes tasks), `afk:verifier` (checks a finished task), `afk:reviewer` (the compliance and quality checks and the critic), `afk:qa` (the hands-on QA check), `afk:research` (codebase research) and `afk:web-research` (web research). Each limits the tools its agent starts with, so a sub-agent loads only what its job needs instead of every tool in your session, which makes it cheaper to start. The planner, reviewer and orchestrator name these types when they spawn agents. If your session predates the plugin update and refuses a type as unknown, the call is made again without it and the agent runs with the default tools.
+
+---
+
 ## The Three Phases
 
 ### Phase 1: Plan (`/afk:plan`)

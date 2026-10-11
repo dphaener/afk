@@ -304,6 +304,20 @@ func runTokensSession(name string, record bool, project string, stdout, stderr i
 		fmt.Fprintf(stderr, "afk tokens: could not print the table: %v\n", err)
 		return 1
 	}
+	// The start-up section comes from the First marks on the records, so it
+	// exists only for a session read from its transcripts; the ledger keeps
+	// no such field and the ledger forms never print it.
+	var total float64
+	for _, l := range lines {
+		total += l.Weighted
+	}
+	if rows := tokens.StartUp(records); len(rows) > 0 {
+		fmt.Fprintln(stdout)
+		if err := tokens.RenderStartUp(stdout, rows, total); err != nil {
+			fmt.Fprintf(stderr, "afk tokens: could not print the start-up section: %v\n", err)
+			return 1
+		}
+	}
 	if !record {
 		return 0
 	}
