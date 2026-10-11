@@ -749,6 +749,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
 - **Acceptance:** parser tests on the fixture and on hand-made cases (a message id split across lines,
   the same id in two files, a subagent with no metadata, an unknown role); the weighted formula as a
   table test; `afk tokens` on the fixture matches numbers computed by hand in the test.
+- Amended 2026-10-11 (T1.4 done): the provider method is `SessionTokens(TokenQuery)`, returning `ErrTokensUnsupported` or `ErrNoTranscript`; phases come from the conductor's phase writes in the main transcript, because `status.json` keeps no history (so a daemon must record a session before `afk clean`); ledger lines are per phase, role and model; until T2.1 calls `internal/tokens` at task end, `afk tokens --record SESSION` writes the ledger. See `docs/decisions.md` T1.4.
 
 #### T1.5 — Measure and trim agent start-up context
 - **Depends on:** T0.2, T1.4

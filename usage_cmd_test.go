@@ -34,6 +34,12 @@ func (f *fakeProvider) Usage(context.Context, provider.UsageDeps) (provider.Usag
 	return f.snap, f.err
 }
 
+// SessionTokens is here only to satisfy provider.Provider; the usage command
+// never reads token records.
+func (f *fakeProvider) SessionTokens(provider.TokenQuery) ([]provider.TokenRecord, error) {
+	return nil, provider.ErrTokensUnsupported
+}
+
 var usageNow = time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 
 func usageWindows(session, week, model float64) []provider.Window {

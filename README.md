@@ -586,6 +586,28 @@ With no `afk.toml`, or no `ntfy_url` in it, afk sends nothing and that is not an
 
 **Exit codes:** 0 when the command did what was asked (including an added item whose notification failed), 1 when the item was not found, was already answered, or a file could not be read or written, 2 when the command was written wrongly (for example neither `--block` nor `--no-block`).
 
+### `afk tokens` — Show how many tokens a task used
+
+Show how many tokens a session or a task used, split by phase and by role. afk is limited by the usage allowance of your agent subscription, so tokens per finished task is the number that decides how much it can get done in a week.
+
+```bash
+afk tokens [--project PATH] [--record] [SESSION|TASK]
+```
+
+- No argument — Totals per task, read from the ledger.
+- `TASK` — A task id such as `T1.4`: that task's lines from the ledger. Use this for a session that has been cleaned.
+- `SESSION` — A session name: reads the session's transcripts now, including its sub-agents, and prints a header (session, task or `no task`, number of calls) and the table. The task id is the first `T<n>.<n>` in `.afk/<session>/description.md`.
+- `--record` — Only with a session name. After printing, adds the session's lines to the ledger. A session that already has lines in the ledger is not added again; the command prints `already recorded` and changes nothing.
+- `--project PATH` — The project to work in. Defaults to the current directory.
+
+**The columns:** one row per phase (`plan`, `execute`, `review`, `fix`, `ship`), role (for example `conductor`, `task`, `verifier`, `review:qa`) and model. `calls` is the number of model calls, `input`, `output`, `cache write` and `cache read` are the token counts the agent CLI reports, and `share` is the row's part of the table's weighted total. Each phase has a `(subtotal)` row and the table ends with a `total` row.
+
+**Weighted cost** is `input + 5 x output + 1.25 x cache write + 0.1 x cache read`. It is a proxy built from the usual ratios between token prices, not a bill, and a subscription is not metered per token; use it to compare tasks with each other. The raw counts are kept in the ledger, so the weights can be changed later.
+
+**The ledger** is `.afk/log/tokens.jsonl` in the project's main checkout, one JSON line per task, phase, role and model. It is added to only by `--record`. Several recordings can run at once; they take turns using a lock file beside the ledger.
+
+**Exit codes:** 0 when the table was printed (or the session was already recorded), 1 when there was nothing to show or the session could not be read (no such session, it has not started, no transcript found, the agent CLI is not supported yet, or the ledger has nothing for the task), 2 when the command was written wrongly. `-h` and `--help` print the usage and exit 0.
+
 ---
 
 ## Session Model

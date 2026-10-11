@@ -43,3 +43,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Assumed**: on a non-blocking question, the answer the agent went ahead with instead of waiting.
 - **ntfy**: the push-notification service afk posts to when an inbox item needs the owner, set by `[notify] ntfy_url` in `afk.toml`.
 - **Main checkout**: the project's original folder, as opposed to a session's worktree; `.afk/inbox/` lives there.
+- **Token ledger**: `.afk/log/tokens.jsonl` in the project's main checkout, one line per task, phase, role and model, recording how many tokens that part of a task used.
+- **Weighted cost**: one number for a set of model calls, `input + 5×output + 1.25×cache_write + 0.1×cache_read`, in input-token equivalents; a proxy from API price ratios.
+- **Token record**: one model call's usage as a provider reports it: when, which model, which role and phase, and the four token counts.
+- **Role**: who made a model call inside a session: `conductor`, `planner`, `research`, `crucible`, `task`, `fix`, `verifier`, a `review:` check, `critic`, or `unknown`/`other` when it cannot be told.
+- **Transcript**: the file an agent CLI keeps of one conversation, one JSON object per line; the source of token records.

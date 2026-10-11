@@ -21,6 +21,7 @@ var subcommands = map[string]func([]string){
 	"ledger": cmdLedger,
 	"usage":  cmdUsage,
 	"inbox":  cmdInbox,
+	"tokens": cmdTokens,
 	"_host":  cmdHost,
 }
 
@@ -184,6 +185,8 @@ Subcommands:
   inbox          List the things that need you; 'inbox show <id>' shows one,
                  'inbox answer <id> <text>' answers it, and 'inbox add' (mostly run
                  by the agent) adds one and sends a push notification if set up
+  tokens         Show how many tokens a task or session used:
+                 afk tokens [--project PATH] [--record] [SESSION|TASK]
 
 Use 'afk <subcommand> --help' for subcommand options.
 

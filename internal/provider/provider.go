@@ -6,9 +6,10 @@
 // `claude plugin list`. A provider owns all three so adding an agent CLI is
 // one new type here rather than a hunt through the session and host code.
 //
-// Every method is pure apart from Preflight and Usage, which reach the outside
-// world only through an injected runner, so the whole matrix is table-testable
-// without any CLI installed.
+// Every method is pure apart from three. Preflight and Usage reach the
+// outside world only through an injected runner, and SessionTokens
+// (tokens.go) only reads files below the home directory it is handed, so the
+// whole matrix is table-testable without any CLI installed.
 package provider
 
 import (
@@ -55,6 +56,12 @@ type Provider interface {
 	// as Preflight: tests inject a fake and never touch a real CLI. A
 	// provider with no way to report returns ErrUsageUnsupported.
 	Usage(ctx context.Context, d UsageDeps) (UsageSnapshot, error)
+	// SessionTokens returns one record per model call of a session and its
+	// sub-agents, for the token ledger. A provider that cannot read its
+	// sessions' token use returns ErrTokensUnsupported; one that can but
+	// finds nothing for the session returns ErrNoTranscript. It reads files
+	// under q.Home only and runs nothing.
+	SessionTokens(q TokenQuery) ([]TokenRecord, error)
 }
 
 // order is the stable listing order for Names.
