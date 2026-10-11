@@ -18,13 +18,20 @@
 //     path breaks after `make install`.
 //
 // Both run only in the detached watcher child, never on a caller's critical path.
-// Keep new impurity inside these two files: a Format or an argv builder that
+// Keep new impurity inside these files: a Format or an argv builder that
 // reached for the environment on its own would take the matrix above with it.
+//
+// The package also sends push notifications through ntfy. ntfy.go is the third
+// confined impure file: it makes one HTTP request (Ntfy.Send) and its only
+// branching, which inbox items notify and how loudly, is the pure NtfyPriority.
+// Unlike the two files above it is called from the `afk inbox` command, never
+// from the detached watcher. NtfyPriority takes plain kind and blocking values
+// because notify must not import internal/inbox.
 //
 // internal/probe imports this for backend selection, never the reverse. Import
 // boundaries: internal/notify imports only stdlib and internal/dashmeta. Never
-// imports internal/probe, internal/session, internal/host, or internal/state. The
-// chain is session → probe → notify → dashmeta, acyclic.
+// imports internal/probe, internal/session, internal/host, internal/state or
+// internal/inbox. The chain is session → probe → notify → dashmeta, acyclic.
 package notify
 
 type Toast struct {

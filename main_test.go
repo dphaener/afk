@@ -23,6 +23,9 @@ import (
 //     Claude Code hook, which has no terminal at all, so a stdout gate on this
 //     name would mean zero notifications in exactly the case the command exists
 //     for.
+//   - `inbox` with stdout PIPED must dispatch for the same reason: `afk inbox
+//     add` is typed by an agent with no terminal, and its words and flags must
+//     reach cmdInbox untouched.
 //   - []string{""} (`afk ""`) is routeUnknownSubcommand with an EMPTY name, not
 //     routeUsageError and not the dashboard. An earlier revision used a
 //     `name != ""` sentinel to decide whether to print the diagnostic, which
@@ -119,6 +122,14 @@ func TestRouteArgs(t *testing.T) {
 			args:      []string{"--help"},
 			stdoutTTY: false,
 			wantKind:  routeUsage,
+		},
+		{
+			name:      "inbox with stdout piped -> subcommand, args passed through",
+			args:      []string{"inbox", "add", "--kind", "notice", "--title", "x", "--no-block"},
+			stdoutTTY: false,
+			wantKind:  routeSubcommand,
+			wantName:  "inbox",
+			wantArgs:  []string{"add", "--kind", "notice", "--title", "x", "--no-block"},
 		},
 		{
 			name:      "dash -> subcommand, no args",

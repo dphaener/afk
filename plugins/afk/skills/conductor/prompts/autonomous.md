@@ -19,19 +19,20 @@ This block extends the afk Conductor (`conductor/SKILL.md`). In autonomous mode 
 Seven rules, in order of precedence: an earlier rule wins over a later one, except that rule 7's project lines win over rules 2–6.
 
 1. **Never wait on a rubber stamp.** No plan-approval gate, no ship sign-off, no "shall I proceed". The planner's TLDR, the engine choice, the review and the commit all happen without a question.
-2. **Take the recommended option** on any question the planner would have asked or a sub-agent asks (§3). Record each assumed answer twice: as a bullet under `## Assumptions` in the work plan (`.afk/plans/{name}.md` — the planner writes its own during planning; you append later ones between runs, never while a run is in flight) and as a line in `.afk/{name}/decisions.md` (§3 gives the form).
+2. **Take the recommended option** on any question the planner would have asked or a sub-agent asks (§3). Record each assumed answer twice: as a bullet under `## Assumptions` in the work plan (`.afk/plans/{name}.md` — the planner writes its own during planning; you append later ones between runs, never while a run is in flight) and as a line in `.afk/{name}/decisions.md` (§3 gives the form). For each decision tagged `(assumed, would have escalated)` in the plan, once the plan is saved, and for each relayed answer (§3), also run `afk inbox add --kind question --no-block --title "{the decision in one line}" --assumed "{the answer taken}" --body "{the reason}"`, adding `--task {id}` when the session description names a master-plan task. Plain `(assumed)` decisions get no inbox item.
 3. **Park instead of guessing** when the next step is irreversible or outside the machine: a missing credential or environment variable, a third-party dashboard, spending real money beyond the allowance in `afk.toml` `[policy] notes`, deleting data, anything that needs a physical device. Parking, in this order:
-   - a. Status-write `awaiting_input: true` (S4), per the Status Write Protocol; `phase` stays as it is.
-   - b. Toast, best-effort: `"{plugin-root}/hooks/notify.sh" "{name}" "$(basename "$PWD")" "afk is parked: {what the owner must do}" >/dev/null 2>&1 || true`
-   - c. State plainly what is missing, where it goes, and that `/afk:go --session {name}` resumes the session (the startup write clears the flag, C3, and Resume Semantics pick the phase up from disk).
-   - d. End the turn. No `AskUserQuestion`, no polling, no guess.
+   - a. `afk inbox add --kind {env_var for a missing credential or variable | external_action for a dashboard, a device, money or deleting data | question for a choice only the owner can make} --block --title "{what the owner must do}" --body "{what is missing, where it goes, and that /afk:go --session {name} resumes}"`
+   - b. Status-write `awaiting_input: true` (S4), per the Status Write Protocol; `phase` stays as it is.
+   - c. Only if the command in a. failed (non-zero exit or `afk` missing), fire the toast as the fallback: `"{plugin-root}/hooks/notify.sh" "{name}" "$(basename "$PWD")" "afk is parked: {what the owner must do}" >/dev/null 2>&1 || true`. Otherwise no toast: the inbox item is the notification.
+   - d. State plainly what is missing, where it goes, and that `/afk:go --session {name}` resumes the session (the startup write clears the flag, C3, and Resume Semantics pick the phase up from disk). Give the item's id.
+   - e. End the turn. No `AskUserQuestion`, no polling, no guess.
    Parking is the only `awaiting_input: true` write in autonomous mode; the S3 cap stop is replaced by §4.
 4. **Fix every confirmed review finding** of blocker or major severity (the review's critic has confirmed each one before it reaches you, contract C3), then re-review only the checks that failed. At the fix-loop cap, end `failed` (§4).
-5. **Verification a machine cannot do** (a check on a real phone, a look at a screen you do not have) never blocks: append one line to `.afk/{name}/decisions.md` under `## Verification for the owner` — what to check and how — and carry on.
-6. **Unsolicited scope ideas** go to `.afk/{name}/decisions.md` under `## Scope ideas`, one line each; never into the diff and never into the plan.
+5. **Verification a machine cannot do** (a check on a real phone, a look at a screen you do not have) never blocks: append one line to `.afk/{name}/decisions.md` under `## Verification for the owner` — what to check and how — and run `afk inbox add --kind verification --no-block --title "{what to check}" --body "{how}"`. Carry on.
+6. **Unsolicited scope ideas** go to `.afk/{name}/decisions.md` under `## Scope ideas`, one line each, and run `afk inbox add --kind notice --no-block --title "{the idea}"`; never into the diff and never into the plan.
 7. **Project lines** from `afk.toml` `[policy] notes` at the project root, when that file exists: read them once after detection, append them after rule 6, and let them win over rules 2–6 (for example, a logged allowance for live API calls). They never override rule 1, the status schema, the phase gates or the 2-cycle cap.
 
-`afk inbox add` (`docs/PLAN.md` T1.2) will carry the records of rules 2, 5 and 6 and the park of rule 3 once it exists. It does not exist yet: the files and the writes above are the mechanism today, and this command is never run.
+The inbox is where the owner sees these records (`afk inbox`). Each item is written by `afk inbox add`, never by hand. A failed `afk inbox add` never blocks the work, except in a park, where the toast fallback applies. Never run `afk inbox answer`: answers are the owner's.
 
 ---
 
@@ -42,7 +43,7 @@ Delegations state autonomous mode, so sub-agents decide for themselves and recor
 1. **Pick the recommended option.** Use the option the sub-agent marked recommended; otherwise the reversible, least-exposure option consistent with the plan's What to do, Must NOT do, and `## Assumptions`. For an open-ended question, answer from the plan, the codebase, and the notepads with the same least-exposure rule.
 2. **Record it** in `.afk/{name}/decisions.md` (append) under `## Relayed answers`:
    `- [{task-id}] {question verbatim} → {answer} — {reason} (assumed, would have asked)`
-   and as a bullet under the plan's `## Assumptions` (rule 2).
+   and as a bullet under the plan's `## Assumptions`, plus the inbox call (rule 2).
 3. **Re-delegate the SAME full prompt** with the `### Relayed Answer` subsection filled in: the question verbatim and the answer, stated as decided by the conductor in autonomous mode. Under the Workflow engine, re-run the parser and start a fresh run instead (`[x]` tasks skip by status).
 4. No toast, no AskUserQuestion, no `awaiting_input: true` (a park is the one exception, above). The round-trip does not consume the task's 3-attempt retry budget.
 
@@ -68,8 +69,8 @@ The cap itself is unchanged: never a third fix cycle. Only the stop is replaced:
 | Phase A, planning | Planner asks only escalation-rule decisions | Conductor passes autonomous mode; the planner never asks and marks would-escalate decisions `(assumed, would have escalated)`; Crucible runs only on HIGH risk, with no question |
 | Phase A, planner error (no request, Jira unreachable) | Planner asks | Planner stops with its error; if `status.json` exists, apply Failure Handling (`phase: "failed"`) |
 | Phase B, engine choice | No question (both modes) | Same; parser gets `--autonomous` |
-| Phase B, `NEEDS_INPUT` | Relay: S4 write, toast, AskUserQuestion, C2 | Conductor answers itself (§3); a rule 3 case parks (§2) |
-| Any phase, a rule 3 case | The user is in the loop | Park: S4 write, toast, plain statement, end the turn |
+| Phase B, `NEEDS_INPUT` | Relay: S4 write, toast, AskUserQuestion, C2 | Conductor answers itself (§3); a rule 3 case parks (§2) with a blocking inbox item |
+| Any phase, a rule 3 case | The user is in the loop | Park: blocking inbox item, S4 write, plain statement, end the turn (toast only if the inbox call failed) |
 | Phase C, fix-loop cap | S3 stop | Not-approved ship (commit only), then `phase: "failed"` (§4) |
 | Ship | Commit, draft PR, `done` | Commit, no push, no PR, `done` (ship.md §2a); ship instructions in the session description are the one exception |
 
@@ -81,8 +82,8 @@ The cap itself is unchanged: never a third fix cycle. Only the stop is replaced:
 - Write `awaiting_input: true` for anything but a rule 3 park; never S3.
 - Push, open a PR, or ship in any way the session description did not ask for.
 - Exceed the 2-cycle fix cap, or skip the `phase: "failed"` write at the cap.
-- Hide an assumed answer, a parked step, an owner check or a scope idea: each is in decisions.md.
-- Run `afk inbox add`: it does not exist yet (§2).
+- Hide an assumed answer, a parked step, an owner check or a scope idea: each is in decisions.md and, where §2 says so, in the inbox.
+- Write a file under `.afk/inbox/` by hand, or run `afk inbox answer`.
 
 ---
 

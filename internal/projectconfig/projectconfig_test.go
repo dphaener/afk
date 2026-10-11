@@ -7,7 +7,8 @@ import (
 	"testing"
 )
 
-// fullExample is the afk.toml from docs/PLAN.md section 4.6, verbatim.
+// fullExample is the afk.toml from docs/PLAN.md section 4.6, verbatim apart
+// from the ntfy_url line, whose %s each row fills in.
 const fullExample = `plan = "docs/PLAN.md"
 
 [ship]
@@ -27,7 +28,7 @@ Live API calls are allowed for smoke checks and recording fixtures. Log each one
 """
 
 [notify]
-ntfy_url = ""                   # e.g. https://ntfy.example/afk-nebari
+ntfy_url = %s                   # e.g. https://ntfy.example/afk-nebari
 `
 
 // TestLoad: the load-bearing rows are "full example" (every other section
@@ -46,8 +47,9 @@ func TestLoad(t *testing.T) {
 		{name: "plan set", file: ptr(`plan = "plans/master.md"`), want: "plans/master.md"},
 		{name: "plan cleaned", file: ptr(`plan = "./docs//sub/../PLAN.md"`), want: "docs/PLAN.md"},
 		{name: "plan inside with dotdot kept inside", file: ptr(`plan = "a/../b.md"`), want: "b.md"},
-		{name: "full example", file: ptr(fullExample), want: "docs/PLAN.md"},
+		{name: "full example", file: ptr(sprintf(fullExample, `""`)), want: "docs/PLAN.md"},
 		{name: "no plan key but other sections", file: ptr("[ship]\nbase = \"main\"\n"), want: DefaultPlan},
+		{name: "only a notify table keeps the default plan", file: ptr("[notify]\nntfy_url = \"https://ntfy.sh/t\"\n"), want: DefaultPlan},
 		{name: "unknown keys and tables", file: ptr("mystery = 3\n[unknown]\nx = [1, 2]\n[ship.nested]\ny = true\n"), want: DefaultPlan},
 		{name: "invalid toml", file: ptr("plan = \n[[["), wantErr: []string{FileName, "TOML"}},
 		{name: "plan not a string", file: ptr("plan = 42"), wantErr: []string{FileName, "plan", "string"}},
@@ -90,10 +92,105 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// TestLoadNotify is table-driven over file contents and checks the ntfy
+// address. Load-bearing rows: the verbatim section 4.6 example (the other
+// keys and the multi-line notes must not break the reader), the rejections
+// (each must name afk.toml and must not echo the password in the URL), and
+// the missing file (no error, because most projects have none).
+func TestLoadNotify(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *string // nil means no file
+		want    string
+		errHas  []string
+	}{
+		{name: "missing file", content: nil, want: ""},
+		{name: "empty file", content: ptr(""), want: ""},
+		{name: "plan example with empty url", content: ptr(sprintf(fullExample, `""`)), want: ""},
+		{name: "plan example with url", content: ptr(sprintf(fullExample, `"https://ntfy.example/afk-nebari"`)), want: "https://ntfy.example/afk-nebari"},
+		{name: "surrounding spaces trimmed", content: ptr("[notify]\nntfy_url = \"  https://ntfy.sh/t  \"\n"), want: "https://ntfy.sh/t"},
+		{name: "http allowed", content: ptr("[notify]\nntfy_url = \"http://localhost:8080/t\"\n"), want: "http://localhost:8080/t"},
+		{name: "ftp scheme", content: ptr("[notify]\nntfy_url = \"ftp://user:hunter2@ntfy.sh/t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
+		{name: "no host", content: ptr("[notify]\nntfy_url = \"https:///t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
+		{name: "no scheme", content: ptr("[notify]\nntfy_url = \"ntfy.sh/t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
+		{name: "unparseable url", content: ptr("[notify]\nntfy_url = \"http://user:hunter2@ntfy.sh:bad/t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
+		{name: "wrong type", content: ptr("[notify]\nntfy_url = 5\n"), errHas: []string{"afk.toml"}},
+		{name: "broken toml", content: ptr("[notify\nntfy_url = \n"), errHas: []string{"afk.toml"}},
+		{name: "broken toml beside a secret", content: ptr("[notify]\nntfy_url = \"http://user:hunter2@ntfy.sh/t\" junk\n"), errHas: []string{"afk.toml"}},
+		{name: "wrong type beside a secret", content: ptr("plan = \"http://user:hunter2@x\"\n[notify]\nntfy_url = 5\n"), errHas: []string{"afk.toml"}},
+		{name: "unknown tables ignored", content: ptr("[mystery]\nx = 1\n[notify]\nother = true\nntfy_url = \"https://ntfy.sh/t\"\n[more.nested]\ny = [1, 2]\n"), want: "https://ntfy.sh/t"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tt.content != nil {
+				if err := os.WriteFile(filepath.Join(root, FileName), []byte(*tt.content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := Load(root)
+			if len(tt.errHas) > 0 {
+				if err == nil {
+					t.Fatalf("Load = %+v, want an error", got)
+				}
+				for _, s := range tt.errHas {
+					if !strings.Contains(err.Error(), s) {
+						t.Errorf("error %q does not mention %q", err, s)
+					}
+				}
+				if strings.Contains(err.Error(), "hunter2") {
+					t.Errorf("error leaks the URL password: %q", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got.Notify.NtfyURL != tt.want {
+				t.Errorf("NtfyURL = %q, want %q", got.Notify.NtfyURL, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoadBothKeys: the fold's reason to exist. One file with plan and
+// [notify] must give both values, and each half must default independently
+// when the other is the only thing present. A missing file must give the
+// default plan with a zero Notify, since callers use the plan unconditionally.
+func TestLoadBothKeys(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *string // nil means no file
+		want    Config
+	}{
+		{"plan and notify together", ptr("plan = \"plans/m.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/t\"\n"), Config{Plan: "plans/m.md", Notify: Notify{NtfyURL: "https://ntfy.sh/t"}}},
+		{"only notify keeps default plan", ptr("[notify]\nntfy_url = \"https://ntfy.sh/t\"\n"), Config{Plan: DefaultPlan, Notify: Notify{NtfyURL: "https://ntfy.sh/t"}}},
+		{"only plan leaves notify empty", ptr("plan = \"plans/m.md\"\n"), Config{Plan: "plans/m.md"}},
+		{"missing file", nil, Config{Plan: DefaultPlan}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tt.content != nil {
+				if err := os.WriteFile(filepath.Join(root, FileName), []byte(*tt.content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := Load(root)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("Load = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoadUnreadable: a directory where the file should be makes the read
+// fail with an error that is not "does not exist"; it must name the file.
 func TestLoadUnreadable(t *testing.T) {
 	root := t.TempDir()
-	// A directory where the file should be makes the read fail with an
-	// error that is not "does not exist".
 	if err := os.Mkdir(filepath.Join(root, FileName), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +200,8 @@ func TestLoadUnreadable(t *testing.T) {
 	}
 }
 
+// TestPlanPath: the default and a custom plan, with and without a trailing
+// slash on the root, both resolve under the root.
 func TestPlanPath(t *testing.T) {
 	tests := []struct {
 		name string
@@ -123,3 +222,5 @@ func TestPlanPath(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func sprintf(format, v string) string { return strings.Replace(format, "%s", v, 1) }

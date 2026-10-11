@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
 
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -23,35 +22,23 @@ type buildState struct {
 	Ledger   ledger.Ledger
 }
 
-// mainCheckout returns the main checkout for dir, given a lookup for the git
-// common directory (the absolute path, or "" when dir is not in a repository).
-//
-// A session runs in a linked worktree, and a worktree has its own gitignored
-// .afk/. The build ledger and the daemon's state live in the main checkout
-// (docs/PLAN.md section 4), so a command run from inside a session must be
-// pointed back at it or it would read and write a ledger nobody else sees.
-// For a linked worktree the common directory is {main}/.git, whose parent is
-// the main checkout. A common directory not named .git (a bare-style
-// repository) has no checkout to point at, so dir is returned unchanged.
-//
-// The lookup is injected so the whole matrix is testable without running git.
-func mainCheckout(dir string, gitCommonDir func(string) string) string {
-	common := gitCommonDir(dir)
-	if common != "" && filepath.Base(common) == ".git" {
-		return filepath.Dir(common)
-	}
-	return dir
-}
-
 // resolveBuildRoot turns the --project flag value and the working directory
 // into the project root the build commands operate on: the flag or cwd via
-// resolveProject, then the main checkout via mainCheckout.
+// resolveProject, then the main checkout via mainCheckout (maincheckout.go).
+//
+// The second step matters because a session runs in a linked worktree with its
+// own gitignored .afk/. The build ledger lives in the main checkout
+// (docs/PLAN.md section 4), so a command run from inside a session must be
+// pointed back at it or it would read and write a ledger nobody else sees.
+//
+// gitCommonDir is the impure git lookup, injected so the matrix is testable
+// without running git.
 func resolveBuildRoot(flagValue, cwd, home string, gitCommonDir func(string) string) (string, error) {
 	dir, err := resolveProject(flagValue, cwd, home)
 	if err != nil {
 		return "", err
 	}
-	return mainCheckout(dir, gitCommonDir), nil
+	return mainCheckout(dir, gitCommonDir(dir)), nil
 }
 
 // loadBuildState loads afk.toml, the master plan it names, and the ledger for

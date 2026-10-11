@@ -17,34 +17,6 @@ func fakeCommonDir(answer string) func(string) string {
 	return func(string) string { return answer }
 }
 
-// TestMainCheckout pins how a directory maps to the checkout holding the
-// ledger.
-//
-// Load-bearing rows: "linked worktree" is the reason the function exists (a
-// session's worktree must resolve to the main checkout), and "common dir not
-// named .git" must NOT guess a parent, or a bare-style repository would send
-// the ledger to some unrelated directory.
-func TestMainCheckout(t *testing.T) {
-	cases := []struct {
-		name   string
-		dir    string
-		common string
-		want   string
-	}{
-		{name: "not a repository", dir: "/work/plain", common: "", want: "/work/plain"},
-		{name: "main checkout", dir: "/repo", common: "/repo/.git", want: "/repo"},
-		{name: "linked worktree", dir: "/repo/.claude/worktrees/t1", common: "/repo/.git", want: "/repo"},
-		{name: "common dir not named .git", dir: "/srv/work", common: "/srv/repo.git", want: "/srv/work"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := mainCheckout(tc.dir, fakeCommonDir(tc.common)); got != tc.want {
-				t.Fatalf("mainCheckout(%q) = %q, want %q", tc.dir, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestResolveBuildRoot checks the two steps compose: the flag wins over cwd,
 // and the result is then mapped to the main checkout.
 func TestResolveBuildRoot(t *testing.T) {
