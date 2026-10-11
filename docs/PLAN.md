@@ -865,10 +865,26 @@ with nobody at the keyboard.
   interfaces. Delivering a follow-up prompt to an idle session (for CI hand-backs) through the host's
   client protocol; note that this takes the session's single client slot, as the dashboard's restart
   does today. Session clean-up after `done`.
+  Two gaps found on the daemon's first real run (2026-10-11), when it was started on this repo with
+  no ledger, took all 19 tasks as pending and launched a session for T0.0, the owner's VM checklist:
+  - **Owner tasks are never launched.** A task whose title carries `(owner)` or `(owner; …)` is the
+    owner's to do. When it is the next task, the daemon launches nothing: it raises one blocking
+    `external_action` item naming the task and parks it, and answering the item marks the task
+    `done`. A title such as `(owner + agent)` is an ordinary task. Add the rule to §5.1 and to the
+    pure next-task and `Decide` functions.
+  - **Starting on a project that is already part-built.** New command `afk ledger init [--project
+    DIR] [--done-through ID] [--done ID,ID]`: creates the ledger, marking as `done` every task up to
+    and including `--done-through` in plan order, plus the listed ids; with no flags it creates an
+    empty ledger (a new project). It refuses when a ledger already exists. `afk ledger set` accepts
+    several task ids before the status. With **no ledger file**, the daemon launches nothing for that
+    project and raises one blocking item that says to run `afk ledger init` and shows both forms.
 - **Acceptance:** table tests over fake `git`/`gh`: green first time; red then green on re-run; red →
   hand-back → green; park at the hand-back cap; required-env match parks before merge; deploy healthy;
   deploy timeout stops the line and `afk resume` clears it; a crash between every pair of states
-  resumes without repeating a push or a merge. Then one real end-to-end run against a throwaway
+  resumes without repeating a push or a merge. Table tests for: an owner task raises an item and
+  launches nothing, and its answer marks it `done`; `(owner + agent)` launches; no ledger file
+  launches nothing and raises one item, once; `afk ledger init` with each flag, with both, with none,
+  with an unknown id, and over an existing ledger. Then one real end-to-end run against a throwaway
   private GitHub repo with a trivial CI workflow, recorded in `docs/decisions.md`.
 
 #### T2.3 — Automatic recovery
