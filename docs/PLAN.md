@@ -213,6 +213,11 @@ an entry carries `replaced_by: ["T4.2a", "T4.2b"]`, because other tasks may stil
 dependency (nebari's T6.1 depends on T4.2). A task absent from the ledger is `pending`. `afk ledger set <id> <status>` edits it by hand; that is how an
 existing project (nebari's 21 finished tasks) is seeded.
 
+File shape: `{"tasks": [ … ]}`, entries sorted by id, `pr` a pull request number, times RFC 3339 UTC,
+empty fields omitted. Unknown keys and unknown statuses are rejected. A missing file means every task
+is pending; a damaged file is an error and is never read as empty. Writers take the lock file
+`.afk/build/.ledger.lock`.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -704,6 +709,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   replacements, unknown dependency, cycle, a task added between two
   reads; with the nebari ledger seeded (21 done, T4.2 superseded, T4.2b pending), `afk next` prints
   `T4.2b`.
+- **Amended 2026-10-11 (T1.1 done):** later tasks may assume the following. (1) `masterplan.ParseFile` then `masterplan.Validate` give the ordered tasks; a malformed heading, a duplicate id, a task with no `- **Depends on:**` line, an unknown dependency and a cycle are errors, `all prior` means every earlier task, and other text with no ids means no dependencies and is kept in `Task.Note`. (2) `ledger.Update(project, fn)` is the only writer of `.afk/build/ledger.json` (lock, re-read, rename) and the daemon must use it; `ledger.Load` returns an error wrapping `ErrCorrupt` for a damaged file, never an empty ledger. (3) `nexttask.Next(tasks, ledger, openItems)` returns no task with reason `in progress` while any task is `running` or `shipping`, and takes the open inbox item ids as a function; the commands pass nil (every item open), so T2.1 must pass the real one from `internal/inbox`. (4) `afk tasks`, `afk next` and `afk ledger set` work on the project's main checkout even when run inside a session's worktree; `loadBuildState` in `buildstate.go` is the shared loader. (5) `projectconfig.Load` is the one `afk.toml` reader: it was folded with T1.2's at merge and returns `plan` (default `docs/PLAN.md`) and `[notify] ntfy_url`, ignoring other keys, so agents still read `[policy] notes` themselves and T2.2 adds `[ship]` to it; likewise there is one `mainCheckout(dir, commonDir)`, in `maincheckout.go`. (6) On this repo `afk next` names T0.0, an owner task, until the ledger is seeded with the finished tasks. See `## T1.1` in `docs/decisions.md`.
 
 #### T1.2 — Inbox and notifications
 - **Depends on:** T0.1

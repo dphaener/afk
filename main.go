@@ -16,6 +16,9 @@ var subcommands = map[string]func([]string){
 	"notify": cmdNotify,
 	"plugin": cmdPlugin,
 	"plan":   cmdPlan,
+	"tasks":  cmdTasks,
+	"next":   cmdNext,
+	"ledger": cmdLedger,
 	"usage":  cmdUsage,
 	"inbox":  cmdInbox,
 	"_host":  cmdHost,
@@ -171,6 +174,10 @@ Subcommands:
                  asks which of the ones found on PATH unless --target is given
   plan check     Mark one task of a session's plan done or failed:
                  afk plan check <session> <task-id> done|failed [--reason TEXT]
+  tasks          List the master plan's tasks with their status
+  next           Show the task that would run next, or why none
+  ledger set     Record a task's status by hand:
+                 afk ledger set <task-id> <status> [--replaced-by IDS]
   usage          Show how much of the agent's usage windows is spent, when they
                  reset, and what the usage governor would do:
                  afk usage [--provider NAME] [--refresh]
