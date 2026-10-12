@@ -49,7 +49,10 @@ func TestPath(t *testing.T) {
 // TestLoad: the error rows each pin that the message names config.toml and
 // the key, since the owner fixes the file from that message alone. The
 // missing-file and unknown-key rows are load-bearing for first runs and for
-// forward compatibility with keys later tasks add.
+// forward compatibility with keys later tasks add. The max_restarts = 0 row
+// is load-bearing: zero is a real setting (never restart), so a reader that
+// treated an absent key and a zero the same way would silently grant three
+// restarts to someone who asked for none.
 func TestLoad(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -59,7 +62,8 @@ func TestLoad(t *testing.T) {
 		errHas  []string
 	}{
 		{name: "missing file gives defaults", missing: true,
-			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter}},
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}},
 		{name: "full file", toml: `
 provider = "some-provider"
 [daemon]
@@ -71,11 +75,27 @@ path = "~/code/a"
 path = "/srv/b"
 name = "bee"
 `, want: Config{Provider: "some-provider", Tick: 2 * time.Second, StallAfter: 30 * time.Minute,
+			MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
 			Projects: []Project{{"a", "/home/u/code/a"}, {"bee", "/srv/b"}}}},
 		{name: "defaults when daemon table absent", toml: "[[project]]\npath = \"/srv/b\"\n",
-			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter, Projects: []Project{{"b", "/srv/b"}}}},
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
+				Projects: []Project{{"b", "/srv/b"}}}},
+		{name: "restart keys absent gives defaults", toml: "[daemon]\ntick = \"5s\"\n",
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}},
+		{name: "restart keys both set", toml: "[daemon]\nmax_restarts = 5\nrestart_backoff = \"30s\"\n",
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: 5, RestartBackoff: 30 * time.Second}},
+		{name: "max_restarts zero means never restart", toml: "[daemon]\nmax_restarts = 0\n",
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: 0, RestartBackoff: DefaultRestartBackoff}},
+		{name: "max_restarts negative", toml: "[daemon]\nmax_restarts = -1\n", errHas: []string{"config.toml", "daemon.max_restarts"}},
+		{name: "restart_backoff not a duration", toml: "[daemon]\nrestart_backoff = \"soon\"\n", errHas: []string{"config.toml", "daemon.restart_backoff", "soon"}},
+		{name: "restart_backoff zero", toml: "[daemon]\nrestart_backoff = \"0s\"\n", errHas: []string{"config.toml", "daemon.restart_backoff", "above zero"}},
 		{name: "unknown keys ignored", toml: "[governor]\nx = 1\n[web]\nport = 3\nfuture = true\n",
-			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter}},
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}},
 		{name: "bad tick duration", toml: "[daemon]\ntick = \"soon\"\n", errHas: []string{"config.toml", "daemon.tick", "soon"}},
 		{name: "bad stall_after duration", toml: "[daemon]\nstall_after = \"10\"\n", errHas: []string{"config.toml", "daemon.stall_after"}},
 		{name: "tick under one second", toml: "[daemon]\ntick = \"500ms\"\n", errHas: []string{"config.toml", "daemon.tick", "1s"}},

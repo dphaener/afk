@@ -113,6 +113,22 @@ type Entry struct {
 	CIReruns    int      `json:"ci_reruns,omitempty"`
 	CIFixCycles int      `json:"ci_fix_cycles,omitempty"`
 	ReplacedBy  []string `json:"replaced_by,omitempty"`
+	// Restarts counts the automatic recoveries of the current attempt: a
+	// restart request to the host and a relaunch of a gone host each add one.
+	// It is saved before the action, so a crash mid-recovery cannot forget a
+	// restart that was already sent. It goes back to zero on a new attempt,
+	// on an un-park and when the task leaves running (PLAN §5.6). Set leaves
+	// it alone.
+	Restarts int `json:"restarts,omitempty"`
+	// RestartAt is when the last recovery was started, RFC 3339 UTC. The
+	// backoff before the next recovery, the host grace after a relaunch and
+	// the continue prompt are all timed from it. A value that does not parse
+	// is read as the zero time, the same as the other times in an entry.
+	RestartAt string `json:"restart_at,omitempty"`
+	// ContinuePending means the agent was resumed after a recovery and has
+	// not yet been sent the line that tells it to carry on. It is cleared
+	// once that line is typed, so a daemon restart does not type it twice.
+	ContinuePending bool `json:"continue_pending,omitempty"`
 }
 
 // ShipStates returns every valid value of Entry.Ship in the order a ship
@@ -226,6 +242,9 @@ func (l Ledger) validate() error {
 		}
 		if e.CIReruns < 0 || e.CIFixCycles < 0 {
 			return fmt.Errorf("task %q has a negative ci_reruns or ci_fix_cycles", e.ID)
+		}
+		if e.Restarts < 0 {
+			return fmt.Errorf("task %q has a negative restarts", e.ID)
 		}
 	}
 	return nil

@@ -235,7 +235,7 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		logf("%s", d)
 	}
 	deps := env.newDeps(prov, cfg.Provider, logf)
-	settings := daemon.Settings{StallAfter: cfg.StallAfter}
+	settings := daemonSettings(cfg)
 
 	if *once {
 		for i, st := range daemon.Once(projects, settings, deps) {
@@ -532,8 +532,34 @@ func realDaemonDeps(p provider.Provider, providerName, home string, now func() t
 		Ship:         daemonShip(projectconfig.Load, sw),
 		SendPrompt:   sendInput,
 		Clean:        daemonClean(cd, ledger.Load),
+		Restart: func(worktree, sess string) (string, error) {
+			return host.RequestRestart(worktree, sess, daemonSendWait, daemonRestartReply)
+		},
+		// The provider and the unattended mode come from the session's own
+		// files inside SpawnHost, so none is passed here.
+		Relaunch: func(req daemon.RelaunchRequest) error {
+			_, err := session.SpawnHost(session.HostSpawn{Name: req.Session, Worktree: req.Worktree, ResumeID: req.ResumeID}, sd)
+			return err
+		},
 	}
 }
+
+// daemonSettings turns the machine config into the loop's settings. It is a
+// function of its own so a test can see that the recovery keys reach the loop:
+// a loop left without them has max_restarts = 0 and parks on the first trouble.
+func daemonSettings(cfg daemonconfig.Config) daemon.Settings {
+	return daemon.Settings{
+		StallAfter:     cfg.StallAfter,
+		MaxRestarts:    cfg.MaxRestarts,
+		RestartBackoff: cfg.RestartBackoff,
+	}
+}
+
+// daemonRestartReply is how long a pass waits for a host to say how its
+// restart went. The host's signal ladder can take about nine seconds and the
+// dashboard waits the same; the pass waits for the answer so that the count
+// and the time it saves describe a restart that finished (PLAN §5.6).
+const daemonRestartReply = 15 * time.Second
 
 // daemonSendWait is how long a typed line waits for a session's host to
 // answer its socket. It is short on purpose, and much shorter than the wait
@@ -964,6 +990,14 @@ func daemonKindText(kind string) string {
 		return "nothing is started, because this project has no task ledger yet"
 	case daemon.KindLineStopped:
 		return "the line is stopped, so no new task will start"
+	case string(daemon.ActRestart):
+		return "restarting a session that stopped answering"
+	case string(daemon.ActRelaunch):
+		return "starting a stopped session again"
+	case string(daemon.ActContinue):
+		return "telling a restarted session to carry on"
+	case string(daemon.ActGiveUp):
+		return "a session could not be recovered; waiting for you"
 	}
 	return kind
 }
@@ -975,8 +1009,12 @@ func daemonTaskRunning(st daemonstate.State) bool {
 		return false
 	}
 	switch st.Kind {
-	case string(daemon.ActLaunch), string(daemon.ActCreate), string(daemon.ActWait), string(daemon.ActUnpark):
+	case string(daemon.ActLaunch), string(daemon.ActCreate), string(daemon.ActWait), string(daemon.ActUnpark),
+		string(daemon.ActRestart), string(daemon.ActRelaunch), string(daemon.ActContinue):
 		return true
+	case string(daemon.ActGiveUp):
+		// Parked, like ActPark: the task waits for the owner, not the session.
+		return false
 	case string(daemon.ActShipStep), daemon.KindLineStopped:
 		// A shipping task and one that stopped the line (a deploy that did
 		// not come up, or a failed after-merge command) both name a session,

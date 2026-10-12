@@ -26,8 +26,13 @@ import (
 // The verdict is advisory in the same sense as Alive(): a child blocked in a
 // long synchronous computation can miss a probe deadline and be reported
 // wedged. That is why the first byte of output clears wedged_since
-// immediately, so a false positive costs a stale dashboard cell for one tick
-// rather than a wrong permanent state.
+// immediately, so a false positive is never a permanent state. It is not
+// free, though. For a session a person watches it costs a stale dashboard
+// cell for one tick. For a session started with ServeConfig.ProbeUnattached
+// the daemon reads wedged_since from host.json and restarts the child once
+// the verdict has lasted (see internal/daemon), so a false verdict that
+// stands that long stops a working agent. The host itself still only
+// reports; it never restarts its child on its own verdict.
 
 const (
 	// outputSilenceThreshold is how long the child must produce nothing
@@ -94,8 +99,9 @@ const (
 	// probeIdle: nothing to do — the child is talking, nobody is attached,
 	// or a probe is still inside its deadline.
 	probeIdle probeDecision = iota
-	// probeNudge: silent long enough with a client attached; ask the child
-	// to repaint.
+	// probeNudge: silent long enough with a client attached (or with the
+	// host started with ProbeUnattached, which counts as attached here); ask
+	// the child to repaint.
 	probeNudge
 	// probeWedge: the nudge went unanswered past the deadline.
 	probeWedge
@@ -137,7 +143,11 @@ type probeInput struct {
 // unattached session is never probed, however long it has been quiet: there
 // is no screen to repaint, so the nudge asks nothing useful, and a verdict
 // reached with nobody watching would be recorded off the back of a question
-// nobody heard the answer to. The pending-probe check comes before the
+// nobody heard the answer to. The one exception is made by the caller, not
+// here: a host started with ServeConfig.ProbeUnattached passes attached as
+// true whether or not a client holds the session (see evaluateLiveness),
+// because the daemon is watching that session through host.json and is the
+// one waiting for the answer. The pending-probe check comes before the
 // silence check because once a probe is out, the only thing that matters is
 // whether it was answered in time.
 func decideProbe(in probeInput, p livenessPolicy) probeDecision {
@@ -213,7 +223,10 @@ func (l *liveness) noteOutput(now time.Time) {
 // observe is one tick's decision. It clears a probe that was outstanding when
 // the last client went away: that deadline expired with nobody watching, and
 // reattaching nudges the child again anyway, so the next verdict is one a
-// client was actually present for.
+// client was actually present for. A host started with
+// ServeConfig.ProbeUnattached always passes attached as true, so for it a
+// client leaving clears nothing: the probe that was out keeps its deadline,
+// because the daemon is still waiting on the verdict.
 func (l *liveness) observe(now time.Time, attached bool) probeDecision {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -343,7 +356,12 @@ func (h *hostRuntime) evaluateLiveness(now time.Time) {
 			h.cfg.Name, d.Round(time.Millisecond))
 	}
 
-	switch d := h.live.observe(now, h.attached()); d {
+	// ProbeUnattached opens the attachment gate from the outside: observe and
+	// decideProbe still see one boolean, "is anyone owed a verdict", and a
+	// host started for a session the daemon supervises answers yes whether or
+	// not a client holds the session. h.cfg is never written after
+	// construction, so reading it here needs no lock and no copy.
+	switch d := h.live.observe(now, h.attached() || h.cfg.ProbeUnattached); d {
 	case probeNudge:
 		// Only start the deadline if the request was actually accepted. A
 		// full slot means the serve loop has not picked up the previous

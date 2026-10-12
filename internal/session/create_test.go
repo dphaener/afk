@@ -2222,11 +2222,99 @@ func TestHostArgsUnattended(t *testing.T) {
 			offArgs := hostArgs(off, "/sock")
 			hostFlags := args[:len(args)-len(got)]
 			offFlags := offArgs[:len(offArgs)-len(childOf(t, offArgs))]
-			if !reflect.DeepEqual(hostFlags, offFlags) {
-				t.Errorf("host flags changed with the mode:\n on  %#v\n off %#v", hostFlags, offFlags)
+			// The one host flag the mode adds is --probe-unattached, just
+			// before the separator: nothing else about the host changes, and
+			// a session that is not unattended gets no such flag.
+			wantFlags := offFlags
+			if tt.spec.Unattended {
+				wantFlags = append(append([]string{}, offFlags[:len(offFlags)-1]...), "--probe-unattached", "--")
+			}
+			if !reflect.DeepEqual(hostFlags, wantFlags) {
+				t.Errorf("host flags with the mode:\n got  %#v\n want %#v", hostFlags, wantFlags)
 			}
 			if line := childCommandLine(tt.spec); !strings.HasPrefix(line, got[0]) || strings.Count(line, `"`) != 2*(len(got)-1) {
 				t.Errorf("childCommandLine = %q does not render the %d-word child argv", line, len(got))
+			}
+		})
+	}
+}
+
+// TestHostArgsResume pins the child argv of a resumed spawn against the
+// provider's own resume argv. Load-bearing rows: "resume, unattended" is the
+// daemon bringing back an unattended session (the mode must survive the
+// resume, and the host must probe with nobody attached); "resume, no mode
+// provider" must be an error, never a resume that asks questions nobody
+// answers; "resume, attended" must not switch probing on.
+func TestHostArgsResume(t *testing.T) {
+	p, err := provider.Lookup("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "11111111-2222-3333-4444-555555555555"
+	plainResume := p.ResumeArgv(id)
+	unattendedResume, err := p.Unattended(plainResume)
+	if err != nil {
+		t.Fatalf("the default provider has no unattended mode: %v", err)
+	}
+	if reflect.DeepEqual(unattendedResume, plainResume) {
+		t.Fatalf("unattended resume argv equals the plain one (%q); the test would prove nothing", plainResume)
+	}
+	without := providerWithoutUnattended(t)
+	tests := []struct {
+		name      string
+		spec      HostSpawn
+		want      []string
+		wantProbe bool
+		wantErr   bool
+	}{
+		{
+			name: "resume, attended",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing", ResumeID: id},
+			want: plainResume,
+		},
+		{
+			name:      "resume, unattended",
+			spec:      HostSpawn{Name: "billing", Worktree: "/wt/billing", ResumeID: id, Unattended: true},
+			want:      unattendedResume,
+			wantProbe: true,
+		},
+		{
+			name:    "resume, unattended, provider with no unattended mode",
+			spec:    HostSpawn{Name: "billing", Worktree: "/wt/billing", ResumeID: id, Unattended: true, Provider: without},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := launchArgv(tt.spec)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "cannot run unattended") {
+					t.Fatalf("launchArgv error = %v, want one saying the session cannot run unattended", err)
+				}
+				if _, err := resolveSpawnUnattended(tt.spec); err == nil {
+					t.Fatal("resolveSpawnUnattended accepted it, so SpawnHost would start a process")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := hostArgs(tt.spec, "/sock")
+			got := childOf(t, args)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("child argv = %#v\nwant %#v", got, tt.want)
+			}
+			probe := -1
+			for i, a := range args {
+				if a == "--probe-unattached" {
+					probe = i
+				}
+			}
+			if tt.wantProbe != (probe >= 0) {
+				t.Fatalf("--probe-unattached present = %v, want %v in %v", probe >= 0, tt.wantProbe, args)
+			}
+			if tt.wantProbe && probe > len(args)-len(got)-1 {
+				t.Errorf("--probe-unattached is not before the separator: %v", args)
 			}
 		})
 	}

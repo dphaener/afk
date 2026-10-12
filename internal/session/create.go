@@ -359,6 +359,12 @@ type HostSpawn struct {
 	// relaunch names only the session, and a daemon-run session relaunched
 	// without the mode would wait at a permission dialog nobody sees.
 	Unattended bool
+	// ResumeID, when set, makes the child the provider's resume command for
+	// that conversation id instead of the launch command. The daemon uses it
+	// to bring back a session whose host is gone (docs/PLAN.md §5.6). It is a
+	// value, never free text from a user: it comes from status.json's
+	// session_id. It is used as given and is never empty on that path.
+	ResumeID string
 }
 
 // HostProcess describes a host started by SpawnHost. PID is captured before
@@ -405,6 +411,13 @@ func hostArgs(spec HostSpawn, socket string) []string {
 	if spec.Provider != "" {
 		args = append(args, "--provider", spec.Provider)
 	}
+	if spec.Unattended {
+		// The daemon supervises an unattended session through files and
+		// attaches no client, so a host that probes only while a client is
+		// attached would never see the agent wedge. The flag must come before
+		// the separator, or it would be read as part of the child's command.
+		args = append(args, "--probe-unattached")
+	}
 	args = append(args, "--")
 	return append(args, childArgv(spec)...)
 }
@@ -427,7 +440,8 @@ func childArgv(spec HostSpawn) []string {
 	return argv
 }
 
-// launchArgv is the child command for spec: the provider's launch argv, passed
+// launchArgv is the child command for spec: the provider's launch argv (or,
+// with ResumeID set, its resume argv for that conversation), passed
 // through the provider's unattended mode when the spawn asks for it. Pure.
 //
 // An unknown Provider falls back to the default provider's argv rather than
@@ -443,7 +457,12 @@ func launchArgv(spec HostSpawn) ([]string, error) {
 	if err != nil {
 		p, _ = provider.Lookup(provider.Default)
 	}
-	argv := p.LaunchArgv(spec.Name, spec.Scratch, spec.Autonomous)
+	var argv []string
+	if spec.ResumeID != "" {
+		argv = p.ResumeArgv(spec.ResumeID)
+	} else {
+		argv = p.LaunchArgv(spec.Name, spec.Scratch, spec.Autonomous)
+	}
 	if !spec.Unattended {
 		return argv, nil
 	}

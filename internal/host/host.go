@@ -140,6 +140,19 @@ type ServeConfig struct {
 	// only the provider says which binary that must be. Optional, so it is not
 	// checked by validate; an unknown name refuses a restart, not startup.
 	Provider string
+	// ProbeUnattached makes the host probe a silent child for a wedge even
+	// while no client is attached (see liveness.go). It exists for sessions
+	// the daemon runs: the daemon supervises through files and never attaches
+	// a client, so under the ordinary rule, which only probes while somebody
+	// is attached, a wedged unattended session would never get a verdict and
+	// nothing would ever restart it.
+	//
+	// Off by default, and it must stay that way for a session a person runs:
+	// such a session with nobody attached is allowed to sit silent for as
+	// long as it likes. Nobody is waiting on it, there is no screen to
+	// repaint, and a verdict nobody asked for would only be a wrong cell in
+	// the dashboard. Optional, so it is not checked by validate.
+	ProbeUnattached bool
 }
 
 func (c ServeConfig) validate() error {

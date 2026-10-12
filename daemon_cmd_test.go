@@ -1188,7 +1188,7 @@ func TestRealDaemonDeps(t *testing.T) {
 		"Preflight": d.Preflight == nil, "Launch": d.Launch == nil, "RecordTokens": d.RecordTokens == nil,
 		"Notify": d.Notify == nil, "NotifyIdle": d.NotifyIdle == nil, "Log": d.Log == nil,
 		"Ship": d.Ship == nil, "SendPrompt": d.SendPrompt == nil, "Clean": d.Clean == nil,
-		"NotifyUrgent": d.NotifyUrgent == nil,
+		"NotifyUrgent": d.NotifyUrgent == nil, "Restart": d.Restart == nil, "Relaunch": d.Relaunch == nil,
 	} {
 		if isNil {
 			t.Errorf("realDaemonDeps leaves %s nil", name)
@@ -2023,6 +2023,7 @@ func TestDaemonTaskRunning(t *testing.T) {
 	running := map[string]bool{
 		string(daemon.ActLaunch): true, string(daemon.ActCreate): true,
 		string(daemon.ActWait): true, string(daemon.ActUnpark): true,
+		string(daemon.ActRestart): true, string(daemon.ActRelaunch): true, string(daemon.ActContinue): true,
 	}
 	for _, kind := range daemon.Kinds() {
 		t.Run(kind, func(t *testing.T) {
@@ -2031,6 +2032,31 @@ func TestDaemonTaskRunning(t *testing.T) {
 			}
 			if daemonTaskRunning(daemonstate.State{Kind: kind, Task: "T1.1"}) {
 				t.Error("with no session: got true, want false")
+			}
+		})
+	}
+}
+
+// TestDaemonSettings checks that the machine config's recovery keys reach the
+// loop. Load-bearing: the max_restarts = 0 row, because zero is a real setting
+// (never restart) and must not be replaced by a default on the way.
+func TestDaemonSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  daemonconfig.Config
+		want daemon.Settings
+	}{
+		{"recovery keys reach the loop",
+			daemonconfig.Config{StallAfter: 5 * time.Minute, MaxRestarts: 1, RestartBackoff: 30 * time.Second},
+			daemon.Settings{StallAfter: 5 * time.Minute, MaxRestarts: 1, RestartBackoff: 30 * time.Second}},
+		{"zero restarts stays zero",
+			daemonconfig.Config{StallAfter: time.Minute, MaxRestarts: 0, RestartBackoff: time.Minute},
+			daemon.Settings{StallAfter: time.Minute, MaxRestarts: 0, RestartBackoff: time.Minute}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := daemonSettings(tt.cfg); got != tt.want {
+				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})
 	}

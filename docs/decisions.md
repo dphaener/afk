@@ -953,3 +953,133 @@ All three checks passed with no blocker or major finding, so no critic ran. `mak
 - Close the failure item when `afk resume` clears a stopped line.
 - Word the `shipped` log line so it does not say the deploy is fine after a stop the owner cleared.
 - Run the command in the background, so a slow one does not hold up other projects.
+
+## T2.3
+
+T2.3 makes the daemon recover a session by itself. A session that has stopped answering is restarted, a session whose host process is gone is started again, and the agent is then told to carry on. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Who checks for a stuck session (A1).** The master plan left two ways open: the session's host checks on its own schedule, or the daemon stays connected to the session. The host checks. A session has room for one connection, and anyone running `afk attach` takes it. A daemon that had to stay connected would lose its view every time someone looked at a session. With the host checking and writing the result to `host.json`, the daemon reads a file, and attaching or detaching changes nothing it reads.
+- **How the check is switched on (A2).** A host only checks with nobody attached when it is started with a new option, `--probe-unattached`. Every unattended session gets it, and those are the sessions the daemon starts. A session you start by hand behaves as before, and the existing tests of the check are not touched.
+- **How the daemon asks for a restart (A3).** It connects for a moment, sends the same restart request the dashboard's `r` key sends, reads the answer and disconnects. Nothing about the messages between a host and its clients changes.
+- **Where the count is kept (A4).** In the task's ledger entry, in three new fields: `restarts`, `restart_at` and `continue_pending`. The daemon keeps nothing in memory.
+- **What counts, and when the count starts again (A5).** Every restart request and every new start of a host counts one, and it is written down before the daemon acts, so a daemon killed in the middle cannot restart without limit. The count goes back to zero on a new attempt at the task, when you answer the item a task was parked on, and when the task moves on to shipping, failed or done.
+- **How many, and how fast (A6).** Two new settings under `[daemon]` in `config.toml`: `max_restarts` (default 3) and `restart_backoff` (default one minute). The first recovery happens at once. The wait before each later one doubles. With the defaults that is at once, after one minute, after two minutes, and then the task parks. With `max_restarts = 0` nothing is ever restarted and the task parks straight away.
+- **Starting a host that is gone (A7).** With the agent's own resume command when the session has recorded its conversation id, so it comes back to the same conversation. With the ordinary start command when it has not got that far. Still only after the minute's grace that already existed.
+- **Telling the agent to carry on (A8).** A resumed agent comes back sitting at its prompt. Thirty seconds after the new agent started, the daemon types the session's own resume command, `/afk:go --session <name>`, once. That command makes the session read where it had got to from its files. A plain "continue" would not do that. A session started again with the ordinary start command needs nothing typed.
+- **When the limit is reached (A9).** One blocking item, "Session could not be recovered: …", and the task parks. Answering it gives the task a fresh set of restarts.
+- **If you are attached when a restart happens (A10).** The daemon restarts a stuck session anyway. Its brief connection takes yours, so your pane says the session was taken and you attach again. The session was frozen, so nothing is lost. Typing a failed CI run back into a session already works the same way.
+- **Pause, parked and shipping (A11).** A paused project still has its running task recovered, because a pause lets a running task carry on. Sessions of parked and shipping tasks are not recovered by this task.
+- **A daemon without the means (A12).** Tests and other callers that give the daemon no way to restart or start a host get the old behaviour: a stopped host is reported once and the task parks.
+- **The pass waits for the restart (A13).** Up to 15 seconds, the same as the dashboard. Nothing else is looked at meanwhile.
+- **How it is checked for real (A14).** With a scratch binary, scratch config and state folders, a throwaway repository and real session hosts whose "agent" is a shell script. No real agent is started.
+- **Tests and prerequisites (A15, A16).** Tests are written with each change. Nothing had to be in place first.
+- **Waiting to be sure (A20).** The host's verdict that a session is stuck clears as soon as the agent prints anything. A restart stops the agent, so the daemon acts only when the verdict has stood for a full minute.
+- **Timing the prompt (A21).** The time of a recovery is saved before the daemon acts, so the count is safe, and saved again when the action succeeds, so the thirty seconds run from when the new agent really started.
+- **A status file with no conversation id (A18).** afk reads such a file as unreadable unless the session is still planning. Recovery handles both: a stuck session with no id cannot be resumed, so the host refuses and the count runs to the limit; a gone one is started again as a fresh conversation that picks its work up from its files.
+- **A time in the ledger that cannot be read (A19).** `restart_at` is not checked when the ledger loads. A bad value reads as "long ago", the same as the entry's other times.
+- **Planning process (A17 to A19).** The work plan went through adversarial review. The first pass found three critical gaps, all in the plan's wording, and each was fixed in the plan.
+
+### The real check
+
+One real run, on 2026-10-12 (UTC), on this machine. Tools: go 1.25.14, git 2.53.0, systemd 259, util-linux 2.41.3 (`script`), on Linux 7.0. The full transcripts are in `.afk/t2-3/evidence/w5-t1-wedge.txt`, `w5-t1-relaunch.txt`, `w5-t1-cap.txt`, `w5-t1-attach.txt` and `w5-t1-refused.txt`. The first one also holds every set-up file and the clean-up.
+
+**What was run.** A binary built from this branch to a scratch folder, with a scratch home, temp, config and state folder, so nothing touched the real ones. Three throwaway git repositories, each with one commit, a `.gitignore` with `.afk/`, a two-task plan (T0.1, and T0.2 depending on it) and an `afk.toml` naming the plan. The config set `tick = "1s"` and `restart_backoff = "5s"` and left `max_restarts` at 3. Every project was paused, so the daemon could recover a running task but could never start one.
+
+No agent ran. A shell script named `claude` stood first on the `PATH` of the daemon and of every host. It notes how it was started, appends each line typed into its terminal to a file, and answers a terminal resize with one line of output. With a flag file present it prints nothing, turns terminal echo off and ignores the resize, which is what a wedged agent looks like to the host. A second script is wedged from the start.
+
+T0.1 of each project was staged by hand the way the daemon leaves a running task: a worktree and branch `t0-1`, a `status.json` with the nine keys, the empty `unattended` marker, a ledger entry at `running`, and a real `afk _host --probe-unattached` started in a short-lived systemd user unit with the wedged script as its child. Then `afk daemon --once` was run again and again, 5 or 10 seconds apart, and the files were read between passes.
+
+**1. A wedge with nobody attached (host pid 1331497).**
+
+- The host started at 17:33:30. At 17:34:00 it asked for a repaint and at 17:34:05 it marked the child wedged: `host.json` gained `wedged_since`, 35 seconds after the start. The host's log has no "client attached" line before that. Nothing had ever connected.
+- Six passes from 17:34:05 to 17:35:02 said "has stopped answering; waiting to be sure before restarting it" and asked for nothing.
+- The pass at 17:35:12, the first one more than a minute after the verdict, restarted the session. The ledger showed `restarts` 1, `restart_at` 17:35:12 and `continue_pending` true. The host's pid was still 1331497. Its child went from 1331517 to 1332076, started as `claude --permission-mode bypassPermissions --resume 11111111-…`, which is the resume command with the staged conversation id and the unattended mode. `wedged_since` was gone.
+- Five passes waited. The pass at 17:35:42, thirty seconds after the restart, typed the resume command. The stand-in's file holds `/afk:go --session t0-1` once, and `continue_pending` was gone from the ledger.
+- Three more passes changed nothing.
+- The decision log gained one `restart` line and one `continue` line.
+
+**2. A host that is gone.** The same task, carried on from scenario 1.
+
+- `status.json` was given a fresh `updated_at`, as an agent's last write would, because the minute's grace runs from the last sign of life. Then the host (1331497) and its child (1332076) were killed with SIGKILL at 17:36:21. The socket file, its lock file and the old `host.json` stayed behind.
+- Seven passes from 17:36:23 to 17:37:13 waited. The pass at 17:37:24, 63 seconds after the kill, started the host again: `restarts` 2, `continue_pending` true.
+- The new host has pid 1333270. Its own command line carries `--probe-unattached`, taken from the session's marker file, and its child (1333298) is `claude --permission-mode bypassPermissions --resume 11111111-…`.
+- The stale socket did not stop it. The new host's log says the socket "exists but does not answer … treating it as stale", and the new host listens on the same path. `host.json` was replaced with the new pid.
+- The pass at 17:37:54, thirty seconds on, typed the resume command. The stand-in's file holds it once for this child.
+
+**3. A session that keeps wedging (host pid 1332642).** The flag file was set, so every resumed stand-in was wedged too.
+
+- Restarts at 17:38:05, 17:40:01 and 17:42:01, each followed thirty seconds later by the typed resume command, and each child wedged again (verdicts at 17:38:58, 17:40:59 and 17:43:00). The host kept its pid; the child changed each time.
+- The pass at 17:44:00, a minute after the fourth verdict, gave up. The task was `parked` on one blocking `failure` item, "Session could not be recovered: T0.1 (t0-1)". Its body says afk restarted the session 3 times, how to look at it, and how to answer or clean up.
+- Three more passes: no restart, no second item.
+- `afk resume`, `afk inbox answer` and one pass: the task was `running` again and `restarts`, `restart_at` and `continue_pending` were gone from the entry. The un-park typed the resume command into the session, as an un-park always does. The project was then paused again and the host stopped.
+- The decision log has three `restart` lines, three `continue` lines, one `give_up` line and one `unpark` line.
+- The backoff waits of 5 and 10 seconds could not be seen here. Each new verdict takes about a minute to appear and another minute to be acted on, which is far longer than the wait. The backoff itself is shown by the unit tests (`TestDecide`, `TestBackoffFor` and `TestTickRecoveryGivesUpAtTheCap`), not by this run.
+
+**4. Attaching while the daemon watches.** The session of scenario 2, healthy, host pid 1333270.
+
+- `afk attach t0-1` was run inside `script`, which gave it a terminal, at 17:39:30. The host logged "client attached". Three passes made while it was attached said "running T0.1, phase executing" and the ledger did not change.
+- The detach key was sent at 17:40:10. The client printed "afk attach: detached" and exited 0, and the host logged "client requested detach". Two passes after that read the session as before.
+- The flag file was then set at 17:41:01, so the running stand-in stopped answering. The host marked it wedged at 17:41:33. The pass at 17:42:37 restarted it (`restarts` 3, new child 1336084), and a later pass typed the resume command.
+- That last prompt came at 17:43:45, 68 seconds after the restart and not 30. The run made no pass for this project in between, because it was busy with scenario 3. The daemon typed it on the first pass it was given.
+
+**5. No conversation to resume (host pid 1332685).** The status file was in phase `planning` with an empty `session_id`.
+
+- The host marked the child wedged at 17:36:58. The pass at 17:38:05 asked for a restart and the host refused. The decision log's `restart` line says "asked its host to restart the agent; the host refused: …status.json records no session_id, so there is no conversation to resume".
+- The ledger showed `restarts` 1 and no `continue_pending`. The child's pid (1332710) never changed and nothing was typed: the stand-in's file holds only its start line.
+- Two more refused requests followed, at 17:38:15 and 17:38:25, and the pass at 17:38:35 parked the task on one "Session could not be recovered" item. The run stopped there.
+- Passes were ten seconds apart, so the 5 second wait cannot be told apart from no wait, and the 10 second wait was met exactly.
+
+**Clean-up.** Every host was stopped with SIGTERM, and each took its child with it. No process with the scratch path was left, no `t23-*` unit was left, the scratch folders and the symlink were removed, and the real `afkd` unit had the same `MainPID` (1240815) and `ActiveEnterTimestamp` before and after.
+
+**Bugs.** None found. Nothing in the code was changed.
+
+**Seen, and left as it is.**
+
+- **A session that wedges again is noticed after about a minute, not 35 seconds.** The host asks for a repaint at most once a minute, and a restart does not reset that timer. So one round of wedge, wait and restart took about two minutes here.
+- **A restart the host refuses uses up the limit quickly.** Three refused requests took 20 seconds with a 5 second backoff. With the default backoff it is three minutes. The task then parks, which is the right end for a session that cannot be resumed.
+- **While a gone host is inside its grace, the pass says "running T0.1, phase executing".** It does not say the host has stopped until it acts.
+- **The grace runs from the last sign of life, not from the moment the host died.** This is read from the code and is why the run refreshed `updated_at` before the kill. A host that dies after a quiet minute is started again on the next pass.
+- **`host.json` is a moment behind a restart.** Read straight after the restart it still showed the old child and the old verdict; the host writes the new ones on its next one-second tick. A pass in that moment does not act on the old verdict, because the backoff has not run out. With a `restart_backoff` under a second it could.
+- **Answering the item un-parks a session that may still be wedged.** The un-park types the resume command at once, and the next pass starts recovering again from a count of zero. The item's body does say to answer when the session is working again.
+- **The host's refusal carries the full path of the status file.** It is long in the decision log and in `afk daemon`'s output.
+- **A parked task in a paused project reads as "paused; no new task will start".** The pass does not mention the parked task.
+- **An attach from a terminal with no size leaves the session at one row by one column.** It stayed that way after the detach. The stand-in still answered the repaint request.
+- **The first pass on a project with no ledger raised a "no task list yet" item, and the daemon answered it by itself when the ledger appeared.** That is from an earlier task and worked as it should.
+
+**Not checked.**
+
+- A real agent. Everything here was a shell script, which dies on the first signal and reads a line whenever the Enter arrives.
+- A restart while a person is attached: the pane saying the session was taken, and attaching again (A10). The attach here ended before the wedge.
+- A child that survives the interrupt, so the restart takes the full nine seconds or fails.
+- The backoff waits, as said under scenario 3.
+- `max_restarts = 0`, and a gone host with no conversation id or an unreadable status file (started again as a fresh conversation). Unit tests cover them.
+- A daemon killed between the ledger save and the restart request. A unit test covers it.
+- `afk daemon` left running as a loop. Every pass here was `afk daemon --once`.
+- The daemon starting the session itself. Every session was staged by hand, so the first host was started by the check with `--probe-unattached`, not by `afk new`. The relaunched host in scenario 2 was started by the daemon and did carry the option.
+- A wedge in a project that is not paused.
+- Push notifications for the parked task. The scratch projects had no ntfy address.
+- A real reboot of the VM, and macOS.
+
+### Not verified, owner check
+
+- **A real agent being restarted and resumed by the daemon.** Whether the agent's resume command brings back the same conversation in the unattended mode, and whether a real wedged agent stops on the host's signals.
+- **A real agent receiving the typed resume command after a restart.** Whether thirty seconds is long enough for the agent to reach its prompt, and whether it then carries on from its recorded phase. First shown by the supervised run of T4.2.
+- **A real agent at a terminal nobody has attached to.** Its host has no terminal size until someone attaches. Whether a healthy agent answers the repaint request there, or is taken for wedged, has not been seen.
+- **A real reboot of the VM.** Every host gone at once, the daemon started by systemd, and each running task's session started again after the grace.
+- **A restart while you are attached.** Your pane should say the session was taken; attach again.
+- **macOS.** Nothing here ran on it.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. `make check` was run once afterwards and was green. Minor notes, left as they are: the comment on `attached()` in `internal/host/host.go` still says it alone gates the check for a stuck session, which is no longer the whole story for a host started with `--probe-unattached`; one acceptance command in the work plan counted indirect imports and so could not print 0, though `internal/daemon` imports neither the host nor the provider package itself; and the growing waits between recoveries cannot be seen in a real run, because a new verdict takes longer to appear than the waits last, so only the unit tests show them.
+
+### Ideas left out
+
+- Recover the session of a shipping task whose host is gone, so a CI hand-back after a reboot does not park.
+- A way to ask a host for a restart without taking the session from a person who is attached.
+- Have the dashboard use `host.RequestRestart`, so there is one sender of the restart request.
+- Say in `afk daemon status` that a session's host is inside its grace, where today it only says the task is running.
+- After the owner answers a "could not be recovered" item, check the session is answering before typing its resume command.
+

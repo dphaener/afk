@@ -660,6 +660,7 @@ func TestUpdateRoundTripEveryField(t *testing.T) {
 		ParkedOn: []string{"q1", "q2"}, StartedAt: "2026-10-11T08:00:00Z", FinishedAt: "2026-10-11T09:30:00Z",
 		MergedSHA: "0123abcd", ReplacedBy: []string{"T4.2a", "T4.2b"},
 		Ship: "pr_open", ShipAt: "2026-10-11T09:00:00Z", CIReruns: 1, CIFixCycles: 2,
+		Restarts: 2, RestartAt: "2026-10-11T09:45:00Z", ContinuePending: true,
 	}
 	// Guard the test itself: if a field is added to Entry and not set above,
 	// this round trip would no longer cover every field.
@@ -686,7 +687,7 @@ func TestUpdateRoundTripEveryField(t *testing.T) {
 		t.Errorf("round trip = %#v\n      want %#v", got.Tasks, want)
 	}
 	data := readFile(t, Path(project))
-	for _, key := range []string{"id", "status", "session", "branch", "pr", "attempts", "parked_on", "started_at", "finished_at", "merged_sha", "replaced_by", "ship", "ship_at", "ci_reruns", "ci_fix_cycles"} {
+	for _, key := range []string{"id", "status", "session", "branch", "pr", "attempts", "parked_on", "started_at", "finished_at", "merged_sha", "replaced_by", "ship", "ship_at", "ci_reruns", "ci_fix_cycles", "restarts", "restart_at", "continue_pending"} {
 		if !strings.Contains(data, `"`+key+`": `) {
 			t.Errorf("file has no %q key:\n%s", key, data)
 		}
@@ -972,6 +973,104 @@ func TestShipFieldsValidation(t *testing.T) {
 			}
 			if e, _ := l.Get("T1.1"); e.Ship != "pr_open" || e.CIReruns != 1 {
 				t.Errorf("entry = %+v", e)
+			}
+		})
+	}
+}
+
+// TestRecoveryFieldsRoundTrip: the recovery fields are written under their
+// JSON names and read back equal. The unreadable restart_at row is load-bearing:
+// a hand-edited time must survive a rewrite as written, not be dropped or
+// rejected, because the reader treats it as the zero time and the file must
+// not change under the owner's hand.
+func TestRecoveryFieldsRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		want Entry
+	}{
+		{"all three set", Entry{ID: "T1.1", Status: Running, Restarts: 2, RestartAt: "2026-10-11T09:45:00Z", ContinuePending: true}},
+		{"restart_at unreadable", Entry{ID: "T1.1", Status: Running, Restarts: 1, RestartAt: "soon"}},
+		{"continue pending alone", Entry{ID: "T1.1", Status: Running, ContinuePending: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := t.TempDir()
+			if err := Update(project, func(l *Ledger) error {
+				l.Tasks = append(l.Tasks, tt.want)
+				return nil
+			}); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			got, err := Load(project)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !reflect.DeepEqual(got, Ledger{Tasks: []Entry{tt.want}}) {
+				t.Errorf("round trip = %#v\n      want %#v", got.Tasks, tt.want)
+			}
+		})
+	}
+}
+
+// TestRecoveryFieldsOmittedWhenEmpty: an entry that never recovered writes no
+// recovery keys, so a ledger from before these fields stays byte-identical
+// when rewritten. The rows are load-bearing: a field without omitempty, or a
+// zero value written as a key, would churn every entry in every project.
+func TestRecoveryFieldsOmittedWhenEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		e    Entry
+	}{
+		{"plain entry", Entry{ID: "T1.1", Status: Pending}},
+		{"running with no recovery", Entry{ID: "T1.1", Status: Running, Session: "t1-1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := t.TempDir()
+			if err := Update(project, func(l *Ledger) error {
+				l.Tasks = append(l.Tasks, tt.e)
+				return nil
+			}); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			data := readFile(t, Path(project))
+			for _, key := range []string{"restarts", "restart_at", "continue_pending"} {
+				if strings.Contains(data, key) {
+					t.Errorf("file writes %q for an entry that never recovered:\n%s", key, data)
+				}
+			}
+		})
+	}
+}
+
+// TestRecoveryFieldsValidation: a negative restarts is refused on read and the
+// error names the task and the field. The unknown-key rows are load-bearing:
+// the recovery fields must not loosen the strict decode, so a misspelt key
+// still stops the ledger rather than being read as empty.
+func TestRecoveryFieldsValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{"restarts zero loads", `{"tasks":[{"id":"T1.1","status":"running","restarts":0}]}`, ""},
+		{"restart_at not a time loads", `{"tasks":[{"id":"T1.1","status":"running","restart_at":"soon"}]}`, ""},
+		{"negative restarts", `{"tasks":[{"id":"T1.1","status":"running","restarts":-1}]}`, `task "T1.1" has a negative restarts`},
+		{"misspelt continue_pending is unknown", `{"tasks":[{"id":"T1.1","status":"running","continue_pendng":true}]}`, `continue_pendng`},
+		{"restart_at under a wrong key is unknown", `{"tasks":[{"id":"T1.1","status":"running","restart_time":"2026-10-11T09:45:00Z"}]}`, `restart_time`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := writeLedger(t, tt.content)
+			_, err := Load(project)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load error = %v, want ErrCorrupt naming %s", err, tt.wantErr)
 			}
 		})
 	}
