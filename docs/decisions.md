@@ -852,3 +852,104 @@ Run once, after all the fixes, with race-built test binaries (`go test -race -c`
 - **The 100 host runs and the 50 `internal/ui` runs ran at the same time,** to save about an hour and a half. Each was the other's load, so neither is a quiet-machine run; that is harsher than the acceptance asks for, not easier.
 - **The conductor ran these, not a task agent (A8).** They took about two hours and forty minutes.
 - **`make check`** is run by the hands-on QA review check and by CI.
+
+## T2.2a
+
+T2.2a makes a merged task's code take effect by itself. A project can name a command that the daemon runs after each merge, and the daemon stops when its own program file changes so that the service manager starts the new one. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **How the command's run is remembered (A1).** Two places. The ledger gets one new ship word, `after_merge`, which says the merge is finished and the command is due. A small file, `.afk/build/after-merge.json`, says for which task and merge the command started and how it ended. The start is written before the command starts.
+- **The daemon dies while the command runs (A2, A12).** The next daemon finds a start with no end. It does not know whether the command finished, so it stops the line and tells the owner. It never runs the command a second time: a second `make install` on top of a half-finished one is the worse mistake. Stopping the daemon does not kill the command.
+- **The daemon waits for the command (A3).** The command runs inside the daemon's pass, for up to `after_merge_timeout`. Nothing else is looked at meanwhile. With one task at a time this costs nothing, and a command run in the background would need tracking across restarts.
+- **A failed command (A4).** It stops the line the same way a failed deploy does, with the same marker. `afk resume` clears it and the task is then marked done. afk does not run the command again and does not check the deploy: clearing the stop is the owner saying it is dealt with.
+- **The item does not block (A5).** The master plan asks for a blocking item. The item is raised at top priority but is not blocking, the same as for a failed deploy. What holds the line is the stop marker, and an item the owner could answer would be a second way out that leaves the marker in place.
+- **The deploy wait (A6).** When a command ran, the deploy's time limit is counted from the command's end, so a slow command does not use it up.
+- **What counts as a new binary (A7, A9, A10).** The program file's size and modification time, at the path found once at start. No hash. `afk daemon --once` does not look. If the file cannot be read at start, the daemon carries on and `afk daemon status` says once that it will not restart by itself.
+- **The log line (A8).** One line in each project's decision log, since the log is per project and the daemon is per machine.
+- **How the command is run (A11).** Through `sh -c` in the project's main checkout. Its output goes to `.afk/build/after-merge.log`, replaced on each run, and the last 20 lines go into the item when it fails. On a timeout the command and everything it started are stopped.
+- **The real check (A13).** Done with a scratch binary, scratch config and state folders and a short-lived systemd user unit, because the real `afkd` unit on this machine was running the session that built this.
+- **Installing (A16).** `make install` is run once, after the review approves.
+
+### The real check
+
+One real run, on 2026-10-12 (UTC), on this machine. Tools: go 1.25.14, git 2.53.0, systemd 259, on Linux 7.0. The full transcripts are in `.afk/t2-2a/evidence/w6-t1-after-merge.txt`, `w6-t1-failures.txt` and `w6-t1-restart.txt`.
+
+**What was run.** A binary built from this branch to a scratch folder, with a scratch home, config and state folder, so nothing touched the real ones. The project was a throwaway git repository with one commit, a `.gitignore` with `.afk/`, a master plan of small tasks and a `config.toml` naming it. It had no remote: the `after_merge` state reads neither git nor GitHub. The project was paused for the whole run and the daemon's `PATH` was `/usr/bin:/bin`, so no agent could be started. Each task was put by hand at status `shipping`, ship state `after_merge`, with a made-up merge commit and a session name that had nothing on disk. Then `afk daemon --once` was run again and again.
+
+The ship asks at most once in 20 seconds. In place of waiting, the time in `.afk/build/ship-poll` was moved back 30 seconds between passes; the transcripts mark each place. One pass in each run was made at once, to see the wait.
+
+**The command works (T0.1, `echo ran >> after-merge-ran.txt && pwd`).**
+
+- Pass 1 ran the command and said "the after-merge command finished". The log holds afk's header line, the project folder printed by `pwd`, and "afk: the command finished with exit code 0". The run record holds the task, the merge commit, a start, a finish and exit code 0. The ledger still said `after_merge`.
+- Pass 2, at once: "waiting a moment before asking GitHub again". Nothing ran.
+- Pass 3 found no deploy to check and saved `deploy_healthy`. Pass 4 cleaned up and marked T0.1 done. A session with nothing on disk counts as cleaned, so the made-up session did not park the task.
+- Pass 5: "paused", and nothing started.
+- `after-merge-ran.txt` holds one line. It still held one line at the end of every run below.
+
+**The command fails (T0.2 and T0.5, `echo boom; exit 3`).**
+
+- The pass that ran the command said "the after-merge command ended with exit code 3" and wrote the record with exit code 3. It did not stop the line yet.
+- The next pass past the 20 seconds wrote the stop marker, saved ship state `stopped` and raised one item, "The after-merge command failed after T0.2", not blocking. Its body carries the end of the log, with "boom" and the exit code, and says what to do. `afk daemon status` said the line is stopped and why.
+- Two more passes after the stop said the same and ran nothing. For T0.5 the command also counted its own runs in a file: one line, before and after. The log and the record kept their times.
+- `afk resume` named the task and the reason and cleared the stop. The next pass marked the task done. The command did not run again.
+
+**The command runs too long (T0.3 and T0.6, `sleep 30` with `after_merge_timeout = "2s"`).**
+
+- The pass took 2 seconds and said "the after-merge command did not finish within 2s and was stopped". The log ends "afk: the command was stopped after 2s". The record has `timed_out` true and exit code -1. No `sleep 30` was left running.
+- The next pass stopped the line with the reason "the after-merge command did not finish within 2s". Two more passes ran nothing (one run counted for T0.6). `afk resume` and one pass finished the task.
+
+**afk was interrupted (T0.4).** A run record with a start and no finish was written by hand for a newly staged task. The first pass stopped the line at once, with the item "The after-merge command was interrupted after T0.4" and the reason "afk was stopped while the after-merge command ran, so it is not known whether the command finished". The command did not run, on that pass or the two after it. `afk resume` and one pass finished the task.
+
+**Restart on a new binary.** User systemd was reachable, so this half ran as planned.
+
+- The scratch binary ran as a short-lived unit, `afkd-t22a-check`, with `Restart=always`, `KillMode=process` and `RestartSec=5` (the unit file says 30; 5 kept the wait short), and a 3 second pass.
+- Two real session hosts stood in for running sessions, each a real `afk _host` with a shell script as its child. Host A was started from a shell before the unit. Host B was started by the unit's own start command, so it sat in the unit's control group, where a session started by the real daemon sits. Host A turned out to sit in the real `afkd` unit's group, because this whole session does; only host B tests `KillMode=process`.
+- The rebuild wrote the same bytes (same checksum, same size) with a new time, at 16:25:06.21. At 16:25:06.58 the daemon logged "afk daemon found a new version of itself on disk and is stopping so it can be started again. Every session is still running." and exited 0. systemd noted that both of host B's processes "remain running after unit stopped", scheduled a restart, and started the unit again at 16:25:11.66. `MainPID` went from 1271814 to 1272129 and `NRestarts` from 0 to 1.
+- The project's decision log gained one `daemon_restart` line. Both hosts and their children were still running with the same pids and start times. `afk daemon status` named the new pid.
+- Read twice: once as it happened and once from the journal 15 seconds later. Both agree.
+- A control came by accident. The first rebuild did not run, because the go command was started with the scratch folders set and its version manager refused. The file was not touched, and over the next 50 seconds the daemon did not restart.
+- At the end the unit was stopped. `systemctl --user stop` left host B running, as it should. Both hosts were then stopped by hand, `systemctl --user list-units 'afkd-t22a*'` listed nothing, and the real `afkd` unit had the same `MainPID` (1240815) and `ActiveEnterTimestamp` before and after. The scratch folders were removed.
+
+**Bugs.** None found. Nothing in the code was changed.
+
+**Seen, and left as it is.**
+
+- **A failed command stops the line one pass later.** The pass that runs the command records how it ended. The marker, the `stopped` ship word and the item come on the next pass, at least 20 seconds on. In between, `afk daemon status` says "shipping" with the failure as the reason. Nothing new can start meanwhile, because the task is still `shipping`. An interrupted run stops on the first pass.
+- In `after_merge` the wait between passes still says "waiting a moment before asking GitHub again", although GitHub is not asked.
+- A timeout's item is titled "The after-merge command failed". Only the body and the reason name the time limit.
+- After `afk resume` clears a failed command, the decision log's `shipped` line asks "T0.2 is merged and its deploy is fine. What now?". The deploy was never checked. The same line follows a cleared deploy stop.
+- The failure item stays open after `afk resume`. Five were open at the end. It does not block, so nothing waits on it.
+- `afk resume` also lifts a pause. The run paused the project again straight after each one.
+- A rebuild that changes nothing restarts the daemon, because only the file's size and time are compared (A7). So does a `make install` with no change.
+- On each restart systemd logs "Found left-over process ... This usually indicates unclean termination" for every session host. With `KillMode=process` that is expected.
+- The interrupted item showed the end of the previous task's log, because the hand-written record came with no run. A real interruption after the command starts leaves that run's own log.
+
+**Not checked.**
+
+- The real `afkd` unit restarting after a real `make install`. It was running the session that built this. It also still runs the old program and the old unit file (`Restart=on-failure`), so it needs the new unit file and one restart by hand first.
+- This repository's own `after_merge` (`make install && afk plugin install --target claude`) run by the daemon after a real merge, including whether `make` and `go` are on the daemon's `PATH` under systemd.
+- A merge on GitHub leading into the command. Every entry was staged at `after_merge` by hand, so the merge, the base update and the branch delete before it were not part of this run.
+- A daemon killed while a real command runs. The interrupted case was a record written by hand.
+- A deploy check after the command, and the deploy time limit counted from the command's end. The project had no health address.
+- The 20 second wait itself. The poll time was moved back by hand.
+- A program file that cannot be read. That was checked on its own while building (`.afk/t2-2a/evidence/w4-t1-unreadable.txt`), not here.
+- macOS and launchd.
+
+### Not verified, owner check
+
+- **Install the new unit file first.** The unit installed on this machine is most likely the old one, with `Restart=on-failure`. With it, a daemon that exits 0 for a new version stays stopped. Copy `contrib/afkd.service` into place, run `systemctl --user daemon-reload` and restart `afkd` once by hand.
+- **The real `afkd` unit restarting after a real `make install`.** The check here used a short-lived unit and a scratch binary.
+- **This repository's own `after_merge` command run by the daemon after a real merge.** Not tried: `make` and `go` on the daemon's `PATH` under systemd, and a build that takes longer than ten minutes.
+- **A merge on GitHub leading into the command.** The checks here started from a task already at the `after_merge` state.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. `make check` was run once afterwards and was green. Minor notes, left as they are: two field comments in `internal/daemon/daemon.go` still speak only of a deploy; a pass that waits in the `after_merge` state says it is waiting before asking GitHub again, though that state asks GitHub nothing; a timeout's item names the time limit only in its body; and the item for an interrupted run points at an output file that may not exist.
+
+### Ideas left out
+
+- Say "waiting a moment before the next step" in states that do not read GitHub.
+- Close the failure item when `afk resume` clears a stopped line.
+- Word the `shipped` log line so it does not say the deploy is fine after a stop the owner cleared.
+- Run the command in the background, so a slow one does not hold up other projects.

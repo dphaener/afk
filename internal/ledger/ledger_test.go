@@ -938,6 +938,8 @@ func TestShipFieldsValidation(t *testing.T) {
 		wantErr string
 	}{
 		{"valid round trips", "{\n  \"tasks\": [\n    {\n      \"id\": \"T1.1\",\n      \"status\": \"shipping\",\n      \"ship\": \"pr_open\",\n      \"ci_reruns\": 1\n    }\n  ]\n}\n", ""},
+		{"after_merge loads", `{"tasks":[{"id":"T1.1","status":"shipping","ship":"after_merge"}]}`, ""},
+		{"misspelt after_merge is rejected", `{"tasks":[{"id":"T1.1","status":"shipping","ship":"aftermerge"}]}`, `aftermerge`},
 		{"unknown ship state", `{"tasks":[{"id":"T1.1","status":"shipping","ship":"flying"}]}`, `task "T1.1"`},
 		{"negative reruns", `{"tasks":[{"id":"T1.1","status":"shipping","ci_reruns":-1}]}`, `task "T1.1"`},
 		{"negative fix cycles", `{"tasks":[{"id":"T1.1","status":"shipping","ci_fix_cycles":-2}]}`, `task "T1.1"`},
@@ -955,6 +957,12 @@ func TestShipFieldsValidation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tt.name == "after_merge loads" {
+				if e, _ := l.Get("T1.1"); e.Ship != "after_merge" {
+					t.Errorf("entry = %+v", e)
+				}
+				return
+			}
 			// Rewriting through Update with a no-op must leave the bytes alone.
 			if err := Update(project, func(*Ledger) error { return nil }); err != nil {
 				t.Fatal(err)
@@ -971,7 +979,7 @@ func TestShipFieldsValidation(t *testing.T) {
 
 func TestShipStates(t *testing.T) {
 	got := ShipStates()
-	if len(got) != 8 || got[0] != "committed" || got[7] != "stopped" {
+	if len(got) != 9 || got[0] != "committed" || got[8] != "stopped" || got[6] != "after_merge" {
 		t.Errorf("ShipStates = %v", got)
 	}
 	got[0] = "x"

@@ -44,10 +44,12 @@ const (
 func Decide(f Facts) Step {
 	state := f.Progress.State
 
-	// DeployHealthy and Stopped read neither the remote nor GitHub (the
-	// session may already be cleaned up), so a failing read cannot concern
-	// them and must not park a ship that is otherwise over.
-	if state != DeployHealthy && state != Stopped {
+	// AfterMerge, DeployHealthy and Stopped read neither the remote nor GitHub
+	// (the session may already be cleaned up), so a failing read cannot
+	// concern them and must not park a ship that is otherwise over. For
+	// AfterMerge it matters more than for the other two: a park there would
+	// leave a merged task waiting on GitHub for a command that needs none.
+	if state != AfterMerge && state != DeployHealthy && state != Stopped {
 		if f.ReadFailingFor >= ReadFailureLimit {
 			return park(f, ParkReadFailing, fmt.Sprintf(
 				"GitHub could not be read for %s", roundDuration(f.ReadFailingFor)))
@@ -74,6 +76,8 @@ func Decide(f Facts) Step {
 		return decideCIGreen(f)
 	case Merged:
 		return decideMerged(f)
+	case AfterMerge:
+		return decideAfterMerge(f)
 	case DeployHealthy:
 		return Step{Kind: StepDone, Next: state, Progress: f.Progress, Reason: "the deploy is healthy"}
 	case Stopped:
@@ -81,7 +85,8 @@ func Decide(f Facts) Step {
 			return wait(f, "the line is stopped until the owner clears it")
 		}
 		// The executor writes the marker before it saves Stopped, so a
-		// missing marker here is the owner saying the deploy is dealt with.
+		// missing marker here is the owner saying the stop (a failed deploy
+		// or a failed after-merge command) is dealt with.
 		return Step{Kind: StepDone, Next: state, Progress: f.Progress, Reason: "the owner cleared the stopped line"}
 	default:
 		return park(f, ParkUnknownState, fmt.Sprintf("the saved ship state %q is not one this version knows", string(state)))
@@ -240,15 +245,93 @@ func decideMerged(f Facts) Step {
 	if f.RemoteFound {
 		return act(StepDeleteRemote, f.Progress, "deleting the merged branch on GitHub")
 	}
+	// The command comes after the two steps above and before the deploy
+	// rules, and the order is the point: it runs in the main checkout, so the
+	// local base must already hold the merge, and what it does (an install, a
+	// restart) is usually what makes the deploy healthy. With no command the
+	// rules are the ones this state always had.
+	if f.Config.AfterMerge != "" {
+		return save(moved(f, AfterMerge), "the merge is finished; the after-merge command is next")
+	}
+	return decideDeploy(f, f.Progress.At)
+}
+
+// decideAfterMerge holds the rules for a merge whose after-merge command is
+// due or done. The command is run at most once for a task and a merge commit,
+// whatever the order of crashes, and that follows from one thing: the step
+// that runs it is chosen only when there is no record of this ship's run at
+// all. Any record, however it ended, leads somewhere else.
+func decideAfterMerge(f Facts) Step {
+	run := f.AfterMerge
+	// Merged never moves here without the merge commit, so this is a ledger
+	// edited by hand or written by a version that worked differently. The
+	// record is matched on the merge commit; running the command against an
+	// empty one would match any other record with an empty one.
+	if f.Progress.MergedSHA == "" {
+		return park(f, ParkUnknownState, "the saved ship state \"after_merge\" has no merge commit with it")
+	}
+	if !run.Found {
+		if f.Config.AfterMerge == "" {
+			// The owner took the command out of afk.toml after this state
+			// was saved and before the command ran. There is nothing to run,
+			// and the ship must not sit here for ever.
+			return decideDeploy(f, f.Progress.At)
+		}
+		// Progress is unchanged, At included: nothing is saved by this step.
+		// The run record is its only trace.
+		return act(StepAfterMerge, f.Progress, "running the after-merge command")
+	}
+	if !run.Finished {
+		// Running it again is the worse mistake: a second install on top of
+		// one that may be half done. Carrying on as if it had worked is the
+		// other mistake. So the owner is asked.
+		step := act(StepStop, moved(f, Stopped),
+			"afk was stopped while the after-merge command ran, so it is not known whether the command finished")
+		step.Stop = StopAfterMergeInterrupted
+		return step
+	}
+	if run.TimedOut || run.ExitCode != 0 {
+		step := act(StepStop, moved(f, Stopped), afterMergeFailure(f))
+		step.Stop = StopAfterMergeFailed
+		return step
+	}
+	// A slow command must not use up the deploy's time, and the deploy the
+	// command started cannot be healthy before the command ended.
+	return decideDeploy(f, run.FinishedAt)
+}
+
+// afterMergeFailure says how a finished after-merge command went wrong. It is
+// the reason saved in the stop marker and shown to the owner, so it never
+// holds the command's text.
+func afterMergeFailure(f Facts) string {
+	switch run := f.AfterMerge; {
+	case run.TimedOut:
+		return fmt.Sprintf("the after-merge command did not finish within %s", roundDuration(f.Config.AfterMergeTimeout))
+	case run.ExitCode < 0:
+		// The runner keeps -1 for a command that never ran (aftermerge.go);
+		// "exit code -1" would tell the owner nothing.
+		return "the after-merge command could not be started"
+	default:
+		return fmt.Sprintf("the after-merge command ended with exit code %d", run.ExitCode)
+	}
+}
+
+// decideDeploy holds the deploy rules, shared by Merged (a project with no
+// after-merge command) and AfterMerge. since is the moment the deploy timeout
+// is measured from: the merge when no command ran, the end of the command
+// when one did.
+func decideDeploy(f Facts, since time.Time) Step {
 	if !f.Config.Deploys || f.Config.HealthURL == "" {
 		return save(moved(f, DeployHealthy), "there is no deploy to check")
 	}
 	if f.HealthChecked && f.Healthy {
 		return save(moved(f, DeployHealthy), "the deploy is healthy")
 	}
-	if f.Now.Sub(f.Progress.At) >= f.Config.DeployTimeout {
-		return act(StepStop, moved(f, Stopped), fmt.Sprintf(
+	if f.Now.Sub(since) >= f.Config.DeployTimeout {
+		step := act(StepStop, moved(f, Stopped), fmt.Sprintf(
 			"the deploy did not become healthy within %s", roundDuration(f.Config.DeployTimeout)))
+		step.Stop = StopDeploy
+		return step
 	}
 	return wait(f, "waiting for the deploy to become healthy")
 }

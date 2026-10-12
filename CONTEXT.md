@@ -73,3 +73,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Attached**: a client the session host has registered as the session's current client; a connection the host has accepted but not yet registered is not attached.
 - **Stress run**: running one test or a whole test package many times in a row, with and without CPU load, to find a test that fails only sometimes.
 - **Flaky test**: a test that sometimes fails although nothing it checks is broken.
+- **After-merge command**: the shell command a project names in `[ship] after_merge`; the daemon runs it once in the main checkout after a merge, before it checks the deploy.
+- **Run record**: `.afk/build/after-merge.json`, which says for which task and merge the after-merge command started and how it ended, so it is never run twice.
+- **Binary identity**: the size and modification time of the daemon's own program file, noted at start; when they change on disk the daemon stops between passes so the service manager starts the new version.

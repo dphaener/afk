@@ -16,6 +16,7 @@ import (
 	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/daemonstate"
+	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
@@ -47,7 +48,20 @@ type daemonRig struct {
 	ctx       context.Context
 	// common maps a folder to the git common dir the fake git reports.
 	common map[string]string
+	// roots are the projects made by project(), in order.
+	roots []string
+	// binary is what the fake "afk's own program file" read answers, given
+	// how many times it has been asked (1 is the read at the start). Nil
+	// answers the same identity every time. binaryReads counts the asks.
+	binary      func(read int) (daemon.Binary, error)
+	binaryReads int
+	// stderr is what the last runDaemon wrote to it, for a row's check.
+	stderr string
 }
+
+// daemonTestBinary is the program file the rig reports unless a test says
+// otherwise.
+var daemonTestBinary = daemon.Binary{Path: "/opt/afk/bin/afk", Size: 100, ModTime: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
 
 func newDaemonRig(t *testing.T) *daemonRig {
 	t.Helper()
@@ -78,7 +92,24 @@ func (r *daemonRig) project() string {
 	if err := ledger.Init(root, nil); err != nil {
 		r.t.Fatal(err)
 	}
+	r.roots = append(r.roots, root)
 	return root
+}
+
+// restartLines counts the daemon_restart lines in a project's decision log.
+func restartLines(t *testing.T, root string) int {
+	t.Helper()
+	entries, err := decisionlog.Read(decisionlog.Path(root))
+	if err != nil {
+		t.Fatalf("reading the decision log of %s: %v", root, err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.Kind == daemon.KindDaemonRestart {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *daemonRig) env() daemonEnv {
@@ -123,6 +154,13 @@ func (r *daemonRig) env() daemonEnv {
 			}
 		},
 		signalContext: func() (context.Context, context.CancelFunc) { return r.ctx, func() {} },
+		binary: func() (daemon.Binary, error) {
+			r.binaryReads++
+			if r.binary == nil {
+				return daemonTestBinary, nil
+			}
+			return r.binary(r.binaryReads)
+		},
 	}
 }
 
@@ -140,14 +178,41 @@ func (r *daemonRig) env() daemonEnv {
 //     is run from the main checkout, where the ledger and the inbox live.
 //   - "stops when asked" pins exit 0 on a stop signal; a service manager
 //     reads anything else as a crash and restarts the daemon.
+//   - "program file changed after the first pass" is the whole of "pick up
+//     new code" (PLAN T2.2a): exit 0, the new-version line and not the
+//     ordinary one, one daemon_restart line in every project's decision log,
+//     and the first pass done in full before it. It is the one row that waits
+//     for a real tick (1s, the shortest the config allows).
+//   - "program file unreadable at the start" must still run, and must leave
+//     the note where status finds it: a daemon that silently never restarts
+//     would bring the hand work back without saying so.
+//   - "once never looks at the program file" has a file that would read as
+//     changed on every look, so any look at all would show.
 func TestRunDaemon(t *testing.T) {
+	const newVersionLine = "afk daemon found a new version of itself on disk and is stopping so it can be started again. Every session is still running."
+	const stoppedLine = "afk daemon stopped. Every session is still running; the next start picks them up."
+	// pausedProjects writes a config naming n paused projects, so a pass has
+	// something to look at and nothing to start.
+	pausedProjects := func(r *daemonRig, n int) {
+		cfg := "[daemon]\ntick = \"1s\"\n"
+		for i := 0; i < n; i++ {
+			root := r.project()
+			if err := daemonstate.Pause(root, daemonTestNow); err != nil {
+				r.t.Fatal(err)
+			}
+			cfg += fmt.Sprintf("[[project]]\nname = \"p%d\"\npath = %q\n", i, root)
+		}
+		r.writeConfig(cfg)
+	}
 	tests := []struct {
 		name  string
 		args  []string
 		setup func(r *daemonRig)
 		code  int
-		// out and errOut are words stdout and stderr must hold.
+		// out and errOut are words stdout and stderr must hold; errNot are
+		// words stderr must not.
 		out, errOut []string
+		errNot      []string
 		launches    int
 		check       func(t *testing.T, r *daemonRig)
 	}{
@@ -313,6 +378,157 @@ func TestRunDaemon(t *testing.T) {
 			code:   0,
 			errOut: []string{"afk daemon started (pid 4242): 1 project(s), looking every 5s", "Every session is still running"},
 		},
+		{
+			name:   "program file unchanged",
+			setup:  func(r *daemonRig) { pausedProjects(r, 2) },
+			code:   0,
+			errOut: []string{stoppedLine},
+			errNot: []string{"found a new version", "cannot see its own program file"},
+			check: func(t *testing.T, r *daemonRig) {
+				// The read at the start and the one at the top of the only
+				// pass, which then finds it has been asked to stop.
+				if r.binaryReads != 2 {
+					t.Errorf("the program file was read %d times, want 2", r.binaryReads)
+				}
+				for _, root := range r.roots {
+					if n := restartLines(t, root); n != 0 {
+						t.Errorf("%s has %d daemon_restart lines, want none", root, n)
+					}
+				}
+				if daemonstate.BinaryUnknown(r.stateDir()) {
+					t.Error("running.json says the program file is unknown, but it was read")
+				}
+			},
+		},
+		{
+			name: "program file changed after the first pass",
+			setup: func(r *daemonRig) {
+				pausedProjects(r, 2)
+				// Not asked to stop: only the new file ends this run. The
+				// limit is there so a broken check fails the test instead of
+				// hanging it.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				r.t.Cleanup(cancel)
+				r.ctx = ctx
+				r.binary = func(read int) (daemon.Binary, error) {
+					b := daemonTestBinary
+					if read >= 3 { // 1 the start, 2 the first pass, 3 the second
+						b.Size++
+					}
+					return b, nil
+				}
+			},
+			code:   0,
+			errOut: []string{newVersionLine},
+			errNot: []string{stoppedLine},
+			check: func(t *testing.T, r *daemonRig) {
+				if r.ctx.Err() != nil {
+					t.Fatal("the run ended on the test's time limit, not on the new program file")
+				}
+				if r.binaryReads != 3 {
+					t.Errorf("the program file was read %d times, want 3", r.binaryReads)
+				}
+				for _, root := range r.roots {
+					if n := restartLines(t, root); n != 1 {
+						t.Errorf("%s has %d daemon_restart lines, want exactly 1", root, n)
+					}
+					if _, ok := daemonstate.ReadState(root); !ok {
+						t.Errorf("%s was never looked at: the first pass must finish before the daemon stops", root)
+					}
+				}
+			},
+		},
+		{
+			name: "program file unreadable at the start",
+			setup: func(r *daemonRig) {
+				pausedProjects(r, 1)
+				// The file stays unreadable. The daemon is asked to stop at
+				// the third look (the top of its second pass), so one whole
+				// pass runs first and the looks after the start are seen to
+				// carry on without a word. The time limit only keeps a daemon
+				// that never looks again from hanging the test.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				r.t.Cleanup(cancel)
+				r.ctx = ctx
+				r.binary = func(read int) (daemon.Binary, error) {
+					if read >= 3 {
+						cancel()
+					}
+					return daemon.Binary{}, errors.New("no such file")
+				}
+			},
+			code:   0,
+			errOut: []string{"afk daemon started", "afk cannot see its own program file", "Restart it by hand after an install", "no such file", stoppedLine},
+			errNot: []string{"found a new version"},
+			check: func(t *testing.T, r *daemonRig) {
+				if n := strings.Count(r.stderr, "cannot see its own program file"); n != 1 {
+					t.Errorf("the log says the program file cannot be seen %d times, want once (at the start only)", n)
+				}
+				if !daemonstate.BinaryUnknown(r.stateDir()) {
+					t.Error("running.json does not say binary_unknown")
+				}
+				if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
+					t.Fatal("the run ended on the test's time limit: the daemon stopped looking for its program file")
+				}
+				if r.binaryReads != 3 {
+					t.Errorf("the program file was looked for %d times, want 3: it is looked for again on every pass", r.binaryReads)
+				}
+				if pid, _, ok := daemonstate.ReadMachine(r.stateDir()); !ok || pid != 4242 {
+					t.Errorf("machine file = pid %d ok %v after the mark, want pid 4242", pid, ok)
+				}
+				if _, ok := daemonstate.ReadState(r.roots[0]); !ok {
+					t.Error("the daemon did not look at the project: an unreadable program file must not stop it")
+				}
+				if n := restartLines(t, r.roots[0]); n != 0 {
+					t.Errorf("%d daemon_restart lines, want none", n)
+				}
+				const line = "afk cannot see its own program file, so it will not restart by itself when a new version is installed. Restart it by hand after an install."
+				status := func(alive bool) string {
+					r.alive = alive
+					var so, se bytes.Buffer
+					if code := runDaemon([]string{"status"}, &so, &se, r.env()); code != 0 {
+						t.Fatalf("status exit %d: %s", code, se.String())
+					}
+					return so.String()
+				}
+				running := status(true)
+				t.Logf("status while that daemon runs:\n%s", running)
+				if n := strings.Count(running, line); n != 1 {
+					t.Errorf("status shows the line %d times while the daemon runs, want once", n)
+				}
+				if gone := status(false); strings.Contains(gone, "cannot see") {
+					t.Errorf("status shows the line for a daemon that is not running:\n%s", gone)
+				}
+			},
+		},
+		{
+			name: "once never looks at the program file",
+			args: []string{"--once"},
+			setup: func(r *daemonRig) {
+				pausedProjects(r, 2)
+				r.binary = func(read int) (daemon.Binary, error) {
+					b := daemonTestBinary
+					b.Size += int64(read) // different on every look
+					return b, nil
+				}
+			},
+			code:   0,
+			out:    []string{"p0: waiting", "p1: waiting"},
+			errNot: []string{"found a new version", "cannot see"},
+			check: func(t *testing.T, r *daemonRig) {
+				if r.binaryReads != 0 {
+					t.Errorf("--once read the program file %d times, want never", r.binaryReads)
+				}
+				for _, root := range r.roots {
+					if n := restartLines(t, root); n != 0 {
+						t.Errorf("%s has %d daemon_restart lines, want none", root, n)
+					}
+				}
+				if daemonstate.BinaryUnknown(r.stateDir()) {
+					t.Error("--once marked the program file unknown")
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -322,6 +538,7 @@ func TestRunDaemon(t *testing.T) {
 			}
 			var so, se bytes.Buffer
 			code := runDaemon(tt.args, &so, &se, r.env())
+			r.stderr = se.String()
 			t.Logf("exit %d\nstdout: %s\nstderr: %s", code, so.String(), se.String())
 			if code != tt.code {
 				t.Errorf("exit code = %d, want %d", code, tt.code)
@@ -334,6 +551,11 @@ func TestRunDaemon(t *testing.T) {
 			for _, w := range tt.errOut {
 				if !strings.Contains(se.String(), w) {
 					t.Errorf("stderr lacks %q", w)
+				}
+			}
+			for _, w := range tt.errNot {
+				if strings.Contains(se.String(), w) {
+					t.Errorf("stderr holds %q, which it must not", w)
 				}
 			}
 			if len(r.launches) != tt.launches {
@@ -449,6 +671,48 @@ path = %q
 		}
 	})
 
+	// The note is read from running.json and is about the daemon that wrote
+	// it, so it shows only while that daemon is alive, and a later start
+	// (which writes the file afresh) takes it away.
+	t.Run("a program file the daemon cannot see", func(t *testing.T) {
+		r := newDaemonRig(t)
+		r.writeConfig(fmt.Sprintf("[[project]]\nname = \"alpha\"\npath = %q\n", r.project()))
+		const line = "afk cannot see its own program file, so it will not restart by itself when a new version is installed. Restart it by hand after an install."
+		status := func(alive bool) string {
+			r.alive = alive
+			var so, se bytes.Buffer
+			if code := runDaemon([]string{"status"}, &so, &se, r.env()); code != 0 {
+				t.Fatalf("exit code = %d, stderr %q", code, se.String())
+			}
+			return so.String()
+		}
+		lock := func() {
+			unlock, err := daemonstate.Lock(r.stateDir(), 777, daemonTestNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unlock()
+		}
+		lock()
+		if got := status(true); strings.Contains(got, "cannot see") {
+			t.Errorf("the line is shown with binary_unknown false:\n%s", got)
+		}
+		if err := daemonstate.MarkBinaryUnknown(r.stateDir()); err != nil {
+			t.Fatal(err)
+		}
+		got := status(true)
+		if strings.Count(got, line) != 1 || !strings.HasPrefix(got, "The afk daemon is running (pid 777") {
+			t.Errorf("want the line once, under the running line, in:\n%s", got)
+		}
+		if got := status(false); strings.Contains(got, "cannot see") {
+			t.Errorf("the line is shown for a daemon that is not running:\n%s", got)
+		}
+		lock()
+		if got := status(true); strings.Contains(got, "cannot see") {
+			t.Errorf("the line outlived the next start:\n%s", got)
+		}
+	})
+
 	t.Run("a config that cannot be read", func(t *testing.T) {
 		r := newDaemonRig(t)
 		r.writeConfig("[daemon]\ntick = \"banana\"\n")
@@ -467,7 +731,10 @@ path = %q
 // the report must say the daemon is not running, label the state as the last
 // one, and not count up a session's running time from a file nobody updates);
 // "parked task" (no Running line: a parked session is not at work, and a
-// duration there would read as progress).
+// duration there would read as progress); the two "program file" rows (the
+// note belongs to a running daemon only, and comes straight after the header
+// so it is read before any project); "stopped by the after-merge command" (a
+// stopped line must not be worded as a failed deploy when it was not one).
 func TestRenderDaemonStatus(t *testing.T) {
 	base := func(ps ...daemonProjectStatus) daemonStatus {
 		return daemonStatus{ConfigPath: "/cfg/afk/config.toml", Now: daemonTestNow, Loc: time.UTC, Projects: ps,
@@ -506,6 +773,35 @@ func TestRenderDaemonStatus(t *testing.T) {
 			}(),
 			want: []string{"Last:    waiting", "Task:    T1.2, in session t1-2", "Since:   Sun 11 Oct 07:10 (2h 20m ago)"},
 			not:  []string{"Running:", "Doing:"},
+		},
+		{
+			name: "program file not seen, daemon running",
+			in: func() daemonStatus {
+				in := base(daemonProjectStatus{Name: "demo", Root: "/p/demo"})
+				in.BinaryUnknown = true
+				return in
+			}(),
+			want: []string{"The afk daemon is running (pid 31, started Fri 9 Oct 10:00).\nafk cannot see its own program file, so it will not restart by itself when a new version is installed. Restart it by hand after an install.\n\ndemo (/p/demo)"},
+		},
+		{
+			name: "program file not seen, daemon not running",
+			in: func() daemonStatus {
+				in := base(daemonProjectStatus{Name: "demo", Root: "/p/demo"})
+				in.BinaryUnknown, in.Running = true, false
+				return in
+			}(),
+			want: []string{"The afk daemon is not running."},
+			not:  []string{"cannot see", "program file"},
+		},
+		{
+			name: "stopped by the after-merge command",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				Stopped: true, StopTask: "T1.1", StopReason: "the after-merge command ended with exit code 3",
+				State: daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: daemon.KindLineStopped, Task: "T1.1", Session: "t1-1",
+					Reason: "the line is stopped; T1.1 is marked done once it is cleared"}}),
+			want: []string{`Stopped: the line is stopped after T1.1: the after-merge command ended with exit code 3. No new task will start until you run "afk resume demo", which clears the stop.`,
+				"Doing:   the line is stopped, so no new task will start"},
+			not: []string{"deploy", "Running:", "program file"},
 		},
 		{
 			name: "paused and idle",
@@ -898,8 +1194,40 @@ func TestRealDaemonDeps(t *testing.T) {
 			t.Errorf("realDaemonDeps leaves %s nil", name)
 		}
 	}
+	// Binary is the one field that must be nil here. It is runDaemon's to
+	// set, from daemonEnv.binary, and only for a daemon that keeps running:
+	// set here it would also reach `afk daemon --once`, and a test's fake
+	// loop would never see the seam.
+	if d.Binary != nil {
+		t.Error("realDaemonDeps sets Binary; runDaemon sets it, and only when --once is not given")
+	}
 	if daemonSendWait != 2*time.Second {
 		t.Errorf("daemonSendWait = %s, want 2s: a pass must not sit on a dead socket", daemonSendWait)
+	}
+}
+
+// TestRealDaemonEnvBinary checks the real "afk's own program file" read: it
+// finds the running program (here the test binary) and answers the same path
+// on every call, because the path is resolved once when the env is built.
+// Nothing is run and nothing outside the test binary's own file is read.
+func TestRealDaemonEnvBinary(t *testing.T) {
+	env := realDaemonEnv()
+	if env.binary == nil {
+		t.Fatal("realDaemonEnv leaves binary nil, so a real daemon would never notice a new version")
+	}
+	first, err := env.binary()
+	if err != nil {
+		t.Fatalf("the test binary's own file could not be read: %v", err)
+	}
+	if first.Path == "" || first.Size <= 0 || first.ModTime.IsZero() {
+		t.Errorf("identity = %+v, want a path, a size and a time", first)
+	}
+	second, err := env.binary()
+	if err != nil || second != first {
+		t.Errorf("second read = %+v, %v; want the same as the first (%+v)", second, err, first)
+	}
+	if daemon.NewBinary(first, second, err) {
+		t.Error("an untouched program file reads as changed")
 	}
 }
 
@@ -913,6 +1241,18 @@ type shipRig struct {
 	items   []inbox.Item
 	itemErr error
 	healthy []string
+	// runs are the after-merge commands the fake runner was asked for; the
+	// three fields after it are what it answers.
+	runs       []afterMergeCall
+	amCode     int
+	amTimedOut bool
+	amErr      error
+}
+
+// afterMergeCall is one after-merge command the fake runner was asked for.
+type afterMergeCall struct {
+	dir, command, logPath string
+	timeout               time.Duration
 }
 
 func (r *shipRig) wiring() shipWiring {
@@ -930,7 +1270,11 @@ func (r *shipRig) wiring() shipWiring {
 			return nil
 		},
 		listInbox: func(string) ([]inbox.Item, error) { return r.items, r.itemErr },
-		now:       func() time.Time { return daemonTestNow },
+		afterMerge: func(dir, command, logPath string, timeout time.Duration) (int, bool, error) {
+			r.runs = append(r.runs, afterMergeCall{dir, command, logPath, timeout})
+			return r.amCode, r.amTimedOut, r.amErr
+		},
+		now: func() time.Time { return daemonTestNow },
 	}
 }
 
@@ -944,6 +1288,10 @@ func (r *shipRig) wiring() shipWiring {
 //     checkout, since the worktree is gone, and nothing may be typed.
 //   - the marker rows read and write the project's own files, which is what
 //     lets a killed daemon come back to the same poll time and the same stop.
+//   - "after-merge": the command, its record and its log all go to the main
+//     checkout whether or not the worktree is there, and the record a start
+//     mark leaves reads back as "not finished", which is what stops a second
+//     run after a kill.
 func TestDaemonShipDeps(t *testing.T) {
 	root, wt := t.TempDir(), t.TempDir()
 	var saved []ship.Progress
@@ -1068,6 +1416,76 @@ func TestDaemonShipDeps(t *testing.T) {
 		}
 	})
 
+	t.Run("after-merge", func(t *testing.T) {
+		for _, worktree := range []string{wt, ""} {
+			root := t.TempDir()
+			req := request(worktree)
+			req.Project.Root = root
+			r := &shipRig{amCode: 3}
+			d := shipDeps(req, r.wiring())
+			logPath := filepath.Join(root, ".afk", "build", "after-merge.log")
+
+			if _, _, _, ok := d.AfterMergeRecord(); ok {
+				t.Errorf("worktree %q: a record was read in a project that has none", worktree)
+			}
+			if got := d.AfterMergeTail(); got != "" {
+				t.Errorf("worktree %q: tail with no log = %q, want empty", worktree, got)
+			}
+
+			// The start mark: on disk in the main checkout, and not finished.
+			started := daemonTestNow.Add(-time.Minute)
+			if err := d.MarkAfterMerge("T1.1", "abc", ship.AfterMergeRun{}, started); err != nil {
+				t.Fatal(err)
+			}
+			rec, ok := daemonstate.ReadAfterMerge(root)
+			if want := (daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:29:00Z"}); !ok || rec != want {
+				t.Errorf("worktree %q: start mark on disk = %+v, %v; want %+v", worktree, rec, ok, want)
+			}
+			task, sha, run, ok := d.AfterMergeRecord()
+			if !ok || task != "T1.1" || sha != "abc" || run != (ship.AfterMergeRun{}) {
+				t.Errorf("worktree %q: start mark read back as %q, %q, %+v, %v; want T1.1, abc and a run that has not finished", worktree, task, sha, run, ok)
+			}
+
+			code, timedOut, err := d.RunAfterMerge("make install", 10*time.Minute)
+			if code != 3 || timedOut || err != nil {
+				t.Errorf("worktree %q: the runner's answer came back as %d, %v, %v", worktree, code, timedOut, err)
+			}
+			if want := []afterMergeCall{{root, "make install", logPath, 10 * time.Minute}}; !reflect.DeepEqual(r.runs, want) {
+				t.Errorf("worktree %q: ran %+v, want %+v (the main checkout, never the worktree)", worktree, r.runs, want)
+			}
+
+			// The finish mark keeps the start time and adds how it ended.
+			done := ship.AfterMergeRun{Finished: true, ExitCode: 3, FinishedAt: daemonTestNow}
+			if err := d.MarkAfterMerge("T1.1", "abc", done, started); err != nil {
+				t.Fatal(err)
+			}
+			rec, _ = daemonstate.ReadAfterMerge(root)
+			if want := (daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:29:00Z", FinishedAt: "2026-10-11T09:30:00Z", ExitCode: 3}); rec != want {
+				t.Errorf("worktree %q: finish mark on disk = %+v, want %+v", worktree, rec, want)
+			}
+			if _, _, run, ok := d.AfterMergeRecord(); !ok || run != done {
+				t.Errorf("worktree %q: finish mark read back as %+v, %v; want %+v", worktree, run, ok, done)
+			}
+
+			// The tail is the end of the log in the main checkout.
+			var lines []string
+			for i := 1; i <= 30; i++ {
+				lines = append(lines, fmt.Sprintf("line %d", i))
+			}
+			if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := d.AfterMergeTail(), strings.Join(lines[10:], "\n"); got != want {
+				t.Errorf("worktree %q: tail = %q, want the last 20 lines", worktree, got)
+			}
+			if worktree != "" {
+				if _, err := os.Stat(filepath.Join(worktree, ".afk")); err == nil {
+					t.Error("something was written under the worktree")
+				}
+			}
+		}
+	})
+
 	t.Run("stop with none on the request writes the marker", func(t *testing.T) {
 		root := t.TempDir()
 		req := request(wt)
@@ -1103,6 +1521,85 @@ func TestDaemonShipDeps(t *testing.T) {
 		r.itemErr = errors.New("inbox unreadable")
 		if d.EnvAnswered("API_KEY") {
 			t.Error("EnvAnswered is true when the inbox cannot be listed; the merge must wait")
+		}
+	})
+}
+
+// TestDaemonAfterMergeRecord pins both directions between the run record on
+// disk and what ship reads, and that the two packages agree on where the log
+// is.
+//
+// Load-bearing rows: "finish time does not parse" and "finish time empty but
+// an exit code" must both read as not finished. The first is a damaged
+// record, and believing its exit code 0 would carry the ship on to the deploy
+// check on the word of a broken file; not finished stops the line instead.
+// "start mark drops a result" keeps a start mark from ever looking finished.
+func TestDaemonAfterMergeRecord(t *testing.T) {
+	finished := time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC)
+	t.Run("read", func(t *testing.T) {
+		tests := []struct {
+			name string
+			rec  daemonstate.AfterMerge
+			want ship.AfterMergeRun
+		}{
+			{"start mark", daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z"}, ship.AfterMergeRun{}},
+			{"finished well", daemonstate.AfterMerge{StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "2026-10-11T09:40:00Z"},
+				ship.AfterMergeRun{Finished: true, FinishedAt: finished}},
+			{"finished with an exit code", daemonstate.AfterMerge{FinishedAt: "2026-10-11T09:40:00Z", ExitCode: 3},
+				ship.AfterMergeRun{Finished: true, ExitCode: 3, FinishedAt: finished}},
+			{"timed out", daemonstate.AfterMerge{FinishedAt: "2026-10-11T09:40:00Z", ExitCode: -1, TimedOut: true},
+				ship.AfterMergeRun{Finished: true, ExitCode: -1, TimedOut: true, FinishedAt: finished}},
+			{"finish time in another zone", daemonstate.AfterMerge{FinishedAt: "2026-10-11T11:40:00+02:00"},
+				ship.AfterMergeRun{Finished: true, FinishedAt: finished}},
+			{"finish time does not parse", daemonstate.AfterMerge{StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "soon"}, ship.AfterMergeRun{}},
+			{"finish time empty but an exit code", daemonstate.AfterMerge{ExitCode: 3, TimedOut: true}, ship.AfterMergeRun{}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := afterMergeRun(tt.rec)
+				if got.Finished != tt.want.Finished || got.ExitCode != tt.want.ExitCode || got.TimedOut != tt.want.TimedOut ||
+					got.Found || !got.FinishedAt.Equal(tt.want.FinishedAt) {
+					t.Errorf("got %+v, want %+v", got, tt.want)
+				}
+			})
+		}
+	})
+	t.Run("write", func(t *testing.T) {
+		started := time.Date(2026, 10, 11, 11, 30, 0, 0, time.FixedZone("x", 2*60*60))
+		tests := []struct {
+			name string
+			run  ship.AfterMergeRun
+			want daemonstate.AfterMerge
+		}{
+			{"start mark", ship.AfterMergeRun{},
+				daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z"}},
+			{"start mark drops a result", ship.AfterMergeRun{ExitCode: 3, TimedOut: true, FinishedAt: finished},
+				daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z"}},
+			{"finished", ship.AfterMergeRun{Finished: true, ExitCode: 2, FinishedAt: finished},
+				daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "2026-10-11T09:40:00Z", ExitCode: 2}},
+			{"timed out", ship.AfterMergeRun{Finished: true, ExitCode: -1, TimedOut: true, FinishedAt: finished},
+				daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "2026-10-11T09:40:00Z", ExitCode: -1, TimedOut: true}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := afterMergeRecord("T1.1", "abc", tt.run, started)
+				if got != tt.want {
+					t.Errorf("got %+v, want %+v", got, tt.want)
+				}
+				// What was written reads back as what was meant.
+				back := afterMergeRun(got)
+				if back.Finished != tt.run.Finished {
+					t.Errorf("read back Finished = %v, want %v", back.Finished, tt.run.Finished)
+				}
+			})
+		}
+	})
+	// ship cannot import daemonstate, so the log's path is written in both.
+	// The stop item shows ship's; the runner writes daemonstate's.
+	t.Run("log path", func(t *testing.T) {
+		root := t.TempDir()
+		if got, want := daemonstate.AfterMergeLogPath(root), filepath.Join(root, filepath.FromSlash(ship.AfterMergeLog)); got != want {
+			t.Errorf("daemonstate writes the log to %q, ship tells the owner to look in %q", got, want)
 		}
 	})
 }
@@ -1195,46 +1692,123 @@ func TestDaemonShipRequest(t *testing.T) {
 //   - "no session and no base" must reach ship unchanged and come back as
 //     ship's own park, with no command run.
 //   - "last state" shows ship.Advance is really what is called.
+//   - the after-merge rows go through the real wiring to the real record
+//     file. "runs in the project root" and "worktree gone" pin the one folder
+//     the command may run in (PLAN T2.2a: the main checkout); "left
+//     unfinished" is the crash case, where the record alone must stop the
+//     line with no second run; "another merge's record" must not be taken
+//     for this ship's, or the command would be skipped.
 func TestDaemonShip(t *testing.T) {
 	entry := ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Branch: "t1-1"}
+	afterMerge := ship.Progress{State: ship.AfterMerge, PR: 7, MergedSHA: "abc"}
 	tests := []struct {
 		name     string
 		cfgErr   error
 		progress ship.Progress
+		// command is the project's after_merge; worktree says whether the
+		// session is still on disk; record is the run record already there.
+		command  string
+		worktree bool
+		record   *daemonstate.AfterMerge
+		amCode   int
 		wantKind ship.OutcomeKind
 		wantHas  string
+		// wantState is the state the ship comes back in, when it moves.
+		wantState ship.State
+		wantRuns  int
+		// wantRecord is the record expected on disk afterwards, nil for none.
+		wantRecord *daemonstate.AfterMerge
 	}{
 		{name: "config unreadable", cfgErr: errors.New("afk.toml is not valid TOML"), progress: ship.Progress{State: ship.PROpen, PR: 7},
 			wantKind: ship.OutcomeWait, wantHas: "afk.toml is not valid TOML"},
 		{name: "no session and no base", progress: ship.Progress{}, wantKind: ship.OutcomePark, wantHas: "base"},
 		{name: "last state", progress: ship.Progress{State: ship.DeployHealthy, PR: 7, MergedSHA: "abc"}, wantKind: ship.OutcomeDone},
+		{name: "after-merge command runs in the project root", progress: afterMerge, command: "make install", worktree: true,
+			wantKind: ship.OutcomeWait, wantHas: "the after-merge command finished", wantRuns: 1,
+			wantRecord: &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "2026-10-11T09:30:00Z"}},
+		{name: "after-merge command, worktree gone", progress: afterMerge, command: "make install",
+			wantKind: ship.OutcomeWait, wantHas: "the after-merge command finished", wantRuns: 1,
+			wantRecord: &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "2026-10-11T09:30:00Z"}},
+		{name: "after-merge command fails", progress: afterMerge, command: "make install", worktree: true, amCode: 3,
+			wantKind: ship.OutcomeWait, wantHas: "exit code 3", wantRuns: 1,
+			wantRecord: &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "2026-10-11T09:30:00Z", ExitCode: 3}},
+		{name: "after-merge record left unfinished", progress: afterMerge, command: "make install", worktree: true,
+			record:   &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:00:00Z"},
+			wantKind: ship.OutcomeStop, wantHas: "afk was stopped while the after-merge command ran", wantState: ship.Stopped, wantRuns: 0,
+			wantRecord: &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:00:00Z"}},
+		{name: "after-merge record with a finish time that does not parse", progress: afterMerge, command: "make install",
+			record:   &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:00:00Z", FinishedAt: "soon"},
+			wantKind: ship.OutcomeStop, wantHas: "afk was stopped while the after-merge command ran", wantState: ship.Stopped, wantRuns: 0,
+			wantRecord: &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:00:00Z", FinishedAt: "soon"}},
+		{name: "another merge's record is not this ship's", progress: afterMerge, command: "make install", worktree: true,
+			record:   &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "older", StartedAt: "2026-10-10T09:00:00Z", FinishedAt: "2026-10-10T09:01:00Z"},
+			wantKind: ship.OutcomeWait, wantHas: "the after-merge command finished", wantRuns: 1,
+			wantRecord: &daemonstate.AfterMerge{Task: "T1.1", MergedSHA: "abc", StartedAt: "2026-10-11T09:30:00Z", FinishedAt: "2026-10-11T09:30:00Z"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &shipRig{}
+			r := &shipRig{amCode: tt.amCode}
 			root := t.TempDir()
+			worktree := ""
+			if tt.worktree {
+				worktree = t.TempDir()
+			}
+			if tt.record != nil {
+				if err := daemonstate.WriteAfterMerge(root, *tt.record); err != nil {
+					t.Fatal(err)
+				}
+			}
 			fn := daemonShip(func(got string) (projectconfig.Config, error) {
 				if got != root {
 					t.Errorf("config loaded from %q, want the project root", got)
 				}
-				return projectconfig.Config{Ship: projectconfig.Ship{MergeMethod: "merge", Deploys: true, DeployTimeout: 15 * time.Minute}}, tt.cfgErr
+				return projectconfig.Config{Ship: projectconfig.Ship{MergeMethod: "merge", Deploys: true, DeployTimeout: 15 * time.Minute,
+					AfterMerge: tt.command, AfterMergeTimeout: 7 * time.Minute}}, tt.cfgErr
 			}, r.wiring())
 			out := fn(daemon.ShipRequest{
-				Project: daemon.Project{Name: "demo", Root: root}, Entry: entry, Progress: tt.progress,
+				Project: daemon.Project{Name: "demo", Root: root}, Entry: entry, Progress: tt.progress, Worktree: worktree,
 				Save: func(ship.Progress) error { return nil },
 				Stop: func(string, string) error { return nil },
 			})
+			t.Logf("outcome: %s: %s", out.Kind, out.Reason)
 			if out.Kind != tt.wantKind {
 				t.Fatalf("outcome = %+v, want kind %q", out, tt.wantKind)
 			}
 			if !strings.Contains(out.Reason, tt.wantHas) {
 				t.Errorf("reason %q lacks %q", out.Reason, tt.wantHas)
 			}
-			if out.Progress != tt.progress {
+			want := tt.progress
+			if tt.wantState != "" {
+				want.State = tt.wantState
+			}
+			if out.Progress.State != want.State || out.Progress.PR != want.PR || out.Progress.MergedSHA != want.MergedSHA {
+				t.Errorf("progress = %+v, want state %q with the rest unchanged (%+v)", out.Progress, want.State, tt.progress)
+			}
+			if tt.wantState == "" && out.Progress != tt.progress {
 				t.Errorf("progress = %+v, want it unchanged (%+v)", out.Progress, tt.progress)
 			}
 			if len(r.calls) != 0 || len(r.typed) != 0 {
 				t.Errorf("ran %+v and typed %q, want nothing", r.calls, r.typed)
+			}
+			if len(r.runs) != tt.wantRuns {
+				t.Fatalf("after-merge runs = %+v, want %d", r.runs, tt.wantRuns)
+			}
+			for _, run := range r.runs {
+				if want := (afterMergeCall{root, tt.command, filepath.Join(root, ".afk", "build", "after-merge.log"), 7 * time.Minute}); run != want {
+					t.Errorf("ran %+v, want %+v: the project root is the only folder the command may run in", run, want)
+				}
+			}
+			rec, ok := daemonstate.ReadAfterMerge(root)
+			switch {
+			case tt.wantRecord == nil && ok:
+				t.Errorf("a run record was written: %+v", rec)
+			case tt.wantRecord != nil && (!ok || rec != *tt.wantRecord):
+				t.Errorf("record under the project root = %+v, %v; want %+v", rec, ok, *tt.wantRecord)
+			}
+			if worktree != "" {
+				if entries, err := os.ReadDir(worktree); err != nil || len(entries) != 0 {
+					t.Errorf("the worktree holds %v (err %v), want nothing written there", entries, err)
+				}
 			}
 		})
 	}

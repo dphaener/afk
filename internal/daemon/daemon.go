@@ -57,6 +57,10 @@ type Settings struct {
 	// HostGrace is how long a session may be without a running host before
 	// it is reported gone. Zero means DefaultHostGrace.
 	HostGrace time.Duration
+	// Binary is the identity of afk's program file recorded when the daemon
+	// started. The zero value means unknown, and Run then never stops for a
+	// new binary.
+	Binary Binary
 }
 
 const (
@@ -141,7 +145,17 @@ const (
 	rulePlan      = "PLAN §5.1"
 	ruleTokens    = "PLAN §4.7"
 	ruleShip      = "PLAN §5.4"
+	ruleRestart   = "PLAN §T2.2a"
 )
+
+// KindDaemonRestart is the decision-log kind for the daemon stopping because
+// its program file changed.
+const KindDaemonRestart = "daemon_restart"
+
+// ErrNewBinary is what Run returns when afk's program file changed on disk.
+// It is not a failure: the caller exits so the service manager starts the new
+// program.
+var ErrNewBinary = errors.New("afk's program file changed on disk")
 
 // LaunchRequest asks for one session to be created and its agent started.
 type LaunchRequest struct {
@@ -242,6 +256,10 @@ type Deps struct {
 	// used instead. It is a second field, and not an argument added to
 	// Notify, so that every existing Notify keeps working unchanged.
 	NotifyUrgent func(p Project, it inbox.Item)
+	// Binary reads the identity of afk's program file as it is now. Nil
+	// means Run never checks. The caller resolves the path; this package
+	// never looks for its own executable.
+	Binary func() (Binary, error)
 }
 
 // ledgerExists is Deps.LedgerExists with its default.
@@ -333,6 +351,16 @@ func Once(projects []Project, s Settings, d Deps) []daemonstate.State {
 //
 // A project that cannot be run does not stop the others: Tick turns every
 // failure into a state, an inbox item or a log line and returns.
+//
+// When Deps.Binary is set, each pass starts by asking whether afk's program
+// file has changed since Settings.Binary was recorded. If so, Run logs one
+// daemon_restart decision per project and returns ErrNewBinary so the service
+// manager starts the new program. The check is only at the top of a pass,
+// never between two projects, so a ship step is never cut in half and every
+// project is either ticked by the old program for the whole pass or not at
+// all. An unknown start identity or an unreadable file carries on (see
+// NewBinary). Nothing is kept between passes but Settings.Binary. Once and
+// Tick never check.
 func Run(ctx context.Context, projects []Project, s Settings, tick time.Duration, d Deps) error {
 	if tick <= 0 {
 		tick = defaultTick
@@ -340,6 +368,20 @@ func Run(ctx context.Context, projects []Project, s Settings, tick time.Duration
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
+		if d.Binary != nil {
+			got, err := d.Binary()
+			if NewBinary(s.Binary, got, err) {
+				now := d.Now()
+				for _, p := range projects {
+					t := &pass{p: p, d: d, now: now}
+					t.record(KindDaemonRestart, "", "",
+						"afk's own program file changed on disk. What now?",
+						"stop between passes so the service manager starts the new one",
+						ruleRestart)
+				}
+				return ErrNewBinary
+			}
+		}
 		for _, p := range projects {
 			if ctx.Err() != nil {
 				return nil
@@ -1125,7 +1167,9 @@ func (t *pass) shipWait(a Action, out ship.Outcome) daemonstate.State {
 		Reason: fmt.Sprintf("shipping %s: %s", a.Task, reason)}
 }
 
-// stoppedState is the stored state of a task whose deploy stopped the line.
+// stoppedState is the stored state of a task whose ship stopped the line, be
+// it the deploy or the after-merge command. The reason it shows is the one
+// the stop marker holds, which the ship worded for the cause.
 func (t *pass) stoppedState(a Action) daemonstate.State {
 	return daemonstate.State{Kind: KindLineStopped, Task: a.Task, Session: a.Session,
 		Reason: fmt.Sprintf("%s; %s is marked done once it is cleared", stoppedReason(t.obs), a.Task)}
@@ -1203,7 +1247,8 @@ func (t *pass) shipStop(a Action, out ship.Outcome) daemonstate.State {
 // The item does not block and the task is not parked on it. What holds the
 // line is the marker, and what clears it is `afk resume`; an item the owner
 // could answer to "release" the task would be a second way out that leaves
-// the marker behind.
+// the marker behind. That is as true of a stop after the merge, when the
+// after-merge command failed, as of a deploy that did not come up.
 func (t *pass) tellStopped(a Action, n inbox.NewItem, reason string) {
 	n.Task, n.Session, n.Blocking = a.Task, a.Session, false
 	n.Title = fitTitle(n.Title)
@@ -1223,10 +1268,10 @@ func (t *pass) tellStopped(a Action, n inbox.NewItem, reason string) {
 	}
 	why := strings.TrimSpace(reason)
 	if why == "" {
-		why = "the deploy did not come up healthy in time"
+		why = "the ship gave no reason"
 	}
 	t.record("line_stopped", a.Task, a.Session,
-		fmt.Sprintf("The deploy after %s did not come up healthy. What now?", a.Task),
+		fmt.Sprintf("The line was stopped after %s: %s. What now?", a.Task, why),
 		fmt.Sprintf("stop the line until `afk resume` and tell the owner (inbox %s): %s", it.ID, why), ruleShip)
 }
 
@@ -1263,10 +1308,10 @@ func stopLostTitle(task string) string {
 func stopLostBody(task, reason string) string {
 	why := strings.TrimSpace(reason)
 	if why == "" {
-		why = "the deploy did not come up healthy in time"
+		why = "the ship gave no reason"
 	}
 	return fmt.Sprintf("%s was merged, but afk stopped the line afterwards: %s. No new task starts until you clear it.\n\n"+
-		"Check the deploy, and fix it or roll it back. Then run `afk resume` to clear the stop; "+
+		"Look at what went wrong and put it right, then run `afk resume` to clear the stop; "+
 		"%s is marked done once it is cleared.", task, why, task)
 }
 

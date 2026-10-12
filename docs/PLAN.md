@@ -228,6 +228,11 @@ word is rejected like an unknown status. `afk ledger set` takes several ids befo
 `afk ledger init [--done-through ID] [--done ID,ID]` creates a missing ledger and never changes an
 existing one.
 
+Amended 2026-10-12 (T2.2a): the `ship` words now include `after_merge`, between `merged` and
+`deploy_healthy`: `committed`, `pushed`, `pr_open`, `handed_back`, `ci_green`, `merged`, `after_merge`,
+`deploy_healthy`, `stopped`. It is saved only when the project's `afk.toml` sets `[ship] after_merge`;
+without that key the ship goes from `merged` to `deploy_healthy` as before.
+
 ### 4.2a Daemon files (new)
 
 Amended 2026-10-11 (T2.1): three small files the build daemon adds, each with one writer and none
@@ -249,6 +254,18 @@ Amended 2026-10-11 (T2.2): two more files in `.afk/build/`, each written only by
 |---|---|---|
 | `.afk/build/stopped` | the daemon, when a deploy does not turn healthy in `deploy_timeout` (removed by `afk resume`) | `{"at":"<RFC 3339 UTC>","task","reason"}`. Existence is the signal, so a damaged marker still stops the line. It is written before the ledger saves the `stopped` ship state. |
 | `.afk/build/ship-poll` | the daemon | `{"at":"<RFC 3339 UTC>","failing_since":"<RFC 3339 UTC or empty>"}`, both keys always present. `at` is when GitHub was last asked (the ship asks at most every 20 seconds); `failing_since` is set while those reads keep failing and cleared when one works. A missing or damaged file means "never asked". |
+
+Amended 2026-10-12 (T2.2a): two more files in `.afk/build/`, written only by the daemon through
+`internal/daemonstate`, by atomic rename, and a new key in `running.json`.
+
+| File | Writer | Shape |
+|---|---|---|
+| `.afk/build/after-merge.json` | the daemon, around each run of the `after_merge` command (written once at the start and once at the end) | `{"task","merged_sha","started_at","finished_at","exit_code","timed_out"}`, every key always present, times RFC 3339 UTC. A run that has started and not finished has `finished_at` `""`. It is matched on the task and the merge commit, so a record of an earlier task is ignored. |
+| `.afk/build/after-merge.log` | the command's output, opened by the daemon for each run | Plain text, replaced on each run. The first line is `afk: running the after-merge command in <dir>: <command>` and the last is `afk: the command finished with exit code N`, `afk: the command was stopped after <timeout>` or `afk: the command could not be started: <error>`. |
+
+`running.json` (in afk's state folder) also holds `"binary_unknown"`, a boolean written `false` by every
+lock and set to `true` when the daemon could not read its own program file at the start. `afk daemon
+status` reads it to say the daemon will not restart by itself on a new version.
 
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
@@ -340,6 +357,12 @@ guessed. The deploy is polled only when `deploys` is true and `health_url` is no
 an `http://` or `https://` address, `merge_method` one of `merge`, `squash` or `rebase`, the two counts
 at least 0, `deploy_timeout` above zero, and `required_env_pattern` a regular expression that
 compiles; anything else is an error naming the file and the key, and the address is never echoed.
+
+Amended 2026-10-12 (T2.2a): `[ship]` also reads `after_merge` (default empty: no command; any other
+value is the text of a shell command, run through `sh -c` in the main checkout) and
+`after_merge_timeout` (default `"10m"`; a length of time above zero, else an error naming the file and
+`[ship] after_merge_timeout`). The command's text is never echoed in an error, a stop reason, an item
+title or a notification; the log tail in a failure item may show it.
 
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
@@ -456,6 +479,20 @@ skipped ones, is never merged: five minutes after it opened the task parks, and 
 waits another five. After the merge the daemon fast-forwards the local base branch (never a merge
 commit) and deletes the remote branch before it looks at the deploy. A pause does not stop a ship
 that is already in progress.
+
+Amended 2026-10-12 (T2.2a): as built, the saved states gain `after_merge`, between `merged` and
+`deploy_healthy`, and only when `[ship] after_merge` is set. In it the daemon writes the run record
+(`.afk/build/after-merge.json`, §4.2a) before it starts the command and again when the command ends,
+runs the command once in the project's main checkout with a limit of `after_merge_timeout`, and saves
+nothing to the ledger while it runs. Exit 0 moves the ship to `deploy_healthy`; the deploy timeout is
+measured from the end of the command, not from the merge, so a slow command does not use up the deploy's
+time. A non-zero exit, a command that could not be started, or a timeout stops the line: the marker
+`.afk/build/stopped` is written, a `failure` item carries the end of `.afk/build/after-merge.log`, and
+`afk resume` then lets the task finish as `done` without running the command again. A crash during the
+command leaves a record with a start and no finish: the next pass stops the line with an item saying it is
+not known whether the command finished, and never runs it a second time. A crash before the start mark
+leaves no record, so the command runs once. If the owner removes the command from `afk.toml` while the
+ship waits in `after_merge` with no record, the ship carries on to the deploy check.
 
 ### 5.5 Autonomous policy (what replaces the human)
 
@@ -975,6 +1012,7 @@ with nobody at the keyboard.
   running sessions untouched.
 - **Note:** the daemon that runs this task has neither feature, so after it merges the owner installs
   and restarts by hand one last time.
+- Amended 2026-10-12 (T2.2a done): later tasks may assume the following. (1) The ship states gain `after_merge`, between `merged` and `deploy_healthy`; a project with no `[ship] after_merge` never enters it. (2) The command runs through `sh -c` in the main checkout, inside the daemon's pass, which waits for it up to `after_merge_timeout`; `.afk/build/after-merge.json` records its start and end and `.afk/build/after-merge.log` holds its output. (3) A failed, timed-out or interrupted command stops the line with the same marker as a failed deploy; the item is not blocking, and `afk resume` marks the task done without running the command again. A daemon killed while the command runs never runs it a second time. (4) `daemon.Run` returns `ErrNewBinary` when the program file's size or modification time changed, checked only at the top of a pass, and `afk daemon` then exits 0; T2.3's restart work must keep that exit path and must not treat it as a crash. (5) `running.json` carries `binary_unknown`. (6) The unit file is `Restart=always`; the unit installed on the VM must be replaced by hand once. See `## T2.2a` in `docs/decisions.md`.
 
 #### T2.3 — Automatic recovery
 - **Depends on:** T0.4, T0.5, T2.1, T2.2a

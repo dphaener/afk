@@ -3,6 +3,8 @@ package ship
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +50,36 @@ func wantItem(t *testing.T, out Outcome, kind string) Item {
 	return *out.Item
 }
 
+// wantOrder fails the test unless each of want appears in events and the first
+// appearance of each comes after the first appearance of the one before it.
+func wantOrder(t *testing.T, events []string, want ...string) {
+	t.Helper()
+	last := -1
+	for _, name := range want {
+		at := -1
+		for i, e := range events {
+			if e == name {
+				at = i
+				break
+			}
+		}
+		if at <= last {
+			t.Errorf("events = %v, want the first %q after everything before it in %v", events, name, want)
+			return
+		}
+		last = at
+	}
+}
+
+// statesSaved is every state the ship was saved in, in order.
+func (w *world) statesSaved() []State {
+	var states []State
+	for _, p := range w.savedLog {
+		states = append(states, p.State)
+	}
+	return states
+}
+
 // TestAdvanceScenarios drives whole ships over the fake project, one call of
 // Advance per tick from the progress last saved, and asserts on what was done
 // to the outside (pushes, pull requests, merges, re-runs, prompts).
@@ -64,12 +96,33 @@ func wantItem(t *testing.T, out Outcome, kind string) Item {
 //     owner, and must happen once the owner has answered.
 //   - "deploy timeout stops the line": the marker must exist before the
 //     outcome is returned, and the task finishes only once it is gone.
+//   - "after-merge command runs once, after the merge and before the deploy
+//     check": the order of base update, branch delete, command and first
+//     health read is the feature. The fake command also fails any row that
+//     runs it before the merge is wholly finished or without a start mark.
+//   - Every row that sets no command expects zero runs (the runs column), so
+//     "empty means no step" is checked on all the rows that existed before.
+//   - "after-merge failure stops the line ...": one run, an item with the end
+//     of the output, no health read, and still one run after the owner clears
+//     the stop. Running the command again there is the mistake A2 forbids.
+//   - "a record for another task ..." and "... another merge commit ...": the
+//     record file is one per project and outlives its ship. Taking the last
+//     ship's "exit 0" for this one would skip the command without a word.
 func TestAdvanceScenarios(t *testing.T) {
+	afterMergeGreen := func(w *world) {
+		w.ci["c1"] = []Checks{ciGreen}
+		w.cfg.AfterMerge = testCommand
+		w.cfg.AfterMergeTimeout = 10 * time.Minute
+	}
+	greenTally := tally{pushes: 1, prs: 1, merges: 1, deletes: 1, syncs: 1}
 	tests := []struct {
 		name  string
 		setup func(w *world)
 		want  OutcomeKind
 		tally tally
+		// runs is how many times the after-merge command must have been
+		// started when the first outcome that is not a wait comes back.
+		runs  int
 		check func(t *testing.T, w *world, out Outcome)
 	}{
 		{
@@ -321,6 +374,262 @@ func TestAdvanceScenarios(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:  "after-merge command runs once, after the merge and before the deploy check",
+			setup: afterMergeGreen,
+			want:  OutcomeDone,
+			tally: greenTally,
+			runs:  1,
+			check: func(t *testing.T, w *world, _ Outcome) {
+				wantOrder(t, w.events, "sync", "delete", "command", "health")
+				if len(w.runCommands) != 1 || w.runCommands[0] != testCommand || w.runTimeouts[0] != 10*time.Minute {
+					t.Errorf("the command ran as %q with %v; want %q with a ten-minute limit", w.runCommands, w.runTimeouts, testCommand)
+				}
+				want := []State{Committed, Pushed, PROpen, CIGreen, Merged, Merged, AfterMerge, DeployHealthy}
+				if got := w.statesSaved(); !reflect.DeepEqual(got, want) {
+					t.Errorf("saved states = %v, want %v (the command itself saves nothing)", got, want)
+				}
+				rec := w.record
+				if rec == nil || rec.task != testTask || rec.sha != "m-c1" || !rec.run.Finished || rec.run.ExitCode != 0 || rec.run.TimedOut {
+					t.Errorf("the run record = %+v, want a finished run with exit 0 for %s at m-c1", rec, testTask)
+				}
+			},
+		},
+		{
+			name:  "empty after-merge command means no step",
+			setup: func(w *world) { w.ci["c1"] = []Checks{ciGreen}; w.cfg.AfterMerge = "" },
+			want:  OutcomeDone,
+			tally: greenTally,
+			check: func(t *testing.T, w *world, _ Outcome) {
+				if slices.Contains(w.statesSaved(), AfterMerge) {
+					t.Errorf("saved states = %v, want no after_merge", w.statesSaved())
+				}
+				if w.record != nil {
+					t.Errorf("a run record was written with no command: %+v", w.record)
+				}
+			},
+		},
+		{
+			name: "after-merge command with no deploy to check",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.cfg.Deploys = false
+				w.healthyOn = 0
+			},
+			want:  OutcomeDone,
+			tally: greenTally,
+			runs:  1,
+			check: func(t *testing.T, w *world, _ Outcome) {
+				if w.healthCalls != 0 {
+					t.Errorf("Health was asked %d time(s) with deploys off", w.healthCalls)
+				}
+			},
+		},
+		{
+			name: "after-merge failure stops the line, and clearing the marker finishes the task",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.runExit = 3
+				w.runTail = "afk: running the after-merge command\ncompiling\nboom: no such target\n"
+			},
+			want:  OutcomeStop,
+			tally: greenTally,
+			runs:  1,
+			check: func(t *testing.T, w *world, out Outcome) {
+				item := wantItem(t, out, ItemFailure)
+				t.Logf("the item the owner reads:\n%s\n\n%s", item.Title, item.Body)
+				if item.Title != "The after-merge command failed after T9.9" {
+					t.Errorf("title = %q", item.Title)
+				}
+				wantText(t, "the item body", item.Body,
+					"T9.9 was merged", "exit code 3", "afk.toml", "after_merge", "project folder",
+					"    compiling\n    boom: no such target\n", AfterMergeLog,
+					"run it by hand", "afk resume", "marked done once it is cleared", "does not run the command again")
+				for _, text := range []string{item.Title, item.Body, out.Reason, w.stopReason} {
+					if strings.Contains(text, "hunter2") {
+						t.Errorf("the command's text was shown to the owner: %q", text)
+					}
+				}
+				wantText(t, "the stop reason", w.stopReason, testTask, "exit code 3")
+				if !w.stopMarker || w.stops != 1 || w.saved.State != Stopped || out.Progress != w.saved {
+					t.Fatalf("marker = %v, stops = %d, saved = %+v, outcome progress = %+v; want the marker, one stop, stopped",
+						w.stopMarker, w.stops, w.saved, out.Progress)
+				}
+				if w.healthCalls != 0 {
+					t.Errorf("the deploy was checked %d time(s) after a failed command", w.healthCalls)
+				}
+				for i := 0; i < 5; i++ {
+					if again, _ := w.step(); again.Kind != OutcomeWait {
+						t.Fatalf("call %d while stopped returned %q, want wait", i+1, again.Kind)
+					}
+				}
+				w.stopMarker = false
+				if done := w.run(); done.Kind != OutcomeDone {
+					t.Fatalf("after the stop was cleared: %q (%s), want done", done.Kind, done.Reason)
+				}
+				if w.runs != 1 || w.stops != 1 || w.healthCalls != 0 {
+					t.Errorf("after the clear: runs = %d, stops = %d, health calls = %d; want 1, 1 and 0",
+						w.runs, w.stops, w.healthCalls)
+				}
+			},
+		},
+		{
+			name: "after-merge timeout stops the line",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.runExit, w.runTimedOut = -1, true
+				w.runTakes = 10 * time.Minute
+			},
+			want:  OutcomeStop,
+			tally: greenTally,
+			runs:  1,
+			check: func(t *testing.T, w *world, out Outcome) {
+				item := wantItem(t, out, ItemFailure)
+				wantText(t, "the item", item.Title+"\n"+item.Body,
+					"The after-merge command failed after T9.9", "did not finish within 10m0s",
+					"afk has no output from the command", AfterMergeLog, "afk resume")
+				if strings.Contains(item.Body, "exit code") {
+					t.Errorf("a timeout is shown as an exit code:\n%s", item.Body)
+				}
+				if !w.stopMarker || w.saved.State != Stopped || w.healthCalls != 0 {
+					t.Errorf("marker = %v, state = %q, health calls = %d", w.stopMarker, w.saved.State, w.healthCalls)
+				}
+			},
+		},
+		{
+			name: "an after-merge command that cannot be started stops the line",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.runErr = errors.New("fork/exec /bin/sh: no such file or directory")
+				w.runTail = "afk: the command could not be started: fork/exec /bin/sh: no such file or directory"
+			},
+			want:  OutcomeStop,
+			tally: greenTally,
+			runs:  1,
+			check: func(t *testing.T, w *world, out Outcome) {
+				item := wantItem(t, out, ItemFailure)
+				wantText(t, "the item body", item.Body, "could not be started", "fork/exec /bin/sh")
+				if strings.Contains(item.Body, "exit code") {
+					t.Errorf("a command that never ran is shown with an exit code:\n%s", item.Body)
+				}
+				if rec := w.record; rec == nil || !rec.run.Finished || rec.run.ExitCode != -1 {
+					t.Errorf("the run record = %+v, want a finished run with exit code -1", rec)
+				}
+			},
+		},
+		{
+			name: "an after-merge run that was started and never finished stops the line without running",
+			setup: func(w *world) {
+				w.at(AfterMerge)
+				w.cfg.AfterMerge = testCommand
+				w.ran(AfterMergeRun{})
+				w.runTail = "half a line of outp"
+			},
+			want: OutcomeStop,
+			check: func(t *testing.T, w *world, out Outcome) {
+				item := wantItem(t, out, ItemFailure)
+				t.Logf("the item the owner reads:\n%s\n\n%s", item.Title, item.Body)
+				if item.Title != "The after-merge command was interrupted after T9.9" {
+					t.Errorf("title = %q", item.Title)
+				}
+				wantText(t, "the item body", item.Body,
+					"afk itself was stopped while the command ran", "does not know whether the command finished",
+					"    half a line of outp\n", AfterMergeLog, "run it by hand", "afk resume", "does not run the command again")
+				if !w.stopMarker || w.saved.State != Stopped || w.healthCalls != 0 {
+					t.Errorf("marker = %v, state = %q, health calls = %d", w.stopMarker, w.saved.State, w.healthCalls)
+				}
+				w.stopMarker = false
+				if done := w.run(); done.Kind != OutcomeDone || w.runs != 0 {
+					t.Errorf("after the clear: %q, runs = %d; want done and no run", done.Kind, w.runs)
+				}
+			},
+		},
+		{
+			name: "a record for another task is ignored and the command runs",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.record = &afterMergeRecord{task: "T1.1", sha: "m-c1",
+					run: AfterMergeRun{Finished: true, FinishedAt: now.Add(-time.Hour)}, startedAt: now.Add(-time.Hour)}
+			},
+			want:  OutcomeDone,
+			tally: greenTally,
+			runs:  1,
+		},
+		{
+			name: "a record for another merge commit of the same task is ignored and the command runs",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.record = &afterMergeRecord{task: testTask, sha: "m-older",
+					run: AfterMergeRun{Finished: true, ExitCode: 2, FinishedAt: now.Add(-time.Hour)}, startedAt: now.Add(-time.Hour)}
+			},
+			want:  OutcomeDone,
+			tally: greenTally,
+			runs:  1,
+		},
+		{
+			name: "an unfinished record for another task does not stop this ship",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.record = &afterMergeRecord{task: "T1.1", sha: "m-c1", startedAt: now.Add(-time.Hour)}
+			},
+			want:  OutcomeDone,
+			tally: greenTally,
+			runs:  1,
+		},
+		{
+			name: "a slow after-merge command does not use up the deploy's time",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				// Longer than the whole deploy timeout; the deploy then
+				// takes three more polls to answer.
+				w.runTakes = 20 * time.Minute
+				w.healthyOn = 3
+			},
+			want:  OutcomeDone,
+			tally: greenTally,
+			runs:  1,
+			check: func(t *testing.T, w *world, _ Outcome) {
+				if w.stops != 0 || w.healthCalls != 3 {
+					t.Errorf("stops = %d, health calls = %d; want 0 and 3", w.stops, w.healthCalls)
+				}
+				if rec := w.record; rec == nil || rec.run.FinishedAt.Sub(rec.startedAt) != 20*time.Minute {
+					t.Errorf("the run record = %+v, want an end twenty minutes after the start", rec)
+				}
+			},
+		},
+		{
+			name: "after-merge command, then a deploy that never turns healthy stops for the deploy",
+			setup: func(w *world) {
+				afterMergeGreen(w)
+				w.healthyOn = 0
+			},
+			want:  OutcomeStop,
+			tally: greenTally,
+			runs:  1,
+			check: func(t *testing.T, w *world, out Outcome) {
+				item := wantItem(t, out, ItemFailure)
+				wantText(t, "the item", item.Title+"\n"+item.Body, "The deploy after T9.9 did not become healthy", "15m0s")
+				finished := w.record.run.FinishedAt
+				if waited := w.savedAt[len(w.savedAt)-1].Sub(finished); waited < 15*time.Minute || waited > 16*time.Minute {
+					t.Errorf("stopped %s after the command ended, want the deploy timeout", waited)
+				}
+			},
+		},
+		{
+			name: "the command is removed from afk.toml before it ran: straight to the deploy check",
+			setup: func(w *world) {
+				w.at(AfterMerge)
+				w.cfg.AfterMerge = ""
+				w.healthyOn = 2
+			},
+			want: OutcomeDone,
+			check: func(t *testing.T, w *world, _ Outcome) {
+				if w.healthCalls != 2 || w.saved.State != DeployHealthy || w.record != nil {
+					t.Errorf("health calls = %d, state = %q, record = %+v; want 2, deploy_healthy and none",
+						w.healthCalls, w.saved.State, w.record)
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -334,6 +643,9 @@ func TestAdvanceScenarios(t *testing.T) {
 			}
 			if got := w.tally(); got != tt.tally {
 				t.Errorf("calls = %+v, want %+v", got, tt.tally)
+			}
+			if w.runs != tt.runs {
+				t.Errorf("the after-merge command ran %d time(s), want %d", w.runs, tt.runs)
 			}
 			for sha, n := range w.pushes {
 				if n != 1 {
@@ -635,12 +947,15 @@ func TestAdvancePollThrottle(t *testing.T) {
 		}
 	})
 
-	for _, state := range []State{Pushed, PROpen, HandedBack, CIGreen, Merged} {
+	// after_merge asks GitHub nothing, but it polls the health URL, so it is
+	// held to the same rate.
+	for _, state := range []State{Pushed, PROpen, HandedBack, CIGreen, Merged, AfterMerge} {
 		t.Run("held: "+string(state), func(t *testing.T) {
 			w := newWorld(t).at(state)
+			w.cfg.AfterMerge = testCommand
 			w.lastPoll = now.Add(-time.Second)
-			if out := call(w, now); out.Kind != OutcomeWait || w.reads != 0 || w.saveCalls != 0 {
-				t.Errorf("%q, %d reads, %d saves; want wait and no call", out.Kind, w.reads, w.saveCalls)
+			if out := call(w, now); out.Kind != OutcomeWait || w.reads != 0 || w.saveCalls != 0 || w.runs != 0 {
+				t.Errorf("%q, %d reads, %d saves, %d runs; want wait and no call", out.Kind, w.reads, w.saveCalls, w.runs)
 			}
 		})
 	}
@@ -712,6 +1027,106 @@ func TestAdvanceWithoutGitOrGH(t *testing.T) {
 	}
 }
 
+// TestAdvanceAfterMergeWithoutGitOrGH runs a whole after_merge with nil Git
+// and GH and no base, as TestAdvanceWithoutGitOrGH does for the two states
+// after it: the session's worktree may be cleaned up before the daemon comes
+// back to a ship in this state, and the command runs in the main checkout,
+// which needs neither.
+func TestAdvanceAfterMergeWithoutGitOrGH(t *testing.T) {
+	w := newWorld(t).at(AfterMerge)
+	w.cfg.AfterMerge = testCommand
+	w.base = ""
+
+	var out Outcome
+	for i := 0; i < 10 && out.Kind != OutcomeDone; i++ {
+		d := w.deps()
+		d.Git, d.GH = nil, nil
+		out = Advance(w.request(), d)
+		w.clock = w.clock.Add(tick)
+		if out.Kind == OutcomePark || out.Kind == OutcomeStop {
+			t.Fatalf("call %d: %q (%s), want wait or done", i+1, out.Kind, out.Reason)
+		}
+	}
+	if out.Kind != OutcomeDone || w.runs != 1 || w.healthCalls != 1 || w.saved.State != DeployHealthy {
+		t.Errorf("outcome = %q, runs = %d, health calls = %d, state = %q; want done, 1, 1 and deploy_healthy",
+			out.Kind, w.runs, w.healthCalls, w.saved.State)
+	}
+	if !w.failingSince.IsZero() || w.reads != w.healthCalls {
+		t.Errorf("failing since %s, %d reads; want no read but the health call", w.failingSince, w.reads)
+	}
+}
+
+// TestAdvanceAfterMergeMarks covers the two writes of the run record failing.
+// Both rows are load-bearing, and they pull in opposite directions:
+//
+//   - A start mark that cannot be written must run nothing. A command that ran
+//     with no start mark on disk would run a second time after a crash.
+//   - A finish mark that cannot be written must not be tried again by running
+//     the command again. The record still says "started", so the next call
+//     stops the line: a result that was lost is read as an interrupted run.
+//
+// Neither saves the ship's progress, and neither moves Progress.At.
+func TestAdvanceAfterMergeMarks(t *testing.T) {
+	t.Run("the start mark cannot be written: nothing runs until it can", func(t *testing.T) {
+		w := newWorld(t).at(AfterMerge)
+		w.cfg.AfterMerge = testCommand
+		w.failStart = true
+		start := w.saved
+
+		for i := 0; i < 3; i++ {
+			out, _ := w.step()
+			if out.Kind != OutcomeWait || !strings.Contains(out.Reason, "start mark: disk full") {
+				t.Fatalf("call %d: %q (%s), want wait with the error", i+1, out.Kind, out.Reason)
+			}
+		}
+		if w.runs != 0 || w.record != nil || w.saveCalls != 0 || w.saved != start {
+			t.Fatalf("runs = %d, record = %+v, saves = %d; want nothing done", w.runs, w.record, w.saveCalls)
+		}
+		w.failStart = false
+		if out := w.run(); out.Kind != OutcomeDone || w.runs != 1 {
+			t.Errorf("after the error went away: %q, runs = %d; want done and one run", out.Kind, w.runs)
+		}
+	})
+
+	t.Run("the finish mark cannot be written: the line stops, the command is not run again", func(t *testing.T) {
+		w := newWorld(t).at(AfterMerge)
+		w.cfg.AfterMerge = testCommand
+		w.failFinish = true
+		start := w.saved
+
+		out, _ := w.step()
+		if out.Kind != OutcomeWait || !strings.Contains(out.Reason, "finish mark: disk full") {
+			t.Fatalf("%q (%s), want wait with the error", out.Kind, out.Reason)
+		}
+		if w.runs != 1 || w.record == nil || w.record.run.Finished || w.saveCalls != 0 || w.saved != start {
+			t.Fatalf("runs = %d, record = %+v, saves = %d; want one run, a start mark and no save", w.runs, w.record, w.saveCalls)
+		}
+		w.failFinish = false
+		out = w.run()
+		if out.Kind != OutcomeStop || w.runs != 1 || w.healthCalls != 0 {
+			t.Fatalf("next: %q (%s), runs = %d, health calls = %d; want stop, one run, no deploy check",
+				out.Kind, out.Reason, w.runs, w.healthCalls)
+		}
+		wantText(t, "the item title", wantItem(t, out, ItemFailure).Title, "was interrupted")
+	})
+
+	t.Run("the command does not move the time the state was entered", func(t *testing.T) {
+		w := newWorld(t).at(AfterMerge)
+		w.cfg.AfterMerge = testCommand
+		start := w.saved
+		w.runTakes = 5 * time.Minute
+
+		out, _ := w.step()
+		if out.Kind != OutcomeWait || out.Progress != start || w.saved != start || w.saveCalls != 0 {
+			t.Errorf("%q, progress %+v, saved %+v, %d saves; want wait and the progress untouched (%+v)",
+				out.Kind, out.Progress, w.saved, w.saveCalls, start)
+		}
+		if strings.Contains(out.Reason, "hunter2") {
+			t.Errorf("the reason quotes the command: %q", out.Reason)
+		}
+	})
+}
+
 // TestAdvanceStopFailures covers a stop whose marker cannot be written. It
 // must not save "stopped" and must not return the stop outcome: Decide reads
 // a saved "stopped" with no marker as the owner having cleared it, so saving
@@ -763,14 +1178,40 @@ func TestAdvanceStopFailures(t *testing.T) {
 // outcome), and a kill after the save finds the marker and waits. In the
 // second the stop outcome is never returned, which the table allows and
 // issues.md records.
+//
+// The scripts with an after-merge command add one more thing every replay
+// must hold: the command is started exactly once (the runs column; zero for
+// the scripts with no command). The save replays already cover "killed before
+// the command" (the kill after the save of after_merge: the next call finds
+// no run record and runs it, for the first time). The command itself saves
+// nothing, so its other two kill points cannot be reached by breaking a save
+// and are replayed by name after the save loop:
+//
+//   - "killed while the command runs": the start mark is on disk and the end
+//     is not. The line must stop, with one run. This row is the one that goes
+//     red if Decide's "started but not finished" rule is removed: the next
+//     call then reads the half-finished run as one that ended well and
+//     carries on to the deploy check.
+//   - "killed after the finish mark": the result is on disk and Advance never
+//     returned. The next call must carry on to the deploy check, with one run.
+//
+// All three are load-bearing; they are the three crashes docs/PLAN.md T2.2a
+// names.
 func TestAdvanceCrashTable(t *testing.T) {
+	withCommand := func(w *world) {
+		w.ci["c1"] = []Checks{ciGreen}
+		w.cfg.AfterMerge = testCommand
+		w.cfg.AfterMergeTimeout = 10 * time.Minute
+	}
 	scripts := []struct {
 		name    string
 		setup   func(w *world)
 		commits []string
 		reruns  int
 		prompts int
-		final   State
+		// runs is how many times the after-merge command is started.
+		runs  int
+		final State
 	}{
 		{
 			name:    "green",
@@ -797,6 +1238,33 @@ func TestAdvanceCrashTable(t *testing.T) {
 				w.healthyOn = 0
 			},
 			commits: []string{"c1"},
+			final:   Stopped,
+		},
+		{
+			name:    "after-merge command",
+			setup:   withCommand,
+			commits: []string{"c1"},
+			runs:    1,
+			final:   DeployHealthy,
+		},
+		{
+			name: "after-merge command fails",
+			setup: func(w *world) {
+				withCommand(w)
+				w.runExit = 1
+			},
+			commits: []string{"c1"},
+			runs:    1,
+			final:   Stopped,
+		},
+		{
+			name: "after-merge command, then deploy timeout",
+			setup: func(w *world) {
+				withCommand(w)
+				w.healthyOn = 0
+			},
+			commits: []string{"c1"},
+			runs:    1,
 			final:   Stopped,
 		},
 	}
@@ -836,9 +1304,17 @@ func TestAdvanceCrashTable(t *testing.T) {
 			return 0
 		}
 
-		// target is the state whose save the replay breaks, "" for a clean run.
-		check := func(t *testing.T, w *world, mode string, target State, stopOutcomes int) {
+		// target is the state whose save the replay breaks, "" for a clean
+		// run and for a kill that is not at a save. final is the state the
+		// ship must end in, which a kill inside the command changes.
+		check := func(t *testing.T, w *world, mode string, target, final State, stopOutcomes int) {
 			t.Helper()
+			if w.runs != sc.runs {
+				t.Errorf("the after-merge command was started %d time(s), want %d", w.runs, sc.runs)
+			}
+			if sc.runs == 0 && (w.record != nil || slices.Contains(w.statesSaved(), AfterMerge)) {
+				t.Errorf("a ship with no command wrote a run record (%+v) or saved after_merge (%v)", w.record, w.statesSaved())
+			}
 			for _, sha := range sc.commits {
 				if w.pushes[sha] != 1 {
 					t.Errorf("commit %s was pushed %d times, want 1", sha, w.pushes[sha])
@@ -871,8 +1347,8 @@ func TestAdvanceCrashTable(t *testing.T) {
 			if w.reruns < sc.reruns || w.reruns > maxReruns {
 				t.Errorf("re-runs = %d, want %d to %d", w.reruns, sc.reruns, maxReruns)
 			}
-			if w.saved.State != sc.final || w.saved.MergedSHA == "" || w.saved.PR != testPR {
-				t.Errorf("final progress = %+v, want %q with a merge commit and the pull request", w.saved, sc.final)
+			if w.saved.State != final || w.saved.MergedSHA == "" || w.saved.PR != testPR {
+				t.Errorf("final progress = %+v, want %q with a merge commit and the pull request", w.saved, final)
 			}
 
 			// The merge's time is the time of the save that recorded the
@@ -895,7 +1371,7 @@ func TestAdvanceCrashTable(t *testing.T) {
 				t.Errorf("merged was never saved")
 			}
 
-			if sc.final == Stopped {
+			if final == Stopped {
 				wantStops, wantOutcomes := 1, 1
 				if target == Stopped && mode == fails {
 					wantStops = 2
@@ -914,7 +1390,7 @@ func TestAdvanceCrashTable(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			base := newWorld(t)
 			sc.setup(base)
-			check(t, base, clean, "", drive(t, base))
+			check(t, base, clean, "", sc.final, drive(t, base))
 			saves := append([]Progress(nil), base.savedLog...)
 			if len(saves) < 7 {
 				t.Fatalf("a clean run made %d saves; the table needs every state of a ship", len(saves))
@@ -931,9 +1407,49 @@ func TestAdvanceCrashTable(t *testing.T) {
 						} else {
 							w.killAfter = k
 						}
-						check(t, w, mode, saves[k-1].State, drive(t, w))
+						check(t, w, mode, saves[k-1].State, sc.final, drive(t, w))
 					})
 				}
+			}
+
+			if sc.runs == 0 {
+				return
+			}
+			entered := slices.IndexFunc(saves, func(p Progress) bool { return p.State == AfterMerge })
+			if entered < 0 {
+				t.Fatalf("a clean run with a command never saved after_merge: %v", base.statesSaved())
+			}
+			points := []struct {
+				name  string
+				arm   func(w *world)
+				final State
+				// deployChecked is whether the health URL may have been
+				// asked by the end.
+				deployChecked bool
+			}{
+				{"killed before the command", func(w *world) { w.killAfter = entered + 1 }, sc.final, true},
+				{"killed while the command runs", func(w *world) { w.killInRun = true }, Stopped, false},
+				{"killed after the finish mark", func(w *world) { w.killAtFinish = true }, sc.final, true},
+			}
+			for _, pt := range points {
+				t.Run(pt.name, func(t *testing.T) {
+					w := newWorld(t)
+					sc.setup(w)
+					pt.arm(w)
+					check(t, w, pt.name, "", pt.final, drive(t, w))
+					if w.killInRun || w.killAtFinish {
+						t.Errorf("the kill never happened")
+					}
+					if !pt.deployChecked && w.healthCalls != 0 {
+						t.Errorf("the deploy was checked %d time(s) after a run nobody saw the end of", w.healthCalls)
+					}
+					if pt.name == "killed while the command runs" {
+						if rec := w.record; rec == nil || rec.run.Finished {
+							t.Errorf("the run record = %+v, want the start mark left as it was", rec)
+						}
+						wantText(t, "the stop reason", w.stopReason, "not known whether the command finished")
+					}
+				})
 			}
 		})
 	}

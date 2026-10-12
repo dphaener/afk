@@ -1,0 +1,6 @@
+# What the afk daemon does for this repository.
+plan = "docs/PLAN.md"
+
+[ship]
+# After a merge, install the new afk and refresh the agent plugin on this machine.
+after_merge = "make install && afk plugin install --target claude"

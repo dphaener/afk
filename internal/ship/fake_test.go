@@ -35,8 +35,22 @@ var (
 )
 
 // errKilled is what the fake Save panics with to stand for the process being
-// killed right after a save reached the disk.
+// killed right after a save reached the disk. The fake after-merge runner and
+// the fake run record panic with it too, for a kill while the command runs
+// and a kill right after its end was recorded.
 var errKilled = errors.New("killed after the save")
+
+// testCommand is the after-merge command the tests set. It holds a made-up
+// secret so a test can check the text never reaches an item's title or a
+// reason.
+const testCommand = "make install TOKEN=hunter2"
+
+// afterMergeRecord is the fake run record: one per project, as on disk.
+type afterMergeRecord struct {
+	task, sha string
+	run       AfterMergeRun
+	startedAt time.Time
+}
 
 // world is one fake project: a session's branch, its remote, GitHub's view of
 // the pull request, the files and markers the daemon would hold, and a clock.
@@ -84,6 +98,24 @@ type world struct {
 	onPrompt     func()
 	fixes        []fix // commits the session has yet to make
 	promptTexts  []string
+
+	// the after-merge command
+	record       *afterMergeRecord // nil when there is no run record
+	runs         int               // times the command was started
+	runCommands  []string
+	runTimeouts  []time.Duration
+	runExit      int // the scripted result
+	runTimedOut  bool
+	runErr       error         // the command could not be started
+	runTakes     time.Duration // how long the fake command runs
+	runTail      string        // the end of the command's output
+	killInRun    bool          // the process is killed while the command runs
+	killAtFinish bool          // killed right after the finish mark is written
+	failStart    bool          // the start mark cannot be written
+	failFinish   bool          // the finish mark cannot be written
+	// events is the order of the outside actions around the after-merge
+	// command: "sync", "delete", "command", "health".
+	events []string
 
 	// errs makes the named call fail, by method name.
 	errs map[string]error
@@ -142,10 +174,15 @@ func (w *world) at(state State) *world {
 	w.pr = PR{Number: testPR, State: PRStateOpen}
 	w.saved = Progress{State: state, At: w.clock, PR: testPR}
 	switch state {
-	case Merged, DeployHealthy, Stopped:
+	case Merged, AfterMerge, DeployHealthy, Stopped:
 		w.pr.State = PRStateMerged
 		w.pr.MergeSHA = "m-" + w.local
 		w.saved.MergedSHA = w.pr.MergeSHA
+	}
+	if state == AfterMerge {
+		// A ship gets here only with the base updated and the branch deleted.
+		w.baseHas[w.pr.MergeSHA] = true
+		w.remote = ""
 	}
 	return w
 }
@@ -203,6 +240,7 @@ func (w *world) deps() Deps {
 		Health: func(url string) (bool, error) {
 			w.reads++
 			w.healthCalls++
+			w.events = append(w.events, "health")
 			w.healthSeen = append(w.healthSeen, url)
 			if err := w.errs["Health"]; err != nil {
 				return false, err
@@ -281,6 +319,61 @@ func (w *world) deps() Deps {
 			}
 			return nil
 		},
+		AfterMergeRecord: func() (string, string, AfterMergeRun, bool) {
+			if w.record == nil {
+				return "", "", AfterMergeRun{}, false
+			}
+			return w.record.task, w.record.sha, w.record.run, true
+		},
+		MarkAfterMerge: func(task, sha string, run AfterMergeRun, startedAt time.Time) error {
+			if run.Found {
+				w.t.Errorf("MarkAfterMerge was given Found; that is the reader's word, not the writer's")
+			}
+			if !run.Finished && w.failStart {
+				return errors.New("start mark: disk full")
+			}
+			if run.Finished && w.failFinish {
+				return errors.New("finish mark: disk full")
+			}
+			if run.Finished && (w.record == nil || !w.record.startedAt.Equal(startedAt)) {
+				w.t.Errorf("the finish mark's start time %s is not the start mark's", startedAt)
+			}
+			w.record = &afterMergeRecord{task: task, sha: sha, run: run, startedAt: startedAt}
+			if run.Finished && w.killAtFinish {
+				w.killAtFinish = false
+				panic(errKilled)
+			}
+			return nil
+		},
+		// The fake command checks the rules no row may break, on every row
+		// that runs it: the start mark is on disk first, and the merge is
+		// wholly finished (commit recorded, base updated, remote branch gone).
+		RunAfterMerge: func(command string, timeout time.Duration) (int, bool, error) {
+			w.runs++
+			w.events = append(w.events, "command")
+			w.runCommands = append(w.runCommands, command)
+			w.runTimeouts = append(w.runTimeouts, timeout)
+			if w.saved.State != AfterMerge {
+				w.t.Errorf("the command ran in state %q", w.saved.State)
+			}
+			if rec := w.record; rec == nil || rec.run.Finished || rec.task != testTask || rec.sha != w.saved.MergedSHA {
+				w.t.Errorf("the command ran without a start mark for this ship: %+v", rec)
+			}
+			if sha := w.saved.MergedSHA; sha == "" || !w.baseHas[sha] || w.remote != "" {
+				w.t.Errorf("the command ran before the merge was finished: merge commit %q, base has it %v, remote branch %q",
+					sha, w.baseHas[sha], w.remote)
+			}
+			if w.killInRun {
+				w.killInRun = false
+				panic(errKilled)
+			}
+			w.clock = w.clock.Add(w.runTakes)
+			if w.runErr != nil {
+				return -1, false, w.runErr
+			}
+			return w.runExit, w.runTimedOut, nil
+		},
+		AfterMergeTail: func() string { return w.runTail },
 	}
 }
 
@@ -385,6 +478,7 @@ func (w *world) Push(string) error {
 
 func (w *world) DeleteRemote(string) error {
 	w.remoteDeletes++
+	w.events = append(w.events, "delete")
 	if err := w.fail("DeleteRemote"); err != nil {
 		return err
 	}
@@ -394,6 +488,7 @@ func (w *world) DeleteRemote(string) error {
 
 func (w *world) SyncBase(base string) error {
 	w.syncs++
+	w.events = append(w.events, "sync")
 	w.wantBase(base)
 	if err := w.fail("SyncBase"); err != nil {
 		return err
@@ -517,6 +612,12 @@ func (w *world) Merge(_ int, method, headSHA string) error {
 	w.pr.State = PRStateMerged
 	w.pr.MergeSHA = "m-" + headSHA
 	return nil
+}
+
+// ran puts a run record for this ship on disk: the command was started at the
+// world's clock and ended as run says (an unfinished run is a start mark).
+func (w *world) ran(run AfterMergeRun) {
+	w.record = &afterMergeRecord{task: testTask, sha: w.saved.MergedSHA, run: run, startedAt: w.clock}
 }
 
 // handBackFile is the hand-back file's text, "" when none was written.

@@ -1487,6 +1487,99 @@ func TestOnceAndRun(t *testing.T) {
 	})
 }
 
+// TestRunNewBinary: Run stops for a new program file only at the top of a
+// pass. The load-bearing rows are "changed on the second pass" (the first
+// pass ticks every project, the stopping pass ticks none, and each project's
+// log gets exactly one daemon_restart line) and the four carry-on rows, since
+// stopping on a doubt would have the service manager restart the daemon for
+// nothing. A row ends its run by cancelling the context after the third
+// pass's first read, so "carries on" is shown by Run still going until then.
+func TestRunNewBinary(t *testing.T) {
+	old := Binary{Path: "/bin/afk", Size: 10, ModTime: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
+	newer := Binary{Path: "/bin/afk", Size: 11, ModTime: old.ModTime}
+	cases := []struct {
+		name     string
+		start    Binary
+		nilDep   bool
+		reads    func(call int) (Binary, error)
+		wantStop bool
+	}{
+		{"unchanged", old, false, func(int) (Binary, error) { return old, nil }, false},
+		{"changed on the second pass", old, false, func(call int) (Binary, error) {
+			if call >= 2 {
+				return newer, nil
+			}
+			return old, nil
+		}, true},
+		{"unreadable", old, false, func(int) (Binary, error) { return Binary{}, errors.New("gone") }, false},
+		{"no dependency", old, true, nil, false},
+		{"start unknown", Binary{}, false, func(int) (Binary, error) { return newer, nil }, false},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			a := newRig(t, task("T1.1"))
+			b := newRig(t, task("T1.1"))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			d := a.deps()
+			ticked := map[string]int{}
+			load := d.LoadBuild
+			d.LoadBuild = func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
+				ticked[root]++
+				return load(root)
+			}
+			reads := 0
+			if !tt.nilDep {
+				d.Binary = func() (Binary, error) {
+					reads++
+					if reads >= 3 {
+						cancel()
+					}
+					return tt.reads(reads)
+				}
+			}
+			if tt.nilDep {
+				// No dependency to count passes by: end after enough ticks.
+				n := 0
+				now := d.Now
+				d.Now = func() time.Time {
+					if n++; n >= 6 {
+						cancel()
+					}
+					return now()
+				}
+			}
+			s := a.settings()
+			s.Binary = tt.start
+			projects := []Project{a.project(), {Name: "other", Root: b.root}}
+			err := Run(ctx, projects, s, time.Millisecond, d)
+			if tt.wantStop {
+				if !errors.Is(err, ErrNewBinary) {
+					t.Fatalf("Run = %v, want ErrNewBinary", err)
+				}
+				for _, r := range []*rig{a, b} {
+					if got := ticked[r.root]; got != 1 {
+						t.Errorf("%s ticked %d times, want 1 (the first pass only)", r.root, got)
+					}
+					if got := r.count(KindDaemonRestart); got != 1 {
+						t.Errorf("%s has %d daemon_restart lines, want 1", r.root, got)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Run = %v, want nil", err)
+			}
+			if ticked[a.root] < 2 || ticked[b.root] < 2 {
+				t.Errorf("ticks = %v, want Run to keep going", ticked)
+			}
+			if a.count(KindDaemonRestart) != 0 || b.count(KindDaemonRestart) != 0 {
+				t.Error("a daemon_restart line was written without a change")
+			}
+		})
+	}
+}
+
 // TestTickNoLedger: a project with no ledger file launches nothing and tells
 // the owner once, over many ticks and a restart; once `afk ledger init` has
 // run, the loop answers its own item and starts the first task that is ready.
@@ -2386,6 +2479,160 @@ func TestTickShipStopsTheLine(t *testing.T) {
 		r.ticks(2, 5*time.Second)
 		if len(r.notified) != 1 || len(r.urgent) != 0 {
 			t.Errorf("ordinary %d, urgent %d; want the stop sent through Notify", len(r.notified), len(r.urgent))
+		}
+	})
+}
+
+const afterMergeStopReason = "the after-merge command ended with exit code 2"
+
+// afterMergeStopScript is a ship whose after-merge command fails: it merges,
+// moves to after_merge, then stops the line (marker first, then the saved
+// state), and waits while the marker is there. Its item is the one
+// internal/ship writes for a failed command: no word about a deploy.
+func afterMergeStopScript(r *rig) func(ShipRequest) ship.Outcome {
+	return func(req ShipRequest) ship.Outcome {
+		p := req.Progress
+		switch p.State {
+		case ship.NotStarted:
+			return saveAndWait(r.t, req, ship.Progress{State: ship.Merged, At: *r.clock, PR: 7, MergedSHA: "abc1234"})
+		case ship.Merged:
+			p.State, p.At = ship.AfterMerge, *r.clock
+			return saveAndWait(r.t, req, p)
+		case ship.AfterMerge:
+			if err := req.Stop(req.Entry.ID, afterMergeStopReason); err != nil {
+				r.t.Errorf("Stop = %v", err)
+			}
+			p.State, p.At = ship.Stopped, *r.clock
+			if err := req.Save(p); err != nil {
+				r.t.Errorf("Save = %v", err)
+			}
+			return ship.Outcome{Kind: ship.OutcomeStop, Reason: afterMergeStopReason, Progress: p,
+				Item: &ship.Item{Kind: ship.ItemFailure, Title: "The after-merge command failed after T1.1",
+					Body: "T1.1 was merged, but the after-merge command failed. Run `afk resume` once it is put right."}}
+		case ship.Stopped:
+			if daemonstate.Stopped(r.root) {
+				return ship.Outcome{Kind: ship.OutcomeWait, Reason: "the line is stopped", Progress: p}
+			}
+			return ship.Outcome{Kind: ship.OutcomeDone, Reason: "the stop was cleared", Progress: p}
+		}
+		r.t.Fatalf("afterMergeStopScript was handed the state %q", p.State)
+		return ship.Outcome{}
+	}
+}
+
+// loggedDecisions reads the decision log with its questions and choices.
+func (r *rig) loggedDecisions() []decisionlog.Entry {
+	r.t.Helper()
+	entries, err := decisionlog.Read(decisionlog.Path(r.root))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return entries
+}
+
+// TestTickShipAfterMergeStop: a failed after-merge command stops the line the
+// same way a deploy does, in words that are true of it. Load-bearing rows:
+//   - after_merge_stop: one item, not blocking, sent once at the highest
+//     priority, whose text and the line_stopped question carry the command's
+//     reason and never claim a deploy failed.
+//   - killed_before_the_item: the fallback item built from the marker alone
+//     (the ship only waits) is neutral too, and only raised once.
+//   - the ship log line: saving after_merge writes exactly one `ship` line
+//     choosing after_merge, with no code beyond the existing Save.
+func TestTickShipAfterMergeStop(t *testing.T) {
+	t.Run("after_merge_stop", func(t *testing.T) {
+		r := newRig(t, task("T1.1"), task("T1.2"))
+		r.shipFn = afterMergeStopScript(r)
+		r.toShipping()
+		r.ticks(2, 5*time.Second)
+		r.advance(5 * time.Second)
+		st := r.tick()
+
+		if st.Kind != KindLineStopped || st.Task != "T1.1" {
+			t.Errorf("state on stop = %+v, want line_stopped for T1.1", st)
+		}
+		wantContains(t, "the stopped reason", st.Reason, afterMergeStopReason, "afk resume")
+		items := r.items()
+		if len(items) != 1 {
+			t.Fatalf("items = %d, want 1 (logs: %v)", len(items), r.logs)
+		}
+		if it := items[0]; it.Kind != "failure" || it.Task != "T1.1" || it.Blocking {
+			t.Errorf("item = %+v, want a failure for T1.1 that does not block", it)
+		}
+		if len(r.urgent) != 1 || r.urgent[0].ID != items[0].ID || len(r.notified) != 0 {
+			t.Errorf("urgent %d, ordinary %d; want the item sent once, at the highest priority", len(r.urgent), len(r.notified))
+		}
+		r.ticks(10, 5*time.Second)
+		if len(r.items()) != 1 || len(r.urgent) != 1 {
+			t.Errorf("items %d, urgent %d after more ticks; want 1 and 1", len(r.items()), len(r.urgent))
+		}
+		r.wantStatus("T1.1", ledger.Shipping)
+
+		var stops []decisionlog.Entry
+		for _, e := range r.loggedDecisions() {
+			if e.Kind == "line_stopped" {
+				stops = append(stops, e)
+			}
+		}
+		if len(stops) != 1 {
+			t.Fatalf("line_stopped lines = %d, want 1", len(stops))
+		}
+		wantContains(t, "the line_stopped line", stops[0].Question+"\n"+stops[0].Chosen,
+			"The line was stopped after T1.1: "+afterMergeStopReason+". What now?", afterMergeStopReason, "afk resume")
+		if strings.Contains(strings.ToLower(stops[0].Question+stops[0].Chosen), "deploy") {
+			t.Errorf("line_stopped line %+v speaks of a deploy", stops[0])
+		}
+	})
+
+	t.Run("killed_before_the_item", func(t *testing.T) {
+		r := newRig(t, task("T1.1"), task("T1.2"))
+		r.shipFn = afterMergeStopScript(r)
+		r.setEntry(ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Branch: "t1-1", Attempts: 1,
+			StartedAt: stamp(*r.clock), Ship: "stopped", ShipAt: stamp(*r.clock), PR: 7, MergedSHA: "abc1234"})
+		if err := daemonstate.Stop(r.root, "T1.1", afterMergeStopReason, *r.clock); err != nil {
+			t.Fatal(err)
+		}
+		r.ticks(5, 5*time.Second)
+		items := r.items()
+		if len(items) != 1 || len(r.urgent) != 1 {
+			t.Fatalf("items %d, urgent %d; want the owner told once (logs: %v)", len(items), len(r.urgent), r.logs)
+		}
+		if items[0].Blocking || items[0].Kind != "failure" || items[0].Task != "T1.1" {
+			t.Errorf("item = %+v", items[0])
+		}
+		text := items[0].Title + "\n" + items[0].Body
+		wantContains(t, "the item", text, "The line is stopped after T1.1", afterMergeStopReason, "afk resume")
+		if strings.Contains(strings.ToLower(text), "deploy") {
+			t.Errorf("item claims a deploy: %q", text)
+		}
+		for _, e := range r.loggedDecisions() {
+			if e.Kind == "line_stopped" && strings.Contains(strings.ToLower(e.Question+e.Chosen), "deploy") {
+				t.Errorf("line_stopped line %+v speaks of a deploy", e)
+			}
+		}
+	})
+
+	t.Run("no_reason_is_neutral", func(t *testing.T) {
+		body := stopLostBody("T1.1", "  ")
+		wantContains(t, "the body", body, "the ship gave no reason", "Look at what went wrong", "afk resume")
+		if strings.Contains(strings.ToLower(body), "deploy") {
+			t.Errorf("body claims a deploy: %q", body)
+		}
+	})
+
+	t.Run("ship_log_line", func(t *testing.T) {
+		r := newRig(t, task("T1.1"))
+		r.shipFn = afterMergeStopScript(r)
+		r.toShipping()
+		r.ticks(2, 5*time.Second)
+		var got []decisionlog.Entry
+		for _, e := range r.loggedDecisions() {
+			if e.Kind == "ship" && e.Chosen == "after_merge" {
+				got = append(got, e)
+			}
+		}
+		if len(got) != 1 {
+			t.Errorf("ship lines choosing after_merge = %d, want 1 (kinds: %v)", len(got), r.decisions())
 		}
 	})
 }
