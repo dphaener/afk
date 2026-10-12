@@ -740,3 +740,115 @@ All three checks passed with no blocker or major finding, so no critic ran. Mino
 - Strip GitHub's colour codes from the log tail in `ci-failure.md`.
 - Record tokens for a session that finishes while its task is parked.
 - List `ledger init` in the usage text of `afk` with no arguments.
+
+## T0.5
+
+T0.5 makes every test in `internal/host` and `internal/ui` reliable. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The survey (A1).** Before planning, each package was run many times with the race detector: 20 runs of `internal/host` without load, 20 with eight busy loops on four CPUs, and 10 of `internal/ui -short`, plus about 2,000 runs of single tests. Five host tests failed at least once; no `internal/ui` test did. The full 100, 50 and 50 runs of the acceptance are run once, after the fixes, and double as the last survey.
+- **The SIGTERM fault is fixed in the host (A2).** A client that connects just as the session ends could be told "connection dropped" when the truth is "session ended". A user can hit that, so the host is changed: a connection that arrived before shutdown but was not yet attached is told the session ended. The wait for it is bounded, the message format does not change, and the test keeps its assertions.
+- **The stuck-child tests wait for an acknowledgement (A3).** The test program checks its switches every 10ms, so one more heartbeat could arrive after the test thought output had stopped. The program now says when it has seen a switch change, and the test waits for that in place of a fixed 200ms pause.
+- **The input-flood test (A4).** It sent a fixed amount of input and expected the host to drop some. When the terminal took all of it, nothing was dropped. The task proves that with a run first, then makes the test reach a drop whatever the terminal's capacity.
+- **The refused-host test (A5).** It checked for the first host's `host.json` before that host had written it. It now waits for the file first.
+- **Pauses that never failed stay (A6).** Other tests use fixed pauses too. None failed in the survey, and the master plan says to prove a cause before changing anything, so they are listed below and left alone.
+- **`internal/ui` is unchanged (A7)** unless the acceptance run shows a failure.
+- **Who runs the long runs (A8).** The acceptance runs take about four and a half hours. A task agent must not hold a command longer than about four minutes, so the conductor runs them as one background command after the fixes and before the review.
+- **Shipping (A9).** As the session description asks: push, open a draft PR, mark it ready, wait for CI and merge on green, with a merge commit. This would normally have gone to the owner; the master plan's bootstrap section prescribes it.
+- **Test first for the host fix (A10).** A test forces the bad ordering on purpose and must fail on the old code.
+- **Prerequisites (A11).** Nothing had to be in place before the work started.
+
+### The survey
+
+Before planning, `internal/host` and `internal/ui` were run many times with the race detector, with and without eight busy loops standing in for a loaded machine. Five host tests failed at least once. No `internal/ui` test did. "Alone" means the one test run again and again; "package runs" means the whole `internal/host` package run once per count.
+
+| Test | Failing line and text | Rate |
+|---|---|---|
+| `TestServeSIGTERMBehavesLikeExit` | `host_test.go:442`: `reading frame header: EOF` or `connection reset by peer` | 163 of 1600 alone; 3 of 20 package runs under load |
+| `TestStuckChildStopsWritingOutputWhenToldTo` | `stuckchild_test.go:303`: `output grew by 17 bytes after stopWriting` | 37 of 200 alone; 5 of 20 package runs |
+| `TestStuckChildStopsBothWhenToldTo` | `stuckchild_test.go:386`: `output grew while both switches were off` | 1 of 20 package runs under load |
+| `TestServeStaysLiveWhenTheChildStopsReadingItsInput` | `host_test.go:884`: the host log never contained `bytes of input` | 7 of 40 alone; 2 of 40 package runs |
+| `TestServeRefusesWhenALiveHostIsListening` | `host_test.go:517`: `stat .../host.json: no such file or directory` | 1 of 20 package runs under load |
+
+`internal/ui -short` passed 16 of 16 runs, so nothing in `internal/ui` was changed. The line numbers above are from the unchanged code; the tests have moved since. Each fix task also saved its own "before" run, which gives a second, independent count (below). The 500, 200, 100 and 50 acceptance runs are in the last section.
+
+### The causes
+
+- **`TestServeSIGTERMBehavesLikeExit`: a real fault in the host.**
+  - *What happened, step by step.* A client dials the host's socket. The dial succeeds as soon as the kernel has queued the connection, which is before the host has even looked at it, so the client believes it is connected. If the host starts shutting down in that gap, the connection is in one of two places. Either the host's accept loop has taken it and is holding it, not yet handed to the serve loop, which has stopped listening: the old code then closed it with nothing in front of the close. Or it is still waiting in the listen queue: it was reset when the host closed the listener. The client reads a bare close or a reset as "connection dropped", when the truth is "the session ended".
+  - *How it was proven.* 33 of 500 runs of the test failed on the unchanged host (`.afk/t0-5/evidence/w1-t1-before.txt`): 30 with `reading frame header: EOF` and 3 with `connection reset by peer`. The two texts are the two places a waiting connection can be: `EOF` is the bare close in the accept loop, the reset is a connection still in the queue when the listener closed. The new test below forces both placements and fails on the old host in all four of its rows.
+  - *Where the fault was.* In the host (`internal/host/host.go`). The test was right to expect an Exit frame.
+  - *Could a user have hit it?* Yes. A user who opens or attaches to a session at the moment it ends, or by a signal, could see `afk attach: connection dropped` and exit code 13, where the truth is "the session ended" and code 11. The session itself was not harmed; it was ending anyway. The rate for a real user is unmeasured: the test hits it about 1 run in 15 to 1 in 10 because it dials on purpose just before shutdown.
+  - *What the fix does.* On shutdown the host now stops its accept loop, tells the connection that loop was holding that the session ended (an Exit frame instead of the bare close), then takes every connection still waiting in the listen queue and tells each the same. The flush of all these Exit frames, the attached client's included, shares one wait of at most `clientFlushGrace` (250ms). The frame format is unchanged, and so is the bare close the host sends in answer to a `Detach`, which is how a client tells "detached" from "ended". `TestServeSIGTERMBehavesLikeExit` is unchanged and keeps its assertions.
+  - *Which test pins it.* `TestServeTellsUnattachedClientsTheSessionEnded`, new, in `internal/host/host_test.go`. It holds a connection inside the accept loop through a test seam (`afterAccept`, which does nothing in the shipped host) and leaves others in the listen queue, then starts shutdown three ways: a client's Exit request, a signal, and the child exiting on its own. It was written first and failed on the old host (`w1-t1-before.txt`). On the fixed host it passed 100 of 100. Two mutation checks, each run with `-count=1`, turned it red: removing the queue drain fails every "still in the listen backlog" client and none of the "held by the accept loop" ones; putting the bare close back in the accept loop fails the held client in all four rows.
+  - *After the fix.* `TestServeSIGTERMBehavesLikeExit` passed 500 of 500, and 200 of 200 under eight busy loops (`w1-t1-after.txt`). One whole-package run followed; the only failures were the two stuck-child tests below, which the next task fixed.
+
+- **`TestStuckChildStopsWritingOutputWhenToldTo` and `TestStuckChildStopsBothWhenToldTo`: a fault in the tests.**
+  - *What happened, step by step.* The test program (the "stuck child") checks its on/off switches once every 10ms. A test flips a switch, sleeps a fixed 200ms and then expects the output to stop growing. But the program could be between two checks when the switch flipped, so it wrote one more heartbeat (17 bytes) after the test believed it had stopped, and the test saw the output grow. A second race hid behind the first: heartbeats the program had already written could still be sitting in the terminal's buffer and be read by the test's collector later.
+  - *How it was proven.* 100 runs of the two tests on the unchanged code: 14 failures of the first (`output grew by 17 bytes after stopWriting`) and 16 of the second (`output grew while both switches were off`) (`w1-t2-before.txt`). Exactly 17 bytes is one heartbeat.
+  - *Where the fault was.* In the tests. The host and the real agent are not involved.
+  - *Could a user have hit it?* No. The stuck child exists only in the tests, and the host code it exercises was not at fault.
+  - *What the fix does.* The program now says when it has seen a switch change: it writes an acknowledgement file after its own write loop has gone round, carrying how many heartbeats it has written. `setStuckChildFlag` waits for that, and for the output to hold that many heartbeats, in place of the fixed pause. All callers wait now, including the liveness tests. The `20 * stuckChildPollInterval` pause stays in the two tests, but only as the window in which a stray write would have to show up; it no longer synchronises anything, and it was not lengthened.
+  - *Which test pins it.* The two tests themselves. After the change: 200 of 200 runs of the three fast stuck-child tests, 200 of 200 of the input-consuming one (run in three parallel chunks, because it holds a 2s window per run), and 100 of 100 and 100 of 100 under load (`w1-t2-after.txt`).
+
+- **`TestServeStaysLiveWhenTheChildStopsReadingItsInput`: a fault in the test.**
+  - *What happened, step by step.* The test makes the child stop reading its input, then sends a fixed 256 chunks of input (about 22KB) and expects the host to drop some and say so in its log (`bytes of input`). The host only drops input when its own queue of 64 chunks is full, and that needs the terminal to be full first, with the host's writer stuck in a write. In the failing runs the terminal and the queue together took the whole flood, so nothing was dropped and the line was never logged. The host was behaving correctly.
+  - *How it was proven.* 15 of 40 runs of the unchanged test failed (`w1-t3-before.txt`), and none of the 15 failing host logs has any `dropped` or `discarding` line, so the queue never overflowed. The host logs a drop only when the queue is full, and always logs the first one.
+  - *Where the fault was.* In the test: it assumed a fixed flood size always overflows, which depends on how much the terminal will take.
+  - *Could a user have hit it?* No. A user who types into a session whose child has stopped reading gets the behaviour the test is meant to check: the host stays live. The test's own flood size was the only thing that varied.
+  - *What the fix does.* A new helper, `floodUntilInputDropped`, sends chunks until the host's log shows the drop, bounded by the test's time budget, and every assertion after the flood is unchanged. There is no sleep, retry or longer timeout. A bigger fixed flood was rejected (see below).
+  - *Which test pins it.* The test itself: 100 of 100 runs, and 50 of 50 under load (`w1-t3-after.txt`). This task did not measure how much the terminal actually holds.
+
+- **`TestServeRefusesWhenALiveHostIsListening`: a fault in the test.**
+  - *What happened, step by step.* The test starts a first host and a second one on the same socket, and checks that the refused second host left the first one's `host.json` in place. A host reports ready when its socket accepts connections, but writes `host.json` only after it has started the child, so the test could look for the file before the first host had written it, and report "the refused host removed it" when it had never been there.
+  - *How it was proven.* The failure is rare (1 in 20 loaded package runs), so it was proven by forcing it, not by reproducing it under load: with a temporary 300ms delay before `host.json` is written, 3 of 3 runs failed with `no such file or directory` (`w1-t4-before.txt`). The delay was removed by hand afterwards. The refusal path also returns before the code that removes the host's own file is registered, so the refused host cannot be removing the first one's.
+  - *Where the fault was.* In the test.
+  - *Could a user have hit it?* No. The host's refusal behaved correctly in every run seen.
+  - *What the fix does.* The test waits for the first host's `host.json` to exist and parse (`awaitMeta`) before starting the second host.
+  - *Which test pins it.* The test itself: 200 of 200 runs, and 200 of 200 under load (`w1-t4-after.txt`). The fixed test was not re-run against the 300ms delay, so the proof that it now waits is the code and the clean runs, not a red-to-green run.
+
+### Decided while building
+
+- **A listener deadline cannot drain the queue.** The work plan offered a deadline as a way to bound the drain. The `net` package's accept checks the deadline before it asks the kernel (`internal/poll`'s `FD.Accept` calls `prepareRead` first), so an expired deadline fails without looking, and a future one makes every shutdown wait that long on an empty queue, which also makes the result depend on the wait being long enough under load. The host asks the kernel directly with a non-blocking `accept(2)` (`acceptQueued`), which returns the moment the queue is empty. An expired deadline is still used for one thing: waking the accept loop out of its parked `Accept` so it can be stopped first.
+- **Rejected: a marker connection the host dials to itself** to learn when the queue was empty. If the socket file had been removed and a new host had bound the same path (a temp-file cleaner on a long session), the marker would have connected to the other host and stolen its client.
+- **How long shutdown can take.** Every step is bounded by `clientFlushGrace` (250ms): the wait for the accept loop to stop (only if it is starved), the drain (only if a client keeps dialing in a loop) and the flush (as before). Because the flush is shared, it does not grow with the number of clients. A connection missed because a bound ran out is reset as before, and attach reports it as a drop, which discovery then corrects. A whole `-race` package run still took about 61 seconds after the fix (60.7s), so shutdown did not get slower. The new test takes about 0.16s a run.
+- **Connections that arrive after shutdown began** but before the drain finishes also get an Exit frame. That is true for them too, so no attempt is made to tell them apart.
+- **The test seam is a package variable, `afterAccept`,** copied once into the host's runtime at construction, the same way `livenessTiming` is. A test sets it before starting the host and restores it in a cleanup registered before the host starts.
+- **Edits outside the line ranges the work plan listed.** The plan's ranges for the host fix were where to read; the fix also needed the host's runtime struct and constructor, a new `clientConn.end()` beside `endAndWait`, and the new test and its helpers. Files touched: `internal/host/host.go` and `internal/host/host_test.go`. `protocol.go` and `internal/ui` are untouched.
+- **A harmless extra log line.** During shutdown a second host probing the socket (it dials and closes at once) can now produce one extra `writing Exit frame to client: broken pipe` line in `host.log`. It is only a log line.
+- **The stuck-child acknowledgement covers the write switch only (A3).** A fixture blocked inside a read cannot look at a flag, so waiting for a read acknowledgement would deadlock, and no test asserts on the instant the program stops reading.
+- **The input-flood test sends until the drop is logged (A4),** not a bigger fixed flood, because no upper bound on what the terminal absorbs was proven and the moment the fixture stops reading is not synchronised with the test.
+- **`awaitMeta` for the refused-host test (A5).** It reads `host.json` the way a reader does, so it waits for a file that parses, not merely one that exists. Only the forced-delay proof was done, as the task allowed for a failure this rare.
+- **The execution engine changed part-way.** The first task ran under the workflow script and the rest as plain sub-agents, at the owner's request, after a quoting bug in the work plan's CPU-load command (`trap "kill $P"` expanded `$P` while it was empty) left busy loops running and hung a command. The plan's Verification Strategy now has the corrected command (`\$P`, and the loops redirected to `/dev/null`).
+- **Not verified.** The host fix was run on Linux only. It uses `syscall.Accept`, `syscall.ForkLock` and `net.FileConn`, which exist on macOS too, but nobody has run it there yet; the owner's next local `make check` is the first macOS run. Every fix has a "before" run on the old code and clean "after" runs, except that the refused-host failure was shown by a forced 300ms delay, not by reproducing it under load, and the fixed test was not re-run against that delay. No built binary was driven by hand: the user-visible symptom (`afk attach: connection dropped`, exit 13, for a session that ended) was reasoned from the code and the tests, not reproduced with a terminal.
+- **README unchanged.** It already says exit code 11 is "the session ended" and 13 is "the host closed the connection without the session ending", and lists the three attach outcomes. After the fix a client in this window gets 11 where it used to get 13, which matches what the README says it should.
+
+### Pauses left alone
+
+These fixed sleeps are still in the tests. None failed in the survey, and the master plan says to prove a cause before changing anything, so they were not touched (A6). Line numbers are from the files as they stand after this task's fixes.
+
+- `internal/host/host_test.go:323`: 50ms for the writer goroutine to take a frame and block in a write that nobody is reading.
+- `internal/host/host_test.go:397`: 200ms after a detach, to check the host did not exit.
+- `internal/host/stuckchild_test.go:380` and `:466`: `20 * stuckChildPollInterval`, the window in which a stray write would have to show up. These are the pauses the stuck-child fix kept, now only as observation windows (the work plan listed one line here; there are two).
+- `internal/host/liveness_test.go:506`, `:539`, `:574`, `:665`: `3 * probeCycle`, the time given for probes to run before checking nothing happened.
+- `internal/host/client_test.go:710`: a deliberate delay before a test listener appears.
+- `internal/host/backlog_test.go:127`: 1ms to read slowly during a flood, on purpose.
+- `internal/ui/hostpane_test.go:149`: 50ms for a write to park inside the connection.
+- `internal/ui/focusrequest_test.go:1045`: `cmdDeadline`, 300ms, how long the test helper waits on one command from a batch.
+
+### Acceptance runs
+
+Run once, after all the fixes, with race-built test binaries (`go test -race -c`), each started from its package directory. Load is eight busy loops on the VM's four CPUs. The commands and full output are in `.afk/t0-5/evidence/acceptance/` (`run.sh` is the script, `summary.txt` the counts).
+
+| Run | Result |
+|---|---|
+| `TestServeSIGTERMBehavesLikeExit`, 500 runs | 500 of 500 passed |
+| `TestServeSIGTERMBehavesLikeExit`, 200 runs under load | 200 of 200 passed |
+| `internal/host`, 100 package runs | 100 of 100 passed |
+| `internal/ui -short`, 50 package runs | 50 of 50 passed |
+| `internal/host`, 50 package runs under load | 50 of 50 passed |
+
+- **The 100 host runs and the 50 `internal/ui` runs ran at the same time,** to save about an hour and a half. Each was the other's load, so neither is a quiet-machine run; that is harsher than the acceptance asks for, not easier.
+- **The conductor ran these, not a task agent (A8).** They took about two hours and forty minutes.
+- **`make check`** is run by the hands-on QA review check and by CI.

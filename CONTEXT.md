@@ -70,3 +70,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Owner task**: a master-plan task whose title carries `(owner)` or `(owner; …)`; the daemon never starts an agent for it and asks the owner to confirm it in the inbox.
 - **Ledger init**: `afk ledger init`, which creates a project's ledger, optionally marking the tasks already finished; without a ledger the daemon starts nothing.
 - **Required-env check**: before a merge, looking in the branch's changes for a newly required environment variable, and parking until the owner has set it.
+- **Attached**: a client the session host has registered as the session's current client; a connection the host has accepted but not yet registered is not attached.
+- **Stress run**: running one test or a whole test package many times in a row, with and without CPU load, to find a test that fails only sometimes.
+- **Flaky test**: a test that sometimes fails although nothing it checks is broken.

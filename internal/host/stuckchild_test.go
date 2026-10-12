@@ -2,7 +2,6 @@ package host
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,6 +52,16 @@ const (
 
 	stuckChildNoReadFlag  = "no-read"
 	stuckChildNoWriteFlag = "no-write"
+
+	// stuckChildAckFile is where the write loop reports the value of
+	// stuckChildNoWriteFlag it has acted on, as "stopped <n>" or "writing <n>" where n
+	// is how many heartbeats it has written in total. Without it a test can
+	// only guess how long the fixture takes to notice a flag change (it polls
+	// once per stuckChildPollInterval), and a guess that is too short lets one
+	// last heartbeat land after the test believes writing has stopped.
+	stuckChildAckFile    = "ack-no-write"
+	stuckChildAckStopped = "stopped"
+	stuckChildAckWriting = "writing"
 
 	// stuckChildBanner is emitted once at startup, unconditionally, so the
 	// attach path always has something to render before any test-driven
@@ -113,15 +122,73 @@ func stuckChildMain() int {
 // stuckChildWriteLoop emits a heartbeat on every tick that
 // stuckChildNoWriteFlag is not set. It never touches stdin, so it keeps
 // running at its own cadence regardless of what the read loop is doing.
+//
+// Each time the observed value of the flag differs from the last one
+// acknowledged, the loop records it in stuckChildAckFile. The acknowledgement
+// is written after that iteration's write (or deliberate non-write) and by the
+// same goroutine, so an "on" acknowledgement cannot be followed by a
+// heartbeat: the iteration that saw the flag set wrote nothing, and every
+// earlier write had already returned. The read loop has no equivalent: it can
+// be blocked inside Read, where it cannot look at a flag at all, and no test
+// asserts on the moment it stops consuming.
 func stuckChildWriteLoop(ctrlDir string) {
+	var ticks int
+	acked := ""
 	for {
-		if !stuckChildFlagSet(ctrlDir, stuckChildNoWriteFlag) {
+		state := stuckChildAckWriting
+		if stuckChildFlagSet(ctrlDir, stuckChildNoWriteFlag) {
+			state = stuckChildAckStopped
+		} else {
 			if _, err := os.Stdout.WriteString(stuckChildHeartbeat); err != nil {
 				return
 			}
+			ticks++
+		}
+		if state != acked && ctrlDir != "" {
+			if err := stuckChildWriteAck(ctrlDir, state, ticks); err != nil {
+				return
+			}
+			acked = state
 		}
 		time.Sleep(stuckChildPollInterval)
 	}
+}
+
+// stuckChildWriteAck publishes the acknowledgement by rename, so a test
+// polling the file never reads a half-written one.
+func stuckChildWriteAck(ctrlDir, state string, ticks int) error {
+	tmp := filepath.Join(ctrlDir, stuckChildAckFile+".tmp")
+	if err := os.WriteFile(tmp, []byte(fmt.Sprintf("%s %d", state, ticks)), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(ctrlDir, stuckChildAckFile))
+}
+
+// awaitStuckChildWriteAck blocks until the fixture reports the write switch in
+// the wanted state, and returns how many heartbeats it had written by then. It
+// is bounded by testBudget, like every other wait in this package. A stale
+// acknowledgement for the opposite state cannot satisfy it, because the file
+// is only rewritten when the state changes.
+func awaitStuckChildWriteAck(t *testing.T, ctrlDir string, stopped bool) int {
+	t.Helper()
+	want := stuckChildAckWriting
+	if stopped {
+		want = stuckChildAckStopped
+	}
+	path := filepath.Join(ctrlDir, stuckChildAckFile)
+	deadline := time.Now().Add(testBudget)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil {
+			var state string
+			var ticks int
+			if _, err := fmt.Sscanf(string(data), "%s %d", &state, &ticks); err == nil && state == want {
+				return ticks
+			}
+		}
+		time.Sleep(testPollStep)
+	}
+	t.Fatalf("the stuckchild fixture never acknowledged the write switch as %q", want)
+	return 0
 }
 
 // stuckChildReadLoop is the switch this fixture exists for: while
@@ -244,16 +311,25 @@ func (sc *stuckChild) resumeWriting() { sc.setFlag(stuckChildNoWriteFlag, false)
 
 func (sc *stuckChild) setFlag(name string, on bool) {
 	sc.t.Helper()
-	path := filepath.Join(sc.ctrlDir, name)
-	if on {
-		if err := os.WriteFile(path, nil, 0o644); err != nil {
-			sc.t.Fatalf("setting flag %s: %v", name, err)
-		}
+	setStuckChildFlag(sc.t, sc.ctrlDir, name, on)
+	if name != stuckChildNoWriteFlag || !on {
 		return
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		sc.t.Fatalf("clearing flag %s: %v", name, err)
+	// The fixture has acknowledged that it stopped writing, so every heartbeat
+	// it will ever write has already left its stdout. The drain goroutine
+	// reads the PTY master asynchronously though, so those bytes may still be
+	// in the kernel's buffer: wait until the output holds exactly as many
+	// heartbeats as the fixture says it wrote, or a late-drained one would
+	// look like growth after the stop.
+	ticks := awaitStuckChildWriteAck(sc.t, sc.ctrlDir, true)
+	deadline := time.Now().Add(testBudget)
+	for time.Now().Before(deadline) {
+		if bytes.Count([]byte(sc.out.String()), []byte(stuckChildHeartbeatMarker)) >= ticks {
+			return
+		}
+		time.Sleep(testPollStep)
 	}
+	sc.t.Fatalf("the stuckchild output never held the %d heartbeats the fixture wrote before stopping", ticks)
 }
 
 // awaitOutput polls the accumulated PTY output until want appears.
@@ -295,6 +371,11 @@ func TestStuckChildStopsWritingOutputWhenToldTo(t *testing.T) {
 	sc.awaitOutput(t, stuckChildHeartbeatMarker)
 
 	sc.stopWriting()
+	// stopWriting returns only once the fixture has acknowledged the switch
+	// and the PTY has been drained of everything it wrote before that, so any
+	// growth from here on is a heartbeat written after the stop. The sleep
+	// below is no longer what synchronises with the fixture; it is only the
+	// window in which a stray write would have to show up.
 	before := len(sc.out.String())
 	time.Sleep(20 * stuckChildPollInterval)
 	after := len(sc.out.String())
@@ -378,8 +459,9 @@ func TestStuckChildStopsBothWhenToldTo(t *testing.T) {
 	pid := readPIDFile(t, sc.pidFile)
 
 	sc.stopReading()
-	sc.stopWriting()
+	sc.stopWriting() // returns once the fixture has acknowledged it, see setFlag
 
+	// As above: the acknowledgement synchronises, the sleep only observes.
 	before := len(sc.out.String())
 	time.Sleep(20 * stuckChildPollInterval)
 	if len(sc.out.String()) != before {
