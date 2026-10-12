@@ -17,9 +17,12 @@ ExecStart=%h/bin/afk daemon
 # they are installed on your machine.
 #Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
-# A bad config.toml makes the daemon exit 1. Waiting 30 seconds before each
-# restart keeps that from flooding the journal while you fix the file.
-Restart=on-failure
+# The daemon exits 0 on purpose when it finds a new version of itself on disk
+# (after `make install`), and only Restart=always starts it again after a clean
+# exit. Waiting 30 seconds between starts still keeps a bad config.toml (the
+# daemon exits 1) from flooding the journal while you fix the file.
+# `systemctl --user stop afkd` still stops it for good.
+Restart=always
 RestartSec=30
 
 # Session hosts must outlive the daemon. The default (control-group) would kill

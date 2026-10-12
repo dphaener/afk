@@ -28,6 +28,12 @@ const HandBackFile = "ci-failure.md"
 // commit the file was written for. handBackHead reads it back.
 const handBackHeadPrefix = "Head commit: "
 
+// AfterMergeLog is where the after-merge command's output is kept, relative to
+// the project's main checkout. It is here only so a stop item can tell the
+// owner where to look: the file is written by whoever fills Deps.RunAfterMerge,
+// and that caller's path must stay this one.
+const AfterMergeLog = ".afk/build/after-merge.log"
+
 // The kinds of item a ship raises. They are the inbox's words, repeated here
 // so this package does not import the inbox: the daemon turns an Item into an
 // inbox item.
@@ -55,8 +61,8 @@ type Request struct {
 
 // Deps is everything Advance touches outside its arguments. Every field is
 // required, with one exception: Git and GH may be nil when the saved state is
-// DeployHealthy or Stopped, because Advance calls neither there (the session's
-// worktree may already be gone).
+// AfterMerge, DeployHealthy or Stopped, because Advance calls neither there
+// (the session's worktree may already be gone).
 type Deps struct {
 	Git Git
 	GH  GH
@@ -87,8 +93,34 @@ type Deps struct {
 	MarkReadFailure  func(time.Time) error
 	ClearReadFailure func() error
 	Now              func() time.Time
-	// Save records the progress. It is the only persistence Advance has.
+	// Save records the progress. It is the only persistence Advance has for
+	// the ship's state; the after-merge run record below is the one other
+	// thing it writes.
 	Save func(Progress) error
+
+	// The four fields below are the after-merge command. They are separate on
+	// purpose: the start mark, the command and the finish mark are three
+	// moments a kill can fall between, and each has its own answer.
+
+	// AfterMergeRecord returns the run record on disk, whoever it belongs to:
+	// the task and merge commit it was written for, and how the run stands.
+	// ok is false when there is no record, and a damaged record is no record.
+	// run.Found is not read; Advance sets it by comparing the task and the
+	// merge commit with its own.
+	AfterMergeRecord func() (task, mergedSHA string, run AfterMergeRun, ok bool)
+	// MarkAfterMerge writes the run record, replacing whatever was there. A
+	// run with Finished false is the start mark, written before the command
+	// starts; the same call with Finished true records how it ended.
+	// startedAt is passed both times because the record is written whole.
+	MarkAfterMerge func(task, mergedSHA string, run AfterMergeRun, startedAt time.Time) error
+	// RunAfterMerge runs the command in the project's main checkout and waits
+	// for it, for at most timeout. It has the shape of this package's own
+	// RunAfterMerge without the folder and the log path, which the caller
+	// knows and Advance does not. An error means the command never ran.
+	RunAfterMerge func(command string, timeout time.Duration) (exitCode int, timedOut bool, err error)
+	// AfterMergeTail returns the end of the command's output for the stop
+	// item, "" when there is none.
+	AfterMergeTail func() string
 }
 
 // OutcomeKind says what the daemon should do after one call of Advance.
@@ -143,6 +175,12 @@ type Outcome struct {
 //     old state, and its read finds the action already done (the remote head
 //     equals the local one, a pull request exists, the pull request is
 //     merged), so it saves and does not act a second time.
+//
+// The after-merge command is the exception to 3, because a command line
+// leaves nothing on the outside to read back. Its trace is a run record
+// written by Advance itself, the start before the command and the end after
+// it (see afterMerge), and "a record exists" is the read that stops a second
+// run.
 //
 // A read that fails changes nothing and is tried again at the next poll. An
 // action that fails parks the task with an item carrying the error.
@@ -199,9 +237,10 @@ type advance struct {
 	cfg projectconfig.Ship
 }
 
-// readsGit reports whether a state's rules read git or GitHub. DeployHealthy
-// and Stopped do not: by then the session may be cleaned up, and Git and GH
-// may be nil. An unknown state reads nothing either; Decide parks it.
+// readsGit reports whether a state's rules read git or GitHub. AfterMerge,
+// DeployHealthy and Stopped do not: by then the session may be cleaned up,
+// and Git and GH may be nil. An unknown state reads nothing either; Decide
+// parks it.
 func readsGit(s State) bool {
 	switch s {
 	case NotStarted, Committed, Pushed, PROpen, HandedBack, CIGreen, Merged:
@@ -212,10 +251,12 @@ func readsGit(s State) bool {
 
 // polls reports whether a state is one that is waited in while GitHub is
 // asked again and again, and so is held to PollEvery. NotStarted and
-// Committed read once and move on, so they are not.
+// Committed read once and move on, so they are not. AfterMerge asks GitHub
+// nothing, but it is waited in while the health URL is asked, and it is held
+// to the same rate so a deploy is polled no more often there than in Merged.
 func polls(s State) bool {
 	switch s {
-	case Pushed, PROpen, HandedBack, CIGreen, Merged:
+	case Pushed, PROpen, HandedBack, CIGreen, Merged, AfterMerge:
 		return true
 	}
 	return false
@@ -363,7 +404,11 @@ func (a *advance) gather() (Facts, error) {
 			return f, err
 		}
 		f.RemoteSHA, f.RemoteFound = remote, found
-		if found || !a.cfg.Deploys || a.cfg.HealthURL == "" {
+		// With an after-merge command the deploy is not looked at from this
+		// state at all: Decide moves to AfterMerge first, and the health URL
+		// is first asked after the command, which is usually what brings the
+		// new version up.
+		if found || a.cfg.AfterMerge != "" || !a.cfg.Deploys || a.cfg.HealthURL == "" {
 			return f, nil
 		}
 		// The error is dropped on purpose (see Deps.Health), and its text is
@@ -373,10 +418,42 @@ func (a *advance) gather() (Facts, error) {
 		f.HealthChecked = true
 		f.Healthy = healthy && err == nil
 
+	case AfterMerge:
+		f.AfterMerge = a.afterMergeRun()
+		// The health URL is asked only where Decide's deploy rules will run:
+		// after a command that ended well, or when there is no command to
+		// run any more. Asking while the command is still due would be a
+		// wasted call, and after a failure the line stops whatever it says.
+		run := f.AfterMerge
+		ranWell := run.Found && run.Finished && !run.TimedOut && run.ExitCode == 0
+		nothingToRun := !run.Found && a.cfg.AfterMerge == ""
+		if (ranWell || nothingToRun) && a.cfg.Deploys && a.cfg.HealthURL != "" {
+			// The error is dropped for the same reasons as in Merged.
+			healthy, err := a.d.Health(a.cfg.HealthURL)
+			f.HealthChecked = true
+			f.Healthy = healthy && err == nil
+		}
+
 	case Stopped:
 		f.StopMarker = a.d.StopMarker()
 	}
 	return f, nil
+}
+
+// afterMergeRun reads the run record and answers for this ship only. A record
+// written for another task, or for an earlier merge of this one, is the last
+// ship's leftover (the file is one per project and is never deleted) and must
+// read as "the command has not been started": taking it for this ship's would
+// skip the command, or stop the line for a failure that was already dealt
+// with. An empty merge commit never matches, so two records that both lack
+// one are not mistaken for each other.
+func (a *advance) afterMergeRun() AfterMergeRun {
+	task, sha, run, ok := a.d.AfterMergeRecord()
+	if !ok || sha == "" || task != a.r.Task || sha != a.r.Progress.MergedSHA {
+		return AfterMergeRun{}
+	}
+	run.Found = true
+	return run
 }
 
 func (a *advance) findPR(f *Facts) error {
@@ -593,8 +670,11 @@ func (a *advance) carryOut(step Step, f Facts) Outcome {
 		// Nothing to save, for the same reason as the base update.
 		return a.wait(step.Reason)
 
+	case StepAfterMerge:
+		return a.afterMerge()
+
 	case StepStop:
-		return a.stop(step)
+		return a.stop(step, f)
 	}
 	return a.wait(fmt.Sprintf("the ship decided on %q, which this version cannot carry out", string(step.Kind)))
 }
@@ -680,32 +760,143 @@ func (a *advance) handBackText(step Step, f Facts, log string) string {
 	return b.String()
 }
 
+// afterMerge runs the project's after-merge command: start mark, command,
+// finish mark. Nothing is saved to the ledger; the ship stays in AfterMerge
+// and the next call reads the record.
+//
+// The command must never run twice for one merge, and it leaves no trace of
+// its own to read back, so the record is written on both sides of it. A kill
+// at each point then has one reading:
+//
+//   - before the start mark: no record, so the next call runs the command,
+//     for the first time.
+//   - after the start mark, before or while the command runs: a started,
+//     unfinished record. Nobody can know whether the command ran or how far
+//     it got, so Decide stops the line and the owner looks.
+//   - after the finish mark: the record says how it ended, and the next call
+//     carries on from there.
+//
+// That is why a start mark that cannot be written runs nothing (a command
+// with no start mark could run again after a crash), and why a finish mark
+// that cannot be written is left alone: the record on disk still says
+// "started", which stops the line at the next call. That is the safe reading
+// of a result that was lost.
+func (a *advance) afterMerge() Outcome {
+	task, sha := a.r.Task, a.r.Progress.MergedSHA
+	if err := a.d.MarkAfterMerge(task, sha, AfterMergeRun{}, a.now); err != nil {
+		return a.wait(fmt.Sprintf(
+			"the start of the after-merge command could not be recorded, so it was not run and will be tried again: %v", err))
+	}
+	code, timedOut, err := a.d.RunAfterMerge(a.cfg.AfterMerge, a.cfg.AfterMergeTimeout)
+	if err != nil {
+		// The shell could not be started, or the log could not be opened.
+		// It is recorded as a finished run that failed, so the next call
+		// stops the line; -1 is the runner's own word for "never ran". Not
+		// recording it would leave a start mark, and the owner would be told
+		// afk was interrupted, which is not what happened.
+		code, timedOut = -1, false
+	}
+	// The clock is read again, not a.now: the command may have taken minutes,
+	// and the deploy timeout is measured from this time.
+	run := AfterMergeRun{Finished: true, TimedOut: timedOut, ExitCode: code, FinishedAt: a.d.Now()}
+	if markErr := a.d.MarkAfterMerge(task, sha, run, a.now); markErr != nil {
+		return a.wait(fmt.Sprintf("the after-merge command ended, but how it ended could not be recorded: %v", markErr))
+	}
+	switch {
+	case err != nil:
+		return a.wait(fmt.Sprintf("the after-merge command could not be started: %v", err))
+	case timedOut:
+		return a.wait(fmt.Sprintf("the after-merge command did not finish within %s and was stopped",
+			roundDuration(a.cfg.AfterMergeTimeout)))
+	case code != 0:
+		return a.wait(fmt.Sprintf("the after-merge command ended with exit code %d", code))
+	}
+	return a.wait("the after-merge command finished")
+}
+
 // stop stops the line: marker first, then the saved state, then the outcome.
 //
 // The marker comes first because Decide reads a saved Stopped with no marker
 // as "the owner cleared it" and finishes the task. Saving first and dying
-// before the marker would therefore mark a failed deploy done with nobody
-// told. In this order a crash between the two finds the ship still in Merged
-// and past its timeout, and stops again, which only rewrites the marker; a
-// crash after the save finds the marker and waits.
-func (a *advance) stop(step Step) Outcome {
+// before the marker would therefore mark a failed deploy, or a failed
+// after-merge command, done with nobody told. In this order a crash between
+// the two finds the ship still where it was (in Merged or AfterMerge and past
+// its timeout, or in AfterMerge with the same run record), and stops again,
+// which only rewrites the marker; a crash after the save finds the marker and
+// waits.
+func (a *advance) stop(step Step, f Facts) Outcome {
 	if err := a.d.Stop(a.r.Task, step.Reason); err != nil {
 		return a.wait(fmt.Sprintf("the line could not be stopped and will be tried again: %v", err))
 	}
 	if err := a.d.Save(step.Progress); err != nil {
 		return a.wait(fmt.Sprintf("the ship's progress could not be saved: %v", err))
 	}
+	return Outcome{Kind: OutcomeStop, Reason: step.Reason, Item: a.stopItem(step, f), Progress: step.Progress}
+}
+
+// stopItem is what the owner reads when the line stops. The words depend on
+// the cause, because what to do differs: a deploy is checked and rolled back,
+// a command is fixed and perhaps run by hand.
+//
+// The command's own text is never put in the title. A title leaves the
+// machine in a push notification and is what the daemon matches items on, and
+// a command line can hold a token. The body does not quote it either, though
+// the end of the log may: the runner's first line of the log names it.
+func (a *advance) stopItem(step Step, f Facts) *Item {
+	task := a.r.Task
+	switch step.Stop {
+	case StopAfterMergeFailed:
+		return &Item{
+			Kind:  ItemFailure,
+			Title: fmt.Sprintf("The after-merge command failed after %s", task),
+			Body: fmt.Sprintf("%s was merged, but %s. "+
+				"This is the command set as `after_merge` under `[ship]` in afk.toml; afk ran it in the project folder. "+
+				"afk has stopped the line: no new task starts until you clear it.\n\n",
+				task, afterMergeFailure(f)) + a.afterMergeHelp(),
+		}
+	case StopAfterMergeInterrupted:
+		return &Item{
+			Kind:  ItemFailure,
+			Title: fmt.Sprintf("The after-merge command was interrupted after %s", task),
+			Body: fmt.Sprintf("%s was merged and afk started the after-merge command "+
+				"(`after_merge` under `[ship]` in afk.toml, run in the project folder). "+
+				"afk itself was stopped while the command ran, so it does not know whether the command finished. "+
+				"afk has stopped the line: no new task starts until you clear it.\n\n",
+				task) + a.afterMergeHelp(),
+		}
+	}
+	// StopDeploy, and a stop with no cause from a version that set none.
 	where := healthURLForOwner(a.cfg.HealthURL)
-	item := &Item{
+	return &Item{
 		Kind:  ItemFailure,
-		Title: fmt.Sprintf("The deploy after %s did not become healthy", a.r.Task),
+		Title: fmt.Sprintf("The deploy after %s did not become healthy", task),
 		Body: fmt.Sprintf("%s was merged, but %s did not answer healthy within %s. "+
 			"afk has stopped the line: no new task starts until you clear it.\n\n"+
 			"Check the deploy, and fix it or roll it back. Then run `afk resume` to clear the stop; "+
 			"%s is marked done once it is cleared.",
-			a.r.Task, where, roundDuration(a.cfg.DeployTimeout), a.r.Task),
+			task, where, roundDuration(a.cfg.DeployTimeout), task),
 	}
-	return Outcome{Kind: OutcomeStop, Reason: step.Reason, Item: item, Progress: step.Progress}
+}
+
+// afterMergeHelp is the half of an after-merge stop item that both causes
+// share: the end of the output, where the rest is, and what to do.
+func (a *advance) afterMergeHelp() string {
+	var b strings.Builder
+	if tail := strings.TrimRight(a.d.AfterMergeTail(), "\n"); strings.TrimSpace(tail) != "" {
+		b.WriteString("The end of the command's output:\n\n")
+		// Indented, not fenced: the output is the command's and may hold a fence.
+		for _, line := range strings.Split(tail, "\n") {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("afk has no output from the command.\n\n")
+	}
+	fmt.Fprintf(&b, "The full output is in `%s` in the project folder.\n\n", AfterMergeLog)
+	fmt.Fprintf(&b, "Fix the cause. If the command still needs running, run it by hand in the project folder. "+
+		"Then run `afk resume` to clear the stop; %s is marked done once it is cleared, "+
+		"and afk does not run the command again.", a.r.Task)
+	return b.String()
 }
 
 // healthURLForOwner is the health URL as it may be shown in an item, which

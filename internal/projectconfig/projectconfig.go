@@ -3,7 +3,8 @@
 //
 // It understands three things: the top-level plan key (the master plan's
 // path), the ntfy address under [notify], and the [ship] table that tells the
-// daemon how to merge and deploy. Every other key and table ([policy], an
+// daemon how to merge and deploy, including the optional after_merge command
+// it runs in the main checkout after a merge (docs/PLAN.md T2.2a). Every other key and table ([policy], an
 // unknown key inside [ship], anything unknown) is ignored on purpose: other
 // parts of afk own those and read their own part, so this reader must never
 // reject a file another part of afk understands. The plan reader and the inbox
@@ -56,6 +57,10 @@ const (
 	DefaultCIFixCycles   = 2
 	DefaultDeploys       = true
 	DefaultDeployTimeout = 15 * time.Minute
+	// DefaultAfterMergeTimeout bounds the after-merge command. It is shorter
+	// than the deploy timeout because the command is local work (an install, a
+	// restart), not a wait on a remote deploy.
+	DefaultAfterMergeTimeout = 10 * time.Minute
 )
 
 // Ship is the [ship] table: how the daemon merges a finished session and
@@ -78,6 +83,16 @@ type Ship struct {
 	// RequiredEnvPattern is a regular expression; a diff that adds a match
 	// parks the task before the merge. Empty means no check.
 	RequiredEnvPattern string
+	// AfterMerge is a shell command the daemon runs once in the project's main
+	// checkout after a merge and the base-branch update, before the deploy
+	// check (docs/PLAN.md T2.2a). A project that installs its own build output
+	// needs this so a merge does not leave the old program running. It is
+	// trimmed; empty means no command. It is never parsed or validated here:
+	// it is the owner's shell text, and an error message must not repeat it.
+	AfterMerge string
+	// AfterMergeTimeout is how long AfterMerge may run before the daemon stops
+	// it and stops the line.
+	AfterMergeTimeout time.Duration
 }
 
 // defaultShip is the [ship] table when no file sets a key.
@@ -88,6 +103,8 @@ func defaultShip() Ship {
 		CIFixCycles:   DefaultCIFixCycles,
 		Deploys:       DefaultDeploys,
 		DeployTimeout: DefaultDeployTimeout,
+
+		AfterMergeTimeout: DefaultAfterMergeTimeout,
 	}
 }
 
@@ -137,6 +154,8 @@ type file struct {
 		HealthURL          *string `toml:"health_url"`
 		DeployTimeout      *string `toml:"deploy_timeout"`
 		RequiredEnvPattern *string `toml:"required_env_pattern"`
+		AfterMerge         *string `toml:"after_merge"`
+		AfterMergeTimeout  *string `toml:"after_merge_timeout"`
 	} `toml:"ship"`
 }
 
@@ -189,9 +208,10 @@ type checked struct {
 // shipKeys holds one file's validated [ship] values; nil means absent.
 type shipKeys struct {
 	base, mergeMethod, healthURL, envPattern *string
+	afterMerge                               *string
 	reruns, fixCycles                        *int
 	deploys                                  *bool
-	timeout                                  *time.Duration
+	timeout, afterMergeTimeout               *time.Duration
 }
 
 // apply lays the keys this file set over s, so a later file wins key by key.
@@ -219,6 +239,12 @@ func (k shipKeys) apply(s *Ship) {
 	}
 	if k.envPattern != nil {
 		s.RequiredEnvPattern = *k.envPattern
+	}
+	if k.afterMerge != nil {
+		s.AfterMerge = *k.afterMerge
+	}
+	if k.afterMergeTimeout != nil {
+		s.AfterMergeTimeout = *k.afterMergeTimeout
 	}
 }
 
@@ -275,6 +301,19 @@ func checkShip(name string, raw *file) (shipKeys, error) {
 			return k, fmt.Errorf("%s: [ship] required_env_pattern does not compile as a regular expression (%v). Fix the pattern, or set it to \"\" for none.", name, err)
 		}
 		k.envPattern = r.RequiredEnvPattern
+	}
+	if r.AfterMerge != nil {
+		// Only trimmed. The text is shell the owner wrote, so it is not parsed,
+		// and no error here quotes it.
+		c := strings.TrimSpace(*r.AfterMerge)
+		k.afterMerge = &c
+	}
+	if r.AfterMergeTimeout != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*r.AfterMergeTimeout))
+		if err != nil || d <= 0 {
+			return k, fmt.Errorf("%s: [ship] after_merge_timeout %q must be a length of time above zero, such as \"10m\" or \"1h30m\". Change it to one.", name, *r.AfterMergeTimeout)
+		}
+		k.afterMergeTimeout = &d
 	}
 	return k, nil
 }

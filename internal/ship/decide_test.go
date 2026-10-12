@@ -3,6 +3,7 @@ package ship
 import (
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func in(state State, ago time.Duration, muts ...mut) Facts {
 		BaseSynced:    true,
 	}
 	switch state {
-	case PROpen, HandedBack, CIGreen, Merged, DeployHealthy, Stopped:
+	case PROpen, HandedBack, CIGreen, Merged, AfterMerge, DeployHealthy, Stopped:
 		f.Progress.PR = 7
 	}
 	for _, m := range muts {
@@ -68,6 +69,34 @@ func diverged(f *Facts)               { f.LocalSHA = "bbb"; f.LocalAhead = false
 func newHead(age time.Duration) mut {
 	return func(f *Facts) { f.LocalSHA = "bbb"; f.LocalAhead = true; f.HeadAge = age }
 }
+
+// command is a project with an after-merge command.
+func command(f *Facts) {
+	f.Config.AfterMerge = "make install"
+	f.Config.AfterMergeTimeout = 10 * time.Minute
+}
+
+// afterMerge is a ship in after_merge as the executor reads it: the merge
+// commit saved, the branch gone, a command set, and nothing asked of the
+// health URL yet. It is the starting point of every after_merge row.
+func afterMerge(f *Facts) {
+	mergedAt("m1")(f)
+	noRemote(f)
+	command(f)
+}
+
+// started is a run record with a start and no end.
+func started(f *Facts) { f.AfterMerge = AfterMergeRun{Found: true} }
+
+// ended is a run record for a command that ended `ago` before now.
+func ended(exitCode int, timedOut bool, ago time.Duration) mut {
+	return func(f *Facts) {
+		f.AfterMerge = AfterMergeRun{Found: true, Finished: true, ExitCode: exitCode, TimedOut: timedOut, FinishedAt: now.Add(-ago)}
+	}
+}
+
+func unhealthy(f *Facts) { f.HealthChecked = true; f.Healthy = false }
+func healthy(f *Facts)   { f.HealthChecked = true; f.Healthy = true }
 
 func reruns(n int) mut    { return prog(func(p *Progress) { p.Reruns = n }) }
 func fixCycles(n int) mut { return prog(func(p *Progress) { p.FixCycles = n }) }
@@ -117,6 +146,21 @@ func to(state State, more ...func(*Progress)) func(*Progress) {
 //     that stops an action being repeated after a crash.
 //   - The merged rows that sync the base and delete the remote branch assert
 //     At is unchanged, so the deploy timeout is measured from the merge.
+//   - "merged, command set but base not synced yet" and "... remote branch
+//     still there": the after-merge command runs in the main checkout, so it
+//     must never be reached before the base holds the merge. Move the
+//     after-merge rule up in decideMerged and these two go red.
+//   - "after_merge, started and never finished: stop the line" is the crash
+//     during the command. Without it the row runs the command a second time
+//     (or, with the rule after it, carries on as if it had worked).
+//   - "after_merge, no record: run the command" asserts the progress is
+//     unchanged, and every other after_merge row with a record asserts the
+//     step is not after_merge: any record at all means never run it again.
+//   - "after_merge, a slow command does not use up the deploy's time": the
+//     deploy timeout is measured from the command's end, not from when the
+//     state was entered.
+//   - "after_merge, reads failing: still runs the command": the state reads
+//     neither git nor GitHub, so an outage must not park a merged task.
 func TestDecide(t *testing.T) {
 	type want struct {
 		kind     StepKind
@@ -125,6 +169,11 @@ func TestDecide(t *testing.T) {
 		headSHA  string
 		envVars  []string
 		conflict bool
+		// stop is the cause a stop must carry; empty means the deploy, which
+		// was the only cause before the after-merge command existed.
+		stop StopCause
+		// reason, when set, must be part of the step's reason.
+		reason string
 	}
 	tests := []struct {
 		name  string
@@ -358,6 +407,88 @@ func TestDecide(t *testing.T) {
 			in(Merged, 16*time.Minute, mergedAt("m1"), noRemote),
 			want{kind: StepStop, change: to(Stopped)}},
 
+		// --- merged, with an after-merge command ---
+		{"merged, command set but merge sha not saved: record it first",
+			in(Merged, time.Minute, command, pr(PRStateMerged), func(f *Facts) { f.PR.MergeSHA = "m1" }, noRemote),
+			want{kind: StepSave, change: func(p *Progress) { p.MergedSHA = "m1" }}},
+		{"merged, command set but base not synced yet: sync first",
+			in(Merged, 20*time.Minute, mergedAt("m1"), command, noRemote, func(f *Facts) { f.BaseSynced = false }),
+			want{kind: StepSyncBase}},
+		{"merged, command set and remote branch still there: delete first",
+			in(Merged, 20*time.Minute, mergedAt("m1"), command),
+			want{kind: StepDeleteRemote}},
+		{"merged, command set, base synced and branch gone: save after_merge",
+			in(Merged, time.Minute, mergedAt("m1"), command, noRemote),
+			want{kind: StepSave, change: to(AfterMerge), reason: "after-merge command is next"}},
+		{"merged, command set and the deploy already past its timeout: after_merge still comes first",
+			in(Merged, 20*time.Minute, mergedAt("m1"), command, noRemote, unhealthy),
+			want{kind: StepSave, change: to(AfterMerge)}},
+		{"merged, command set and the deploy already healthy: after_merge still comes first",
+			in(Merged, time.Minute, mergedAt("m1"), command, noRemote, healthy),
+			want{kind: StepSave, change: to(AfterMerge)}},
+
+		// --- after_merge ---
+		{"after_merge, no record: run the command, progress untouched",
+			in(AfterMerge, time.Minute, afterMerge),
+			want{kind: StepAfterMerge}},
+		{"after_merge, no record and long past the deploy timeout: still run the command",
+			in(AfterMerge, time.Hour, afterMerge, unhealthy),
+			want{kind: StepAfterMerge}},
+		{"after_merge, no merge commit saved: park, never run",
+			in(AfterMerge, time.Minute, afterMerge, prog(func(p *Progress) { p.MergedSHA = "" })),
+			want{kind: StepPark, cause: ParkUnknownState}},
+		{"after_merge, no record and the command was removed, deploys off: save deploy_healthy",
+			in(AfterMerge, time.Minute, afterMerge, func(f *Facts) { f.Config.AfterMerge = ""; f.Config.Deploys = false }),
+			want{kind: StepSave, change: to(DeployHealthy)}},
+		{"after_merge, no record and the command was removed, deploy not healthy yet: wait",
+			in(AfterMerge, 14*time.Minute, afterMerge, unhealthy, func(f *Facts) { f.Config.AfterMerge = "" }),
+			want{kind: StepWait}},
+		{"after_merge, no record and the command was removed, deploy past its timeout: stop for the deploy",
+			in(AfterMerge, 15*time.Minute, afterMerge, unhealthy, func(f *Facts) { f.Config.AfterMerge = "" }),
+			want{kind: StepStop, change: to(Stopped), stop: StopDeploy}},
+		{"after_merge, started and never finished: stop the line",
+			in(AfterMerge, time.Minute, afterMerge, started),
+			want{kind: StepStop, change: to(Stopped), stop: StopAfterMergeInterrupted, reason: "not known whether the command finished"}},
+		{"after_merge, started and never finished, command since removed: still stop the line",
+			in(AfterMerge, time.Minute, afterMerge, started, func(f *Facts) { f.Config.AfterMerge = "" }),
+			want{kind: StepStop, change: to(Stopped), stop: StopAfterMergeInterrupted}},
+		{"after_merge, exit code 3: stop the line",
+			in(AfterMerge, time.Minute, afterMerge, ended(3, false, time.Second)),
+			want{kind: StepStop, change: to(Stopped), stop: StopAfterMergeFailed, reason: "exit code 3"}},
+		{"after_merge, exit code 3 even with a healthy deploy: stop the line",
+			in(AfterMerge, time.Minute, afterMerge, ended(3, false, time.Second), healthy),
+			want{kind: StepStop, change: to(Stopped), stop: StopAfterMergeFailed}},
+		{"after_merge, timed out: stop the line, naming the limit",
+			in(AfterMerge, 11*time.Minute, afterMerge, ended(-1, true, time.Second)),
+			want{kind: StepStop, change: to(Stopped), stop: StopAfterMergeFailed, reason: "did not finish within 10m0s"}},
+		{"after_merge, the command could not be started: stop the line",
+			in(AfterMerge, time.Minute, afterMerge, ended(-1, false, time.Second)),
+			want{kind: StepStop, change: to(Stopped), stop: StopAfterMergeFailed, reason: "could not be started"}},
+		{"after_merge, exit 0 and deploys off: save deploy_healthy",
+			in(AfterMerge, time.Minute, afterMerge, ended(0, false, time.Second), func(f *Facts) { f.Config.Deploys = false }),
+			want{kind: StepSave, change: to(DeployHealthy)}},
+		{"after_merge, exit 0 and no health URL: save deploy_healthy",
+			in(AfterMerge, time.Minute, afterMerge, ended(0, false, time.Second), func(f *Facts) { f.Config.HealthURL = "" }),
+			want{kind: StepSave, change: to(DeployHealthy)}},
+		{"after_merge, exit 0 and the deploy is healthy: save deploy_healthy",
+			in(AfterMerge, time.Minute, afterMerge, ended(0, false, time.Second), healthy),
+			want{kind: StepSave, change: to(DeployHealthy)}},
+		{"after_merge, a slow command does not use up the deploy's time: wait",
+			in(AfterMerge, 20*time.Minute, afterMerge, ended(0, false, 14*time.Minute+59*time.Second), unhealthy),
+			want{kind: StepWait}},
+		{"after_merge, exit 0 and the deploy past its timeout since the command ended: stop for the deploy",
+			in(AfterMerge, 20*time.Minute, afterMerge, ended(0, false, 15*time.Minute), unhealthy),
+			want{kind: StepStop, change: to(Stopped), stop: StopDeploy, reason: "did not become healthy within 15m0s"}},
+		{"after_merge, exit 0 just now but entered long ago: the timeout is not measured from the entry",
+			in(AfterMerge, time.Hour, afterMerge, ended(0, false, time.Second)),
+			want{kind: StepWait}},
+		{"after_merge, reads failing: still runs the command",
+			in(AfterMerge, time.Minute, afterMerge, func(f *Facts) { f.ReadFailingFor = time.Hour }),
+			want{kind: StepAfterMerge}},
+		{"after_merge, reads failing after a good run: still goes on to the deploy",
+			in(AfterMerge, time.Minute, afterMerge, ended(0, false, time.Second), healthy, func(f *Facts) { f.ReadFailingFor = time.Hour }),
+			want{kind: StepSave, change: to(DeployHealthy)}},
+
 		// --- deploy_healthy and stopped ---
 		{"deploy_healthy: done",
 			in(DeployHealthy, time.Minute, mergedAt("m1")),
@@ -427,6 +558,21 @@ func TestDecide(t *testing.T) {
 			if got.Reason == "" {
 				t.Error("Reason is empty; every step says why")
 			}
+			if !strings.Contains(got.Reason, tt.want.reason) {
+				t.Errorf("Reason = %q, want it to contain %q", got.Reason, tt.want.reason)
+			}
+			wantStop := tt.want.stop
+			if tt.want.kind == StepStop && wantStop == "" {
+				wantStop = StopDeploy
+			}
+			if got.Stop != wantStop {
+				t.Errorf("Stop = %q, want %q", got.Stop, wantStop)
+			}
+			// The command's text is the owner's and may hold a secret; no
+			// reason, which goes to the log and the stop marker, may quote it.
+			if cmd := tt.facts.Config.AfterMerge; cmd != "" && strings.Contains(got.Reason, cmd) {
+				t.Errorf("Reason quotes the after-merge command: %q", got.Reason)
+			}
 
 			// The rules no row may break, checked on every row.
 			if got.Kind == StepMerge {
@@ -442,9 +588,18 @@ func TestDecide(t *testing.T) {
 				t.Errorf("Reruns raised to %d, above ci_reruns %d", got.Progress.Reruns, tt.facts.Config.CIReruns)
 			}
 			switch got.Kind {
-			case StepWait, StepPark, StepDone, StepSyncBase, StepDeleteRemote:
+			case StepWait, StepPark, StepDone, StepSyncBase, StepDeleteRemote, StepAfterMerge:
 				if got.Progress != tt.facts.Progress {
 					t.Errorf("%s changed the progress: %+v -> %+v", got.Kind, tt.facts.Progress, got.Progress)
+				}
+			}
+			// The command is run from one place only: after_merge, with a
+			// merge commit, a command to run and no record of a run.
+			if got.Kind == StepAfterMerge {
+				f := tt.facts
+				if f.Progress.State != AfterMerge || f.Progress.MergedSHA == "" || f.Config.AfterMerge == "" || f.AfterMerge.Found {
+					t.Errorf("the command was chosen in state %q, merge commit %q, command set %v, record %+v",
+						f.Progress.State, f.Progress.MergedSHA, f.Config.AfterMerge != "", f.AfterMerge)
 				}
 			}
 		})
@@ -496,7 +651,7 @@ func TestDecideNeverMergesUnchecked(t *testing.T) {
 // list (this package must not import it), so a change here is a change to a
 // file format.
 func TestStates(t *testing.T) {
-	want := []State{"committed", "pushed", "pr_open", "handed_back", "ci_green", "merged", "deploy_healthy", "stopped"}
+	want := []State{"committed", "pushed", "pr_open", "handed_back", "ci_green", "merged", "after_merge", "deploy_healthy", "stopped"}
 	if got := States(); !reflect.DeepEqual(got, want) {
 		t.Errorf("States() = %v, want %v", got, want)
 	}

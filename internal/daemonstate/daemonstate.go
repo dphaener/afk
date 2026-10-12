@@ -175,6 +175,60 @@ func ClearStop(project string) (bool, error) {
 	return false, fmt.Errorf("removing stop marker: %w", err)
 }
 
+// --- After-merge run record ---
+
+// AfterMerge is the record of one run of a project's after-merge command. It
+// is how the ship tells "never started", "started and cut off" and "finished"
+// apart after a crash (PLAN T2.2a). Every key is always written. An
+// unfinished run has FinishedAt "".
+type AfterMerge struct {
+	Task       string `json:"task"`
+	MergedSHA  string `json:"merged_sha"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at"`
+	ExitCode   int    `json:"exit_code"`
+	TimedOut   bool   `json:"timed_out"`
+}
+
+// AfterMergePath is the run record in a project's main checkout.
+func AfterMergePath(root string) string {
+	return filepath.Join(root, ".afk", "build", "after-merge.json")
+}
+
+// AfterMergeLogPath is where the command's output goes.
+func AfterMergeLogPath(root string) string {
+	return filepath.Join(root, ".afk", "build", "after-merge.log")
+}
+
+// WriteAfterMerge replaces the run record atomically, creating .afk/build
+// when it is missing. Times in r should be RFC 3339 UTC strings.
+func WriteAfterMerge(root string, r AfterMerge) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(AfterMergePath(root), append(data, '\n')); err != nil {
+		return fmt.Errorf("writing after-merge record: %w", err)
+	}
+	return nil
+}
+
+// ReadAfterMerge reads the run record. A missing file and a damaged one both
+// return false: a damaged record must read as "no record of a run". What that
+// means for the ship (run the command, or stop) is for the ship state
+// machine to decide, not this reader.
+func ReadAfterMerge(root string) (AfterMerge, bool) {
+	data, err := os.ReadFile(AfterMergePath(root))
+	if err != nil {
+		return AfterMerge{}, false
+	}
+	var r AfterMerge
+	if err := json.Unmarshal(data, &r); err != nil {
+		return AfterMerge{}, false
+	}
+	return r, true
+}
+
 // --- Ship poll ---
 
 // ShipPollPath is the ship-poll file in a project's main checkout. It records
@@ -340,6 +394,11 @@ func (s State) Same(other State) bool {
 type machine struct {
 	PID       int    `json:"pid"`
 	StartedAt string `json:"started_at"`
+	// BinaryUnknown is true when the daemon could not read its own program
+	// file, so it cannot notice a new build. It lives here because
+	// `afk daemon status` already reads this file, and it is per daemon run:
+	// Lock writes false.
+	BinaryUnknown bool `json:"binary_unknown"`
 }
 
 // Lock takes the machine-wide daemon lock in dir (afk's state folder, chosen
@@ -395,4 +454,42 @@ func ReadMachine(dir string) (pid int, startedAt string, ok bool) {
 		return 0, "", false
 	}
 	return m.PID, m.StartedAt, true
+}
+
+// MarkBinaryUnknown re-reads running.json, sets binary_unknown and writes it
+// back atomically. A missing or damaged file is an error: there is no holder
+// to mark.
+func MarkBinaryUnknown(dir string) error {
+	path := filepath.Join(dir, "running.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading running.json: %w", err)
+	}
+	var m machine
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("reading running.json: %w", err)
+	}
+	m.BinaryUnknown = true
+	out, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(path, append(out, '\n')); err != nil {
+		return fmt.Errorf("writing running.json: %w", err)
+	}
+	return nil
+}
+
+// BinaryUnknown reports whether the daemon marked its program file unreadable.
+// False when the file is missing or damaged.
+func BinaryUnknown(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "running.json"))
+	if err != nil {
+		return false
+	}
+	var m machine
+	if err := json.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	return m.BinaryUnknown
 }

@@ -171,9 +171,13 @@ func TestPauseTargets(t *testing.T) {
 // Load-bearing rows: "neither" keeps today's text and exit code; "stopped
 // only" names the task and reason and removes the marker; "damaged marker" is
 // still cleared, because existence is the signal; every row ends with neither
-// flag file on disk.
+// flag file on disk. The two after-merge rows use the reasons internal/ship
+// writes to the marker for a failed and for an interrupted command, and pin
+// that the sentence reads as one and does not call either a deploy.
 func TestResumeClearsStop(t *testing.T) {
 	const stopJSON = `{"at":"2026-10-11T00:00:00Z","task":"T0.1","reason":"deploy did not come up"}`
+	const afterMergeFailedJSON = `{"at":"2026-10-11T00:00:00Z","task":"T2.2a","reason":"the after-merge command ended with exit code 3"}`
+	const afterMergeCutOffJSON = `{"at":"2026-10-11T00:00:00Z","task":"T2.2a","reason":"afk was stopped while the after-merge command ran, so it is not known whether the command finished"}`
 	tests := []struct {
 		name     string
 		paused   bool
@@ -187,6 +191,12 @@ func TestResumeClearsStop(t *testing.T) {
 		{name: "stopped only", stop: stopJSON, has: []string{"was stopped after T0.1: deploy did not come up.", "It is cleared; the daemon carries on at its next pass."}, lacks: []string{"Resumed"}, wantKind: []string{"stop_cleared"}},
 		{name: "both", paused: true, stop: stopJSON, has: []string{"Resumed", "was stopped after T0.1: deploy did not come up."}, wantKind: []string{"resume", "stop_cleared"}},
 		{name: "damaged marker", stop: "{not json", has: []string{"was stopped.", "It is cleared"}, wantKind: []string{"stop_cleared"}},
+		{name: "stopped by a failed after-merge command", stop: afterMergeFailedJSON,
+			has:   []string{"was stopped after T2.2a: the after-merge command ended with exit code 3. It is cleared; the daemon carries on at its next pass."},
+			lacks: []string{"Resumed", "deploy"}, wantKind: []string{"stop_cleared"}},
+		{name: "stopped by an interrupted after-merge command", stop: afterMergeCutOffJSON,
+			has:   []string{"was stopped after T2.2a: afk was stopped while the after-merge command ran, so it is not known whether the command finished. It is cleared; the daemon carries on at its next pass."},
+			lacks: []string{"Resumed", "deploy"}, wantKind: []string{"stop_cleared"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -668,6 +668,8 @@ afk daemon status     # say what it is doing in each project, and why
 
 Stopping the daemon (ctrl-c, or `systemctl --user stop afkd`) never stops a session. Every session keeps running, and the next start picks them up again, because everything the daemon knows is in files. Only one daemon can run on a machine; a second one exits with code 1.
 
+**A new version of afk.** Between passes the daemon checks its own program file. When `make install` has put a new version there, it logs "afk daemon found a new version of itself on disk and is stopping so it can be started again. Every session is still running." and exits with code 0. It never leaves in the middle of a ship step, and it does not touch any session. Under the systemd unit in `contrib/` (`Restart=always`) it starts again by itself; a daemon you started by hand stays stopped until you start it again. `afk daemon --once` does not check. If the daemon cannot read its own program file when it starts, it says so in its log and carries on without the check.
+
 **Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. A missing file is not an error, but with no `[[project]]` the daemon has nothing to build and `afk daemon` exits 1. Keys it does not know are ignored.
 
 ```toml
@@ -707,8 +709,9 @@ On its next pass the daemon sees every item answered and marks the task `running
 6. Still red, or the branch conflicts with its base: it hands the failure back to the session, up to `ci_fix_cycles` times. It writes what failed to `ci-failure.md` in the session's `.afk/<session>/` folder and types one line into the session telling it to read the file and commit a fix. It does not tell the session to push. The daemon pushes the new commit itself once the session has been quiet for two minutes, and the checks run again.
 7. When every check has passed, and the diff adds no match for `required_env_pattern`, it merges the pull request with `merge_method`.
 8. After the merge it brings your **project checkout's base branch up to date**: it fetches and fast-forwards the local base to GitHub (never a merge commit, never a reset). The next task is cut from that branch, so it holds the work just merged. It also deletes the merged branch on GitHub.
-9. If `health_url` is set and `deploys` is true, it asks that address until it answers with a 2xx status, or until `deploy_timeout` has passed since the merge. Without a `health_url` there is no deploy check.
-10. It removes the finished session (the same clean-up as `afk clean`) and marks the task `done`. The next task can then start.
+9. If the project's `afk.toml` sets `after_merge`, it runs that command once, in the project's main checkout (see `[ship]` below). It runs only when the base branch update and the branch delete are done.
+10. If `health_url` is set and `deploys` is true, it asks that address until it answers with a 2xx status, or until `deploy_timeout` has passed since the merge, or since the command finished when there was one. Without a `health_url` there is no deploy check.
+11. It removes the finished session (the same clean-up as `afk clean`) and marks the task `done`. The next task can then start.
 
 **A pull request with no CI checks is never merged.** If GitHub shows no check on the pull request five minutes after it opened (or only skipped ones), the task parks with an item titled `No checks ran on the pull request for <task>`. It asks you to add a CI workflow that runs on pull requests, or to merge the pull request yourself and run `afk ledger set <task> done`. Answering the item only makes afk wait another five minutes for checks.
 
@@ -716,7 +719,7 @@ On its next pass the daemon sees every item answered and marks the task `running
 
 **A hand-back or an answered item types into the session.** The daemon has only the session's one terminal to type into, so it takes the session from whoever has it. If a dashboard pane or `afk attach` is open on that session, it is told the session was taken over (for about half a second) and you must open it again. Do not leave an attach open on a session the daemon is shipping if you do not want it interrupted.
 
-**The stopped line.** If the deploy does not answer healthy within `deploy_timeout`, the merge has already happened, and the daemon stops the whole project: it writes `.afk/build/stopped`, raises a `failure` item and sends the notification at urgent priority. No new task starts there, and `afk daemon status` shows a `Stopped:` line. Check the deploy, fix it or roll it back, then run `afk resume`. That clears the stopped line and any pause together, and the task is marked `done` on the next pass. Answering the item does not clear the stop; only `afk resume` does.
+**The stopped line.** If the deploy does not answer healthy within `deploy_timeout`, or the `after_merge` command fails (it ends with a non-zero exit code, cannot be started, or runs past `after_merge_timeout`) or is cut off (afk was stopped while it ran, so nobody knows whether it finished), the merge has already happened, and the daemon stops the whole project: it writes `.afk/build/stopped`, raises a `failure` item and sends the notification at urgent priority. No new task starts there, and `afk daemon status` shows a `Stopped:` line. Check the deploy, fix it or roll it back, then run `afk resume`. For a command that failed or was cut off, read `.afk/build/after-merge.log`, fix what went wrong and run the command yourself if it still needs running. That clears the stopped line and any pause together, and the task is marked `done` on the next pass. `afk resume` does not run the command again, whatever the reason for the stop. Answering the item does not clear the stop; only `afk resume` does.
 
 **A pause does not stop a ship that is in progress.** `afk pause` holds back new tasks, and a task being shipped carries on to the end (push, pull request, merge and clean-up).
 
@@ -732,11 +735,11 @@ On its next pass the daemon sees every item answered and marks the task `running
 
 If a check fails, the daemon adds a blocking `failure` item to your inbox that says what to do, and starts nothing until you answer it. A provider with no unattended mode afk knows (Codex and OpenCode today) cannot be used with the daemon.
 
-**What it writes.** In each project's main checkout: `.afk/build/daemon.json` (what it last did and why), `.afk/build/paused` (the pause flag), `.afk/build/stopped` (the stopped line, with the task and the reason), `.afk/build/ship-poll` (when GitHub was last asked, so a one-second tick does not make a call each second, and when its reads started failing), `.afk/build/ledger.json` (each task's status) and `.afk/log/decisions.jsonl` (one line for each decision). Each unattended session also has an empty file, `.afk/<session>/unattended`, that keeps the unattended mode on when its host restarts the agent. In afk's state folder, `daemon.lock` and `running.json` enforce the one-daemon rule. The daemon logs to stderr, one line each with a time; under systemd that is the journal. A hand-back writes `ci-failure.md` in the session's `.afk/<session>/` folder, which is removed with the session.
+**What it writes.** In each project's main checkout: `.afk/build/daemon.json` (what it last did and why), `.afk/build/paused` (the pause flag), `.afk/build/stopped` (the stopped line, with the task and the reason), `.afk/build/after-merge.json` (the record of the `after_merge` command: the task, the merge commit, when it started and finished, its exit code and whether it timed out) and `.afk/build/after-merge.log` (the command's output, replaced on each run), `.afk/build/ship-poll` (when GitHub was last asked, so a one-second tick does not make a call each second, and when its reads started failing), `.afk/build/ledger.json` (each task's status) and `.afk/log/decisions.jsonl` (one line for each decision). Each unattended session also has an empty file, `.afk/<session>/unattended`, that keeps the unattended mode on when its host restarts the agent. In afk's state folder, `daemon.lock` and `running.json` enforce the one-daemon rule. The daemon logs to stderr, one line each with a time; under systemd that is the journal. A hand-back writes `ci-failure.md` in the session's `.afk/<session>/` folder, which is removed with the session.
 
 **`afk daemon --once`** does a single pass over every project and prints one line each: `<project>: <what it did> (<task>, session <session>): <why>`. It takes the same lock as the daemon, so it exits 1 while a daemon is running. Use it to try a setup, or from cron.
 
-**`afk daemon status`** prints a line about the daemon (running or not, and since when), then a block for each project:
+**`afk daemon status`** prints a line about the daemon (running or not, and since when). While the daemon is running and could not read its own program file, the next line says: "afk cannot see its own program file, so it will not restart by itself when a new version is installed. Restart it by hand after an install." Then comes a block for each project:
 
 ```text
 The afk daemon is running (pid 4121, started Sun 11 Oct 08:02).
@@ -754,7 +757,7 @@ A paused project gets a `Paused:` line first. `Doing:` becomes `Last:` when no d
 
 To run the daemon as a service on Linux, see [`contrib/README.md`](contrib/README.md).
 
-**Exit codes:** `afk daemon` returns 0 when it was stopped or `--once` finished, 1 when `config.toml` could not be used, no project is configured, or a daemon is already running, and 2 when the command was written wrongly. `afk daemon status` returns 0 when the report was printed, 1 when `config.toml` itself cannot be read, and 2 when the command was written wrongly.
+**Exit codes:** `afk daemon` returns 0 when it was stopped, when it stopped itself because it found a new version of afk on disk, or when `--once` finished, 1 when `config.toml` could not be used, no project is configured, or a daemon is already running, and 2 when the command was written wrongly. `afk daemon status` returns 0 when the report was printed, 1 when `config.toml` itself cannot be read, and 2 when the command was written wrongly.
 
 ### `afk pause` and `afk resume` — Hold and release the daemon
 
@@ -782,6 +785,8 @@ deploys = true
 health_url = "https://example.com/health"
 deploy_timeout = "15m"
 required_env_pattern = ""
+after_merge = "make install"
+after_merge_timeout = "10m"
 ```
 
 | Key | Default | Meaning |
@@ -793,6 +798,8 @@ required_env_pattern = ""
 | `deploys` | `true` | Whether merging deploys. With `false` there is no deploy check. |
 | `health_url` | `""` (none) | The address asked after the merge. It must start with `http://` or `https://`. Healthy is any 2xx answer. With no `health_url` the deploy is not polled, whatever `deploys` says. It is never printed in a message, because it may hold a password. |
 | `deploy_timeout` | `"15m"` | How long after the merge the deploy may take to turn healthy, as a length of time above zero such as `"15m"` or `"1h30m"`. Past it, the line stops. |
+| `after_merge` | `""` (none) | A shell command the daemon runs once after a merge, before the deploy check. It runs through `sh -c` in the project's main checkout, and its output goes to `.afk/build/after-merge.log`. A non-zero exit, a command that cannot be started, or running past `after_merge_timeout` stops the line (see "The stopped line"). **It runs unattended, with the daemon's permissions and its `PATH`**, so only put a command here that you would run yourself, and make sure every program it calls is on the daemon's `PATH`. |
+| `after_merge_timeout` | `"10m"` | How long the command may run, as a length of time above zero such as `"10m"` or `"1h"`. Past it the command is stopped and the line stops. |
 | `required_env_pattern` | `""` (no check) | A regular expression. If the branch adds a line that matches, the task parks before the merge with an item naming the variable (the first capture group of the match, or the whole match if there is no group). For example `\$\{([A-Z_]+):\?\}` catches a new required `${VAR:?}`. |
 
 A pull request that has no CI checks is never merged (see "Shipping" in the daemon section). The timings that are not here (five minutes for checks to appear, an hour for a fix after a hand-back, two minutes of quiet before a push) are fixed.

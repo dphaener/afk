@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -439,4 +440,113 @@ func TestShipPollFailure(t *testing.T) {
 			t.Fatalf("ShipPollFailingSince = %v, want %v", got, t0)
 		}
 	})
+}
+
+// TestAfterMerge: load-bearing rows are the unfinished record (finished_at
+// stays "" and the key is still written) and the damaged file, which must read
+// as no record rather than as an error or a zero-value run.
+func TestAfterMerge(t *testing.T) {
+	full := AfterMerge{Task: "T1", MergedSHA: "abc", StartedAt: "2026-10-11T08:00:00Z", FinishedAt: "2026-10-11T08:01:00Z", ExitCode: 3, TimedOut: true}
+	tests := []struct {
+		name   string
+		setup  func(t *testing.T, root string)
+		want   AfterMerge
+		wantOK bool
+	}{
+		{"round trip", func(t *testing.T, root string) {
+			if err := WriteAfterMerge(root, full); err != nil {
+				t.Fatal(err)
+			}
+		}, full, true},
+		{"unfinished", func(t *testing.T, root string) {
+			r := AfterMerge{Task: "T1", MergedSHA: "abc", StartedAt: "2026-10-11T08:00:00Z"}
+			if err := WriteAfterMerge(root, r); err != nil {
+				t.Fatal(err)
+			}
+			b, _ := os.ReadFile(AfterMergePath(root))
+			for _, k := range []string{`"task"`, `"merged_sha"`, `"started_at"`, `"finished_at":""`, `"exit_code":0`, `"timed_out":false`} {
+				if !strings.Contains(string(b), k) {
+					t.Errorf("record %s lacks %s", b, k)
+				}
+			}
+		}, AfterMerge{Task: "T1", MergedSHA: "abc", StartedAt: "2026-10-11T08:00:00Z"}, true},
+		{"missing file", func(t *testing.T, root string) {}, AfterMerge{}, false},
+		{"damaged file", func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Dir(AfterMergePath(root)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(AfterMergePath(root), []byte("{not json"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, AfterMerge{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			tt.setup(t, root)
+			got, ok := ReadAfterMerge(root)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("ReadAfterMerge = %+v, %v; want %+v, %v", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+	t.Run("build folder created when missing", func(t *testing.T) {
+		root := t.TempDir()
+		if err := WriteAfterMerge(root, full); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".afk", "build")); err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Base(AfterMergeLogPath(root)) != "after-merge.log" {
+			t.Errorf("log path = %s", AfterMergeLogPath(root))
+		}
+	})
+}
+
+// TestBinaryUnknown: load-bearing rows are the reset by a second Lock (a new
+// daemon run starts clean) and ReadMachine still working with the new key.
+func TestBinaryUnknown(t *testing.T) {
+	dir := t.TempDir()
+	if BinaryUnknown(dir) {
+		t.Fatal("true with no file")
+	}
+	unlock, err := Lock(dir, 42, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if BinaryUnknown(dir) {
+		t.Fatal("true after Lock")
+	}
+	if err := MarkBinaryUnknown(dir); err != nil {
+		t.Fatal(err)
+	}
+	if !BinaryUnknown(dir) {
+		t.Fatal("false after MarkBinaryUnknown")
+	}
+	if pid, started, ok := ReadMachine(dir); !ok || pid != 42 || started != "2026-10-11T08:00:00Z" {
+		t.Fatalf("ReadMachine = %d %q %v", pid, started, ok)
+	}
+	unlock()
+	unlock2, err := Lock(dir, 43, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock2()
+	if BinaryUnknown(dir) {
+		t.Fatal("still true after a second Lock")
+	}
+	// Damaged and missing files.
+	if err := os.WriteFile(filepath.Join(dir, "running.json"), []byte("{x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if BinaryUnknown(dir) {
+		t.Fatal("true for a damaged file")
+	}
+	if err := MarkBinaryUnknown(dir); err == nil {
+		t.Fatal("MarkBinaryUnknown on a damaged file returned nil")
+	}
+	if err := MarkBinaryUnknown(t.TempDir()); err == nil {
+		t.Fatal("MarkBinaryUnknown with no file returned nil")
+	}
 }

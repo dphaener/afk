@@ -216,6 +216,7 @@ func TestLoadOverlay(t *testing.T) {
 		{name: "committed file does not parse", committed: ptr("plan = \n[[["), local: ptr("plan = \"b.md\"\n"), errHas: FileName, errNot: LocalFileName},
 		{name: "bad address in local names local", committed: ptr("[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("[notify]\nntfy_url = \"ftp://user:hunter2@ntfy.sh/t\"\n"), errHas: LocalFileName + ": [notify] ntfy_url"},
 		{name: "bad address in committed names committed", committed: ptr("[notify]\nntfy_url = \"ntfy.sh/t\"\n"), local: ptr("plan = \"b.md\"\n"), errHas: FileName + ": [notify] ntfy_url", errNot: LocalFileName},
+		{name: "bad after_merge_timeout in local names local", committed: ptr("[ship]\nafter_merge_timeout = \"5m\"\n"), local: ptr("[ship]\nafter_merge_timeout = \"soon\"\n"), errHas: LocalFileName + ": [ship] after_merge_timeout", errNot: FileName + ":"},
 		{name: "bad plan in local names local", local: ptr("plan = \"../x.md\"\n"), errHas: LocalFileName},
 	}
 	for _, tt := range tests {
@@ -299,7 +300,12 @@ func sprintf(format, v string) string { return strings.Replace(format, "%s", v, 
 // daemon runs on projects with no afk.toml), "local overrides committed" (the
 // overlay works key by key, and a local false/0 must beat a committed value),
 // and the error rows, each of which must name the file the bad value came
-// from and, for merge_method, list the three allowed words.
+// from and, for merge_method, list the three allowed words. For T2.2a the
+// load-bearing new rows are the default (no command, 10m: a project with no
+// after_merge must run nothing), the spaces-only command (it must read as none,
+// not as a blank command to run), the local empty command beating a committed
+// one (the owner's way to switch it off on one machine), and the bad timeout
+// rows (they must name the file and key, and never repeat the command text).
 func TestLoadShip(t *testing.T) {
 	defaults := defaultShip()
 	with := func(f func(*Ship)) Ship { s := defaults; f(&s); return s }
@@ -322,6 +328,15 @@ func TestLoadShip(t *testing.T) {
 		{name: "deploys false", committed: ptr("[ship]\ndeploys = false\n"), want: with(func(s *Ship) { s.Deploys = false })},
 		{name: "health_url", committed: ptr("[ship]\nhealth_url = \"https://x.example/health\"\n"), want: with(func(s *Ship) { s.HealthURL = "https://x.example/health" })},
 		{name: "deploy_timeout", committed: ptr("[ship]\ndeploy_timeout = \"1h30m\"\n"), want: with(func(s *Ship) { s.DeployTimeout = 90 * time.Minute })},
+		{name: "after_merge default is none, 10m", committed: ptr("[ship]\n"), want: with(func(s *Ship) { s.AfterMerge = ""; s.AfterMergeTimeout = 10 * time.Minute })},
+		{name: "after_merge set", committed: ptr("[ship]\nafter_merge = \"make install\"\n"), want: with(func(s *Ship) { s.AfterMerge = "make install" })},
+		{name: "after_merge only spaces is none", committed: ptr("[ship]\nafter_merge = \"   \"\n"), want: defaults},
+		{name: "after_merge is trimmed", committed: ptr("[ship]\nafter_merge = \"  make install \"\n"), want: with(func(s *Ship) { s.AfterMerge = "make install" })},
+		{name: "after_merge_timeout set", committed: ptr("[ship]\nafter_merge_timeout = \"2m\"\n"), want: with(func(s *Ship) { s.AfterMergeTimeout = 2 * time.Minute })},
+		{name: "local empty after_merge wins over committed", committed: ptr("[ship]\nafter_merge = \"make install\"\nafter_merge_timeout = \"3m\"\n"), local: ptr("[ship]\nafter_merge = \"\"\n"), want: with(func(s *Ship) { s.AfterMergeTimeout = 3 * time.Minute })},
+		{name: "bad after_merge_timeout", committed: ptr("[ship]\nafter_merge_timeout = \"soon\"\n"), errHas: []string{FileName, "[ship] after_merge_timeout", "length of time"}},
+		{name: "zero after_merge_timeout", committed: ptr("[ship]\nafter_merge_timeout = \"0s\"\n"), errHas: []string{FileName, "[ship] after_merge_timeout", "length of time"}},
+		{name: "bad after_merge_timeout does not echo the command", committed: ptr("[ship]\nafter_merge = \"hunter2 --go\"\nafter_merge_timeout = \"soon\"\n"), errHas: []string{FileName, "after_merge_timeout"}},
 		{name: "required_env_pattern", committed: ptr("[ship]\nrequired_env_pattern = \"^NEBARI_[A-Z]+=\"\n"), want: with(func(s *Ship) { s.RequiredEnvPattern = "^NEBARI_[A-Z]+=" })},
 		{name: "full example", committed: ptr(sprintf(fullExample, `""`)), want: with(func(s *Ship) { s.Base = "main" })},
 		{name: "local overrides committed key by key", committed: ptr("[ship]\nmerge_method = \"squash\"\nci_reruns = 3\ndeploys = true\n"), local: ptr("[ship]\nci_reruns = 0\ndeploys = false\n"), want: with(func(s *Ship) { s.MergeMethod = "squash"; s.CIReruns = 0; s.Deploys = false })},

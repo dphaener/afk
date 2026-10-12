@@ -51,11 +51,20 @@ const (
 	// Merged means the pull request is merged; the base update, the remote
 	// branch delete and the deploy check follow.
 	Merged State = "merged"
+	// AfterMerge means the merge is finished (the merge commit is recorded,
+	// the local base holds it and the remote branch is gone) and the project's
+	// after-merge command is due or done. Which of the two is not saved here:
+	// it is in the run record the daemon keeps (Deps.AfterMergeRecord), because
+	// "started" has to reach the disk before the command does and the ledger
+	// is saved only after a step. A project with no after-merge command never
+	// enters this state.
+	AfterMerge State = "after_merge"
 	// DeployHealthy means the deploy answered healthy, or there is no deploy
 	// to check.
 	DeployHealthy State = "deploy_healthy"
-	// Stopped means the deploy did not turn healthy in time and the line is
-	// stopped until the owner clears it.
+	// Stopped means the line is stopped until the owner clears it: the deploy
+	// did not turn healthy in time, or the after-merge command failed, ran out
+	// of time or was interrupted.
 	Stopped State = "stopped"
 )
 
@@ -63,7 +72,7 @@ const (
 // the absence of a saved state). It exists so a test elsewhere can check that
 // these words and the ledger's stay the same list.
 func States() []State {
-	return []State{Committed, Pushed, PROpen, HandedBack, CIGreen, Merged, DeployHealthy, Stopped}
+	return []State{Committed, Pushed, PROpen, HandedBack, CIGreen, Merged, AfterMerge, DeployHealthy, Stopped}
 }
 
 // Progress is everything about one ship that is saved between ticks.
@@ -74,7 +83,10 @@ type Progress struct {
 	// pull request is open. Both start a fresh wait for GitHub to report, and
 	// the timed rules (no checks, the re-run settle time) measure from it.
 	// The base update and the remote branch delete inside Merged never move
-	// it, so the deploy timeout is measured from the merge.
+	// it, so the deploy timeout is measured from the merge. Running the
+	// after-merge command never moves it either; once a command has run, the
+	// deploy timeout is measured from the end of the command instead
+	// (AfterMergeRun.FinishedAt).
 	At time.Time
 	// PR is the pull request number, 0 until one is found or opened.
 	PR int
@@ -207,6 +219,27 @@ type GH interface {
 	Merge(pr int, method, headSHA string) error
 }
 
+// AfterMergeRun is what the run record says about the after-merge command for
+// one ship. The zero value means "no record": the command has not been started
+// for this task and this merge commit.
+type AfterMergeRun struct {
+	// Found is true when a record exists for this task and this merge commit.
+	// A record for another task or another merge is not this ship's and reads
+	// as not found; the executor makes that comparison, not whoever keeps the
+	// record.
+	Found bool
+	// Finished is false for a run that was started and whose end was never
+	// recorded: the daemon died, or was stopped, while the command ran.
+	Finished bool
+	// TimedOut is true when the command was stopped for running too long.
+	TimedOut bool
+	// ExitCode is the command's exit code; -1 when it could not be started.
+	// It means nothing while Finished is false.
+	ExitCode int
+	// FinishedAt is when the command ended.
+	FinishedAt time.Time
+}
+
 // Facts is everything Decide looks at, as plain values. The executor reads
 // only the facts the current state's rules use; the rest stay zero.
 //
@@ -262,6 +295,8 @@ type Facts struct {
 	Healthy       bool
 	// StopMarker is whether the project's stopped-line file exists.
 	StopMarker bool
+	// AfterMerge is the run record for this ship's after-merge command.
+	AfterMerge AfterMergeRun
 
 	// ReadFailingFor is how long reads of the remote or of GitHub have been
 	// failing without a good one in between. Zero means the last read worked.
@@ -293,6 +328,12 @@ const (
 	StepSyncBase StepKind = "sync_base"
 	// StepDeleteRemote deletes the merged branch on the remote.
 	StepDeleteRemote StepKind = "delete_remote"
+	// StepAfterMerge runs the project's after-merge command. It is the one
+	// step with no "did it already happen" read on the outside world: a
+	// command line has no trace to look for. The executor therefore records
+	// the start before the command and the end after it, and Decide never
+	// chooses this step when any record of this ship's run exists.
+	StepAfterMerge StepKind = "after_merge"
 	// StepStop stops the line. It is one kind on purpose: the executor
 	// writes the stop marker and then saves Stopped, in that order, so a
 	// saved Stopped with no marker can only mean the owner cleared it.
@@ -341,6 +382,21 @@ const (
 	ParkNoBase ParkCause = "no_base"
 )
 
+// StopCause says why the line is being stopped, so the executor can write an
+// item that tells the owner what happened and what to do about it.
+type StopCause string
+
+const (
+	// StopDeploy: the deploy did not answer healthy in time.
+	StopDeploy StopCause = "deploy"
+	// StopAfterMergeFailed: the after-merge command ended with a non-zero
+	// exit code, could not be started, or ran out of time.
+	StopAfterMergeFailed StopCause = "after_merge_failed"
+	// StopAfterMergeInterrupted: the command was started and its end was
+	// never recorded, so nobody knows whether it finished.
+	StopAfterMergeInterrupted StopCause = "after_merge_interrupted"
+)
+
 // Step is Decide's answer: one thing to do, and what to save afterwards.
 type Step struct {
 	Kind StepKind
@@ -357,6 +413,8 @@ type Step struct {
 	Reason string
 	// Cause is set on a park.
 	Cause ParkCause
+	// Stop is set on a StepStop.
+	Stop StopCause
 	// EnvVars are the variables to raise items for, on a ParkEnvVar.
 	EnvVars []string
 	// HeadSHA is the commit a StepMerge must find at the pull request's

@@ -117,8 +117,13 @@ type Entry struct {
 
 // ShipStates returns every valid value of Entry.Ship in the order a ship
 // moves through them, stopped last. The slice is the caller's to keep.
+//
+// after_merge sits between merged and deploy_healthy: the merge is finished
+// and the project's after-merge command is due or done. Whether it started and
+// how it ended is in the run record (internal/daemonstate), not here, so the
+// ledger entry gains no field (PLAN T2.2a).
 func ShipStates() []string {
-	return []string{"committed", "pushed", "pr_open", "handed_back", "ci_green", "merged", "deploy_healthy", "stopped"}
+	return []string{"committed", "pushed", "pr_open", "handed_back", "ci_green", "merged", "after_merge", "deploy_healthy", "stopped"}
 }
 
 // Ledger is the whole file.

@@ -54,6 +54,10 @@ Stopping the daemon (ctrl-c, or a stop from the service manager) leaves every
 session running; the next start picks them up again. "afk pause" stops new
 tasks from starting in one project without stopping the daemon.
 
+When a new version of afk is installed over the one that is running, the
+daemon stops by itself between two looks (exit 0), so a service manager set to
+restart it always starts the new version. Run by hand, start it again.
+
 Exit codes: 0 done or stopped (status: the report was printed), 1 the config
 could not be used, no project is configured, or a daemon is already running,
 2 the command was written wrongly.
@@ -86,6 +90,11 @@ type daemonEnv struct {
 	// signalContext returns a context that ends when the process is asked to
 	// stop.
 	signalContext func() (context.Context, context.CancelFunc)
+	// binary reads the identity of afk's own program file as it is on disk
+	// now: once when the daemon starts and once at the top of every pass, so
+	// a new build installed over it is noticed (PLAN T2.2a). Nil means the
+	// daemon never looks. An error means the file cannot be seen.
+	binary func() (daemon.Binary, error)
 }
 
 func realDaemonEnv() daemonEnv {
@@ -94,6 +103,15 @@ func realDaemonEnv() daemonEnv {
 	// right answer for a machine whose home is unknown.
 	home, _ := os.UserHomeDir()
 	now := time.Now
+	// The path is asked for once, here, and the same text is read on every
+	// call. Asking again later would give the wrong answer exactly when it
+	// matters: on Linux os.Executable reads the /proc/self/exe link each time
+	// (os/executable_procfs.go), and that link follows the file this process
+	// was started from, not the name it had. Once a new build has replaced
+	// the file, the link no longer leads to the new one, so a fresh lookup
+	// could never see it. The path as it was at the start is where the new
+	// build lands.
+	exe, exeErr := os.Executable()
 	return daemonEnv{
 		config:       daemonconfig.DefaultDeps(),
 		state:        usagestate.DefaultDeps(),
@@ -111,6 +129,12 @@ func realDaemonEnv() daemonEnv {
 		},
 		signalContext: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		},
+		binary: func() (daemon.Binary, error) {
+			if exeErr != nil {
+				return daemon.Binary{}, exeErr
+			}
+			return daemon.ReadBinary(exe)
 		},
 	}
 }
@@ -220,13 +244,48 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		return 0
 	}
 
+	// The program file's identity is recorded here, after the lock (so only
+	// the daemon that really runs marks running.json) and never for --once,
+	// which leaves after one pass whatever is on disk.
+	//
+	// A file that cannot be read is not a reason to refuse to run: the daemon
+	// builds as before and only loses the restart on a new version. That loss
+	// is silent unless it is written down, so it is said once in the log and
+	// kept in running.json, where `afk daemon status` reads it. The seam is
+	// still handed to the loop; with no identity from the start the loop's
+	// rule (daemon.NewBinary) is to carry on whatever a later read says.
+	if env.binary != nil {
+		id, err := env.binary()
+		if err != nil {
+			logf("%s (%v)", binaryUnknownText, err)
+			if err := daemonstate.MarkBinaryUnknown(stateDir); err != nil {
+				logf("warning: that could not be recorded for \"afk daemon status\": %v", err)
+			}
+		} else {
+			settings.Binary = id
+		}
+		deps.Binary = env.binary
+	}
+
 	ctx, stop := env.signalContext()
 	defer stop()
 	logf("afk daemon started (pid %d): %d project(s), looking every %s", env.pid, len(projects), cfg.Tick)
-	_ = daemon.Run(ctx, projects, settings, cfg.Tick, deps) // Run only ever returns nil
+	// Both ways out are exit 0. Being asked to stop is not a failure, and
+	// neither is stopping for a new version: the daemon chose to, between two
+	// passes. The service manager starts it again because the unit says
+	// "always", not because of the exit code, and a non-zero code here would
+	// show every install as a crash in its log.
+	if err := daemon.Run(ctx, projects, settings, cfg.Tick, deps); errors.Is(err, daemon.ErrNewBinary) {
+		logf("afk daemon found a new version of itself on disk and is stopping so it can be started again. Every session is still running.")
+		return 0
+	}
 	logf("afk daemon stopped. Every session is still running; the next start picks them up.")
 	return 0
 }
+
+// binaryUnknownText is what the daemon's log and `afk daemon status` both say
+// when the daemon cannot read its own program file.
+const binaryUnknownText = "afk cannot see its own program file, so it will not restart by itself when a new version is installed. Restart it by hand after an install."
 
 // addProjectHelp says where the machine config goes and what to put in it.
 func addProjectHelp(cfgPath string) string {
@@ -363,7 +422,8 @@ func (n daemonNotifier) idle(p daemon.Project, title, body string) {
 
 // urgent tells the owner about an item at ntfy's highest priority (5), the
 // one that gets past a phone's quiet hours. The loop uses it for one thing: a
-// deploy that did not come up, which has stopped the line.
+// stopped line, whether a deploy did not come up or a project's after-merge
+// command failed.
 //
 // The text is the same as item's. InboxMessage is asked with "failure" and
 // blocking rather than the item's own kind and flag for one reason: those two
@@ -437,7 +497,8 @@ func realDaemonDeps(p provider.Provider, providerName, home string, now func() t
 			items, _, err := inbox.Store{Dir: inbox.Dir(root)}.List()
 			return items, err
 		},
-		now: now,
+		afterMerge: ship.RunAfterMerge,
+		now:        now,
 	}
 	return daemon.Deps{
 		Now: now,
@@ -493,7 +554,11 @@ type shipWiring struct {
 	sendInput func(worktree, session, text string) error
 	// listInbox lists the project's inbox items.
 	listInbox func(root string) ([]inbox.Item, error)
-	now       func() time.Time
+	// afterMerge runs a project's after-merge command in dir, with its output
+	// going to logPath, and waits for it (ship.RunAfterMerge). It is a field
+	// so a test sees which folder it was given and runs no shell.
+	afterMerge func(dir, command, logPath string, timeout time.Duration) (exitCode int, timedOut bool, err error)
+	now        func() time.Time
 }
 
 // daemonShip is the loop's Deps.Ship: read the project's [ship] table, then
@@ -553,6 +618,15 @@ func shipRequest(req daemon.ShipRequest, cfg projectconfig.Ship) ship.Request {
 // command but the "is the worktree clean" read runs there anyway), and gh
 // runs in the main checkout, because it finds the GitHub repository from the
 // folder it is run in and any checkout of the repository will do.
+//
+// The after-merge command is the opposite case: it runs in the main checkout
+// and nowhere else, whether or not the worktree is still there. It is the
+// project's own "install what was just merged" step (PLAN T2.2a), the merge
+// is on the base branch, and the main checkout is where the base branch is
+// checked out and was just brought up to date. The session's worktree holds
+// the task's branch, which by then is merged and about to be removed. Its run
+// record and its log are kept in the main checkout's .afk/build for the same
+// reason the stop marker is: they have to outlive the session.
 func shipDeps(req daemon.ShipRequest, w shipWiring) ship.Deps {
 	root := req.Project.Root
 	ghDir := req.Worktree
@@ -590,7 +664,73 @@ func shipDeps(req daemon.ShipRequest, w shipWiring) ship.Deps {
 		ClearReadFailure: func() error { return daemonstate.ClearShipPollFailure(root) },
 		Now:              w.now,
 		Save:             req.Save,
+		AfterMergeRecord: func() (string, string, ship.AfterMergeRun, bool) {
+			rec, ok := daemonstate.ReadAfterMerge(root)
+			if !ok {
+				return "", "", ship.AfterMergeRun{}, false
+			}
+			return rec.Task, rec.MergedSHA, afterMergeRun(rec), true
+		},
+		MarkAfterMerge: func(task, mergedSHA string, run ship.AfterMergeRun, startedAt time.Time) error {
+			return daemonstate.WriteAfterMerge(root, afterMergeRecord(task, mergedSHA, run, startedAt))
+		},
+		RunAfterMerge: func(command string, timeout time.Duration) (int, bool, error) {
+			return w.afterMerge(root, command, daemonstate.AfterMergeLogPath(root), timeout)
+		},
+		AfterMergeTail: func() string {
+			return ship.TailFile(daemonstate.AfterMergeLogPath(root), afterMergeTailLines, afterMergeTailBytes)
+		},
 	}
+}
+
+// How much of the after-merge command's output goes into the inbox item when
+// the command fails. The item is read on a phone, and the whole output is in
+// the log file the item names; the last lines are where a failing build says
+// what went wrong.
+const (
+	afterMergeTailLines = 20
+	afterMergeTailBytes = 2000
+)
+
+// afterMergeRun turns the run record on disk into what ship reads. Pure, so
+// each shape of record is a table row.
+//
+// A run counts as finished only when its finish time can be read. An empty
+// finished_at is the start mark, written before the command starts. One that
+// is there but does not parse is treated the same way, and the exit code
+// beside it is not believed: a record damaged that far cannot be trusted to
+// say the command succeeded, and "started, not known to have finished" is the
+// reading that stops the line and brings the owner, where "finished with exit
+// 0" would carry on to the deploy check on the word of a broken file.
+func afterMergeRun(rec daemonstate.AfterMerge) ship.AfterMergeRun {
+	if rec.FinishedAt == "" {
+		return ship.AfterMergeRun{}
+	}
+	at, err := time.Parse(time.RFC3339, rec.FinishedAt)
+	if err != nil {
+		return ship.AfterMergeRun{}
+	}
+	return ship.AfterMergeRun{Finished: true, TimedOut: rec.TimedOut, ExitCode: rec.ExitCode, FinishedAt: at}
+}
+
+// afterMergeRecord is the other direction: what ship knows about a run, as
+// the record that is written. Pure.
+//
+// A run that has not finished is written with no finish time, exit code 0 and
+// timed_out false whatever the caller passed, so a start mark always looks
+// the same and finished_at alone says which of the two a record is.
+func afterMergeRecord(task, mergedSHA string, run ship.AfterMergeRun, startedAt time.Time) daemonstate.AfterMerge {
+	rec := daemonstate.AfterMerge{
+		Task:      task,
+		MergedSHA: mergedSHA,
+		StartedAt: startedAt.UTC().Format(time.RFC3339),
+	}
+	if run.Finished {
+		rec.FinishedAt = run.FinishedAt.UTC().Format(time.RFC3339)
+		rec.ExitCode = run.ExitCode
+		rec.TimedOut = run.TimedOut
+	}
+	return rec
 }
 
 // envAnswered reports whether the owner has answered the item that asked them
@@ -711,7 +851,11 @@ type daemonStatus struct {
 	PID        int
 	StartedAt  string
 	Running    bool
-	Projects   []daemonProjectStatus
+	// BinaryUnknown is that record saying the daemon could not read its own
+	// program file when it started. It is only worth a line while that daemon
+	// is running: the next start writes the record afresh.
+	BinaryUnknown bool
+	Projects      []daemonProjectStatus
 }
 
 // daemonProjectStatus is one project's block.
@@ -745,6 +889,7 @@ func runDaemonStatus(stdout, stderr io.Writer, env daemonEnv) int {
 	if dir, err := usagestate.Dir(env.state); err == nil {
 		in.PID, in.StartedAt, in.HasMachine = daemonstate.ReadMachine(dir)
 		in.Running = in.HasMachine && env.alive(in.PID)
+		in.BinaryUnknown = daemonstate.BinaryUnknown(dir)
 	}
 	for _, p := range cfg.Projects {
 		// The same resolution the daemon does, so status reads the files
@@ -833,9 +978,10 @@ func daemonTaskRunning(st daemonstate.State) bool {
 	case string(daemon.ActLaunch), string(daemon.ActCreate), string(daemon.ActWait), string(daemon.ActUnpark):
 		return true
 	case string(daemon.ActShipStep), daemon.KindLineStopped:
-		// A shipping task and one whose deploy stopped the line both name a
-		// session, but its work is finished: the wait is on GitHub, the
-		// deploy or the owner, not on the session.
+		// A shipping task and one that stopped the line (a deploy that did
+		// not come up, or a failed after-merge command) both name a session,
+		// but its work is finished: the wait is on GitHub, the deploy or the
+		// owner, not on the session.
 		return false
 	case string(daemon.ActOwner), string(daemon.ActOwnerDone), string(daemon.ActNoLedger):
 		// These never have a session; listed so every kind the loop gained
@@ -913,6 +1059,12 @@ func renderDaemonStatus(in daemonStatus) string {
 		b.WriteString("The afk daemon is not running. What follows is how it left things.\n")
 	default:
 		b.WriteString("The afk daemon is not running, and has not been started on this machine yet.\n")
+	}
+	// Only for a daemon that is running. The note is about that process, and
+	// a stopped one's record would tell the owner to restart something that
+	// is not there; the next start looks again and writes its own answer.
+	if in.Running && in.BinaryUnknown {
+		b.WriteString(binaryUnknownText + "\n")
 	}
 
 	if len(in.Projects) == 0 {
