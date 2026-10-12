@@ -45,6 +45,22 @@ type Task struct {
 	Note string
 }
 
+// ownerMarkerRE matches a bracketed marker that is exactly "(owner)" or
+// starts "(owner;", ignoring case and allowing spaces after the opening
+// bracket and around the semicolon.
+var ownerMarkerRE = regexp.MustCompile(`(?i)\(\s*owner\s*(\)|;)`)
+
+// Owner reports whether the task is the owner's to do, not an agent's: its
+// title carries "(owner)" or "(owner; ...)", as in "T0.0 — Stand up the VM
+// (owner; not an agent task)".
+//
+// The match is deliberately narrow. The daemon once launched an agent for
+// the owner's VM checklist (PLAN T2.2), so the marker must be unmistakable.
+// "(owner + agent)" is an ordinary task that an agent does with the owner's
+// help, and "(owners)" or "(owner approval)" is just prose; treating any of
+// them as owner tasks would leave agent work undone.
+func (t Task) Owner() bool { return ownerMarkerRE.MatchString(t.Title) }
+
 var (
 	taskHeadingRE = regexp.MustCompile(`^#### (T\d+\.\d+[a-z]?)\s+[—–-]\s+(\S.*)$`)
 	badHeadingRE  = regexp.MustCompile(`^#### T\d`)

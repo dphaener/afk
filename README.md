@@ -466,22 +466,21 @@ When there is a task, the line starts with its id and title, for example `T4.2b 
 
 ### `afk ledger set` — Record a task's status by hand
 
-Set one task's status in the ledger. This is how you tell afk about work that was done before it was running, and how you correct a mistake.
+Set the status of one or more tasks in the ledger. This is how you tell afk about work that was done before it was running, and how you correct a mistake.
 
 ```bash
-afk ledger set [--project DIR] [--replaced-by IDS] <task-id> <status>
+afk ledger set [--project DIR] [--replaced-by ID,ID] <task-id>... <status>
 ```
 
-- `<task-id>` — Must be a task in the plan, so a typo is refused instead of being recorded for no task.
+- `<task-id>...` — One or more tasks, each of which must be in the plan, so a typo is refused instead of being recorded for no task. Every id is checked before anything is written, so one wrong id changes nothing.
 - `<status>` — One of `pending`, `running`, `shipping`, `parked`, `done`, `failed`, `superseded`.
-- `--replaced-by IDS` — Comma-separated task ids that replace the task. Required with `superseded`, and refused with any other status.
+- `--replaced-by IDS` — Comma-separated task ids that replace the task. Required with `superseded`, and refused with any other status. It names the replacements of one task, so it cannot be combined with several task ids.
 - `--project DIR` — The project to work in. Defaults to the current directory.
 
 To seed a project that is already part way through its plan:
 
 ```bash
-afk ledger set T1.1 done
-afk ledger set T1.2 done
+afk ledger set T1.1 T1.2 T1.3 done
 afk ledger set T4.2 superseded --replaced-by T4.2a,T4.2b
 afk next        # names the first task still to do
 ```
@@ -489,6 +488,31 @@ afk next        # names the first task still to do
 Running the same command twice changes nothing the second time. Several of these commands can run at once; they take turns using a lock file.
 
 **Exit codes:** 0 when the task has the status (changed now or already), 1 when the plan or ledger could not be used or the task is not in the plan, 2 when the command was written wrongly (for example an unknown status).
+
+### `afk ledger init` — Create the ledger for a project that has none
+
+A project with no ledger file is one afk cannot judge: it cannot tell a new project from one that is already part built, so the daemon starts nothing and raises an inbox item (see the daemon section). `afk ledger init` creates the file.
+
+```bash
+afk ledger init [--project DIR] [--done-through ID] [--done ID,ID]
+```
+
+- No flags — Creates an empty ledger. Every task is `pending`, so a new project starts from its first task.
+- `--done-through ID` — Marks every task up to and including `ID`, in the plan's order, as `done`. Use it for a project that is part built.
+- `--done ID,ID` — Marks the listed tasks `done`. It can be combined with `--done-through`, for finished tasks after that point.
+- `--project DIR` — The project to work in. Defaults to the current directory.
+
+```bash
+afk ledger init                                      # a new project
+afk ledger init --done-through T1.4                  # T0.0 to T1.4 are built
+afk ledger init --done-through T1.4 --done T2.1,T2.3
+```
+
+An id that is not a task in the plan is refused, and nothing is written. If the ledger already exists the command leaves it alone, says so and exits 1; use `afk ledger set` to change an existing ledger. On success it prints `Created <path> with N task(s) marked done.`
+
+If `--done-through` covers a task that was never built because other tasks replaced it (one kept in the plan only as history), it is marked `done`, which is not true of it. Follow with `afk ledger set {id} superseded --replaced-by …` to record it properly.
+
+**Exit codes:** 0 when the ledger was created, 1 when the plan could not be used, an id is not in the plan, the ledger already exists or the file could not be written, 2 when the command was written wrongly.
 
 ### `afk usage` — Show how much of your usage is spent
 
@@ -673,13 +697,32 @@ afk inbox answer <id> <text>       # answer it
 
 On its next pass the daemon sees every item answered and marks the task `running` again. A stall or host-stopped report works differently: answering it silences the report and leaves the task `running`, so resume the session by hand if it needs it.
 
-**Shipping.** A finished task stops at `shipping`: afk does not push, open a pull request or merge for you yet. Until that is built, do it by hand. Merge the task's branch yourself, then tell afk:
+**Shipping.** When a session finishes its task, the daemon takes the work the rest of the way. The task stays `shipping` and the daemon does these in order, saving where it got to after each step, so a restart or a crash never pushes, opens or merges twice:
 
-```bash
-afk ledger set T4.3 done
-```
+1. It checks the session left nothing uncommitted and that its branch has a commit the base branch does not.
+2. It pushes the branch (never a force push).
+3. It opens a pull request against the base branch, titled from the branch's last commit.
+4. It waits for the pull request's checks, asking GitHub at most every 20 seconds.
+5. Red checks are re-run, up to `ci_reruns` times.
+6. Still red, or the branch conflicts with its base: it hands the failure back to the session, up to `ci_fix_cycles` times. It writes what failed to `ci-failure.md` in the session's `.afk/<session>/` folder and types one line into the session telling it to read the file and commit a fix. It does not tell the session to push. The daemon pushes the new commit itself once the session has been quiet for two minutes, and the checks run again.
+7. When every check has passed, and the diff adds no match for `required_env_pattern`, it merges the pull request with `merge_method`.
+8. After the merge it brings your **project checkout's base branch up to date**: it fetches and fast-forwards the local base to GitHub (never a merge commit, never a reset). The next task is cut from that branch, so it holds the work just merged. It also deletes the merged branch on GitHub.
+9. If `health_url` is set and `deploys` is true, it asks that address until it answers with a 2xx status, or until `deploy_timeout` has passed since the merge. Without a `health_url` there is no deploy check.
+10. It removes the finished session (the same clean-up as `afk clean`) and marks the task `done`. The next task can then start.
 
-The daemon then starts the next task. `afk clean t4-3` removes the finished session; if you leave it, its agent sits idle with nothing to do.
+**A pull request with no CI checks is never merged.** If GitHub shows no check on the pull request five minutes after it opened (or only skipped ones), the task parks with an item titled `No checks ran on the pull request for <task>`. It asks you to add a CI workflow that runs on pull requests, or to merge the pull request yourself and run `afk ledger set <task> done`. Answering the item only makes afk wait another five minutes for checks.
+
+**What parks a shipping task.** The same rule as above applies: the daemon raises a blocking inbox item that says what happened and what to do, and the task is `parked` until you answer. It parks when: the GitHub tool is missing or logged out; the session left uncommitted changes or committed nothing; a push, a pull request, a re-run or a merge is refused; the pull request was closed without merging or has vanished; the branch is gone from GitHub or has commits the session does not; no checks ran (above); the session made no commit within an hour of a hand-back; a red CI is still red after `ci_fix_cycles` hand-backs; the diff adds something `required_env_pattern` matches (the item names the variables, and you set them before you answer); your local base branch cannot be fast-forwarded (for example because it is checked out in another worktree); or GitHub could not be read for 30 minutes. **Answering the item continues the ship from where it stopped, with a fresh set of attempts**: the re-run and hand-back counts go back to zero and the timers start again.
+
+**A hand-back or an answered item types into the session.** The daemon has only the session's one terminal to type into, so it takes the session from whoever has it. If a dashboard pane or `afk attach` is open on that session, it is told the session was taken over (for about half a second) and you must open it again. Do not leave an attach open on a session the daemon is shipping if you do not want it interrupted.
+
+**The stopped line.** If the deploy does not answer healthy within `deploy_timeout`, the merge has already happened, and the daemon stops the whole project: it writes `.afk/build/stopped`, raises a `failure` item and sends the notification at urgent priority. No new task starts there, and `afk daemon status` shows a `Stopped:` line. Check the deploy, fix it or roll it back, then run `afk resume`. That clears the stopped line and any pause together, and the task is marked `done` on the next pass. Answering the item does not clear the stop; only `afk resume` does.
+
+**A pause does not stop a ship that is in progress.** `afk pause` holds back new tasks, and a task being shipped carries on to the end (push, pull request, merge and clean-up).
+
+**Owner tasks.** A task whose heading title carries `(owner)` or `(owner; …)`, such as `T0.0 — Stand up the VM (owner; not an agent task)`, is yours to do. The daemon never starts an agent for it. It raises one blocking inbox item, `Your task: <id> — <title>`, and the task is `parked`. Tasks that depend on it wait. When the work is finished, answer the item (`afk inbox answer <id> done`); the answer marks the task `done`, with no session, branch or review. A title that says `(owner + agent)` is an ordinary task: an agent does it with your help.
+
+**A project with no ledger.** If `.afk/build/ledger.json` does not exist, the daemon starts nothing and raises one blocking item, `This project has no task list yet`, with the `afk ledger init` commands for a new project and for a part-built one. It raises it once, not on every pass. You do not need to answer it: the daemon closes it by itself once the ledger exists.
 
 **Unattended agents.** Nobody can answer a permission prompt, so the daemon starts each agent with permissions bypassed (for Claude Code, `--permission-mode bypassPermissions`). The agent can then run any command in its worktree without asking, so run the daemon only on a machine and a project you are happy to give that to. Before it starts a task, the daemon checks that:
 
@@ -689,7 +732,7 @@ The daemon then starts the next task. `afk clean t4-3` removes the finished sess
 
 If a check fails, the daemon adds a blocking `failure` item to your inbox that says what to do, and starts nothing until you answer it. A provider with no unattended mode afk knows (Codex and OpenCode today) cannot be used with the daemon.
 
-**What it writes.** In each project's main checkout: `.afk/build/daemon.json` (what it last did and why), `.afk/build/paused` (the pause flag), `.afk/build/ledger.json` (each task's status) and `.afk/log/decisions.jsonl` (one line for each decision). Each unattended session also has an empty file, `.afk/<session>/unattended`, that keeps the unattended mode on when its host restarts the agent. In afk's state folder, `daemon.lock` and `running.json` enforce the one-daemon rule. The daemon logs to stderr, one line each with a time; under systemd that is the journal.
+**What it writes.** In each project's main checkout: `.afk/build/daemon.json` (what it last did and why), `.afk/build/paused` (the pause flag), `.afk/build/stopped` (the stopped line, with the task and the reason), `.afk/build/ship-poll` (when GitHub was last asked, so a one-second tick does not make a call each second, and when its reads started failing), `.afk/build/ledger.json` (each task's status) and `.afk/log/decisions.jsonl` (one line for each decision). Each unattended session also has an empty file, `.afk/<session>/unattended`, that keeps the unattended mode on when its host restarts the agent. In afk's state folder, `daemon.lock` and `running.json` enforce the one-daemon rule. The daemon logs to stderr, one line each with a time; under systemd that is the journal. A hand-back writes `ci-failure.md` in the session's `.afk/<session>/` folder, which is removed with the session.
 
 **`afk daemon --once`** does a single pass over every project and prints one line each: `<project>: <what it did> (<task>, session <session>): <why>`. It takes the same lock as the daemon, so it exits 1 while a daemon is running. Use it to try a setup, or from cron.
 
@@ -720,9 +763,39 @@ afk pause [project]
 afk resume [project]
 ```
 
-`afk pause` writes `.afk/build/paused` in the project's main checkout, so the daemon starts no new task there. A task that is running finishes, and a parked task is not started again until you resume. `afk resume` removes the file. `project` is a project name from `config.toml` or a folder; with nothing given it is the current folder's main checkout, even from inside a session's worktree.
+`afk pause` writes `.afk/build/paused` in the project's main checkout, so the daemon starts no new task there. A task that is running finishes, and a parked task is not started again until you resume. `afk resume` removes the file, and it also clears a stopped line (see "The stopped line" in the daemon section), printing which of the two it cleared. `project` is a project name from `config.toml` or a folder; with nothing given it is the current folder's main checkout, even from inside a session's worktree.
 
-**Exit codes:** 0 when done (resuming a project that was not paused is still 0), 1 when the project or the config could not be used or the file could not be written or removed, 2 when the command was written wrongly.
+**Exit codes:** 0 when done (resuming a project that was not paused or stopped is still 0), 1 when the project or the config could not be used or the file could not be written or removed, 2 when the command was written wrongly.
+
+### `[ship]` in `afk.toml` — How the daemon ships a finished task
+
+Every key is optional. Put them under `[ship]` in `afk.toml`, or in `afk.local.toml` (a key there wins). A key of the wrong type, a value out of range or a pattern that does not compile is an error that names the file and the key.
+
+```toml
+# afk.toml
+[ship]
+base = "main"
+merge_method = "merge"
+ci_reruns = 1
+ci_fix_cycles = 2
+deploys = true
+health_url = "https://example.com/health"
+deploy_timeout = "15m"
+required_env_pattern = ""
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `base` | the session's own base branch | The branch pull requests target and that is brought up to date after a merge. If it is empty and the session has no base either, the task parks rather than guessing. |
+| `merge_method` | `"merge"` | How the pull request is merged: `merge`, `squash` or `rebase`. |
+| `ci_reruns` | `1` | How many times red checks are re-run before the failure goes back to the session. `0` hands back at once. |
+| `ci_fix_cycles` | `2` | How many times a red CI (or a conflict) is handed back to the session before the task parks. |
+| `deploys` | `true` | Whether merging deploys. With `false` there is no deploy check. |
+| `health_url` | `""` (none) | The address asked after the merge. It must start with `http://` or `https://`. Healthy is any 2xx answer. With no `health_url` the deploy is not polled, whatever `deploys` says. It is never printed in a message, because it may hold a password. |
+| `deploy_timeout` | `"15m"` | How long after the merge the deploy may take to turn healthy, as a length of time above zero such as `"15m"` or `"1h30m"`. Past it, the line stops. |
+| `required_env_pattern` | `""` (no check) | A regular expression. If the branch adds a line that matches, the task parks before the merge with an item naming the variable (the first capture group of the match, or the whole match if there is no group). For example `\$\{([A-Z_]+):\?\}` catches a new required `${VAR:?}`. |
+
+A pull request that has no CI checks is never merged (see "Shipping" in the daemon section). The timings that are not here (five minutes for checks to appear, an hour for a fix after a hand-back, two minutes of quiet before a push) are fixed.
 
 ### `afk.local.toml` — Private project settings
 
@@ -846,6 +919,7 @@ A directory counts as a project only if it's a git repo root (a main checkout, n
 | **git-spice** (`gs`) | `afk new`'s base picker offers the repo's local branches with trunk first. New branches are plain git branches. `afk dash`'s stack panel is hidden. | Explicit `--base BRANCH` to `afk new`. Stacking is still possible via `base_branch` in status.json. Use `--no-git-spice` to force plain-git mode. |
 | **worktrunk** (`wt`) | **When present (with git-spice also installed):** Branches are created via `wt switch --create` and are tracked in git-spice best-effort. The base picker shows all local branches (trunk, tracked stack, every other local branch). When absent, git-spice creates and tracks the branch when the base is tracked, and falls back to a plain git branch with a warning otherwise. | Worktrees are created at `.claude/worktrees/`. |
 | **notifier** (`alerter`, `osascript`) | Session state updates silently (no desktop notifications). Awaiting-input state is still recorded in status.json and visible in the dashboard. Desktop notifications are **macOS-only**. `alerter` provides full-fidelity notifications (sound, per-session replacement, click-to-focus); `osascript` is the reduced-fidelity fallback (formatting only — no click-to-focus). | Install alerter: `brew install vjeantet/tap/alerter` (note: this is a **tap**, not homebrew-core). If a toast vanishes before you can click it, the setting to look at is System Settings → Notifications → **Terminal** (alerter delivers under Terminal's identity, so look for Terminal, not alerter) → style Alerts rather than Banners. **Unverified:** whether that makes these toasts persist was never observed — System Settings cannot be driven programmatically, so it is yours to confirm, and on at least one machine `com.apple.Terminal` is absent from `com.apple.ncprefs.plist` entirely (while delivery still works), so the row may not appear until macOS registers it. Click-to-focus requires a running `afk dash` (which records the pane metadata); without it the toast still appears with formatting, sound, and grouping but has no Focus button. |
+| **gh** (GitHub CLI) | The daemon cannot push-and-merge: a finished task parks with an inbox item saying the GitHub tool is missing or not logged in. Nothing else in afk uses `gh`. | Install `gh` and run `gh auth login`, then answer the item; the ship carries on from where it stopped. Or push, merge and run `afk ledger set <task> done` by hand. |
 
 **Push notifications** (`afk inbox`) use `ntfy_url` (from `afk.local.toml`, or `afk.toml`) and need no desktop notifier, so they work on Linux; with no `ntfy_url` they are silent.
 

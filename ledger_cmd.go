@@ -29,6 +29,10 @@ func cmdLedger(args []string) {
 		cwd, _ := os.Getwd()
 		home, _ := os.UserHomeDir()
 		os.Exit(runLedgerSet(args[1:], os.Stdout, os.Stderr, cwd, home, resolveGitCommonDirIn))
+	case "init":
+		cwd, _ := os.Getwd()
+		home, _ := os.UserHomeDir()
+		os.Exit(runLedgerInit(args[1:], os.Stdout, os.Stderr, cwd, home, resolveGitCommonDirIn))
 	default:
 		fmt.Fprintf(os.Stderr, "afk ledger: unknown subcommand %q\n", args[0])
 		printLedgerUsage(os.Stderr)
@@ -36,25 +40,37 @@ func cmdLedger(args []string) {
 	}
 }
 
-const ledgerSetUsageLine = "afk ledger set [--project DIR] [--replaced-by ID,ID] <task-id> <status>"
+const ledgerSetUsageLine = "afk ledger set [--project DIR] [--replaced-by ID,ID] <task-id>... <status>"
+
+const ledgerInitUsageLine = "afk ledger init [--project DIR] [--done-through ID] [--done ID,ID]"
 
 func printLedgerUsage(w io.Writer) {
 	fmt.Fprintf(w, `afk ledger — record where a master-plan task stands
 
 Usage:
   %s
+  %s
 
-Sets one task's status in .afk/build/ledger.json in the project's main checkout.
+Sets the status of one or more tasks in .afk/build/ledger.json in the project's
+main checkout, for example: afk ledger set T0.1 T0.2 T0.3 done
 <status> is one of pending, running, shipping, parked, done, failed, superseded.
 A task with no entry is pending. Only the status (and, for superseded, the
 replacing tasks) is written; everything else recorded for the task is kept.
 
   superseded needs --replaced-by with the task ids that take its place,
   for example: afk ledger set T4.2 superseded --replaced-by T4.2a,T4.2b
+  (--replaced-by takes a single task id before the status, not several).
+
+init creates the ledger for a project that has none, for work that was built
+before afk tracked it:
+  --done-through ID  marks every task up to and including ID, in plan order, done
+  --done ID,ID       marks the listed tasks done (combines with --done-through)
+With neither flag it creates an empty ledger. It never changes a ledger that
+already exists; use "afk ledger set" for that.
 
 Exit codes: 0 done (or nothing to do), 1 the plan, the ledger or a task was not
 found or the ledger could not be written, 2 the command was written wrongly.
-`, ledgerSetUsageLine)
+`, ledgerSetUsageLine, ledgerInitUsageLine)
 }
 
 // runLedgerSet implements `afk ledger set` and returns the exit code: 0 when
@@ -106,11 +122,11 @@ func runLedgerSet(args []string, stdout, stderr io.Writer, cwd, home string, git
 		return 2
 	}
 
-	if len(words) != 2 {
-		return usage("expected a task id and a status, but got %d word(s).", len(words))
+	if len(words) < 2 {
+		return usage("expected at least one task id and a status, but got %d word(s).", len(words))
 	}
-	id := words[0]
-	st, err := ledger.ParseStatus(words[1])
+	ids := dedupe(words[:len(words)-1])
+	st, err := ledger.ParseStatus(words[len(words)-1])
 	if err != nil {
 		return usage("%v.", err)
 	}
@@ -129,8 +145,13 @@ func runLedgerSet(args []string, stdout, stderr io.Writer, cwd, home string, git
 	if st == ledger.Superseded && len(repl) == 0 {
 		return usage("a superseded task needs the tasks that replace it. Add --replaced-by with their ids, for example --replaced-by T4.2a,T4.2b.")
 	}
-	if slices.Contains(repl, id) {
-		return usage("%s cannot be replaced by itself. Name the other tasks in --replaced-by.", id)
+	if replacedGiven && len(ids) > 1 {
+		return usage("--replaced-by names the tasks that replace one task, so it cannot be used with %d task ids. Run the command once for each superseded task.", len(ids))
+	}
+	for _, id := range ids {
+		if slices.Contains(repl, id) {
+			return usage("%s cannot be replaced by itself. Name the other tasks in --replaced-by.", id)
+		}
 	}
 
 	root, err := resolveBuildRoot(*proj, cwd, home, gitCommonDir)
@@ -147,35 +168,130 @@ func runLedgerSet(args []string, stdout, stderr io.Writer, cwd, home string, git
 	for _, t := range state.Tasks {
 		inPlan[t.ID] = true
 	}
-	for _, want := range append([]string{id}, repl...) {
+	for _, want := range append(slices.Clone(ids), repl...) {
 		if !inPlan[want] {
 			fmt.Fprintf(stderr, "afk ledger set: %s is not a task in %s.\nRun \"afk tasks\" to see the task ids.\n", want, state.PlanPath)
 			return 1
 		}
 	}
 
-	var old ledger.Status
-	var changed bool
+	olds := make([]ledger.Status, len(ids))
+	changed := make([]bool, len(ids))
 	err = ledger.Update(root, func(l *ledger.Ledger) error {
-		old = l.Status(id)
-		var serr error
-		changed, serr = l.Set(id, st, repl)
-		return serr
+		for i, id := range ids {
+			olds[i] = l.Status(id)
+			var serr error
+			if changed[i], serr = l.Set(id, st, repl); serr != nil {
+				return serr
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "afk ledger set: could not update %s: %v\nNothing was changed. Fix the problem above and run the command again.\n", ledger.Path(root), err)
 		return 1
 	}
 
-	if !changed {
-		fmt.Fprintf(stdout, "%s is already %s\n", id, st)
-		return 0
+	for i, id := range ids {
+		if !changed[i] {
+			fmt.Fprintf(stdout, "%s is already %s\n", id, st)
+			continue
+		}
+		line := fmt.Sprintf("%s: %s → %s", id, olds[i], st)
+		if st == ledger.Superseded {
+			line += " (replaced by " + strings.Join(dedupe(repl), ", ") + ")"
+		}
+		fmt.Fprintln(stdout, line)
 	}
-	line := fmt.Sprintf("%s: %s → %s", id, old, st)
-	if st == ledger.Superseded {
-		line += " (replaced by " + strings.Join(dedupe(repl), ", ") + ")"
+	return 0
+}
+
+// runLedgerInit implements `afk ledger init` and returns the exit code: 0 when
+// the ledger was created, 1 when the plan cannot be used, an id is not in the
+// plan, or a ledger already exists, 2 for a command line that could never work.
+//
+// It refuses an existing ledger rather than merging: init is for a project
+// whose earlier work predates the ledger, and a merge could quietly overwrite
+// what the daemon has recorded since. Ids are all checked first so a typo
+// leaves no ledger behind (an empty ledger would mean "nothing is built").
+func runLedgerInit(args []string, stdout, stderr io.Writer, cwd, home string, gitCommonDir func(string) string) int {
+	fs := flag.NewFlagSet("afk ledger init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	proj := addProjectFlag(fs)
+	doneThrough := fs.String("done-through", "", "Mark every task up to and including this id done")
+	doneList := fs.String("done", "", "Comma-separated task ids to mark done")
+	fs.Usage = func() { printLedgerUsage(stderr) }
+
+	var words []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			return 2
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		words = append(words, rest[0])
+		rest = rest[1:]
 	}
-	fmt.Fprintln(stdout, line)
+	if len(words) > 0 {
+		fmt.Fprintf(stderr, "afk ledger init: unexpected word %q. Task ids go after --done-through or --done.\nUsage: %s\n", words[0], ledgerInitUsageLine)
+		return 2
+	}
+
+	root, err := resolveBuildRoot(*proj, cwd, home, gitCommonDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "afk ledger init: cannot tell which project to use. Pass --project with the folder that holds the master plan.\nUsage: %s\n", ledgerInitUsageLine)
+		return 2
+	}
+	state, err := loadBuildState(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "afk ledger init: %v\n", err)
+		return 1
+	}
+
+	inPlan := make(map[string]bool, len(state.Tasks))
+	for _, t := range state.Tasks {
+		inPlan[t.ID] = true
+	}
+	var done []string
+	if id := strings.TrimSpace(*doneThrough); id != "" {
+		if !inPlan[id] {
+			fmt.Fprintf(stderr, "afk ledger init: %s is not a task in %s.\nRun \"afk tasks\" to see the task ids. Nothing was written.\n", id, state.PlanPath)
+			return 1
+		}
+		for _, t := range state.Tasks {
+			done = append(done, t.ID)
+			if t.ID == id {
+				break
+			}
+		}
+	}
+	for _, id := range strings.Split(*doneList, ",") {
+		if id = strings.TrimSpace(id); id == "" {
+			continue
+		}
+		if !inPlan[id] {
+			fmt.Fprintf(stderr, "afk ledger init: %s is not a task in %s.\nRun \"afk tasks\" to see the task ids. Nothing was written.\n", id, state.PlanPath)
+			return 1
+		}
+		done = append(done, id)
+	}
+	done = dedupe(done)
+
+	if err := ledger.Init(root, done); err != nil {
+		if errors.Is(err, ledger.ErrExists) {
+			fmt.Fprintf(stderr, "afk ledger init: the ledger already exists at %s, so it was left alone.\nUse \"afk ledger set\" to change it.\n", ledger.Path(root))
+			return 1
+		}
+		fmt.Fprintf(stderr, "afk ledger init: could not create %s: %v\nNothing was written. Fix the problem above and run the command again.\n", ledger.Path(root), err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Created %s with %d task(s) marked done.\n", ledger.Path(root), len(done))
 	return 0
 }
 

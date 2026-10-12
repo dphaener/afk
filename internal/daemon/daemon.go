@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
@@ -18,6 +19,8 @@ import (
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/nexttask"
 	"github.com/dphaener/afk/internal/session"
+	"github.com/dphaener/afk/internal/ship"
+	"github.com/dphaener/afk/internal/state"
 )
 
 // This file is the impure half of the loop. Tick reads one Observation from
@@ -32,7 +35,10 @@ import (
 //
 // Everything that reaches outside the project's own plain files is a field
 // of Deps, so the tests drive the whole loop with a fake agent that only
-// writes status.json. The inbox, the ledger, the decision log and the state
+// writes status.json and a fake ship that only saves its progress. Git,
+// GitHub, the health check and the session's terminal are never touched from
+// this package: the ship behind Deps.Ship owns the first three and
+// Deps.SendPrompt the last. The inbox, the ledger, the decision log and the state
 // files are used directly: they are plain files under Root with one writer
 // package each, and faking them would only test the fake.
 
@@ -82,10 +88,25 @@ const (
 	// StopTitle is the item raised when the plan, the ledger or the project
 	// config cannot be used.
 	StopTitle = "afk cannot run this project"
+	// NoLedgerTitle is the blocking item raised when the project has no
+	// ledger file. The loop answers it by itself once the file is there.
+	NoLedgerTitle = "This project has no task list yet"
+	// OwnerTitlePrefix starts the title of the item raised for a task that
+	// is the owner's to do. The task's id and title follow it.
+	OwnerTitlePrefix = "Your task: "
 )
 
+// maxItemTitle is the longest title the inbox stores, counted in characters
+// (internal/inbox's maxTitleChars, which is not exported). A master-plan
+// heading has no such limit, so a title built from one is cut to fit; a
+// longer one would be refused by the store and the owner would never hear
+// of their task. TestTickOwnerTask's long-title row adds a real item at
+// exactly this length, so the two numbers cannot drift apart unnoticed.
+const maxItemTitle = 200
+
 // State kinds the executor writes that are not an ActionKind. Every other
-// state's kind is the kind of the action taken.
+// state's kind is the kind of the action taken. KindLineStopped, beside
+// Decide in decide.go, is the third.
 const (
 	// KindStopped: the project's folder is not there. Nothing is written.
 	KindStopped = "stopped"
@@ -96,6 +117,21 @@ const (
 	ReasonNoProject = "project folder not found"
 )
 
+// Kinds lists every state kind the loop can write, each once. It is here so
+// that whatever shows a state to the owner can test that it has plain words
+// for all of them, and a kind added to the loop cannot reach the owner as a
+// bare code word without a test saying so.
+func Kinds() []string {
+	return []string{
+		string(ActStop), string(ActWait), string(ActCreate), string(ActShip),
+		string(ActFail), string(ActPark), string(ActHostGone), string(ActStall),
+		string(ActUnpark), string(ActLaunch), string(ActIdle),
+		string(ActNoLedger), string(ActOwner), string(ActOwnerDone),
+		string(ActShipStep),
+		KindStopped, KindBlocked, KindLineStopped,
+	}
+}
+
 // The decision log's rule column: which part of docs/PLAN.md took the
 // decision.
 const (
@@ -104,6 +140,7 @@ const (
 	ruleWatch     = "PLAN §5.3 step 4"
 	rulePlan      = "PLAN §5.1"
 	ruleTokens    = "PLAN §4.7"
+	ruleShip      = "PLAN §5.4"
 )
 
 // LaunchRequest asks for one session to be created and its agent started.
@@ -114,9 +151,41 @@ type LaunchRequest struct {
 	Task, Session, Description string
 }
 
+// ShipRequest asks for one task's ship to be taken at most one step forward.
+// It is what the loop knows about the ship on this tick; everything the ship
+// reads for itself (git, GitHub, the deploy, the project's [ship] table) is
+// the business of whatever is behind Deps.Ship.
+type ShipRequest struct {
+	Project Project
+	// Entry is the task's ledger entry as read at the start of the tick. Its
+	// Session and Branch name what is being shipped.
+	Entry ledger.Entry
+	// Worktree is the session's worktree and Base the branch it was cut
+	// from, both as discovered on this tick (Base is status.json's
+	// base_branch). Both are empty when the session is not on disk, which is
+	// an ordinary case and not an error: a session is cleaned up before the
+	// ledger says done, and a daemon killed between the two comes back to a
+	// shipping task with nothing left to look at. The ship's last states need
+	// neither. Base is also empty when status.json cannot be read; the
+	// project's own `[ship] base` is then the only base there is.
+	Worktree, Base string
+	// Progress is the ship's progress as the ledger holds it.
+	Progress ship.Progress
+	// Save writes the progress to the ledger entry. The ship calls it after
+	// each step, so the ledger always holds the state the next action leaves
+	// from, and a daemon killed anywhere starts again from a state that is
+	// true. It fails when the entry is no longer shipping (the owner moved it
+	// by hand), and the ship must then do nothing more.
+	Save func(ship.Progress) error
+	// Stop writes the project's stop marker. The ship calls it, before it
+	// saves the stopped state, when a deploy does not come up healthy.
+	Stop func(task, reason string) error
+}
+
 // Deps is every call the loop makes outside the project's plain files. Now,
 // LoadBuild, Sessions, Preflight, Launch and RecordTokens must be set; Notify,
-// NotifyIdle and Log may be nil.
+// NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt and
+// Clean may be nil.
 type Deps struct {
 	// Now is the clock. The package never reads the real one, so a test
 	// moves time by hand.
@@ -145,6 +214,58 @@ type Deps struct {
 	NotifyIdle func(p Project, title, body string)
 	// Log takes one line for the daemon's own log.
 	Log func(format string, args ...any)
+	// LedgerExists reports whether the project has a ledger file, damaged or
+	// not. Nil means ledger.Exists. It is separate from LoadBuild because
+	// LoadBuild cannot say: a missing ledger loads as an empty one, with no
+	// error.
+	LedgerExists func(root string) bool
+	// Stopped reports whether the project's line is stopped, and the reason
+	// the stop marker gives (empty when it gives none). Nil means the stop
+	// marker in the project's own files, read with internal/daemonstate.
+	Stopped func(root string) (reason string, stopped bool)
+	// Ship takes a shipping task's ship at most one step forward and says
+	// what the loop should do about it. Nil means there is no shipper: a
+	// finished task then stays in `shipping` until the owner moves it by
+	// hand, which is what the loop did before it could ship.
+	Ship func(ShipRequest) ship.Outcome
+	// SendPrompt types one line into a session's terminal and presses Enter.
+	// Nil means nothing is typed: an un-parked session is then left for the
+	// owner to resume, as before.
+	SendPrompt func(worktree, session, text string) error
+	// Clean removes a shipped task's session: its worktree, its files and its
+	// merged branch. A session that is not there is not an error. Nil means
+	// nothing is cleaned and the task is marked done all the same.
+	Clean func(p Project, session string) error
+	// NotifyUrgent tells the owner about an item at the highest priority. It
+	// is used for one thing, a stopped line: a deploy that is down is the one
+	// message that should get past a phone's quiet hours. Nil means Notify is
+	// used instead. It is a second field, and not an argument added to
+	// Notify, so that every existing Notify keeps working unchanged.
+	NotifyUrgent func(p Project, it inbox.Item)
+}
+
+// ledgerExists is Deps.LedgerExists with its default.
+func (d Deps) ledgerExists(root string) bool {
+	if d.LedgerExists != nil {
+		return d.LedgerExists(root)
+	}
+	return ledger.Exists(root)
+}
+
+// stopped is Deps.Stopped with its default.
+//
+// The default asks twice on purpose. ReadStop gives the reason but says "no
+// marker" for any read error, including a marker that is there and cannot be
+// opened. Stopped only looks for the file. A marker that exists must stop the
+// line whether or not it can be read (running on past a broken deploy is the
+// wrong direction to fail in), so existence decides and the reason is taken
+// when there is one.
+func (d Deps) stopped(root string) (string, bool) {
+	if d.Stopped != nil {
+		return d.Stopped(root)
+	}
+	_, reason, ok := daemonstate.ReadStop(root)
+	return reason, ok || daemonstate.Stopped(root)
 }
 
 func (d Deps) logf(format string, args ...any) {
@@ -170,9 +291,13 @@ type pass struct {
 	// planPath is the master plan's path as LoadBuild gave it.
 	planPath string
 	// row is the discovered session the SessionView was built from, kept
-	// because shipping and failing need two things the view does not carry:
-	// the agent's own session id (for the token ledger) and the verdict.
+	// because shipping and failing need things the view does not carry: the
+	// agent's own session id (for the token ledger), the verdict, and the
+	// worktree path and base branch the ship works in.
 	row *discover.SessionState
+	// parkedRows is the same for Observation.Parked, by task id: an un-park
+	// needs the worktree to type the resume command into.
+	parkedRows map[string]*discover.SessionState
 }
 
 // Tick runs the loop once for one project and returns the project's state as
@@ -256,7 +381,9 @@ func (t *pass) run(s Settings) daemonstate.State {
 		StallAfter: s.StallAfter,
 		HostGrace:  s.HostGrace,
 		Paused:     daemonstate.Paused(root),
+		NoLedger:   !t.d.ledgerExists(root),
 	}
+	o.StopReason, o.Stopped = t.d.stopped(root)
 	if o.StallAfter <= 0 {
 		o.StallAfter = defaultStallAfter
 	}
@@ -283,17 +410,37 @@ func (t *pass) run(s Settings) daemonstate.State {
 	}
 
 	if o.BuildErr == nil {
-		if e, ok := watched(o.Ledger); ok {
+		// One listing serves both readers, and it is made only on a tick
+		// that uses it: listing sessions costs a git call.
+		e, isWatched := watched(o.Ledger)
+		parked := parkedSessions(o.Ledger)
+		if isWatched || len(parked) > 0 {
 			rows, err := t.d.Sessions(root)
-			if err != nil {
+			switch {
+			case err != nil && isWatched:
 				// Never read as "the session is missing": that would
 				// create it a second time over a session that is there.
 				t.d.logf("%s: could not look at the sessions for %s: %v", t.p.Name, e.ID, err)
 				t.obs = o
 				return daemonstate.State{Kind: string(ActWait), Task: e.ID, Session: e.Session,
 					Reason: fmt.Sprintf("the project's sessions could not be read (%v); trying again on the next pass", err)}
+			case err != nil:
+				// Nothing is in flight, so the tick goes on: a launch or an
+				// idle state does not need the sessions. Only an un-park
+				// does, and Decide holds that back (ParkedErr).
+				t.d.logf("%s: could not look at the sessions of the parked tasks: %v", t.p.Name, err)
+				o.ParkedErr = err
+			case isWatched:
+				o.Session, t.row = viewOf(rows, e.Session)
+			default:
+				o.Parked = make(map[string]*SessionView, len(parked))
+				t.parkedRows = make(map[string]*discover.SessionState, len(parked))
+				for _, pe := range parked {
+					if v, row := viewOf(rows, pe.Session); v != nil {
+						o.Parked[pe.ID], t.parkedRows[pe.ID] = v, row
+					}
+				}
 			}
-			o.Session, t.row = viewOf(rows, e.Session)
 		}
 	}
 	t.obs = o
@@ -308,10 +455,22 @@ func (t *pass) run(s Settings) daemonstate.State {
 	if a.Kind != ActStop && o.InboxErr == nil {
 		t.clearStops()
 	}
+	// The same for the missing ledger, and on its own condition: the item
+	// says "there is no ledger file", and that stops being true the moment
+	// there is one, even a damaged one that the tick then stops on.
+	if !o.NoLedger && o.InboxErr == nil {
+		t.clearNoLedger()
+	}
 
 	switch a.Kind {
 	case ActStop:
 		return t.stop(a)
+	case ActNoLedger:
+		return t.noLedger(a)
+	case ActOwner:
+		return t.ownerTask(a)
+	case ActOwnerDone:
+		return t.ownerDone(a)
 	case ActLaunch:
 		return t.launch(a)
 	case ActCreate:
@@ -326,6 +485,8 @@ func (t *pass) run(s Settings) daemonstate.State {
 		return t.report(a)
 	case ActUnpark:
 		return t.unpark(a)
+	case ActShipStep:
+		return t.shipStep(a)
 	default:
 		// ActWait and ActIdle change nothing.
 		return stateOf(a)
@@ -333,17 +494,41 @@ func (t *pass) run(s Settings) daemonstate.State {
 }
 
 // watched returns the entry whose session this tick must look at: the first
-// running or shipping entry in ledger order, when it is running and names a
-// session. It follows Decide's rule 2 so that sessions, which cost a git
-// call to list, are read only on the ticks that use them.
+// running or shipping entry in ledger order, when it names a session. It
+// follows Decide's rule 2 so that sessions, which cost a git call to list,
+// are read only on the ticks that use them.
+//
+// A shipping entry is watched as well as a running one, though Decide never
+// looks at a shipping session's phase. The ship step needs two things only
+// discovery has, the session's worktree path and its base branch. Without
+// them the ship would run with no worktree: every hand-back to the session
+// would fail in a real project while every test with a fake ship passed.
 func watched(l ledger.Ledger) (ledger.Entry, bool) {
 	for _, e := range l.Tasks {
 		if e.Status != ledger.Running && e.Status != ledger.Shipping {
 			continue
 		}
-		return e, e.Status == ledger.Running && e.Session != ""
+		return e, e.Session != ""
 	}
 	return ledger.Entry{}, false
+}
+
+// parkedSessions returns the parked entries that name a session, or nothing
+// when any entry is running or shipping. Their sessions are looked at so an
+// un-park can tell a finished session from a working one (Observation.Parked),
+// and an un-park can only happen on a tick with nothing in flight. An owner's
+// task is parked with no session and is never in this list.
+func parkedSessions(l ledger.Ledger) []ledger.Entry {
+	var out []ledger.Entry
+	for _, e := range l.Tasks {
+		switch {
+		case e.Status == ledger.Running || e.Status == ledger.Shipping:
+			return nil
+		case e.Status == ledger.Parked && e.Session != "":
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // viewOf finds the session called name among the discovered rows and turns
@@ -383,9 +568,15 @@ func viewOf(rows []discover.SessionState, name string) (*SessionView, *discover.
 	return nil, nil
 }
 
-// stateOf is the state of a tick that did exactly what Decide said.
+// stateOf is the state of a tick that did exactly what Decide said. A wait
+// that Decide marked as the stopped line is stored under its own kind, so
+// `afk daemon status` can tell it from every other wait.
 func stateOf(a Action) daemonstate.State {
-	return daemonstate.State{Kind: string(a.Kind), Task: a.Task, Session: a.Session, Reason: a.Reason}
+	kind := string(a.Kind)
+	if a.Kind == ActWait && a.LineStopped {
+		kind = KindLineStopped
+	}
+	return daemonstate.State{Kind: kind, Task: a.Task, Session: a.Session, Reason: a.Reason}
 }
 
 // save stores the tick's state and returns what is on disk afterwards.
@@ -459,6 +650,30 @@ func openTitled(items []inbox.Item, title string) (inbox.Item, bool) {
 		}
 	}
 	return inbox.Item{}, false
+}
+
+// openTitledFor finds an open item with exactly this title that is about
+// this task.
+func openTitledFor(items []inbox.Item, title, task string) (inbox.Item, bool) {
+	for _, it := range items {
+		if it.Open() && it.Title == title && it.Task == task {
+			return it, true
+		}
+	}
+	return inbox.Item{}, false
+}
+
+// fitTitle cuts a title to what the inbox stores. The cut is by character,
+// not by byte, so it cannot land inside one, and it is the same every time
+// for the same text. That matters because a title is how the loop finds an
+// item it raised earlier.
+func fitTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if utf8.RuneCountInString(title) <= maxItemTitle {
+		return title
+	}
+	r := []rune(title)
+	return strings.TrimSpace(string(r[:maxItemTitle-1])) + "…"
 }
 
 // change makes one transition of one ledger entry, and refuses when the
@@ -547,6 +762,14 @@ func (t *pass) launch(a Action) daemonstate.State {
 		e.StartedAt = stamp(t.now)
 		e.ParkedOn = nil
 		e.FinishedAt = ""
+		// A new attempt ships from the beginning. An entry can come here
+		// holding an earlier attempt's ship: parked in the middle of one,
+		// then set back to pending by hand. Left in place, the new attempt
+		// would reach shipping already "holding" the old pull request, look
+		// for it under a branch that never had one, and park for ever.
+		e.Ship, e.ShipAt = "", ""
+		e.CIReruns, e.CIFixCycles = 0, 0
+		e.PR, e.MergedSHA = 0, ""
 	})
 	if err != nil {
 		return t.ledgerTrouble(a, err)
@@ -642,9 +865,10 @@ func (t *pass) tokens(a Action) {
 	t.record("tokens", a.Task, a.Session, question, fmt.Sprintf("recorded %d token ledger lines", n), ruleTokens)
 }
 
-// ship hands a finished task to shipping, which is the end of the line here:
-// nothing in this package merges, pushes or cleans. The task waits in
-// `shipping` until the ship step exists or the owner moves it by hand.
+// ship hands a finished task to shipping. That is all it does: the entry
+// becomes `shipping` with no ship state, and every tick after this one is a
+// shipStep. With no shipper (Deps.Ship nil) the task waits there until the
+// owner moves it by hand.
 func (t *pass) ship(a Action) daemonstate.State {
 	t.tokens(a)
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
@@ -654,7 +878,7 @@ func (t *pass) ship(a Action) daemonstate.State {
 	}
 	t.record("ship_wait", a.Task, a.Session,
 		fmt.Sprintf("The session for %s finished. What now?", a.Task),
-		"wait in `shipping`; shipping is a later task's work", ruleWatch)
+		"hand it to shipping", ruleWatch)
 	return stateOf(a)
 }
 
@@ -727,10 +951,31 @@ func (t *pass) park(a Action) daemonstate.State {
 	return stateOf(a)
 }
 
-// unpark marks a parked task running again. No session is started: the one
-// it had is still there, and its original start time is kept, because that
-// time is what Decide's once-per-attempt limit measures from.
+// unpark puts a parked task back where Decide said: running or shipping. No
+// session is started: the one it had is still there, and its original start
+// time is kept, because that time is what Decide's once-per-attempt limit
+// measures from.
+//
+// Back to shipping, the ship's clock is set to now and both CI counters to
+// zero. The owner's answer buys a fresh set of attempts. Every ship park that
+// comes from a limit (no checks in time, no commit after a hand-back, too
+// many hand-backs) is decided from that clock or those counters, so with the
+// old values the very next step would park again on the same limit, for ever.
 func (t *pass) unpark(a Action) daemonstate.State {
+	if a.Resume == ledger.Shipping {
+		if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
+			e.Status = ledger.Shipping
+			e.ParkedOn = nil
+			e.ShipAt = stamp(t.now)
+			e.CIReruns, e.CIFixCycles = 0, 0
+		}); err != nil {
+			return t.ledgerTrouble(a, err)
+		}
+		t.record("unpark", a.Task, a.Session,
+			fmt.Sprintf("Every item %s was parked on is answered. What now?", a.Task),
+			"go on shipping from where it stopped, with a fresh set of attempts", ruleShip)
+		return stateOf(a)
+	}
 	if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
 		e.Status = ledger.Running
 		e.ParkedOn = nil
@@ -740,7 +985,334 @@ func (t *pass) unpark(a Action) daemonstate.State {
 	t.record("unpark", a.Task, a.Session,
 		fmt.Sprintf("Every item %s was parked on is answered. What now?", a.Task),
 		"mark it running again; its session is still there", ruleWatch)
+	// After the ledger, so the line is typed at most once: a daemon killed
+	// between the two leaves a running task whose session was not told, and
+	// the stall rule is what catches that.
+	t.resume(a)
 	return stateOf(a)
+}
+
+// resumeCommand is the line that makes a session pick its work up again from
+// its own files. The stall and stopped-host items give the owner the same
+// line to type by hand.
+func resumeCommand(sess string) string {
+	return "/afk:go --session " + sess
+}
+
+// resume types the session's resume command into a session that has just
+// been un-parked to running, and nothing else: the command alone on the line.
+//
+// It is that command and not a sentence such as "your items are answered,
+// carry on" because of how a session parks. The conductor's park contract
+// (plugins/afk/skills/conductor/prompts/autonomous.md §2 rule 3) has it write
+// awaiting_input: true and end its turn, and says (step d) that this command
+// is what resumes it: the command's start-up write is the thing that clears
+// the flag. A plain sentence would get the agent working with the flag still
+// set, and Decide's stall rule would park the session again ten minutes
+// later. The answers themselves are not typed: the session reads them from
+// the inbox when it resumes.
+//
+// Nothing is typed when the session is not on disk (the next tick creates it
+// again, which starts it) or has ended as failed (the next tick marks the
+// task failed). A session whose phase is done never gets here: Decide sends
+// it back to shipping.
+//
+// A send that fails is logged and nothing more. The task is un-parked either
+// way; a session that was not woken still shows awaiting_input, and the stall
+// rule tells the owner.
+func (t *pass) resume(a Action) {
+	if t.d.SendPrompt == nil {
+		return
+	}
+	v, row := t.obs.Parked[a.Task], t.parkedRows[a.Task]
+	if v == nil || row == nil {
+		return
+	}
+	if !v.Stale && (v.Phase == state.PhaseDone || v.Phase == state.PhaseFailed) {
+		return
+	}
+	if err := t.d.SendPrompt(row.WorktreePath, a.Session, resumeCommand(a.Session)); err != nil {
+		t.d.logf("%s: %s was un-parked, but its session %s could not be told to carry on: %v",
+			t.p.Name, a.Task, a.Session, err)
+	}
+}
+
+// progressOf reads a ship's progress out of a ledger entry. A ship_at that
+// cannot be read is the zero time, which every timed rule of the ship reads
+// as "long ago".
+func progressOf(e ledger.Entry) ship.Progress {
+	at, _ := parseTime(e.ShipAt)
+	return ship.Progress{
+		State: ship.State(e.Ship), At: at, PR: e.PR,
+		Reruns: e.CIReruns, FixCycles: e.CIFixCycles, MergedSHA: e.MergedSHA,
+	}
+}
+
+// shipStep takes a shipping task's ship one step forward and acts on what the
+// ship says: wait, park, stop the line, or done.
+//
+// The loop's part is the files it owns. The ledger entry is where the ship's
+// progress lives, written through Save; the inbox is where a park or a stop
+// reaches the owner; the stop marker is written through Stop. What the step
+// actually is (a push, a merge, a health check) happens behind Deps.Ship.
+func (t *pass) shipStep(a Action) daemonstate.State {
+	if t.d.Ship == nil {
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,
+			Reason: fmt.Sprintf("%s is waiting to ship", a.Task)}
+	}
+	e, _ := t.obs.Ledger.Get(a.Task)
+	req := ShipRequest{Project: t.p, Entry: e, Progress: progressOf(e)}
+	if t.row != nil {
+		req.Worktree, req.Base = t.row.WorktreePath, t.row.BaseBranch
+	}
+
+	// last is the state the ledger holds, so that the decision log gets one
+	// line per change of state and none for a save that only moves a counter
+	// or the clock. It is a local of this one call, not something kept.
+	last := req.Progress.State
+	req.Save = func(p ship.Progress) error {
+		err := t.change(a.Task, ledger.Shipping, func(e *ledger.Entry) {
+			e.Ship = string(p.State)
+			e.ShipAt = ""
+			if !p.At.IsZero() {
+				e.ShipAt = stamp(p.At)
+			}
+			e.PR = p.PR
+			e.CIReruns, e.CIFixCycles = p.Reruns, p.FixCycles
+			e.MergedSHA = p.MergedSHA
+		})
+		if err != nil {
+			return err
+		}
+		if p.State != last && p.State != ship.NotStarted {
+			t.record("ship", a.Task, a.Session,
+				fmt.Sprintf("How far has the ship of %s got?", a.Task), string(p.State), ruleShip)
+		}
+		last = p.State
+		return nil
+	}
+	req.Stop = func(task, reason string) error {
+		return daemonstate.Stop(t.p.Root, task, reason, t.now)
+	}
+
+	out := t.d.Ship(req)
+	switch out.Kind {
+	case ship.OutcomePark:
+		return t.shipPark(a, out)
+	case ship.OutcomeStop:
+		return t.shipStop(a, out)
+	case ship.OutcomeDone:
+		return t.shipDone(a, out)
+	}
+	return t.shipWait(a, out)
+}
+
+// shipWait is the state of a ship that has nothing for the loop to do.
+//
+// A ship in its stopped state is stored as the stopped line, with the task
+// named, because that is what the owner has to act on: the task is not
+// waiting on GitHub, it is waiting for `afk resume`.
+func (t *pass) shipWait(a Action, out ship.Outcome) daemonstate.State {
+	if out.Progress.State == ship.Stopped && t.obs.Stopped {
+		t.stopNotTold(a, out.Progress.At)
+		return t.stoppedState(a)
+	}
+	reason := strings.TrimSpace(out.Reason)
+	if reason == "" {
+		reason = "nothing to do on this pass"
+	}
+	return daemonstate.State{Kind: string(ActShipStep), Task: a.Task, Session: a.Session,
+		Reason: fmt.Sprintf("shipping %s: %s", a.Task, reason)}
+}
+
+// stoppedState is the stored state of a task whose deploy stopped the line.
+func (t *pass) stoppedState(a Action) daemonstate.State {
+	return daemonstate.State{Kind: KindLineStopped, Task: a.Task, Session: a.Session,
+		Reason: fmt.Sprintf("%s; %s is marked done once it is cleared", stoppedReason(t.obs), a.Task)}
+}
+
+// parkShipping parks a shipping task on one blocking item, keeping its ship
+// fields so the answer carries on from the same state.
+//
+// The item is added before the ledger is written, because the entry needs its
+// id, and it is looked for first. If the tick dies between the two, the task
+// is still shipping; the next step parks again for the same reason, with the
+// same title, finds the open item and only finishes the ledger. The owner is
+// told once. That is why a ship's titles hold no counts and no times.
+func (t *pass) parkShipping(a Action, n inbox.NewItem, why string) daemonstate.State {
+	n.Task, n.Session, n.Blocking = a.Task, a.Session, true
+	n.Title = fitTitle(n.Title)
+	it, have := openTitledFor(t.obs.Items, n.Title, a.Task)
+	if !have {
+		var err error
+		if it, err = t.add(n); err != nil {
+			return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session, Reason: fmt.Sprintf(
+				"%s needs the owner (%s), and the inbox item saying so could not be written (%v); trying again on the next pass",
+				a.Task, why, err)}
+		}
+	}
+	if err := t.change(a.Task, ledger.Shipping, func(e *ledger.Entry) {
+		e.Status = ledger.Parked
+		e.ParkedOn = []string{it.ID}
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("park", a.Task, a.Session,
+		fmt.Sprintf("The ship of %s cannot go on by itself: %s. What now?", a.Task, why),
+		fmt.Sprintf("park it on inbox %s; the answer carries on from where it stopped", it.ID), ruleShip)
+	return daemonstate.State{Kind: string(ActPark), Task: a.Task, Session: a.Session,
+		Reason: fmt.Sprintf("%s is waiting on the owner: %s; see inbox item %s", a.Task, why, it.ID)}
+}
+
+// shipPark parks the task on the item the ship wrote.
+func (t *pass) shipPark(a Action, out ship.Outcome) daemonstate.State {
+	why := strings.TrimSpace(out.Reason)
+	if why == "" {
+		why = "the ship stopped and gave no reason"
+	}
+	n := inbox.NewItem{Kind: ship.ItemFailure, Title: fmt.Sprintf("%s could not be shipped", a.Task),
+		Body: upperFirst(why) + ".\n\nAnswer this item and afk tries again."}
+	if out.Item != nil {
+		n.Kind, n.Title, n.Body = out.Item.Kind, out.Item.Title, out.Item.Body
+	}
+	return t.parkShipping(a, n, why)
+}
+
+// shipStop tells the owner the line is stopped. The marker is already there:
+// the ship wrote it, through ShipRequest.Stop, before it saved the stopped
+// state. The task stays `shipping`, and its ship finishes it once `afk
+// resume` has removed the marker.
+func (t *pass) shipStop(a Action, out ship.Outcome) daemonstate.State {
+	n := inbox.NewItem{Kind: ship.ItemFailure, Title: stopLostTitle(a.Task), Body: stopLostBody(a.Task, out.Reason)}
+	if out.Item != nil {
+		n.Kind, n.Title, n.Body = out.Item.Kind, out.Item.Title, out.Item.Body
+	}
+	t.tellStopped(a, n, out.Reason)
+	// The marker was written during this tick, after the observation was
+	// made, so the observation is brought up to date for the reason below.
+	t.obs.Stopped = true
+	if strings.TrimSpace(t.obs.StopReason) == "" {
+		t.obs.StopReason = out.Reason
+	}
+	return t.stoppedState(a)
+}
+
+// tellStopped raises the item for a stopped line, unless an open one with the
+// same title is already there, and sends it at the highest priority.
+//
+// The item does not block and the task is not parked on it. What holds the
+// line is the marker, and what clears it is `afk resume`; an item the owner
+// could answer to "release" the task would be a second way out that leaves
+// the marker behind.
+func (t *pass) tellStopped(a Action, n inbox.NewItem, reason string) {
+	n.Task, n.Session, n.Blocking = a.Task, a.Session, false
+	n.Title = fitTitle(n.Title)
+	if _, have := openTitledFor(t.obs.Items, n.Title, a.Task); have {
+		return
+	}
+	it, err := t.store.Add(n)
+	if err != nil {
+		t.d.logf("%s: the inbox item %q could not be written: %v", t.p.Name, n.Title, err)
+		return
+	}
+	switch {
+	case t.d.NotifyUrgent != nil:
+		t.d.NotifyUrgent(t.p, it)
+	case t.d.Notify != nil:
+		t.d.Notify(t.p, it)
+	}
+	why := strings.TrimSpace(reason)
+	if why == "" {
+		why = "the deploy did not come up healthy in time"
+	}
+	t.record("line_stopped", a.Task, a.Session,
+		fmt.Sprintf("The deploy after %s did not come up healthy. What now?", a.Task),
+		fmt.Sprintf("stop the line until `afk resume` and tell the owner (inbox %s): %s", it.ID, why), ruleShip)
+}
+
+// stopNotTold covers one gap: the ship saved its stopped state and the daemon
+// was killed before the item was added. The ship then only waits (the marker
+// is there, so it has nothing to report), and without this the owner would
+// have a stopped line and no message saying so.
+//
+// "Not told" is worked out from the inbox, like every once-only rule here:
+// no failure item for this task, open or answered, created at or after the
+// moment the ship stopped. At, not only after, because times are stored to
+// the second. An item whose time cannot be read counts as the message, the
+// same lean towards not repeating that reported takes.
+func (t *pass) stopNotTold(a Action, stoppedAt time.Time) {
+	for _, it := range t.obs.Items {
+		if it.Task != a.Task || it.Kind != ship.ItemFailure {
+			continue
+		}
+		created, ok := parseTime(it.CreatedAt)
+		if !ok || !created.Before(stoppedAt.Truncate(time.Second)) {
+			return
+		}
+	}
+	t.tellStopped(a, inbox.NewItem{Kind: ship.ItemFailure, Title: stopLostTitle(a.Task),
+		Body: stopLostBody(a.Task, t.obs.StopReason)}, t.obs.StopReason)
+}
+
+// stopLostTitle and stopLostBody are the loop's own words for a stopped line,
+// used when the ship's item is not to hand.
+func stopLostTitle(task string) string {
+	return fmt.Sprintf("The line is stopped after %s", task)
+}
+
+func stopLostBody(task, reason string) string {
+	why := strings.TrimSpace(reason)
+	if why == "" {
+		why = "the deploy did not come up healthy in time"
+	}
+	return fmt.Sprintf("%s was merged, but afk stopped the line afterwards: %s. No new task starts until you clear it.\n\n"+
+		"Check the deploy, and fix it or roll it back. Then run `afk resume` to clear the stop; "+
+		"%s is marked done once it is cleared.", task, why, task)
+}
+
+// shipDone finishes a shipped task: clean its session up, then mark it done.
+//
+// In that order, so that a task never says done while its worktree and branch
+// are still lying about. The cost is the gap between the two: a daemon killed
+// there comes back to a shipping task with no session on disk. That is why
+// shipStep runs with no session at all, and why Clean must treat a session
+// that is not there as cleaned.
+func (t *pass) shipDone(a Action, out ship.Outcome) daemonstate.State {
+	if t.d.Clean != nil {
+		if err := t.d.Clean(t.p, a.Session); err != nil {
+			return t.parkShipping(a, inbox.NewItem{
+				Kind:  ship.ItemFailure,
+				Title: fmt.Sprintf("%s is merged, but its session %s could not be cleaned up", a.Task, a.Session),
+				Body: fmt.Sprintf("%s is merged and its deploy is fine. The last step is removing the session %s "+
+					"(its worktree, its files and its merged branch), and that failed:\n\n    %v\n\n"+
+					"What to do next:\n"+
+					"1. Run `afk clean %s`. If that fails too, remove the worktree folder and delete the branch %s by hand.\n"+
+					"2. Then answer this item. afk tries the clean-up again (a session that is already gone is fine) "+
+					"and marks %s done.",
+					a.Task, a.Session, err, a.Session, a.Session, a.Task),
+			}, fmt.Sprintf("its session %s could not be cleaned up", a.Session))
+		}
+	}
+	if err := t.change(a.Task, ledger.Shipping, func(e *ledger.Entry) {
+		e.Status = ledger.Done
+		e.FinishedAt = stamp(t.now)
+		e.ParkedOn = nil
+		// The ledger already holds the merge commit, saved when the merge
+		// was seen. The outcome's copy is written only when it has one, so a
+		// ship that reports done with an empty progress cannot erase it.
+		if out.Progress.MergedSHA != "" {
+			e.MergedSHA = out.Progress.MergedSHA
+		}
+		e.Ship, e.ShipAt = "", ""
+		e.CIReruns, e.CIFixCycles = 0, 0
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("shipped", a.Task, a.Session,
+		fmt.Sprintf("%s is merged and its deploy is fine. What now?", a.Task),
+		fmt.Sprintf("clean up the session %s and mark %s done", a.Session, a.Task), ruleShip)
+	return daemonstate.State{Kind: string(ActShipStep), Task: a.Task, Session: a.Session,
+		Reason: fmt.Sprintf("%s is shipped and done", a.Task)}
 }
 
 // report raises the item for a stalled session or a dead host and parks the
@@ -790,10 +1362,10 @@ func stallBody(task, sess string) string {
 	return fmt.Sprintf("The session for %s is asking something at the terminal, and has been for longer than afk waits. "+
 		"afk cannot yet wake a session by itself, so someone has to look.\n\n"+
 		"What to do next:\n"+
-		"1. Run `afk attach %s` and answer what it is asking. If the agent is idle instead, type `/afk:go --session %s` there.\n"+
+		"1. Run `afk attach %s` and answer what it is asking. If the agent is idle instead, type `%s` there.\n"+
 		"2. Then answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
 		"afk goes back to watching %s once it is answered.",
-		task, sess, sess, task)
+		task, sess, resumeCommand(sess), task)
 }
 
 // hostGoneBody tells the owner what to do about a session whose host has
@@ -806,12 +1378,12 @@ func hostGoneBody(task, sess string) string {
 		"afk cannot yet wake a session by itself, so someone has to look.\n\n"+
 		"What to do next, either:\n"+
 		"1. Run `afk dash` and open the session %s. That starts its stopped host again, in the same mode. "+
-		"If the agent is idle there, type `/afk:go --session %s`.\n"+
+		"If the agent is idle there, type `%s`.\n"+
 		"2. Then answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
 		"afk goes back to watching %s once it is answered.\n\n"+
 		"Or, if the session is beyond saving: run `afk clean %s`, then `afk ledger set %s pending`, "+
 		"and afk starts the task again in a new session.",
-		task, sess, sess, task, sess, task)
+		task, sess, resumeCommand(sess), task, sess, task)
 }
 
 // upperFirst capitalises a reason so it can open a sentence. Reasons from
@@ -876,4 +1448,165 @@ func (t *pass) clearStops() {
 			fmt.Sprintf("Can %s be run?", t.p.Name),
 			fmt.Sprintf("yes; answered inbox %s as fixed", strings.Join(closed, ", ")), rulePlan)
 	}
+}
+
+// noLedger tells the owner, once, that the project has no ledger and how to
+// make one. Nothing else happens on such a tick: no task is chosen, so no
+// preflight runs and no session starts.
+//
+// "Once" is an open item with NoLedgerTitle, looked for on every tick. It is
+// not a remembered flag, so a daemon started again finds the item its
+// predecessor raised and adds nothing. An owner who answers the item without
+// making the ledger is told again, which is right: the answer is the only
+// way they have to say "look again", and the project still cannot be built.
+func (t *pass) noLedger(a Action) daemonstate.State {
+	st := stateOf(a)
+	it, have := openTitled(t.obs.Items, NoLedgerTitle)
+	if !have {
+		var err error
+		it, err = t.add(inbox.NewItem{Kind: "external_action", Blocking: true, Title: NoLedgerTitle, Body: noLedgerBody(t.p.Root)})
+		if err != nil {
+			st.Reason = fmt.Sprintf("%s (the inbox item saying so could not be written: %v)", a.Reason, err)
+			return st
+		}
+		t.record("no_ledger", "", "",
+			fmt.Sprintf("%s has no ledger file. Which tasks are already built?", t.p.Name),
+			fmt.Sprintf("unknown, so nothing is started until the owner runs `afk ledger init` (inbox %s)", it.ID), rulePlan)
+	}
+	st.Reason = fmt.Sprintf("%s See inbox item %s.", a.Reason, it.ID)
+	return st
+}
+
+// noLedgerBody says why nothing is running and gives both commands, because
+// only the owner knows which of the two projects this is: a new one, where
+// every task is still to do, or a part-built one, where starting from the
+// first task would build finished work a second time.
+func noLedgerBody(root string) string {
+	return fmt.Sprintf("afk keeps a list of which tasks in the plan are finished (the ledger). The project at %s has none, "+
+		"so afk cannot tell a new project from one that is already part-built. Nothing is started until the list exists.\n\n"+
+		"What to do next, one of:\n"+
+		"1. A new project, nothing built yet:\n"+
+		"   afk ledger init --project %s\n"+
+		"2. A project that is part-built. Say which tasks are finished:\n"+
+		"   afk ledger init --project %s --done-through T1.4\n"+
+		"   marks every task up to and including T1.4 as done (use your own last finished task). "+
+		"Add `--done T2.1,T2.3` for finished tasks after that point.\n\n"+
+		"You do not need to answer this item. afk closes it by itself once the list exists, and then starts the first task that is ready.",
+		root, root, root)
+}
+
+// clearNoLedger answers every open "no task list" item once the ledger file
+// exists, the way clearStops answers StopTitle.
+func (t *pass) clearNoLedger() {
+	var closed []string
+	for _, it := range t.obs.Items {
+		if !it.Open() || it.Title != NoLedgerTitle {
+			continue
+		}
+		if _, err := t.store.Answer(it.ID, "created", "cli"); err != nil {
+			if !errors.Is(err, inbox.ErrAlreadyAnswered) {
+				t.d.logf("%s: inbox item %s could not be answered: %v", t.p.Name, it.ID, err)
+			}
+			continue
+		}
+		closed = append(closed, it.ID)
+	}
+	if len(closed) > 0 {
+		t.record("ledger_found", "", "",
+			fmt.Sprintf("Does %s have a ledger file now?", t.p.Name),
+			fmt.Sprintf("yes; answered inbox %s as created", strings.Join(closed, ", ")), rulePlan)
+	}
+}
+
+// ownerTitle is the title of the item for an owner task: the prefix, the id
+// and the task's own title, cut to what the inbox stores.
+//
+// The cut is by character, not by byte, so it cannot land inside one, and it
+// is the same every time for the same task. That matters because the title
+// is how the loop finds the item it raised (see ownerTask).
+func ownerTitle(id, title string) string {
+	full := OwnerTitlePrefix + id
+	if title = strings.TrimSpace(title); title != "" {
+		full += " — " + title
+	}
+	return fitTitle(full)
+}
+
+// ownerTask hands a task to the owner: one blocking item, then the ledger
+// entry goes from pending to parked on that item. No session is created and
+// the entry never says running, so nothing can mistake it for agent work.
+//
+// The item is added before the ledger is written, because the entry needs
+// its id, and it is looked for first. If the tick dies between the two, the
+// next one decides ActOwner again (the task is still pending), finds the open
+// item by its title and only finishes the ledger; the owner is told once.
+//
+// Only an open item counts. An answered one with the same title is from an
+// earlier round: the owner set the task back to pending with `afk ledger
+// set`, and parking it on an item that is already answered would mark it
+// done again on the very next tick without asking.
+func (t *pass) ownerTask(a Action) daemonstate.State {
+	title := ""
+	for _, tk := range t.obs.Tasks {
+		if tk.ID == a.Task {
+			title = tk.Title
+			break
+		}
+	}
+	itemTitle := ownerTitle(a.Task, title)
+	it, have := openTitled(t.obs.Items, itemTitle)
+	if !have {
+		var err error
+		it, err = t.add(inbox.NewItem{Task: a.Task, Kind: "external_action", Blocking: true,
+			Title: itemTitle, Body: ownerBody(a.Task, title, t.relPlan())})
+		if err != nil {
+			return daemonstate.State{Kind: string(ActWait), Task: a.Task,
+				Reason: fmt.Sprintf("%s, and the inbox item saying so could not be written (%v); trying again on the next pass", a.Reason, err)}
+		}
+	}
+	if err := t.change(a.Task, ledger.Pending, func(e *ledger.Entry) {
+		e.Status = ledger.Parked
+		e.ParkedOn = []string{it.ID}
+		e.FinishedAt = ""
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("owner_task", a.Task, "",
+		fmt.Sprintf("%s is marked as the owner's task. Should an agent be started for it?", a.Task),
+		fmt.Sprintf("no; ask the owner with inbox %s and park %s until it is answered", it.ID, a.Task), rulePlan)
+	st := stateOf(a)
+	st.Reason = fmt.Sprintf("%s; see inbox item %s", a.Reason, it.ID)
+	return st
+}
+
+// ownerBody tells the owner the task is theirs and that their answer is what
+// finishes it. It carries the task's whole title, because the item's own
+// title may have been cut to fit.
+func ownerBody(task, title, plan string) string {
+	return fmt.Sprintf("%s — %s\n\n"+
+		"The plan marks this task as yours to do, not an agent's, so afk has not started anything for it. "+
+		"Tasks that depend on it wait until it is done.\n\n"+
+		"What to do next:\n"+
+		"1. Do the task. Its steps are under %s in %s.\n"+
+		"2. When it is finished, answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
+		"Answering it is what marks %s as done, so answer only when the work really is finished.",
+		task, strings.TrimSpace(title), task, plan, task)
+}
+
+// ownerDone marks an owner task done once every item it was parked on is
+// answered. The owner's answer is the whole of the evidence: the work was
+// done away from this machine, and there is no session, branch or review to
+// look at.
+func (t *pass) ownerDone(a Action) daemonstate.State {
+	if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
+		e.Status = ledger.Done
+		e.ParkedOn = nil
+		e.FinishedAt = stamp(t.now)
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("owner_done", a.Task, "",
+		fmt.Sprintf("The owner answered the item for their task %s. What now?", a.Task),
+		fmt.Sprintf("mark %s done; the answer is the owner saying it is finished", a.Task), rulePlan)
+	return stateOf(a)
 }

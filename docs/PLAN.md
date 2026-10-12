@@ -218,6 +218,16 @@ empty fields omitted. Unknown keys and unknown statuses are rejected. A missing 
 is pending; a damaged file is an error and is never read as empty. Writers take the lock file
 `.afk/build/.ledger.lock`.
 
+Amended 2026-10-11 (T2.2): an entry also carries four ship fields, each omitted when empty or zero.
+`ship` is where the ship has got to, one of `committed`, `pushed`, `pr_open`, `handed_back`,
+`ci_green`, `merged`, `deploy_healthy` or `stopped` (§5.4); `ship_at` is when that state was entered
+(RFC 3339 UTC; the timed rules measure from it, and it moves on a re-run and on a push of a newer
+head); `ci_reruns` counts re-runs of failed checks for the current head; `ci_fix_cycles` counts
+hand-backs to the session. All four go back to empty or zero when the task is done. An unknown `ship`
+word is rejected like an unknown status. `afk ledger set` takes several ids before the status, and
+`afk ledger init [--done-through ID] [--done ID,ID]` creates a missing ledger and never changes an
+existing one.
+
 ### 4.2a Daemon files (new)
 
 Amended 2026-10-11 (T2.1): three small files the build daemon adds, each with one writer and none
@@ -231,6 +241,14 @@ inside `status.json`, the ledger or `usage.json`.
 
 The machine also holds `daemon.lock` and `running.json` in afk's state folder (beside `usage.json`);
 they make the daemon one per machine and are not per project.
+
+Amended 2026-10-11 (T2.2): two more files in `.afk/build/`, each written only by the daemon through
+`internal/daemonstate`, by atomic rename.
+
+| File | Writer | Shape |
+|---|---|---|
+| `.afk/build/stopped` | the daemon, when a deploy does not turn healthy in `deploy_timeout` (removed by `afk resume`) | `{"at":"<RFC 3339 UTC>","task","reason"}`. Existence is the signal, so a damaged marker still stops the line. It is written before the ledger saves the `stopped` ship state. |
+| `.afk/build/ship-poll` | the daemon | `{"at":"<RFC 3339 UTC>","failing_since":"<RFC 3339 UTC or empty>"}`, both keys always present. `at` is when GitHub was last asked (the ship asks at most every 20 seconds); `failing_since` is set while those reads keep failing and cleared when one works. A missing or damaged file means "never asked". |
 
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
@@ -310,6 +328,17 @@ and one `[[project]]` per project with `path` (absolute, or starting with `~/`) 
 governor and web keys to the same file. The dashboard's `config.json` is a separate file with its own
 keys (`search_roots`, `scan_interval`, `max_depth`); the two are not merged.
 
+Amended 2026-10-11 (T2.2): `[ship]` is read by `internal/projectconfig` (from `afk.toml`, then
+`afk.local.toml` over it, key by key) with these defaults when a key is absent: `merge_method`
+`"merge"`, `ci_reruns` 1, `ci_fix_cycles` 2, `deploys` true, `deploy_timeout` `"15m"`, and `base`,
+`health_url` and `required_env_pattern` empty. An empty `base` falls back to the session's own base
+branch (`base_branch` in its `status.json`); if that is empty too, the task parks and nothing is
+guessed. The deploy is polled only when `deploys` is true and `health_url` is not empty; with no
+`health_url` the ship goes straight from the merge to `deploy_healthy`. `health_url` must be empty or
+an `http://` or `https://` address, `merge_method` one of `merge`, `squash` or `rebase`, the two counts
+at least 0, `deploy_timeout` above zero, and `required_env_pattern` a regular expression that
+compiles; anything else is an error naming the file and the key, and the address is never echoed.
+
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
 One line per task per phase per role, written when a task ends: `{at, task, session, phase:
@@ -344,6 +373,10 @@ Everything else in the plan is for the agent. The plan is **re-read on every cyc
 added and split while the build runs. A dependency naming an unknown task, or a cycle, is a `failure`
 inbox item and the loop stops for that project.
 
+Amended 2026-10-11 (T2.2): a task whose title carries `(owner)` or `(owner; …)` (case does not
+matter, and spaces inside the brackets are allowed) is the owner's to do and is never launched.
+`(owner + agent)` is an ordinary task, and so is prose such as `(owner approval)`.
+
 ### 5.2 Next task (pure function)
 
 Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason there is none.
@@ -354,6 +387,11 @@ Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason
 - A `parked` task whose blocking items are all answered becomes ready again and goes first.
 - Nothing ready: report why (`all done` · `waiting on owner` with the item ids · `blocked by failed
   T…`). "Waiting on owner" and "blocked" each raise one notification, not one per tick.
+
+Amended 2026-10-11 (T2.2): an owner task (§5.1) that is `pending` and ready is chosen like any other,
+but the daemon raises one blocking item (`Your task: T0.0 — …`) and parks it instead of launching;
+the owner's answer marks it `done`. A project with no ledger file launches nothing and raises one
+blocking item, `This project has no task list yet`, until `afk ledger init` creates the file.
 
 ### 5.3 One task
 
@@ -405,6 +443,17 @@ committed ──▶ pushed ──▶ pr_open ──▶ ci_green ──▶ merged
 - **After `done`:** ledger `done`, clean the session (worktree removed, state archived), log.
 - Each state is persisted in the ledger before the action that leaves it, so a daemon restart resumes
   mid-ship without repeating a push or a merge.
+
+Amended 2026-10-11 (T2.2): as built, the saved states are `committed`, `pushed`, `pr_open`,
+`handed_back`, `ci_green`, `merged`, `deploy_healthy` and `stopped`. `handed_back` is a red CI or a
+conflict given to the session, with a new commit awaited for up to an hour (then the task parks);
+the daemon pushes that commit itself once it is two minutes old. `stopped` is a deploy that did not
+turn healthy: the daemon writes `.afk/build/stopped` first, then saves the state, and `afk resume`
+removing the marker is what lets the task finish as `done`. A pull request with no checks, or only
+skipped ones, is never merged: five minutes after it opened the task parks, and answering the item
+waits another five. After the merge the daemon fast-forwards the local base branch (never a merge
+commit) and deletes the remote branch before it looks at the deploy. A pause does not stop a ship
+that is already in progress.
 
 ### 5.5 Autonomous policy (what replaces the human)
 
@@ -886,6 +935,7 @@ with nobody at the keyboard.
   launches nothing and raises one item, once; `afk ledger init` with each flag, with both, with none,
   with an unknown id, and over an existing ledger. Then one real end-to-end run against a throwaway
   private GitHub repo with a trivial CI workflow, recorded in `docs/decisions.md`.
+- Amended 2026-10-12 (T2.2 done): later tasks may assume the following. (1) `internal/ship` is a pure `Decide(Facts) Step` plus `Advance`, one step per daemon pass, behind `Git` and `GH` interfaces; the daemon reaches it through the optional `Deps.Ship`, `SendPrompt`, `Clean` and `NotifyUrgent`. (2) The ledger entry carries `ship`, `ship_at`, `ci_reruns` and `ci_fix_cycles` while its status is `shipping`; a new attempt clears them with `pr` and `merged_sha`. (3) The daemon can type into a session with `host.SendInput` (it takes the client slot for about half a second); T2.3 can use it for its "continue" prompt, and an un-parked session is sent its resume command. (4) After a merge the daemon fast-forwards the project checkout's base branch, cleans the session and deletes the merged branch. (5) A pull request with no checks, or a cancelled check, is never merged; the task parks. (6) A stopped line is `.afk/build/stopped`, cleared by `afk resume` together with a pause; a pause does not stop a ship in progress. (7) With no ledger file the daemon starts nothing: T4.1 seeds nebari with `afk ledger init --done-through`. Owner tasks (`(owner)` or `(owner; …)` in the title) are confirmed in the inbox, never launched. (8) Not yet seen: a real agent receiving a typed line, a real deploy check, a park or a stopped line against GitHub; the supervised run of T4.2 is the first. See `## T2.2` in `docs/decisions.md`.
 
 #### T2.3 — Automatic recovery
 - **Depends on:** T0.4, T0.5, T2.1

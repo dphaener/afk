@@ -96,6 +96,18 @@ type Observation struct {
 	StallAfter, HostGrace time.Duration
 	// Paused is the project's pause flag.
 	Paused bool
+	// NoLedger means the project has no ledger file at all. That is not the
+	// same as an empty ledger: with no file there is no telling a new
+	// project from a part-built one, and reading "no file" as "everything
+	// is pending" is how a project with eighteen finished tasks once had
+	// its first task started again. Ledger is empty then, and means nothing.
+	NoLedger bool
+	// Stopped is the project's stop marker: a deploy did not come up
+	// healthy, and nothing new may start until `afk resume` clears it.
+	// StopReason is the marker's own words, for the reason shown to the
+	// owner; it may be empty, because a damaged marker still stops the line.
+	Stopped    bool
+	StopReason string
 	// BuildErr is set when the plan, the ledger or the project config
 	// could not be used. Tasks and Ledger are not trusted then.
 	BuildErr error
@@ -106,6 +118,18 @@ type Observation struct {
 	// Session is the session named by the active ledger entry, or nil when
 	// that session is not on disk.
 	Session *SessionView
+	// Parked holds the session of each parked entry that names one, by task
+	// id; a task whose session is not on disk has no key. It is filled only
+	// on a tick with no active entry, which is the only tick that can
+	// un-park. Decide needs it for one question: has the parked session
+	// already finished? Session cannot answer that, because it is the active
+	// entry's and a parked entry is never the active one.
+	Parked map[string]*SessionView
+	// ParkedErr is set when the sessions could not be listed on a tick that
+	// has no active entry. Parked means nothing then, and no task is
+	// un-parked: with no view, a finished session would be read as one that
+	// is still working.
+	ParkedErr error
 }
 
 // ActionKind names the one thing the executor does on a tick.
@@ -138,7 +162,28 @@ const (
 	ActLaunch ActionKind = "launch"
 	// ActIdle: nothing is in flight and nothing can start.
 	ActIdle ActionKind = "idle"
+	// ActNoLedger: the project has no ledger file. Start nothing and tell
+	// the owner how to make one.
+	ActNoLedger ActionKind = "no_ledger"
+	// ActOwner: the next task is the owner's to do, not an agent's. Raise
+	// one inbox item for it and park the task on that item. No session.
+	ActOwner ActionKind = "owner_task"
+	// ActOwnerDone: the owner answered the item their task was parked on,
+	// which is how they say it is done. Mark it done.
+	ActOwnerDone ActionKind = "owner_done"
+	// ActShipStep: a task is shipping. Take its ship one step forward (push,
+	// pull request, checks, merge, deploy check), or wait for whatever that
+	// step waits on. ActShip is the hand-over into shipping; this is every
+	// tick after it.
+	ActShipStep ActionKind = "shipping"
 )
+
+// KindLineStopped is the state kind of a tick held back by the stop marker.
+// It is not an ActionKind: Decide answers such a tick with ActWait (nothing
+// is done), and sets Action.LineStopped so the stored state can say which
+// kind of waiting this is. It is also not KindStopped, which was taken first
+// and means the project's folder is not there.
+const KindLineStopped = "line_stopped"
 
 // Action is Decide's answer. Reason is a plain-language sentence for
 // `afk daemon status`; it is always set.
@@ -149,11 +194,23 @@ const (
 // ids instead. An ActIdle's Reason begins with the nexttask.Reason word it
 // came from ("waiting on owner", "blocked by failed", "all done", "stuck"),
 // which is how the executor tells them apart.
+//
+// LineStopped is set on an ActWait that waits because of the stop marker and
+// for no other reason. It is a field, not a word at the start of Reason,
+// because the reason carries the marker's own text, which this package does
+// not write and cannot promise the shape of.
+//
+// Resume is set on an ActUnpark and nowhere else: the status the task goes
+// back to, ledger.Running or ledger.Shipping. It is decided here and not in
+// the executor because it is a choice with a wrong answer (see decideNext),
+// and so it belongs in the table.
 type Action struct {
 	Kind          ActionKind
 	Task, Session string
 	Reason        string
 	Items         []string
+	LineStopped   bool
+	Resume        ledger.Status
 }
 
 // Decide chooses what the loop does on this tick. It reads no file, no clock
@@ -167,15 +224,38 @@ type Action struct {
 //     is not in the plan, or that names no session: stop. Both come from a
 //     ledger changed by hand, and creating a session for a task that is gone,
 //     or under an empty name, is worse than standing still.
+//     The project has no ledger file (NoLedger), checked after the two
+//     errors and before the entries: start nothing and say how to make one.
+//     After the errors, because a damaged project is the more useful thing
+//     to report and because without the inbox the executor could not tell
+//     whether it had already said so. Before the entries, because there is
+//     no ledger to check.
 //  2. The active entry is the first in ledger order that is running or
-//     shipping. Shipping: wait (shipping is a later task's work).
+//     shipping. Shipping: take the ship one step (ActShipStep), whatever the
+//     pause flag and the stop marker say.
 //  3. Running: see decideRunning.
-//  4. Nothing active and the project is paused: wait.
-//  5. Otherwise ask nexttask.Next. A parked task whose items are all
-//     answered is un-parked; a pending task is launched; no task is idle.
+//  4. Nothing active and the line is stopped: wait, whatever would be next.
+//  5. Otherwise ask nexttask.Next (see decideNext). An owner task is raised
+//     as an inbox item, or marked done once that item is answered; a parked
+//     task whose items are all answered is un-parked, back to shipping when
+//     it was shipping or its session has finished and to running otherwise;
+//     a pending task is launched; no task is idle.
+//  6. Nothing active and the project is paused: rule 5's answer stands only
+//     when it is about an owner task; anything else waits.
 //
-// A running entry is watched even when the project is paused. Pause stops
-// new sessions, not the work already paid for.
+// A running entry is watched, and a shipping one shipped, even when the
+// project is paused or the line is stopped. Both stop new work, not the work
+// already paid for. For the stop marker this is more than a courtesy: the
+// task whose deploy stopped the line is itself still shipping, and its ship
+// is what notices that `afk resume` removed the marker and finishes the task.
+// Holding it back would leave the line stopped for ever.
+//
+// Pause and the stopped line differ on owner tasks, on purpose. `afk pause`
+// promises only that no new task starts. Raising the owner's item and marking
+// their task done start nothing, so pause lets both through. A stopped line
+// means the last deploy is broken and the owner has to look before the build
+// moves at all, so it holds back everything, those two included. That is why
+// rule 4 is checked before nexttask is asked and rule 6 after.
 func Decide(o Observation) Action {
 	if o.BuildErr != nil {
 		return Action{Kind: ActStop, Reason: o.BuildErr.Error()}
@@ -183,6 +263,11 @@ func Decide(o Observation) Action {
 	if o.InboxErr != nil {
 		return Action{Kind: ActWait, Reason: fmt.Sprintf(
 			"the inbox could not be read (%v); nothing is decided until it can be", o.InboxErr)}
+	}
+
+	if o.NoLedger {
+		return Action{Kind: ActNoLedger, Reason: "waiting on the owner: this project has no task list yet. " +
+			"Run `afk ledger init` for a new project, or `afk ledger init --done-through <task>` for one that is part-built."}
 	}
 
 	inPlan := make(map[string]bool, len(o.Tasks))
@@ -216,21 +301,37 @@ func Decide(o Observation) Action {
 
 	if active != nil {
 		if active.Status == ledger.Shipping {
-			return Action{Kind: ActWait, Task: active.ID, Session: active.Session,
-				Reason: fmt.Sprintf("%s is waiting to ship", active.ID)}
+			return Action{Kind: ActShipStep, Task: active.ID, Session: active.Session,
+				Reason: fmt.Sprintf("shipping %s", active.ID)}
 		}
 		return decideRunning(o, *active)
 	}
 
-	if o.Paused {
+	if o.Stopped {
+		return Action{Kind: ActWait, LineStopped: true, Reason: stoppedReason(o)}
+	}
+	a := decideNext(o)
+	if o.Paused && a.Kind != ActOwner && a.Kind != ActOwnerDone {
 		return Action{Kind: ActWait, Reason: "paused; no new task will start until `afk resume`"}
 	}
-	return decideNext(o)
+	return a
+}
+
+// stoppedReason is the sentence for a tick held back by the stop marker: that
+// the line is stopped, why when the marker says, and the one command that
+// clears it.
+func stoppedReason(o Observation) string {
+	why := strings.TrimSpace(o.StopReason)
+	if why == "" {
+		return "the line is stopped; nothing new starts until `afk resume` clears it"
+	}
+	return fmt.Sprintf("the line is stopped (%s); nothing new starts until `afk resume` clears it", why)
 }
 
 // decideRunning is rule 3: what to do about the one task in flight.
 //
-//	a. Its session is not on disk: create it again, or wait when paused.
+//	a. Its session is not on disk: create it again, or wait when paused or
+//	   when the line is stopped.
 //	b. status.json cannot be read: wait, unless the host is gone.
 //	c. Phase done: ship.
 //	d. Phase failed: fail.
@@ -240,7 +341,13 @@ func Decide(o Observation) Action {
 //	h. Otherwise wait.
 //
 // The order carries meaning. A finished session (c, d) is acted on before
-// anything about its host, because a host exits once its session is done.
+// anything about its host, so that a host which is gone by the time its
+// session says done or failed is not reported as a dead session: the work is
+// over either way. Nothing here assumes the host does exit. The ship that
+// follows relies on the opposite for one step only, the hand-back of a red
+// CI, which types into the session and so needs its host alive after done;
+// when the host is not there that prompt fails and the task parks with an
+// item saying how to reach the session.
 // Parking (e) comes before the two reports because a parked session sits at
 // a prompt by design, and the owner has already been sent the question.
 func decideRunning(o Observation, e ledger.Entry) Action {
@@ -250,6 +357,13 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 
 	s := o.Session
 	if s == nil {
+		if o.Stopped {
+			// The same reading as pause, below: there is no session to
+			// watch, so this is a start, and a stopped line starts nothing.
+			a := act(ActWait, fmt.Sprintf("%s; %s has no session", stoppedReason(o), e.ID))
+			a.LineStopped = true
+			return a
+		}
 		if o.Paused {
 			// Creating a session is a new launch as far as the owner is
 			// concerned, and pause stops every one of those.
@@ -341,6 +455,35 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 const alreadyReported = "already reported; waiting for the owner to resume the session"
 
 // decideNext is rule 5: nothing is in flight, so ask which task is next.
+//
+// An owner task (nexttask's Decision.Owner, from the "(owner)" marker in its
+// title) is never launched: no agent can stand up a machine or sign up for an
+// account. nexttask still picks it in its ordinary place, so everything that
+// depends on it waits for it like any other task. Pending, it becomes an
+// inbox item and is parked on that item (ActOwner). Parked with every item
+// answered, it is done (ActOwnerDone): the owner's answer is the only signal
+// there is that work done away from this machine has finished. It never
+// passes through running, so it never gets a session.
+//
+// A task marked "(owner + agent)" is not an owner task. Its Owner flag is
+// false and it launches like any other.
+//
+// A parked agent task whose items are all answered goes back to one of two
+// statuses, and the choice matters:
+//
+//   - shipping, when the entry holds a ship state (it was parked in the
+//     middle of its ship) or its session's phase is done. The second half
+//     covers a ship that parked before it saved anything (GitHub's tool not
+//     logged in, uncommitted changes), which leaves no ship state behind.
+//     Sent back to running, such a task would be seen as "phase done" on the
+//     next tick and handed to shipping a second time, recording its tokens
+//     and logging its finish twice.
+//   - running, otherwise: the session parked on a question and has work left.
+//     A session that is not on disk is this case too; the next tick then
+//     creates it again.
+//
+// An unreadable status file is not "done": the phase of a stale view is
+// whatever was parsed last, or nothing.
 func decideNext(o Observation) Action {
 	open := make(map[string]bool, len(o.Items))
 	for _, it := range o.Items {
@@ -355,8 +498,28 @@ func decideNext(o Observation) Action {
 	})
 
 	if d.Task != "" {
-		if e, ok := o.Ledger.Get(d.Task); ok && e.Status == ledger.Parked {
-			return Action{Kind: ActUnpark, Task: d.Task, Session: e.Session,
+		e, ok := o.Ledger.Get(d.Task)
+		isParked := ok && e.Status == ledger.Parked
+		if d.Owner {
+			if isParked {
+				return Action{Kind: ActOwnerDone, Task: d.Task,
+					Reason: fmt.Sprintf("you answered the item for your task %s; marking it done", d.Task)}
+			}
+			return Action{Kind: ActOwner, Task: d.Task,
+				Reason: fmt.Sprintf("waiting on the owner: %s is your task, not an agent's", d.Task)}
+		}
+		if isParked {
+			if o.ParkedErr != nil {
+				return Action{Kind: ActWait, Task: d.Task, Session: e.Session, Reason: fmt.Sprintf(
+					"the items %s was parked on are answered, but the project's sessions could not be read (%v); trying again on the next pass",
+					d.Task, o.ParkedErr)}
+			}
+			v := o.Parked[d.Task]
+			if e.Ship != "" || (v != nil && !v.Stale && v.Phase == state.PhaseDone) {
+				return Action{Kind: ActUnpark, Task: d.Task, Session: e.Session, Resume: ledger.Shipping,
+					Reason: fmt.Sprintf("the items %s was parked on are answered; it is shipping again", d.Task)}
+			}
+			return Action{Kind: ActUnpark, Task: d.Task, Session: e.Session, Resume: ledger.Running,
 				Reason: fmt.Sprintf("the items %s was parked on are answered; it is running again", d.Task)}
 		}
 		return Action{Kind: ActLaunch, Task: d.Task, Reason: fmt.Sprintf("starting %s", d.Task)}
@@ -405,11 +568,13 @@ func concerns(it inbox.Item, e ledger.Entry) bool {
 // prefix was already raised for this task during the current attempt, open
 // or answered. It is what limits each report to once per attempt.
 //
-// Answered items count on purpose. Answering the item un-parks the task, but
-// nothing can type into a session before T2.2, so the session is exactly as
-// idle afterwards as it was before. Counting only open items would raise the
-// same report again every StallAfter for as long as the owner left the
-// session alone.
+// Answered items count on purpose. Answering the item un-parks the task, and
+// the un-park types the session's resume command into it (see unpark in
+// daemon.go), but that is one attempt with no promise behind it: the host
+// may be gone, the dial may fail, or the agent may be sitting in a dialog
+// that swallows the line. A session that the line did not move is exactly as
+// idle afterwards as it was before, and counting only open items would raise
+// the same report again every StallAfter for as long as it stayed that way.
 //
 // "This attempt" is an item created at or after the entry's start. At, not
 // only after: times are stored to the second, and an item raised in the

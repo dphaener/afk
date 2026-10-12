@@ -1,6 +1,6 @@
-// Package daemonstate holds the three small files the build daemon keeps
-// that nothing else owns: the pause flag, the per-project state file and the
-// machine lock.
+// Package daemonstate holds the small files the build daemon keeps that
+// nothing else owns: the pause flag, the stop marker, the ship-poll file, the
+// per-project state file and the machine lock.
 //
 // They live apart from status.json, the ledger and usage.json on purpose.
 // Each of those has its own writers and its own schema; adding the daemon's
@@ -99,6 +99,188 @@ func Resume(project string) (bool, error) {
 func Paused(project string) bool {
 	_, err := os.Stat(PausePath(project))
 	return err == nil
+}
+
+// --- Stop marker ---
+
+// StopPath is the stop marker in a project's main checkout. The daemon writes
+// it when a deploy health check times out, so the line stops until the owner
+// runs `afk resume`. It is a file, not a field in memory, because the daemon
+// keeps nothing between ticks and must be restartable at any moment: a
+// restarted daemon has to find the line still stopped.
+func StopPath(project string) string {
+	return filepath.Join(project, ".afk", "build", "stopped")
+}
+
+// stopRecord is the contents of the stop marker.
+type stopRecord struct {
+	At     string `json:"at"`
+	Task   string `json:"task"`
+	Reason string `json:"reason"`
+}
+
+// Stop writes the stop marker, naming the task and why. A second stop
+// replaces the first: the newest reason is the one the owner needs to see.
+func Stop(project, task, reason string, now time.Time) error {
+	data, err := json.Marshal(stopRecord{
+		At:     now.UTC().Format(time.RFC3339),
+		Task:   task,
+		Reason: reason,
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(StopPath(project), append(data, '\n')); err != nil {
+		return fmt.Errorf("writing stop marker: %w", err)
+	}
+	return nil
+}
+
+// Stopped reports whether the marker exists. Its contents are never read: a
+// damaged marker must still stop the line, for the same reason a damaged
+// pause flag still pauses. Stopping on a file nobody can parse is the safe
+// direction; running on it would push a broken deploy further.
+func Stopped(project string) bool {
+	_, err := os.Stat(StopPath(project))
+	return err == nil
+}
+
+// ReadStop returns the task and reason from the marker. ok is false only when
+// there is no marker. A marker that exists but cannot be parsed returns ok
+// true with empty task and reason, so the caller can still say "stopped" and
+// tell the owner to run `afk resume`.
+func ReadStop(project string) (task, reason string, ok bool) {
+	data, err := os.ReadFile(StopPath(project))
+	if err != nil {
+		return "", "", false
+	}
+	var s stopRecord
+	if err := json.Unmarshal(data, &s); err != nil {
+		return "", "", true
+	}
+	return s.Task, s.Reason, true
+}
+
+// ClearStop removes the stop marker and reports whether there was one, so
+// `afk resume` can say "was not stopped" instead of claiming it did something.
+// Like Paused, existence is the signal, so a damaged marker is removed too.
+func ClearStop(project string) (bool, error) {
+	err := os.Remove(StopPath(project))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("removing stop marker: %w", err)
+}
+
+// --- Ship poll ---
+
+// ShipPollPath is the ship-poll file in a project's main checkout. It records
+// when GitHub was last asked about the ship, so the daemon's one-second tick
+// does not turn into one API call per second. It is a file for the same reason
+// the stop marker is: nothing may be kept in memory between ticks.
+func ShipPollPath(project string) string {
+	return filepath.Join(project, ".afk", "build", "ship-poll")
+}
+
+// shipPollRecord is the contents of the ship-poll file. FailingSince is set
+// while GitHub reads keep failing and is cleared when one works again, so the
+// daemon can tell a short blip from an outage that needs an owner.
+type shipPollRecord struct {
+	At           string `json:"at"`
+	FailingSince string `json:"failing_since"`
+}
+
+// readShipPoll returns the poll record. ok is false when the file is missing
+// or damaged, and callers then treat both fields as unset.
+func readShipPoll(project string) (shipPollRecord, bool) {
+	data, err := os.ReadFile(ShipPollPath(project))
+	if err != nil {
+		return shipPollRecord{}, false
+	}
+	var r shipPollRecord
+	if err := json.Unmarshal(data, &r); err != nil {
+		return shipPollRecord{}, false
+	}
+	return r, true
+}
+
+// writeShipPoll replaces the ship-poll file atomically.
+func writeShipPoll(project string, r shipPollRecord) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(ShipPollPath(project), append(data, '\n')); err != nil {
+		return fmt.Errorf("writing ship poll: %w", err)
+	}
+	return nil
+}
+
+// parseRFC3339 returns the zero time for an empty or unparsable value. The
+// zero time means "unset" to every caller, so a damaged value degrades to
+// "poll now" rather than to an error.
+func parseRFC3339(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// MarkShipPoll records that GitHub was just asked and got an answer. It keeps
+// any failing_since already in the file: a good read does not end an outage
+// by itself, and ClearShipPollFailure is the explicit step that does.
+func MarkShipPoll(project string, now time.Time) error {
+	prev, _ := readShipPoll(project)
+	return writeShipPoll(project, shipPollRecord{
+		At:           now.UTC().Format(time.RFC3339),
+		FailingSince: prev.FailingSince,
+	})
+}
+
+// LastShipPoll returns when GitHub was last asked. The zero time means the
+// file is missing or damaged, which the daemon reads as "poll now".
+func LastShipPoll(project string) time.Time {
+	r, _ := readShipPoll(project)
+	return parseRFC3339(r.At)
+}
+
+// MarkShipPollFailure records a failed GitHub read. It always updates At,
+// because the read was still an ask and the rate limit must count it, and it
+// sets failing_since only when the file does not already have one, so the
+// start of the outage is kept rather than moved forward on every retry.
+func MarkShipPollFailure(project string, now time.Time) error {
+	prev, _ := readShipPoll(project)
+	failing := prev.FailingSince
+	if parseRFC3339(failing).IsZero() {
+		failing = now.UTC().Format(time.RFC3339)
+	}
+	return writeShipPoll(project, shipPollRecord{
+		At:           now.UTC().Format(time.RFC3339),
+		FailingSince: failing,
+	})
+}
+
+// ClearShipPollFailure empties failing_since after a read that worked. When
+// nothing is set it writes nothing, so a clean project never grows a poll
+// file just to say that there is no failure.
+func ClearShipPollFailure(project string) error {
+	prev, ok := readShipPoll(project)
+	if !ok || prev.FailingSince == "" {
+		return nil
+	}
+	prev.FailingSince = ""
+	return writeShipPoll(project, prev)
+}
+
+// ShipPollFailingSince returns when the current run of failed GitHub reads
+// began. The zero time means no failure is recorded, or the file is damaged.
+func ShipPollFailingSince(project string) time.Time {
+	r, _ := readShipPoll(project)
+	return parseRFC3339(r.FailingSince)
 }
 
 // --- Project state ---
