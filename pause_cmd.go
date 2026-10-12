@@ -37,7 +37,7 @@ could not be written, 2 the command was written wrongly.
 }
 
 func printResumeUsage(w io.Writer) {
-	fmt.Fprintf(w, `afk resume — let the daemon start new tasks in a project again
+	fmt.Fprintf(w, `afk resume — let the daemon start new tasks in a project again (and clear a stopped line)
 
 Usage:
   %s
@@ -45,8 +45,11 @@ Usage:
 <project> is a project name from afk's machine config, or a folder. With
 nothing given, the project is the current folder's main checkout.
 
+It also clears a stopped line: if the daemon stopped after a task failed, this
+lets it carry on at its next pass.
+
 Exit codes: 0 done (or it was not paused), 1 the project or the config could
-not be used or the pause could not be removed, 2 the command was written wrongly.
+not be used or the pause or stop could not be removed, 2 the command was written wrongly.
 `, resumeUsageLine)
 }
 
@@ -210,21 +213,61 @@ func runResume(args []string, stdout, stderr io.Writer, env pauseEnv) int {
 	if !ok {
 		return code
 	}
+	// Read the stop marker before clearing it: the message names the task and
+	// the reason, which are gone once the file is.
+	stopTask, stopReason, _ := daemonstate.ReadStop(root)
 	was, err := daemonstate.Resume(root)
 	if err != nil {
 		fmt.Fprintf(stderr, "afk resume: %v. Check that you can write to %s.\n", err, filepath.Dir(daemonstate.PausePath(root)))
 		return 1
 	}
-	if !was {
+	wasStopped, err := daemonstate.ClearStop(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "afk resume: %v. Check that you can write to %s.\n", err, filepath.Dir(daemonstate.StopPath(root)))
+		return 1
+	}
+	if !was && !wasStopped {
 		fmt.Fprintf(stdout, "%s was not paused; nothing changed.\n", root)
 		return 0
 	}
-	if err := logPauseDecision(root, env.now(), "resume", "resumed"); err != nil {
-		fmt.Fprintf(stderr, "afk resume: the project is resumed, but the decision log could not be written: %v\n", err)
-		return 1
+	now := env.now()
+	if was {
+		if err := logPauseDecision(root, now, "resume", "resumed"); err != nil {
+			fmt.Fprintf(stderr, "afk resume: the project is resumed, but the decision log could not be written: %v\n", err)
+			return 1
+		}
 	}
-	fmt.Fprintf(stdout, "Resumed %s. The daemon may start new tasks again.\n", root)
+	if wasStopped {
+		chosen := "cleared the stop"
+		if stopTask != "" {
+			chosen += " after " + stopTask
+		}
+		if err := logPauseDecision(root, now, "stop_cleared", chosen); err != nil {
+			fmt.Fprintf(stderr, "afk resume: the stopped line is cleared, but the decision log could not be written: %v\n", err)
+			return 1
+		}
+	}
+	if was {
+		fmt.Fprintf(stdout, "Resumed %s. The daemon may start new tasks again.\n", root)
+	}
+	if wasStopped {
+		fmt.Fprintf(stdout, "%s\n", stoppedMessage(root, stopTask, stopReason))
+	}
 	return 0
+}
+
+// stoppedMessage words the "line cleared" sentence. A marker that could not be
+// parsed has no task or reason; the sentence then says only what is known.
+func stoppedMessage(root, task, reason string) string {
+	what := "was stopped"
+	if task != "" {
+		what += " after " + task
+	}
+	if reason != "" {
+		what += ": " + reason
+	}
+	what = strings.TrimSuffix(what, ".")
+	return fmt.Sprintf("The line for %s %s. It is cleared; the daemon carries on at its next pass.", root, what)
 }
 
 // logPauseDecision records an owner's pause or resume in the project's

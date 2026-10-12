@@ -21,6 +21,7 @@ Usage:
   %s
 
 Prints one line: the task id and title, or the reason nothing can start.
+A task that is yours to do, not an agent's, is named as yours instead.
 Nothing is started or recorded.
 
 Exit codes: 0 a line was printed (a task or a reason), 1 the plan, the ledger
@@ -74,6 +75,11 @@ func openItemsFunc(store inbox.Store) func(string) bool {
 
 // nextLine turns a decision into the single line afk next prints. It is pure
 // so every reason is a table row.
+//
+// An owner task does not get the "id, two spaces, title" line of a task that
+// can start. That shape is what a script reads as "launch this", and the one
+// thing that must never happen to an owner task is an agent being started
+// for it. It gets a sentence instead, still one line and still exit 0.
 func nextLine(d nexttask.Decision, tasks []masterplan.Task, l ledger.Ledger) string {
 	if d.Task != "" {
 		title := ""
@@ -82,6 +88,13 @@ func nextLine(d nexttask.Decision, tasks []masterplan.Task, l ledger.Ledger) str
 				title = t.Title
 				break
 			}
+		}
+		if d.Owner {
+			s := d.Task + " is yours to do; the daemon will ask you to confirm it in the inbox."
+			if title != "" {
+				s += " It is: " + title
+			}
+			return s
 		}
 		return d.Task + "  " + title
 	}

@@ -63,3 +63,10 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Machine config**: `config.toml` in afk's config folder, listing the projects the daemon runs and its timings; one per machine.
 - **Local config**: `afk.local.toml`, laid over `afk.toml` key by key and never committed; where private values such as the ntfy address go.
 - **Un-park**: to return a parked task to `running` once every item it waited for has been answered.
+- **Ship**: what the daemon does with a finished session: push the branch, open a pull request, wait for CI, merge, check the deploy and clean up.
+- **Ship state**: how far a task's ship has got (`committed`, `pushed`, `pr_open`, `handed_back`, `ci_green`, `merged`, `deploy_healthy`, `stopped`), saved in the ledger before the step that leaves it.
+- **Hand-back**: sending a failed CI run back to the session that wrote the code, by typing one line into it that points at a file describing the failure.
+- **Stop the line**: after a merge whose deploy never became healthy, the daemon starts nothing more for that project until the owner runs `afk resume`.
+- **Owner task**: a master-plan task whose title carries `(owner)` or `(owner; …)`; the daemon never starts an agent for it and asks the owner to confirm it in the inbox.
+- **Ledger init**: `afk ledger init`, which creates a project's ledger, optionally marking the tasks already finished; without a ledger the daemon starts nothing.
+- **Required-env check**: before a merge, looking in the branch's changes for a newly required environment variable, and parking until the owner has set it.

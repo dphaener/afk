@@ -659,6 +659,7 @@ func TestUpdateRoundTripEveryField(t *testing.T) {
 		ID: "T4.2", Status: Superseded, Session: "t4-2", Branch: "feat/t4-2", PR: 41, Attempts: 3,
 		ParkedOn: []string{"q1", "q2"}, StartedAt: "2026-10-11T08:00:00Z", FinishedAt: "2026-10-11T09:30:00Z",
 		MergedSHA: "0123abcd", ReplacedBy: []string{"T4.2a", "T4.2b"},
+		Ship: "pr_open", ShipAt: "2026-10-11T09:00:00Z", CIReruns: 1, CIFixCycles: 2,
 	}
 	// Guard the test itself: if a field is added to Entry and not set above,
 	// this round trip would no longer cover every field.
@@ -685,7 +686,7 @@ func TestUpdateRoundTripEveryField(t *testing.T) {
 		t.Errorf("round trip = %#v\n      want %#v", got.Tasks, want)
 	}
 	data := readFile(t, Path(project))
-	for _, key := range []string{"id", "status", "session", "branch", "pr", "attempts", "parked_on", "started_at", "finished_at", "merged_sha", "replaced_by"} {
+	for _, key := range []string{"id", "status", "session", "branch", "pr", "attempts", "parked_on", "started_at", "finished_at", "merged_sha", "replaced_by", "ship", "ship_at", "ci_reruns", "ci_fix_cycles"} {
 		if !strings.Contains(data, `"`+key+`": `) {
 			t.Errorf("file has no %q key:\n%s", key, data)
 		}
@@ -800,6 +801,18 @@ func TestUpdateRefusesToWriteALedgerLoadWouldReject(t *testing.T) {
 			l.Tasks = append(l.Tasks, Entry{Status: Done})
 			return nil
 		}},
+		{"unknown ship state", func(l *Ledger) error {
+			l.Tasks = append(l.Tasks, Entry{ID: "T0.2", Status: Shipping, Ship: "flying"})
+			return nil
+		}},
+		{"negative ci_reruns", func(l *Ledger) error {
+			l.Tasks = append(l.Tasks, Entry{ID: "T0.2", Status: Shipping, CIReruns: -1})
+			return nil
+		}},
+		{"negative ci_fix_cycles", func(l *Ledger) error {
+			l.Tasks = append(l.Tasks, Entry{ID: "T0.2", Status: Shipping, CIFixCycles: -1})
+			return nil
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -912,4 +925,132 @@ func TestUpdateConcurrentWritersAllSurvive(t *testing.T) {
 	}
 	t.Logf("all %d ids present in %s", len(l.Tasks), filepath.Base(Path(project)))
 	assertOnlyLedgerFiles(t, project, true)
+}
+
+// TestShipFieldsValidation: the ship fields are checked on read as well as on
+// write, and the error names the task. The byte-for-byte row is load-bearing:
+// the shipper rewrites entries constantly and a field that reformatted would
+// churn the file.
+func TestShipFieldsValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{"valid round trips", "{\n  \"tasks\": [\n    {\n      \"id\": \"T1.1\",\n      \"status\": \"shipping\",\n      \"ship\": \"pr_open\",\n      \"ci_reruns\": 1\n    }\n  ]\n}\n", ""},
+		{"unknown ship state", `{"tasks":[{"id":"T1.1","status":"shipping","ship":"flying"}]}`, `task "T1.1"`},
+		{"negative reruns", `{"tasks":[{"id":"T1.1","status":"shipping","ci_reruns":-1}]}`, `task "T1.1"`},
+		{"negative fix cycles", `{"tasks":[{"id":"T1.1","status":"shipping","ci_fix_cycles":-2}]}`, `task "T1.1"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := writeLedger(t, tt.content)
+			l, err := Load(project)
+			if tt.wantErr != "" {
+				if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Load error = %v, want ErrCorrupt naming %s", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Rewriting through Update with a no-op must leave the bytes alone.
+			if err := Update(project, func(*Ledger) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if got := readFile(t, Path(project)); got != tt.content {
+				t.Errorf("file changed:\n%s", got)
+			}
+			if e, _ := l.Get("T1.1"); e.Ship != "pr_open" || e.CIReruns != 1 {
+				t.Errorf("entry = %+v", e)
+			}
+		})
+	}
+}
+
+func TestShipStates(t *testing.T) {
+	got := ShipStates()
+	if len(got) != 8 || got[0] != "committed" || got[7] != "stopped" {
+		t.Errorf("ShipStates = %v", got)
+	}
+	got[0] = "x"
+	if ShipStates()[0] != "committed" {
+		t.Error("ShipStates shares its slice")
+	}
+}
+
+// TestSetLeavesShipFieldsAlone: Set changes status only; the shipper's record
+// must survive an owner running `afk ledger set`.
+func TestSetLeavesShipFieldsAlone(t *testing.T) {
+	l := Ledger{Tasks: []Entry{{ID: "T1.1", Status: Shipping, Ship: "pushed", ShipAt: "2026-10-11T09:00:00Z", CIReruns: 1, CIFixCycles: 1}}}
+	if _, err := l.Set("T1.1", Parked, nil); err != nil {
+		t.Fatal(err)
+	}
+	e := l.Tasks[0]
+	if e.Ship != "pushed" || e.ShipAt == "" || e.CIReruns != 1 || e.CIFixCycles != 1 {
+		t.Errorf("entry = %+v", e)
+	}
+}
+
+// TestExistsAndInit: the existing-file rows are load-bearing. Init over any
+// file, damaged included, must refuse and leave the bytes alone, because a
+// replaced ledger forgets finished work. The repeated-id row covers
+// --done-through plus --done naming one task twice.
+func TestExistsAndInit(t *testing.T) {
+	tests := []struct {
+		name       string
+		existing   *string
+		ids        []string
+		wantExists bool
+		wantErr    error
+		wantFile   string
+	}{
+		{"no file with ids", nil, []string{"T0.2", "T0.1"}, false, nil,
+			"{\n  \"tasks\": [\n    {\n      \"id\": \"T0.1\",\n      \"status\": \"done\"\n    },\n    {\n      \"id\": \"T0.2\",\n      \"status\": \"done\"\n    }\n  ]\n}\n"},
+		{"no file without ids", nil, nil, false, nil, "{\n  \"tasks\": []\n}\n"},
+		{"repeated ids kept once", nil, []string{"T0.2", "T0.2"}, false, nil,
+			"{\n  \"tasks\": [\n    {\n      \"id\": \"T0.2\",\n      \"status\": \"done\"\n    }\n  ]\n}\n"},
+		{"existing file", ptr(`{"tasks":[]}`), []string{"T0.1"}, true, ErrExists, `{"tasks":[]}`},
+		{"existing damaged file", ptr(`not json`), nil, true, ErrExists, `not json`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := t.TempDir()
+			if tt.existing != nil {
+				project = writeLedger(t, *tt.existing)
+			}
+			if got := Exists(project); got != tt.wantExists {
+				t.Errorf("Exists = %v, want %v", got, tt.wantExists)
+			}
+			err := Init(project, tt.ids)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Init error = %v, want %v", err, tt.wantErr)
+			}
+			if got := readFile(t, Path(project)); got != tt.wantFile {
+				t.Errorf("file = %q, want %q", got, tt.wantFile)
+			}
+			if !Exists(project) {
+				t.Error("Exists is false after Init")
+			}
+			if tt.wantErr == nil {
+				if _, err := Load(project); err != nil {
+					t.Errorf("Load after Init: %v", err)
+				}
+			}
+			assertOnlyLedgerFiles(t, project, true)
+		})
+	}
+}
+
+// TestExistsDirectoryIsNotALedger: a directory at the ledger path is not a
+// regular file.
+func TestExistsDirectoryIsNotALedger(t *testing.T) {
+	project := t.TempDir()
+	if err := os.MkdirAll(Path(project), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if Exists(project) {
+		t.Error("Exists is true for a directory")
+	}
 }

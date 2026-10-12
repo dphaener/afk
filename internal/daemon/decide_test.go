@@ -44,6 +44,18 @@ func running(id string) ledger.Entry {
 	}
 }
 
+// ownerTask is a task whose title carries the owner marker, in the form the
+// master plan uses for T0.0. An agent must never be started for one.
+func ownerTask(id string, deps ...string) masterplan.Task {
+	return masterplan.Task{ID: id, Title: "Stand up the VM (owner; not an agent task)", DependsOn: deps}
+}
+
+// ownerParked is an owner task as the loop leaves it: parked on its item,
+// with no session, no branch and no attempt, because none was ever started.
+func ownerParked(id string, items ...string) ledger.Entry {
+	return ledger.Entry{ID: id, Status: ledger.Parked, ParkedOn: items}
+}
+
 func entry(id string, st ledger.Status) ledger.Entry {
 	return ledger.Entry{ID: id, Status: st}
 }
@@ -52,6 +64,14 @@ func parked(id string, items ...string) ledger.Entry {
 	e := running(id)
 	e.Status = ledger.Parked
 	e.ParkedOn = items
+	return e
+}
+
+// shipParked is a task parked in the middle of its ship: it holds the ship
+// state it had reached.
+func shipParked(id, shipState string, items ...string) ledger.Entry {
+	e := parked(id, items...)
+	e.Ship, e.ShipAt, e.PR = shipState, ago(10*time.Minute), 7
 	return e
 }
 
@@ -120,9 +140,10 @@ func createdAgo(it inbox.Item, before time.Duration) inbox.Item {
 //   - "an answered item restarts the stall clock": without it the task would
 //     stall on the same tick the owner's answer un-parked it.
 //   - "an answered stall item means no second stall" and the host-gone twin:
-//     nothing can type into a session before T2.2, so an answered item leaves
-//     the session exactly as idle as before, and without the once-per-attempt
-//     limit the owner would be paged every StallAfter for ever.
+//     the resume command typed on an un-park is one attempt that may not
+//     land, so an answered item can leave the session exactly as idle as
+//     before, and without the once-per-attempt limit the owner would be
+//     paged every StallAfter for ever.
 //   - "a stall item from an earlier attempt does not suppress a new one":
 //     the limit is per attempt. A new attempt that stalls must still page.
 //   - "stale status with a dead host past the grace reports host gone": an
@@ -144,6 +165,41 @@ func createdAgo(it inbox.Item, before time.Duration) inbox.Item {
 //   - "two active entries watch the first in ledger order": only a
 //     hand-edited ledger has two, and the loop must still watch one session,
 //     the same one every tick.
+//   - "no ledger file starts nothing": with no file every task reads as
+//     pending, and the first run of the daemon on a part-built project
+//     started its first task again. The row beside it, "an empty ledger
+//     launches the first task", is the other half: an empty ledger that
+//     exists is the owner saying the project is new.
+//   - "a pending owner task is handed to the owner" against "a task marked
+//     owner + agent launches": the first is the bug this rule fixes (an agent
+//     was started for the owner's VM checklist), the second is the rule not
+//     reaching too far and leaving agent work undone.
+//   - "pause lets an owner task be raised" and "pause lets an answered owner
+//     task finish" against "a stopped line holds back an owner task" and "a
+//     stopped line holds back an answered owner task": the two flags differ
+//     on exactly these, and swapping the order of the checks in Decide turns
+//     one pair or the other red.
+//   - "a stopped line still watches a running session" and "a shipping task
+//     still ships on a stopped line": the stop holds back new work only. If
+//     it came first, the task whose deploy stopped the line could never be
+//     finished after `afk resume` (its own ship is what sees the marker go),
+//     and a session already paid for would sit unwatched.
+//   - "a task parked before its ship saved anything goes back to shipping"
+//     against "a task parked on a question goes back to running": the entry
+//     alone cannot tell these apart (neither has a ship state), only the
+//     parked session's phase can. Sent to running, the first would be handed
+//     to shipping a second time, with its tokens recorded and its finish
+//     logged twice. "a stale view of a parked session is not read as done"
+//     is the guard on the other side.
+//   - "a task parked in the middle of its ship goes back to shipping with
+//     no session on disk": the ship state alone decides, so a session that
+//     was cleaned up cannot send a merged task back to running, which would
+//     create its session again and build the task a second time.
+//   - "an answered task is not un-parked while the sessions cannot be read":
+//     with no view a finished session reads as a working one.
+//   - "a stopped line with nothing running waits": the only row whose state
+//     is stored as line_stopped with no task, which is what `afk daemon
+//     status` shows while the owner looks at the deploy.
 func TestDecide(t *testing.T) {
 	// T1.2 builds on T1.1; T1.3 stands alone, so it is the task that can run
 	// while T1.1 is parked or failed.
@@ -153,13 +209,21 @@ func TestDecide(t *testing.T) {
 	cases := []struct {
 		name     string
 		paused   bool
-		buildErr error
-		inboxErr error
-		tasks    []masterplan.Task // nil means plan
-		ledger   ledger.Ledger
-		items    []inbox.Item
-		session  *SessionView
-		want     Action // Reason is checked through reasonHas, not here
+		noLedger bool
+		// stopped is the stop marker; stopReason is the text it carries.
+		stopped    bool
+		stopReason string
+		buildErr   error
+		inboxErr   error
+		tasks      []masterplan.Task // nil means plan
+		ledger     ledger.Ledger
+		items      []inbox.Item
+		session    *SessionView
+		// parked is the session of each parked task, by task id; parkedErr
+		// stands for a listing that failed.
+		parked    map[string]*SessionView
+		parkedErr error
+		want      Action // Reason is checked through reasonHas, not here
 		// reasonHas lists text the reason must hold. Whole sentences are not
 		// pinned: the rows fix what the owner must be told, not the wording.
 		reasonHas []string
@@ -228,11 +292,24 @@ func TestDecide(t *testing.T) {
 
 		// Rule 2: which entry is watched, and shipping.
 		{
-			name:      "a shipping task waits to ship",
+			name:      "a shipping task takes a ship step",
 			ledger:    led(ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1"}),
 			session:   view(func(v *SessionView) { v.Phase = state.PhaseDone }),
-			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
-			reasonHas: []string{"T1.1 is waiting to ship"},
+			want:      Action{Kind: ActShipStep, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"shipping T1.1"},
+		},
+		{
+			// Cleaned up, then killed before the ledger said done: the ship
+			// still has to be asked, so it can say done.
+			name:   "a shipping task with no session on disk still takes a ship step",
+			ledger: led(ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Ship: "deploy_healthy"}),
+			want:   Action{Kind: ActShipStep, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "a paused shipping task still ships",
+			paused: true,
+			ledger: led(ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Ship: "pr_open"}),
+			want:   Action{Kind: ActShipStep, Task: "T1.1", Session: "t1-1"},
 		},
 		{
 			name:    "two active entries watch the first in ledger order",
@@ -689,7 +766,88 @@ func TestDecide(t *testing.T) {
 			name:   "parked then answered un-parks before a pending task launches",
 			ledger: led(parked("T1.1", "q1")),
 			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
-			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1"},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:      "a task parked on a question goes back to running",
+			ledger:    led(parked("T1.1", "q1")),
+			items:     []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked:    map[string]*SessionView{"T1.1": view(func(v *SessionView) { v.AwaitingInput = true })},
+			want:      Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+			reasonHas: []string{"running again"},
+		},
+		{
+			name:      "a task parked in the middle of its ship goes back to shipping",
+			ledger:    led(shipParked("T1.1", "pr_open", "q1")),
+			items:     []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked:    map[string]*SessionView{"T1.1": view(func(v *SessionView) { v.Phase = state.PhaseDone })},
+			want:      Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+			reasonHas: []string{"shipping again"},
+		},
+		{
+			name:   "a task parked in the middle of its ship goes back to shipping with no session on disk",
+			ledger: led(shipParked("T1.1", "deploy_healthy", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+		},
+		{
+			// The park came from a limit (two hand-backs used up). The
+			// answer sends it back to shipping; the executor is what gives
+			// it a fresh clock and fresh counters.
+			name: "an answered ship park at its limit goes back to shipping for a fresh try",
+			ledger: led(func() ledger.Entry {
+				e := shipParked("T1.1", "pr_open", "q1")
+				e.CIReruns, e.CIFixCycles, e.ShipAt = 1, 2, ago(2*time.Hour)
+				return e
+			}()),
+			items: []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			want:  Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+		},
+		{
+			// GitHub's tool was not logged in: the ship parked before it
+			// saved a state, so only the session's phase says it had finished.
+			name:   "a task parked before its ship saved anything goes back to shipping",
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(func(v *SessionView) { v.Phase = state.PhaseDone })},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+		},
+		{
+			name:   "a parked task with no ship state and no session on disk goes back to running",
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:   "a stale view of a parked session is not read as done",
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(func(v *SessionView) { v.Stale = true; v.Phase = state.PhaseDone })},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:   "another task's finished session does not send this one to shipping",
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.3": view(func(v *SessionView) { v.Name = "t1-3"; v.Phase = state.PhaseDone })},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:      "an answered task is not un-parked while the sessions cannot be read",
+			ledger:    led(parked("T1.1", "q1")),
+			items:     []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parkedErr: errors.New("git worktree list: exit status 128"),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"sessions could not be read", "exit status 128"},
+		},
+		{
+			// The listing is needed for an un-park only.
+			name:      "unreadable sessions do not hold back a launch",
+			ledger:    led(parked("T1.1", "q1")),
+			items:     []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			parkedErr: errors.New("git worktree list: exit status 128"),
+			want:      Action{Kind: ActLaunch, Task: "T1.3"},
 		},
 		{
 			name:   "a task parked on an open item lets an independent task launch",
@@ -734,6 +892,216 @@ func TestDecide(t *testing.T) {
 			want:      Action{Kind: ActIdle},
 			reasonHas: []string{"stuck", "T1.2"},
 		},
+
+		// No ledger file.
+		{
+			name:      "no ledger file starts nothing",
+			noLedger:  true,
+			want:      Action{Kind: ActNoLedger},
+			reasonHas: []string{"waiting on the owner", "afk ledger init", "--done-through"},
+		},
+		{
+			name:     "no ledger file starts nothing for an owner task either",
+			noLedger: true,
+			tasks:    []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			want:     Action{Kind: ActNoLedger},
+		},
+		{
+			name:      "a build error wins over no ledger file",
+			noLedger:  true,
+			buildErr:  errors.New("the master plan has a problem"),
+			want:      Action{Kind: ActStop},
+			reasonHas: []string{"the master plan has a problem"},
+		},
+		{
+			// Without the items the executor cannot tell whether it already
+			// said so, and would say it again on every tick.
+			name:      "an inbox error wins over no ledger file",
+			noLedger:  true,
+			inboxErr:  errors.New("permission denied"),
+			want:      Action{Kind: ActWait},
+			reasonHas: []string{"inbox"},
+		},
+		{
+			// Pause and a stopped line both mean "start nothing", which a
+			// missing ledger already does; the owner still has to be told
+			// the project cannot be built.
+			name:     "no ledger file is said even when paused and stopped",
+			noLedger: true,
+			paused:   true,
+			stopped:  true,
+			want:     Action{Kind: ActNoLedger},
+		},
+
+		// Owner tasks.
+		{
+			name:      "a pending owner task is handed to the owner",
+			tasks:     []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			want:      Action{Kind: ActOwner, Task: "T0.0"},
+			reasonHas: []string{"waiting on the owner", "T0.0", "your task"},
+		},
+		{
+			name: "a task marked owner + agent launches",
+			tasks: []masterplan.Task{
+				{ID: "T0.1", Title: "Wire up the deploy key (owner + agent)"},
+				task("T1.1", "T0.1"),
+			},
+			want: Action{Kind: ActLaunch, Task: "T0.1"},
+		},
+		{
+			name:   "an owner task is handed over in its place in the plan, not before",
+			tasks:  []masterplan.Task{task("T1.1"), ownerTask("T1.2", "T1.1"), task("T1.3")},
+			ledger: led(entry("T1.1", ledger.Done)),
+			want:   Action{Kind: ActOwner, Task: "T1.2"},
+		},
+		{
+			name:  "an owner task whose dependency is not done waits its turn",
+			tasks: []masterplan.Task{task("T1.1"), ownerTask("T1.2", "T1.1")},
+			want:  Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name:   "an answered owner task is done",
+			tasks:  []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			ledger: led(ownerParked("T0.0", "o1")),
+			items:  []inbox.Item{answered(blocking(item("o1", "T0.0", "")), time.Minute)},
+			want:   Action{Kind: ActOwnerDone, Task: "T0.0"},
+		},
+		{
+			name:      "an owner task whose item is open keeps what depends on it waiting",
+			tasks:     []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			ledger:    led(ownerParked("T0.0", "o1")),
+			items:     []inbox.Item{blocking(item("o1", "T0.0", ""))},
+			want:      Action{Kind: ActIdle, Items: []string{"o1"}},
+			reasonHas: []string{"waiting on owner", "T0.0", "o1"},
+		},
+		{
+			name:   "an owner task whose item is open lets an independent task launch",
+			tasks:  []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0"), task("T1.3")},
+			ledger: led(ownerParked("T0.0", "o1")),
+			items:  []inbox.Item{blocking(item("o1", "T0.0", ""))},
+			want:   Action{Kind: ActLaunch, Task: "T1.3"},
+		},
+		{
+			// An item that cannot be found cannot be shown to be answered.
+			name:      "an owner task parked on a missing item is not done",
+			tasks:     []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			ledger:    led(ownerParked("T0.0", "gone")),
+			want:      Action{Kind: ActIdle, Items: []string{"gone"}},
+			reasonHas: []string{"waiting on owner"},
+		},
+		{
+			name:   "pause lets an owner task be raised",
+			paused: true,
+			tasks:  []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			want:   Action{Kind: ActOwner, Task: "T0.0"},
+		},
+		{
+			name:   "pause lets an answered owner task finish",
+			paused: true,
+			tasks:  []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			ledger: led(ownerParked("T0.0", "o1")),
+			items:  []inbox.Item{answered(blocking(item("o1", "T0.0", "")), time.Minute)},
+			want:   Action{Kind: ActOwnerDone, Task: "T0.0"},
+		},
+		{
+			// The owner task is done, so what is next is an ordinary launch,
+			// and pause holds that back as it always did.
+			name:      "pause still holds back the task after an owner task",
+			paused:    true,
+			tasks:     []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			ledger:    led(entry("T0.0", ledger.Done)),
+			want:      Action{Kind: ActWait},
+			reasonHas: []string{"paused"},
+		},
+
+		// The stopped line.
+		{
+			name:       "a stopped line with nothing running waits",
+			stopped:    true,
+			stopReason: "the deploy of T1.1 did not become healthy",
+			ledger:     led(entry("T1.1", ledger.Done)),
+			want:       Action{Kind: ActWait, LineStopped: true},
+			reasonHas:  []string{"the line is stopped", "the deploy of T1.1 did not become healthy", "afk resume"},
+		},
+		{
+			// A damaged marker has no reason to give and still stops.
+			name:      "a stopped line with no reason still says how to clear it",
+			stopped:   true,
+			want:      Action{Kind: ActWait, LineStopped: true},
+			reasonHas: []string{"the line is stopped", "afk resume"},
+		},
+		{
+			name:    "a stopped line still watches a running session",
+			stopped: true,
+			ledger:  led(running("T1.1")),
+			session: view(func(v *SessionView) { v.Phase = state.PhaseDone }),
+			want:    Action{Kind: ActShip, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a stopped line leaves a working session to work",
+			stopped:   true,
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "a stopped line still parks a running session on its question",
+			stopped: true,
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(nil),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			name:    "a shipping task still ships on a stopped line",
+			stopped: true,
+			ledger:  led(ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Ship: "stopped"}),
+			want:    Action{Kind: ActShipStep, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// There is no session to watch, so creating one is a start.
+			name:      "a stopped line does not create a missing session",
+			stopped:   true,
+			ledger:    led(running("T1.1")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1", LineStopped: true},
+			reasonHas: []string{"the line is stopped", "T1.1 has no session"},
+		},
+		{
+			name:    "a stopped line holds back a launch",
+			stopped: true,
+			want:    Action{Kind: ActWait, LineStopped: true},
+		},
+		{
+			name:    "a stopped line holds back an un-park",
+			stopped: true,
+			ledger:  led(parked("T1.1", "q1")),
+			items:   []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			want:    Action{Kind: ActWait, LineStopped: true},
+		},
+		{
+			name:    "a stopped line holds back an owner task",
+			stopped: true,
+			tasks:   []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			want:    Action{Kind: ActWait, LineStopped: true},
+		},
+		{
+			name:    "a stopped line holds back an answered owner task",
+			stopped: true,
+			tasks:   []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			ledger:  led(ownerParked("T0.0", "o1")),
+			items:   []inbox.Item{answered(blocking(item("o1", "T0.0", "")), time.Minute)},
+			want:    Action{Kind: ActWait, LineStopped: true},
+		},
+		{
+			// `afk resume` clears both, so the reason names the stop: it is
+			// the one the owner has to look at before resuming.
+			name:      "stopped and paused reads as stopped",
+			stopped:   true,
+			paused:    true,
+			want:      Action{Kind: ActWait, LineStopped: true},
+			reasonHas: []string{"the line is stopped"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -746,11 +1114,19 @@ func TestDecide(t *testing.T) {
 				Now: now, InboxErr: tc.inboxErr,
 				StallAfter: stallAfter, HostGrace: hostGrace,
 				Paused: tc.paused, BuildErr: tc.buildErr,
+				NoLedger: tc.noLedger, Stopped: tc.stopped, StopReason: tc.stopReason,
 				Tasks: tasks, Ledger: tc.ledger, Items: tc.items, Session: tc.session,
+				Parked: tc.parked, ParkedErr: tc.parkedErr,
 			})
 			if got.Kind != tc.want.Kind || got.Task != tc.want.Task || got.Session != tc.want.Session {
 				t.Errorf("Decide = {%s task=%q session=%q}, want {%s task=%q session=%q}\nreason: %s",
 					got.Kind, got.Task, got.Session, tc.want.Kind, tc.want.Task, tc.want.Session, got.Reason)
+			}
+			if got.Resume != tc.want.Resume {
+				t.Errorf("Resume = %q, want %q\nreason: %s", got.Resume, tc.want.Resume, got.Reason)
+			}
+			if got.LineStopped != tc.want.LineStopped {
+				t.Errorf("LineStopped = %v, want %v\nreason: %s", got.LineStopped, tc.want.LineStopped, got.Reason)
 			}
 			if !slices.Equal(got.Items, tc.want.Items) {
 				t.Errorf("Items = %v, want %v", got.Items, tc.want.Items)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,77 @@ func TestPauseTargets(t *testing.T) {
 				if got, want := daemonstate.Paused(d), d == tt.paused; got != want {
 					t.Errorf("Paused(%s)=%v want %v", d, got, want)
 				}
+			}
+		})
+	}
+}
+
+// TestResumeClearsStop covers every paused/stopped combination of afk resume.
+//
+// Load-bearing rows: "neither" keeps today's text and exit code; "stopped
+// only" names the task and reason and removes the marker; "damaged marker" is
+// still cleared, because existence is the signal; every row ends with neither
+// flag file on disk.
+func TestResumeClearsStop(t *testing.T) {
+	const stopJSON = `{"at":"2026-10-11T00:00:00Z","task":"T0.1","reason":"deploy did not come up"}`
+	tests := []struct {
+		name     string
+		paused   bool
+		stop     string
+		has      []string
+		lacks    []string
+		wantKind []string
+	}{
+		{name: "neither", has: []string{"was not paused; nothing changed."}, lacks: []string{"stopped"}},
+		{name: "paused only", paused: true, has: []string{"Resumed", "may start new tasks again"}, lacks: []string{"stopped"}, wantKind: []string{"resume"}},
+		{name: "stopped only", stop: stopJSON, has: []string{"was stopped after T0.1: deploy did not come up.", "It is cleared; the daemon carries on at its next pass."}, lacks: []string{"Resumed"}, wantKind: []string{"stop_cleared"}},
+		{name: "both", paused: true, stop: stopJSON, has: []string{"Resumed", "was stopped after T0.1: deploy did not come up."}, wantKind: []string{"resume", "stop_cleared"}},
+		{name: "damaged marker", stop: "{not json", has: []string{"was stopped.", "It is cleared"}, wantKind: []string{"stop_cleared"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			env := testPauseEnv(root, nil, nil)
+			if tt.paused {
+				if err := daemonstate.Pause(root, env.now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.stop != "" {
+				if err := os.MkdirAll(filepath.Dir(daemonstate.StopPath(root)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(daemonstate.StopPath(root), []byte(tt.stop), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var so, se bytes.Buffer
+			if code := runResume(nil, &so, &se, env); code != 0 {
+				t.Fatalf("code=%d err=%q", code, se.String())
+			}
+			for _, w := range tt.has {
+				if !strings.Contains(so.String(), w) {
+					t.Errorf("output %q lacks %q", so.String(), w)
+				}
+			}
+			for _, w := range tt.lacks {
+				if strings.Contains(so.String(), w) {
+					t.Errorf("output %q has %q", so.String(), w)
+				}
+			}
+			if daemonstate.Paused(root) || daemonstate.Stopped(root) {
+				t.Error("a flag file is left behind")
+			}
+			entries, _ := decisionlog.Read(decisionlog.Path(root))
+			var kinds []string
+			for _, e := range entries {
+				if e.ChosenBy != "owner" {
+					t.Errorf("chosen_by = %q", e.ChosenBy)
+				}
+				kinds = append(kinds, e.Kind)
+			}
+			if strings.Join(kinds, ",") != strings.Join(tt.wantKind, ",") {
+				t.Errorf("log kinds = %v, want %v", kinds, tt.wantKind)
 			}
 		})
 	}

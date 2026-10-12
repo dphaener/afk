@@ -640,3 +640,41 @@ func TestUnmet(t *testing.T) {
 		})
 	}
 }
+
+// TestNextOwner: the parked-and-answered row is load-bearing, because an
+// owner task's answer is what marks it done and it must still go first.
+// The ordinary row guards against Owner leaking onto every decision.
+func TestNextOwner(t *testing.T) {
+	owner := func(id string) masterplan.Task {
+		return masterplan.Task{ID: id, Title: "Stand up the VM (owner; not an agent task)"}
+	}
+	both := masterplan.Task{ID: "T2.1", Title: "Nebari (owner + agent)"}
+	tests := []struct {
+		name   string
+		tasks  []masterplan.Task
+		ledger ledger.Ledger
+		open   func(string) bool
+		want   Decision
+	}{
+		{"owner task next sets Owner", []masterplan.Task{owner("T0.0")}, ledger.Ledger{}, nil,
+			Decision{Task: "T0.0", Owner: true}},
+		{"ordinary task does not", []masterplan.Task{task("T1.1")}, ledger.Ledger{}, nil,
+			Decision{Task: "T1.1"}},
+		{"owner plus agent does not", []masterplan.Task{both}, ledger.Ledger{}, nil,
+			Decision{Task: "T2.1"}},
+		{"parked answered owner task goes first", []masterplan.Task{owner("T0.0"), task("T1.1")},
+			ledger.Ledger{Tasks: []ledger.Entry{parked("T0.0", "i1")}}, openOnly(),
+			Decision{Task: "T0.0", Owner: true}},
+		{"parked unanswered owner task waits", []masterplan.Task{owner("T0.0")},
+			ledger.Ledger{Tasks: []ledger.Entry{parked("T0.0", "i1")}}, openOnly("i1"),
+			Decision{Reason: ReasonWaitingOnOwner, Parked: []string{"T0.0"}, WaitingOn: []string{"i1"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Next(tt.tasks, tt.ledger, tt.open)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Next = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

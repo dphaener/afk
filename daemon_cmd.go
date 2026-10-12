@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
+	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/tokens"
 	"github.com/dphaener/afk/internal/usagestate"
 )
@@ -359,6 +361,28 @@ func (n daemonNotifier) idle(p daemon.Project, title, body string) {
 	n.deliver(p, url, notify.NtfyMessage{Title: "afk: " + title, Body: body, Priority: 3})
 }
 
+// urgent tells the owner about an item at ntfy's highest priority (5), the
+// one that gets past a phone's quiet hours. The loop uses it for one thing: a
+// deploy that did not come up, which has stopped the line.
+//
+// The text is the same as item's. InboxMessage is asked with "failure" and
+// blocking rather than the item's own kind and flag for one reason: those two
+// only choose whether to send and how loudly, the stop item is deliberately
+// not blocking (`afk resume` clears the line, not an answer), and here both
+// questions are already settled.
+func (n daemonNotifier) urgent(p daemon.Project, it inbox.Item) {
+	url, ok := n.address(p)
+	if !ok {
+		return
+	}
+	msg, ok := notify.InboxMessage(it.ID, it.Task, "failure", it.Title, it.Body, true, url)
+	if !ok {
+		return
+	}
+	msg.Priority = 5
+	n.deliver(p, url, msg)
+}
+
 // address reads the project's ntfy address. No address is silence: most
 // projects have none.
 func (n daemonNotifier) address(p daemon.Project) (string, bool) {
@@ -395,6 +419,26 @@ func realDaemonDeps(p provider.Provider, providerName, home string, now func() t
 	// daemon's log, not on a stdout nobody reads. PickBase stays nil: there
 	// is nobody to pick, and nil means "use the default base".
 	sd.Stdout, sd.Stderr = logw, logw
+	// The same for a clean-up's notes.
+	cd := session.DefaultCleanDeps()
+	cd.Stdout, cd.Stderr = logw, logw
+	sendInput := func(worktree, sess, text string) error {
+		return host.SendInput(worktree, sess, text, daemonSendWait)
+	}
+	sw := shipWiring{
+		// One runner for git and gh: ship's adapters need a runner that
+		// returns what was printed even on a failure and an error that knows
+		// its exit code, and ship.NewRun is the one that promises both
+		// (session's runner promises neither).
+		run:       ship.NewRun(0),
+		health:    ship.NewHealth(nil),
+		sendInput: sendInput,
+		listInbox: func(root string) ([]inbox.Item, error) {
+			items, _, err := inbox.Store{Dir: inbox.Dir(root)}.List()
+			return items, err
+		},
+		now: now,
+	}
 	return daemon.Deps{
 		Now: now,
 		LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
@@ -420,9 +464,235 @@ func realDaemonDeps(p provider.Provider, providerName, home string, now func() t
 			})
 			return len(res.Lines), err
 		},
-		Notify:     n.item,
-		NotifyIdle: n.idle,
-		Log:        logf,
+		Notify:       n.item,
+		NotifyIdle:   n.idle,
+		NotifyUrgent: n.urgent,
+		Log:          logf,
+		Ship:         daemonShip(projectconfig.Load, sw),
+		SendPrompt:   sendInput,
+		Clean:        daemonClean(cd, ledger.Load),
+	}
+}
+
+// daemonSendWait is how long a typed line waits for a session's host to
+// answer its socket. It is short on purpose, and much shorter than the wait
+// `afk attach` uses: attach may be racing a host that is still starting, but
+// the daemon only types into sessions that have been running for a while, so
+// the host is up or it is not, and a pass must not sit on a dead socket.
+const daemonSendWait = 2 * time.Second
+
+// shipWiring is what the ship reaches the machine through, gathered so a test
+// can hand shipDeps fakes and see where each call goes.
+type shipWiring struct {
+	// run runs git and gh. It must return what was printed even when the
+	// command failed, and an error that knows its exit code (ship.RunFunc).
+	run ship.RunFunc
+	// health asks a deploy's health URL once.
+	health func(url string) (bool, error)
+	// sendInput types one line into a session's terminal.
+	sendInput func(worktree, session, text string) error
+	// listInbox lists the project's inbox items.
+	listInbox func(root string) ([]inbox.Item, error)
+	now       func() time.Time
+}
+
+// daemonShip is the loop's Deps.Ship: read the project's [ship] table, then
+// let ship.Advance take one step. Every rule about that step is in
+// internal/ship.
+//
+// A project config that cannot be read is a wait, with the error as the
+// reason, and nothing else: no step is taken on settings nobody can see, and
+// it is not a park either, because fixing the file is all it takes and the
+// next pass reads it again.
+func daemonShip(loadConfig func(root string) (projectconfig.Config, error), w shipWiring) func(daemon.ShipRequest) ship.Outcome {
+	return func(req daemon.ShipRequest) ship.Outcome {
+		cfg, err := loadConfig(req.Project.Root)
+		if err != nil {
+			return ship.Outcome{
+				Kind:     ship.OutcomeWait,
+				Reason:   fmt.Sprintf("the project config could not be read, so nothing was done: %v. Fix the file and the ship carries on", err),
+				Progress: req.Progress,
+			}
+		}
+		return ship.Advance(shipRequest(req, cfg.Ship), shipDeps(req, w))
+	}
+}
+
+// shipRequest turns what the loop knows about a ship into ship's own request.
+//
+// The base is the project's `[ship] base` when it is set, and otherwise the
+// branch the session was cut from. With no session on disk and no base set
+// there is none, and both are passed on empty: ship has a rule for that (it
+// parks and asks for a base), and guessing one here would open a pull request
+// against the wrong branch.
+func shipRequest(req daemon.ShipRequest, cfg projectconfig.Ship) ship.Request {
+	if cfg.Base == "" {
+		cfg.Base = req.Base
+	}
+	r := ship.Request{
+		Task:     req.Entry.ID,
+		Session:  req.Entry.Session,
+		Branch:   req.Entry.Branch,
+		Base:     req.Base,
+		Progress: req.Progress,
+		Config:   cfg,
+	}
+	if req.Worktree != "" {
+		r.SessionDir = filepath.Join(req.Worktree, ".afk", req.Entry.Session)
+	}
+	return r
+}
+
+// shipDeps builds everything one step of a ship touches. Each field is one
+// call into the package that owns the work; a test checks none is left nil,
+// because ship.Advance calls them without asking.
+//
+// The session's worktree may be gone: it is cleaned up before the ledger says
+// done, and a daemon killed between the two comes back to a shipping task
+// with nothing on disk. Git is then built over the main checkout alone (every
+// command but the "is the worktree clean" read runs there anyway), and gh
+// runs in the main checkout, because it finds the GitHub repository from the
+// folder it is run in and any checkout of the repository will do.
+func shipDeps(req daemon.ShipRequest, w shipWiring) ship.Deps {
+	root := req.Project.Root
+	ghDir := req.Worktree
+	if ghDir == "" {
+		ghDir = root
+	}
+	stop := req.Stop
+	if stop == nil {
+		stop = func(task, reason string) error { return daemonstate.Stop(root, task, reason, w.now()) }
+	}
+	return ship.Deps{
+		Git:    ship.NewGit(w.run, root, req.Worktree),
+		GH:     ship.NewGH(w.run, ghDir),
+		Health: w.health,
+		Prompt: func(text string) error {
+			if req.Worktree == "" {
+				return fmt.Errorf("session %s is not on disk, so there is no terminal to type into", req.Entry.Session)
+			}
+			return w.sendInput(req.Worktree, req.Entry.Session, text)
+		},
+		WriteFile: writeFileAtomic,
+		ReadFile:  os.ReadFile,
+		EnvAnswered: func(variable string) bool {
+			// An inbox that cannot be listed is "not answered": the merge
+			// waits rather than going through on a guess.
+			items, err := w.listInbox(root)
+			return err == nil && envAnswered(items, req.Entry.ID, variable)
+		},
+		Stop:             stop,
+		StopMarker:       func() bool { return daemonstate.Stopped(root) },
+		LastPoll:         func() time.Time { return daemonstate.LastShipPoll(root) },
+		MarkPoll:         func(t time.Time) error { return daemonstate.MarkShipPoll(root, t) },
+		ReadFailingSince: func() time.Time { return daemonstate.ShipPollFailingSince(root) },
+		MarkReadFailure:  func(t time.Time) error { return daemonstate.MarkShipPollFailure(root, t) },
+		ClearReadFailure: func() error { return daemonstate.ClearShipPollFailure(root) },
+		Now:              w.now,
+		Save:             req.Save,
+	}
+}
+
+// envAnswered reports whether the owner has answered the item that asked them
+// to set this environment variable before this task merges. Pure, so each way
+// of not matching is a table row.
+//
+// The variable has to be a whole word of the title. The title is ship's
+// ("Set {variable} before {task} merges"), and a plain substring test would
+// let the answer about MY_API_KEY also release a merge that waits on API_KEY.
+func envAnswered(items []inbox.Item, task, variable string) bool {
+	if variable == "" {
+		return false
+	}
+	for _, it := range items {
+		if it.Kind != ship.ItemEnvVar || it.Task != task || it.Open() {
+			continue
+		}
+		for _, word := range strings.Fields(it.Title) {
+			if word == variable {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// writeFileAtomic writes a file so that a reader sees the old contents or the
+// new, never half of the new: a temp file beside it, then a rename. The
+// hand-back file it is used for is read by an agent that may look the moment
+// the prompt arrives, and by the next pass to learn whether the hand-back
+// already happened, and a daemon can be killed between any two writes.
+//
+// The folder is not created. It is the session's own, and one that is missing
+// means the session is gone; making it again would leave a stray folder
+// behind for a file nobody will read.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	_, werr := tmp.Write(data)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		// CreateTemp makes the file 0600; the session's other files are 0644.
+		werr = os.Chmod(name, 0o644)
+	}
+	if werr == nil {
+		werr = os.Rename(name, path)
+	}
+	if werr != nil {
+		_ = os.Remove(name)
+	}
+	return werr
+}
+
+// daemonCleanOptions is how a shipped task's session is cleaned: the branch
+// is always deleted, and deleted on GitHub's word when the ledger holds a
+// merge commit.
+//
+// ConfirmedUnmerged looks wrong for a branch that has just been merged. The
+// reason is what session.Merged checks: whether the branch's tip is an
+// ancestor of the local base. After a squash or a rebase merge it never is
+// (the base holds new commits with the same changes, not the branch's own),
+// so that check alone would keep every such branch for ever. A merged_sha in
+// the ledger is GitHub having said the pull request merged, which is the
+// better evidence. Without one the local check decides, as it does for
+// `afk clean --delete-branch` with nobody to ask.
+func daemonCleanOptions(e ledger.Entry) session.CleanOptions {
+	return session.CleanOptions{DeleteBranch: true, ConfirmedUnmerged: e.MergedSHA != ""}
+}
+
+// daemonClean is the loop's Deps.Clean: find the session the way `afk clean`
+// does and clean it up. No session of that name is success, not an error: the
+// loop cleans before it marks the task done, so a daemon killed between the
+// two asks again for a session that is already gone.
+//
+// The ledger is read here because the loop hands over only the session's
+// name. One that cannot be read just means the cautious options.
+func daemonClean(cd session.CleanDeps, loadLedger func(root string) (ledger.Ledger, error)) func(daemon.Project, string) error {
+	return func(p daemon.Project, name string) error {
+		sessions, err := session.Discover(p.Root, cd)
+		if err != nil {
+			return err
+		}
+		target := findCleanTarget(sessions, name)
+		if target == nil {
+			return nil
+		}
+		var entry ledger.Entry
+		if l, err := loadLedger(p.Root); err == nil {
+			for _, e := range l.Tasks {
+				if e.Session == name {
+					entry = e
+					break
+				}
+			}
+		}
+		_, err = session.CleanSessionWithOptions(p.Root, *target, cd, daemonCleanOptions(entry))
+		return err
 	}
 }
 
@@ -448,10 +718,14 @@ type daemonStatus struct {
 type daemonProjectStatus struct {
 	Name, Root string
 	// Missing: there is no folder at Root. Nothing else is read then.
-	Missing  bool
-	Paused   bool
-	HasState bool
-	State    daemonstate.State
+	Missing bool
+	Paused  bool
+	// Stopped: the line's stop marker is there. StopTask and StopReason are
+	// what it says, both empty when the marker cannot be read.
+	Stopped              bool
+	StopTask, StopReason string
+	HasState             bool
+	State                daemonstate.State
 	// Counts is how many recorded tasks are in each status.
 	Counts map[ledger.Status]int
 	// LedgerProblem is set, with what to do, when the ledger cannot be used.
@@ -484,6 +758,7 @@ func runDaemonStatus(stdout, stderr io.Writer, env daemonEnv) int {
 			continue
 		}
 		ps.Paused = daemonstate.Paused(ps.Root)
+		ps.StopTask, ps.StopReason, ps.Stopped = daemonstate.ReadStop(ps.Root)
 		ps.State, ps.HasState = daemonstate.ReadState(ps.Root)
 		l, err := ledger.Load(ps.Root)
 		switch {
@@ -534,6 +809,16 @@ func daemonKindText(kind string) string {
 		return "stopped, because the project folder was not found"
 	case daemon.KindBlocked:
 		return "a task is ready, but this machine cannot start agents"
+	case string(daemon.ActShipStep):
+		return "shipping a finished task"
+	case string(daemon.ActOwner):
+		return "the next task is yours to do, and is waiting in your inbox"
+	case string(daemon.ActOwnerDone):
+		return "you confirmed your task, so it is marked done"
+	case string(daemon.ActNoLedger):
+		return "nothing is started, because this project has no task ledger yet"
+	case daemon.KindLineStopped:
+		return "the line is stopped, so no new task will start"
 	}
 	return kind
 }
@@ -547,8 +832,27 @@ func daemonTaskRunning(st daemonstate.State) bool {
 	switch st.Kind {
 	case string(daemon.ActLaunch), string(daemon.ActCreate), string(daemon.ActWait), string(daemon.ActUnpark):
 		return true
+	case string(daemon.ActShipStep), daemon.KindLineStopped:
+		// A shipping task and one whose deploy stopped the line both name a
+		// session, but its work is finished: the wait is on GitHub, the
+		// deploy or the owner, not on the session.
+		return false
+	case string(daemon.ActOwner), string(daemon.ActOwnerDone), string(daemon.ActNoLedger):
+		// These never have a session; listed so every kind the loop gained
+		// with shipping is answered here on purpose.
+		return false
 	}
 	return false
+}
+
+// daemonStateChurns reports whether a state's time is rewritten while nothing
+// has really changed. A ship's reason alternates between "waiting a moment
+// before asking GitHub again" and what it is waiting for, and each change
+// rewrites the state file, so its time is the last poll and not when the
+// shipping began. Showing that as "Since" would say a ship that has waited an
+// hour on CI began seconds ago.
+func daemonStateChurns(st daemonstate.State) bool {
+	return st.Kind == string(daemon.ActShipStep)
 }
 
 // agoText says how long ago something was, for a report read by a person.
@@ -557,6 +861,24 @@ func agoText(d time.Duration) string {
 		return "less than a minute"
 	}
 	return untilText(d)
+}
+
+// stoppedLineText is the line of the report for a project whose line is
+// stopped: after which task, why, and the command that clears it. It reads
+// the stop marker's own words and not the daemon's state file, so it is right
+// even when the daemon has not looked since the stop, or is not running.
+//
+// A marker that cannot be read still stops the line (existence is the
+// signal), so it gets the same line without the two things it could not say.
+func stoppedLineText(p daemonProjectStatus) string {
+	s := "Stopped: the line is stopped"
+	if p.StopTask != "" {
+		s += " after " + p.StopTask
+	}
+	if why := strings.TrimRight(strings.TrimSpace(p.StopReason), "."); why != "" {
+		s += ": " + why
+	}
+	return s + fmt.Sprintf(". No new task will start until you run \"afk resume %s\", which clears the stop.", p.Name)
 }
 
 // renderDaemonStatus builds the whole report. Pure: every time, path and
@@ -608,6 +930,9 @@ func renderDaemonStatus(in daemonStatus) string {
 		if p.Paused {
 			fmt.Fprintf(&b, "  Paused: no new task will start until you run \"afk resume %s\". A task that is running carries on.\n", p.Name)
 		}
+		if p.Stopped {
+			b.WriteString("  " + stoppedLineText(p) + "\n")
+		}
 		if !p.HasState {
 			b.WriteString("  The daemon has not looked at this project yet.\n")
 		} else {
@@ -632,7 +957,9 @@ func renderDaemonStatus(in daemonStatus) string {
 			if st.Reason != "" {
 				fmt.Fprintf(&b, "  Why:     %s\n", st.Reason)
 			}
-			if text, at, ok := when(st.At); ok {
+			if text, at, ok := when(st.At); ok && daemonStateChurns(st) {
+				fmt.Fprintf(&b, "  Updated: %s (%s ago)\n", text, agoText(in.Now.Sub(at)))
+			} else if ok {
 				ago := agoText(in.Now.Sub(at))
 				fmt.Fprintf(&b, "  Since:   %s (%s ago)\n", text, ago)
 				if in.Running && daemonTaskRunning(st) {

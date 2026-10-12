@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,8 @@ import (
 	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/session"
+	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -61,7 +65,9 @@ func (r *daemonRig) configPath() string { return filepath.Join(r.cfgHome, "afk",
 func (r *daemonRig) stateDir() string   { return filepath.Join(r.stateHome, "afk") }
 
 // project makes a folder the loop accepts as a checkout (it only looks for a
-// .git entry) holding a two-task master plan.
+// .git entry) holding a two-task master plan and the empty ledger `afk ledger
+// init` writes for a new project. The ledger has to be there: the loop starts
+// nothing in a project that has no ledger file at all.
 func (r *daemonRig) project() string {
 	r.t.Helper()
 	root := r.t.TempDir()
@@ -69,6 +75,9 @@ func (r *daemonRig) project() string {
 		r.t.Fatal(err)
 	}
 	writeBuildFile(r.t, root, "docs/PLAN.md", daemonTestPlan)
+	if err := ledger.Init(root, nil); err != nil {
+		r.t.Fatal(err)
+	}
 	return root
 }
 
@@ -416,6 +425,30 @@ path = %q
 		t.Error("status created the missing project folder")
 	}
 
+	// The stop marker is read from the project's own files, not from the
+	// daemon's state file, so the report is right with no daemon running.
+	t.Run("a stopped line", func(t *testing.T) {
+		r := newDaemonRig(t)
+		stopped, damaged := r.project(), r.project()
+		if err := daemonstate.Stop(stopped, "T1.1", "the deploy did not come up healthy within 15m0s", daemonTestNow); err != nil {
+			t.Fatal(err)
+		}
+		writeBuildFile(t, damaged, ".afk/build/stopped", "{not json")
+		r.writeConfig(fmt.Sprintf("[[project]]\nname = \"alpha\"\npath = %q\n[[project]]\nname = \"beta\"\npath = %q\n", stopped, damaged))
+		var so, se bytes.Buffer
+		if code := runDaemon([]string{"status"}, &so, &se, r.env()); code != 0 {
+			t.Fatalf("exit code = %d, stderr %q", code, se.String())
+		}
+		for _, w := range []string{
+			`Stopped: the line is stopped after T1.1: the deploy did not come up healthy within 15m0s. No new task will start until you run "afk resume alpha", which clears the stop.`,
+			`Stopped: the line is stopped. No new task will start until you run "afk resume beta", which clears the stop.`,
+		} {
+			if !strings.Contains(so.String(), w) {
+				t.Errorf("status lacks %q in:\n%s", w, so.String())
+			}
+		}
+	})
+
 	t.Run("a config that cannot be read", func(t *testing.T) {
 		r := newDaemonRig(t)
 		r.writeConfig("[daemon]\ntick = \"banana\"\n")
@@ -505,6 +538,54 @@ func TestRenderDaemonStatus(t *testing.T) {
 			want: []string{"Doing:   a task is ready, but this machine cannot start agents", "Task:    T1.1\n"},
 		},
 		{
+			name: "stopped line, daemon idle behind it",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				Stopped: true, StopTask: "T1.1", StopReason: "the deploy did not come up healthy within 15m0s",
+				State:  daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: daemon.KindLineStopped, Reason: "the line is stopped: the deploy did not come up healthy within 15m0s"},
+				Counts: map[ledger.Status]int{ledger.Done: 1}}),
+			want: []string{`Stopped: the line is stopped after T1.1: the deploy did not come up healthy within 15m0s. No new task will start until you run "afk resume demo", which clears the stop.`,
+				"Doing:   the line is stopped, so no new task will start", "Since:   Sun 11 Oct 09:00 (30m ago)"},
+			not: []string{"Running:", "line_stopped"},
+		},
+		{
+			name: "stopped line, its task still shipping",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				Stopped: true, StopTask: "T1.1", StopReason: "no answer from the deploy",
+				State: daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: daemon.KindLineStopped, Task: "T1.1", Session: "t1-1",
+					Reason: "the line is stopped; T1.1 is marked done once it is cleared"}}),
+			want: []string{`afk resume demo`, "Stopped: the line is stopped after T1.1: no answer from the deploy.", "Task:    T1.1, in session t1-1"},
+			not:  []string{"Running:"},
+		},
+		{
+			name: "stopped by a marker nobody can read, daemon not looked yet",
+			in:   base(daemonProjectStatus{Name: "demo", Root: "/p/demo", Stopped: true}),
+			want: []string{`Stopped: the line is stopped. No new task will start until you run "afk resume demo"`, "The daemon has not looked at this project yet."},
+		},
+		{
+			name: "shipping",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				State:  daemonstate.State{At: "2026-10-11T09:29:50Z", Kind: string(daemon.ActShipStep), Task: "T1.1", Session: "t1-1", Reason: "shipping T1.1: waiting for the checks on pull request 7"},
+				Counts: map[ledger.Status]int{ledger.Shipping: 1}}),
+			want: []string{"Doing:   shipping a finished task", "Task:    T1.1, in session t1-1", "Why:     shipping T1.1: waiting for the checks",
+				"Updated: Sun 11 Oct 09:29 (less than a minute ago)", "Tasks:   1 shipping"},
+			not: []string{"Running:", "Since:", "Stopped:"},
+		},
+		{
+			name: "owner task waiting",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				State:  daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: string(daemon.ActOwner), Task: "T0.0", Reason: "T0.0 is the owner's to do; see inbox item a1b2"},
+				Counts: map[ledger.Status]int{ledger.Parked: 1}}),
+			want: []string{"Doing:   the next task is yours to do, and is waiting in your inbox", "Task:    T0.0\n", "Since:   Sun 11 Oct 09:00"},
+			not:  []string{"Running:", "owner_task"},
+		},
+		{
+			name: "no ledger",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				State: daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: string(daemon.ActNoLedger), Reason: "no task ledger; see inbox item a1b2"}}),
+			want: []string{"Doing:   nothing is started, because this project has no task ledger yet", "Why:     no task ledger; see inbox item a1b2", "Tasks:   none recorded yet"},
+			not:  []string{"Running:", "no_ledger:"},
+		},
+		{
 			name: "missing folder, damaged ledger, unread project, odd state",
 			in: base(
 				daemonProjectStatus{Name: "gone", Root: "/p/gone", Missing: true},
@@ -535,18 +616,29 @@ func TestRenderDaemonStatus(t *testing.T) {
 
 // TestDaemonKindTextCoversEveryKind keeps the report in step with the loop:
 // a kind the loop writes that this file has no words for would be shown to
-// the owner as a bare code word.
+// the owner as a bare code word. It ranges over the loop's own list, so a
+// kind added there fails here until it has words.
+//
+// The second half is as load-bearing as the first: two kinds with the same
+// words could not be told apart by the owner, which is how "shipping" would
+// hide behind "waiting".
 func TestDaemonKindTextCoversEveryKind(t *testing.T) {
-	kinds := []string{
-		string(daemon.ActStop), string(daemon.ActWait), string(daemon.ActCreate), string(daemon.ActShip),
-		string(daemon.ActFail), string(daemon.ActPark), string(daemon.ActHostGone), string(daemon.ActStall),
-		string(daemon.ActUnpark), string(daemon.ActLaunch), string(daemon.ActIdle),
-		daemon.KindStopped, daemon.KindBlocked,
-	}
-	for _, k := range kinds {
-		if got := daemonKindText(k); got == k || got == "" {
+	seen := map[string]string{}
+	for _, k := range daemon.Kinds() {
+		got := daemonKindText(k)
+		if got == k || got == "" {
 			t.Errorf("daemonKindText(%q) = %q, want plain words", k, got)
 		}
+		if strings.Contains(got, "_") {
+			t.Errorf("daemonKindText(%q) = %q holds a code word", k, got)
+		}
+		if other, dup := seen[got]; dup {
+			t.Errorf("daemonKindText gives %q and %q the same words (%q)", k, other, got)
+		}
+		seen[got] = k
+	}
+	if got := daemonKindText("from-the-future"); got != "from-the-future" {
+		t.Errorf("an unknown kind is shown as %q, want it as it is", got)
 	}
 }
 
@@ -676,6 +768,13 @@ func TestDaemonNotifier(t *testing.T) {
 			n.idle(daemon.Project{Name: "demo", Root: "/p"}, "demo is waiting on you", "waiting on owner: T1.1 parked")
 		},
 			want: &notify.NtfyMessage{Title: "afk: demo is waiting on you", Body: "waiting on owner: T1.1 parked", Priority: 3}},
+		{name: "urgent, for an item that is not blocking", url: url, call: func(n daemonNotifier) {
+			n.urgent(daemon.Project{Name: "demo", Root: "/p"}, inbox.Item{ID: "e5f6", Task: "T1.1", Kind: "failure", Title: "The line is stopped after T1.1", Body: "Check the deploy."})
+		},
+			want: &notify.NtfyMessage{Title: "afk: The line is stopped after T1.1", Body: "Check the deploy.\n\nafk inbox show e5f6 (T1.1)", Priority: 5}},
+		{name: "urgent, for a kind that would not notify", url: url, call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, quiet) },
+			want: &notify.NtfyMessage{Title: "afk: FYI", Body: "afk inbox show c3d4", Priority: 5}},
+		{name: "urgent, no address", call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, item) }},
 		{name: "idle, no address", call: func(n daemonNotifier) { n.idle(daemon.Project{Name: "demo", Root: "/p"}, "t", "b") }},
 		{name: "send fails", url: url, sendErr: errors.New("could not reach https://user:xxxxx@ntfy.example/topic"),
 			call:   func(n daemonNotifier) { n.item(daemon.Project{Name: "demo", Root: "/p"}, item) },
@@ -771,6 +870,593 @@ func TestDaemonProjects(t *testing.T) {
 				if !strings.Contains(all, w) {
 					t.Errorf("dropped %q lacks %q", all, w)
 				}
+			}
+		})
+	}
+}
+
+// TestRealDaemonDeps pins that the real wiring sets the calls the loop treats
+// as optional. Each nil is silent, which is why this is a test and not a
+// review comment: with no Ship a finished task waits for ever in `shipping`,
+// with no SendPrompt an answered task is never resumed, with no Clean a
+// shipped task leaves its worktree and branch behind, and with no
+// NotifyUrgent a failed deploy arrives at an ordinary priority.
+//
+// Building the deps runs nothing: no git, no agent CLI, no network.
+func TestRealDaemonDeps(t *testing.T) {
+	var log bytes.Buffer
+	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), func() time.Time { return daemonTestNow }, &log,
+		daemonLogger(&log, func() time.Time { return daemonTestNow }))
+	for name, isNil := range map[string]bool{
+		"Now": d.Now == nil, "LoadBuild": d.LoadBuild == nil, "Sessions": d.Sessions == nil,
+		"Preflight": d.Preflight == nil, "Launch": d.Launch == nil, "RecordTokens": d.RecordTokens == nil,
+		"Notify": d.Notify == nil, "NotifyIdle": d.NotifyIdle == nil, "Log": d.Log == nil,
+		"Ship": d.Ship == nil, "SendPrompt": d.SendPrompt == nil, "Clean": d.Clean == nil,
+		"NotifyUrgent": d.NotifyUrgent == nil,
+	} {
+		if isNil {
+			t.Errorf("realDaemonDeps leaves %s nil", name)
+		}
+	}
+	if daemonSendWait != 2*time.Second {
+		t.Errorf("daemonSendWait = %s, want 2s: a pass must not sit on a dead socket", daemonSendWait)
+	}
+}
+
+// shipCall is one command the fake runner was asked for.
+type shipCall struct{ dir, cmd string }
+
+// shipRig is fakes for everything shipDeps reaches the machine through.
+type shipRig struct {
+	calls   []shipCall
+	typed   []string
+	items   []inbox.Item
+	itemErr error
+	healthy []string
+}
+
+func (r *shipRig) wiring() shipWiring {
+	return shipWiring{
+		run: func(dir, name string, args ...string) (string, error) {
+			r.calls = append(r.calls, shipCall{dir, strings.Join(append([]string{name}, args...), " ")})
+			return "", nil
+		},
+		health: func(url string) (bool, error) {
+			r.healthy = append(r.healthy, url)
+			return true, nil
+		},
+		sendInput: func(worktree, session, text string) error {
+			r.typed = append(r.typed, worktree+"|"+session+"|"+text)
+			return nil
+		},
+		listInbox: func(string) ([]inbox.Item, error) { return r.items, r.itemErr },
+		now:       func() time.Time { return daemonTestNow },
+	}
+}
+
+// TestDaemonShipDeps checks that every field ship.Advance calls is set and goes to
+// the right place.
+//
+// Load-bearing:
+//   - "no field is nil", by reflection, so a field added to ship.Deps later
+//     fails here until it is wired (Advance calls each without asking).
+//   - the two "no session on disk" rows: git and gh must then run in the main
+//     checkout, since the worktree is gone, and nothing may be typed.
+//   - the marker rows read and write the project's own files, which is what
+//     lets a killed daemon come back to the same poll time and the same stop.
+func TestDaemonShipDeps(t *testing.T) {
+	root, wt := t.TempDir(), t.TempDir()
+	var saved []ship.Progress
+	var stops []string
+	request := func(worktree string) daemon.ShipRequest {
+		return daemon.ShipRequest{
+			Project:  daemon.Project{Name: "demo", Root: root},
+			Entry:    ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Branch: "t1-1"},
+			Worktree: worktree,
+			Save:     func(p ship.Progress) error { saved = append(saved, p); return nil },
+			Stop:     func(task, reason string) error { stops = append(stops, task+": "+reason); return nil },
+		}
+	}
+
+	t.Run("no field is nil", func(t *testing.T) {
+		for _, worktree := range []string{wt, ""} {
+			r := &shipRig{}
+			v := reflect.ValueOf(shipDeps(request(worktree), r.wiring()))
+			for i := 0; i < v.NumField(); i++ {
+				if v.Field(i).IsNil() {
+					t.Errorf("worktree %q: ship.Deps.%s is nil", worktree, v.Type().Field(i).Name)
+				}
+			}
+		}
+	})
+
+	t.Run("git and gh with a session on disk", func(t *testing.T) {
+		r := &shipRig{}
+		d := shipDeps(request(wt), r.wiring())
+		_, _ = d.Git.LocalSHA("t1-1")
+		_, _ = d.Git.Clean()
+		_ = d.GH.Ready()
+		if len(r.calls) != 3 {
+			t.Fatalf("calls = %+v, want three", r.calls)
+		}
+		if r.calls[0].dir != root || !strings.HasPrefix(r.calls[0].cmd, "git ") {
+			t.Errorf("a branch read ran as %+v, want git in the main checkout", r.calls[0])
+		}
+		if r.calls[1].dir != wt || !strings.HasPrefix(r.calls[1].cmd, "git ") {
+			t.Errorf("the clean read ran as %+v, want git in the worktree", r.calls[1])
+		}
+		if r.calls[2].dir != wt || !strings.HasPrefix(r.calls[2].cmd, "gh ") {
+			t.Errorf("gh ran as %+v, want gh in the worktree", r.calls[2])
+		}
+	})
+
+	t.Run("git and gh with no session on disk", func(t *testing.T) {
+		r := &shipRig{}
+		d := shipDeps(request(""), r.wiring())
+		_, _ = d.Git.LocalSHA("t1-1")
+		_ = d.GH.Ready()
+		if len(r.calls) != 2 || r.calls[0].dir != root || r.calls[1].dir != root {
+			t.Errorf("calls = %+v, want git and gh both in the main checkout", r.calls)
+		}
+		if _, err := d.Git.Clean(); err == nil {
+			t.Error("Git.Clean with no worktree gave no error; it has nothing to read")
+		}
+	})
+
+	t.Run("prompt", func(t *testing.T) {
+		r := &shipRig{}
+		if err := shipDeps(request(wt), r.wiring()).Prompt("read ci-failure.md"); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{wt + "|t1-1|read ci-failure.md"}; !reflect.DeepEqual(r.typed, want) {
+			t.Errorf("typed %q, want %q", r.typed, want)
+		}
+	})
+
+	t.Run("prompt with no session on disk", func(t *testing.T) {
+		r := &shipRig{}
+		err := shipDeps(request(""), r.wiring()).Prompt("read ci-failure.md")
+		if err == nil || !strings.Contains(err.Error(), "t1-1") || len(r.typed) != 0 {
+			t.Errorf("err = %v, typed = %q; want an error naming the session and nothing typed", err, r.typed)
+		}
+	})
+
+	t.Run("markers, clock, save and stop", func(t *testing.T) {
+		r := &shipRig{}
+		d := shipDeps(request(wt), r.wiring())
+		if !d.Now().Equal(daemonTestNow) {
+			t.Errorf("Now = %s", d.Now())
+		}
+		if d.StopMarker() {
+			t.Error("StopMarker is true in a project with no marker")
+		}
+		if err := daemonstate.Stop(root, "T1.1", "deploy down", daemonTestNow); err != nil {
+			t.Fatal(err)
+		}
+		if !d.StopMarker() {
+			t.Error("StopMarker is false after the marker was written")
+		}
+		if !d.LastPoll().IsZero() || !d.ReadFailingSince().IsZero() {
+			t.Errorf("LastPoll = %s, ReadFailingSince = %s, want both zero before any poll", d.LastPoll(), d.ReadFailingSince())
+		}
+		if err := d.MarkPoll(daemonTestNow); err != nil {
+			t.Fatal(err)
+		}
+		if !d.LastPoll().Equal(daemonTestNow) || !daemonstate.LastShipPoll(root).Equal(daemonTestNow) {
+			t.Errorf("LastPoll = %s, want the marked time, kept in the project's files", d.LastPoll())
+		}
+		if err := d.MarkReadFailure(daemonTestNow.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if !d.ReadFailingSince().Equal(daemonTestNow.Add(time.Minute)) {
+			t.Errorf("ReadFailingSince = %s, want the marked time", d.ReadFailingSince())
+		}
+		if err := d.ClearReadFailure(); err != nil {
+			t.Fatal(err)
+		}
+		if !d.ReadFailingSince().IsZero() {
+			t.Errorf("ReadFailingSince = %s after a clear, want zero", d.ReadFailingSince())
+		}
+		if err := d.Save(ship.Progress{State: ship.Pushed}); err != nil || len(saved) != 1 || saved[0].State != ship.Pushed {
+			t.Errorf("Save did not reach the request's Save: err %v, saved %+v", err, saved)
+		}
+		if err := d.Stop("T1.1", "no answer"); err != nil || !reflect.DeepEqual(stops, []string{"T1.1: no answer"}) {
+			t.Errorf("Stop did not reach the request's Stop: err %v, stops %q", err, stops)
+		}
+		if ok, err := d.Health("https://example.test/up"); !ok || err != nil || len(r.healthy) != 1 {
+			t.Errorf("Health did not reach the wiring: ok %v err %v asked %q", ok, err, r.healthy)
+		}
+	})
+
+	t.Run("stop with none on the request writes the marker", func(t *testing.T) {
+		root := t.TempDir()
+		req := request(wt)
+		req.Project.Root, req.Stop = root, nil
+		if err := shipDeps(req, (&shipRig{}).wiring()).Stop("T1.1", "no answer"); err != nil {
+			t.Fatal(err)
+		}
+		if task, reason, ok := daemonstate.ReadStop(root); !ok || task != "T1.1" || reason != "no answer" {
+			t.Errorf("marker = %q, %q, %v", task, reason, ok)
+		}
+	})
+
+	t.Run("hand-back file", func(t *testing.T) {
+		d := shipDeps(request(wt), (&shipRig{}).wiring())
+		path := filepath.Join(wt, "ci-failure.md")
+		if _, err := d.ReadFile(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("ReadFile of a missing file = %v, want one that is fs.ErrNotExist", err)
+		}
+		if err := d.WriteFile(path, []byte("Head commit: abc\n")); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := d.ReadFile(path); err != nil || string(got) != "Head commit: abc\n" {
+			t.Errorf("read back %q, %v", got, err)
+		}
+	})
+
+	t.Run("env var answers", func(t *testing.T) {
+		r := &shipRig{items: []inbox.Item{{Task: "T1.1", Kind: "env_var", Title: "Set API_KEY before T1.1 merges", Answer: "set"}}}
+		d := shipDeps(request(wt), r.wiring())
+		if !d.EnvAnswered("API_KEY") || d.EnvAnswered("OTHER") {
+			t.Error("EnvAnswered does not follow the inbox")
+		}
+		r.itemErr = errors.New("inbox unreadable")
+		if d.EnvAnswered("API_KEY") {
+			t.Error("EnvAnswered is true when the inbox cannot be listed; the merge must wait")
+		}
+	})
+}
+
+// TestDaemonEnvAnswered is the "has the owner said this variable is set" read.
+//
+// Load-bearing: "longer name" (an answer about MY_API_KEY must not release a
+// merge waiting on API_KEY, which a substring test would do), "open" (asked
+// is not answered) and "another task" (the same variable for a different
+// task is a different question).
+func TestDaemonEnvAnswered(t *testing.T) {
+	item := func(task, kind, title, answer string) inbox.Item {
+		return inbox.Item{Task: task, Kind: kind, Title: title, Answer: answer}
+	}
+	tests := []struct {
+		name     string
+		items    []inbox.Item
+		variable string
+		want     bool
+	}{
+		{"answered", []inbox.Item{item("T1.1", "env_var", "Set API_KEY before T1.1 merges", "done")}, "API_KEY", true},
+		{"open", []inbox.Item{item("T1.1", "env_var", "Set API_KEY before T1.1 merges", "")}, "API_KEY", false},
+		{"another task", []inbox.Item{item("T1.2", "env_var", "Set API_KEY before T1.2 merges", "done")}, "API_KEY", false},
+		{"another kind", []inbox.Item{item("T1.1", "failure", "Set API_KEY before T1.1 merges", "done")}, "API_KEY", false},
+		{"another variable", []inbox.Item{item("T1.1", "env_var", "Set DB_URL before T1.1 merges", "done")}, "API_KEY", false},
+		{"longer name", []inbox.Item{item("T1.1", "env_var", "Set MY_API_KEY before T1.1 merges", "done")}, "API_KEY", false},
+		{"second item answers", []inbox.Item{
+			item("T1.1", "env_var", "Set DB_URL before T1.1 merges", "done"),
+			item("T1.1", "env_var", "Set API_KEY before T1.1 merges", "done")}, "API_KEY", true},
+		{"no items", nil, "API_KEY", false},
+		{"empty variable", []inbox.Item{item("T1.1", "env_var", "Set  before T1.1 merges", "done")}, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := envAnswered(tt.items, "T1.1", tt.variable); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDaemonShipRequest pins what the loop's request becomes for ship.
+//
+// Load-bearing: "config base wins" and "session base fills an unset key" are
+// the two halves of where the base comes from; "no session, no base" must
+// pass both on empty, because ship parks on a missing base and a guess here
+// would open a pull request against the wrong branch.
+func TestDaemonShipRequest(t *testing.T) {
+	entry := ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Branch: "t1-1"}
+	progress := ship.Progress{State: ship.PROpen, PR: 7}
+	tests := []struct {
+		name           string
+		worktree, base string
+		cfgBase        string
+		wantCfgBase    string
+		wantDir        string
+	}{
+		{name: "session base fills an unset key", worktree: "/wt/t1-1", base: "main", wantCfgBase: "main", wantDir: "/wt/t1-1/.afk/t1-1"},
+		{name: "config base wins", worktree: "/wt/t1-1", base: "main", cfgBase: "release", wantCfgBase: "release", wantDir: "/wt/t1-1/.afk/t1-1"},
+		{name: "no session, config base", cfgBase: "release", wantCfgBase: "release"},
+		{name: "no session, no base"},
+		{name: "stale status, no base", worktree: "/wt/t1-1", wantDir: "/wt/t1-1/.afk/t1-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := daemon.ShipRequest{Project: daemon.Project{Root: "/p"}, Entry: entry, Worktree: tt.worktree, Base: tt.base, Progress: progress}
+			got := shipRequest(req, projectconfig.Ship{Base: tt.cfgBase, MergeMethod: "squash", CIReruns: 3})
+			if got.Task != "T1.1" || got.Session != "t1-1" || got.Branch != "t1-1" || got.Progress != progress {
+				t.Errorf("task, session, branch or progress not passed through: %+v", got)
+			}
+			if got.Base != tt.base || got.Config.Base != tt.wantCfgBase {
+				t.Errorf("Base = %q, Config.Base = %q; want %q and %q", got.Base, got.Config.Base, tt.base, tt.wantCfgBase)
+			}
+			if got.SessionDir != filepath.FromSlash(tt.wantDir) {
+				t.Errorf("SessionDir = %q, want %q", got.SessionDir, tt.wantDir)
+			}
+			if got.Config.MergeMethod != "squash" || got.Config.CIReruns != 3 {
+				t.Errorf("the rest of [ship] was not passed through: %+v", got.Config)
+			}
+		})
+	}
+}
+
+// TestDaemonShip runs the loop's Ship over fakes.
+//
+// Load-bearing:
+//   - "config unreadable" must be a wait that carries the error and runs
+//     nothing: a broken afk.toml must not crash the pass, must not ship on
+//     settings nobody can read, and clears itself once the file is fixed.
+//   - "no session and no base" must reach ship unchanged and come back as
+//     ship's own park, with no command run.
+//   - "last state" shows ship.Advance is really what is called.
+func TestDaemonShip(t *testing.T) {
+	entry := ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Branch: "t1-1"}
+	tests := []struct {
+		name     string
+		cfgErr   error
+		progress ship.Progress
+		wantKind ship.OutcomeKind
+		wantHas  string
+	}{
+		{name: "config unreadable", cfgErr: errors.New("afk.toml is not valid TOML"), progress: ship.Progress{State: ship.PROpen, PR: 7},
+			wantKind: ship.OutcomeWait, wantHas: "afk.toml is not valid TOML"},
+		{name: "no session and no base", progress: ship.Progress{}, wantKind: ship.OutcomePark, wantHas: "base"},
+		{name: "last state", progress: ship.Progress{State: ship.DeployHealthy, PR: 7, MergedSHA: "abc"}, wantKind: ship.OutcomeDone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &shipRig{}
+			root := t.TempDir()
+			fn := daemonShip(func(got string) (projectconfig.Config, error) {
+				if got != root {
+					t.Errorf("config loaded from %q, want the project root", got)
+				}
+				return projectconfig.Config{Ship: projectconfig.Ship{MergeMethod: "merge", Deploys: true, DeployTimeout: 15 * time.Minute}}, tt.cfgErr
+			}, r.wiring())
+			out := fn(daemon.ShipRequest{
+				Project: daemon.Project{Name: "demo", Root: root}, Entry: entry, Progress: tt.progress,
+				Save: func(ship.Progress) error { return nil },
+				Stop: func(string, string) error { return nil },
+			})
+			if out.Kind != tt.wantKind {
+				t.Fatalf("outcome = %+v, want kind %q", out, tt.wantKind)
+			}
+			if !strings.Contains(out.Reason, tt.wantHas) {
+				t.Errorf("reason %q lacks %q", out.Reason, tt.wantHas)
+			}
+			if out.Progress != tt.progress {
+				t.Errorf("progress = %+v, want it unchanged (%+v)", out.Progress, tt.progress)
+			}
+			if len(r.calls) != 0 || len(r.typed) != 0 {
+				t.Errorf("ran %+v and typed %q, want nothing", r.calls, r.typed)
+			}
+		})
+	}
+}
+
+// TestDaemonWriteFileAtomic: a new file, a replaced file, and a folder that is not
+// there. The last row is the load-bearing one: the hand-back file must not
+// bring a cleaned-up session's folder back, and a failed write must not leave
+// its temp file behind.
+func TestDaemonWriteFileAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ci-failure.md")
+	for _, text := range []string{"first\n", "second, and longer\n"} {
+		if err := writeFileAtomic(path, []byte(text)); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := os.ReadFile(path); err != nil || string(got) != text {
+			t.Errorf("read back %q, %v; want %q", got, err, text)
+		}
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v (%v), want 0644 like the session's other files", fi.Mode().Perm(), err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("folder holds %d entries, want only the file (no temp file left)", len(entries))
+	}
+	gone := filepath.Join(dir, "gone")
+	if err := writeFileAtomic(filepath.Join(gone, "ci-failure.md"), []byte("x")); err == nil {
+		t.Error("writing into a folder that is not there gave no error")
+	}
+	if _, err := os.Stat(gone); err == nil {
+		t.Error("the missing folder was created")
+	}
+}
+
+// TestDaemonCleanOptions pins how a shipped session is cleaned.
+//
+// Both rows are load-bearing. With a merge commit in the ledger the branch
+// must be deleted without the local "is it merged" check having the last
+// word, or every squash- and rebase-merged branch is kept for ever. Without
+// one, that check must still decide, so work GitHub never confirmed merged
+// is not deleted on the daemon's say-so.
+func TestDaemonCleanOptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry ledger.Entry
+		want  session.CleanOptions
+	}{
+		{"merged_sha recorded", ledger.Entry{ID: "T1.1", Session: "t1-1", MergedSHA: "abc123"},
+			session.CleanOptions{DeleteBranch: true, ConfirmedUnmerged: true}},
+		{"no merged_sha", ledger.Entry{ID: "T1.1", Session: "t1-1"},
+			session.CleanOptions{DeleteBranch: true, ConfirmedUnmerged: false}},
+		{"no entry at all", ledger.Entry{},
+			session.CleanOptions{DeleteBranch: true, ConfirmedUnmerged: false}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := daemonCleanOptions(tt.entry); got != tt.want {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// daemonCleanGit runs git in dir for TestDaemonClean.
+func daemonCleanGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s (in %s): %v\n%s", strings.Join(args, " "), dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestDaemonClean runs the loop's Clean over real git in temp folders (the
+// precedent is internal/session's clean tests: a wrong git call cannot be
+// caught by a fake). It touches no real session: the repository, the
+// worktree and the archive folder are all made here, there is no host, and
+// git-spice is stubbed out.
+//
+// The session's branch holds a commit the base does not, which is exactly
+// how a squash-merged branch looks locally.
+//
+// Load-bearing:
+//   - "merged on GitHub" deletes that branch; "not known to be merged" keeps
+//     it. Together they are the whole reason the ledger is read.
+//   - "no such session" is success with nothing touched: the loop cleans
+//     before it marks the task done, so after a kill it asks again.
+//   - "ledger unreadable" still cleans, with the cautious options.
+func TestDaemonClean(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	tests := []struct {
+		name       string
+		session    string
+		entry      *ledger.Entry
+		ledgerErr  error
+		wantGone   bool // the worktree and the session's files
+		wantBranch bool // the branch t1-1 still exists
+	}{
+		{name: "merged on GitHub", session: "t1-1",
+			entry:    &ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Branch: "t1-1", MergedSHA: "abc123"},
+			wantGone: true, wantBranch: false},
+		{name: "not known to be merged", session: "t1-1",
+			entry:    &ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", Branch: "t1-1"},
+			wantGone: true, wantBranch: true},
+		{name: "ledger unreadable", session: "t1-1", ledgerErr: errors.New("ledger file is damaged"),
+			wantGone: true, wantBranch: true},
+		{name: "no such session", session: "t9-9",
+			entry:    &ledger.Entry{ID: "T9.9", Status: ledger.Shipping, Session: "t9-9", Branch: "t9-9", MergedSHA: "abc123"},
+			wantGone: false, wantBranch: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			root, wt, home := filepath.Join(base, "repo"), filepath.Join(base, "t1-1"), filepath.Join(base, "home")
+			for _, d := range []string{root, home} {
+				if err := os.Mkdir(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			daemonCleanGit(t, root, "init", "-b", "main")
+			daemonCleanGit(t, root, "config", "user.name", "afk Test")
+			daemonCleanGit(t, root, "config", "user.email", "afk-test@example.com")
+			writeBuildFile(t, root, ".gitignore", ".afk/\n")
+			daemonCleanGit(t, root, "add", "-A")
+			daemonCleanGit(t, root, "commit", "-m", "chore: Initial commit")
+			daemonCleanGit(t, root, "worktree", "add", "-b", "t1-1", wt, "main")
+			writeBuildFile(t, wt, "greeting.txt", "hello\n")
+			daemonCleanGit(t, wt, "add", "-A")
+			daemonCleanGit(t, wt, "commit", "-m", "feat: Add a greeting")
+			writeBuildFile(t, wt, ".afk/t1-1/status.json", `{"session_id":"11111111-1111-1111-1111-111111111111","plan_name":"t1-1","phase":"done","branch":"t1-1","base_branch":"main","loop_count":0,"awaiting_input":false,"tmux_window":"","updated_at":"2026-10-11T09:00:00Z"}`+"\n")
+
+			var out bytes.Buffer
+			cd := session.DefaultCleanDeps()
+			cd.Stdout, cd.Stderr = &out, &out
+			cd.HomeDir = func() (string, error) { return home, nil }
+			cd.Now = func() time.Time { return daemonTestNow }
+			cd.IsSpiceTracked = func(string, string) bool { return false }
+			clean := daemonClean(cd, func(got string) (ledger.Ledger, error) {
+				if got != root {
+					t.Errorf("ledger loaded from %q, want the project root", got)
+				}
+				if tt.ledgerErr != nil {
+					return ledger.Ledger{}, tt.ledgerErr
+				}
+				return ledger.Ledger{Tasks: []ledger.Entry{{ID: "T0.9", Status: ledger.Done, Session: "t0-9"}, *tt.entry}}, nil
+			})
+			if err := clean(daemon.Project{Name: "demo", Root: root}, tt.session); err != nil {
+				t.Fatalf("clean: %v\n%s", err, out.String())
+			}
+			_, statErr := os.Stat(wt)
+			if gone := os.IsNotExist(statErr); gone != tt.wantGone {
+				t.Errorf("worktree gone = %v, want %v\n%s", gone, tt.wantGone, out.String())
+			}
+			branches := daemonCleanGit(t, root, "branch", "--list", "t1-1")
+			if has := branches != ""; has != tt.wantBranch {
+				t.Errorf("branch t1-1 exists = %v, want %v\n%s", has, tt.wantBranch, out.String())
+			}
+		})
+	}
+
+	t.Run("sessions cannot be listed", func(t *testing.T) {
+		cd := session.DefaultCleanDeps()
+		cd.Run = func(string, string, ...string) (string, error) { return "", errors.New("git is broken") }
+		clean := daemonClean(cd, func(string) (ledger.Ledger, error) { return ledger.Ledger{}, nil })
+		if err := clean(daemon.Project{Name: "demo", Root: t.TempDir()}, "t1-1"); err == nil {
+			t.Error("got no error; a listing that failed is not \"no such session\"")
+		}
+	})
+}
+
+// TestDaemonStoppedLineText pins the report's line for a stopped line: after which
+// task, why, and the command that clears it. The damaged-marker row matters
+// because a marker nobody can read still stops the line, and the owner must
+// still be told how to clear it.
+func TestDaemonStoppedLineText(t *testing.T) {
+	tests := []struct {
+		name string
+		in   daemonProjectStatus
+		want string
+	}{
+		{"task and reason", daemonProjectStatus{Name: "demo", Stopped: true, StopTask: "T1.1", StopReason: "the deploy did not come up healthy within 15m0s."},
+			`Stopped: the line is stopped after T1.1: the deploy did not come up healthy within 15m0s. No new task will start until you run "afk resume demo", which clears the stop.`},
+		{"task only", daemonProjectStatus{Name: "demo", Stopped: true, StopTask: "T1.1"},
+			`Stopped: the line is stopped after T1.1. No new task will start until you run "afk resume demo", which clears the stop.`},
+		{"damaged marker", daemonProjectStatus{Name: "demo", Stopped: true},
+			`Stopped: the line is stopped. No new task will start until you run "afk resume demo", which clears the stop.`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stoppedLineText(tt.in); got != tt.want {
+				t.Errorf("got  %q\nwant %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDaemonTaskRunning pins which states get a "Running" line. Load-bearing:
+// the shipping and stopped-line rows name a session and must still be false,
+// since that session's work is over and a running time would read as
+// progress; and every kind the loop can write has a row, so a new one is
+// decided here on purpose.
+func TestDaemonTaskRunning(t *testing.T) {
+	running := map[string]bool{
+		string(daemon.ActLaunch): true, string(daemon.ActCreate): true,
+		string(daemon.ActWait): true, string(daemon.ActUnpark): true,
+	}
+	for _, kind := range daemon.Kinds() {
+		t.Run(kind, func(t *testing.T) {
+			if got := daemonTaskRunning(daemonstate.State{Kind: kind, Task: "T1.1", Session: "t1-1"}); got != running[kind] {
+				t.Errorf("with a session: got %v, want %v", got, running[kind])
+			}
+			if daemonTaskRunning(daemonstate.State{Kind: kind, Task: "T1.1"}) {
+				t.Error("with no session: got true, want false")
 			}
 		})
 	}

@@ -636,3 +636,107 @@ All three checks passed with no blocker or major finding, so no critic ran. Mino
 - **T1.5 landed on main first**, so main was merged into this branch (a merge commit, no rebase). `CONTEXT.md` and this file conflicted and both sides were kept.
 - **One break git did not flag.** T1.5's start-up section in `afk tokens` reads the per-call records, which this task had moved inside `tokens.Record`. `RecordResult` now hands the records back, so the transcripts are still read once.
 - **Not reviewed by the three checks.** The join was made after the verdict. It was checked with the full `make check`, green, and by CI.
+
+## T2.2
+
+T2.2 makes the daemon ship a finished session by itself: push, pull request, CI, merge, deploy check, clean-up. It also stops the daemon starting an agent for a task that is the owner's, and adds `afk ledger init` for a project that is already part-built. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Where a ship's progress is kept (A1).** In the ledger entry, in four new fields: `ship`, `ship_at`, `ci_reruns` and `ci_fix_cycles`. The task's status stays `shipping` throughout. A second file could disagree with the ledger.
+- **Shape of the code (A2).** One pure function decides the next step from plain facts. A second part gathers the facts, takes one step and saves. The daemon takes one step per pass and never waits inside one.
+- **Not doing anything twice (A3).** Before each action the daemon asks whether it already happened: is the branch on GitHub at this commit, is there a pull request for it, is it merged. A daemon killed after an action and before saving then finds the work done.
+- **How often GitHub is asked (A4).** At most once every 20 seconds per project. The time of the last look is in a small file, because the daemon keeps nothing in memory.
+- **A pull request with no CI checks is never merged (A5, A30).** A conflict with the base is handed back to the session. No checks at all after five minutes parks the task. A cancelled check counts as a failure.
+- **Handing a red CI back (A6, A22, A31, A32).** The failing jobs and the end of their log go into a file in the session's folder, and one line is typed into the session asking it to read the file, fix, commit and not push. The session's status file is not touched, because a finished session is finished. The fix counts as ready when the branch has a new commit at least two minutes old and nothing uncommitted. No new commit in an hour parks the task.
+- **A newly required environment variable (A7).** Checked just before the merge. The owner sets the variable and answers the item, and the merge follows.
+- **A step that fails (A8, A23, A38).** A failed look is tried again; half an hour of failed looks parks the task. A failed push, pull request, merge or update parks it with the error. Answering the item tries again with a fresh set of attempts.
+- **After a merge (A9).** The project's own checkout is fast-forwarded to include it, because the next task's worktree is cut from there. Fast-forward only; a refusal parks.
+- **Deploy check (A10, A21).** Only when a health address is set. If it never comes up, the line stops: nothing more starts for the project until `afk resume`, and the task then counts as done.
+- **Clean-up (A11, A24).** The worktree is removed, the session's folder archived and the merged branch deleted, on GitHub's word that it merged.
+- **Waking a parked session (A12, A27).** When the owner answers what a session was waiting for, the daemon types the session's resume command into it.
+- **Owner tasks (A13, A33).** A title with `(owner)` or `(owner; …)`. One inbox item; answering it marks the task done. `(owner + agent)` is an ordinary task. A pause does not hold these back.
+- **No ledger (A14).** The daemon starts nothing and raises one item showing both forms of `afk ledger init`.
+- **Settings (A15).** The `[ship]` defaults: merge commits, one automatic re-run, two hand-backs, a 15-minute deploy wait. The base is the session's base branch unless set.
+- **The pull request (A16).** Opened ready, titled with the last commit's subject.
+- **A second attempt starts clean (A35).** It does not inherit the first attempt's pull request.
+- **Would normally have gone to the owner (A17, A18).** The real run creates a private GitHub repository that this machine's login cannot delete afterwards. And this session ships itself as its description asks: push, draft pull request, mark ready, wait for CI, merge on green.
+- **Planning process (A37).** The work plan went through three review passes, which found 7, 3 and 4 critical gaps. All were fixed in the plan; none was left open.
+
+### Accepted risks
+
+- **A real agent has not been seen receiving a typed line.** Tests use a recording listener and the real run uses a script. Whether the agent's terminal submits the line is first shown by the supervised run of T4.2.
+- **The session's host must still be running after the session finishes** (A28). If it is not, the hand-back fails and the task parks with an item saying how to reach the session.
+- **A re-run can happen twice** if the daemon is killed at exactly the wrong moment. A push, a pull request and a merge cannot.
+
+### The end-to-end run
+
+One real run, on 2026-10-12 (UTC), against a private GitHub repository made for it: `dphaener/afk-ship-e2e-20261011`. Tools: gh 2.102.0, git 2.53.0, on Linux. The full transcripts are in `.afk/t2-2/evidence/w6-t1-red.txt` and `w6-t1-green.txt`.
+
+**What was run.** A binary built from this branch to a scratch folder, with a scratch home, config and state folder, so nothing touched the real ones. The repository held a two-task plan (T0.1, and T0.2 depending on it), a `.gitignore` with `.afk/`, and one CI job on pull requests that runs `test -f greeting.txt`. The project was paused with `afk pause` for the whole run, so the daemon could ship but could never start an agent, and no agent CLI was on the `PATH`. Each task's session was staged by hand the way the daemon leaves one at `phase: done`: a worktree and branch with one commit, a `status.json`, a ledger entry at `shipping` written by hand (`afk ledger set` writes only the status, and the daemon rightly refuses a `shipping` entry with no session), and a real `afk _host` whose child was a shell script standing in for the agent. The script reads lines from its terminal and, on a line naming `ci-failure.md`, commits the missing file. Then `afk daemon --once` was run again and again, at least 20 seconds apart.
+
+**T0.1, red first (pull request #1, merge commit `9c071a51b891020f5ad7349f82302a4e3557b377`).**
+
+- `committed`, `pushed`, `pr_open`: three passes, a few seconds in all. The pull request was opened ready, titled with the commit's subject, its body ending in the task and session.
+- Seconds after it opened, `gh pr checks 1` printed `no checks reported on the 't0-1' branch` and exited 1. That is the wording the code expects, now seen from a real gh.
+- CI failed (no `greeting.txt`). The daemon re-ran the failed job once (`ci_reruns` 1), waited 90 seconds, saw it fail again, wrote `ci-failure.md` with the job's name and the end of its log, typed one line into the session and saved `handed_back` (`ci_fix_cycles` 1).
+- The first time, the typed line did not arrive. See the bug below. After the fix the hand-back was repeated by hand: the old host stopped and a new one started, `ci-failure.md` removed, the ledger entry put back to `pr_open` with both counters at zero. The daemon re-ran, waited and handed back again, and this time the script received the line, once, and committed `greeting.txt` within the same second. Because of that reset the job ran three times on GitHub, not two.
+- The daemon waited out the two quiet minutes after the fix commit, pushed it (`pr_open` again), and 23 seconds later read the new commit's check as passed (`ci_green`). It merged on the next pass, and only then: the merge is of commit `184cc11`, whose check passed, not of the commit whose check failed.
+- `merged`: it recorded the merge commit, fast-forwarded the project checkout's `main`, deleted the branch on GitHub, found no deploy to check (`deploy_healthy`), cleaned up and marked T0.1 `done`.
+- Checked afterwards: one pull request for the branch, merged, one merge commit; the branch gone from GitHub; the worktree and the local branch gone; the session's folder in the archive, `ci-failure.md` included; the host stopped; local `main` equal to `origin/main` at the merge commit.
+
+**T0.2, green from the start, squash merge (pull request #2, merge commit `da66179eb8756e6e7d6904cf879afde3fb74ab89`).** The scratch project's `afk.toml` set `merge_method = "squash"` and a `health_url` on this machine (`http://127.0.0.1:36245/`).
+
+- With T0.1 done, T0.2 pending and the project paused, a pass said "paused" and started nothing.
+- `committed`, `pushed`, pull request opened, check passed, squash-merged, `main` fast-forwarded, branch deleted on GitHub.
+- Deploy check: with nothing listening on the health address, three passes said "waiting for the deploy to become healthy". A local web server was then started there, the next pass got a 200 and saved `deploy_healthy`, and the pass after that cleaned up and marked T0.2 `done`.
+- Checked afterwards: GitHub's `main` is one new commit, `Add a farewell (#2)`, with a single parent. The local branch `t0-2` is gone, though a squashed branch is never an ancestor of `main`: it was deleted because the ledger held the merge commit (A24). The worktree is gone and the archive is there. Nothing was typed into this session.
+
+**The kill test.** During T0.2 the daemon was killed with SIGKILL twice, at the two worst moments, by a wrapper around `gh` that ran the real command and then killed the daemon that had started it.
+
+- Right after `gh pr create` returned. The ledger still said `pushed` with no pull request number. The next pass said "pull request #2 already exists for the branch" and saved `pr_open`. No second pull request was opened.
+- Right after `gh pr merge` returned. The ledger still said `ci_green`. The next pass said "the pull request is already merged" and saved `merged` with the merge commit. No second merge was tried.
+- At the end: two pull requests in the repository, one per task, each merged once.
+- The machine lock did not get in the way after either kill: the next pass started at once.
+
+**Bug found and fixed.**
+
+- **The Enter of a typed line was lost.** `host.SendInput` wrote the text, the Enter and the detach one after another. The host handles a detach at once but writes input to the terminal from a second queue, and it throws away input from a client that has already gone. So the Enter was dropped: the host's log said "discarding 1 bytes of input from a client that no longer holds the session", the line sat typed in the session and never submitted, and the ledger said `handed_back` all the same. With a real agent the task would have waited an hour and parked. Fixed in `internal/host/input.go`: `SendInput` now waits 200 ms after the Enter before it detaches. A new test, `TestSendInputReachesARealChild`, runs a real host with a real child; it failed two times in three before the fix and passed fifteen in fifteen after. The earlier tests could not see this because they stood in for the host. The wait is a margin and not a guarantee, since the host has no way to say "written"; a firmer fix belongs in the host (deliver what a client sent before its own detach) and is left for a later task.
+
+**Seen, and left as it is.**
+
+- The log in `ci-failure.md` carries GitHub's colour codes and a job and step name in front of every line. It reads fine; it is not pretty.
+- A daemon killed while `gh pr create` runs leaves one small file, `afk-pr-body-*.md`, in the temp folder.
+- A scratch `XDG_CONFIG_HOME` also hides gh's login, so the run pointed `GH_CONFIG_DIR` at the real one. Only a test set-up meets this.
+- A `shipping` entry with no session (what `afk ledger set T0.1 shipping` leaves) raised one "afk cannot run this project" item, and the daemon answered it by itself once the entry named a session.
+
+**Not checked.**
+
+- A real agent receiving the typed line. The stand-in is a shell script, which reads a line whenever the Enter arrives. Whether an agent's terminal submits it is first shown by the supervised run of T4.2.
+- A real deploy. The health check was a local web server on this machine, started by hand.
+- A deploy that never comes up: the stopped line, its top-priority notification and `afk resume` clearing it, against the real binary.
+- Any park during a real ship (no checks after five minutes, the hand-back limit, a required environment variable, a conflict with the base, a failed push or merge), and the un-park that follows an answer.
+- `afk daemon` left running as a loop. Every pass here was `afk daemon --once`.
+- The daemon starting the session itself. Both sessions were staged by hand, so the step from a finished agent to `shipping`, and token recording, were not part of this run.
+- A kill after the push and before its save, and a kill during the clean-up.
+- What `gh pr checks` exits with while checks are pending or failed, and the `rebase` merge method.
+- Push notifications. The scratch project had no ntfy address.
+
+**The repository is left in place.** This machine's GitHub login cannot delete repositories. `dphaener/afk-ship-e2e-20261011` is private, holds nothing but the files above, and can be deleted by the owner at any time.
+
+### Not verified, owner check
+
+- **Delete the test repository.** `dphaener/afk-ship-e2e-20261011` (private) was made for the real run. This machine's login cannot delete repositories.
+- **A real agent receiving a typed line.** The real run used a script in place of the agent. On the first supervised run, watch a CI hand-back or an answered inbox item reach the session and be submitted.
+- **A flaky host test.** The review's full `make check` failed once on `TestStuckChildStopsWritingOutputWhenToldTo` in `internal/host` while other Go commands were running. It passed alone, and this change does not touch it.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes: the README's old "Shipping" paragraph was replaced because it had become false; a few best-effort calls discard their errors; the stop-the-line and park paths were not reproduced against GitHub.
+
+### Ideas left out
+
+- Have the host deliver a client's queued input before acting on its detach, so `SendInput` needs no pause.
+- Strip GitHub's colour codes from the log tail in `ci-failure.md`.
+- Record tokens for a session that finishes while its task is parked.
+- List `ledger init` in the usage text of `afk` with no arguments.

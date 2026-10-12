@@ -236,3 +236,142 @@ func TestLedgerSetHelp(t *testing.T) {
 		t.Errorf("usage missing:\n%s", se.String())
 	}
 }
+
+func runLedgerInitCmd(project string, args ...string) (code int, stdout, stderr string) {
+	var so, se bytes.Buffer
+	code = runLedgerInit(append([]string{"--project", project}, args...), &so, &se, project, "", fakeCommonDir(""))
+	return code, so.String(), se.String()
+}
+
+// TestLedgerInit pins what init writes and refuses.
+//
+// Load-bearing rows: "unknown id in done-through" and "unknown id in done"
+// must leave no file, because an empty ledger says "nothing is built";
+// "existing ledger" must leave the file byte for byte as it was, since init
+// never merges.
+func TestLedgerInit(t *testing.T) {
+	const existing = `{"tasks":[{"id":"T1.1","status":"running"}]}`
+	cases := []struct {
+		name     string
+		existing string
+		args     []string
+		wantCode int
+		wantOut  string
+		wantErr  []string
+		wantDone []string
+		wantFile bool
+	}{
+		{name: "done-through", args: []string{"--done-through", "T1.2"}, wantOut: "2 task(s) marked done", wantDone: []string{"T1.1", "T1.2"}, wantFile: true},
+		{name: "done list", args: []string{"--done", "T1.1,T1.2b"}, wantOut: "2 task(s) marked done", wantDone: []string{"T1.1", "T1.2b"}, wantFile: true},
+		{name: "both combine", args: []string{"--done-through", "T1.1", "--done", "T1.2b,T1.1"}, wantOut: "2 task(s) marked done", wantDone: []string{"T1.1", "T1.2b"}, wantFile: true},
+		{name: "neither makes an empty ledger", wantOut: "0 task(s) marked done", wantFile: true},
+		{name: "unknown id in done-through", args: []string{"--done-through", "T9.9"}, wantCode: 1, wantErr: []string{"T9.9 is not a task in", "Nothing was written"}},
+		{name: "unknown id in done", args: []string{"--done", "T1.1,T9.9"}, wantCode: 1, wantErr: []string{"T9.9 is not a task in", "Nothing was written"}},
+		{name: "existing ledger", existing: existing, args: []string{"--done-through", "T1.2"}, wantCode: 1, wantErr: []string{"already exists", "ledger.json", `"afk ledger set"`}, wantFile: true},
+		{name: "positional word", args: []string{"T1.1"}, wantCode: 2, wantErr: []string{"unexpected word", "Usage: afk ledger init"}},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			project := ledgerCmdProject(t, ledgerCmdPlan)
+			if tt.existing != "" {
+				writeLedgerFile(t, project, tt.existing)
+			}
+			code, stdout, stderr := runLedgerInitCmd(project, tt.args...)
+			if code != tt.wantCode {
+				t.Fatalf("exit = %d, want %d (stderr: %s)", code, tt.wantCode, stderr)
+			}
+			if !strings.Contains(stdout, tt.wantOut) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout, tt.wantOut)
+			}
+			for _, w := range tt.wantErr {
+				if !strings.Contains(stderr, w) {
+					t.Errorf("stderr missing %q:\n%s", w, stderr)
+				}
+			}
+			data, err := os.ReadFile(ledger.Path(project))
+			if (err == nil) != tt.wantFile {
+				t.Fatalf("ledger file exists = %v, want %v", err == nil, tt.wantFile)
+			}
+			if tt.existing != "" && string(data) != tt.existing {
+				t.Errorf("ledger changed to %q, want it untouched", data)
+			}
+			if tt.existing == "" && tt.wantFile {
+				l, err := ledger.Load(project)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(l.Tasks) != len(tt.wantDone) {
+					t.Fatalf("tasks = %v, want %v", l.Tasks, tt.wantDone)
+				}
+				for _, id := range tt.wantDone {
+					if l.Status(id) != ledger.Done {
+						t.Errorf("%s = %s, want done", id, l.Status(id))
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestLedgerInitLinkedWorktree pins that init from a linked worktree creates
+// the main checkout's ledger, like set.
+func TestLedgerInitLinkedWorktree(t *testing.T) {
+	main := ledgerCmdProject(t, ledgerCmdPlan)
+	worktree := t.TempDir()
+	var so, se bytes.Buffer
+	code := runLedgerInit([]string{"--done", "T1.1"}, &so, &se, worktree, "", fakeCommonDir(filepath.Join(main, ".git")))
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, se.String())
+	}
+	if _, err := os.Stat(ledger.Path(worktree)); err == nil {
+		t.Errorf("ledger written inside the worktree")
+	}
+	if !ledger.Exists(main) {
+		t.Errorf("main checkout has no ledger")
+	}
+}
+
+// TestLedgerSetSeveralIds pins the multi-id form.
+//
+// Load-bearing rows: "one unknown among three" must write nothing, or a typo
+// would half-apply a batch; "replaced-by with two ids" is a usage error
+// because one replacement list cannot belong to two tasks.
+func TestLedgerSetSeveralIds(t *testing.T) {
+	t.Run("three ids", func(t *testing.T) {
+		project := ledgerCmdProject(t, ledgerCmdPlan)
+		code, stdout, stderr := runLedgerCmd(t, project, "T1.1", "T1.2", "T1.2a", "done")
+		if code != 0 {
+			t.Fatalf("exit = %d, stderr: %s", code, stderr)
+		}
+		want := "T1.1: pending → done\nT1.2: pending → done\nT1.2a: pending → done\n"
+		if stdout != want {
+			t.Errorf("stdout = %q, want %q", stdout, want)
+		}
+		l, _ := ledger.Load(project)
+		for _, id := range []string{"T1.1", "T1.2", "T1.2a"} {
+			if l.Status(id) != ledger.Done {
+				t.Errorf("%s = %s, want done", id, l.Status(id))
+			}
+		}
+	})
+	t.Run("one unknown among three", func(t *testing.T) {
+		project := ledgerCmdProject(t, ledgerCmdPlan)
+		code, stdout, stderr := runLedgerCmd(t, project, "T1.1", "T9.9", "T1.2", "done")
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "T9.9 is not a task in") {
+			t.Errorf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		if ledger.Exists(project) {
+			t.Errorf("ledger was created")
+		}
+	})
+	t.Run("replaced-by with two ids", func(t *testing.T) {
+		project := ledgerCmdProject(t, ledgerCmdPlan)
+		code, stdout, stderr := runLedgerCmd(t, project, "T1.2", "T1.1", "superseded", "--replaced-by", "T1.2a")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "--replaced-by") || !strings.Contains(stderr, "2 task ids") {
+			t.Errorf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		if ledger.Exists(project) {
+			t.Errorf("ledger was created")
+		}
+	})
+}

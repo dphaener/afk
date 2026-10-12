@@ -65,6 +65,8 @@ var (
 	ErrNoReplacement = errors.New("a superseded task needs at least one replacing task")
 	// ErrSelfReplacement means a task was named as its own replacement.
 	ErrSelfReplacement = errors.New("a task cannot be replaced by itself")
+	// ErrExists means Init found a ledger already there and left it alone.
+	ErrExists = errors.New("a ledger already exists")
 )
 
 // Statuses returns every status in lifecycle order. The slice is the
@@ -102,7 +104,21 @@ type Entry struct {
 	StartedAt  string   `json:"started_at,omitempty"`
 	FinishedAt string   `json:"finished_at,omitempty"`
 	MergedSHA  string   `json:"merged_sha,omitempty"`
-	ReplacedBy []string `json:"replaced_by,omitempty"`
+	// Ship is how far the ship of a shipping task has got (see ShipStates),
+	// ShipAt when it entered that state, and the two counters how often CI
+	// was re-run and handed back to the session. They are the shipper's
+	// record: Set leaves them alone.
+	Ship        string   `json:"ship,omitempty"`
+	ShipAt      string   `json:"ship_at,omitempty"`
+	CIReruns    int      `json:"ci_reruns,omitempty"`
+	CIFixCycles int      `json:"ci_fix_cycles,omitempty"`
+	ReplacedBy  []string `json:"replaced_by,omitempty"`
+}
+
+// ShipStates returns every valid value of Entry.Ship in the order a ship
+// moves through them, stopped last. The slice is the caller's to keep.
+func ShipStates() []string {
+	return []string{"committed", "pushed", "pr_open", "handed_back", "ci_green", "merged", "deploy_healthy", "stopped"}
 }
 
 // Ledger is the whole file.
@@ -199,6 +215,12 @@ func (l Ledger) validate() error {
 		}
 		if _, err := ParseStatus(string(e.Status)); err != nil {
 			return fmt.Errorf("task %q has %v", e.ID, err)
+		}
+		if e.Ship != "" && !slices.Contains(ShipStates(), e.Ship) {
+			return fmt.Errorf("task %q has unknown ship state %q (want one of %s)", e.ID, e.Ship, strings.Join(ShipStates(), ", "))
+		}
+		if e.CIReruns < 0 || e.CIFixCycles < 0 {
+			return fmt.Errorf("task %q has a negative ci_reruns or ci_fix_cycles", e.ID)
 		}
 	}
 	return nil
@@ -314,16 +336,11 @@ func Update(project string, fn func(*Ledger) error) error {
 		return fmt.Errorf("creating %s: %w", dir, err)
 	}
 
-	lp := lockPath(project)
-	lock, err := os.OpenFile(lp, os.O_CREATE|os.O_RDWR, 0o644)
+	unlock, err := lockProject(project)
 	if err != nil {
-		return fmt.Errorf("opening ledger lock %s: %w", lp, err)
+		return err
 	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("locking %s: %w", lp, err)
-	}
-	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	defer unlock()
 
 	l, onDisk, exists, err := read(path)
 	if err != nil {
@@ -354,10 +371,33 @@ func Update(project string, fn func(*Ledger) error) error {
 		return nil
 	}
 
-	// The temp file must be in the ledger's directory: rename is only atomic
-	// within one filesystem. The pid in the name is enough to keep writers
-	// apart because the lock already allows one at a time; it is there so a
-	// leftover from a killed process is recognisable and gets overwritten.
+	return replaceFile(dir, path, out)
+}
+
+// lockProject takes the exclusive lock Update and Init share and returns the
+// function that releases it. The directory must already exist.
+func lockProject(project string) (unlock func(), err error) {
+	lp := lockPath(project)
+	lock, err := os.OpenFile(lp, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening ledger lock %s: %w", lp, err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		lock.Close()
+		return nil, fmt.Errorf("locking %s: %w", lp, err)
+	}
+	return func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		lock.Close()
+	}, nil
+}
+
+// replaceFile writes out to path through a temp file in dir and a rename.
+// The temp file must be in the ledger's directory: rename is only atomic
+// within one filesystem. The pid in the name is enough to keep writers
+// apart because the lock already allows one at a time; it is there so a
+// leftover from a killed process is recognisable and gets overwritten.
+func replaceFile(dir, path string, out []byte) error {
 	tmp := filepath.Join(dir, fmt.Sprintf(".ledger.json.tmp.%d", os.Getpid()))
 	if err := writeFileSync(tmp, out, 0o644); err != nil {
 		_ = os.Remove(tmp)
@@ -368,6 +408,57 @@ func Update(project string, fn func(*Ledger) error) error {
 		return fmt.Errorf("renaming ledger into place: %w", err)
 	}
 	return nil
+}
+
+// Exists reports whether the project has a ledger file, damaged or not. Load
+// cannot say: it returns an empty ledger for a missing file, and a project
+// with no ledger is not the same as a project whose ledger is empty.
+func Exists(project string) bool {
+	info, err := os.Stat(Path(project))
+	return err == nil && info.Mode().IsRegular()
+}
+
+// Init creates a project's ledger with one done entry per id in done (repeated
+// ids are kept once), or an empty ledger when there are none. It returns
+// ErrExists, changing nothing, when a ledger is already there.
+//
+// It exists beside Update because an empty ledger is a statement that the
+// project is new and nothing has been built, which Update deliberately cannot
+// make: it never creates a file for an empty ledger, so that a no-op change
+// does not turn "no ledger" into "empty ledger". Init takes the same lock as
+// Update, so an Update racing it either sees the new file or runs first and
+// makes Init return ErrExists.
+func Init(project string, done []string) error {
+	path := Path(project)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
+	}
+	unlock, err := lockProject(project)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	if Exists(project) {
+		return fmt.Errorf("%w: %s", ErrExists, path)
+	}
+	l := Ledger{Tasks: []Entry{}}
+	for _, id := range done {
+		if id == "" {
+			return ErrEmptyID
+		}
+		if _, ok := l.Get(id); ok {
+			continue
+		}
+		l.Tasks = append(l.Tasks, Entry{ID: id, Status: Done})
+	}
+	sortTasks(l.Tasks)
+	out, err := json.MarshalIndent(l, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding ledger: %w", err)
+	}
+	return replaceFile(dir, path, append(out, '\n'))
 }
 
 // writeFileSync is os.WriteFile plus an fsync before close. Without the sync
