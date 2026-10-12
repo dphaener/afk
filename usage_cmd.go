@@ -15,6 +15,7 @@ import (
 	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/usagetext"
 )
 
 // usageProbeTimeout bounds one probe. The agent CLI normally answers in a
@@ -237,15 +238,7 @@ func writeGovernorLine(w io.Writer, d usageDeps, dec governor.Decision) {
 }
 
 func windowLabel(w provider.Window) string {
-	switch w.Kind {
-	case provider.WindowSession:
-		return "Session"
-	case provider.WindowWeekly:
-		return "Week (all models)"
-	case provider.WindowWeeklyModel:
-		return "Week (" + w.Scope + ")"
-	}
-	return "Other (" + w.Scope + ")"
+	return usagetext.WindowLabel(w.Kind, w.Scope)
 }
 
 // ageText says how long ago the numbers were read. A live probe's age is

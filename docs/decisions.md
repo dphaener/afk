@@ -1379,3 +1379,50 @@ All three checks passed with no blocker or major finding, so no critic ran. Mino
 - Serve the page under a sub-path. `public_url` may hold a path, but redirects and the cookie assume the page is at the root.
 - Mention the web page in `afk daemon --help` and the link in `afk inbox --help`.
 - Show the page's address in `afk daemon status`.
+
+## T3.2
+
+T3.2 puts the build in the dashboard: a usage segment in the header, a Build tab that lists the master plan's tasks with their status, and an inbox overlay to read and answer items. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Where the Build tab lives (A1, A2).** It is a sixth tab in the tab strip on the right side, placed last so the number keys of the other tabs do not move. It appears only when the project has a master plan or a ledger. It is about the project and not the selected session, so it shows the same thing on every row, and it also shows when there is no session at all. A build with nothing running is exactly when the owner wants the task list.
+- **The keys (A3).** `b` goes to the Build tab and `i` opens the inbox. Both are ordinary dashboard keys, so `?` and `:` list them without extra work. They also work while the overview on the right has the keyboard. While the agent pane has the keyboard they are typing, like every other letter.
+- **Where the data comes from (A4, A5).** One loader reads the plan, the ledger, the daemon's small files, the inbox and the usage reading, on the dashboard's existing refresh, away from the screen-drawing code. It reads the project's main checkout, which it works out from git. The ledger and the inbox live there, and a dashboard started inside a session's worktree would otherwise show an empty build. Nothing is dialled and nothing uses the network.
+- **One set of words (A6, A11).** The governor's sentences ("paused until …", "nothing new is started") and the names of the usage windows moved out of the commands into a small shared package, `internal/usagetext`, which the commands and the dashboard both call. Task statuses are the ledger's own words, as `afk tasks` prints them, with a short plain detail beside each.
+- **The dashboard does not import the web page's code (A7).** A new package, `internal/buildview`, holds what the dashboard shows and works out the task rows. The summary line still comes from the web page's `Summarize`, called by the loader, so the two surfaces agree.
+- **The tightest usage window (A8).** The window with the highest percentage used, because it is the one that stops the build first. On a tie, the one that resets later.
+- **An old reading says so (A9).** `usage.json` outlives the daemon. After 30 minutes, which is the governor's own default for a stale reading, the segment says how old the reading is.
+- **What the header gives up first (A10).** As the screen narrows: the switch-projects hint, then the usage text shortens, then the afk badge goes, then the short usage text, then the awaiting line, and the "stale" warning last. The short usage text says whether the build is being held back, which matters more than the badge. With no usage reading the header shows nothing new.
+- **Answering (A12, A13).** The dashboard only records the answer, marked as answered from the dashboard. A number picks an option, as `afk inbox answer` does. The build loop un-parks the task on its next pass; the dashboard never writes the ledger. The overlay follows the files while it is open and keeps the cursor and any typed text, so an item answered from the phone changes on screen.
+- **Paused for usage (A14).** A session the daemon paused for usage has no host, so it used to read as stopped. It now reads "paused for usage". Its keys are unchanged, so `r` still starts it again.
+- **Left out (A15).** Pause and resume keys in the dashboard, and a count of inbox items in the header. The master plan's scope for this task does not list them.
+- **Tests, prerequisites, install, shipping (A16 to A20).** Tests are written with each change, with three new saved screens. Nothing had to be in place first. This session does not run `make install`: the project's `afk.toml` installs after the merge, and the one `~/bin/afk` is what the running service uses. The session stops at reviewed commits and the daemon ships them. The OpenCode plugin is not touched.
+
+### Decided while building
+
+- **An answer is resolved once.** The work plan said to turn a typed number into its option and then save it. Saving already does that, and doing it twice could pick the wrong option, so the dashboard hands the typed text straight to the inbox.
+- **A narrow Build tab trims row by row.** A row that does not fit loses its detail first, and then its title is cut. The id and the status always show.
+- **The paused wording is drawn where the row is drawn.** The list row and the overview say a session is paused for usage; the code for that is in the dashboard's view file, not the list file the plan named.
+- **While the inbox overlay is open, no key quits the dashboard.** `ctrl+c` and `q` are not quit keys there, because the owner is typing an answer. `esc` or `ctrl+g` leaves it.
+- **An inbox folder that cannot be listed** shows as "1 inbox file could not be read". The wording is close but not exact; a field of its own is a small follow-up.
+- **After an answer, the row reads "answered" at once.** The count on the Build tab can lag by one refresh, about two seconds.
+
+### Checked, and not checked
+
+- **Checked against a built binary** (a scratch build, never `~/bin`): in a throwaway repository with a five-task plan, a ledger, two inbox items and a scratch usage reading, driven through tmux at 120 by 40 and 60 by 24. The header showed the pause and 91%, `b` showed the five tasks with their statuses, `?` and `:` listed both keys, `i` listed the items, an empty answer was refused with its message, typing `2` saved the second option as answered from the dashboard, and `b` with no plan gave its notice. The hands-on check repeated the walk-through. `make check` was run in full, green.
+- **Not checked: the keys beside a live agent.** No real session ran. Owner check: with an agent pane focused, press `b` and `i` and see that the agent gets the letters and the dashboard does nothing.
+- **Not checked: a real daemon's files.** The ledger and inbox were made by hand. A task parked by hand has no item recorded against it, so its row says "answered, starting again soon" even while a question is open; a task the daemon parks names its items.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes: this file and `CONTEXT.md` were edited outside the work plan's tasks (the planner and conductor write both, by design); the Build tab's summary says "unknown" for a running task whose session has no status yet, which is not friendly wording; and the quality check ran the short tests only, so the full `make check` was run afterwards by the conductor.
+
+### Ideas left out
+
+- Pause and resume keys in the dashboard.
+- A count of open inbox items in the header.
+- Let `afk ledger set parked` name the items a task waits for.
+- Make `?` work while the right side has the keyboard, as `:` does.
+- A word such as "blocks" beside an inbox row that is holding a task up, in place of the bare `!`.
+- A friendlier word than "unknown" for a running task whose session has not reported a phase.

@@ -106,6 +106,12 @@ const (
 	// — and swallows every key it does not bind, so a stray letter cannot
 	// open, clean or steal a session mid-resize.
 	inputResize
+	// inputInbox is the inbox overlay (Model.inboxOpen): a list of the
+	// project's inbox items and, one level in, an item with a field to answer
+	// it. Every key is the component's, as in the switcher and the palette,
+	// and it has no parent rule at all — see its spec in newModeRegistry for
+	// why not even the quit chord.
+	inputInbox
 
 	// inputModeCount bounds the enum for exhaustive iteration (registry
 	// completeness tests, and Wave 6 enumerating modes for the palette).
@@ -141,6 +147,8 @@ func (m inputMode) String() string {
 		return "detail"
 	case inputResize:
 		return "resize"
+	case inputInbox:
+		return "inbox"
 	}
 	return "unknown"
 }
@@ -198,6 +206,8 @@ type modeState struct {
 	pane bool
 	// paletteOpen mirrors Model.paletteOpen.
 	paletteOpen bool
+	// inboxOpen mirrors Model.inboxOpen.
+	inboxOpen bool
 	// resizing mirrors Model.resizing. It needs no conjunction: resize mode
 	// moves the divider between surfaces that are always drawn, whichever of
 	// them happens to be in the main region.
@@ -218,6 +228,7 @@ func (m Model) modeSnapshot() modeState {
 		view:          m.view,
 		pane:          m.paneForSelection(),
 		paletteOpen:   m.paletteOpen,
+		inboxOpen:     m.inboxOpen,
 		resizing:      m.resizing,
 	}
 }
@@ -286,6 +297,15 @@ type modeLayer struct {
 //     focused pane (reachable: a focusOnArrival attach landing under the
 //     overlay — "keys go to the overlay, because the overlay is what is on
 //     screen").
+//   - The inbox overlay sits beside the switcher, directly below it. Like the
+//     palette it is opened only from the dashboard's own keyboard (normal and
+//     detail mode), so no other overlay is up when it appears and its place
+//     among them is declared for the frame's sake: views.go composes the
+//     overlays in this order. Below the modals for the switcher's reason (a
+//     create can fail underneath and its report must get the keyboard), and
+//     above the form, the filter prompt, resize mode and both right-side
+//     focuses, so a pane that arrives focused under it cannot take keys
+//     meant for the answer field.
 //   - The form outranks a focused pane. THIS IS THE ONE DELIBERATE CHANGE:
 //     today's if-order lets an invisible focused pane swallow every key while
 //     the form is on screen (the known uncovered corner at model.go:1613-1620,
@@ -334,6 +354,7 @@ var modePrecedence = []modeLayer{
 	{inputPickProvider, func(s modeState) bool { return s.modal == inputPickProvider }},
 	{inputPalette, func(s modeState) bool { return s.paletteOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
+	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
 	{inputForm, func(s modeState) bool { return s.formOpen }},
 	{inputFilter, func(s modeState) bool { return s.listFiltering }},
 	{inputResize, func(s modeState) bool { return s.resizing }},
@@ -416,6 +437,8 @@ const (
 	actionFilterStart
 	actionFilterClear
 	actionPalette
+	actionBuild       // b in normal and detail: showBuildTab
+	actionInbox       // i in normal and detail: openInbox
 	actionEnterResize // ctrl+w in normal and detail: enterResize
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
@@ -517,6 +540,10 @@ func (a modeAction) String() string {
 		return "filter-clear"
 	case actionPalette:
 		return "palette"
+	case actionBuild:
+		return "build"
+	case actionInbox:
+		return "inbox"
 	case actionEnterResize:
 		return "enter-resize"
 	case actionExitResize:
@@ -664,8 +691,10 @@ type modeSpec struct {
 
 // The detail pane's tab keys, bound only in detail mode: from the list they
 // would re-tab the right pane, which list focus must never control (plan
-// objective 2). One binding carries all five digits, so help lists "jump to
-// tab" as one row.
+// objective 2). One binding carries all six digits, so help lists "jump to
+// tab" as one row. Six is the longest the strip gets: the five session tabs
+// in a git-spice repo plus Build (visibleDetailTabs). A digit past the last
+// visible tab does nothing (switchDetailTab).
 var (
 	detailTabNextKey = key.NewBinding(
 		key.WithKeys("tab"),
@@ -676,8 +705,8 @@ var (
 		key.WithHelp("shift+tab", "previous tab"),
 	)
 	detailTabJumpKey = key.NewBinding(
-		key.WithKeys("1", "2", "3", "4", "5"),
-		key.WithHelp("1-5", "jump to tab"),
+		key.WithKeys("1", "2", "3", "4", "5", "6"),
+		key.WithHelp("1-6", "jump to tab"),
 	)
 )
 
@@ -745,10 +774,12 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 // names its source. Two cross-cutting facts the tables encode, both verified
 // against every handler (see decisions.md for the audit):
 //
-//   - ctrl+g (keys.Mouse) is a rule in EVERY mode except the switcher. The
-//     switcher's omission is documented intent (model.go:2161-2165): the
-//     overlay replaces the pane in the main region, so there is no session
-//     output behind it worth selecting, and one Esc away the chord works.
+//   - ctrl+g (keys.Mouse) is a rule in EVERY mode except the switcher, the
+//     palette and the inbox overlay. The switcher's omission is documented
+//     intent (model.go:2161-2165): the overlay replaces the pane in the main
+//     region, so there is no session output behind it worth selecting, and
+//     one Esc away the chord works. In the inbox overlay the chord closes
+//     the overlay (see its spec below).
 //   - ctrl+c quits from the modals and the switcher, is deliberately
 //     component fall-through in the form (the name buffer is worth protecting
 //     from a stray chord — TestFormSwallowsQuitKeysEscIsOnlyExit), forwards
@@ -1040,6 +1071,8 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: keys.Filter, action: actionFilterStart},
 			{binding: filterClear, action: actionFilterClear, needsFilter: true},
 			{binding: keys.Palette, action: actionPalette},
+			{binding: keys.Build, action: actionBuild},
+			{binding: keys.Inbox, action: actionInbox},
 			{binding: pageUp, action: actionPageUp},
 			{binding: pageDown, action: actionPageDown},
 			{binding: listTop, action: actionListTop},
@@ -1053,13 +1086,16 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		// immediately. Every unrelated binding retains its prior relative order
 		// after it, with resizeToggleKey last because the curated short help
 		// omits it and full help/palette should rank it behind the more common
-		// actions.
+		// actions. keys.Build follows the palette and precedes the housekeeping
+		// chords: it is a view, not a per-session action, and that slot is past
+		// the palette's first viewport, so the rows a person already knows keep
+		// their places. keys.Inbox follows it for the same reason.
 		keys: modeKeyMap{bindings: []key.Binding{
 			keys.Up, keys.Down, keys.Focus,
 			pageUp, pageDown, listTop, listBottom,
 			keys.New, keys.Scratch,
 			keys.Project, keys.Clean, keys.Restart, keys.Label,
-			keys.Filter, filterClear, keys.Palette,
+			keys.Filter, filterClear, keys.Palette, keys.Build, keys.Inbox,
 			closePane, keys.Mouse, keys.Quit, resizeToggleKey,
 		}},
 	}
@@ -1119,7 +1155,14 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	// scroll keys: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end —
 	// plus ctrl+w into resize mode, which leaves the focus on the right so it
 	// resumes when the resize ends. These scroll and tab keys are bound in
-	// this mode only: from the list they would drive the right pane.
+	// this mode only: from the list they would drive the right pane. `b`
+	// (showBuildTab) is the one tab key that is ALSO a normal-mode rule: from
+	// the list it moves the keyboard to the right side itself, so it controls
+	// nothing behind the user's back, and here it is a jump to one tab. It
+	// sorts last in the help order, where it costs the truncated line nothing.
+	// `i` (openInbox) is beside it on the same terms: it opens an overlay over
+	// the screen and moves nothing on it, and the owner reading the Build tab's
+	// "items need you" line is exactly who presses it.
 	//
 	// The bindings are ordered for TRUNCATION SURVIVAL, not for rule fidelity:
 	// renderHelp's default branch renders this whole keymap through one hard
@@ -1138,6 +1181,8 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: detailTabNextKey, action: actionDetailTabNext},
 			{binding: detailTabPrevKey, action: actionDetailTabPrev},
 			{binding: detailTabJumpKey, action: actionDetailTabJump},
+			{binding: keys.Build, action: actionBuild},
+			{binding: keys.Inbox, action: actionInbox},
 			{binding: detailFocusUp, action: actionDetailScrollUp},
 			{binding: detailFocusDown, action: actionDetailScrollDown},
 			{binding: detailHalfPageUp, action: actionDetailHalfPageUp},
@@ -1154,7 +1199,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			detailTabNextKey, detailTabPrevKey, detailTabJumpKey,
 			detailFocusUp, detailFocusDown, detailHalfPageUp, detailHalfPageDown,
 			detailPageUp, detailPageDown, detailGotoTop, detailGotoBottom,
-			resizeToggleKey,
+			resizeToggleKey, keys.Build, keys.Inbox,
 		}},
 	}
 
@@ -1238,6 +1283,22 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			switcherChoose, switcherMove, switcherFilter, switcherRescanKey,
 			switcherClose, quitChord,
 		}},
+	}
+
+	// Inbox mode has NO parent rule: every key is the component's, staged in
+	// inboxOverlay.Update (inboxoverlay.go). The switcher and the palette keep
+	// one, the ctrl+c quit, because what they hold is a throwaway query. This
+	// overlay holds an answer being written, on a screen where every letter is
+	// text, so nothing quits the dashboard from inside it; esc and ctrl+g are
+	// the ways out. ctrl+g closes the overlay here and is not the mouse chord,
+	// for the switcher's documented reason: the box covers what there was to
+	// select, and one press away the chord works again. The keymap lists both
+	// screens' keys; the footer shows the ones for the screen that is up
+	// (renderHelp).
+	r[inputInbox] = modeSpec{
+		mode: inputInbox,
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: inboxModeKeys()},
 	}
 
 	// The modals transcribe their update handlers rung for rung: mouse

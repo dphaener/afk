@@ -100,3 +100,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Loopback**: an address only this machine can reach (`127.0.0.1`, `::1`, `localhost`); the web page's default, and the only kind allowed without a token.
 - **Public URL**: `[web] public_url`, the address the owner reaches the web page at from outside; used to put a link to an inbox item in a notification.
 - **Project summary**: what the web page shows for one project: current task and phase, tasks done over total, last ship result, and whether it is paused or stopped.
+- **Build tab**: the dashboard tab that lists the master plan's tasks with their ledger status; it is about the project, not the selected session.
+- **Inbox overlay**: the dashboard's box, opened with `i`, that lists the project's inbox items, shows one in full and takes an answer.
+- **Usage segment**: the part of the dashboard's header that shows the governor's last decision and the tightest usage window.
+- **Tightest window**: the usage window with the highest percentage used, the one that will hold the build back first.
+- **Build snapshot**: everything the dashboard shows about a build, read from the main checkout's files in one go on each refresh.

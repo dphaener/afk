@@ -17,6 +17,7 @@ import (
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/usagetext"
 )
 
 // This file is the real side of the daemon's usage governor (PLAN §6.3 to
@@ -592,25 +593,7 @@ func usageStatusLine(g *usagestate.Governor, loc *time.Location) string {
 		loc = time.UTC
 	}
 	const layout = "Mon 2 Jan 15:04"
-	var lead string
-	switch governor.Action(g.Action) {
-	case governor.ActionRun:
-		lead = "within the limits"
-	case governor.ActionNoLaunch:
-		lead = "nothing new is started"
-	case governor.ActionPause:
-		if g.WakeAt != nil {
-			lead = "paused until " + g.WakeAt.In(loc).Format(layout)
-		} else {
-			lead = "paused, with no known time to start again"
-		}
-	case governor.ActionHold:
-		lead = "not known, so nothing new is started"
-	case governor.ActionRefuse:
-		lead = "afk will not run"
-	default:
-		lead = g.Action
-	}
+	lead := usagetext.Lead(g, loc)
 	line := "Usage: " + lead + "."
 	if r := strings.TrimSpace(g.Reason); r != "" {
 		line += " " + r

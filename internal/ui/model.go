@@ -43,10 +43,12 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/config"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/host"
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
@@ -168,6 +170,15 @@ type Session struct {
 	// Model.sessions itself rather than overlaid at render time, because the
 	// list's items, selected() and every keybinding index that one slice.
 	Pending bool
+
+	// UsagePaused is true when the build's ledger records that the daemon
+	// paused this session for usage, and UsageWake is when it means to start
+	// it again, as text ("" when no time is known). Discovery does not set
+	// them: they are stamped from the build snapshot (stampUsagePauses,
+	// buildtab.go) so a row can say "paused for usage" where it would
+	// otherwise read as stopped.
+	UsagePaused bool
+	UsageWake   string
 }
 
 // cleanTargetKind reduces a row's Kind to the part that identifies a clean
@@ -299,6 +310,25 @@ type Deps struct {
 	// Now returns the current time (for the "last refreshed" age and
 	// deterministic tests). Defaults to time.Now.
 	Now func() time.Time
+	// LoadBuild reads what the dashboard shows about the project's build: the
+	// master plan's tasks with their ledger status, the inbox and the last
+	// usage reading. repo is the active project's folder, which may be a
+	// linked worktree; the loader finds the main checkout itself, because that
+	// is where the ledger and the inbox live. sessions are the rows the model
+	// already holds, so the loader does not run discovery again. It is called
+	// only from inside a tea.Cmd (builddata.go), never from Update or View.
+	//
+	// It has NO default, like Scan and LoadConfig: it reads the real
+	// filesystem and the machine's usage file, so only `afk dash` wires it. A
+	// nil LoadBuild means no build data, ever, and no command is issued.
+	LoadBuild func(repo string, sessions []BuildSession) buildview.Snapshot
+	// AnswerInbox records the owner's answer to the inbox item id in the
+	// project whose main checkout is root (the Root of the snapshot LoadBuild
+	// returned), and returns the item as stored. It is the dashboard's only
+	// write to a project's build files. It has NO default, for the same
+	// reason LoadBuild has none: a zero Deps must not be able to write into a
+	// real project's inbox.
+	AnswerInbox func(root, id, text string) (inbox.Item, error)
 	// SpiceDetect reports whether the repo at dir is operating in git-spice
 	// mode. Defaults to internal/spice.Detect. The stack panel is hidden
 	// entirely when this returns false — never a placeholder.
@@ -654,6 +684,11 @@ func (d Deps) withDefaults() Deps {
 	if d.Pid == nil {
 		d.Pid = os.Getpid
 	}
+	// LoadBuild and AnswerInbox are absent for the same reason as the two below:
+	// the first reads a real project's build files and the machine's usage
+	// file, and the second writes a real inbox. A nil LoadBuild issues no
+	// command (buildCmd), so a zero-Deps Model has no build data.
+	//
 	// Scan and LoadConfig are absent from this list deliberately, and it is the
 	// one omission here that is load-bearing. Wiring them would make every
 	// zero-Deps Model — the whole of this package's test suite included — read
@@ -699,6 +734,8 @@ type keyMap struct {
 	Project key.Binding
 	Filter  key.Binding
 	Palette key.Binding
+	Build   key.Binding
+	Inbox   key.Binding
 	Quit    key.Binding
 }
 
@@ -824,6 +861,25 @@ func defaultKeyMap() keyMap {
 		Palette: key.NewBinding(
 			key.WithKeys(":"),
 			key.WithHelp(":", "command palette"),
+		),
+		// `b` goes straight to the Build tab (showBuildTab). Its help rides the
+		// full help view and the palette only, on the same precedent as
+		// Project, Scratch and Label above: the short footer line is at its
+		// measured-width cap. It is a rule in normal mode and in detail mode
+		// and in no other: with the agent pane focused every key but the
+		// three reserved chords belongs to the agent, `b` included.
+		Build: key.NewBinding(
+			key.WithKeys("b"),
+			key.WithHelp("b", "build tasks"),
+		),
+		// `i` opens the inbox overlay (openInbox, inboxoverlay.go). Like `b` it
+		// is a rule in normal mode and in detail mode only, and its help rides
+		// the full help view and the palette: the short footer line is at its
+		// measured-width cap. With the agent pane focused `i` is a letter the
+		// agent is being sent.
+		Inbox: key.NewBinding(
+			key.WithKeys("i"),
+			key.WithHelp("i", "inbox"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
@@ -989,6 +1045,20 @@ type Model struct {
 	// Model being copied by value through Init and Update, and has to be
 	// readable from the Cmd goroutine that owns the invocation.
 	stackRefreshing *atomic.Bool
+
+	// build is the last build snapshot Deps.LoadBuild returned for the active
+	// project, and buildKnown whether one has arrived since the project became
+	// active. Both are cleared on a project switch (forgetBuild). buildKnown
+	// stays false for the whole run when no loader is wired, which is what
+	// keeps the screen exactly as it was before build data existed.
+	build      buildview.Snapshot
+	buildKnown bool
+
+	// buildRefreshing keeps one slow build read from being stacked on itself
+	// by the refresh ticker, the way stackRefreshing does for the stack. It is
+	// a pointer for the same reason: the guard must survive the Model being
+	// copied by value, and the Cmd goroutine reads it.
+	buildRefreshing *atomic.Bool
 
 	plainBranches []string
 	plainTrunk    string
@@ -1548,6 +1618,15 @@ type Model struct {
 	palette     commandPalette
 	paletteOpen bool
 
+	// inbox is the inbox overlay's state (inboxoverlay.go); inboxOpen is the
+	// "is it open" flag, beside switcherOpen and paletteOpen for the reason
+	// they sit beside formOpen: an overlay coexists with a modal, so it cannot
+	// be folded into the single-valued modal field. Like the switcher's, the
+	// struct is not zeroed on close: its zero value has an unbuilt input and
+	// viewport, and keeping the last-built one makes a stray render harmless.
+	inbox     inboxOverlay
+	inboxOpen bool
+
 	// helpShowAll is renderHelp's ShowAll flag (views.go), toggled by `?` in
 	// normal mode only (dispatchKey). It is presentational — no mode reads it
 	// — which is why it lives beside the other footer-only state rather than
@@ -1624,6 +1703,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		deps:                d,
 		keys:                keys,
 		stackRefreshing:     new(atomic.Bool),
+		buildRefreshing:     new(atomic.Bool),
 		list:                newSessionList(keys, d.Now),
 		detailViewport:      viewport.New(),
 		initialSession:      deps.InitialSessionName,
@@ -1750,8 +1830,16 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (a form or an overlay drawn over it, a modal up) is not on screen, and
 		// pasting into a child the user cannot see is the same defect for a
 		// paste as for a keystroke. Same invariant, different message path.
-		if activeInputMode(m.modeSnapshot()) == inputPane {
+		switch activeInputMode(m.modeSnapshot()) {
+		case inputPane:
 			forwardPasteToPane(m.pane, msg.Content)
+		case inputInbox:
+			// The inbox overlay's answer field is the one other place a paste
+			// belongs: an item can ask for a token or a path, and those are
+			// pasted, not typed. The overlay hands a non-key message to the
+			// field only when an open item's field is on screen.
+			cmd, _ := m.inbox.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
@@ -2007,6 +2095,12 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stack = msg.stack
 		m.notifyStackError()
 		return m, nil
+
+	case buildLoadedMsg:
+		return m.applyBuildLoaded(msg), nil
+
+	case inboxAnsweredMsg:
+		return m.applyInboxAnswered(msg)
 
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
@@ -2340,6 +2434,11 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// rendered (list.go draws those from FilterInput/filterState
 			// directly), which is why the missing narrowing read as working.
 			cmd, _ := m.switcher.Update(msg)
+			return m, cmd
+		case inputInbox:
+			// The answer field's cursor blink. The overlay reports no result
+			// for a message that is not a keypress.
+			cmd, _ := m.inbox.Update(msg)
 			return m, cmd
 		}
 	}
@@ -2882,7 +2981,7 @@ func (m Model) switchDetailTab(a modeAction, k tea.KeyPressMsg) (tea.Model, tea.
 	if m.shouldRenderPane() {
 		return m, nil
 	}
-	tabs := visibleDetailTabs(m.stack)
+	tabs := visibleDetailTabs(m.stack, m.hasBuild())
 	cur := slices.Index(tabs, m.activeDetailTab())
 	switch a {
 	case actionDetailTabNext:
@@ -3040,6 +3139,10 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.clearSessionFilter()
 	case actionPalette:
 		return m.openPalette()
+	case actionBuild:
+		return m.showBuildTab()
+	case actionInbox:
+		return m.openInbox()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -3138,6 +3241,8 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 		return m.switcherComponentKey(k)
 	case inputPalette:
 		return m.paletteComponentKey(k)
+	case inputInbox:
+		return m.inboxComponentKey(k)
 	case inputFilter:
 		return m.sessionFilterKey(k)
 	case inputEditLabel:
@@ -3206,6 +3311,7 @@ func (m *Model) relayout() {
 	m.sizeFormComponents()
 	m.sizeSwitcher()
 	m.sizePalette()
+	m.sizeInbox()
 	m.sizeSessionList()
 	m.syncDetailViewport()
 	if m.pane != nil {
@@ -3439,6 +3545,45 @@ func (m Model) focusDetail() (tea.Model, tea.Cmd) {
 	reg := m.modes()
 	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc", "ctrl+\\"})
 	m.notify(notifyInfo, "scrolling the detail view — the session list is frozen · "+release.Help().Key+" to return")
+	return m, nil
+}
+
+// showBuildTab is `b`: go straight to the Build tab, with the keyboard on the
+// right side so the task list scrolls at once. It works from the list and
+// from a focused overview, on any row and with no row at all, because the tab
+// is about the project.
+//
+// The right side is switched to the overview, since that is where the tabs
+// are. A live agent pane on screen goes behind the overview exactly as ctrl+t
+// puts it there: still connected, still running, one ctrl+t away. It is never
+// closed.
+//
+// With no build to show the key changes nothing and says why. The check comes
+// first so that a project with no master plan cannot have its view or its
+// focus moved by a key that has nothing to show for it.
+func (m Model) showBuildTab() (tea.Model, tea.Cmd) {
+	if !m.hasBuild() || !m.hasActiveProject() {
+		m.notify(notifyInfo, noBuildNotice)
+		return m, nil
+	}
+	hidPane := m.shouldRenderPane()
+	m.view = viewOverview
+	if m.detailTab != tabBuild {
+		m.detailTab = tabBuild
+		// The offset belonged to the tab that was showing (switchDetailTab).
+		m.detailViewport.GotoTop()
+	}
+	m.syncDetailViewport()
+	if m.focus != focusRight {
+		// focusDetail owns moving the keyboard right, so esc and ctrl+\
+		// release it the way they release any focused overview.
+		next, cmd := m.focusDetail()
+		m = next.(Model)
+		if hidPane {
+			m.notify(notifyInfo, m.paneName+" still running behind the build tasks · "+m.keys.Toggle.Help().Key+" for the agent")
+		}
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -4371,7 +4516,7 @@ func (m Model) connectSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.rowHasAgent(s) {
-		m.notify(notifyInfo, s.Name+" is stopped · "+wedgeRecoveryKey+" to restart")
+		m.notify(notifyInfo, s.Name+" "+stoppedText(s)+" · "+wedgeRecoveryKey+" to restart")
 		return m, nil
 	}
 	return m, m.connect(paneOpenRequest{
@@ -4743,7 +4888,16 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 		m.dropPaneForOtherRows()
 		m.view = viewAgent
 		m.focus = focusRight
-		m.notify(notifyInfo, target.name+" is stopped · "+wedgeRecoveryKey+" to restart")
+		// The row is looked up for its wording only: a session the daemon
+		// paused for usage must not be called stopped here either.
+		word := "is stopped"
+		for _, row := range m.sessions {
+			if row.Name == target.name {
+				word = stoppedText(row)
+				break
+			}
+		}
+		m.notify(notifyInfo, target.name+" "+word+" · "+wedgeRecoveryKey+" to restart")
 		return m, tea.Batch(cmds...)
 	}
 	// The same entrance enter uses (connect): the focus moves right and the
@@ -6437,8 +6591,8 @@ func (m *Model) notifyScanError(errText string) {
 }
 
 // projectCmds is the per-project refresh trio — discovery, the git-spice stack
-// topology, the plain-branch list — or nothing at all when there is no active
-// project.
+// topology, the plain-branch list — plus the build read when a loader is wired
+// (builddata.go), or nothing at all when there is no active project.
 //
 // The suppression keys on the active repo and never on len(projects). That
 // distinction is the whole reason this helper exists: a Model built straight from
@@ -6452,7 +6606,14 @@ func (m Model) projectCmds() []tea.Cmd {
 	if !m.hasActiveProject() {
 		return nil
 	}
-	return []tea.Cmd{m.loadCmd(), m.stackCmd(), m.plainBranchesCmd()}
+	cmds := []tea.Cmd{m.loadCmd(), m.stackCmd(), m.plainBranchesCmd()}
+	// The build read joins the trio only when a loader is wired. A nil entry
+	// would be harmless to tea.Batch, but the callers that take these
+	// unbatched (switchProjectCmds) hand the slice on as it is.
+	if build := m.buildCmd(); build != nil {
+		cmds = append(cmds, build)
+	}
+	return cmds
 }
 
 // hasActiveProject reports whether there is a project for the per-project
@@ -7071,6 +7232,14 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	m.notifiedBranchesErr = ""
 	m.plainBranches = nil
 	m.plainTrunk = ""
+	// The build snapshot is the outgoing project's tasks and inbox. It must go
+	// before projectCmds below issues the incoming project's first read.
+	m.forgetBuild()
+	// The inbox overlay shows the outgoing project's items, and an answer
+	// typed into it would be sent against a snapshot that has just been
+	// dropped. It closes with the switch; an answer already on its way to
+	// disk still lands, and its outcome is dropped by the generation stamp.
+	m.inboxOpen = false
 	m.deadHostPIDs = nil
 	m.pendingSpawns = nil
 	// A preview timer armed on the outgoing project's rows is inert from here (see
@@ -7237,6 +7406,8 @@ func (m *Model) setSessions(sessions []Session) {
 // atomic.
 func (m *Model) rebuildListItems(sel int) {
 	before, hadBefore := m.selected()
+	// Fresh rows from discovery carry no usage pause; the build snapshot does.
+	m.stampUsagePauses()
 	items := make([]list.Item, len(m.sessions))
 	for i := range m.sessions {
 		items[i] = sessionItem{session: m.sessions[i]}

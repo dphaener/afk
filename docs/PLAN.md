@@ -1219,6 +1219,7 @@ with nobody at the keyboard.
   key bindings registered like every other key so `?` and `:` list them. All from files; no dialing.
 - **Acceptance:** UI model tests for the new tab, overlay and header at narrow and wide widths; README
   updated.
+- Amended 2026-10-12 (T3.2 done): later tasks may assume the following. (1) `afk dash` has `b` (the Build tab, last in the right side's tab strip, shown only when the project has a master plan or a ledger) and `i` (the inbox overlay); both are normal-mode rules, so `?` and `:` list them, and neither acts while the agent pane has the keyboard. (2) The header shows the governor's stored decision and the tightest usage window from `usage.json`, and nothing when there is no reading. (3) The dashboard reads the build through two opt-in `ui.Deps` seams, `LoadBuild` and `AnswerInbox`, wired in `dash_build.go`; the loader reads the project's main checkout on the refresh tick and never dials. (4) `internal/usagetext` holds the governor and usage-window wording shared with `afk daemon status` and `afk usage`, and `internal/buildview` holds the snapshot and the pure task rows. (5) An answer from the dashboard is `inbox.Store.Answer(…, inbox.ViaTUI)` and nothing else; the dashboard never writes the ledger. (6) A session paused for usage reads as paused in the list and the overview. (7) Not yet seen: the new keys beside a live agent, or a real daemon's files; the supervised run of T4.2 is the first. See `## T3.2` in `docs/decisions.md`.
 
 ---
 

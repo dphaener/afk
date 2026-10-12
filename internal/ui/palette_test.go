@@ -369,6 +369,7 @@ func TestColonIsClaimedOnlyByNormalMode(t *testing.T) {
 		inputNormal:         {kind: routeAction, action: actionPalette},
 		inputPalette:        {kind: routeComponent},
 		inputSwitcher:       {kind: routeComponent},
+		inputInbox:          {kind: routeComponent},
 		inputForm:           {kind: routeComponent},
 		inputFilter:         {kind: routeComponent},
 		inputEditLabel:      {kind: routeComponent},

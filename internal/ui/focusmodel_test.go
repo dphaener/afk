@@ -154,7 +154,49 @@ var (
 	scenarioX      = keyRune('x')
 	scenarioQ      = keyRune('q')
 	scenarioR      = keyRune('r')
+	scenarioB      = keyRune('b')
+	scenarioI      = keyRune('i')
 )
+
+// loadScenarioBuild hands the model a build with one task, so `b` has a tab to
+// open wherever the dashboard, and not the agent, has the keyboard.
+func loadScenarioBuild(h *scenarioHarness) {
+	h.m, _ = update(h.t, h.m, buildLoadedMsg{snap: buildSnap("/repo"), gen: h.m.projectGen})
+}
+
+// assertNotOnBuildTab fails the scenario if a key meant for the agent moved
+// the detail tab behind it.
+func assertNotOnBuildTab(h *scenarioHarness) {
+	h.t.Helper()
+	if h.m.detailTab == tabBuild {
+		h.t.Errorf("b typed into the agent moved the detail tab to Build")
+	}
+}
+
+// loadScenarioInbox hands the model a build read with one open inbox item, so
+// `i` has an inbox to open wherever the dashboard has the keyboard.
+func loadScenarioInbox(h *scenarioHarness) {
+	h.m, _ = update(h.t, h.m, buildLoadedMsg{snap: inboxSnap(), gen: h.m.projectGen})
+}
+
+// assertInboxClosed fails the scenario if a key meant for the agent opened
+// the inbox overlay over it.
+func assertInboxClosed(h *scenarioHarness) {
+	h.t.Helper()
+	if h.m.inboxOpen {
+		h.t.Errorf("i typed into the agent opened the inbox overlay")
+	}
+}
+
+// assertInboxOpen fails the scenario if `i` from the list did not open the
+// overlay, and closes it again so the row's last state is the list's.
+func assertInboxOpen(h *scenarioHarness) {
+	h.t.Helper()
+	if !h.m.inboxOpen {
+		h.t.Errorf("i from the list did not open the inbox overlay")
+	}
+	h.m, _ = update(h.t, h.m, keyEsc)
+}
 
 // TestFocusScenario drives whole key sequences through Update and asserts the
 // two-axis state (focus, view), who owns the keyboard, what reached the agent,
@@ -177,6 +219,13 @@ var (
 //     placeholder.
 //   - "r from the list" vs "r from the right overview": same one spawn and one
 //     dial, but focus differs. From the list the keyboard stays on the list.
+//   - "b typed into a focused agent": the Build tab's key is a list and
+//     overview key. Forwarded once, no tab change, no view change is the proof
+//     the agent pane lost none of its keys to it; the last step shows the same
+//     key working from the list, hiding the agent without closing it.
+//   - "i typed into a focused agent": the same proof for the inbox key. The
+//     overlay staying closed is the point; the last steps show the key
+//     working from the list with the agent still drawn and untouched.
 //   - "steal while typing": q after a steal must not quit. The fixture types
 //     first so the keyboard really is inside the agent when the host takes the
 //     client away; a lost pane that handed focus to the list would quit here.
@@ -220,6 +269,50 @@ func TestFocusScenario(t *testing.T) {
 				{name: "q is typing", msg: scenarioQ, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.forwarded = focusRight, "agent", "alpha", 1
 				})},
+			},
+		},
+		{
+			// The build data is loaded first so `b` WOULD open the Build tab
+			// from the list: the row then proves the agent's focus is what
+			// stops it, not a missing build.
+			name: "b typed into a focused agent goes to the agent and does nothing else",
+			rows: []Session{runningSess("alpha")},
+			steps: []scenarioStep{
+				{name: "the build arrives", act: loadScenarioBuild, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
+					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
+				})},
+				{name: "b is typing", msg: scenarioB, want: with(list, func(s *scenarioState) {
+					s.focus, s.owner, s.selected, s.forwarded = focusRight, "agent", "alpha", 1
+				})},
+				{name: "the tab did not move", act: assertNotOnBuildTab, want: with(list, func(s *scenarioState) {
+					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
+				})},
+				{name: "ctrl+backslash", msg: scenarioCtrlBS, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "b from the list hides the agent behind the build tasks", msg: scenarioB, want: scenarioState{
+					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
+				}},
+			},
+		},
+		{
+			// The inbox is loaded first so `i` WOULD open the overlay from the
+			// list: the row then proves the agent's focus is what stops it.
+			name: "i typed into a focused agent goes to the agent and does nothing else",
+			rows: []Session{runningSess("alpha")},
+			steps: []scenarioStep{
+				{name: "the inbox arrives", act: loadScenarioInbox, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
+					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
+				})},
+				{name: "i is typing", msg: scenarioI, want: with(list, func(s *scenarioState) {
+					s.focus, s.owner, s.selected, s.forwarded = focusRight, "agent", "alpha", 1
+				})},
+				{name: "the overlay did not open", act: assertInboxClosed, want: with(list, func(s *scenarioState) {
+					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
+				})},
+				{name: "ctrl+backslash", msg: scenarioCtrlBS, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "i from the list opens the overlay over the agent", msg: scenarioI, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "the overlay opened, and esc closes it", act: assertInboxOpen, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
 		{

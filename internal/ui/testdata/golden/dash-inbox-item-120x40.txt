@@ -1,0 +1,40 @@
+ afk Dashboard 
+╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
+│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff   Build       tab/1-6: switch │
+│                                           ││ ─────────────────────────────────────────────────────────────────────── │
+│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
+│   ● Billing v2          REVIEWING   7/7   ││  executing   loop 3  updated 2026-07-10T00:00:00Z  ● host running       │
+│   ● fix-login-redirect  PLANNING      – ● ││                                                                         │
+│   ○ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
+│   ● scratch-1           SCRATCH       –   ││                                                                         │
+│   ○ old-migration       BROKEN        –   ││ Progress  █████████░░░░░░░░░░░ 3/7                                      │
+│                                           ││ Diff      +412/-88 · 9 file(s) vs main                                  │
+│               ╭─ Inbox · k7m2pq ─────────────────────────────────────────────────────────────────────╮               │
+│               │ Drop the legacy_sessions table?                                                      │               │
+│               │ question · T2.2 · session feat-auth · raised 3 hours ago · the task waits for your   │               │
+│               │ answer                                                                               │               │
+│               │                                                                                      │               │
+│               │ The migration in T2.2 removes legacy_sessions. Two reports in admin/ still read it.  │               │
+│               │                                                                                      │               │
+│               │ Dropping it now breaks those reports until T3.1 moves them to the new table.         │               │
+│               │                                                                                      │               │
+│               │ Options                                                                              │               │
+│               │   1. Drop it now and fix the reports in T3.1                                         │               │
+│               │   2. Keep it for one release (recommended)                                           │pping          │
+│               │   3. Leave it and close T2.2                                                         │               │
+│               │                                                                                      │               │
+│               │ type an answer, or a number to pick an option                                        │               │
+│               │ > 2                                                                                  │               │
+│               ╰──────────────────────────────────────────────────────────────────────────────────────╯               │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+╰───────────────────────────────────────────╯╰───────────────────────────── enter/f: focus view · c: clean · l: label ─╯
+enter send answer · esc clear, then back · pgup scroll up · pgdn scroll down · ctrl+g close inbox
