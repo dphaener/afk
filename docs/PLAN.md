@@ -939,6 +939,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   second `afk attach` stealing the session while the pane has focus, after which typed keys do not
   reach dashboard bindings; and `afk dash --open <name>`. Anything the walk-through finds that forge
   has too is fixed here and listed in `docs/decisions.md` so it can go back to forge.
+- **Amended 2026-10-12 (T0.6 done):** later tasks may assume the following. (1) The dashboard has one focus (`paneFocus`: `focusList` or `focusRight`) and one right-side view (`rightView`: `viewAgent` or `viewOverview`); the four old flags are gone, and `internal/ui/focusmodel_test.go` holds the key-sequence matrix a new key or view should add rows to. (2) A pane is drawn only for the selected row, so anything that opens a session by name (`afk dash --open`, the hand-off from `afk new`) moves the cursor to it first; that was a bug forge still has, fixed here with a second one (messages naming `enter/f` where only `ctrl+t` works, now chosen by `agentKeyHint`). (3) Four things were seen and left for forge to decide, the main one being that when a session's host dies under a focused pane the row turns to its overview about two seconds later and `q` typed then quits the dashboard; T3.2 should not assume a dead row swallows keys. (4) `afk dash` can be driven end to end through tmux with a stand-in script in place of the agent; the recipe and every finding are under `## T0.6` in `docs/decisions.md`.
 
 ---
 

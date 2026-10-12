@@ -108,9 +108,8 @@ func waitForEntry(t *testing.T, gitCommonDir string) (dashmeta.Entry, bool) {
 // to the keystroke form, so setting both keeps the fixture honest to the wire.
 func quitKey() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'q', Text: "q"} }
 
-// TestDashUsageDocumentsTheUnifiedFocusContract keeps the CLI's compact help
-// aligned with the dashboard's normal-mode dispatch: Enter and f focus the
-// drawn surface, while Ctrl-T alone selects or creates the agent surface.
+// TestDashUsageDocumentsTheUnifiedFocusContract pins the help text to the
+// two-axis focus model in internal/ui.
 func TestDashUsageDocumentsTheUnifiedFocusContract(t *testing.T) {
 	fs := flag.NewFlagSet("dash", flag.ContinueOnError)
 	var out bytes.Buffer
@@ -118,8 +117,8 @@ func TestDashUsageDocumentsTheUnifiedFocusContract(t *testing.T) {
 	got := out.String()
 
 	for _, want := range []string{
-		"enter/f    focus view currently drawn on the right",
-		"ctrl+t     agent/view toggle; attach or restart without moving keyboard focus",
+		"enter/f    focus the right side (connects a running session in agent view)",
+		"ctrl+t     switch the right side between agent and overview (right side focused only)",
 		"preview running session in agent pane",
 	} {
 		if !strings.Contains(got, want) {
@@ -129,6 +128,8 @@ func TestDashUsageDocumentsTheUnifiedFocusContract(t *testing.T) {
 	for _, stale := range []string{
 		"enter      focus the selected session's pane",
 		"f          focus what's drawn",
+		"enter/f    focus view currently drawn on the right",
+		"ctrl+t     agent/view toggle; attach or restart without moving keyboard focus",
 	} {
 		if strings.Contains(got, stale) {
 			t.Errorf("dash usage retains stale focus contract %q:\n%s", stale, got)

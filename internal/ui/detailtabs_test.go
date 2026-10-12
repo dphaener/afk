@@ -12,10 +12,12 @@ import (
 )
 
 // TestDetailTabKeysRouteToActions pins the dispatch half of the tabs: tab,
-// shift+tab and the digits route to the three tab actions when the detail
-// pane is on screen, and fall through to ignored — not to some other action —
-// when a session pane is. The digit row uses "3" rather than "1" so a binding
-// that only carried the first digit would fail here.
+// shift+tab and the digits route to the three tab actions only while the
+// overview owns the keyboard (inputDetail), and fall through to ignored — not
+// to some other action — from the list even with the overview drawn: with
+// the list focused nothing on the right is under control (plan objective 2).
+// The digit row uses "3" rather than "1" so a binding that only carried the
+// first digit would fail here.
 func TestDetailTabKeysRouteToActions(t *testing.T) {
 	reg := newModeRegistry(defaultKeyMap())
 	cases := []struct {
@@ -29,13 +31,13 @@ func TestDetailTabKeysRouteToActions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reg.route(inputNormal, routeConds{detailShown: true}, tc.key)
+			got := reg.route(inputDetail, routeConds{}, tc.key)
 			if want := (keyDecision{routeAction, tc.want}); got != want {
-				t.Fatalf("route(detail shown, %q) = {%v %v}, want {%v %v}",
+				t.Fatalf("route(overview focused, %q) = {%v %v}, want {%v %v}",
 					tc.key.String(), got.kind, got.action, want.kind, want.action)
 			}
 			if got := reg.route(inputNormal, routeConds{}, tc.key); got.kind != routeIgnored {
-				t.Fatalf("route(pane on screen, %q) = {%v %v}, want ignored",
+				t.Fatalf("route(list focused, %q) = {%v %v}, want ignored",
 					tc.key.String(), got.kind, got.action)
 			}
 		})
@@ -78,7 +80,7 @@ func TestDetailTabSwitching(t *testing.T) {
 		m := testModel(bigPlanSession("alpha"))
 		m.stack = stackState{Detected: gs}
 		m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
-		return m
+		return focusOverview(t, m)
 	}
 	press := func(m Model, keys ...tea.Msg) Model {
 		for _, k := range keys {
@@ -141,16 +143,32 @@ func TestDetailTabSwitching(t *testing.T) {
 		}
 	})
 
-	t.Run("keys are inert while a session pane is on screen", func(t *testing.T) {
+	t.Run("keys reach the session, not the tabs, while its pane is focused", func(t *testing.T) {
 		m := newModel(true)
-		m.pane = newFakePane("x")
+		pane := newFakePane("x")
+		m.pane = pane
 		m.paneName = "alpha"
+		m.view = viewAgent
+		if !m.paneOwnsKeyboard() {
+			t.Fatalf("fixture broken: the pane must own the keyboard")
+		}
 		m = press(m, tab, keyRune('4'))
 		if got := m.activeDetailTab(); got != tabOverview {
-			t.Fatalf("tab keys moved the tab to %v while the pane was on screen", got)
+			t.Fatalf("tab keys moved the tab to %v while the pane was focused", got)
 		}
-		if m.normalBindingEnabled(detailTabNextKey) {
-			t.Fatalf("the tab key must be hidden from help while the pane is on screen")
+		if len(pane.keys)+len(pane.texts) == 0 {
+			t.Fatalf("tab and 4 must be forwarded to the focused session")
+		}
+	})
+
+	t.Run("keys are inert from the list", func(t *testing.T) {
+		m := press(newModel(true), keyEsc)
+		if m.focus != focusList || !m.detailDrawn() {
+			t.Fatalf("fixture broken: focus=%v detailDrawn=%v", m.focus, m.detailDrawn())
+		}
+		m = press(m, tab, keyRune('4'))
+		if got := m.activeDetailTab(); got != tabOverview {
+			t.Fatalf("tab keys moved the tab to %v with the list focused", got)
 		}
 	})
 }

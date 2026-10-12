@@ -15,17 +15,17 @@
 │                         │ preview↑                                                     ↑/k │                         │
 │                         │ preview↓                                                     ↓/j │                         │
 │                         │ focus view                                               enter/f │                         │
-│                         │ agent/view                                                ctrl+t │                         │
 │                         │ page up                                                     pgup │                         │
 │                         │ page down                                                   pgdn │                         │
 │                         │ first session                                               home │                         │
 │                         │ last session                                                 end │                         │
-│                         │ detail up                                                shift+↑ │before dropping          │
-│                         │ detail down                                              shift+↓ │                         │
-│                         │ detail half page up                                       ctrl+u │                         │
-│                         │ detail half page down                                     ctrl+d │                         │
-│                         │ next tab                                                     tab │                         │
-│                         │ previous tab                                           shift+tab │                         │
+│                         │ new session                                                    n │                         │
+│                         │ one-off                                                        o │before dropping          │
+│                         │ projects                                                       p │                         │
+│                         │ clean (confirm)                                                c │                         │
+│                         │ label                                                          l │                         │
+│                         │ filter                                                         / │                         │
+│                         │ command palette                                                : │                         │
 │                         ╰──────────────────────────────────────────────────────────────────╯                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │

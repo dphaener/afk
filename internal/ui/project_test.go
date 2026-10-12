@@ -622,7 +622,7 @@ func TestSwitchProject(t *testing.T) {
 			m.selectSessionIndex(1)
 			m.pane = pane
 			m.paneName = "one"
-			m.paneFocused = true
+			m.focus = focusRight
 			m.stack = stackState{Detected: true, Branches: []spice.Branch{{Name: "one"}}}
 			m.plainBranches = []string{"main"}
 			m.plainTrunk = "main"
@@ -658,7 +658,7 @@ func TestSwitchProject(t *testing.T) {
 			if pane.closed != 1 {
 				t.Errorf("outgoing pane closed %d times, want 1", pane.closed)
 			}
-			if got.pane != nil || got.paneName != "" || got.paneFocused {
+			if got.pane != nil || got.paneName != "" || got.paneOwnsKeyboard() {
 				t.Error("switching project must leave no pane state behind")
 			}
 			if got.sessions != nil || got.listSelection() != 0 {
@@ -745,9 +745,9 @@ func TestTogglePaneDialOutstandingAcrossAProjectSwitchIsDropped(t *testing.T) {
 	oldSess := runningSess("same")
 	oldSess.WorktreePath = "/roots/a/wt/same"
 	m.setSessions([]Session{oldSess})
-	m, staleCmd := update(t, m, keyCtrlT)
+	m, staleCmd := update(t, m, keyEnter)
 	if staleCmd == nil {
-		t.Fatal("precondition: ctrl+t on a running session must dispatch a dial")
+		t.Fatal("precondition: enter on a running session must dispatch a dial")
 	}
 
 	m, _ = m.switchProject("/roots/b")
@@ -756,7 +756,7 @@ func TestTogglePaneDialOutstandingAcrossAProjectSwitchIsDropped(t *testing.T) {
 	newSess.WorktreePath = "/roots/b/wt/same"
 	m.setSessions([]Session{newSess})
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return newPane, nil }
-	m, freshCmd := update(t, m, keyCtrlT)
+	m, freshCmd := update(t, m, keyEnter)
 	if freshCmd == nil {
 		t.Fatal("precondition: the re-dial in the new project must dispatch")
 	}
@@ -779,8 +779,8 @@ func TestTogglePaneDialOutstandingAcrossAProjectSwitchIsDropped(t *testing.T) {
 	if newPane.closed != 0 {
 		t.Errorf("new connection closed %d times, want 0 — the surplus branch treated it as the extra", newPane.closed)
 	}
-	if m.paneName != "same" || m.paneFocused {
-		t.Errorf("paneName=%q focused=%v, want the fresh ctrl+t shown with list ownership", m.paneName, m.paneFocused)
+	if m.paneName != "same" || !m.paneOwnsKeyboard() {
+		t.Errorf("paneName=%q focused=%v, want the fresh enter's pane installed and focused", m.paneName, m.paneOwnsKeyboard())
 	}
 }
 
@@ -802,9 +802,9 @@ func TestRestartOutstandingAcrossAProjectSwitchIsDropped(t *testing.T) {
 	stopped := sess("same")
 	stopped.WorktreePath = "/roots/a/wt/same"
 	m.setSessions([]Session{stopped})
-	m, restartCmd := update(t, m, keyCtrlT)
+	m, restartCmd := update(t, m, keyRune('r'))
 	if restartCmd == nil {
-		t.Fatal("precondition: ctrl+t on a stopped session must dispatch the restart")
+		t.Fatal("precondition: r on a stopped session must dispatch the restart")
 	}
 
 	m, _ = m.switchProject("/roots/b")
@@ -842,7 +842,7 @@ func TestRestartOutstandingAcrossAProjectSwitchIsDropped(t *testing.T) {
 }
 
 // TestRestartInSwitchedToProjectChainsIntoThePaneOpen is the SUCCESS direction
-// TestRestartOutstandingAcrossAProjectSwitchIsDropped cannot see: ctrl+t on a
+// TestRestartOutstandingAcrossAProjectSwitchIsDropped cannot see: `r` on a
 // stopped session pressed AFTER a project switch, whose restart must sail
 // through the generation guard in Update's hostRestartedMsg case and chain into
 // the pane open. It exists to pin the `req.gen = m.projectGen` stamp in
@@ -883,9 +883,9 @@ func TestRestartInSwitchedToProjectChainsIntoThePaneOpen(t *testing.T) {
 		return fp, nil
 	}
 
-	m, restartCmd := update(t, m, keyCtrlT)
+	m, restartCmd := update(t, m, keyRune('r'))
 	if restartCmd == nil {
-		t.Fatal("precondition: ctrl+t on a stopped session must dispatch the restart")
+		t.Fatal("precondition: r on a stopped session must dispatch the restart")
 	}
 	restarted := drainForHostRestarted(t, restartCmd)
 	if restarted.err != nil {
@@ -898,20 +898,20 @@ func TestRestartInSwitchedToProjectChainsIntoThePaneOpen(t *testing.T) {
 
 	m, cmd := update(t, m, restarted)
 	if cmd == nil {
-		t.Fatal("the restart was dropped as stale in the project that dispatched it — ctrl+t on a stopped session silently did nothing")
+		t.Fatal("the restart was dropped as stale in the project that dispatched it — r on a stopped session silently did nothing")
 	}
 	attached := drainForPaneAttached(t, cmd)
-	if attached.focusOnArrival {
-		t.Error("ctrl+t's focusOnArrival=false was lost across the restart chain")
+	if attached.focusOnArrival || !attached.selectionBound {
+		t.Errorf("list r's focusOnArrival=false/selectionBound=true was lost across the restart chain: %+v", attached)
 	}
 	if gotCfg.Name != "target" || gotCfg.Worktree != "/roots/b/wt/target" {
 		t.Fatalf("opened %+v, want the switched-to project's target worktree", gotCfg)
 	}
 
 	m, _ = update(t, m, attached)
-	if m.pane != fp || m.paneName != "target" || m.paneFocused {
+	if m.pane != fp || m.paneName != "target" || m.paneOwnsKeyboard() {
 		t.Fatalf("pane=%v name=%q focused=%v, want the restarted session's pane installed with list ownership",
-			m.pane == fp, m.paneName, m.paneFocused)
+			m.pane == fp, m.paneName, m.paneOwnsKeyboard())
 	}
 }
 

@@ -148,9 +148,6 @@ func paletteEntries(spec modeSpec, conds routeConds, enabled func(key.Binding) b
 		if rule.needsFilter && !conds.listFiltered {
 			continue
 		}
-		if rule.needsDetail && !conds.detailShown {
-			continue
-		}
 		if !rule.binding.Enabled() || !enabled(rule.binding) {
 			continue
 		}

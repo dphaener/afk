@@ -103,23 +103,40 @@ type paneHandle interface {
 // answered separately, and a name alone conflates them:
 //
 //   - "is a dial for this session outstanding" — what stops a second dial to one
-//     host, in either direction (an explicit ctrl+t during a preview's dial, or a
-//     preview during an explicit open).
+//     host, in either direction (an explicit connect during a preview's dial,
+//     or a preview during an explicit open).
 //   - "was that dial an explicit open" — what stops a PREVIEW's arrival from
 //     releasing a claim an explicit open is holding.
-//   - "did ctrl+t claim this exact preview" — what lets the preview's already-
-//     dispatched result become the explicit surface without opening a second
-//     client, while every other stale preview remains rejectable.
+//   - "did a connect claim this exact preview" — what lets the preview's
+//     already-dispatched result become the explicit surface without opening a
+//     second client, while every other stale preview remains rejectable.
 //
-// claimedPreview stays keyed to this one dial: attachSelected marks it when
-// ctrl+t targets the same session, and applyPaneAttached consumes it only when
-// that preview result arrives. It is deliberately not a free-standing Model flag,
-// which could leak onto a later unrelated arrival.
+// claimedPreview stays keyed to this one dial: connect marks it when enter
+// (or ctrl+t into the agent view) targets the same session, and
+// applyPaneAttached consumes it only when that preview result arrives. It is
+// deliberately not a free-standing Model flag, which could leak onto a later
+// unrelated arrival.
 type inFlightOpen struct {
 	name           string
 	preview        bool
 	claimedPreview bool
 	focusOnArrival bool
+}
+
+// inFlightRestart is an outstanding restartHostCmd. gen is the project
+// generation it was dispatched under, so a pre-switch report cannot clear a
+// same-named restart the incoming project owns.
+type inFlightRestart struct {
+	name           string
+	gen            int
+	focusOnArrival bool
+}
+
+// lostPane names a session whose pane connection ended without the session
+// ending; message is the placeholder's first line.
+type lostPane struct {
+	name    string
+	message string
 }
 
 // Session is the dashboard's per-session view model: the discovered
@@ -694,8 +711,8 @@ func defaultKeyMap() keyMap {
 		// arrow glyph appended to each label is the distinguisher, not
 		// restyling: TestHelpLineAt80KeepsTheDiscoverableKeysAndTheCaptureState
 		// pins this line at a width that was already oversubscribed with a
-		// pane open, so a real word ("prev"/"next") pushes Toggle's canonical
-		// "agent/view" hint off the end. A single glyph (already this footer's
+		// pane open, so a real word ("prev"/"next") pushes the later hints
+		// off the end. A single glyph (already this footer's
 		// vocabulary — it's what the key column itself uses) fits the ~2-column
 		// margin that's actually available.
 		Up: key.NewBinding(
@@ -731,9 +748,11 @@ func defaultKeyMap() keyMap {
 		// banner drawn inside a wedged pane — bound here, not re-declared,
 		// so the banner's guidance and this binding cannot name two
 		// different keys (see hostpane.go's decision comment on the const).
+		// It is the one restart key (restartSelected): a stopped row restarts
+		// at once, a wedged running row after a confirmation.
 		Restart: key.NewBinding(
 			key.WithKeys(wedgeRecoveryKey),
-			key.WithHelp(wedgeRecoveryKey, "restart wedged (confirm)"),
+			key.WithHelp(wedgeRecoveryKey, "restart"),
 		),
 		// Label's help text is never rendered by renderHelp, on the same
 		// precedent as Project and Scratch above (their own comments explain
@@ -745,15 +764,16 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("l"),
 			key.WithHelp("l", "label"),
 		),
-		// "focus pane" would now be wrong half the time: `f` focuses whichever
-		// surface is drawn in the main region, and that is the DETAIL pane
-		// whenever no session pane is on screen (applyKeyAction's
-		// actionFocusPane case). The combined label and compact description are
-		// width-sensitive because they share the 80-column footer with Ctrl-T's
-		// canonical agent/view hint; the focused presentation tests pin that
-		// budget. paletteEntries reads Help() directly and there is no live-
-		// override path, so this one string is what `?`, `:` and the footer all
-		// say.
+		// "focus pane" would be wrong half the time: enter/f focuses the right
+		// side in whichever view the user chose (focusRightSide, reached from
+		// applyKeyAction's actionFocusPane case). The overview view focuses
+		// the overview; the agent view focuses the selected row's pane,
+		// connecting it first when it has none, and a row with no live agent
+		// focuses its overview. The combined label and compact description are
+		// width-sensitive because they share the oversubscribed 80-column list
+		// footer; the focused presentation tests pin that budget.
+		// paletteEntries reads Help() directly and there is no live-override
+		// path, so this one string is what `?`, `:` and the footer all say.
 		Focus: key.NewBinding(
 			key.WithKeys("enter", "f"),
 			key.WithHelp("enter/f", "focus view"),
@@ -764,7 +784,7 @@ func defaultKeyMap() keyMap {
 		),
 		Toggle: key.NewBinding(
 			key.WithKeys("ctrl+t"),
-			key.WithHelp("ctrl+t", "agent/view"),
+			key.WithHelp("ctrl+t", "agent/overview"),
 		),
 		// The switcher's rescan key is deliberately absent from this map: the
 		// overlay component handles `R` itself and reports it back as a result
@@ -810,6 +830,74 @@ func defaultKeyMap() keyMap {
 			key.WithHelp("q", "quit"),
 		),
 	}
+}
+
+// paneFocus is which side of the dashboard's split owns the keyboard: the
+// session list on the left, or the right pane. It is one of exactly two axes
+// of interaction state (the other is rightView), and there are two rather
+// than one combined enum or a set of flags because that is the model the user
+// holds: "switch focus between the left and right panes, and when in the
+// right pane, switch between the agent view and the overview, that's it. When
+// on the left pane, you can't control anything in the right pane." Every
+// state the dashboard can be in is a point on these two axes, so there is no
+// focus a mask has to hide and no stale flag a reconcile pass has to clear.
+//
+// The zero value is focusList, so a zero Model starts with the keyboard on
+// the dashboard.
+type paneFocus int
+
+const (
+	// focusList: the session list owns the keyboard; the right pane is
+	// display only.
+	focusList paneFocus = iota
+	// focusRight: the right pane owns the keyboard. Which surface receives it
+	// — the agent's PTY or the overview's viewport — is rightView's question,
+	// answered together with whether a pane is actually drawn (modeSnapshot).
+	focusRight
+)
+
+// String exists for test-failure output; nothing renders it.
+func (f paneFocus) String() string {
+	switch f {
+	case focusList:
+		return "list"
+	case focusRight:
+		return "right"
+	}
+	return "unknown"
+}
+
+// rightView is which surface the right pane shows: the live agent session or
+// the overview (summary/diff/stack tabs). It is dashboard-wide, not per
+// session — one preference the user flips with ctrl+t, carried across rows —
+// and it is orthogonal to paneFocus: the overview can be showing while the
+// list has the keyboard, and the agent can be showing while the list has the
+// keyboard. Neither axis implies the other, which is the whole reason they
+// are two fields rather than one.
+//
+// The zero value is viewAgent: a fresh dashboard previews the agent.
+type rightView int
+
+const (
+	// viewAgent: the right pane shows the session pane when one is installed
+	// for the selected row, and the overview otherwise — there is nothing
+	// else to draw for a row without a pane.
+	viewAgent rightView = iota
+	// viewOverview: the right pane shows the overview even when a pane is
+	// installed. The pane stays alive and resizing behind it, so switching
+	// back is instant.
+	viewOverview
+)
+
+// String exists for test-failure output; nothing renders it.
+func (v rightView) String() string {
+	switch v {
+	case viewAgent:
+		return "agent"
+	case viewOverview:
+		return "overview"
+	}
+	return "unknown"
 }
 
 // Model is the dashboard state. It is a pure value: Update returns a new
@@ -861,8 +949,9 @@ type Model struct {
 	// and Bubble Tea runs every Cmd on its own goroutine. Two concurrent cleans of
 	// one session mean two `git add -A`/`commit` against a single index, an
 	// archive step stat-ing a source the other already deleted, and two
-	// `git worktree remove`. ctrl+t consults this set too — a clean SIGKILLs the
-	// session's host, which must never happen under a live pane.
+	// `git worktree remove`. enter, ctrl+t and `r` consult this set too — a
+	// clean SIGKILLs the session's host, which must never happen under a live
+	// pane.
 	//
 	// Keyed by (name, cleanTargetKind), not by name: an identity-relevant entry
 	// can share a name with a healthy or one-off session, and a name-only key
@@ -1105,29 +1194,25 @@ type Model struct {
 	detailViewportFor string
 
 	// pane is the embedded terminal pane currently on screen, or nil when none is
-	// open. The dashboard renders one at a time and ctrl+t switches it between
-	// sessions (see applyPaneAttached) — a switch detaches the outgoing session
-	// rather than ending it, so this is a view onto one of many running sessions,
-	// not a limit on how many can exist. paneName is the session it is connected
-	// to; paneFocused records whether keyboard input routes to that session.
-	pane        paneHandle
-	paneName    string
-	paneFocused bool
+	// open. The dashboard renders one at a time and a connect switches it
+	// between sessions (see applyPaneAttached) — a switch detaches the
+	// outgoing session rather than ending it, so this is a view onto one of
+	// many running sessions, not a limit on how many can exist. paneName is
+	// the session it is connected to. Whether keyboard input routes to it is
+	// NOT a field on the pane: it is derived from focus and view below
+	// (paneOwnsKeyboard).
+	pane     paneHandle
+	paneName string
 
-	// detailFocused records whether the keyboard is routed to the DETAIL
-	// pane's viewport. It is a second, distinct focus concept from paneFocused
-	// above, not a generalisation of it: paneFocused forwards keystrokes to a
-	// child session over a socket, while this one moves m.detailViewport, a
-	// value this process owns and renders. They are mutually exclusive by
-	// construction — the detail pane is drawn precisely when no session pane
-	// is (views.go's shouldRenderPane) — which is what lets `f` mean "focus
-	// whatever is in the main region" with no ambiguity.
-	//
-	// It is governed by an INVARIANT rather than by enumerated clear sites:
-	// detailFocused implies the detail pane is the drawn surface, reconciled
-	// once per message in Update (reconcileDetailFocus). Masking it in
-	// modeSnapshot is not enough on its own — see that method's doc.
-	detailFocused bool
+	// focus and view are the dashboard's entire interaction state: which side
+	// of the split owns the keyboard, and which surface the right side shows.
+	// The four flags they replace (a pane-focused flag, a detail-focused flag,
+	// a pane-hidden flag and a saved focus to restore on reveal) could encode
+	// states the user has no model for — a focused pane hidden behind the
+	// summary, a focused detail with the pane drawn over it — and each one
+	// needed a mask or a reconcile pass to paper over. See the two type docs.
+	focus paneFocus
+	view  rightView
 
 	// previewGen is what makes a superseded preview timer INERT. tea.Tick Cmds
 	// cannot be cancelled, so every armed timer fires; each one carries the
@@ -1164,11 +1249,21 @@ type Model struct {
 	// needlessly stealing that session too.
 	//
 	// It records EVERY open, previews included, because the harm is symmetric:
-	// ctrl+t pressed while a preview is dialing the same session would otherwise
+	// enter pressed while a preview is dialing the same session would otherwise
 	// dial it a second time, and the host answers a second client by sending Stolen
 	// to the first. Knowing a dial is already outstanding is what lets
-	// attachSelected claim it instead (see inFlightOpen).
+	// connectSelected claim it instead (see inFlightOpen).
 	attachInFlight inFlightOpen
+
+	// restartInFlight is attachInFlight for host respawns. A second connect for
+	// the same name joins it instead of spawning a second host, whose bind probe
+	// would steal the first one's pane.
+	restartInFlight inFlightRestart
+
+	// paneLost is a pane that ended while its session kept running (steal, drop,
+	// read error), so the agent view can offer a reconnect instead of drawing
+	// the row as if nothing happened.
+	paneLost lostPane
 
 	// spinner animates on the help row while any operation hasInFlightWork
 	// reads (a create, a clean, a restart request) is outstanding. It is driven
@@ -1208,14 +1303,6 @@ type Model struct {
 	// It starts true because dash.go constructs the program with
 	// tea.WithMouseCellMotion(), so capture is on before the first Update runs.
 	mouseCapture bool
-
-	// paneHidden means a pane is alive (m.pane != nil) but the summary is showing
-	// over it — m.pane != nil no longer implies the pane is visible when this is
-	// true. Meaningless when m.pane == nil.
-	paneHidden bool
-	// paneFocusedBeforeHide records the focus state to restore on toggle-back,
-	// making the round-trip lossless.
-	paneFocusedBeforeHide bool
 
 	// initialSession is the session Deps.InitialSessionName named at startup
 	// (afk new's TTY handoff, or `afk dash --open`), captured once in New.
@@ -1623,38 +1710,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, cmd
 	}
 	nm.flushBackground()
-	nm.reconcileDetailFocus()
 	return nm, cmd
 }
 
-// reconcileDetailFocus enforces the one invariant detail focus has:
-// detailFocused implies the detail pane is the surface being drawn. It runs
-// here, after handle, rather than on the key-dispatch path, because the
-// unmasking is not always key-driven — a discovery tick that takes the paned
-// row out of the list (rebuildListItems) and a paneExitedMsg that clears the
-// pane both hand the main region back to the detail view with no keypress at
-// all, and a pre-dispatch check would miss them.
-//
-// One reconciliation point rather than a list of clear sites is deliberate.
-// Two paths make the pane render without clearing anything — togglePaneSummary's
-// reveal branch and applyPaneAttached's install path — and modeSnapshot's
-// conjunction only MASKS a stale flag while the pane is up: the next ctrl+t
-// hide, or a tick moving the cursor off the paned row, unmasks it and j/k
-// silently scroll the diff with the session cursor frozen and no `f` ever
-// pressed. A missed path produces no error, which is exactly why this is
-// structural.
-//
-// The test is detailDrawn, not shouldRenderPane: they differ only in the
-// empty state, where View paints renderEmptyState and there is no detail box
-// to own the keyboard either.
-//
-// It clears only detailFocused, so it cannot fight togglePaneSummary's
-// paneFocusedBeforeHide restore.
-func (m *Model) reconcileDetailFocus() {
-	if m.detailFocused && !m.detailDrawn() {
-		m.detailFocused = false
-	}
-}
+// There is deliberately no post-handle focus reconciliation here. The old
+// detail-focus flag needed one (a pane could arrive under it and leave the
+// keyboard on a surface no longer drawn); focus and view cannot express that
+// state, because which right surface owns the keyboard is derived from them
+// and from what is drawn at the moment of each keypress (modeSnapshot).
 
 // handle is Update's body: the message switch itself.
 func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1703,8 +1766,7 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// and never reach the session — so the kind is discriminated once, in
 	// paneMouseEvent, where the emulator's matching type is chosen.
 	case tea.MouseMsg:
-		m.routeMouse(msg)
-		return m, nil
+		return m.handleMouse(msg)
 
 	case spinner.TickMsg:
 		// spinner.Model.Update always returns a fresh Tick Cmd on a TickMsg it
@@ -1966,6 +2028,12 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// can take — including the stale-generation drop two lines down —
 		// reports back exactly once through this message.
 		m.endOtherOp()
+		joinedFocus := false
+		if m.restartInFlight.name == msg.name && m.restartInFlight.gen == msg.gen {
+			joinedFocus = m.restartInFlight.focusOnArrival
+			m.restartInFlight = inFlightRestart{}
+		}
+		focusOnArrival := msg.focusOnArrival || joinedFocus
 		// A restart that crossed a project switch. The respawn cannot be
 		// un-dispatched — the OUTGOING project's host is up again, which is
 		// harmless — but everything below is stale: the failure status and the
@@ -1976,7 +2044,13 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.projectGen {
 			return m, nil
 		}
+		// A restart the user focused (connect moved the focus right at request
+		// time) that ends here without a pane hands the keyboard back, on the
+		// rule applyPaneAttached's failure branch follows.
 		if msg.err != nil {
+			if focusOnArrival {
+				m.handBackUnansweredFocus()
+			}
 			m.notify(notifyError, restartFailedStatus(msg.name, msg.worktree, msg.err))
 			return m, m.loadCmd()
 		}
@@ -1985,6 +2059,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the clean stops it again on its way through, so the only thing to get
 		// right here is not claiming otherwise and not opening a pane onto it.
 		if m.cleaningByName(msg.name) {
+			if focusOnArrival {
+				m.handBackUnansweredFocus()
+			}
 			m.notify(notifyWarn, "can't open "+msg.name+" — it's being cleaned")
 			return m, m.loadCmd()
 		}
@@ -1996,10 +2073,14 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name:           msg.name,
 			worktree:       msg.worktree,
 			restarted:      true,
-			focusOnArrival: msg.focusOnArrival,
+			focusOnArrival: focusOnArrival,
+			selectionBound: msg.selectionBound,
 			focusRequest:   msg.focusRequest,
 		}); cmd != nil {
 			return m, cmd
+		}
+		if focusOnArrival {
+			m.handBackUnansweredFocus()
 		}
 		return m, m.loadCmd()
 
@@ -2032,7 +2113,7 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Another session is already in the pane. Creating a session no
 			// longer implies watching it — the host runs regardless — so say
 			// where it went rather than displacing what the user is looking at.
-			m.notify(notifySuccess, appendWarningSuffix("created "+msg.name+" — running in the background", warnings)+" · ctrl+t to open the agent")
+			m.notify(notifySuccess, appendWarningSuffix("created "+msg.name+" — running in the background", warnings)+" · "+m.keys.Focus.Help().Key+" to open the agent")
 			return m, m.loadCmd()
 		}
 		m.notify(notifySuccess, appendWarningSuffix("created "+msg.name+" — connecting…", warnings))
@@ -2069,7 +2150,7 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cleanFinishedMsg:
 		// The in-flight entry goes either way: on success the session is gone, on
 		// failure it is untouched and retryable. Leaving it set on the error path
-		// would lock the row out of `c` and ctrl+t for the rest of the run.
+		// would lock the row out of `c`, enter and `r` for the rest of the run.
 		m.clearCleaning(cleanID{name: msg.name, kind: msg.kind})
 		if msg.err != nil {
 			m.notify(notifyError, cleanFailedStatus(msg.name, msg.result, msg.err))
@@ -2094,9 +2175,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s, ok := m.sessionByName(msg.name); ok && s.Provider != "" {
 				agent = s.Provider
 			}
-			m.notify(notifySuccess, "restarted "+msg.name+" — "+agent+" is resuming its conversation · ctrl+t to reopen the agent")
+			m.notify(notifySuccess, "restarted "+msg.name+" — "+agent+" is resuming its conversation · "+m.agentKeyHint()+" to reopen the agent")
 		default:
-			m.notify(notifyWarn, "restart requested for "+msg.name+" — the host reported no outcome · ctrl+t to reconnect the agent")
+			m.notify(notifyWarn, "restart requested for "+msg.name+" — the host reported no outcome · "+m.agentKeyHint()+" to reconnect the agent")
 		}
 		// Refresh immediately on every outcome: on success the restart itself
 		// cleared wedged_since in host.json (restart.go's noteRestart), and on
@@ -2130,12 +2211,22 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// client stealing it; both mean this pane is done. Close is idempotent
 		// (Done already fired) and detaches rather than terminating, so a steal
 		// cannot take the session down with it.
-		_ = m.pane.Close()
 		ended := m.paneName
-		m.pane = nil
-		m.paneName = ""
-		m.paneFocused = false
-		m.clearPaneHiddenState()
+		wasFocused := m.paneOwnsKeyboard()
+		m.forgetPane()
+		// A connection lost under a live session keeps the keyboard on the
+		// right, in the agent view's reconnect placeholder: handing it to the
+		// list mid-typing would deliver the next `q` to the quit binding.
+		if lost, ok := lostPaneMessage(ended, msg); ok {
+			m.paneLost = lostPane{name: ended, message: lost}
+			// Only a pane that owned the keyboard forces the agent view: one
+			// lost behind a focused overview leaves that overview drawn and
+			// focused, and ctrl+t then shows the reconnect placeholder.
+			if wasFocused {
+				m.focus = focusRight
+				m.view = viewAgent
+			}
+		}
 		switch {
 		case msg.err != nil:
 			m.notify(notifyError, "disconnected from "+ended+": "+msg.err.Error())
@@ -2152,11 +2243,11 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// reason as a steal: the host closed this connection without an
 			// Exit frame, which it does when it drops a client that fell
 			// behind its output and keeps serving. Pinning that live PID in
-			// deadHostPIDs is what turned every later ctrl+t into a restart
+			// deadHostPIDs is what turned every later connect into a restart
 			// whose second `afk _host` stole the freshly opened pane via
 			// its bind probe. Whether the host is in fact gone (the other
 			// way a bare close happens) is left to discovery's signal-0.
-			m.notify(notifyWarn, "connection to "+ended+" dropped — it may still be running · ctrl+t to reopen the agent")
+			m.notify(notifyWarn, "connection to "+ended+" dropped — it may still be running · "+m.agentKeyHint()+" to reopen the agent")
 		default:
 			m.notify(notifyInfo, "session ended: "+ended)
 			// The host exits with its child, so the next discovery pass
@@ -2299,9 +2390,10 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	// attachInFlight set for the life of the process — every future preview
 	// silently dead.
 	//
-	// Matched on the name because two rapid explicit opens (ctrl+t on A, then
-	// ctrl+t on B before A lands) leave the record naming "B"; an unconditional clear would let
-	// A's arrival clear it while B is still dialing, reopening exactly the window
+	// Matched on the name because two rapid explicit opens (a connect to A,
+	// then one to B before A lands) leave the record naming "B"; an
+	// unconditional clear would let A's arrival clear it while B is still
+	// dialing, reopening exactly the window
 	// this guard exists to close. One residual is accepted rather than engineered
 	// around: if the program quits before a Cmd's result is delivered the record stays
 	// set, which is harmless — the Model dies with it.
@@ -2311,13 +2403,20 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	matchesInFlight := msg.name == m.attachInFlight.name && msg.preview == m.attachInFlight.preview
 	claimedPreview := matchesInFlight && msg.preview && m.attachInFlight.claimedPreview
 	// A dispatched preview can become stale after its Cmd has started: an
-	// explicit open and detail focus both bump previewGen. Drop either loser
-	// here, closing its host client, before it can replace the user's chosen
-	// surface. A same-session ctrl+t claim is the one narrow generation
-	// exception, but never while detail owns input: focusDetail also clears that
-	// claim so the rejection survives a later release.
-	stalePreview := msg.preview && (m.detailFocused ||
-		(!claimedPreview && msg.previewGen != 0 && msg.previewGen != m.previewGen))
+	// explicit open and detail focus both bump previewGen, and a passive
+	// preview has no business replacing an overview the user is reading.
+	// Drop either loser here, closing its host client, before it can replace
+	// the user's chosen surface.
+	//
+	// A CLAIMED preview is exempt from both, unconditionally. The claim is
+	// enter (or ctrl+t into the agent view) adopting this dial as the user's
+	// own connect, made with the right side focused — so detail ownership is
+	// the claim's normal state while it waits (right focus in agent view with
+	// no pane yet IS detail ownership), not a reason to drop it, and the
+	// generation was bumped by the claim itself. Gating the claim on
+	// detailOwnsKeyboard would drop exactly the dial enter had claimed.
+	stalePreview := msg.preview && !claimedPreview && (m.detailOwnsKeyboard() ||
+		(msg.previewGen != 0 && msg.previewGen != m.previewGen))
 	if stalePreview {
 		if matchesInFlight {
 			m.attachInFlight = inFlightOpen{}
@@ -2333,12 +2432,21 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		m.attachInFlight = inFlightOpen{}
 	}
 	focusOnArrival := msg.focusOnArrival || joinedFocus
+	// honourFocus is whether this arrival lands the user IN the session. A
+	// focused connect (connect moved the focus right at request time, for a
+	// keypress and a click alike) gives way to any later focus choice the
+	// user made while it dialed: switching to the overview (ctrl+t), or going
+	// back to the list (ctrl+\, esc, a list click). Either is an explicit "not
+	// the agent right now", and an arrival that moved the focus anyway would
+	// hand the next typed keys to a session the user walked away from. The
+	// pane installs unfocused instead, one enter or ctrl+t away.
+	honourFocus := focusOnArrival && m.view != viewOverview && m.focus == focusRight
 	passivePreview := msg.preview && !claimedPreview
 	if msg.err != nil {
 		// A failed PREVIEW never proves the host is dead — no host correction or
-		// reload. A passive preview is completely silent; when ctrl+t claimed this
-		// short-window dial, report that it did not connect and let the next ctrl+t
-		// perform a full explicit attempt.
+		// reload. A passive preview is completely silent; when a connect claimed
+		// this short-window dial, report that it did not connect and let the
+		// next enter perform a full explicit attempt.
 		// All three would be wrong here, and each for its own reason:
 		//
 		//   - A status write puts error text on screen produced by nothing but a
@@ -2349,15 +2457,19 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		//     HostRunning=false in deadHostPIDs keyed on a PID a LIVE host keeps
 		//     re-asserting, and the override only lapses when that PID changes (see
 		//     applyDeadHostOverrides). A host merely slow to answer would read as
-		//     stopped permanently, and ctrl+t would then spawn a SECOND host for a
+		//     stopped permanently, and `r` would then spawn a SECOND host for a
 		//     session that already has one.
 		//   - loadCmd here means browsing N stale rows fires N extra full discovery
 		//     passes (git worktree list + per-session numstat) on top of the ticker.
 		if msg.preview {
 			if claimedPreview {
-				m.notify(notifyWarn, "opening "+msg.name+" did not connect · ctrl+t to retry")
+				m.handBackUnansweredFocus()
+				m.notify(notifyWarn, "opening "+msg.name+" did not connect · "+m.keys.Focus.Help().Key+" to retry")
 			}
 			return m, nil
+		}
+		if focusOnArrival {
+			m.handBackUnansweredFocus()
 		}
 		m.notify(notifyError, paneAttachFailedStatus(msg))
 		if errors.Is(msg.err, host.ErrHostNotReachable) {
@@ -2371,12 +2483,27 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	if m.pane != nil && msg.pane == m.pane {
 		return m, nil
 	}
+	// A focused connect whose row the user has since left (ctrl+\, then a
+	// cursor move) is abandoned: installing it would put a pane on a row that
+	// is not selected, holding the host's one client slot undrawn. Only a
+	// list-focused keyboard can have left: under right focus the selection is
+	// pinned, and a click may name a session not yet in the list. A
+	// selection-bound open (`r` from the list) is abandoned the same way.
+	if (focusOnArrival || msg.selectionBound) && m.focus == focusList {
+		if s, ok := m.selected(); ok && s.Name != msg.name {
+			_ = msg.pane.Close()
+			return m, nil
+		}
+	}
 	// A clean confirmed while this connection was in flight. openPaneFor gates
 	// DISPATCH, which cannot see a `c`,`y` that lands afterwards, so the arriving
 	// connection is dropped here instead: installing it would put a live pane on a
 	// host the clean is about to SIGKILL, in a worktree it is deleting.
 	if m.cleaningByName(msg.name) {
 		_ = msg.pane.Close()
+		if focusOnArrival {
+			m.handBackUnansweredFocus()
+		}
 		// Silent for a PREVIEW, for the reason the error branch above is: the status
 		// would be error text produced by nothing but a cursor move (the clean was
 		// confirmed while this preview's dial was outstanding, so the user asked for
@@ -2398,7 +2525,7 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	// indistinguishable to the user from the click not working.
 	if m.pane != nil && msg.name == m.paneName {
 		_ = msg.pane.Close()
-		if focusOnArrival {
+		if honourFocus {
 			return m.focusPane()
 		}
 		return m, nil
@@ -2407,20 +2534,29 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	previousName := m.paneName
 	m.pane = msg.pane
 	m.paneName = msg.name
-	// An arriving pane is always SHOWN, focused or not: opening or switching a
-	// session makes that pane the thing the user is looking at, so a ctrl+t hide
-	// from before the switch must not carry over and leave the new pane invisible.
-	// Clearing it unconditionally also keeps showAndFocusPane's invariant intact
-	// through the focus assignment below, whatever focusOnArrival turns out to be.
-	m.paneHidden = false
-	// From the MESSAGE, never a
-	// standalone Model flag, and only on this install path — which is what lets the
-	// four exits above need no cleanup (see attachSelected). This statement is also
-	// the earliest point the focus can be honoured: one line up, m.pane was still the
-	// session being switched away from. False keeps every entrance nobody asked for —
-	// preview, post-create auto-open, startup pane — arriving with the keyboard on
-	// the dashboard.
-	m.paneFocused = focusOnArrival
+	m.paneLost = lostPane{}
+	// From the MESSAGE, never a standalone Model flag, and only on this
+	// install path — which is what lets the four exits above need no cleanup.
+	// This is also the earliest point a focus can be honoured: one line up,
+	// m.pane was still the session being switched away from.
+	switch {
+	case honourFocus:
+		// The user lands IN the session: a connect (key or click) whose
+		// request still stands (see honourFocus).
+		m.showAndFocusPane()
+	case focusOnArrival:
+		// A connect the user has since switched to the overview or the list
+		// for: the pane fills in, and focus and view stay exactly as the user
+		// left them.
+	default:
+		// An arriving pane nobody focused — preview, post-create auto-open,
+		// startup pane — lands with the keyboard on the list and leaves the
+		// view alone. `view` is the user's ctrl+t choice and nothing passive
+		// may rewrite it: a pane arriving under the overview installs behind
+		// it, and ctrl+t reveals it. Writing view=agent here is how a cursor
+		// move once yanked a chosen overview back to the agent.
+		m.focus = focusList
+	}
 	if previous != nil {
 		// The swap: detach the outgoing session (it keeps running — see
 		// hostpane.go's hostChild.Close) now that its replacement is connected
@@ -2447,13 +2583,20 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	// moved. It gets focusPane's own wording instead. This rides on the message
 	// rather than on focusOnArrival, which cannot stand in for it: startup and
 	// click paths intentionally carry different wording policies.
+	//
+	// The click wording is gated on honourFocus: a click whose connect the
+	// user walked away from (back to the list, or to the overview) installs
+	// the pane unfocused, and "input goes to X" would then be false. That
+	// click falls through to "switched to" or "opened", which are true.
 	if !passivePreview {
 		switch {
-		case msg.focusRequest:
+		case msg.focusRequest && honourFocus:
 			m.notify(notifyInfo, focusRequestHonoredStatus(msg.name))
 		case previous != nil:
 			m.notify(notifyInfo, "switched to "+msg.name+" — "+previousName+
-				" still running in the background · ctrl+t to come back")
+				" still running in the background")
+		case honourFocus:
+			m.notify(notifyInfo, focusRequestHonoredStatus(msg.name))
 		default:
 			m.notify(notifyInfo, "opened "+msg.name+" · "+m.keys.Focus.Help().Key+" to focus, ctrl+\\ to return")
 		}
@@ -2462,21 +2605,97 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	return m, paneEventCmd(msg.pane)
 }
 
+// handleMouse applies the focus rules to a terminal mouse event, then either
+// forwards it (routeMouse) or turns it into a focus change. The mouse follows
+// the keyboard's focus, as in any two-pane application:
+//
+//   - focus=list: nothing reaches the right side. Wheel, motion and release
+//     events over it are dropped (they neither scroll the pane nor the
+//     overview). A left click inside the right region is the one exception: it
+//     is the pointer form of enter/f, so it goes through focusRightSide — the
+//     same entrance, including the connect in agent view — and is consumed
+//     rather than also forwarded, so the click that moved focus is not
+//     delivered to the session as well.
+//   - focus=right: events over the right side are forwarded as before. A click
+//     in the list region moves focus back to the list and is otherwise a list
+//     click; the list has no mouse behaviour of its own, so that is the whole
+//     effect. Non-click events over the list are dropped.
+//
+// The drop-early shape is deliberate: only a click needs the frame layout
+// (mouseFrameLayout renders the header and footer), so wheel and motion — one
+// event per cell the pointer crosses — never pay for it here.
+//
+// The same input-mode guard as routeMouse applies first, widened by inputDetail
+// so a click can leave a focused overview. Mouse capture released (ctrl+g)
+// silences every case, focus changes included: the user handed the mouse back
+// to the terminal.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.quitting || !m.ready || m.width == 0 || m.height == 0 || !m.mouseCapture {
+		return m, nil
+	}
+	switch activeInputMode(m.modeSnapshot()) {
+	case inputNormal, inputPane, inputDetail:
+	default:
+		return m, nil
+	}
+
+	click, isClick := msg.(tea.MouseClickMsg)
+	leftClick := isClick && click.Mouse().Button == tea.MouseLeft
+
+	if m.focus == focusList {
+		if !leftClick {
+			return m, nil
+		}
+		x, y := click.Mouse().X, click.Mouse().Y
+		if _, inRight := m.mouseRegion(x, y); inRight {
+			return m.focusRightSide()
+		}
+		return m, nil
+	}
+
+	// focus=right.
+	if isClick {
+		x, y := click.Mouse().X, click.Mouse().Y
+		if inList, _ := m.mouseRegion(x, y); inList {
+			// Focus only: the list has no click-to-select-row on main, so
+			// there is no list click to act as.
+			m.focus = focusList
+			return m, nil
+		}
+	}
+	m.routeMouse(msg)
+	return m, nil
+}
+
+// mouseRegion classifies a screen cell against the body's two columns: the
+// session list (the sidebar's rendered width) and the right side (everything
+// right of it), both bounded vertically by the body rows between the header
+// and the footer. A cell in the header or footer is in neither.
+func (m Model) mouseRegion(x, y int) (inList, inRight bool) {
+	listOuter, _, bodyHeight, headerRows, _ := m.mouseFrameLayout()
+	if y < headerRows || y >= headerRows+bodyHeight || x < 0 {
+		return false, false
+	}
+	if x < sidebarRenderedWidth(listOuter) {
+		return true, false
+	}
+	return false, x < m.width
+}
+
 // routeMouse forwards a terminal mouse event to the hosted session when it
 // landed inside the pane's content area, and drops it otherwise. It mutates no
 // Model state and returns no Cmd: like forwardKeyToPane, delivery is a
-// synchronous in-memory call on the pane handle, so Update invokes it directly.
+// synchronous in-memory call on the pane handle, so handleMouse invokes it
+// directly.
 //
-// Routing deliberately ignores m.paneFocused. Scroll-follows-mouse is the
-// intended behaviour: the pointer is already the pointer at the thing it is
-// over, and requiring `f` first before a wheel notch reached the session would
-// make the common case (glance at the pane, scroll it) a two-step gesture. Only
-// the KEYBOARD is modal here.
+// handleMouse only calls it with focus=right: the mouse follows the keyboard,
+// so a list-focused dashboard never delivers anything to the session. (The
+// forwarding itself does not consult m.focus; the gate lives in one place,
+// handleMouse.)
 //
 // An event outside the content area is DROPPED, never clamped and never
-// repurposed. The sidebar and the list have no mouse behaviour at all, so there
-// is nothing else for an out-of-region event to mean; clamping it would deliver
-// a real click at a cell the user never touched.
+// repurposed. Clamping would deliver a real click at a cell the user never
+// touched.
 func (m Model) routeMouse(msg tea.MouseMsg) {
 	// The handle can already be nil while an event is in flight: paneExitedMsg
 	// clears it, and a queued mouse event decoded before that message is
@@ -2646,16 +2865,15 @@ func (m Model) routeConditions() routeConds {
 	return routeConds{
 		paneOpen:     m.pane != nil,
 		listFiltered: m.list.FilterState() != list.Unfiltered,
-		detailShown:  !m.shouldRenderPane(),
 	}
 }
 
 // switchDetailTab is the three tab actions: next and previous wrap around the
 // visible tabs, jump lands on the tab at the pressed digit's position among
 // them (so with git-spice absent, `3` is Notes, not a hidden Stack). A digit
-// past the last tab is ignored. The routing guard (needsDetail) already keeps
-// these off a screen showing a session pane; the shouldRenderPane check here
-// is belt-and-braces for a caller that bypasses routing.
+// past the last tab is ignored. Only detail mode routes these keys, and it is
+// never active over a drawn session pane; the shouldRenderPane check here is
+// belt-and-braces for a caller that bypasses routing.
 //
 // A switch snaps the viewport to the top before syncing: the offset belonged
 // to the tab that was showing, and a Waves offset applied to a three-line
@@ -2733,6 +2951,15 @@ func (m Model) dispatchKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if mode == inputNormal && key.Matches(k, helpToggleKey) {
 		return m.toggleFullHelp()
 	}
+	// The right side focused on the agent placeholder (connecting, restarting,
+	// lost). mode.go derives it as inputDetail, but the overview is not what is
+	// drawn there, so its scroll, tab and quit rules must not apply: the
+	// placeholder stands in for the agent, and only its own keys act
+	// (placeholderKey). A row with no live agent is NOT the placeholder — it
+	// draws the overview, so detail mode's own rules answer there.
+	if mode == inputDetail && m.agentPlaceholderDrawn() {
+		return m.placeholderKey(k)
+	}
 
 	reg := m.modes()
 	switch dec := reg.route(mode, m.routeConditions(), k); dec.kind {
@@ -2767,7 +2994,7 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionMouseToggle:
 		return m.toggleMouseCapture()
 	case actionPaneToggle:
-		return m.togglePaneSummary()
+		return m.toggleView()
 	case actionPaneUnfocus:
 		return m.releasePaneFocus()
 	case actionDetailUnfocus:
@@ -2829,24 +3056,13 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionResizeRightBig:
 		return m.nudgeSidebar(resizeBigStep)
 
-	// Enter/f is ONE rule on ONE action; which surface it focuses is decided
-	// here, not in the rule table and not in focusPane. A second rule would
-	// double the palette row and break
-	// TestEveryNormalRuleIsRunnableFromThePalette. Keeping detailDrawn here also
-	// prevents lifecycle helpers from quietly acquiring a surface-choice branch:
-	// the rule says who owns the key, this handler says which drawn surface it
-	// focuses, and focusPane remains pane-only.
+	// Enter/f is ONE rule on ONE action: focus the right side. A second rule
+	// would double the palette row and break
+	// TestEveryNormalRuleIsRunnableFromThePalette. What "the right side" means
+	// — the overview, the installed agent, or a connect — is focusRightSide's
+	// to decide from the view, never the rule table's.
 	case actionFocusPane:
-		if m.detailDrawn() {
-			return m.focusDetail()
-		}
-		if m.shouldRenderPane() {
-			return m.focusPane()
-		}
-		// A zero-project/zero-selection frame has no main-region surface to
-		// focus. Preserve its current status (including an empty one) rather
-		// than manufacturing pane guidance for a pane that is not drawn.
-		return m, nil
+		return m.focusRightSide()
 	case actionNewSession:
 		return m.openNewForm()
 	case actionScratch:
@@ -2859,8 +3075,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openSwitcher()
 	case actionClean:
 		return m.cleanRequested()
-	case actionRestartWedged:
-		return m.restartWedgedSelected()
+	case actionRestart:
+		return m.restartSelected()
 	case actionEditLabel:
 		return m.openLabelForm()
 
@@ -2983,8 +3199,9 @@ func (m Model) sessionFilterKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // inline rather than in a Cmd — same treatment as the synchronous pane.Close
 // on quit.
 //
-// This runs while m.paneHidden is true: the emulator must keep tracking
-// geometry or toggling back exposes a grid with stale wrap points.
+// This runs while the overview is showing over a live pane: the emulator must
+// keep tracking geometry or switching back exposes a grid with stale wrap
+// points.
 func (m *Model) relayout() {
 	m.sizeFormComponents()
 	m.sizeSwitcher()
@@ -3027,8 +3244,8 @@ func (m Model) resizeHints() (commit, cancel string) {
 
 // enterResize is ctrl+w from normal or detail mode. It records the effective
 // split (clampSidebarPct, so 38 when nothing was ever set) for esc to restore
-// and leaves detailFocused alone, so a resize begun from a focused detail
-// pane hands the keyboard back to it on exit. relayout runs because the
+// and leaves the focus alone, so a resize begun from a focused detail pane
+// hands the keyboard back to it on exit. relayout runs because the
 // footer is now resize mode's, and the frame must agree with whatever height
 // that footer takes.
 func (m Model) enterResize() (tea.Model, tea.Cmd) {
@@ -3153,8 +3370,8 @@ func (m *Model) resetDetailScroll() {
 // focused pane's pgup/pgdn and home/end. It does nothing while the pane is
 // the surface on screen (shouldRenderPane): the detail view is not drawn
 // then, so moving its offset would be state changing on an invisible
-// surface, and the next ctrl+t back to the summary should show it where it
-// was left. syncDetailViewport runs first every time — see its doc for why
+// surface, and the next switch to the overview should show it where it was
+// left. syncDetailViewport runs first every time — see its doc for why
 // the offset otherwise clamps to 0, or stops short of the last rows.
 func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 	if m.shouldRenderPane() {
@@ -3186,36 +3403,38 @@ func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 // dashboard and the session is left completely alone — still attached, still
 // rendering in the pane.
 func (m Model) releasePaneFocus() (tea.Model, tea.Cmd) {
-	m.paneFocused = false
+	m.focus = focusList
 	m.notify(notifyInfo, "input goes to the dashboard — "+m.paneName+" still running in the pane · "+m.keys.Focus.Help().Key+" to focus")
 	return m, nil
 }
 
-// focusDetail routes the keyboard to the detail pane's viewport. It is the
-// other half of the `f` binding (applyKeyAction's actionFocusPane case), taken
-// whenever the detail pane rather than a session pane is the drawn surface —
-// including with a pane alive but hidden by ctrl+t, or with the cursor moved
-// off the paned row.
+// focusDetail routes the keyboard to the detail pane's viewport. It is
+// focusRightSide's overview-view branch: enter/f from the list while the right
+// side shows the overview.
 //
-// The caller has already checked detailDrawn, and it is checked again here for
-// the reason scrollDetail re-checks shouldRenderPane: this must not be
-// enterable from a path that bypasses routing, or the keyboard lands on a
-// surface nobody can see.
+// It moves focus only; the view is left as it is — the view is ctrl+t's, and
+// only from the right side.
+//
+// detailDrawn is checked here for the reason scrollDetail re-checks
+// shouldRenderPane: this must not be enterable from a path that bypasses
+// routing, or the keyboard lands on a surface nobody can see.
 func (m Model) focusDetail() (tea.Model, tea.Cmd) {
 	if !m.detailDrawn() {
 		return m, nil
 	}
-	m.detailFocused = true
-	// Detail focus is an explicit surface choice. It permanently invalidates
-	// every pending/dispatched preview, including one Ctrl-T previously claimed:
-	// clearing the claim makes the generation mismatch reject the arrival even
-	// if detail focus is released before that result returns.
+	m.focus = focusRight
+	// Focusing the overview invalidates every UNCLAIMED pending/dispatched
+	// preview: a passive preview landing now would flip nothing the user is
+	// reading (applyPaneAttached drops it while the right side owns input),
+	// but bumping here keeps a timer armed before the keypress from dialing at
+	// all. A preview an earlier enter CLAIMED is deliberately left alone: that
+	// dial is the user's own connect, not a preview any more, and the
+	// generation is exactly what a claim is exempt from (see
+	// applyPaneAttached's stalePreview). Revoking it here would make enter,
+	// ctrl+t, ctrl+\, enter lose the connect the first enter asked for.
 	m.previewGen++
-	if m.attachInFlight.preview {
-		m.attachInFlight.claimedPreview = false
-	}
 	// The way out is read from mode.go's inputDetail release binding, the same
-	// findBinding lookup detailFocusedHint (views.go) uses, so this toast and
+	// findBinding lookup detailReleaseHint (views.go) uses, so this toast and
 	// the pane's own edge hint cannot name two different keys.
 	reg := m.modes()
 	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc", "ctrl+\\"})
@@ -3227,18 +3446,21 @@ func (m Model) focusDetail() (tea.Model, tea.Cmd) {
 // goes back to the session list and the viewport keeps its offset, so a
 // release and a re-focus resume where the reading left off.
 func (m Model) releaseDetailFocus() (tea.Model, tea.Cmd) {
-	m.detailFocused = false
+	m.focus = focusList
 	m.notify(notifyInfo, "input goes to the session list · "+m.keys.Focus.Help().Key+" to scroll the detail view again")
 	return m, nil
 }
 
 // cleanRequested is the `c` binding. Clean can remove the worktree out from
 // under a running session, so it is blocked while a pane is open on one
-// (visible or hidden) and the status names the way out.
+// (visible or behind the overview) and the status names the way out. `c` is
+// a list key, and from the list ctrl+\ closes an installed pane whichever
+// view is showing (normal mode's actionPaneClose), so the way out is the one
+// chord in both cases.
 func (m Model) cleanRequested() (tea.Model, tea.Cmd) {
 	if m.pane != nil {
-		if m.paneHidden {
-			m.notify(notifyWarn, "close the pane first — it's hidden behind the summary · ctrl+t, then ctrl+\\")
+		if m.view == viewOverview {
+			m.notify(notifyWarn, "close the pane first — it's behind the overview · ctrl+\\")
 		} else {
 			m.notify(notifyWarn, "close the pane first · ctrl+\\")
 		}
@@ -3267,13 +3489,7 @@ func (m Model) cleanRequested() (tea.Model, tea.Cmd) {
 // reset, warns once per process rather than once per clean), and a guard that
 // silently stops guarding is worse than an honest immediate quit. See issues.md.
 func (m Model) requestQuit() (tea.Model, tea.Cmd) {
-	if m.pane != nil {
-		_ = m.pane.Close()
-		m.pane = nil
-		m.paneName = ""
-		m.paneFocused = false
-		m.clearPaneHiddenState()
-	}
+	m.forgetPane()
 	// Closing the fsnotify watcher releases its kqueue/inotify descriptor and
 	// ends the blocked subscription Cmd by closing its Events channel. Bounded and
 	// synchronous, so it runs inline here alongside the pane close rather than in a
@@ -3749,9 +3965,9 @@ func (m Model) applyScratchDirs(msg scratchDirsListedMsg) (tea.Model, tea.Cmd) {
 // openSwitcher opens the project-switcher overlay (the `p` keybinding).
 //
 // It is allowed while a pane is open and deliberately leaves it ALONE: the pane
-// keeps running and stays connected, exactly as ctrl+t's hide does. Selecting a
-// different project is what detaches it (switchProject), so the cost of a glance
-// at the project list is never a dropped connection.
+// keeps running and stays connected, exactly as it does behind the overview.
+// Selecting a different project is what detaches it (switchProject), so the
+// cost of a glance at the project list is never a dropped connection.
 //
 // The component is rebuilt on every open rather than kept warm, which is what
 // makes the rows current: it holds a snapshot of the data it was constructed
@@ -4050,26 +4266,78 @@ func (m Model) dismissSpawnError() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// attachSelected is ctrl+t's no-drawn-agent lifecycle helper. It opens the
-// selected running session, or restarts a stopped host and then opens it. The
-// arriving surface is deliberately unfocused: ctrl+t chooses what is shown;
-// Enter/f is the separate current-surface focus gesture.
+// focusRightSide is enter/f from the list: the one way the keyboard moves to
+// the right side. What it lands on is decided by the view alone, never by a
+// guess about which surface happens to be drawn:
 //
-// The ONLY thing it branches on is HostRunning — is there a host to talk to:
-//   - running: open the pane straight away.
-//   - stopped: restart the host first, then open (see restartHostCmd; Update
-//     chains the pane open off hostRestartedMsg).
+//   - overview view: focus the overview (focusDetail).
+//   - agent view, the selected row's pane installed: focus it (focusPane).
+//   - agent view, a row with no live agent (stopped, host gone, pending,
+//     fault, cleaning, finished): the overview is what the right side draws
+//     for it (agentPlaceholderDrawn), so focus that overview. Enter NEVER
+//     restarts a host — `r` is the restart key (restartSelected) — because
+//     "look at this session" must not spawn a process as a side effect.
+//   - agent view, a running row with no pane: connect the selected session
+//     and focus the right side now, so the pane lands focused
+//     (connectSelected). This is what retires the old 300ms race — enter no
+//     longer focuses "whatever is drawn" while a preview is still dialing; it
+//     claims that dial or opens its own.
+//
+// With no active project there is no right side to focus, and the current
+// status (including an empty one) is preserved rather than overwritten with
+// guidance for a surface that is not drawn.
+func (m Model) focusRightSide() (tea.Model, tea.Cmd) {
+	if !m.hasActiveProject() {
+		return m, nil
+	}
+	if m.view == viewOverview {
+		return m.focusDetail()
+	}
+	if m.paneForSelection() {
+		return m.focusPane()
+	}
+	if s, ok := m.selected(); ok && !m.rowHasAgent(s) {
+		return m.focusDetail()
+	}
+	return m.connectSelected()
+}
+
+// connectSelected opens the selected session's agent and focuses the right
+// side for it. It is the agent-view half of both right-side entrances: enter/f
+// from the list (focusRightSide) and ctrl+t from the overview (toggleView). Its
+// dials go through openPaneFor only, so the clean gate, the preview
+// invalidation and the project stamp all apply, and there is no second dial
+// path.
+//
+// It NEVER restarts a host. A row with no live agent (rowHasAgent false) is
+// refused here, at the entrance, rather than trusted to every caller's guard:
+// "look at this session" must not spawn a process, and `r` (restartSelected)
+// is the one restart key. A restart of ours already in flight counts as an
+// agent, so connect joins it instead of refusing.
 //
 // Status validity deliberately does NOT gate this. A host is reached via
 // host.json, which is written and read independently of status.json, so a
 // STALE session with a live host is still perfectly viewable — and looking at
 // it is often exactly how a user finds out why its status went stale.
 //
+// Focus moves to the right side at the keypress, not on arrival, and only
+// when a connect is actually under way. The keypress is the user's choice of
+// surface; waiting for the arrival to move the focus is what let a stray key
+// typed during the dial land on a list binding. Every dial still carries
+// focusOnArrival so applyPaneAttached knows the request was the user's: the
+// pane lands focused, unless the user switched to the overview while it dialed
+// (then it installs behind the overview), and a failed connect hands the
+// keyboard back to the list, where enter retries.
+//
+// The refusals — no selection, a pending placeholder, a worktree fault, a
+// clean in flight — leave the focus where it was: there is nothing on the
+// right that could receive the keyboard, so moving it would strand it.
+//
 // The opposite error is corrected after the fact rather than pre-checked here:
 // HostRunning is advisory (a recycled PID can fake it), so a session that
 // claims to be running but is not gets fixed from the failed dial — see
 // applyPaneAttached.
-func (m Model) attachSelected() (tea.Model, tea.Cmd) {
+func (m Model) connectSelected() (tea.Model, tea.Cmd) {
 	s, ok := m.selected()
 	if !ok {
 		return m, nil
@@ -4096,50 +4364,139 @@ func (m Model) attachSelected() (tea.Model, tea.Cmd) {
 		m.notify(notifyWarn, "can't open "+s.Name+" — it's being cleaned")
 		return m, nil
 	}
-	// togglePaneSummary normally handles this before calling us. Keep this guard
-	// for non-key callers: an installed pane never needs a second connection.
+	// Both callers handle this before calling us. Keep the guard for any
+	// future caller: an installed pane never needs a second connection.
 	if m.pane != nil && s.Name == m.paneName {
+		m.showAndFocusPane()
 		return m, nil
 	}
+	if !m.rowHasAgent(s) {
+		m.notify(notifyInfo, s.Name+" is stopped · "+wedgeRecoveryKey+" to restart")
+		return m, nil
+	}
+	return m, m.connect(paneOpenRequest{
+		name:     s.Name,
+		worktree: s.WorktreePath,
+		scratch:  s.Scratch,
+	})
+}
+
+// connect is the one way the right side is connected to a session: enter/f
+// from the list, ctrl+t into the agent view, and a click-to-focus request all
+// land here, so all three move the focus right at request time and agree on
+// what an outstanding dial or restart means. It selects the agent view, and
+// dials only through openPaneFor. It never starts a restart: callers refuse a
+// row with no live agent first, and a restart already in flight is joined.
+func (m *Model) connect(req paneOpenRequest) tea.Cmd {
+	req.focusOnArrival = true
+	m.view = viewAgent
 	// A dial for this session is ALREADY outstanding — almost always a preview
-	// whose settle timer fired just before the keypress. Dialing again would connect
-	// a second client, and the host answers that by sending Stolen to the first, so
-	// the pane this keypress is meant to focus would be torn down as it arrived.
-	// Claim that dial instead and let the arrival already on its way install the
-	// pane (see inFlightOpen and applyPaneAttached). Bumping previewGen makes
-	// every other pending/dispatched preview stale; claimedPreview is the narrow
-	// exception for this exact result.
-	if m.attachInFlight.name == s.Name {
+	// whose settle timer fired just before the keypress. Dialing again would
+	// connect a second client, and the host answers that by sending Stolen to
+	// the first, so the pane this keypress is meant to focus would be torn down
+	// as it arrived. Claim that dial instead and let the arrival already on its
+	// way install the pane focused (see inFlightOpen and applyPaneAttached).
+	// Bumping previewGen makes every other pending/dispatched preview stale;
+	// claimedPreview is the narrow exception for this exact result, and it
+	// survives any later bump — that is what a claim means.
+	if m.attachInFlight.name == req.name {
 		if m.attachInFlight.preview {
 			m.previewGen++
 			m.attachInFlight.claimedPreview = true
 			m.previewOnNextLoad = false
 		}
-		m.notify(notifyInfo, "opening "+s.Name+"…")
-		return m, nil
+		m.attachInFlight.focusOnArrival = true
+		m.focus = focusRight
+		m.notify(notifyInfo, "opening "+req.name+"…")
+		return nil
 	}
-	// Ctrl+t on a DIFFERENT session switches the pane to it. The currently-open
-	// pane is deliberately left running until the new connection succeeds (see
-	// applyPaneAttached, which performs the swap): closing it first would mean a
-	// failed dial costs the user the session they were already watching.
-	if s.HostRunning {
-		if m.pane != nil {
-			m.notify(notifyInfo, "switching to "+s.Name+"…")
-		}
-		return m, m.openPaneFor(paneOpenRequest{
-			name:     s.Name,
-			worktree: s.WorktreePath,
-		})
+	if m.restartInFlight.name == req.name && m.restartInFlight.gen == m.projectGen {
+		m.restartInFlight.focusOnArrival = true
+		m.focus = focusRight
+		m.notify(notifyInfo, "restarting "+req.name+"…")
+		return nil
 	}
-	// Visible for the duration of the spawn: the restart runs in a Cmd, so the
-	// dashboard keeps ticking and redrawing while it happens.
-	m.notify(notifyInfo, "restarting "+s.Name+"…")
+	// A pane for a DIFFERENT session is installed. It is deliberately left
+	// running until the new connection succeeds (see applyPaneAttached, which
+	// performs the swap): closing it first would mean a failed dial costs the
+	// user the session they were already watching.
+	if m.pane != nil {
+		m.notify(notifyInfo, "switching to "+req.name+"…")
+	} else {
+		m.notify(notifyInfo, "opening "+req.name+"…")
+	}
+	cmd := m.openPaneFor(req)
+	if cmd != nil {
+		m.focus = focusRight
+	}
+	return cmd
+}
+
+// startRestart dispatches restartHostCmd and records it in restartInFlight.
+// Every restart dispatch goes through here so the record cannot miss one.
+func (m *Model) startRestart(req paneOpenRequest) tea.Cmd {
 	m.noteOtherOpStarted()
-	return m, m.restartHostCmd(paneOpenRequest{
-		name:     s.Name,
-		worktree: s.WorktreePath,
-		scratch:  s.Scratch,
-	})
+	m.restartInFlight = inFlightRestart{name: req.name, gen: m.projectGen, focusOnArrival: req.focusOnArrival}
+	return m.restartHostCmd(req)
+}
+
+// placeholderKey answers a key while the agent placeholder owns the keyboard:
+// enter/f connects (or reconnects) the selected row through connectSelected,
+// ctrl+t switches to the overview, ctrl+\ returns to the list, `r` is the
+// restart key as everywhere outside a live agent (restartSelected), and
+// ctrl+g keeps toggling the mouse as it does over a live agent. Every other
+// key is swallowed, so nothing typed at a lost or still-connecting agent
+// reaches a list binding.
+//
+// It matches the keyMap's own bindings (and mode.go's unfocusPaneKey) rather
+// than declaring placeholder copies: the placeholder stands in for the
+// agent's surface, and a second declaration of a chord would let its key or
+// help text drift from the one renderHelp and the pane footer show.
+func (m Model) placeholderKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(k, m.keys.Focus):
+		return m.connectSelected()
+	case key.Matches(k, m.keys.Restart):
+		return m.restartSelected()
+	case key.Matches(k, m.keys.Toggle):
+		return m.toggleView()
+	case key.Matches(k, unfocusPaneKey):
+		m.focus = focusList
+		m.notify(notifyInfo, "input goes to the session list · "+m.keys.Focus.Help().Key+" to come back")
+		return m, nil
+	case key.Matches(k, m.keys.Mouse):
+		return m.toggleMouseCapture()
+	}
+	return m, nil
+}
+
+// lostPaneMessage is the placeholder line for a pane that ended while its
+// session may still be running, and false for a session that ended: that row
+// reads as stopped and needs no reconnect offer.
+func lostPaneMessage(name string, msg paneExitedMsg) (string, bool) {
+	switch {
+	case msg.err != nil, msg.reason == host.DetachDropped:
+		return "disconnected from " + name, true
+	case msg.reason == host.DetachStolen:
+		return "another client took over " + name, true
+	}
+	return "", false
+}
+
+// handBackUnansweredFocus returns the keyboard to the list when a connect the
+// user focused (connectSelected, or `r` from the right side) ends without a
+// pane for the selected row: the dial failed, the restart failed, or a clean
+// got there first. It acts only while the agent placeholder is what the
+// focused right side shows — a placeholder with nothing to connect has
+// nothing that can act on a key, and the retry gesture is a list key. The
+// guard keeps it from undoing a choice the user made since the keypress: if
+// they already went back to the list, switched to the overview, or the row
+// now draws its overview (a stopped row whose restart failed — the overview
+// is still worth reading, and `r` retries from there), nothing changes.
+func (m *Model) handBackUnansweredFocus() {
+	if m.focus == focusRight && m.agentPlaceholderDrawn() {
+		m.focus = focusList
+	}
 }
 
 // closePane detaches from the session in the pane and takes it off screen. It is
@@ -4155,46 +4512,89 @@ func (m Model) closePane() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	closed := m.paneName
-	_ = m.pane.Close()
-	m.pane = nil
-	m.paneName = ""
-	m.paneFocused = false
-	m.notify(notifyInfo, "closed the pane — "+closed+" still running in the background · ctrl+t to reopen the agent")
+	m.forgetPane()
+	m.notify(notifyInfo, "closed the pane — "+closed+" still running in the background · "+m.keys.Focus.Help().Key+" to reopen the agent")
 	return m, nil
 }
 
-func (m Model) togglePaneSummary() (tea.Model, tea.Cmd) {
+// forgetPane is the one teardown for an installed pane: close (detach) it,
+// drop the handle, and hand the keyboard back to the list if the pane was
+// what held it. The focus rule is the reason this is a helper rather than
+// three lines at each site: a pane that owned the keyboard going away must
+// not leave focus on the right with nothing drawn to receive it, while a
+// focused OVERVIEW (right focus with the pane behind it, or for another row)
+// keeps the keyboard exactly as before — the surface the user was reading is
+// still there. The view is left alone; it is a dashboard-wide preference,
+// not state about this pane.
+//
+// It is a no-op with no pane installed, so callers need no guard.
+func (m *Model) forgetPane() {
 	if m.pane == nil {
-		return m.attachSelected()
+		return
 	}
-	if m.paneHidden {
-		// Hidden is state about the installed pane, not about whatever row the
-		// cursor later selects. Reveal (and restore focus) only while that same
-		// session is selected; otherwise Ctrl-T targets the selected row through
-		// the ordinary attach/restart path and leaves the old pane hidden until
-		// its replacement successfully arrives.
-		if s, ok := m.selected(); ok && s.Name == m.paneName {
-			m.paneHidden = false
-			m.paneFocused = m.paneFocusedBeforeHide
-			if m.paneFocused {
-				m.notify(notifyInfo, "input goes to "+m.paneName+" · ctrl+\\ to return")
-			} else {
-				m.notify(notifyInfo, "pane revealed — "+m.paneName+" still running · "+m.keys.Focus.Help().Key+" to focus")
-			}
-			return m, nil
+	if m.paneOwnsKeyboard() {
+		m.focus = focusList
+	}
+	_ = m.pane.Close()
+	m.pane = nil
+	m.paneName = ""
+}
+
+// toggleView is ctrl+t. It is reachable only with the right side focused
+// (inputPane and inputDetail declare it; inputNormal does not), and it does one
+// thing: flip the right side between the agent and the overview. The focus
+// never moves — the user stays on the right, now looking at the other view.
+//
+// Switching TO the agent view connects the selected session when it has no
+// pane, under the same rules enter uses from the list (connectSelected). On a
+// row with no live agent (stopped, pending, faulted, cleaning) ctrl+t is a
+// no-op in both directions: that row draws its overview whatever the view.
+//
+// The old ctrl+t carried four meanings — attach/restart from the list, hide,
+// reveal-with-focus-restore, and replace a pane belonging to another row —
+// and every one of them is either gone or folded into this flip.
+func (m Model) toggleView() (tea.Model, tea.Cmd) {
+	// A row with no live agent draws its overview in either view, so a flip
+	// would change nothing on screen and only rewrite the sticky preference
+	// the next running row is shown with. It is inert instead.
+	if s, ok := m.selected(); ok && !m.paneForSelection() && !m.rowHasAgent(s) {
+		return m, nil
+	}
+	if m.view == viewAgent {
+		m.view = viewOverview
+		if m.pane != nil {
+			m.notify(notifyInfo, m.paneName+" still running behind the overview · ctrl+t for the agent")
+		} else {
+			m.notify(notifyInfo, "overview · ctrl+t for the agent")
 		}
-		return m.attachSelected()
-	} else if m.shouldRenderPane() {
-		m.paneFocusedBeforeHide = m.paneFocused
-		m.paneFocused = false
-		m.paneHidden = true
-		m.notify(notifyInfo, m.paneName+" still running in the pane · ctrl+t to reveal")
-	} else {
-		// The existing pane belongs to a different row and the selected row's
-		// detail is what is drawn. Ctrl+t chooses that row's agent surface.
-		return m.attachSelected()
+		return m, nil
 	}
-	return m, nil
+	m.view = viewAgent
+	if m.paneForSelection() {
+		m.notify(notifyInfo, "input goes to "+m.paneName+" · ctrl+\\ to return")
+		return m, nil
+	}
+	return m.connectSelected()
+}
+
+// agentKeyHint is the key a toast names for "get to this row's agent" from
+// wherever the keyboard is now. From the list, the agent pane or the agent
+// placeholder that key is enter/f. With the OVERVIEW focused it is ctrl+t:
+// enter is not bound there (inputDetail), so a toast saying "enter/f to
+// reopen the agent" named a key that did nothing, which is what a restart
+// confirmed from the focused overview showed when the dashboard was walked
+// through against a built binary (docs/decisions.md, T0.6). ctrl+t from the
+// focused overview switches to the agent view and connects (toggleView).
+//
+// Only toasts that can be raised while the overview has the keyboard use it:
+// the outcome of a restart, the one-off restart refusal, and a connection
+// dropped behind the overview. The others are raised in a state that already
+// fixes the focus (a ctrl+\ back to the list, for instance).
+func (m Model) agentKeyHint() string {
+	if m.focus == focusRight && m.view == viewOverview {
+		return m.keys.Toggle.Help().Key
+	}
+	return m.keys.Focus.Help().Key
 }
 
 // focusPane routes keyboard input to the session in the pane. It is the
@@ -4211,46 +4611,26 @@ func (m Model) focusPane() (tea.Model, tea.Cmd) {
 }
 
 // showAndFocusPane is the single way input is ever handed to the pane: it
-// REVEALS the pane and focuses it together, so "focused implies visible" holds
-// by construction rather than by three call sites remembering to clear the flag.
-//
-// The pairing is not cosmetic. paneHidden means the summary is drawn over a live
-// pane (View's four-state switch), so a Model with paneFocused && paneHidden
-// routes every keystroke into a child the user cannot see — the bug the plan's
-// objective 3 forbids, and exactly the one applyFocusRequest shipped by setting
-// paneFocused alone. Any future path that focuses the pane must come through
-// here for the same reason. The one other place paneFocused can become true is
-// togglePaneSummary's reveal, which restores the saved focus in the same two
-// lines that clear paneHidden — the same pairing, spelled out rather than
-// delegated because only that path has a focus state to restore.
+// selects the agent view and focuses the right side together, so a focused
+// pane is always the drawn one. Focusing without the view flip would land the
+// keyboard on the overview when the pane sits behind it — a click-to-focus
+// that arrives while the user is reading the summary must put them IN the
+// session, not scrolling its diff.
 //
 // It deliberately does NOT set a status: each caller's wording differs (the
 // Enter/f key and a honored click say different things),
 // and folding them together here would flatten that.
 func (m *Model) showAndFocusPane() {
-	m.paneHidden = false
-	m.paneFocused = true
-}
-
-// clearPaneHiddenState is showAndFocusPane's counterpart for teardown: it resets
-// both toggle fields when the pane goes away, so the Model never carries
-// paneHidden == true with pane == nil. Every read of paneHidden is gated on
-// pane != nil today, which makes the leftover invisible — and that is precisely
-// why it is worth clearing: the next paneHidden-first check would inherit a flag
-// set by a session that ended, with nothing on screen to explain it.
-func (m *Model) clearPaneHiddenState() {
-	m.paneHidden = false
-	m.paneFocusedBeforeHide = false
+	m.view = viewAgent
+	m.focus = focusRight
 }
 
 // applyFocusRequest handles a pending click-to-focus request: open the named
 // session's pane and focus it, so the user's keystrokes reach the Claude session
 // instead of landing on the dashboard's list.
 //
-// It reuses the machinery ctrl+t and `--open` already use rather than
-// duplicating either — openPaneFor for a live host (which keeps the in-flight
-// clean gate), restartHostCmd for a stopped one, and focusPane's effect applied
-// when the pane arrives (see applyPaneAttached). The two things it adds are
+// It connects through connect, the entrance enter/f uses, so a click and a
+// keypress agree on focus, view, and outstanding dials. The two things it adds are
 // deciding WHICH session, from a name on disk, and then SELECTING that session
 // in the list — moving the cursor onto it and recording it as this project's
 // remembered row — so the dashboard behind the pane is showing the session the
@@ -4346,28 +4726,36 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	}
 
-	// focusOnArrival on BOTH branches, restart included. That is behavior
-	// preservation, not a reading of the words "focus request": the pre-preview
-	// code set a single pending-focus name above both branches, so a click on a
-	// STOPPED session focused once the restart landed, and
-	// TestFocusRequestRestartsAStoppedHost pins it. It is also the
-	// one caller for which attachSelected's "the restart branch does not set it"
-	// reasoning does not hold — a click names its session, so the request outlives
-	// the restart by design.
-	req := paneOpenRequest{
-		name:           target.name,
-		worktree:       target.worktree,
-		scratch:        target.scratch,
-		focusOnArrival: true,
-		focusRequest:   true,
+	// A stopped host is not restarted by a click, on enter's rule (see
+	// focusRightSide): the right side is focused in the agent view, which for
+	// a row with no live agent draws its overview, and `r` restarts it.
+	//
+	// previewGen is bumped because a click is the one selection change that
+	// skips schedulePreview (see above): a timer armed for the row the user
+	// last sat on is still live, and firing now it would install a pane for a
+	// row that is no longer selected.
+	//
+	// No connection is coming to replace a pane installed for another row, so
+	// it is detached here: left alone it stays connected but undrawn, holding
+	// its host's one client slot and blocking `c` on the row the click chose.
+	if !target.hostRunning && !m.restartingRow(target.name) {
+		m.previewGen++
+		m.dropPaneForOtherRows()
+		m.view = viewAgent
+		m.focus = focusRight
+		m.notify(notifyInfo, target.name+" is stopped · "+wedgeRecoveryKey+" to restart")
+		return m, tea.Batch(cmds...)
 	}
-	if !target.hostRunning {
-		m.notify(notifyInfo, "restarting "+target.name+"…")
-		m.noteOtherOpStarted()
-		return m, tea.Batch(append(cmds, m.restartHostCmd(req))...)
-	}
-	m.notify(notifyInfo, "opening "+target.name+"…")
-	return m, tea.Batch(append(cmds, m.openPaneFor(req))...)
+	// The same entrance enter uses (connect): the focus moves right and the
+	// view to the agent now, at request time, so keys typed while the dial is
+	// out land on the placeholder rather than on list bindings. focusRequest
+	// only picks the arrival's wording.
+	return m, tea.Batch(append(cmds, m.connect(paneOpenRequest{
+		name:         target.name,
+		worktree:     target.worktree,
+		scratch:      target.scratch,
+		focusRequest: true,
+	}))...)
 }
 
 // focusRequestHonoredStatus is the notification for a honored click. It is
@@ -4390,9 +4778,11 @@ func focusRequestHonoredStatus(name string) string {
 // race with a still-writing host.json) surfaces one error rather than retrying
 // on every subsequent refresh tick.
 //
-// A session whose host is not running yet is restarted first, exactly as ctrl+t
-// does: the handoff from `afk new` lands here microseconds after the host was
-// spawned, so "not running yet" is the common case, not an error.
+// A session whose host is not running yet is restarted first: the handoff
+// from `afk new` lands here microseconds after the host was spawned, so
+// "not running yet" is the common case, not an error. This is a surface-open
+// request, not a user's enter, so the "enter never restarts" rule does not
+// apply.
 func (m Model) maybeOpenInitialPane() (tea.Model, tea.Cmd) {
 	if m.initialSession == "" || m.initialPaneAttempted {
 		return m, nil
@@ -4421,12 +4811,29 @@ func (m Model) maybeOpenInitialPane() (tea.Model, tea.Cmd) {
 		m.notify(notifyWarn, "can't open "+s.Name+" — it's being cleaned")
 		return m, nil
 	}
+	// Move the cursor onto the named session before dialing it. The pane is
+	// drawn only for the selected row (paneForSelection), and the first load
+	// leaves the cursor on row 0, so without this a startup pane for any other
+	// row connects and is never shown: the right side draws row 0's overview,
+	// "opened X · enter/f to focus" focuses row 0 instead of X, and the
+	// connection holds X's one client slot behind it. Found by walking through
+	// `afk dash --open` against a built binary (docs/decisions.md, T0.6).
+	//
+	// It is the same three calls a click-to-focus makes, for the same reason
+	// (see applyFocusRequest): the selection, the viewport reset a selection
+	// change implies, and the memory, but NOT schedulePreview, which would arm
+	// a second dial for the session the open below is already dialing. No
+	// previewGen bump is needed here as it is there: New arms no startup
+	// preview when a startup pane is requested, so no timer is live yet.
+	if i, ok := m.sessionIndex(s.Name); ok {
+		m.selectSessionIndex(i)
+		m.resetDetailScroll()
+		m.rememberSelectedRow()
+	}
 	if !s.HostRunning {
 		m.notify(notifyInfo, "restarting "+s.Name+"…")
-		m.noteOtherOpStarted()
-		// Unfocused, like ctrl+t's restart: this is a surface-open request, not a
-		// focus gesture.
-		return m, m.restartHostCmd(paneOpenRequest{
+		// Unfocused: this is a surface-open request, not a focus gesture.
+		return m, m.startRestart(paneOpenRequest{
 			name:     s.Name,
 			worktree: s.WorktreePath,
 			scratch:  s.Scratch,
@@ -4471,6 +4878,7 @@ func (m *Model) schedulePreview() tea.Cmd {
 	// ahead of every key — so composing a body in this funnel would only cost
 	// a render nobody reads, on the hot path of every cursor move.
 	m.resetDetailScroll()
+	m.followSelection()
 
 	if !ok {
 		return nil
@@ -4508,8 +4916,16 @@ func (m *Model) schedulePreview() tea.Cmd {
 		m.rememberSelectedRow()
 	}
 
+	// The overview is drawn, so there is no agent pane to fill in: a dial now
+	// would hold the host's one client slot for a pane nobody can see. Like
+	// every refusal here it lands after the bump, so the previous row's timer
+	// dies too. applyPreviewTimer re-checks it at fire time.
+	if m.view == viewOverview {
+		return nil
+	}
+
 	// A placeholder has no worktree and no host yet — the same refusal
-	// attachSelected makes.
+	// connectSelected makes.
 	if s.Pending {
 		return nil
 	}
@@ -4524,7 +4940,7 @@ func (m *Model) schedulePreview() tea.Cmd {
 		return nil
 	}
 	// A worktree-side fault has no host to dial either — again the same
-	// refusal attachSelected makes, and not covered by the HostRunning check
+	// refusal connectSelected makes, and not covered by the HostRunning check
 	// below: that field is advisory, so a recycled PID would arm a timer for
 	// a row whose worktree may not even exist.
 	if isWorktreeFault(s.Kind) {
@@ -4558,6 +4974,31 @@ func (m *Model) schedulePreview() tea.Cmd {
 		return nil
 	}
 	return previewTimerCmd(m.previewGen, s.Name)
+}
+
+// followSelection makes the pane follow a list-focused selection change: a
+// pane that no longer belongs to the selected row is detached at once, so it
+// never holds its host's single client slot while undrawn, and a lost-pane
+// note for a row the cursor left is dropped. With the right side focused the
+// selection is pinned (rebuildListItems), so there is nothing to follow.
+func (m *Model) followSelection() {
+	if m.focus != focusList {
+		return
+	}
+	m.dropPaneForOtherRows()
+}
+
+// dropPaneForOtherRows is followSelection without its focus gate, for a
+// selection change that moves the focus itself (a click on a stopped row):
+// the pane is detached because nothing will ever draw it, whoever held the
+// keyboard before the move.
+func (m *Model) dropPaneForOtherRows() {
+	if m.pane != nil && !m.paneForSelection() {
+		m.forgetPane()
+	}
+	if s, ok := m.selected(); ok && s.Name != m.paneLost.name {
+		m.paneLost = lostPane{}
+	}
 }
 
 // rememberSelectedRow records the row the cursor is on as this project's
@@ -4621,19 +5062,26 @@ func (m *Model) rememberSelectedRow() {
 // Without this check that tick alone would open a pane onto a row the user never
 // selected.
 //
-// detailFocused is checked alongside paneFocused for the same reason: a
-// timer armed less than previewDelay before `f` focused the detail pane is
-// still live, and without this gate it would fire mid-read, open a pane and
-// replace the diff the user just brought the keyboard to. schedulePreview
-// only bumps previewGen on a cursor move, and focusing the detail pane is
-// not one. resizing is gated on the same reasoning: ctrl+w is not a cursor
-// move either, and a preview landing mid-resize would swap what the main
-// region shows while the user is sizing it.
+// Right focus gates it whichever surface holds the keyboard: a timer armed
+// less than previewDelay before `f` focused the detail pane is still live,
+// and without this gate it would fire mid-read, open a pane and replace the
+// diff the user just brought the keyboard to. schedulePreview only bumps
+// previewGen on a cursor move, and focusing the detail pane is not one.
+// resizing is gated on the same reasoning: ctrl+w is not a cursor move
+// either, and a preview landing mid-resize would swap what the main region
+// shows while the user is sizing it.
 func (m Model) applyPreviewTimer(msg previewTimerMsg) (tea.Model, tea.Cmd) {
 	if msg.gen != m.previewGen {
 		return m, nil
 	}
-	if m.modal != inputNormal || m.formOpen || m.paneFocused || m.detailFocused || m.resizing {
+	if m.modal != inputNormal || m.formOpen || m.focus == focusRight || m.resizing {
+		return m, nil
+	}
+	// The overview is drawn: a preview has nothing to fill in. Re-checked
+	// here, not only at arming, because a timer armed in the agent view can
+	// still be pending when the view changes, and this is the last gate
+	// before the dial.
+	if m.view == viewOverview {
 		return m, nil
 	}
 	// ANY outstanding dial, preview or explicit (unlike schedulePreview, which only
@@ -4702,7 +5150,7 @@ func (m *Model) markHostStopped(name string) {
 		// An IN-PLACE field edit still has to be published to the list, whose
 		// items carry their own copy of each Session: without this the row keeps
 		// drawing the live-host dot and — because selected() reads the item —
-		// the very next ctrl+t retries the connect this correction just proved
+		// the very next enter retries the connect this correction just proved
 		// impossible. Every mutation of m.sessions ends in a rebuild, this one
 		// included.
 		m.rebuildListItems(m.listSelection())
@@ -4716,8 +5164,8 @@ func (m *Model) markHostStopped(name string) {
 // This is what makes a correction stick long enough to be acted on. Discovery
 // re-derives HostRunning from host.json plus a signal-0 check on every tick, so
 // a stale host.json naming a recycled PID reports "running" again within
-// milliseconds. Without this, the "ctrl+t to restart" hint would be
-// contradicted by the next tick and ctrl+t would retry the same impossible
+// milliseconds. Without this, the "r to restart" hint would be
+// contradicted by the next tick and enter would retry the same impossible
 // connection forever instead of restarting.
 //
 // The correction is keyed on the exact PID that was disproved, so it lapses on
@@ -4766,7 +5214,7 @@ func (m Model) hasInFlightWork() bool {
 // started; see its case in Update, which is also the only place the loop
 // stops). It is called from exactly one place, tickMsg's case: every
 // dispatch site that ADDS an in-flight operation (submitNewForm,
-// confirmClean, attachSelected's restart branch, and the rest
+// confirmClean, startRestart (the `r` key), and the rest
 // hasInFlightWork reads) is also under a test that runs its returned Cmd
 // directly and type-asserts a specific message out of it — batching a second
 // Cmd in at THAT point would turn the assertion's target into a
@@ -4852,12 +5300,12 @@ func (m *Model) clearCleaning(id cleanID) {
 }
 
 // openPaneFor is the single gate in front of attachPaneCmd, so every entrance to
-// it consults the in-flight clean set: ctrl+t, the restart chain
-// (hostRestartedMsg), the post-create auto-open (spawnFinishedMsg), and the
-// startup pane (maybeOpenInitialPane). Guarding only the keypress left three
-// paths open — most sharply ctrl+t on a stopped session followed by `c`,`y`
-// while the restart Cmd is still in flight, which lands a live pane on the host
-// the clean is about to SIGKILL.
+// it consults the in-flight clean set: connect (enter, ctrl+t, a click), the
+// restart chain (hostRestartedMsg), the post-create auto-open
+// (spawnFinishedMsg), and the startup pane (maybeOpenInitialPane). Guarding
+// only the keypress left three paths open — most sharply `r` on a stopped
+// session followed by `c`,`y` while the restart Cmd is still in flight, which
+// lands a live pane on the host the clean is about to SIGKILL.
 //
 // Pane ARRIVAL is guarded separately, in applyPaneAttached: a pane dispatched
 // before the clean was confirmed is still in flight when this gate has already
@@ -4867,8 +5315,8 @@ func (m *Model) clearCleaning(id cleanID) {
 //
 // Being that single gate is also why the preview invalidation lives HERE rather
 // than at each call site: bumping previewGen once covers the restart chain
-// (hostRestartedMsg), the post-create auto-open (spawnFinishedMsg), ctrl+t, the
-// startup pane, and any entrance added later. Without it a preview armed one
+// (hostRestartedMsg), the post-create auto-open (spawnFinishedMsg), connect,
+// the startup pane, and any entrance added later. Without it a preview armed one
 // settle ago lands on top of an attach the user just asked for, opens a SECOND
 // connection to the same host, and the host sends Stolen to the first — closing
 // the very pane that was requested.
@@ -5362,6 +5810,71 @@ func (m Model) dispatchConfirmedClean(opts session.CleanOptions) (tea.Model, tea
 	return m, m.cleanSessionCmd(name, string(phase), scratch, kind, opts)
 }
 
+// restartSelected is `r`, the one restart key. It is live on the session list,
+// on a focused overview, and on the agent placeholder — everywhere except a
+// live agent pane, where `r` is typing and forwards to the child (inputPane
+// has no rule for it). What it does depends on the row:
+//
+//   - a stopped row (no host, not pending/fault/cleaning): restart the host
+//     straight away through startRestart → restartHostCmd → hostRestartedMsg
+//     → openPaneFor, the chain enter used to run. No confirmation: respawning
+//     a host that is not running destroys nothing.
+//   - a running row the dashboard shows as WEDGED: the existing confirm flow
+//     (restartWedgedSelected), because that restart kills a live process.
+//   - anything else: inert.
+//
+// From the right side the restart carries focusOnArrival, so the agent lands
+// focused (or behind the overview, when that is the view). From the list it
+// is selectionBound instead: the keyboard stays on the list, and the arriving
+// pane is dropped if the cursor has moved off the row by then.
+//
+// restartableStopped refuses a row whose restart is already in flight, whose
+// dial is outstanding, or whose pane is installed, so a second `r` — or an `r`
+// on a row discovery has not yet re-read as running — cannot spawn a second
+// host that would steal the first one's client.
+func (m Model) restartSelected() (tea.Model, tea.Cmd) {
+	s, ok := m.selected()
+	if !ok {
+		return m, nil
+	}
+	if !s.HostRunning && m.cleaningSessions[cleanIDFor(s)] {
+		// The clean stops this host for good; respawning it would put a live
+		// child in a worktree being deleted. Said rather than silent, because
+		// on a stopped row `r` is otherwise exactly the key that acts.
+		m.notify(notifyWarn, "can't restart "+s.Name+" — it's being cleaned")
+		return m, nil
+	}
+	if m.restartableStopped(s) {
+		right := m.focus == focusRight
+		m.notify(notifyInfo, "restarting "+s.Name+"…")
+		return m, m.startRestart(paneOpenRequest{
+			name:           s.Name,
+			worktree:       s.WorktreePath,
+			scratch:        s.Scratch,
+			focusOnArrival: right,
+			selectionBound: !right,
+		})
+	}
+	if !s.HostRunning {
+		return m, nil
+	}
+	return m.restartWedgedSelected()
+}
+
+// restartableStopped is "`r` would respawn this row's host": no host running,
+// a row that is a session (not pending, not a worktree fault, not being
+// cleaned), and nothing of ours already connecting to it — no restart in
+// flight, no dial outstanding, no pane installed.
+func (m Model) restartableStopped(s Session) bool {
+	if s.HostRunning || s.Pending || isWorktreeFault(s.Kind) || m.cleaningSessions[cleanIDFor(s)] {
+		return false
+	}
+	if m.restartingRow(s.Name) || m.attachInFlight.name == s.Name {
+		return false
+	}
+	return m.pane == nil || m.paneName != s.Name
+}
+
 // restartWedgedSelected implements the wedge-recovery keybinding (W6.T3):
 // gate entry on the row's OWN wedge verdict — showsWedged is the exact
 // predicate views.go's renderRow uses for the WEDGED badge, so this key can
@@ -5390,7 +5903,7 @@ func (m Model) restartWedgedSelected() (tea.Model, tea.Cmd) {
 	// above, this one explains itself: the WEDGED badge advertises `r` on this
 	// very row, so silence would read as a broken key.
 	if s.Scratch {
-		m.notify(notifyWarn, s.Name+" is a one-off session — restart can't resume it · ctrl+t to show the agent, c to clean")
+		m.notify(notifyWarn, s.Name+" is a one-off session — restart can't resume it · "+m.agentKeyHint()+" to show the agent, c to clean")
 		return m, nil
 	}
 	m.modal = inputConfirmRestart
@@ -5429,12 +5942,8 @@ func (m Model) confirmRestart() (tea.Model, tea.Cmd) {
 		m.notify(notifyWarn, name+" is no longer wedged — restart cancelled")
 		return m, nil
 	}
-	if m.pane != nil && m.paneName == name {
-		_ = m.pane.Close()
-		m.pane = nil
-		m.paneName = ""
-		m.paneFocused = false
-		m.clearPaneHiddenState()
+	if m.paneName == name {
+		m.forgetPane()
 	}
 	m.notify(notifyInfo, "requesting restart for "+name+"…")
 	m.noteOtherOpStarted()
@@ -5717,8 +6226,8 @@ func hasReading(s Session) bool {
 //
 // Awaiting-input is suppressed for the session SHOWING in the pane: every
 // conductor turn boundary flips awaiting_input, so the session the user is
-// looking straight at would toast continuously. A pane hidden behind the
-// ctrl+t summary is not being looked at, so its session notifies like any
+// looking straight at would toast continuously. A pane behind the overview
+// is not being looked at, so its session notifies like any
 // other.
 //
 // Host death is warn and never worse, because HostRunning comes from an
@@ -5772,11 +6281,11 @@ func (m *Model) notifySessionTransitions(previous []Session) {
 }
 
 // paneShowing reports whether the named session is the one on screen in the
-// pane — open AND not hidden behind the ctrl+t summary. paneName is "" with no
-// pane open and no session is named "", so the pane handle itself need not be
+// pane — open AND not behind the overview. paneName is "" with no pane open
+// and no session is named "", so the pane handle itself need not be
 // consulted.
 func (m *Model) paneShowing(name string) bool {
-	return name == m.paneName && !m.paneHidden
+	return name == m.paneName && m.view == viewAgent
 }
 
 // reportsHostDeath reports whether the host loss between these two readings of
@@ -6531,13 +7040,7 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// over m.repo, and this single assignment is what keeps their contract ("the
 	// repo this dashboard is showing") true across a switch.
 	m.repo = path
-	if m.pane != nil {
-		_ = m.pane.Close()
-		m.pane = nil
-		m.paneName = ""
-		m.paneFocused = false
-		m.clearPaneHiddenState()
-	}
+	m.forgetPane()
 	// Every value below is session- or repo-scoped and belongs to the OUTGOING
 	// project; left in place, each would read as the incoming project's until its
 	// first load lands seconds later.
@@ -6578,6 +7081,8 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	m.previewGen++
 	m.projectGen++
 	m.attachInFlight = inFlightOpen{}
+	m.restartInFlight = inFlightRestart{}
+	m.paneLost = lostPane{}
 	// A focus-request switch racing in behind an earlier switcher switch's still-
 	// in-flight load must not inherit that switch's arm — applyFocusRequest owns
 	// its own explicit open for ITS switch, so previewOnNextLoad must start false
@@ -6719,7 +7224,8 @@ func (m *Model) setSessions(sessions []Session) {
 // selected session by name, is deliberate: applyPreviewTimer's name check exists precisely because a tick
 // that adds or drops a row can change which session an unmoved index points at,
 // and re-deriving selection by name here would leave that check guarding
-// nothing while quietly changing what the arrow keys land on.
+// nothing while quietly changing what the arrow keys land on. The exception is
+// a right-focused keyboard, whose row is pinned by name — see holdSelection.
 //
 // SetItems' tea.Cmd is dropped and the filter re-run inline instead. Upstream
 // nils filteredItems and defers the recompute to that Cmd, so dropping it alone
@@ -6730,6 +7236,7 @@ func (m *Model) setSessions(sessions []Session) {
 // Update's no-I/O contract intact and makes the item/filter/selection update
 // atomic.
 func (m *Model) rebuildListItems(sel int) {
+	before, hadBefore := m.selected()
 	items := make([]list.Item, len(m.sessions))
 	for i := range m.sessions {
 		items[i] = sessionItem{session: m.sessions[i]}
@@ -6740,6 +7247,9 @@ func (m *Model) rebuildListItems(sel int) {
 		}
 	}
 	m.selectSessionIndex(sel)
+	if hadBefore {
+		m.holdSelection(before)
+	}
 	// A rebuild can change which session the unmoved index points at (the
 	// reason applyPreviewTimer checks names), and it always refreshes the
 	// content the detail pane draws — so the scroll offset is re-keyed to the
@@ -6750,6 +7260,42 @@ func (m *Model) rebuildListItems(sel int) {
 	// would leave the clamp ceiling stale until the next scroll key.
 	m.resetDetailScroll()
 	m.syncDetailViewport()
+}
+
+// holdSelection applies the pane-lifecycle rules to a rebuild that moved the
+// selection off before, the row selected going in.
+//
+// With the right side focused the selection is PINNED by name (and kind, since
+// a fault row and a session can share a name): a tick that reshuffles the
+// list must not change which session the focused surface belongs to. This is
+// the one exception to rebuildListItems' hold-the-index rule, and it costs
+// applyPreviewTimer's name check nothing — previews never fire under right
+// focus. A pinned row that left discovery cannot be held; its pane, if it had
+// one, is detached, and the keyboard stays right on whatever the right side
+// now shows — handing it to the list would deliver typed keys to list
+// bindings.
+//
+// With the list focused the index holds as before, and a pane whose row the
+// rebuild moved off is detached exactly as a cursor move would detach it.
+func (m *Model) holdSelection(before Session) {
+	if after, ok := m.selected(); ok && after.Name == before.Name && after.Kind == before.Kind {
+		return
+	}
+	if m.focus == focusRight {
+		for i := range m.sessions {
+			if m.sessions[i].Name == before.Name && m.sessions[i].Kind == before.Kind {
+				m.selectSessionIndex(i)
+				return
+			}
+		}
+		if _, ok := m.selected(); ok && before.Name == m.paneName {
+			m.forgetPane()
+		}
+		return
+	}
+	if _, ok := m.selected(); ok && m.pane != nil && before.Name == m.paneName {
+		m.forgetPane()
+	}
 }
 
 // listSelection is the selected session's index in m.sessions — the successor

@@ -26,15 +26,23 @@ import (
 //   - "switcher over form" is unreachable in practice but declared so the
 //     frame (views.go renders switcher first) and the keyboard can never
 //     disagree; enshrining the opposite order would split them.
-//   - "focused flag without a pane" pins that modeState.paneFocused is the
-//     conjunction the old handleKey's guard used — callers build it as
-//     paneFocused && pane != nil, and a bare flag must not claim the keyboard.
-//   - The detailFocused rows pin the new layer's POSITION, directly above
-//     normal mode and below everything else. modePrecedence is hand-ordered
-//     and a row slipped above a modal is shadowed silently, with no error —
-//     move the entry up and these rows are what turns it red. The
-//     "detail focused alone" row is also what decides esc: filterClear binds
-//     esc in inputNormal and the release binds it here, so an applied filter
+//   - The four (focus, view, pane) rows under "the two axes" are the whole
+//     focus model as data. "list focus with a pane in agent view" is the one
+//     that encodes the user's rule — with the list focused nothing on the
+//     right owns the keyboard, however live the pane is — and "right focus in
+//     agent view without a pane" pins that the keyboard follows the DRAWN
+//     surface (the overview, since there is nothing else to draw) rather
+//     than falling to normal mode, where typed keys would hit list bindings.
+//   - "right focus, overview view, pane present" pins that the view axis
+//     outranks the pane's existence: an installed pane behind the overview
+//     does not claim the keyboard. This is the row that replaces the old
+//     "focused flag hidden behind the summary" corner.
+//   - The inputDetail rows pin the layer's POSITION, directly above normal
+//     mode and below everything else. modePrecedence is hand-ordered and a
+//     row slipped above a modal is shadowed silently, with no error — move
+//     the entry up and these rows are what turns it red. The "right focus in
+//     overview" row is also what decides esc: filterClear binds esc in
+//     inputNormal and the release binds it here, so an applied filter
 //     survives the release because this mode outranks normal, not because of
 //     any rule ordering.
 //
@@ -51,19 +59,64 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			state: modeState{},
 			want:  inputNormal,
 		},
+
+		// The two axes, crossed with whether a pane is drawable for the
+		// selected row. Focus decides whether the right side owns the
+		// keyboard at all; view and pane decide which right surface does.
+		{
+			name:  "list focus, agent view, no pane",
+			state: modeState{focus: focusList, view: viewAgent},
+			want:  inputNormal,
+		},
+		{
+			name:  "list focus with a pane in agent view: the pane is display only",
+			state: modeState{focus: focusList, view: viewAgent, pane: true},
+			want:  inputNormal,
+		},
+		{
+			name:  "list focus, overview view, no pane",
+			state: modeState{focus: focusList, view: viewOverview},
+			want:  inputNormal,
+		},
+		{
+			name:  "list focus, overview view, pane behind it",
+			state: modeState{focus: focusList, view: viewOverview, pane: true},
+			want:  inputNormal,
+		},
+		{
+			name:  "right focus, agent view, pane present: the pane owns the keyboard",
+			state: modeState{focus: focusRight, view: viewAgent, pane: true},
+			want:  inputPane,
+		},
+		{
+			name:  "right focus in agent view without a pane: the drawn overview owns it",
+			state: modeState{focus: focusRight, view: viewAgent},
+			want:  inputDetail,
+		},
+		{
+			name:  "right focus, overview view, no pane",
+			state: modeState{focus: focusRight, view: viewOverview},
+			want:  inputDetail,
+		},
+		{
+			name:  "right focus, overview view, pane present: the view outranks the pane",
+			state: modeState{focus: focusRight, view: viewOverview, pane: true},
+			want:  inputDetail,
+		},
+
 		{
 			name:  "filter prompt alone",
 			state: modeState{listFiltering: true},
 			want:  inputFilter,
 		},
 		{
-			// Reachable: applyPaneAttached sets paneFocused asynchronously (a
+			// Reachable: applyPaneAttached moves the focus asynchronously (a
 			// honored click arrives already focused), so a focus can land while
 			// the prompt is open. The prompt is what is on screen and what the
 			// user is typing into, so it keeps the keyboard — the same rule the
 			// form/pane row below states.
 			name:  "filter prompt over focused pane",
-			state: modeState{listFiltering: true, paneFocused: true},
+			state: modeState{listFiltering: true, focus: focusRight, pane: true},
 			want:  inputFilter,
 		},
 		{
@@ -115,48 +168,28 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputForm,
 		},
 		{
-			name:  "focused pane alone",
-			state: modeState{paneFocused: true},
-			want:  inputPane,
-		},
-		{
-			name:  "detail focused alone",
-			state: modeState{detailFocused: true},
-			want:  inputDetail,
-		},
-		{
-			// Unreachable through the snapshot conjunctions (paneFocused needs
-			// a pane, detailFocused needs the pane NOT to be the drawn
-			// surface), declared so the order is a decision rather than an
-			// accident of table position — the same reason "switcher over
-			// form" is declared above.
-			name:  "focused pane over focused detail: the pane wins",
-			state: modeState{paneFocused: true, detailFocused: true},
-			want:  inputPane,
-		},
-		{
 			name:  "filter prompt over focused detail",
-			state: modeState{listFiltering: true, detailFocused: true},
+			state: modeState{listFiltering: true, focus: focusRight, view: viewOverview},
 			want:  inputFilter,
 		},
 		{
 			name:  "form over focused detail",
-			state: modeState{formOpen: true, detailFocused: true},
+			state: modeState{formOpen: true, focus: focusRight, view: viewOverview},
 			want:  inputForm,
 		},
 		{
 			name:  "switcher over focused detail",
-			state: modeState{switcherOpen: true, detailFocused: true},
+			state: modeState{switcherOpen: true, focus: focusRight, view: viewOverview},
 			want:  inputSwitcher,
 		},
 		{
 			name:  "palette over focused detail",
-			state: modeState{paletteOpen: true, detailFocused: true},
+			state: modeState{paletteOpen: true, focus: focusRight, view: viewOverview},
 			want:  inputPalette,
 		},
 		{
 			name:  "confirm clean over focused detail: modal wins",
-			state: modeState{modal: inputConfirmClean, detailFocused: true},
+			state: modeState{modal: inputConfirmClean, focus: focusRight, view: viewOverview},
 			want:  inputConfirmClean,
 		},
 		{
@@ -166,16 +199,16 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 		},
 		{
 			// Reachable: resize mode is entered from a focused detail pane and
-			// leaves detailFocused set, so the resize must outrank it.
+			// leaves the focus on the right, so the resize must outrank it.
 			name:  "resizing over focused detail",
-			state: modeState{resizing: true, detailFocused: true},
+			state: modeState{resizing: true, focus: focusRight, view: viewOverview},
 			want:  inputResize,
 		},
 		{
 			// Reachable only through a focus-on-arrival attach landing
 			// mid-resize: the explicit gesture keeps the keyboard.
 			name:  "resizing over focused pane",
-			state: modeState{resizing: true, paneFocused: true},
+			state: modeState{resizing: true, focus: focusRight, pane: true},
 			want:  inputResize,
 		},
 		{
@@ -205,7 +238,7 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 		},
 		{
 			name:  "form open and pane focused: form wins (the closed corner)",
-			state: modeState{formOpen: true, paneFocused: true},
+			state: modeState{formOpen: true, focus: focusRight, pane: true},
 			want:  inputForm,
 		},
 		{
@@ -220,12 +253,12 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 		},
 		{
 			name:  "confirm clean over focused pane: modal wins",
-			state: modeState{modal: inputConfirmClean, paneFocused: true},
+			state: modeState{modal: inputConfirmClean, focus: focusRight, pane: true},
 			want:  inputConfirmClean,
 		},
 		{
 			name:  "switcher over focused pane: switcher wins",
-			state: modeState{switcherOpen: true, paneFocused: true},
+			state: modeState{switcherOpen: true, focus: focusRight, pane: true},
 			want:  inputSwitcher,
 		},
 		{
@@ -236,12 +269,13 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 		{
 			name: "everything at once: modal wins",
 			state: modeState{
-				modal:         inputEditLabel,
-				switcherOpen:  true,
-				formOpen:      true,
-				paneFocused:   true,
-				detailFocused: true,
-				resizing:      true,
+				modal:        inputEditLabel,
+				switcherOpen: true,
+				formOpen:     true,
+				focus:        focusRight,
+				view:         viewOverview,
+				pane:         true,
+				resizing:     true,
 			},
 			want: inputEditLabel,
 		},
@@ -256,14 +290,15 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 	}
 }
 
-// TestActiveInputModeModalAlwaysWins covers the 320 combinations the named
-// matrix above samples: every modal, crossed with every setting of the six
-// composing flags (5 × 2^6 = 320), must derive the modal. This is the exhaustive form of the
-// "modal outranks everything" invariant — a precedence-table edit that slips
-// any layer above the modals turns some cell here red. The modal set is
-// derived from isModal rather than listed, so a sixth modal added later is
-// covered the moment its constant exists; the count check below makes adding
-// one a deliberate edit rather than a silent widening.
+// TestActiveInputModeModalAlwaysWins covers the 640 combinations the named
+// matrix above samples: every modal, crossed with every setting of the five
+// composing flags and the two focus axes (5 × 2^7 = 640), must derive the
+// modal. This is the exhaustive form of the "modal outranks everything"
+// invariant — a precedence-table edit that slips any layer above the modals
+// turns some cell here red. The modal set is derived from isModal rather than
+// listed, so a sixth modal added later is covered the moment its constant
+// exists; the count check below makes adding one a deliberate edit rather
+// than a silent widening.
 func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 	var modals []inputMode
 	for mode := inputMode(0); mode < inputModeCount; mode++ {
@@ -275,24 +310,29 @@ func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 		t.Fatalf("isModal admits %d modes, want the 5 footer modals", len(modals))
 	}
 	bools := []bool{false, true}
+	focuses := []paneFocus{focusList, focusRight}
+	views := []rightView{viewAgent, viewOverview}
 	for _, modal := range modals {
 		for _, sw := range bools {
 			for _, form := range bools {
 				for _, filtering := range bools {
-					for _, pane := range bools {
-						for _, detail := range bools {
-							for _, resizing := range bools {
-								s := modeState{
-									modal:         modal,
-									switcherOpen:  sw,
-									formOpen:      form,
-									listFiltering: filtering,
-									paneFocused:   pane,
-									detailFocused: detail,
-									resizing:      resizing,
-								}
-								if got := activeInputMode(s); got != modal {
-									t.Errorf("activeInputMode(%+v) = %v, want %v", s, got, modal)
+					for _, focus := range focuses {
+						for _, view := range views {
+							for _, pane := range bools {
+								for _, resizing := range bools {
+									s := modeState{
+										modal:         modal,
+										switcherOpen:  sw,
+										formOpen:      form,
+										listFiltering: filtering,
+										focus:         focus,
+										view:          view,
+										pane:          pane,
+										resizing:      resizing,
+									}
+									if got := activeInputMode(s); got != modal {
+										t.Errorf("activeInputMode(%+v) = %v, want %v", s, got, modal)
+									}
 								}
 							}
 						}
@@ -303,15 +343,14 @@ func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 	}
 }
 
-// TestModeSnapshot pins the Model→modeState bridge: each overlay-activity field
-// maps to its snapshot field, and paneFocused is the conjunction with pane !=
-// nil. The load-bearing rows are the two pane ones — a focused flag with a nil
-// pane must NOT claim the keyboard, which is the guard the old handleKey spelled
-// `m.paneFocused && m.pane != nil` and the dispatch now inherits from here —
-// and the detail pair, which is the same guard mirrored: detailFocused counts
-// only while the pane is NOT the drawn surface, so a focus-on-arrival attach
-// landing under a focused detail view cannot leave the keyboard on a view that
-// is no longer there.
+// TestModeSnapshot pins the Model→modeState bridge: each overlay-activity
+// field maps to its snapshot field, focus and view copy across verbatim, and
+// pane is "a live pane belongs to the selected row". The load-bearing rows
+// are the pane ones: a pane installed for a row that is NOT selected does not
+// count, and a pane with no selection at all does (the paned row left
+// discovery and the list emptied — the pane must stay reachable). Neither
+// focus nor view is masked here; the derivation in modePrecedence combines
+// them, which is what lets the matrix test above enumerate the raw axes.
 func TestModeSnapshot(t *testing.T) {
 	cases := []struct {
 		name string
@@ -359,36 +398,54 @@ func TestModeSnapshot(t *testing.T) {
 			want: modeState{formOpen: true},
 		},
 		{
-			name: "focused flag with a pane",
+			name: "right focus copies across",
+			mut:  func(m *Model) { m.focus = focusRight },
+			want: modeState{focus: focusRight},
+		},
+		{
+			name: "overview view copies across",
+			mut:  func(m *Model) { m.view = viewOverview },
+			want: modeState{view: viewOverview},
+		},
+		{
+			name: "right focus in overview view, no pane",
 			mut: func(m *Model) {
-				m.pane = newFakePane("")
-				m.paneFocused = true
+				m.focus = focusRight
+				m.view = viewOverview
 			},
-			want: modeState{paneFocused: true},
+			want: modeState{focus: focusRight, view: viewOverview},
 		},
 		{
-			name: "focused flag without a pane does not count",
-			mut:  func(m *Model) { m.paneFocused = true },
-			want: modeState{},
-		},
-		{
-			name: "unfocused pane does not count",
+			name: "a pane with no selection counts",
 			mut:  func(m *Model) { m.pane = newFakePane("") },
-			want: modeState{},
+			want: modeState{pane: true},
 		},
 		{
-			name: "detail focused with no pane on screen",
-			mut:  func(m *Model) { m.detailFocused = true },
-			want: modeState{detailFocused: true},
-		},
-		{
-			name: "detail focused while the pane is the drawn surface does not count",
+			name: "a pane for the selected row counts",
 			mut: func(m *Model) {
-				m.detailFocused = true
+				*m = testModel(runningSess("sess"))
 				m.pane = newFakePane("")
 				m.paneName = "sess"
 			},
+			want: modeState{pane: true},
+		},
+		{
+			name: "a pane for another row does not count",
+			mut: func(m *Model) {
+				*m = testModel(runningSess("sess"))
+				m.pane = newFakePane("")
+				m.paneName = "other"
+			},
 			want: modeState{},
+		},
+		{
+			name: "a pane behind the overview still counts: the derivation decides",
+			mut: func(m *Model) {
+				m.pane = newFakePane("")
+				m.view = viewOverview
+				m.focus = focusRight
+			},
+			want: modeState{focus: focusRight, view: viewOverview, pane: true},
 		},
 		{
 			name: "resizing",
@@ -402,7 +459,7 @@ func TestModeSnapshot(t *testing.T) {
 				m.pane = newFakePane("")
 				m.paneName = "sess"
 			},
-			want: modeState{resizing: true},
+			want: modeState{resizing: true, pane: true},
 		},
 	}
 
@@ -458,10 +515,12 @@ func press(code rune, text string) tea.KeyPressMsg {
 //     ones this per-key layout shows and a single-mode table cannot. esc
 //     releases here but is ignored in normal mode; ctrl+\ releases UNGATED
 //     where normal mode needs routeConds.paneOpen; enter is ignored where
-//     normal mode attaches. The shift+arrow pair is the load-bearing one:
-//     those chords scroll the detail viewport from normal mode only, and are
-//     ignored once focused — README's `shift+↑`/`shift+↓` bullet says exactly
-//     that, so a rule table that grew them here would make the README wrong.
+//     normal mode attaches.
+//   - the overview keys in normal mode (shift+arrows, ctrl+u/ctrl+d, tab,
+//     shift+tab, 1-5) are ignored even with the overview drawn: with the list
+//     focused nothing on the right is under control (plan objective 2), so a
+//     rule that grew back here would let the list scroll or re-tab the
+//     overview.
 //     TestDetailFocusRetainedKeySet (detailfocus_test.go) enumerates the whole
 //     focused surface; these rows carry only the normal/detail contrasts.
 func TestRouteKeyMatrix(t *testing.T) {
@@ -520,7 +579,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 
 		// ctrl+t: the old intercept position, as per-mode data.
 		{"ctrl+t in pane toggles", inputPane, routeConds{}, ctrlT, keyDecision{routeAction, actionPaneToggle}},
-		{"ctrl+t in normal toggles", inputNormal, routeConds{}, ctrlT, keyDecision{routeAction, actionPaneToggle}},
+		{"ctrl+t in normal is ignored", inputNormal, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
 		{"ctrl+t in detail toggles", inputDetail, routeConds{}, ctrlT, keyDecision{routeAction, actionPaneToggle}},
 		{"ctrl+t in form goes to the component", inputForm, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
 		{"ctrl+t in switcher goes to the list", inputSwitcher, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
@@ -587,8 +646,13 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"up in normal moves the cursor", inputNormal, routeConds{}, up, keyDecision{routeAction, actionCursorUp}},
 		{"up in detail scrolls the viewport", inputDetail, routeConds{}, up, keyDecision{routeAction, actionDetailScrollUp}},
 		{"up in switcher goes to the list", inputSwitcher, routeConds{}, up, keyDecision{kind: routeComponent}},
-		{"shift+up in normal scrolls the detail viewport", inputNormal, routeConds{}, shiftUp, keyDecision{routeAction, actionDetailScrollUp}},
-		{"shift+down in normal scrolls the detail viewport", inputNormal, routeConds{}, shiftDown, keyDecision{routeAction, actionDetailScrollDown}},
+		{"shift+up in normal is ignored", inputNormal, routeConds{}, shiftUp, keyDecision{kind: routeIgnored}},
+		{"shift+down in normal is ignored", inputNormal, routeConds{}, shiftDown, keyDecision{kind: routeIgnored}},
+		{"ctrl+u in normal is ignored", inputNormal, routeConds{}, chord('u'), keyDecision{kind: routeIgnored}},
+		{"ctrl+d in normal is ignored", inputNormal, routeConds{}, chord('d'), keyDecision{kind: routeIgnored}},
+		{"tab in normal is ignored", inputNormal, routeConds{}, tab, keyDecision{kind: routeIgnored}},
+		{"shift+tab in normal is ignored", inputNormal, routeConds{}, shiftTab, keyDecision{kind: routeIgnored}},
+		{"1 in normal is ignored", inputNormal, routeConds{}, press('1', "1"), keyDecision{kind: routeIgnored}},
 		{"shift+up in detail is ignored", inputDetail, routeConds{}, shiftUp, keyDecision{kind: routeIgnored}},
 		{"shift+down in detail is ignored", inputDetail, routeConds{}, shiftDown, keyDecision{kind: routeIgnored}},
 		{"plain text in edit label goes to the textinput", inputEditLabel, routeConds{}, plainX, keyDecision{kind: routeComponent}},
@@ -678,55 +742,62 @@ func TestRouteKeyMatrix(t *testing.T) {
 // mode.go's rule table — the wrong binding var, or a copy-pasted action
 // constant — would misroute silently, since all six live in the same
 // r[inputNormal].rules slice with no compiler check tying binding to action.
-// TestDetailScrollKeysAreAdvertisedInFullHelpAndThePalette pins the four
-// detail-scroll keys onto the two surfaces that make them discoverable, since
-// nothing else does. The dashboard's curated short help line deliberately omits
-// them (it is width-bound and already at its cap — see renderNormalHelpKeyMap),
-// so `?` and `:` are the ONLY places a user can find these keys, and both build
-// themselves from r[inputNormal]'s modeKeyMap.bindings.
-//
-// The package's existing completeness tests cannot cover this. Both
-// TestFullHelpOmitsNoEnabledBinding and TestEveryNormalRuleIsRunnableFromThePalette
-// walk that same bindings slice and assert what is in it renders — so dropping
-// these four FROM the slice removes them from the test's input as well, and
-// both stay green while the keys silently become undiscoverable. Naming each
-// key string explicitly here is the point: this test has to fail in exactly the
-// case those two cannot see.
-func TestDetailScrollKeysAreAdvertisedInFullHelpAndThePalette(t *testing.T) {
+// TestOverviewKeysAreAdvertisedOnlyWhileTheOverviewIsFocused pins where the
+// overview's scroll and tab keys are discoverable. Both halves are
+// load-bearing: each key must carry help in inputDetail's keymap (the focused
+// overview's footer renders it), and must be ABSENT from inputNormal's, which
+// `?` and the `:` palette build from — advertising them there would offer the
+// list a way to drive the right pane (plan objective 2). Naming each key
+// string is the point: the generic completeness tests walk the same slices
+// and cannot notice a key moving between them.
+func TestOverviewKeysAreAdvertisedOnlyWhileTheOverviewIsFocused(t *testing.T) {
 	reg := newModeRegistry(defaultKeyMap())
-	bindings := reg.spec(inputNormal).keys.bindings
-
-	for _, want := range []string{"shift+up", "shift+down", "ctrl+u", "ctrl+d"} {
-		t.Run(want, func(t *testing.T) {
-			var found *key.Binding
-			for i := range bindings {
-				for _, k := range bindings[i].Keys() {
-					if k == want {
-						found = &bindings[i]
-					}
+	find := func(bindings []key.Binding, want string) *key.Binding {
+		for i := range bindings {
+			for _, k := range bindings[i].Keys() {
+				if k == want {
+					return &bindings[i]
 				}
 			}
+		}
+		return nil
+	}
+
+	for _, want := range []string{"ctrl+u", "ctrl+d", "tab", "shift+tab", "1"} {
+		t.Run(want, func(t *testing.T) {
+			found := find(reg.spec(inputDetail).keys.bindings, want)
 			if found == nil {
-				t.Fatalf("%q is not in inputNormal's help keymap, so neither `?` nor `:` can advertise it", want)
+				t.Fatalf("%q is not in inputDetail's keymap, so the focused overview cannot advertise it", want)
 			}
 			if h := found.Help(); h.Key == "" || h.Desc == "" {
-				t.Errorf("%q carries help %+v; both halves must be set or it renders blank in `?`", want, h)
+				t.Errorf("%q carries help %+v; both halves must be set or it renders blank", want, h)
+			}
+			if find(reg.spec(inputNormal).keys.bindings, want) != nil {
+				t.Errorf("%q is in inputNormal's keymap; the list must not advertise a right-pane key", want)
 			}
 		})
+	}
+	for _, gone := range []string{"shift+up", "shift+down"} {
+		if find(reg.spec(inputNormal).keys.bindings, gone) != nil {
+			t.Errorf("%q is in inputNormal's keymap; it scrolled the overview from the list", gone)
+		}
 	}
 }
 
 // TestNormalModeKeyMapPrioritizesSurfaceControls pins the palette/help order,
 // which is deliberately separate from routing-rule order. At 120x40 the
-// palette's first viewport holds 14 rows, so Focus and Toggle must be adjacent
-// immediately after movement rather than merely present somewhere in the full
-// registry. The general completeness and palette-runnability tests below guard
-// that the mechanically displaced unrelated bindings remain represented.
+// palette's first viewport holds 14 rows, so Focus — the one way to the right
+// side — must follow movement immediately rather than merely be present
+// somewhere in the full registry. ctrl+t must be ABSENT: with the list focused
+// it controls nothing (plan objective 2/3), so it is neither a rule nor a
+// help/palette row in normal mode. The general completeness and
+// palette-runnability tests below guard that the mechanically displaced
+// unrelated bindings remain represented.
 func TestNormalModeKeyMapPrioritizesSurfaceControls(t *testing.T) {
 	keys := defaultKeyMap()
 	registry := newModeRegistry(keys)
 	bindings := registry.spec(inputNormal).keys.bindings
-	want := []key.Binding{keys.Up, keys.Down, keys.Focus, keys.Toggle}
+	want := []key.Binding{keys.Up, keys.Down, keys.Focus}
 
 	sameKeys := func(a, b []string) bool {
 		if len(a) != len(b) {
@@ -757,17 +828,20 @@ func TestNormalModeKeyMapPrioritizesSurfaceControls(t *testing.T) {
 			t.Errorf("normal keymap contains keys %v %d times, want exactly once", expected.Keys(), count)
 		}
 	}
+	for _, binding := range bindings {
+		if sameKeys(binding.Keys(), keys.Toggle.Keys()) {
+			t.Errorf("normal keymap carries ctrl+t (%v); the list must not advertise a right-side key", binding.Keys())
+		}
+	}
 }
 
-// The mode field defaults to inputNormal (its zero value) for every
-// pre-existing row, so those rows are byte-for-byte what this test asserted
-// before W2.T1: the unfocused case is the regression guard, and it must keep
-// passing unchanged. The inputDetail rows below are the inverted assertion
-// W2.T1 adds — the same physical keys, claimed by the FOCUSED mode's own
-// rule table instead, with ctrl+u/ctrl+d asserted to route to the identical
-// action they already do unfocused (see mode.go's detailHalfPageUp/Down
-// comment: they are the pre-existing detail-scroll chords, not list keys,
-// in either mode).
+// TestDetailScrollKeysRouteToActions pins the overview's scroll keys to the
+// FOCUSED overview only. The normal-mode rows are load-bearing: ctrl+u/ctrl+d
+// and the shift+arrows used to scroll an unfocused overview from the list,
+// which is exactly the "list controls the right pane" leak objective 2 rules
+// out, so each must fall through to routeIgnored. pgup/pgdown stay list paging.
+// The inputDetail rows are the cursor-vs-viewport split: the plain list keys
+// scroll the viewport once the overview owns the keyboard.
 func TestDetailScrollKeysRouteToActions(t *testing.T) {
 	reg := newModeRegistry(defaultKeyMap())
 
@@ -775,12 +849,12 @@ func TestDetailScrollKeysRouteToActions(t *testing.T) {
 		name string
 		mode inputMode
 		key  tea.KeyPressMsg
-		want modeAction
+		want modeAction // actionNone: the key must be ignored
 	}{
-		{"shift+up scrolls the detail pane up", inputNormal, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift}, actionDetailScrollUp},
-		{"shift+down scrolls the detail pane down", inputNormal, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift}, actionDetailScrollDown},
-		{"ctrl+u half-pages the detail pane up", inputNormal, chord('u'), actionDetailHalfPageUp},
-		{"ctrl+d half-pages the detail pane down", inputNormal, chord('d'), actionDetailHalfPageDown},
+		{"shift+up from the list is ignored", inputNormal, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift}, actionNone},
+		{"shift+down from the list is ignored", inputNormal, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift}, actionNone},
+		{"ctrl+u from the list is ignored", inputNormal, chord('u'), actionNone},
+		{"ctrl+d from the list is ignored", inputNormal, chord('d'), actionNone},
 		{"pgup still pages the session list", inputNormal, tea.KeyPressMsg{Code: tea.KeyPgUp}, actionPageUp},
 		{"pgdown still pages the session list", inputNormal, tea.KeyPressMsg{Code: tea.KeyPgDown}, actionPageDown},
 
@@ -796,8 +870,6 @@ func TestDetailScrollKeysRouteToActions(t *testing.T) {
 		{"focused home goes to the top of the detail pane", inputDetail, tea.KeyPressMsg{Code: tea.KeyHome}, actionDetailGotoTop},
 		{"focused end goes to the bottom of the detail pane", inputDetail, tea.KeyPressMsg{Code: tea.KeyEnd}, actionDetailGotoBottom},
 
-		// ctrl+u/ctrl+d: NOT part of the split above — the same chord, the
-		// same action, focused or not.
 		{"focused ctrl+u half-pages the detail pane up", inputDetail, chord('u'), actionDetailHalfPageUp},
 		{"focused ctrl+d half-pages the detail pane down", inputDetail, chord('d'), actionDetailHalfPageDown},
 	}
@@ -805,6 +877,9 @@ func TestDetailScrollKeysRouteToActions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			want := keyDecision{routeAction, tc.want}
+			if tc.want == actionNone {
+				want = keyDecision{kind: routeIgnored}
+			}
 			got := reg.route(tc.mode, routeConds{}, tc.key)
 			if got != want {
 				t.Fatalf("route(%v, %q) = {%v %v}, want {%v %v}",

@@ -69,6 +69,7 @@ func diffScrollModel(t *testing.T, width, height int) Model {
 	m.setSessions([]Session{sess("alpha")})
 
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: width, Height: height})
+	m = focusOverview(t, m)
 
 	// shift+tab from the Overview wraps to the last visible tab, which is
 	// always Diff (visibleDetailTabs) whether or not git-spice is detected —

@@ -24,7 +24,7 @@ var paneCursorFixture = termpane.CursorState{X: 2, Y: 1, Visible: true, Shape: t
 //     cursor marks WHERE KEYSTROKES LAND. Both leave the pane fully drawn, and
 //     both route the keyboard somewhere else — so a cursor blinking in the
 //     session would be pointing at a window the user's typing does not reach.
-//     "footer modal" is the row m.paneFocused alone gets wrong, which is why
+//     "footer modal" is the row m.paneOwnsKeyboard() alone gets wrong, which is why
 //     the gate is activeInputMode and not that field.
 //   - the three overlay rows (switcher/palette/form) prevent a cursor drawn
 //     over a component that replaced the pane in the frame entirely.
@@ -55,14 +55,14 @@ func TestViewCursorFollowsFocusedPane(t *testing.T) {
 			width:  80,
 			height: 24,
 			cursor: paneCursorFixture,
-			mutate: func(m *Model) { m.paneFocused = false },
+			mutate: func(m *Model) { m.focus = focusList },
 		},
 		{
 			name:   "hidden pane",
 			width:  80,
 			height: 24,
 			cursor: paneCursorFixture,
-			mutate: func(m *Model) { m.paneHidden = true },
+			mutate: func(m *Model) { m.view = viewOverview },
 		},
 		{
 			name:   "switcher open",
