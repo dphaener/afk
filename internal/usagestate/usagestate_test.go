@@ -216,4 +216,96 @@ func TestWriteRenameFailure(t *testing.T) {
 	}
 }
 
+// TestGovernorRoundTrip: the no-decision row is load-bearing because a snapshot
+// with no decision must write no governor key at all; the wake-time row pins
+// that wake_at survives the trip; the no-wake row pins that wake_at is omitted
+// rather than written as year 1, which would read back as a real date.
+func TestGovernorRoundTrip(t *testing.T) {
+	wake := time.Date(2026, 10, 12, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		gov  *Governor
+	}{
+		{"no decision", nil},
+		{"decision with wake time", &Governor{Action: "pause", Reason: "session at 90%", WakeAt: &wake, At: wake.Add(-time.Minute)}},
+		{"decision without wake time", &Governor{Action: "no_launch", Reason: "session at 75%", At: wake}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			d := testDeps(dir)
+			f := FromSnapshot("prov", sample())
+			f.Governor = tt.gov
+			if err := Write(d, f); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "afk", "usage.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &top); err != nil {
+				t.Fatal(err)
+			}
+			if _, has := top["governor"]; has != (tt.gov != nil) {
+				t.Fatalf("governor key present = %v, want %v", has, tt.gov != nil)
+			}
+			if tt.gov != nil && tt.gov.WakeAt == nil {
+				var g map[string]any
+				_ = json.Unmarshal(top["governor"], &g)
+				if _, has := g["wake_at"]; has {
+					t.Error("nil wake_at should be omitted")
+				}
+			}
+
+			got, ok := Read(d)
+			if !ok {
+				t.Fatal("Read false after Write")
+			}
+			if tt.gov == nil {
+				if got.Governor != nil {
+					t.Fatalf("Governor = %+v, want nil", got.Governor)
+				}
+				return
+			}
+			g := got.Governor
+			if g == nil || g.Action != tt.gov.Action || g.Reason != tt.gov.Reason || !g.At.Equal(tt.gov.At) {
+				t.Fatalf("Governor = %+v, want %+v", g, tt.gov)
+			}
+			if (g.WakeAt == nil) != (tt.gov.WakeAt == nil) {
+				t.Fatalf("WakeAt nil = %v, want %v", g.WakeAt == nil, tt.gov.WakeAt == nil)
+			}
+			if g.WakeAt != nil && !g.WakeAt.Equal(*tt.gov.WakeAt) {
+				t.Errorf("WakeAt = %v, want %v", *g.WakeAt, *tt.gov.WakeAt)
+			}
+		})
+	}
+}
+
+// TestGovernorOldFile: the row is load-bearing because usage.json files from
+// before the governor was stored have no governor key, and an older snapshot
+// must still read as ok with a nil Governor, or every existing install would
+// lose its snapshot on upgrade.
+func TestGovernorOldFile(t *testing.T) {
+	dir := t.TempDir()
+	d := testDeps(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "afk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := `{"at":"2026-10-11T12:00:00Z","provider":"prov","windows":[{"kind":"session","used_pct":30}],"overage_enabled":false,"source":"probe"}`
+	if err := os.WriteFile(filepath.Join(dir, "afk", "usage.json"), []byte(old+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, ok := Read(d)
+	if !ok {
+		t.Fatal("Read false for a file with no governor key")
+	}
+	if f.Governor != nil {
+		t.Errorf("Governor = %+v, want nil", f.Governor)
+	}
+	if f.Provider != "prov" || len(f.Windows) != 1 || f.Windows[0].UsedPct != 30 {
+		t.Errorf("snapshot fields lost: %+v", f)
+	}
+}
+
 func ptr(s string) *string { return &s }

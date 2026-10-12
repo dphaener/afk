@@ -1,0 +1,12 @@
+{
+  "loggedIn": true,
+  "authMethod": "example-method",
+  "apiProvider": "example-api",
+  "analyticsDisabled": false,
+  "projectsDirectory": "/example/projects",
+  "configDirectory": "/example/config",
+  "email": "user-placeholder",
+  "orgId": "org-placeholder",
+  "orgName": "org-name-placeholder",
+  "subscriptionType": "plan-placeholder"
+}

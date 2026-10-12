@@ -243,6 +243,14 @@ All three are cleared when the task starts a new attempt or gets a new session, 
 leaves `running` (done, failed, shipping). Giving up leaves `restarts` in the parked entry; the
 un-park clears it.
 
+Amended 2026-10-12 (T2.4): an entry also carries `usage_pause_at` and `usage_wake_at`, each omitted when
+empty. `usage_pause_at` is when the daemon paused the running session for usage (RFC 3339 UTC); it is
+saved before the session is stopped. `usage_wake_at` is the earliest time to start it again, or empty
+when none is known. Both are cleared when the task starts a new attempt or gets a new session, when the
+session is started again after the pause, and when the task leaves `running` for `done`, `failed` or
+`shipping`. An un-park back to `running` keeps them and a pause that parks keeps them, so the session
+is started again, not typed into.
+
 ### 4.2a Daemon files (new)
 
 Amended 2026-10-11 (T2.1): three small files the build daemon adds, each with one writer and none
@@ -277,6 +285,13 @@ Amended 2026-10-12 (T2.2a): two more files in `.afk/build/`, written only by the
 lock and set to `true` when the daemon could not read its own program file at the start. `afk daemon
 status` reads it to say the daemon will not restart by itself on a new version.
 
+Amended 2026-10-12 (T2.4): one more file in afk's state folder (beside `usage.json`), written only by the
+daemon through `internal/daemonstate`, by atomic rename.
+
+| File | Writer | Shape |
+|---|---|---|
+| `governor.json` | the daemon | `{"probe_tried_at","login_checked_at","login_known","logged_in"}`, every key always present. The two times are RFC 3339 UTC or `""` for never. `probe_tried_at` is when a usage read was last attempted (stamped before the attempt, so a failing read is not tried on every pass). `login_known` says whether `logged_in` is a real answer; a check that could not run leaves the last answer. A missing or damaged file means "never tried" and "not known". |
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -307,6 +322,11 @@ Written by the governor: `{at, provider, windows: [{kind, scope, used_pct, reset
 source}`. `scope` is the model's name on a per-model weekly window and empty otherwise. The path is
 `$XDG_STATE_HOME/afk/usage.json` when `XDG_STATE_HOME` is set to an absolute path, otherwise
 `~/.local/state/afk/usage.json`. The dashboard and web page read it; nobody else probes.
+
+Amended 2026-10-12 (T2.4): the file also holds a `governor` object, `{"action","reason","wake_at","at"}`:
+the governor's decision for the reading (`run`, `no_launch`, `pause`, `hold` or `refuse`), the reason in
+plain words, when to wake a paused session (omitted when none is known) and when the decision was made.
+The daemon and `afk usage` both store it with the reading. A file without the key reads as no decision.
 
 ### 4.6 Project config — `afk.toml` (committed)
 
@@ -378,6 +398,13 @@ Amended 2026-10-12 (T2.3): `[daemon]` also reads `max_restarts` (default 3; a wh
 recoveries per task, at least 0, where 0 means never restart; a negative value is an error naming
 `daemon.max_restarts`) and `restart_backoff` (default `"1m"`; a length of time above zero, else an
 error naming the key). They are machine config only; `afk.toml` is not read for them.
+
+Amended 2026-10-12 (T2.4): `config.toml` also reads a `[governor]` table: `pause_at` (default 90; above 5
+and at most 100), `launch_below` (default 75; above 0 and at most `pause_at`), `stale_after` (default
+`"30m"`; above zero and longer than `probe_interval`), `probe_interval` (default `"5m"`; at least `"1m"`)
+and `on_unknown_usage` (default `"run"`; `"run"` or `"hold"`). Anything else is an error naming the file
+and the key, and `afk daemon` and `afk usage` both read the table. The weekly launch line is
+`pause_at` minus 5.
 
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
@@ -655,6 +682,15 @@ As built, the unsupported row is checked first, because such a provider never ha
 
 Every action is logged (§4.4) and reflected in `usage.json`.
 
+Amended 2026-10-12 (T2.4): as built, the daemon asks the governor only on a pass with a running or
+shipping task, or one where the loop is about to launch, create again or un-park a task, or while the
+extra-usage or login item is open; an idle project causes no probe. A reading younger than
+`probe_interval` is reused, and a failed probe is not tried again for a minute. `no_launch`, `hold` and
+`refuse` stop every start (an un-park, too, except that at `no_launch` a parked task may carry on); `pause`
+stops the running session. `refuse` also stops a running session, which the table above does not say,
+because an agent left running could spend real money. The decision is stored in `usage.json` (§4.5) and
+a change of it is written to the decision log (§4.4), not every reading.
+
 ### 6.4 Pausing and resuming a live session
 
 How to pause a running agent cleanly is **not yet known** and is T1.3/T2.4's spike (§10). Candidates:
@@ -670,10 +706,25 @@ limit-wait act as a backstop. Known facts to design against:
 - In the nebari build, a response cut off mid-stream needed a human "Please continue". The daemon must
   be able to send that prompt.
 
+Amended 2026-10-12 (T2.4): the spike was run and the answer is to end the session's agent and start it
+again later. The daemon saves the pause in the ledger (§4.2), asks the session's host to end its agent
+(a minute later it sends the host a terminate signal, and after three minutes it raises a blocking item
+and parks the task), and after the reset starts a new host with the agent's resume command and types the
+session's resume command 30 seconds later. The other ways tried (Escape, Ctrl+C, freezing the process)
+and the evidence are in `docs/decisions.md` under `## T2.4`. The `StopFailure` marker is read by the
+daemon, which pauses the session when it is newer than the session's start and last restart.
+
 ### 6.5 Login expiry
 
 Check `claude auth status` hourly. Logged out, or (if detectable) expiring within 3 days → a blocking
 `failure` item and a high-priority notification. Nothing launches while logged out.
+
+Amended 2026-10-12 (T2.4): as built, the check runs hourly, and every `probe_interval` while logged out
+so that a new login is noticed soon. A check that cannot run keeps the last answer. Expiry is not
+detectable: the status output of `claude auth status` has no date, so there is no early warning, only the
+logged-out state. Logged out raises one blocking `failure` item in every project with an urgent
+notification, starts nothing and keeps a paused session paused; a running session is left alone. The
+daemon answers the item itself on the first check that finds the agent logged in.
 
 ---
 
@@ -1129,6 +1180,7 @@ with nobody at the keyboard.
   running session paused at 90% and resumed after `ResetsAt`; overage on refuses to run; stale
   snapshot holds; unsupported provider follows `on_unknown_usage`; logged-out blocks launches. The
   spike's finding and the chosen pause mechanism are written up in `docs/decisions.md`.
+- Amended 2026-10-12 (T2.4 done): later tasks may assume the following. (1) The daemon consults the governor on a pass with a running task or one about to start, re-create or un-park something, through optional `daemon.Deps` (`Usage`, `Login`, `StopSession`, `RateLimited`); with no `Usage` every governor rule is off. (2) A pause ends the session's agent and host (`host.RequestExit`, then SIGTERM, never a kill) and is saved first in the ledger entry as `usage_pause_at` and `usage_wake_at`; the task stays `running`, and a resume is a relaunch in the same conversation followed by the continue prompt, not counted as a restart. A paused session has no host, so T3.1 and T3.2 should show it as paused and not as stopped. (3) New state kinds in `daemon.json`: `usage_wait`, `login_wait`, `usage_pause`, `usage_paused`, `usage_stuck`, `usage_resume`. (4) `usage.json` carries a `governor` object (`action`, `reason`, `wake_at`, `at`), which is what T3.1 and T3.2 read for the governor's state; `governor.json` beside it is the daemon's own bookkeeping. (5) Thresholds are `[governor]` in `config.toml`, read by `daemonconfig` and by `afk usage`. (6) The provider has `Login`; there is no warning ahead of a login's expiry because the CLI gives no date. (7) Extra usage on and logged out each raise one blocking item per project with no task, answered by the daemon. (8) Not yet seen: a real agent paused or resumed by the daemon, a real limit, a pause during a Workflow run; the supervised run of T4.2 is the first. See `## T2.4` in `docs/decisions.md`.
 
 ---
 
@@ -1220,8 +1272,11 @@ with nobody at the keyboard.
 |---|---|
 | Does forge's autonomous flow hold up on real tasks as well as `/shipit:go` did on nebari? **Answered 2026-10-10: yes.** The owner has run forge's autonomous mode many times and it works well, so T0.2 grafts shipit's strengths onto it and does not rework it. | T0.2 |
 | How to pause a live agent session cleanly and resume it (§6.4). Spike on the VM. | T2.4 |
+| **Answered 2026-10-12 (T2.4):** end the session's agent and start it again with its resume command; the spike and the other ways tried are in `docs/decisions.md` under `## T2.4`. Amended 2026-10-12 (T2.4) | T2.4 |
 | What exactly a session emits when it hits a usage limit (text, hook, whether a reset time is present). Never observed; capture it the first time it happens. | T2.4 |
+| **Amended 2026-10-12 (T2.4): still not observed.** Nobody trips a limit on purpose, so the daemon relies on the `StopFailure` marker (which carries no reset time) and the usage reading. | T2.4 |
 | Is the login-expiry warning detectable ahead of time, or only the logged-out state? | T2.4 |
+| **Answered 2026-10-12 (T2.4): no.** The status output has no date in it, so only the logged-out state is detectable (§6.5). Amended 2026-10-12 (T2.4) | T2.4 |
 | Liveness with no client: host-side schedule, or daemon holds the client slot? | T2.3 |
 | **Answered 2026-10-12** (the row above): host-side schedule. The host probes by itself when started with `--probe-unattached`, because a daemon holding the client slot would lock out a human who attaches. | T2.3 |
 | Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? **Answered 2026-10-11:** not observed. The probe was run three times back to back (Claude Code 2.1.296) and each time exited 0 with a full report, in about 1.5 seconds. Nobody tried to provoke throttling, because tripping a rate limit on the owner's account on purpose is not a machine's call, so what it does when throttled is still unknown. `afk usage` reuses a reading under 5 minutes old, and the governor treats a reading over 30 minutes old as stale and holds. | T1.3 |

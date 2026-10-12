@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -33,6 +34,11 @@ const (
 	restartBackoff = time.Minute
 	continueAfter  = 30 * time.Second
 	wedgeConfirm   = 60 * time.Second
+
+	// The usage limits of the rows that switch the governor on (see
+	// governed). They are the shipped defaults as well.
+	pauseRetry        = time.Minute
+	rateLimitFallback = time.Hour
 )
 
 // ago is the RFC 3339 text of a time d before now, the form the ledger and
@@ -145,6 +151,51 @@ func stale(v *SessionView) {
 func both(a, b func(*SessionView)) func(*SessionView) {
 	return func(v *SessionView) { a(v); b(v) }
 }
+
+// governed is an Observation change for a daemon with a usage source that
+// said action on a reading taken this tick, the means to stop a session, and
+// every means of recovery (a pause needs the relaunch, and the rows must show
+// that recovery, though wired, is not what acts). Rows change the fields they
+// test. A row without it runs as the loop did before the governor existed.
+func governed(action governor.Action, change func(*Observation)) func(*Observation) {
+	return recovering(func(o *Observation) {
+		o.Usage = UsageView{Consulted: true, Action: action, Reason: "a sentence with 91% in it", At: now}
+		o.CanPause, o.PauseRetry, o.RateLimitFallback = true, pauseRetry, rateLimitFallback
+		if change != nil {
+			change(o)
+		}
+	})
+}
+
+// unconsulted is a daemon with every means wired whose usage source was not
+// asked on this tick. The view still carries action, so a row shows that the
+// word is ignored and not merely absent.
+func unconsulted(action governor.Action) func(*Observation) {
+	return governed(action, func(o *Observation) { o.Usage.Consulted = false })
+}
+
+// loggedOut and loggedIn are Observation changes for a known login verdict.
+func loggedOut(o *Observation) { o.Login = LoginView{Known: true} }
+func loggedIn(o *Observation)  { o.Login = LoginView{Known: true, LoggedIn: true} }
+
+// usagePaused is a running entry whose session was stopped for usage before
+// ago. wake is the saved wake time as the ledger holds it; "" is none.
+func usagePaused(id string, before time.Duration, wake string) ledger.Entry {
+	e := running(id)
+	e.UsagePauseAt, e.UsageWakeAt = ago(before), wake
+	return e
+}
+
+// rateLimited is a view change: the session's rate-limit marker carries a
+// time d before now.
+func rateLimited(d time.Duration) func(*SessionView) {
+	return func(v *SessionView) { v.RateLimitedAt = now.Add(-d) }
+}
+
+// stopped is a view change: the host is not running, as after a pause. The
+// status time is left recent, so a row that reaches recovery by mistake is
+// caught by the gone rows and not by this one.
+func stopped(v *SessionView) { v.HostRunning = false }
 
 // item is an open, non-blocking notice. The helpers below change one thing
 // each, so a row says exactly what makes its item matter.
@@ -290,6 +341,32 @@ func createdAgo(it inbox.Item, before time.Duration) inbox.Item {
 //     action nothing can carry out.
 //   - "paused project with a wedged running session is restarted": pause
 //     stops new work, and a running task carries on under it.
+//   - "usage paused with the host gone past the grace is not relaunched" and
+//     its at-the-cap twin: a paused session's host is gone on purpose. If the
+//     usage rule sat below recovery the session would be started again inside
+//     the limit it was stopped for, and then given up on. This is the row the
+//     task's mutation check turns red.
+//   - Every "unconsulted" row: a daemon with no usage source, or a tick that
+//     did not ask, must launch, create, un-park and watch exactly as before.
+//     "a fresh rate-limit marker with usage unconsulted does nothing" is the
+//     sharpest of them: with no usage source nothing could ever resume the
+//     session, so stopping it would be stopping it for good.
+//   - "usage paused does not resume on a run reading taken before the pause":
+//     a session stopped by its marker is stopped while the last reading still
+//     says run. Without the row that reading resumes it on the next tick, it
+//     hits the limit again, and the two go round every half minute.
+//   - "usage paused never resumes while its host is running": a resume
+//     starts a new host, and two hosts for one session is two agents.
+//   - "no_launch does not hold an un-park" against "hold holds an un-park":
+//     a parked session is a running agent at a prompt, and PLAN §6.3 lets a
+//     running session carry on at no_launch and at no other level.
+//   - "refuse does not hold an un-park back to shipping": a ship starts no
+//     agent, and a merged task that cannot be marked done blocks the line.
+//   - "an owner pause keeps its own wording under a usage hold": the owner
+//     must be sent to `afk resume`, not to `afk usage`.
+//   - "usage paused before its wake waits with usage unconsulted": the
+//     executor does not consult during a known wait, so the "paused until"
+//     answer must not need a reading.
 func TestDecide(t *testing.T) {
 	// T1.2 builds on T1.1; T1.3 stands alone, so it is the task that can run
 	// while T1.1 is parked or failed.
@@ -1630,6 +1707,890 @@ func TestDecide(t *testing.T) {
 			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
 			reasonHas: []string{"status file cannot be read"},
 		},
+		// Rule 7 and rule a: the governor's hold on new work. Every row is
+		// wired with every means, so what changes is only the verdict.
+		{
+			name: "unconsulted usage launches",
+			obs:  unconsulted(governor.ActionPause),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name: "run launches",
+			obs:  governed(governor.ActionRun, nil),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name:      "no_launch holds a launch",
+			obs:       governed(governor.ActionNoLaunch, nil),
+			want:      Action{Kind: ActUsageWait, Task: "T1.1"},
+			reasonHas: []string{"close to the limit", "afk usage"},
+		},
+		{
+			name:      "hold holds a launch",
+			obs:       governed(governor.ActionHold, nil),
+			want:      Action{Kind: ActUsageWait, Task: "T1.1"},
+			reasonHas: []string{"no recent usage reading", "afk usage"},
+		},
+		{
+			name:      "pause holds a launch",
+			obs:       governed(governor.ActionPause, nil),
+			want:      Action{Kind: ActUsageWait, Task: "T1.1"},
+			reasonHas: []string{"pause line"},
+		},
+		{
+			name:      "refuse holds a launch",
+			obs:       governed(governor.ActionRefuse, nil),
+			want:      Action{Kind: ActUsageWait, Task: "T1.1"},
+			reasonHas: []string{"extra usage"},
+		},
+		{
+			// Only "run" may start anything; a word from a newer governor
+			// is not it.
+			name:      "an unknown governor word holds a launch",
+			obs:       governed(governor.Action("later"), nil),
+			want:      Action{Kind: ActUsageWait, Task: "T1.1"},
+			reasonHas: []string{"afk usage"},
+		},
+		{
+			name:      "logged out holds a launch",
+			obs:       governed(governor.ActionRun, loggedOut),
+			want:      Action{Kind: ActLoginWait, Task: "T1.1"},
+			reasonHas: []string{"logged out", "log it in"},
+		},
+		{
+			name:      "logged out wins over usage",
+			obs:       governed(governor.ActionPause, loggedOut),
+			want:      Action{Kind: ActLoginWait, Task: "T1.1"},
+			reasonHas: []string{"logged out"},
+		},
+		{
+			name:      "logged out holds a launch with usage unconsulted",
+			obs:       func(o *Observation) { loggedOut(o) },
+			want:      Action{Kind: ActLoginWait, Task: "T1.1"},
+			reasonHas: []string{"logged out"},
+		},
+		{
+			name: "login unknown launches",
+			obs:  governed(governor.ActionRun, func(o *Observation) { o.Login = LoginView{} }),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			// LoggedIn means nothing without Known.
+			name: "login unknown launches whatever its other field says",
+			obs:  governed(governor.ActionRun, func(o *Observation) { o.Login = LoginView{LoggedIn: false} }),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name: "logged in launches",
+			obs:  governed(governor.ActionRun, loggedIn),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name:      "an owner task is still raised under a usage hold",
+			obs:       governed(governor.ActionHold, loggedOut),
+			tasks:     []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			want:      Action{Kind: ActOwner, Task: "T0.0"},
+			reasonHas: []string{"your task"},
+		},
+		{
+			name:   "an answered owner task is still done under refuse",
+			obs:    governed(governor.ActionRefuse, nil),
+			tasks:  []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			ledger: led(ownerParked("T0.0", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T0.0", "")), time.Minute)},
+			want:   Action{Kind: ActOwnerDone, Task: "T0.0"},
+		},
+		{
+			name:      "an owner pause keeps its own wording under a usage hold",
+			obs:       governed(governor.ActionHold, loggedOut),
+			paused:    true,
+			want:      Action{Kind: ActWait},
+			reasonHas: []string{"paused", "afk resume"},
+		},
+		{
+			name:       "a stopped line keeps its own wording under a usage hold",
+			obs:        governed(governor.ActionHold, nil),
+			stopped:    true,
+			stopReason: "deploy check failed",
+			want:       Action{Kind: ActWait, LineStopped: true},
+			reasonHas:  []string{"the line is stopped"},
+		},
+		{
+			name:      "an idle project stays idle under refuse",
+			obs:       governed(governor.ActionRefuse, loggedOut),
+			ledger:    led(entry("T1.1", ledger.Done), entry("T1.2", ledger.Done), entry("T1.3", ledger.Done)),
+			want:      Action{Kind: ActIdle},
+			reasonHas: []string{"all done"},
+		},
+		{
+			name:     "no ledger file is still reported under a usage hold",
+			obs:      governed(governor.ActionHold, nil),
+			noLedger: true,
+			want:     Action{Kind: ActNoLedger},
+		},
+
+		// Rule a: creating a missing session again is a start.
+		{
+			name:   "unconsulted usage creates a missing session",
+			obs:    unconsulted(governor.ActionRefuse),
+			ledger: led(running("T1.1")),
+			want:   Action{Kind: ActCreate, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "run creates a missing session",
+			obs:    governed(governor.ActionRun, loggedIn),
+			ledger: led(running("T1.1")),
+			want:   Action{Kind: ActCreate, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "no_launch holds a create",
+			obs:    governed(governor.ActionNoLaunch, nil),
+			ledger: led(running("T1.1")),
+			want:   Action{Kind: ActUsageWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "hold holds a create",
+			obs:    governed(governor.ActionHold, nil),
+			ledger: led(running("T1.1")),
+			want:   Action{Kind: ActUsageWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "pause holds a create",
+			obs:    governed(governor.ActionPause, nil),
+			ledger: led(running("T1.1")),
+			want:   Action{Kind: ActUsageWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "refuse holds a create",
+			obs:    governed(governor.ActionRefuse, nil),
+			ledger: led(running("T1.1")),
+			want:   Action{Kind: ActUsageWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "logged out holds a create",
+			obs:    governed(governor.ActionRun, loggedOut),
+			ledger: led(running("T1.1")),
+			want:   Action{Kind: ActLoginWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "an owner pause keeps its own wording for a missing session under a usage hold",
+			obs:       governed(governor.ActionHold, nil),
+			paused:    true,
+			ledger:    led(running("T1.1")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"paused"},
+		},
+		{
+			// The pause fields do not survive a session that is gone from
+			// disk: there is nothing to resume, so it is a create like any
+			// other, and the executor clears them when it creates.
+			name:   "usage paused with no session on disk is created again on a run reading",
+			obs:    governed(governor.ActionRun, nil),
+			ledger: led(usagePaused("T1.1", time.Hour, "")),
+			want:   Action{Kind: ActCreate, Task: "T1.1", Session: "t1-1"},
+		},
+
+		// Rule 7: an un-park sets an agent going again.
+		{
+			name:   "unconsulted usage un-parks",
+			obs:    unconsulted(governor.ActionRefuse),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(nil)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:   "no_launch does not hold an un-park",
+			obs:    governed(governor.ActionNoLaunch, nil),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(nil)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:   "hold holds an un-park",
+			obs:    governed(governor.ActionHold, nil),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(nil)},
+			want:   Action{Kind: ActUsageWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "pause holds an un-park",
+			obs:    governed(governor.ActionPause, nil),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(nil)},
+			want:   Action{Kind: ActUsageWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "refuse holds an un-park",
+			obs:    governed(governor.ActionRefuse, nil),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(nil)},
+			want:   Action{Kind: ActUsageWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "logged out holds an un-park",
+			obs:    governed(governor.ActionRun, loggedOut),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(nil)},
+			want:   Action{Kind: ActLoginWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// no_launch lets a running session carry on; it does not make a
+			// logged-out agent able to.
+			name:   "logged out holds an un-park under no_launch",
+			obs:    governed(governor.ActionNoLaunch, loggedOut),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(nil)},
+			want:   Action{Kind: ActLoginWait, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:   "hold does not hold an un-park back to shipping",
+			obs:    governed(governor.ActionHold, nil),
+			ledger: led(shipParked("T1.1", "pr_open", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+		},
+		{
+			name:   "pause does not hold an un-park back to shipping",
+			obs:    governed(governor.ActionPause, nil),
+			ledger: led(shipParked("T1.1", "pr_open", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+		},
+		{
+			name:   "refuse does not hold an un-park back to shipping",
+			obs:    governed(governor.ActionRefuse, nil),
+			ledger: led(shipParked("T1.1", "pr_open", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+		},
+		{
+			name:   "logged out does not hold an un-park back to shipping",
+			obs:    governed(governor.ActionNoLaunch, loggedOut),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			parked: map[string]*SessionView{"T1.1": view(func(v *SessionView) { v.Phase = state.PhaseDone })},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Shipping},
+		},
+		{
+			name: "a shipping task still ships under refuse and logged out",
+			obs:  governed(governor.ActionRefuse, loggedOut),
+			ledger: led(func() ledger.Entry {
+				e := running("T1.1")
+				e.Status = ledger.Shipping
+				return e
+			}()),
+			want: Action{Kind: ActShipStep, Task: "T1.1", Session: "t1-1"},
+		},
+
+		// Rule u, entry not paused: when a running session is stopped.
+		{
+			name:      "unconsulted usage leaves a running session alone",
+			obs:       unconsulted(governor.ActionPause),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name: "running and the governor says pause is paused with the governor's wake",
+			obs: governed(governor.ActionPause, func(o *Observation) {
+				o.Usage.WakeAt, o.Usage.NextReset = now.Add(2*time.Hour), now.Add(5*time.Hour)
+			}),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(2 * time.Hour)},
+			reasonHas: []string{"pause line"},
+		},
+		{
+			// The governor gives no wake when a window at the limit has no
+			// reset time. Zero stays zero: a new reading decides.
+			name:    "running and the governor says pause with no wake keeps the wake empty",
+			obs:     governed(governor.ActionPause, func(o *Observation) { o.Usage.NextReset = now.Add(5 * time.Hour) }),
+			ledger:  led(running("T1.1")),
+			session: view(nil),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name: "running and the governor says refuse is paused with no wake",
+			obs: governed(governor.ActionRefuse, func(o *Observation) {
+				o.Usage.WakeAt, o.Usage.NextReset = now.Add(2*time.Hour), now.Add(5*time.Hour)
+			}),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"extra usage"},
+		},
+		{
+			name:      "running under no_launch just waits",
+			obs:       governed(governor.ActionNoLaunch, nil),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "running under hold just waits",
+			obs:       governed(governor.ActionHold, nil),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// A logged-out agent with a session running is left to it:
+			// recovery already bounds a session that keeps dying.
+			name:      "running and logged out just waits",
+			obs:       governed(governor.ActionRun, loggedOut),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a pause is not chosen without the means to stop",
+			obs:       governed(governor.ActionPause, func(o *Observation) { o.CanPause = false }),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a pause is not chosen without the means to start again",
+			obs:       governed(governor.ActionRefuse, func(o *Observation) { o.CanRelaunch = false }),
+			ledger:    led(running("T1.1")),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// Without the means the later rules run unchanged, the stall
+			// report among them.
+			name:    "a pause without the means still reports a stall",
+			obs:     governed(governor.ActionPause, func(o *Observation) { o.CanPause = false }),
+			ledger:  led(running("T1.1")),
+			session: view(func(v *SessionView) { v.AwaitingInput, v.UpdatedAt = true, now.Add(-time.Hour) }),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a fresh rate-limit marker pauses until the next reset",
+			obs:       governed(governor.ActionRun, func(o *Observation) { o.Usage.NextReset = now.Add(3 * time.Hour) }),
+			ledger:    led(running("T1.1")),
+			session:   view(rateLimited(time.Minute)),
+			want:      Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(3 * time.Hour)},
+			reasonHas: []string{"hit a usage limit"},
+		},
+		{
+			name:    "a fresh rate-limit marker with no reset known pauses for the fallback",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(running("T1.1")),
+			session: view(rateLimited(time.Minute)),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(rateLimitFallback)},
+		},
+		{
+			// A reset already past cannot be the one that ends this limit,
+			// and waking at it would resume at once.
+			name:    "a fresh rate-limit marker with the next reset already past pauses for the fallback",
+			obs:     governed(governor.ActionRun, func(o *Observation) { o.Usage.NextReset = now.Add(-time.Minute) }),
+			ledger:  led(running("T1.1")),
+			session: view(rateLimited(time.Minute)),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(rateLimitFallback)},
+		},
+		{
+			name:    "a next reset exactly now is not ahead, so the fallback is used",
+			obs:     governed(governor.ActionRun, func(o *Observation) { o.Usage.NextReset = now }),
+			ledger:  led(running("T1.1")),
+			session: view(rateLimited(time.Minute)),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(rateLimitFallback)},
+		},
+		{
+			name:    "a fresh rate-limit marker pauses under no_launch too",
+			obs:     governed(governor.ActionNoLaunch, func(o *Observation) { o.Usage.NextReset = now.Add(3 * time.Hour) }),
+			ledger:  led(running("T1.1")),
+			session: view(rateLimited(time.Minute)),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(3 * time.Hour)},
+		},
+		{
+			// The governor's own pause decides the wake, marker or not.
+			name: "a fresh rate-limit marker under a governor pause takes the governor's wake",
+			obs: governed(governor.ActionPause, func(o *Observation) {
+				o.Usage.WakeAt, o.Usage.NextReset = now.Add(2*time.Hour), now.Add(5*time.Hour)
+			}),
+			ledger:    led(running("T1.1")),
+			session:   view(rateLimited(time.Minute)),
+			want:      Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(2 * time.Hour)},
+			reasonHas: []string{"pause line"},
+		},
+		{
+			name:    "a fresh rate-limit marker under refuse has no wake",
+			obs:     governed(governor.ActionRefuse, func(o *Observation) { o.Usage.NextReset = now.Add(5 * time.Hour) }),
+			ledger:  led(running("T1.1")),
+			session: view(rateLimited(time.Minute)),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// Nothing removes the marker, so one from an earlier attempt in
+			// the same worktree is still there.
+			name:      "a rate-limit marker older than the attempt does nothing",
+			obs:       governed(governor.ActionRun, nil),
+			ledger:    led(running("T1.1")),
+			session:   view(rateLimited(2 * time.Hour)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a rate-limit marker in the second the attempt began does nothing",
+			obs:       governed(governor.ActionRun, nil),
+			ledger:    led(running("T1.1")),
+			session:   view(rateLimited(time.Hour)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// The marker that caused a pause is still there after the
+			// resume, which stamps restart_at.
+			name:      "a rate-limit marker older than the last restart does nothing",
+			obs:       governed(governor.ActionRun, nil),
+			ledger:    led(recovered("T1.1", 0, 10*time.Minute, false)),
+			session:   view(rateLimited(20 * time.Minute)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a rate-limit marker in the second of the last restart does nothing",
+			obs:       governed(governor.ActionRun, nil),
+			ledger:    led(recovered("T1.1", 0, 10*time.Minute, false)),
+			session:   view(rateLimited(10 * time.Minute)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "a rate-limit marker one second after the last restart pauses",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(recovered("T1.1", 0, 10*time.Minute, false)),
+			session: view(rateLimited(10*time.Minute - time.Second)),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(rateLimitFallback)},
+		},
+		{
+			name:      "a fresh rate-limit marker with usage unconsulted does nothing",
+			obs:       unconsulted(governor.ActionRun),
+			ledger:    led(running("T1.1")),
+			session:   view(rateLimited(time.Minute)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a fresh rate-limit marker without the means to stop does nothing",
+			obs:       governed(governor.ActionRun, func(o *Observation) { o.CanPause = false }),
+			ledger:    led(running("T1.1")),
+			session:   view(rateLimited(time.Minute)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "a pause is due but the session finished, so it ships",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(running("T1.1")),
+			session: view(func(v *SessionView) { v.Phase = state.PhaseDone }),
+			want:    Action{Kind: ActShip, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a pause is due but a blocking item is open, so it parks",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(nil),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			// The pause outranks recovery: a wedged agent under a pause is
+			// stopped, not restarted into the limit.
+			name:    "a pause is due and the session is wedged, so it is paused and not restarted",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(running("T1.1")),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// With the host already gone the pause is still recorded, so
+			// that recovery does not start it again under the limit.
+			name:    "a pause is due and the host is gone, so it is paused and not relaunched",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(running("T1.1")),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "stale status and the governor says pause is paused",
+			obs:     governed(governor.ActionPause, func(o *Observation) { o.Usage.WakeAt = now.Add(2 * time.Hour) }),
+			ledger:  led(running("T1.1")),
+			session: view(stale),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(2 * time.Hour)},
+		},
+		{
+			name:    "stale status and a fresh rate-limit marker is paused",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(stale, rateLimited(time.Minute))),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(rateLimitFallback)},
+		},
+		{
+			name:      "stale status with usage unconsulted waits as before",
+			obs:       unconsulted(governor.ActionPause),
+			ledger:    led(running("T1.1")),
+			session:   view(stale),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"status file cannot be read"},
+		},
+
+		// Rule u, entry paused: nothing below it may see the session.
+		{
+			name:      "usage paused with the host gone past the grace is not relaunched",
+			obs:       governed(governor.ActionPause, nil),
+			ledger:    led(usagePaused("T1.1", 30*time.Minute, "")),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"paused for usage"},
+		},
+		{
+			name: "usage paused with the host gone and every restart used is not given up on",
+			obs:  governed(governor.ActionPause, nil),
+			ledger: led(func() ledger.Entry {
+				e := usagePaused("T1.1", 30*time.Minute, "")
+				e.Restarts, e.RestartAt = maxRestarts, ago(40*time.Minute)
+				return e
+			}()),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused with the host gone and no means to relaunch is not reported gone",
+			obs:     governed(governor.ActionRun, func(o *Observation) { o.CanRelaunch = false }),
+			ledger:  led(usagePaused("T1.1", 30*time.Minute, "")),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			// With no relaunch the session can only be started over by hand.
+			reasonHas: []string{"cannot start a session again", "afk ledger set T1.1 pending"},
+		},
+		{
+			name:    "usage paused and wedged is not restarted",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", pauseRetry-time.Second, "")),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name: "usage paused with continue pending types nothing",
+			obs:  governed(governor.ActionPause, nil),
+			ledger: led(func() ledger.Entry {
+				e := recovered("T1.1", 1, time.Hour, true)
+				e.UsagePauseAt = ago(pauseRetry - time.Second)
+				return e
+			}()),
+			session: view(nil),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused and awaiting input past the stall limit reports no stall",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", 30*time.Minute, "")),
+			session: view(both(gone, func(v *SessionView) { v.AwaitingInput = true })),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused with the host up and awaiting input past the stall limit reports no stall",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", pauseRetry-time.Second, "")),
+			session: view(func(v *SessionView) { v.AwaitingInput, v.UpdatedAt = true, now.Add(-time.Hour) }),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "usage paused with the host still up before the retry time waits",
+			obs:       governed(governor.ActionPause, nil),
+			ledger:    led(usagePaused("T1.1", pauseRetry-time.Second, "")),
+			session:   view(nil),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting for it to stop"},
+		},
+		{
+			name:      "usage paused with the host still up at the retry time is stopped by force",
+			obs:       governed(governor.ActionPause, nil),
+			ledger:    led(usagePaused("T1.1", pauseRetry, "")),
+			session:   view(nil),
+			want:      Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", Force: true},
+			reasonHas: []string{"still running"},
+		},
+		{
+			name:    "usage paused with the host still up just short of three retry times is still forced",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", 3*pauseRetry-time.Second, "")),
+			session: view(nil),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", Force: true},
+		},
+		{
+			name:      "usage paused with the host still up at three retry times is reported stuck",
+			obs:       governed(governor.ActionPause, nil),
+			ledger:    led(usagePaused("T1.1", 3*pauseRetry, "")),
+			session:   view(nil),
+			want:      Action{Kind: ActUsageStuck, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"still running", "spending"},
+		},
+		{
+			// The same observation with the stuck item open: rule e parks
+			// first, which is the whole of the once-only limit.
+			name:    "usage stuck with its item open parks",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", 3*pauseRetry, "")),
+			items:   []inbox.Item{titled(item("u1", "T1.1", "t1-1"), PauseFailedTitlePrefix)},
+			session: view(nil),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"u1"}},
+		},
+		{
+			name:    "usage paused with the host still up and no means to stop it just waits",
+			obs:     governed(governor.ActionPause, func(o *Observation) { o.CanPause = false }),
+			ledger:  led(usagePaused("T1.1", time.Hour, "")),
+			session: view(nil),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused never resumes while its host is running",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", pauseRetry-time.Second, "")),
+			session: view(nil),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused with its host running on a run reading is forced, not resumed",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", pauseRetry, ago(time.Second))),
+			session: view(nil),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", Force: true},
+		},
+		{
+			// A forced stop is about the host, not the clock: a wake still
+			// ahead does not excuse a session that has not stopped.
+			name:      "usage paused before its wake with the host still up is forced",
+			obs:       governed(governor.ActionPause, nil),
+			ledger:    led(usagePaused("T1.1", pauseRetry, ago(-time.Hour))),
+			session:   view(nil),
+			want:      Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", Force: true},
+			reasonHas: []string{"still running"},
+		},
+		{
+			name:      "usage paused resumes on run after the wake",
+			obs:       governed(governor.ActionRun, nil),
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session:   view(gone),
+			want:      Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"starting"},
+		},
+		{
+			name:    "usage paused resumes on no_launch after the wake",
+			obs:     governed(governor.ActionNoLaunch, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session: view(gone),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused resumes exactly at the wake",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, ago(0))),
+			session: view(gone),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused with no wake resumes on a run reading",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(gone),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused with an unreadable wake resumes on a run reading",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "next tuesday")),
+			session: view(gone),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// The host is only just gone: a resume needs no grace, because
+			// the loop is the one that stopped it.
+			name:    "usage paused resumes with the host gone inside the grace",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(stopped),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused resumes with a login known to be in",
+			obs:     governed(governor.ActionRun, loggedIn),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(gone),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "usage paused does not resume before the wake",
+			obs:       governed(governor.ActionRun, nil),
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, ago(-time.Hour))),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"paused for usage until", "13:00 UTC"},
+		},
+		{
+			name:      "usage paused before its wake waits with usage unconsulted",
+			obs:       unconsulted(governor.ActionRun),
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, ago(-time.Hour))),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"paused for usage until", "13:00 UTC"},
+		},
+		{
+			name:      "usage paused does not resume on a run reading taken before the pause",
+			obs:       governed(governor.ActionRun, func(o *Observation) { o.Usage.At = now.Add(-3 * time.Hour) }),
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"new usage reading"},
+		},
+		{
+			// The pause is stored to the second, so a reading inside that
+			// second cannot be shown to be the later of the two.
+			name: "usage paused does not resume on a reading taken in the second of the pause",
+			obs: governed(governor.ActionRun, func(o *Observation) {
+				o.Usage.At = now.Add(-2*time.Hour + 900*time.Millisecond)
+			}),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name: "usage paused resumes on a reading one second after the pause",
+			obs: governed(governor.ActionRun, func(o *Observation) {
+				o.Usage.At = now.Add(-2*time.Hour + time.Second)
+			}),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(gone),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused does not resume on pause",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused does not resume on hold",
+			obs:     governed(governor.ActionHold, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused does not resume on refuse",
+			obs:     governed(governor.ActionRefuse, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "usage paused past its wake with usage unconsulted says no reading is available",
+			obs:       unconsulted(governor.ActionRun),
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"no usage reading is available", "afk ledger set T1.1 pending"},
+		},
+		{
+			name:      "usage paused with no wake and usage unconsulted says no reading is available",
+			obs:       unconsulted(governor.ActionRun),
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, "")),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"no usage reading is available", "afk ledger set T1.1 pending"},
+		},
+		{
+			// A daemon with nothing wired at all meets a ledger a governed
+			// daemon left behind: it still must not recover the session.
+			name:      "usage paused is left alone by a daemon with nothing wired",
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, "")),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"no usage reading is available"},
+		},
+		{
+			name:      "usage paused does not resume while logged out",
+			obs:       governed(governor.ActionRun, loggedOut),
+			ledger:    led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session:   view(gone),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"logged out"},
+		},
+		{
+			name:    "usage paused does not resume without the means to relaunch",
+			obs:     governed(governor.ActionRun, func(o *Observation) { o.CanRelaunch = false }),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session: view(gone),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused and phase done ships",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(both(gone, func(v *SessionView) { v.Phase = state.PhaseDone })),
+			want:    Action{Kind: ActShip, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused and phase failed fails",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			session: view(both(gone, func(v *SessionView) { v.Phase = state.PhaseFailed })),
+			want:    Action{Kind: ActFail, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused with an open blocking item parks",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(gone),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			name:      "stale status and usage paused with the host gone is not relaunched",
+			obs:       governed(governor.ActionPause, nil),
+			ledger:    led(usagePaused("T1.1", 30*time.Minute, "")),
+			session:   view(both(stale, stopped)),
+			want:      Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"paused for usage"},
+		},
+		{
+			name:    "stale status and usage paused resumes on run after the wake",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, ago(time.Minute))),
+			session: view(both(stale, stopped)),
+			want:    Action{Kind: ActUsageResume, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "stale status and usage paused with the host still up is forced",
+			obs:     governed(governor.ActionPause, nil),
+			ledger:  led(usagePaused("T1.1", pauseRetry, "")),
+			session: view(stale),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", Force: true},
+		},
+		{
+			name:    "stale status and usage paused with an open blocking item parks",
+			obs:     governed(governor.ActionRun, nil),
+			ledger:  led(usagePaused("T1.1", 2*time.Hour, "")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(both(stale, stopped)),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1662,6 +2623,21 @@ func TestDecide(t *testing.T) {
 			}
 			if !slices.Equal(got.Items, tc.want.Items) {
 				t.Errorf("Items = %v, want %v", got.Items, tc.want.Items)
+			}
+			// Checked on every row: a wake or a forced stop on an action
+			// that is not a usage pause would be carried out by nothing and
+			// would still change the stored state.
+			if !got.WakeAt.Equal(tc.want.WakeAt) {
+				t.Errorf("WakeAt = %s, want %s\nreason: %s", got.WakeAt, tc.want.WakeAt, got.Reason)
+			}
+			if got.Force != tc.want.Force {
+				t.Errorf("Force = %v, want %v\nreason: %s", got.Force, tc.want.Force, got.Reason)
+			}
+			// The loop writes its state and its log when a reason changes,
+			// so no reason may carry the governor's own sentence, whose
+			// numbers change with every reading.
+			if o.Usage.Reason != "" && strings.Contains(got.Reason, o.Usage.Reason) {
+				t.Errorf("Reason = %q holds the governor's sentence", got.Reason)
 			}
 			// Every action is shown by `afk daemon status`, so none may come
 			// back without a sentence.
@@ -1700,12 +2676,78 @@ func TestDecideDoesNotChangeItsInput(t *testing.T) {
 // limit rests on: a stall item must never be read as a host-gone report or
 // the other way round, which is what would happen if one prefix began with
 // the other.
+//
+// The usage-stuck prefix is held to the same rule against every other one.
+// Decide does not search for it, but it shares an inbox with the two that
+// are searched for: beginning with either, a "could not be stopped" item
+// would be read as a stall or host-gone report and silence one the owner is
+// owed in the same attempt.
 func TestTitlePrefixesAreDistinct(t *testing.T) {
 	if StallTitlePrefix == "" || HostGoneTitlePrefix == "" {
 		t.Fatal("a title prefix is empty; every item would match it")
 	}
 	if strings.HasPrefix(StallTitlePrefix, HostGoneTitlePrefix) || strings.HasPrefix(HostGoneTitlePrefix, StallTitlePrefix) {
 		t.Errorf("prefixes overlap: %q and %q", StallTitlePrefix, HostGoneTitlePrefix)
+	}
+	if PauseFailedTitlePrefix == "" {
+		t.Fatal("the pause-failed title prefix is empty; every item would match it")
+	}
+	for _, other := range []string{StallTitlePrefix, HostGoneTitlePrefix, RecoveryTitlePrefix} {
+		if strings.HasPrefix(PauseFailedTitlePrefix, other) || strings.HasPrefix(other, PauseFailedTitlePrefix) {
+			t.Errorf("prefixes overlap: %q and %q", PauseFailedTitlePrefix, other)
+		}
+	}
+}
+
+// TestNotices pins the two standing troubles the executor raises an item for.
+//
+// Load-bearing rows: "refuse without being consulted is no overage" (the view
+// of a tick that did not ask means nothing, and an item raised from it would
+// be answered and raised again on alternate ticks), "login unknown is not
+// logged out" (a tool that cannot say must not page the owner to log in), and
+// "pause is not overage" (only extra usage being on is the owner's to fix;
+// a pause ends by itself).
+func TestNotices(t *testing.T) {
+	cases := []struct {
+		name          string
+		usage         UsageView
+		login         LoginView
+		wantOverage   bool
+		wantLoggedOut bool
+	}{
+		{name: "nothing known is no notice"},
+		{name: "run and logged in is no notice",
+			usage: UsageView{Consulted: true, Action: governor.ActionRun}, login: LoginView{Known: true, LoggedIn: true}},
+		{name: "refuse is overage",
+			usage: UsageView{Consulted: true, Action: governor.ActionRefuse}, wantOverage: true},
+		{name: "refuse without being consulted is no overage",
+			usage: UsageView{Action: governor.ActionRefuse}},
+		{name: "pause is not overage",
+			usage: UsageView{Consulted: true, Action: governor.ActionPause}},
+		{name: "hold is not overage",
+			usage: UsageView{Consulted: true, Action: governor.ActionHold}},
+		{name: "no_launch is not overage",
+			usage: UsageView{Consulted: true, Action: governor.ActionNoLaunch}},
+		{name: "known and out is logged out",
+			login: LoginView{Known: true}, wantLoggedOut: true},
+		{name: "login unknown is not logged out",
+			login: LoginView{}},
+		{name: "login unknown is not logged out whatever its other field says",
+			login: LoginView{LoggedIn: true}},
+		{name: "both at once",
+			usage: UsageView{Consulted: true, Action: governor.ActionRefuse}, login: LoginView{Known: true},
+			wantOverage: true, wantLoggedOut: true},
+		{name: "logged out with usage unconsulted is still logged out",
+			usage: UsageView{Action: governor.ActionRefuse}, login: LoginView{Known: true}, wantLoggedOut: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			overage, loggedOut := Notices(Observation{Now: now, Usage: tc.usage, Login: tc.login})
+			if overage != tc.wantOverage || loggedOut != tc.wantLoggedOut {
+				t.Errorf("Notices = (overage %v, logged out %v), want (%v, %v)",
+					overage, loggedOut, tc.wantOverage, tc.wantLoggedOut)
+			}
+		})
 	}
 }
 

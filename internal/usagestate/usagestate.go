@@ -136,14 +136,32 @@ type Window struct {
 	Scope    string     `json:"scope,omitempty"`
 }
 
-// File is the on-disk shape of usage.json. It holds only measurements; the
-// governor's decision is derived from it at read time, never stored.
+// Governor is the decision the governor made from a snapshot, as the writer
+// of the snapshot computed it. It is stored as words and times so this
+// package never has to import internal/governor: it records what was decided,
+// it does not decide. Readers show it as recorded; they do not recompute it,
+// because the thresholds may have changed since the snapshot was written.
+type Governor struct {
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+	// WakeAt is nil, and omitted from the file, when the decision has no wake
+	// time (a zero time would serialize as year 1 and read as a real date).
+	WakeAt *time.Time `json:"wake_at,omitempty"`
+	At     time.Time  `json:"at"`
+}
+
+// File is the on-disk shape of usage.json. It holds the measurements and, when
+// the writer made one, the governor's decision computed from them. A file
+// written before the governor was stored has no governor key and reads with a
+// nil Governor.
 type File struct {
 	At             time.Time `json:"at"`
 	Provider       string    `json:"provider"`
 	Windows        []Window  `json:"windows"`
 	OverageEnabled bool      `json:"overage_enabled"`
 	Source         string    `json:"source"`
+	// Governor is nil, and omitted from the file, when no decision was stored.
+	Governor *Governor `json:"governor,omitempty"`
 }
 
 // FromSnapshot converts a probe result into the file shape. Times are

@@ -89,3 +89,9 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Agent view**: the right side showing the selected session's live terminal.
 - **Overview**: the right side showing the selected session's summary (plan, progress, review) instead of its terminal; a row with no live agent always shows it.
 - **Walk-through**: driving a built afk by hand (through tmux) in a throwaway repository and saving the screens, to check behaviour the tests only describe.
+- **Usage pause**: the daemon stopping a running session's agent because a usage window is nearly spent (or extra usage is on), and starting it again in the same conversation after the reset.
+- **Wake time**: the earliest moment a session paused for usage may be started again, usually one minute after the full window resets.
+- **Hold**: the governor's answer when it has no recent usage reading: nothing new starts and a running session is left alone.
+- **Rate-limit marker**: `.afk/{session}/.rate-limited`, written by a hook when the agent CLI stops because of a usage limit; the daemon reads it and pauses the session.
+- **Login check**: the daemon asking the agent CLI, about once an hour, whether it is still logged in; logged out means nothing new starts.
+- **Spike**: a short hands-on experiment run before the work is planned, to find out how something really behaves.

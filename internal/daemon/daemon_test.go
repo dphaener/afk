@@ -15,6 +15,7 @@ import (
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
+	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -95,6 +96,41 @@ type rig struct {
 	// they are set.
 	noRestarts            bool
 	backoff, wedgeConfirm time.Duration
+
+	// The usage governor's fakes (governor_test.go). Like restartOn, each
+	// switch is off unless a test turns it on, so every test written before
+	// the loop had a governor runs as it did.
+	//
+	// usageOn sets Deps.Usage to fakeUsage, which works its verdict out with
+	// the real governor.Decide from the fake account below and the rig's
+	// clock, and counts its calls in usageCalls. usedPct and resetsAt are the
+	// one usage window the account reports (a zero resetsAt is a window with
+	// no known reset), and overage its extra-usage switch. readAt is when the
+	// reading was taken; the zero time means "just now", a new reading on
+	// every call. noReading is an account never read, unsupported a tool that
+	// cannot report usage, and onUnknown the machine's on_unknown_usage.
+	usageOn                bool
+	usageCalls             int
+	usedPct                float64
+	resetsAt, readAt       time.Time
+	overage                bool
+	noReading, unsupported bool
+	onUnknown              string
+	// loginOn sets Deps.Login, which answers login and counts in loginCalls.
+	loginOn    bool
+	login      LoginView
+	loginCalls int
+	// stopOn sets Deps.StopSession. stops is every call made. A stop that
+	// works takes the host away; stopErr is what it answers instead, and
+	// stopIgnored and forceIgnored make the polite stop and the forced one
+	// answer nil and leave the host running.
+	stopOn                    bool
+	stops                     []stopCall
+	stopErr                   error
+	stopIgnored, forceIgnored bool
+	// markerFn, when set, is Deps.RateLimited. Unset, the loop reads the
+	// real marker file from the session's folder, which rateLimit writes.
+	markerFn func(worktree, sess string) (time.Time, bool)
 }
 
 // recoveryTakes is how far a fake restart or relaunch that works moves the
@@ -111,10 +147,83 @@ type restartCall struct {
 	counted           int
 }
 
-// relaunchCall is the same for a relaunch.
+// relaunchCall is the same for a relaunch. paused is the entry's
+// usage_pause_at as the ledger file held it while the call was being made:
+// empty for every relaunch but one made with the pause still saved.
 type relaunchCall struct {
 	req     RelaunchRequest
 	counted int
+	paused  string
+}
+
+// stopCall is one stop the loop asked for. paused is the entry's
+// usage_pause_at as the ledger file held it while the call was being made.
+type stopCall struct {
+	worktree, session string
+	force             bool
+	paused            string
+}
+
+// onDisk reads the entry that names sess straight from the ledger file, the
+// way a daemon started a moment later would.
+func (r *rig) onDisk(sess string) ledger.Entry {
+	r.t.Helper()
+	l, err := ledger.Load(r.root)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	for _, e := range l.Tasks {
+		if e.Session == sess {
+			return e
+		}
+	}
+	r.t.Fatalf("no ledger entry names the session %s", sess)
+	return ledger.Entry{}
+}
+
+// fakeStop is Deps.StopSession: it records the call and the pause on disk,
+// then answers as the test set it to. A stop that works takes the host away,
+// as the real host removes its own files when it ends.
+func (r *rig) fakeStop(worktree, sess string, force bool) error {
+	r.stops = append(r.stops, stopCall{worktree, sess, force, r.onDisk(sess).UsagePauseAt})
+	if r.stopErr != nil {
+		return r.stopErr
+	}
+	if (force && r.forceIgnored) || (!force && r.stopIgnored) {
+		return nil
+	}
+	if err := os.Remove(filepath.Join(r.sessionDir(sess), "hostup")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// fakeUsage is Deps.Usage: the real governor's verdict on the rig's fake
+// account at the rig's clock, as the view the loop is handed. NextReset is
+// worked out the way the real source does, from the one window there is.
+func (r *rig) fakeUsage() UsageView {
+	r.usageCalls++
+	th := governor.DefaultThresholds()
+	if r.onUnknown != "" {
+		th.OnUnknownUsage = r.onUnknown
+	}
+	in := governor.Input{Unsupported: r.unsupported, SessionRunning: true, Now: *r.clock, Thresholds: th}
+	v := UsageView{Consulted: true, At: *r.clock}
+	if !r.unsupported && !r.noReading {
+		at := r.readAt
+		if at.IsZero() {
+			at = *r.clock
+		}
+		in.Snapshot = &provider.UsageSnapshot{At: at, OverageEnabled: r.overage, Windows: []provider.Window{
+			{Kind: provider.WindowSession, UsedPct: r.usedPct, ResetsAt: r.resetsAt}}}
+		v.At = at
+		if !r.resetsAt.IsZero() {
+			v.NextReset = r.resetsAt.Add(time.Minute)
+		}
+	}
+	d := governor.Decide(in)
+	v.Action, v.Reason, v.WakeAt = d.Action, d.Reason, d.WakeAt
+	return v
 }
 
 // countedOnDisk reads the restart count of the entry that names sess straight
@@ -171,7 +280,7 @@ func (r *rig) fakeRestart(worktree, sess string) (string, error) {
 // fakeRelaunch is Deps.Relaunch. A relaunch that works takes a while and
 // leaves a running host that has no verdict yet.
 func (r *rig) fakeRelaunch(req RelaunchRequest) error {
-	r.relaunches = append(r.relaunches, relaunchCall{req, r.countedOnDisk(req.Session)})
+	r.relaunches = append(r.relaunches, relaunchCall{req, r.countedOnDisk(req.Session), r.onDisk(req.Session).UsagePauseAt})
 	if r.relaunchErr != nil {
 		return r.relaunchErr
 	}
@@ -323,6 +432,16 @@ func (r *rig) deps() Deps {
 	if r.relaunchOn {
 		d.Relaunch = r.fakeRelaunch
 	}
+	if r.usageOn {
+		d.Usage = r.fakeUsage
+	}
+	if r.loginOn {
+		d.Login = func() LoginView { r.loginCalls++; return r.login }
+	}
+	if r.stopOn {
+		d.StopSession = r.fakeStop
+	}
+	d.RateLimited = r.markerFn
 	return d
 }
 
@@ -2062,6 +2181,8 @@ func TestKinds(t *testing.T) {
 		string(ActIdle), string(ActNoLedger), string(ActOwner), string(ActOwnerDone),
 		string(ActShipStep),
 		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
+		string(ActUsageWait), string(ActLoginWait), string(ActUsagePause),
+		string(ActUsagePaused), string(ActUsageStuck), string(ActUsageResume),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
 	got := Kinds()

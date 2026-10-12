@@ -73,6 +73,10 @@ type Provider interface {
 	// only through d and reports plain-language manual steps when it will
 	// not be. See unattended.go.
 	UnattendedPreflight(d UnattendedDeps) (ok bool, manualSteps string)
+	// Login reports whether the agent CLI is logged in, through the injected
+	// runner. A provider with no way to tell returns ErrLoginUnsupported.
+	// See login.go.
+	Login(ctx context.Context, d LoginDeps) (LoginStatus, error)
 }
 
 // order is the stable listing order for Names.
