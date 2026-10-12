@@ -45,6 +45,11 @@ import (
 //     inputNormal and the release binds it here, so an applied filter
 //     survives the release because this mode outranks normal, not because of
 //     any rule ordering.
+//   - The inbox rows pin the overlay's place: below every modal, the palette
+//     and the switcher, above everything else. "inbox over focused pane" is
+//     the one that matters in use: an attach can land focused under the open
+//     overlay, and the keys being typed are an answer, not input for a
+//     session the box is covering.
 //
 // The single-state rows exist so a precedence-table edit that drops a layer
 // entirely fails loudly rather than shadowing.
@@ -166,6 +171,60 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			name:  "form alone",
 			state: modeState{formOpen: true},
 			want:  inputForm,
+		},
+		{
+			name:  "inbox alone",
+			state: modeState{inboxOpen: true},
+			want:  inputInbox,
+		},
+		{
+			name:  "inbox over focused pane: the overlay is what is on screen",
+			state: modeState{inboxOpen: true, focus: focusRight, view: viewAgent, pane: true},
+			want:  inputInbox,
+		},
+		{
+			// Reachable: `i` is a rule in detail mode, and the focus stays on
+			// the right while the overlay is up.
+			name:  "inbox over focused detail",
+			state: modeState{inboxOpen: true, focus: focusRight, view: viewOverview},
+			want:  inputInbox,
+		},
+		{
+			name:  "inbox over form",
+			state: modeState{inboxOpen: true, formOpen: true},
+			want:  inputInbox,
+		},
+		{
+			name:  "inbox over filter prompt",
+			state: modeState{inboxOpen: true, listFiltering: true},
+			want:  inputInbox,
+		},
+		{
+			name:  "inbox over resizing",
+			state: modeState{inboxOpen: true, resizing: true},
+			want:  inputInbox,
+		},
+		{
+			name:  "switcher over inbox",
+			state: modeState{switcherOpen: true, inboxOpen: true},
+			want:  inputSwitcher,
+		},
+		{
+			name:  "palette over inbox",
+			state: modeState{paletteOpen: true, inboxOpen: true},
+			want:  inputPalette,
+		},
+		{
+			// Reachable: a background create can fail while the overlay is up,
+			// and its report is the only place that output can be read.
+			name:  "spawn error over inbox: modal wins",
+			state: modeState{modal: inputSpawnError, inboxOpen: true},
+			want:  inputSpawnError,
+		},
+		{
+			name:  "edit label over inbox: modal wins",
+			state: modeState{modal: inputEditLabel, inboxOpen: true},
+			want:  inputEditLabel,
 		},
 		{
 			name:  "filter prompt over focused detail",
@@ -345,8 +404,10 @@ func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 
 // TestModeSnapshot pins the Model→modeState bridge: each overlay-activity
 // field maps to its snapshot field, focus and view copy across verbatim, and
-// pane is "a live pane belongs to the selected row". The load-bearing rows
-// are the pane ones: a pane installed for a row that is NOT selected does not
+// pane is "a live pane belongs to the selected row". The inbox rows are what
+// make the overlay own the keyboard at all: a flag the snapshot did not copy
+// would leave an open overlay on screen with every key going underneath it.
+// The load-bearing rows are the pane ones: a pane installed for a row that is NOT selected does not
 // count, and a pane with no selection at all does (the paned row left
 // discovery and the list emptied — the pane must stay reachable). Neither
 // focus nor view is masked here; the derivation in modePrecedence combines
@@ -396,6 +457,20 @@ func TestModeSnapshot(t *testing.T) {
 			name: "form active",
 			mut:  func(m *Model) { m.formOpen = true },
 			want: modeState{formOpen: true},
+		},
+		{
+			name: "inbox open",
+			mut:  func(m *Model) { m.inboxOpen = true },
+			want: modeState{inboxOpen: true},
+		},
+		{
+			name: "inbox open over a focused overview",
+			mut: func(m *Model) {
+				m.inboxOpen = true
+				m.focus = focusRight
+				m.view = viewOverview
+			},
+			want: modeState{inboxOpen: true, focus: focusRight, view: viewOverview},
 		},
 		{
 			name: "right focus copies across",
@@ -490,8 +565,9 @@ func press(code rune, text string) tea.KeyPressMsg {
 // per-handler special cases. Load-bearing rows, and why:
 //
 //   - ctrl+g rows: the mouse chord must be claimable from EVERY mode except
-//     the switcher (each old handler intercepts it first; the switcher's
-//     omission is documented intent at model.go:2161-2165). A row flipping
+//     the switcher and the inbox overlay (each old handler intercepts it
+//     first; the switcher's omission is documented intent at
+//     model.go:2161-2165, and the inbox overlay closes on it). A row flipping
 //     here either strands the user with a captured mouse or steals a key the
 //     switcher never claimed.
 //   - ctrl+c rows: quits from modals and switcher, component fall-through in
@@ -523,6 +599,16 @@ func press(code rune, text string) tea.KeyPressMsg {
 //     overview.
 //     TestDetailFocusRetainedKeySet (detailfocus_test.go) enumerates the whole
 //     focused surface; these rows carry only the normal/detail contrasts.
+//   - "b" rows: the Build tab's key is a rule in normal and detail and in no
+//     other mode. "b in pane forwards to the child" is the load-bearing one:
+//     the agent pane keeps every key but its three reserved chords.
+//   - "i" rows: the same shape for the inbox key, and "i in pane forwards to
+//     the child" is load-bearing for the same reason.
+//   - inputInbox rows: the overlay has no parent rule, so EVERY key is the
+//     component's. "q in inbox" and "ctrl+c in inbox" are the load-bearing
+//     pair: a quit rule here would lose a half-typed answer. "ctrl+g in
+//     inbox" is the one chord that is not the mouse toggle in this mode; the
+//     overlay closes on it.
 func TestRouteKeyMatrix(t *testing.T) {
 	reg := newModeRegistry(defaultKeyMap())
 
@@ -677,6 +763,50 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"o in provider picker is swallowed", inputPickProvider, routeConds{}, press('o', "o"), keyDecision{kind: routeIgnored}},
 		{"y in provider picker is swallowed", inputPickProvider, routeConds{}, yLower, keyDecision{kind: routeIgnored}},
 		{"tab in provider picker is swallowed", inputPickProvider, routeConds{}, tab, keyDecision{kind: routeIgnored}},
+
+		// b: the Build tab, from the list and from a focused overview only. The
+		// pane row is the one that matters: with the agent focused `b` is a
+		// letter the agent is being sent, and a rule here would take it away
+		// from every session the dashboard hosts. Everywhere else it is text
+		// for a component or is swallowed, like any other letter.
+		{"b in normal shows the build tasks", inputNormal, routeConds{}, press('b', "b"), keyDecision{routeAction, actionBuild}},
+		{"b in detail shows the build tasks", inputDetail, routeConds{}, press('b', "b"), keyDecision{routeAction, actionBuild}},
+		{"b in pane forwards to the child", inputPane, routeConds{}, press('b', "b"), keyDecision{kind: routeChild}},
+		{"b in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('b', "b"), keyDecision{kind: routeChild}},
+		{"b in form types (component)", inputForm, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
+		{"b in filter types (component)", inputFilter, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
+		{"b in switcher filters (component)", inputSwitcher, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
+		{"b in palette types (component)", inputPalette, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
+		{"b in edit label goes to the textinput", inputEditLabel, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
+		{"b in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
+		{"b in resize is swallowed", inputResize, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
+		// i: the inbox overlay, on the same terms as b.
+		{"i in normal opens the inbox", inputNormal, routeConds{}, press('i', "i"), keyDecision{routeAction, actionInbox}},
+		{"i in detail opens the inbox", inputDetail, routeConds{}, press('i', "i"), keyDecision{routeAction, actionInbox}},
+		{"i in pane forwards to the child", inputPane, routeConds{}, press('i', "i"), keyDecision{kind: routeChild}},
+		{"i in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('i', "i"), keyDecision{kind: routeChild}},
+		{"i in form types (component)", inputForm, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		{"i in filter types (component)", inputFilter, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		{"i in switcher filters (component)", inputSwitcher, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		{"i in palette types (component)", inputPalette, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		{"i in edit label goes to the textinput", inputEditLabel, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		{"i in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
+		{"i in resize is swallowed", inputResize, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
+
+		// The inbox overlay: no parent rule, every key to the component.
+		{"q in inbox is text (component)", inputInbox, routeConds{}, q, keyDecision{kind: routeComponent}},
+		{"ctrl+c in inbox does not quit (component)", inputInbox, routeConds{}, ctrlC, keyDecision{kind: routeComponent}},
+		{"ctrl+g in inbox closes the overlay (component)", inputInbox, routeConds{}, ctrlG, keyDecision{kind: routeComponent}},
+		{"esc in inbox goes to the component (two-stage)", inputInbox, routeConds{}, esc, keyDecision{kind: routeComponent}},
+		{"enter in inbox goes to the component", inputInbox, routeConds{}, enter, keyDecision{kind: routeComponent}},
+		{"i in inbox is text (component)", inputInbox, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		{"b in inbox is text (component)", inputInbox, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
+		{"ctrl+t in inbox goes to the component", inputInbox, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
+		{"ctrl+backslash in inbox goes to the component", inputInbox, routeConds{paneOpen: true}, ctrlBackslash, keyDecision{kind: routeComponent}},
+		{"pgup in inbox goes to the component", inputInbox, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgUp}, keyDecision{kind: routeComponent}},
+		// The sixth digit exists for the Build tab in a git-spice repo.
+		{"6 in detail jumps to a tab", inputDetail, routeConds{}, press('6', "6"), keyDecision{routeAction, actionDetailTabJump}},
+		{"6 in normal is ignored", inputNormal, routeConds{}, press('6', "6"), keyDecision{kind: routeIgnored}},
 
 		// ctrl+w: enters resize mode from normal and detail only; a focused
 		// pane forwards it to the child (delete-word in a shell), and inside
@@ -989,6 +1119,17 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"resize advertises L", inputResize, "L"},
 		{"resize advertises shift+left", inputResize, "shift+left"},
 		{"resize advertises shift+right", inputResize, "shift+right"},
+		// The inbox overlay's keys are all the component's, so this keymap is
+		// the only structured record of them, for both of its screens.
+		{"normal advertises i", inputNormal, "i"},
+		{"detail advertises i", inputDetail, "i"},
+		{"inbox advertises enter", inputInbox, "enter"},
+		{"inbox advertises esc", inputInbox, "esc"},
+		{"inbox advertises up", inputInbox, "up"},
+		{"inbox advertises down", inputInbox, "down"},
+		{"inbox advertises pgup", inputInbox, "pgup"},
+		{"inbox advertises pgdown", inputInbox, "pgdown"},
+		{"inbox advertises ctrl+g", inputInbox, "ctrl+g"},
 	}
 
 	for _, tc := range wantKeys {

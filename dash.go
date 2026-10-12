@@ -143,6 +143,8 @@ Keys:
   ctrl-g     hand the mouse to the terminal (native selection), again to return it
   n          create a session (in-TUI form)
   p          open the project switcher (filterable list of discovered projects)
+  b          show the Build tab: the master plan's tasks and their status (needs a master plan)
+  i          open the inbox: read an item, answer it by typing or by number (enter sends)
   c          confirm clean in the dashboard (runs in-process)
   q          quit
 
@@ -575,6 +577,11 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		RecordProjectOpen:  recordProjectOpen,
 		LoadSidebarPct:     loadSidebarPct,
 		RememberSidebarPct: rememberSidebarPct,
+		// The two build seams have no default in internal/ui (they read and
+		// write a real project), so this is the only place they are wired.
+		// Left out, the dashboard runs with no build data and nothing says so.
+		LoadBuild:   dashLoadBuild,
+		AnswerInbox: dashAnswerInbox,
 	}
 }
 

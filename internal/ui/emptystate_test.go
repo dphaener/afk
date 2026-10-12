@@ -14,9 +14,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/palette"
 	"github.com/dphaener/afk/internal/project"
+	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/usagestate"
 )
 
 // --- renderHeader: badge, cross-project attention, switch hint ---
@@ -333,6 +336,173 @@ func TestHeaderLineDegradesInOrder(t *testing.T) {
 	}
 }
 
+// TestHeaderLineDegradesWithUsage pins the ladder when a usage reading is
+// standing: the hint goes first, then the names collapse, then the long usage
+// text gives way to the short, then the badge, and the short usage outlives
+// the badge but not the attention line. Each row sits one cell under the
+// previous rung's natural width. Load-bearing: "the badge goes, the short
+// usage stays" (the reason the short form exists) and "usage-only survives
+// with no attention at all", the case where the left half is empty.
+func TestHeaderLineDegradesWithUsage(t *testing.T) {
+	p := headerPieces{
+		badge:          "afk Dashboard",
+		attention:      "● 2 awaiting in gamma · 1 in delta",
+		attentionShort: "● 3 awaiting in 2 other projects",
+		usage:          "usage: paused until Mon 2 Jan 15:04 · Week (all models) 91%",
+		usageShort:     "paused · 91%",
+		hint:           "p: switch projects",
+	}
+	w := lipgloss.Width
+	full := w("afk Dashboard ● 2 awaiting in gamma · 1 in delta") + headerMinGap + w(p.usage) + 2 + w(p.hint)
+	noHint := w("afk Dashboard ● 2 awaiting in gamma · 1 in delta") + headerMinGap + w(p.usage)
+	aggregate := w("afk Dashboard ● 3 awaiting in 2 other projects") + headerMinGap + w(p.usage)
+	short := w("afk Dashboard ● 3 awaiting in 2 other projects") + headerMinGap + w(p.usageShort)
+	noBadge := w("● 3 awaiting in 2 other projects") + headerMinGap + w(p.usageShort)
+	attOnly := w("● 3 awaiting in 2 other projects")
+
+	cases := []struct {
+		name       string
+		width      int
+		has, lacks []string
+	}{
+		{"everything fits", full,
+			[]string{"afk Dashboard", "gamma", "usage: paused", "p: switch projects"}, nil},
+		{"one short: the hint goes first", full - 1,
+			[]string{"afk Dashboard", "gamma", "usage: paused"}, []string{"p: switch"}},
+		{"then the names collapse", noHint - 1,
+			[]string{"afk Dashboard", "2 other projects", "usage: paused"}, []string{"gamma"}},
+		{"then the long usage becomes the short", aggregate - 1,
+			[]string{"afk Dashboard", "2 other projects", "paused · 91%"}, []string{"usage:"}},
+		{"then the badge, and the short usage survives it", short - 1,
+			[]string{"2 other projects", "paused · 91%"}, []string{"afk Dashboard"}},
+		{"then the short usage, and the attention survives it", noBadge - 1,
+			[]string{"2 other projects"}, []string{"paused · 91%", "afk Dashboard"}},
+		{"below the attention line it truncates", attOnly - 1,
+			[]string{"3 awaiting"}, []string{"paused", "afk Dashboard"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := headerLine(p, tc.width)
+			if gw := lipgloss.Width(got); gw > tc.width {
+				t.Fatalf("width %d exceeds the budget %d: %q", gw, tc.width, got)
+			}
+			if lipgloss.Height(got) != 1 {
+				t.Errorf("width %d: header is not one row: %q", tc.width, got)
+			}
+			for _, want := range tc.has {
+				if !strings.Contains(got, want) {
+					t.Errorf("width %d: %q lacks %q", tc.width, got, want)
+				}
+			}
+			for _, banned := range tc.lacks {
+				if strings.Contains(got, banned) {
+					t.Errorf("width %d: %q still has %q", tc.width, got, banned)
+				}
+			}
+		})
+	}
+
+	t.Run("staleness outlives the short usage", func(t *testing.T) {
+		q := p
+		q.stale = "stale · discovery failing 12s"
+		got := headerLine(q, w(q.stale)+2)
+		if !strings.Contains(got, "stale") || strings.Contains(got, "paused") || strings.Contains(got, "awaiting") {
+			t.Errorf("got %q, want the staleness signal alone", got)
+		}
+	})
+
+	t.Run("usage alone, no attention, no hint", func(t *testing.T) {
+		q := headerPieces{badge: "afk Dashboard", usage: p.usage, usageShort: p.usageShort}
+		got := headerLine(q, w("afk Dashboard")+headerMinGap+w(q.usageShort))
+		if !strings.Contains(got, "afk Dashboard") || !strings.Contains(got, "paused · 91%") {
+			t.Errorf("got %q, want badge and short usage", got)
+		}
+		got = headerLine(q, w(q.usageShort)+2)
+		if strings.Contains(got, "afk Dashboard") || !strings.Contains(got, "paused · 91%") {
+			t.Errorf("got %q, want the short usage to outlive the badge", got)
+		}
+		if lipgloss.Width(got) != w(q.usageShort)+2 {
+			t.Errorf("a fitting header spans the full width, got %d", lipgloss.Width(got))
+		}
+	})
+}
+
+// usageModel is a model holding a usage reading taken "now", for the header
+// tests. action "" stores no governor decision.
+func usageModel(action string) Model {
+	m := testModel(sess("a"))
+	m.projects = nil
+	wake := m.deps.Now().Add(2 * time.Hour)
+	reset := m.deps.Now().Add(3 * time.Hour)
+	f := usagestate.File{
+		At: m.deps.Now(),
+		Windows: []usagestate.Window{
+			{Kind: provider.WindowSession, UsedPct: 40, ResetsAt: &reset},
+			{Kind: provider.WindowWeekly, UsedPct: 91, ResetsAt: &reset},
+		},
+	}
+	if action != "" {
+		f.Governor = &usagestate.Governor{Action: action, WakeAt: &wake, At: m.deps.Now()}
+	}
+	m.build = buildview.Snapshot{Usage: f, UsageKnown: true}
+	m.buildKnown = true
+	return m
+}
+
+// TestHeaderUsageSegment pins what the header says about usage through the
+// real Model path: the long form at a wide width, the short form at a narrow
+// one, and nothing at all without a reading (also when the snapshot says the
+// reading is unknown, and when no build data has arrived).
+func TestHeaderUsageSegment(t *testing.T) {
+	long := usageModel("pause")
+	long.width = 160
+	got := xansi.Strip(long.renderHeader())
+	if !strings.Contains(got, "usage: paused until ") || !strings.Contains(got, "· Week (all models) 91%") {
+		t.Errorf("160 columns = %q, want the long segment", got)
+	}
+	if lipgloss.Height(long.renderHeader()) != 1 {
+		t.Errorf("160 columns is not one row")
+	}
+
+	narrow := usageModel("pause")
+	narrow.width = 30
+	got = xansi.Strip(narrow.renderHeader())
+	if !strings.Contains(got, "paused · 91%") || strings.Contains(got, "usage:") {
+		t.Errorf("30 columns = %q, want the short segment", got)
+	}
+
+	for name, mk := range map[string]func() Model{
+		"no build data": func() Model { m := usageModel("pause"); m.buildKnown = false; return m },
+		"reading not known": func() Model {
+			m := usageModel("pause")
+			m.build.UsageKnown = false
+			return m
+		},
+		"never loaded": func() Model { m := testModel(sess("a")); m.projects = nil; return m },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := mk()
+			m.width = 160
+			got := xansi.Strip(m.renderHeader())
+			if strings.Contains(got, "usage") || strings.Contains(got, "paused") {
+				t.Errorf("%s: header = %q, want no usage text", name, got)
+			}
+		})
+	}
+
+	t.Run("a run decision is dim and a pause is a warning", func(t *testing.T) {
+		ok, held := usageModel("run"), usageModel("pause")
+		ok.width, held.width = 160, 160
+		pOK, pHeld := ok.headerPieces(), held.headerPieces()
+		if pOK.usage != theme.dim.Render(xansi.Strip(pOK.usage)) {
+			t.Errorf("run usage = %q, want theme.dim", pOK.usage)
+		}
+		if pHeld.usage != theme.awaitingFlag.Render(xansi.Strip(pHeld.usage)) {
+			t.Errorf("pause usage = %q, want the warning style", pHeld.usage)
+		}
+	})
+}
+
 // TestHeaderLineKeepsStalenessLast extends the ladder above with the piece
 // that only exists while discovery is failing, and pins the one ordering
 // decision that is not obvious from the strings: staleness outranks the
@@ -540,6 +710,28 @@ func TestRenderHeaderIsExactlyOneRow(t *testing.T) {
 		{"zero width, before the first WindowSizeMsg", attentionModel(), 0},
 		{"discovery failing, everything on screen at once", failing(), 200},
 		{"discovery failing, too narrow for anything but a truncated staleness signal", failing(), 20},
+	}
+	// A long usage segment at every width the layout is tested at, with and
+	// without attention and failing discovery: the segment must be cut, never
+	// wrapped, and 20 columns is where only truncation is left.
+	withUsage := func(m Model) Model {
+		u := usageModel("pause")
+		m.build, m.buildKnown = u.build, true
+		return m
+	}
+	for _, w := range []int{200, 120, 80, 60, 40, 20} {
+		for _, st := range []struct {
+			name string
+			mk   func() Model
+		}{
+			{"quiet", quiet}, {"hinted", hinted}, {"attention", func() Model { return attentionModel() }}, {"failing", failing},
+		} {
+			cases = append(cases, struct {
+				name  string
+				model Model
+				width int
+			}{fmt.Sprintf("usage reading, %s, %d columns", st.name, w), withUsage(st.mk()), w})
+		}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

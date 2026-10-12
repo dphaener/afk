@@ -1,0 +1,40 @@
+ afk Dashboard                                                                                                          
+╭─ Sessions ────────────────────────────────╮╭─ Build ─────────────────────────────────────────────────────────────────╮
+│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff   Build       tab/1-6: switch │
+│                                           ││ ─────────────────────────────────────────────────────────────────────── │
+│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ 1/7 done · T1.2: executing                                              │
+│   ● Billing v2          REVIEWING   7/7   ││ paused: afk resume starts it again                                      │
+│   ● fix-login-redirect  PLANNING      – ● ││ 1 item needs you · i: inbox                                             │
+│   ○ feat-search         DONE        5/5   ││                                                                         │
+│   ● scratch-1           SCRATCH       –   ││ T1.1  done      Session model         PR #12 · 4c30e4a                  │
+│   ○ old-migration       BROKEN        –   ││ T1.2  running   Auth middleware       feat-auth · executing             │
+│                                           ││ T2.1  shipping  Billing totals        ci running · PR #14               │
+│                                           ││ T2.2  parked    Legacy sessions       waiting on you: q-3               │
+│                                           ││ T2.3  failed    Login redirect        attempt 2                         │
+│                                           ││ T3.1  pending   Search index          waiting for T2.1                  │
+│                                           ││ T3.2  pending   Pick a mail provider  ready · yours to do               │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+╰───────────────────────────────────────────╯╰────────────────────────────────────────────── esc/ctrl+\: back to list ─╯
+esc/ctrl+\ back to list · q quit · ctrl+g release mouse · ctrl+t agent/overview · tab next tab · shift+tab previous tab…

@@ -11,7 +11,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/discover"
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/spice"
@@ -420,4 +422,113 @@ func TestGoldenMultiProjectDashboard(t *testing.T) {
 		},
 	}
 	assertGolden(t, "dash-120x40-multiproject", render(m))
+}
+
+// goldenBuild is the build the Build tab's frame is drawn from: one task in
+// each state an owner meets in a normal week (done, running, shipping, parked
+// on a question, failed, waiting on another task, and one that is theirs to
+// do), a blocking inbox item, and the build paused.
+func goldenBuild() buildview.Snapshot {
+	return buildview.Snapshot{
+		Root:     "/repo",
+		HasBuild: true,
+		Rows: []buildview.Row{
+			{ID: "T1.1", Title: "Session model", Status: "done", Detail: "PR #12 · 4c30e4a"},
+			{ID: "T1.2", Title: "Auth middleware", Status: "running", Detail: "feat-auth · executing"},
+			{ID: "T2.1", Title: "Billing totals", Status: "shipping", Detail: "ci running · PR #14"},
+			{ID: "T2.2", Title: "Legacy sessions", Status: "parked", Detail: "waiting on you: q-3"},
+			{ID: "T2.3", Title: "Login redirect", Status: "failed", Detail: "attempt 2"},
+			{ID: "T3.1", Title: "Search index", Status: "pending", Detail: "waiting for T2.1"},
+			{ID: "T3.2", Title: "Pick a mail provider", Status: "pending", Detail: "ready · yours to do", Owner: true},
+		},
+		Done:         1,
+		Total:        7,
+		Current:      "T1.2",
+		CurrentPhase: "executing",
+		Paused:       true,
+		Items: []inbox.Item{
+			{ID: "q-3", Kind: "question", Blocking: true, Title: "Drop the legacy_sessions table?"},
+		},
+	}
+}
+
+// goldenInbox is the build read the inbox frames are drawn from: goldenBuild
+// with the inbox an owner finds after a day away. One question is holding a
+// task up and has options, one failure is holding another up, one notice
+// blocks nothing, and one question was answered from the web page. The times
+// are set against goldenNow so every age on screen is fixed.
+func goldenInbox() buildview.Snapshot {
+	at := func(d time.Duration) string { return goldenNow.Add(-d).UTC().Format(time.RFC3339) }
+	snap := goldenBuild()
+	snap.Items = []inbox.Item{
+		{
+			ID: "k7m2pq", CreatedAt: at(3 * time.Hour), Task: "T2.2", Session: "feat-auth",
+			Kind: "question", Blocking: true,
+			Title: "Drop the legacy_sessions table?",
+			Body: "The migration in T2.2 removes legacy_sessions. Two reports in admin/ still read it.\n\n" +
+				"Dropping it now breaks those reports until T3.1 moves them to the new table.",
+			Options:     []string{"Drop it now and fix the reports in T3.1", "Keep it for one release", "Leave it and close T2.2"},
+			Recommended: "Keep it for one release",
+		},
+		{
+			ID: "r4x9wd", CreatedAt: at(25 * time.Minute), Task: "T2.3", Session: "fix-login-redirect",
+			Kind: "failure", Blocking: true,
+			Title: "Login redirect failed its checks twice",
+			Body:  "--- FAIL: TestRedirectAfterLogin (0.02s)\n    redirect_test.go:41: got /login, want /dashboard",
+		},
+		{
+			ID: "b3n8ht", CreatedAt: at(50 * time.Hour), Task: "T3.1",
+			Kind: "notice", Title: "Used the staging key for the search index",
+			Assumed: "staging is fine until launch",
+		},
+		{
+			ID: "p5c6yz", CreatedAt: at(26 * time.Hour), Task: "T3.2",
+			Kind: "question", Blocking: true, Title: "Which mail provider?",
+			Options: []string{"Postal", "Mailer"},
+			Answer:  "Postal", AnsweredAt: at(22 * time.Hour), AnsweredVia: inbox.ViaWeb,
+		},
+	}
+	return snap
+}
+
+// TestGoldenInbox pins the inbox overlay's two screens at 120×40 over the
+// fixture dashboard, reached the way a user reaches them: the build read
+// arrives, `i` opens the list, enter opens the first item. The item frame is
+// the one a layout change is most likely to move: the body, the numbered
+// options with the recommended one marked, and the answer field are all on
+// it, with a number typed so the field's contents are part of the frame.
+func TestGoldenInbox(t *testing.T) {
+	m := goldenModel(t, 120, 40)
+	m, _ = update(t, m, buildLoadedMsg{snap: goldenInbox(), gen: m.projectGen})
+	m, _ = update(t, m, keyRune('i'))
+	if !m.inboxOpen {
+		t.Fatal("i did not open the inbox")
+	}
+	t.Run("dash-inbox-120x40", func(t *testing.T) {
+		assertGolden(t, "dash-inbox-120x40", render(m))
+	})
+	t.Run("dash-inbox-item-120x40", func(t *testing.T) {
+		im, _ := update(t, m, keyEnter)
+		im, _ = update(t, im, keyRune('2'))
+		if im.inbox.screen != inboxScreenItem || im.inbox.input.Value() != "2" {
+			t.Fatalf("the item screen is not up with 2 typed (screen=%v text=%q)", im.inbox.screen, im.inbox.input.Value())
+		}
+		assertGolden(t, "dash-inbox-item-120x40", render(im))
+	})
+}
+
+// TestGoldenBuildTab pins the Build tab at 120×40 over the fixture dashboard,
+// reached the way a user reaches it: the build's data arrives, then `b`. The
+// notice that key raises is cleared before the frame is taken, because a toast
+// floats over the pane's top corner and would hide the tab strip, which is
+// the part of this frame a layout change is most likely to move.
+func TestGoldenBuildTab(t *testing.T) {
+	m := goldenModel(t, 120, 40)
+	m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
+	m, _ = update(t, m, keyRune('b'))
+	if m.activeDetailTab() != tabBuild || m.focus != focusRight {
+		t.Fatalf("b did not open the Build tab (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
+	}
+	m.clearStatus()
+	assertGolden(t, "dash-build-120x40", render(m))
 }

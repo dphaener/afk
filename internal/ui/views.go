@@ -18,10 +18,13 @@ import (
 	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/discover"
+	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/state"
+	"github.com/dphaener/afk/internal/usagetext"
 )
 
 // View renders the whole dashboard: header, then the list pane beside the
@@ -108,10 +111,11 @@ func (m Model) View() tea.View {
 	// The overlays float over the finished frame (modal.go) rather than
 	// replacing a region of it, so the list and the pane a person was reading
 	// stay on screen behind the box. The order matches modePrecedence — the
-	// palette outranks the switcher, which outranks the form — so the frame and
-	// the key routing agree on which surface is on top. The three are mutually
-	// exclusive in practice (each owns every key while it is up), so this is
-	// fidelity to the precedence table, not a state a user can reach. Whatever
+	// palette outranks the switcher, which outranks the inbox, which outranks
+	// the form — so the frame and the key routing agree on which surface is on
+	// top. The four are mutually exclusive in practice (each owns every key
+	// while it is up), so this is fidelity to the precedence table, not a
+	// state a user can reach. Whatever
 	// owns the keyboard must be ON SCREEN, and that holds in the empty state
 	// too: a scan can empty the project list under an open overlay, and a
 	// component that still routes `q` while invisible would be a keyboard trap.
@@ -120,6 +124,8 @@ func (m Model) View() tea.View {
 		frame = composeModal(frame, m.renderPaletteModal(), m.width, m.height)
 	case m.switcherOpen:
 		frame = composeModal(frame, m.renderSwitcherModal(), m.width, m.height)
+	case m.inboxOpen:
+		frame = composeModal(frame, m.renderInboxModal(), m.width, m.height)
 	case m.formOpen:
 		frame = composeModal(frame, m.renderNewFormModal(), m.width, m.height)
 	}
@@ -864,7 +870,14 @@ type headerPieces struct {
 	// day, and "0 awaiting" is not a fact worth a row.
 	attention      string
 	attentionShort string
-	hint           string // "" with one or zero known projects
+	// usage is the governor's stored decision and the tightest usage window —
+	// "usage: paused until Mon 2 Jan 15:04 · Week (all models) 91%" — while
+	// usageShort is the same in a few words. Both are "" when the model holds
+	// no usage reading (no loader wired, no usage.json yet), which keeps every
+	// header without a build exactly as it was.
+	usage      string
+	usageShort string
+	hint       string // "" with one or zero known projects
 }
 
 // headerPieces gathers the parts from the Model. Zero or one known project
@@ -884,6 +897,8 @@ func (m Model) headerPieces() headerPieces {
 			durationShort(m.deps.Now().Sub(m.loadFailingSince))))
 	}
 
+	p.usage, p.usageShort = m.usagePieces()
+
 	others := m.awaitingElsewhere()
 	if len(others) == 0 {
 		return p
@@ -902,6 +917,25 @@ func (m Model) headerPieces() headerPieces {
 		p.attentionShort = p.attention
 	}
 	return p
+}
+
+// usagePieces styles usagetext.Segment's two forms. The segment is read from
+// the snapshot the model already holds (never from usage.json here, because
+// View must not touch the disk). It is dim while the governor says run or has
+// said nothing, and in the warning style (the one the awaiting flag uses)
+// when it is holding the build back or cannot tell, because that is the
+// state the owner needs to notice.
+func (m Model) usagePieces() (long, short string) {
+	known := m.buildKnown && m.build.UsageKnown
+	l, s := usagetext.Segment(m.build.Usage, known, m.deps.Now(), time.Local)
+	if l == "" && s == "" {
+		return "", ""
+	}
+	style := theme.dim
+	if g := m.build.Usage.Governor; g != nil && g.Action != "" && g.Action != string(governor.ActionRun) {
+		style = theme.awaitingFlag
+	}
+	return style.Render(l), style.Render(s)
 }
 
 // attentionNamed is the attention line with the projects named: a warning
@@ -958,7 +992,8 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 // ladder is table-testable from plain unstyled pieces
 // (TestHeaderLineDegradesInOrder).
 //
-// The drop order, richest to poorest:
+// The drop order, richest to poorest, with no usage reading (the common case
+// for anyone not running a build):
 //
 //  1. badge + stale + named attention + hint
 //  2. badge + stale + aggregate attention + hint
@@ -966,6 +1001,16 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 //  4. stale + aggregate attention — badge dropped
 //  5. stale ALONE — attention dropped too
 //  6. whatever is left, truncated
+//
+// With a usage reading (the governor's state and the tightest window) the
+// right half carries it before the hint, and the pieces go weakest first:
+// the switch hint; the named attention for the aggregate; the long usage text
+// for the short; the badge; the short usage; the attention; the staleness
+// signal last. The short usage outlives the badge because it says whether the
+// build is being held back, which the reader cannot see anywhere else on the
+// row, while the badge says what they already know. It goes before attention
+// and staleness because those ask the reader to act, or say the screen is
+// wrong, and a usage note is neither.
 //
 // Rungs 4 and 5 look wrong and are not. They rank the three left-hand pieces
 // against each other, weakest first: the BADGE goes before anything else, on
@@ -1030,24 +1075,58 @@ func headerLine(p headerPieces, width int) string {
 		// against that edge reads as part of the badge.
 		return p.badge + " " + rest
 	}
-	candidates := []struct{ l, r string }{
-		{left(p.attention), p.hint},
-		{left(p.attentionShort), p.hint},
-		{left(p.attentionShort), ""},
+	type rung struct{ l, r string }
+	var candidates []rung
+	if p.usage == "" && p.usageShort == "" {
+		candidates = []rung{
+			{left(p.attention), p.hint},
+			{left(p.attentionShort), p.hint},
+			{left(p.attentionShort), ""},
+		}
+		// Rung 4 exists only when there IS something to keep after the badge
+		// goes. With neither a staleness signal nor an attention line it would
+		// be an empty left half beside an empty right half, which "fits" at
+		// every width — it would swallow the badge into a row of spaces before
+		// the truncating rung ever got the chance at it.
+		if rest := alerts(p.attentionShort); rest != "" {
+			candidates = append(candidates, rung{rest, ""})
+		}
+	} else {
+		// With a usage reading the right half is usage, then the hint, and
+		// the hint goes first: it is the one piece that only repeats what the
+		// key help says. Then the names collapse, then the long usage text,
+		// then the badge. Short usage stays with the left half's alerts after
+		// the badge is gone, and only the alerts themselves outlive it.
+		right := func(u string, withHint bool) string {
+			switch {
+			case u == "":
+				if withHint {
+					return p.hint
+				}
+				return ""
+			case withHint && p.hint != "":
+				return u + "  " + p.hint
+			}
+			return u
+		}
+		candidates = []rung{
+			{left(p.attention), right(p.usage, true)},
+			{left(p.attention), right(p.usage, false)},
+			{left(p.attentionShort), right(p.usage, false)},
+			{left(p.attentionShort), right(p.usageShort, false)},
+			// Badge dropped. The left half may be empty here, which is
+			// intended: the short usage then stands alone on the right.
+			{alerts(p.attentionShort), right(p.usageShort, false)},
+		}
+		if rest := alerts(p.attentionShort); rest != "" {
+			candidates = append(candidates, rung{rest, ""})
+		}
 	}
-	// Rung 4 exists only when there IS something to keep after the badge
-	// goes. With neither a staleness signal nor an attention line it would be
-	// an empty left half beside an empty right half, which "fits" at every
-	// width — it would swallow the badge into a row of spaces before the
-	// truncating rung ever got the chance at it.
-	if rest := alerts(p.attentionShort); rest != "" {
-		candidates = append(candidates, struct{ l, r string }{rest, ""})
-	}
-	// Rung 5 only differs from rung 4 when both alerts are standing; with one
-	// of them missing rung 4 already IS the survivor, and a duplicate
-	// candidate would just be dead width arithmetic.
+	// The staleness signal alone only differs from the rung above when both
+	// alerts are standing; with one missing that rung already IS the survivor
+	// and a duplicate would be dead width arithmetic.
 	if p.stale != "" && p.attentionShort != "" {
-		candidates = append(candidates, struct{ l, r string }{p.stale, ""})
+		candidates = append(candidates, rung{p.stale, ""})
 	}
 	for _, c := range candidates {
 		minGap := headerMinGap
@@ -1068,6 +1147,9 @@ func headerLine(p headerPieces, width int) string {
 	last := p.stale
 	if last == "" {
 		last = p.attentionShort
+	}
+	if last == "" {
+		last = p.usageShort
 	}
 	if last == "" {
 		last = p.badge
@@ -1760,6 +1842,11 @@ func (m Model) renderHelp() string {
 			}
 		}
 		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: bindings}, false, width))
+	case mode == inputInbox:
+		// The overlay has two screens with different keys, and the registry's
+		// keymap lists both. The line shows the ones for the screen that is
+		// up, read off the same bindings the overlay matches against.
+		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: m.inbox.helpKeys()}, false, width))
 	default:
 		reg := m.modes()
 		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(mode).keys, false, width))
@@ -2007,9 +2094,16 @@ const (
 
 // hostIndicator renders the styled liveness dot for s. A pending placeholder
 // has no host yet, so it always gets the stopped (hollow, dim) form.
+//
+// A session the daemon paused for usage keeps the hollow dot, since its host
+// really is gone, but in the warning colour: the dim form says "stopped", and
+// this one is waiting for a usage window and will be started again.
 func hostIndicator(s Session) string {
 	if s.HostRunning && !s.Pending {
 		return theme.hostRunning.Render(hostRunningGlyph)
+	}
+	if usagePaused(s) {
+		return theme.awaitingFlag.Render(hostStoppedGlyph)
 	}
 	return theme.hostStopped.Render(hostStoppedGlyph)
 }
@@ -2225,10 +2319,17 @@ func renderSessionRow(s Session, selected bool, width int, now time.Time) string
 	// A stale status has no trustworthy phase, so the column says so instead
 	// of showing the neutral UNKNOWN a corrupt file would otherwise wear —
 	// the two are different faults with different fixes.
+	//
+	// A session paused for usage says that in place of its phase. status.json
+	// still holds the phase it was stopped in, and "EXECUTING" beside a hollow
+	// dot is how a stopped session reads; the owner has nothing to fix here.
 	var phase string
-	if s.StatusStale {
+	switch {
+	case s.StatusStale:
 		phase = theme.staleText.Render("STALE")
-	} else {
+	case usagePaused(s):
+		phase = theme.awaitingFlag.Render(usagePausedLabel(l.abbrevPhase))
+	default:
 		phase = theme.phaseText(sessionPhaseKey(s), l.abbrevPhase)
 	}
 
@@ -2418,6 +2519,11 @@ func (m Model) detailBoxLabels() (title, hint string) {
 	if ok {
 		title = displayName(s)
 	}
+	if m.detailDrawn() && m.activeDetailTab() == tabBuild {
+		// The Build tab is about the project, so the box does not name a
+		// session over it.
+		title = "Build"
+	}
 	if m.resizing {
 		commit, cancel := m.resizeHints()
 		return title, fmt.Sprintf("%s: save split · %s: cancel", commit, cancel)
@@ -2526,9 +2632,80 @@ func (m Model) detailBody(contentW int) string {
 // composeDetailBody builds the detail pane's unwrapped, unbounded text: the
 // no-selection, placeholder and worktree-fault messages, or the tab strip plus
 // the active tab's panels. detailBody is its only caller.
+//
+// A project with a build draws the tab strip in every one of those states.
+// The Build tab is about the project and not the selected row, so it has to
+// be reachable, and read the same, with a placeholder or a fault selected and
+// with no session at all. A build with nothing running is exactly when the
+// task list is the thing to look at. Without a build the three messages stand
+// alone, as they always have.
 func (m Model) composeDetailBody(contentW int) string {
 	var b strings.Builder
 	s, ok := m.selected()
+	hasBuild := m.hasBuild()
+	notice := rowNotice(s, ok)
+	if notice != "" && !hasBuild {
+		return notice
+	}
+
+	// The tab strip and its rule, then the active tab's panels. The session's
+	// head (name, branch, phase) is the Overview's first lines rather than a
+	// fixture above every tab: the strip is the pane's title row now, and a
+	// head repeated over Waves or Stack would cost two rows on the tab that
+	// most needs them.
+	tabs := visibleDetailTabs(m.stack, hasBuild)
+	active := m.activeDetailTab()
+	b.WriteString(renderTabStrip(tabs, active, contentW))
+	b.WriteString("\n")
+	b.WriteString(theme.dim.Render(strings.Repeat("─", contentW)))
+	b.WriteString("\n")
+
+	if notice != "" && active != tabBuild {
+		// Every other tab is about the selected session, and this row has
+		// none to show: the message takes the tab's place under the strip.
+		b.WriteString(notice)
+		return b.String()
+	}
+
+	ctx := panelContext{Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build}
+	spec := detailTabSpecs()[active]
+	rendered := 0
+	for _, p := range spec.panels {
+		lines := p.Render(ctx, contentW)
+		if len(lines) == 0 {
+			continue
+		}
+		rendered++
+		// A single-panel tab is titled by the strip; only a tab that stacks
+		// several panels (Notes) needs a heading over each.
+		if len(spec.panels) > 1 {
+			b.WriteString("\n")
+			b.WriteString(theme.panelTitle.Render(p.Title()))
+			b.WriteString("\n")
+		}
+		for _, ln := range lines {
+			b.WriteString(ln)
+			b.WriteString("\n")
+		}
+	}
+	if rendered == 0 {
+		// Every panel declined (panel.Render's nil means "hide me"). Inside a
+		// tab the user chose, an empty box would read as a rendering fault, so
+		// the tab says in one line why there is nothing here.
+		b.WriteString("\n")
+		b.WriteString(theme.dim.Render(spec.empty(s)))
+		b.WriteString("\n")
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// rowNotice is what the detail pane says in place of the session tabs when the
+// selection has no session state to show: nothing selected, a placeholder for
+// a session still being created, or a worktree fault. It is "" for an ordinary
+// session row.
+func rowNotice(s Session, ok bool) string {
+	var b strings.Builder
 	if !ok {
 		b.WriteString(theme.dim.Render("Select a session to see details."))
 		return b.String()
@@ -2565,50 +2742,7 @@ func (m Model) composeDetailBody(contentW int) string {
 		b.WriteString(theme.dim.Render("No session state to show. Press c to clean it up."))
 		return b.String()
 	}
-
-	// The tab strip and its rule, then the active tab's panels. The session's
-	// head (name, branch, phase) is the Overview's first lines rather than a
-	// fixture above every tab: the strip is the pane's title row now, and a
-	// head repeated over Waves or Stack would cost two rows on the tab that
-	// most needs them.
-	tabs := visibleDetailTabs(m.stack)
-	active := m.activeDetailTab()
-	b.WriteString(renderTabStrip(tabs, active, contentW))
-	b.WriteString("\n")
-	b.WriteString(theme.dim.Render(strings.Repeat("─", contentW)))
-	b.WriteString("\n")
-
-	ctx := panelContext{Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now()}
-	spec := detailTabSpecs()[active]
-	rendered := 0
-	for _, p := range spec.panels {
-		lines := p.Render(ctx, contentW)
-		if len(lines) == 0 {
-			continue
-		}
-		rendered++
-		// A single-panel tab is titled by the strip; only a tab that stacks
-		// several panels (Notes) needs a heading over each.
-		if len(spec.panels) > 1 {
-			b.WriteString("\n")
-			b.WriteString(theme.panelTitle.Render(p.Title()))
-			b.WriteString("\n")
-		}
-		for _, ln := range lines {
-			b.WriteString(ln)
-			b.WriteString("\n")
-		}
-	}
-	if rendered == 0 {
-		// Every panel declined (panel.Render's nil means "hide me"). Inside a
-		// tab the user chose, an empty box would read as a rendering fault, so
-		// the tab says in one line why there is nothing here.
-		b.WriteString("\n")
-		b.WriteString(theme.dim.Render(spec.empty(s)))
-		b.WriteString("\n")
-	}
-
-	return strings.TrimRight(b.String(), "\n")
+	return ""
 }
 
 // --- detail tabs ---
@@ -2626,6 +2760,10 @@ const (
 	tabStack
 	tabNotes
 	tabDiff
+	// tabBuild is the project's build: the master plan's tasks with their
+	// ledger status (buildtab.go). It is last so the digit keys of the tabs
+	// before it never move, and it is shown only when the project has a build.
+	tabBuild
 	detailTabCount
 )
 
@@ -2659,27 +2797,38 @@ func detailTabSpecs() [detailTabCount]detailTabSpec {
 				}
 				return "No base branch recorded to diff against."
 			}},
+		tabBuild: {name: "Build", panels: []panel{buildPanel{}},
+			empty: func(Session) string { return "No build to show." }},
 	}
 }
 
 // visibleDetailTabs is the strip, in order, for a repo whose stack state is
-// st: every tab except Stack, which appears only when git-spice is detected —
-// the same rule stackPanel itself follows ("never a placeholder panel for
-// non-gs users"). The digit keys index THIS slice, so `3` is Notes in a plain
-// git repo and Stack in a git-spice one.
-func visibleDetailTabs(st stackState) []detailTab {
+// st: every session tab except Stack, which appears only when git-spice is
+// detected — the same rule stackPanel itself follows ("never a placeholder
+// panel for non-gs users") — and then Build, only when the project has a
+// build to show (hasBuild, Model.hasBuild). The digit keys index THIS slice,
+// so `3` is Notes in a plain git repo and Stack in a git-spice one. Build is
+// appended last for that reason: a build arriving, or a project switch taking
+// it away, must not move the digit of a tab the user already knows.
+func visibleDetailTabs(st stackState, hasBuild bool) []detailTab {
 	tabs := []detailTab{tabOverview, tabWaves}
 	if st.Detected {
 		tabs = append(tabs, tabStack)
 	}
-	return append(tabs, tabNotes, tabDiff)
+	tabs = append(tabs, tabNotes, tabDiff)
+	if hasBuild {
+		tabs = append(tabs, tabBuild)
+	}
+	return tabs
 }
 
-// activeDetailTab is m.detailTab when the current repo can show it, else the
-// Overview — the case is a Stack tab chosen before a rescan found git-spice
-// gone, or a zero-value Model.
+// activeDetailTab is m.detailTab when the current project can show it, else
+// the Overview — the case is a Stack tab chosen before a rescan found
+// git-spice gone, a Build tab whose project was switched away from (the tab
+// comes back by itself when the new project's build data arrives, because the
+// stored choice is kept), or a zero-value Model.
 func (m Model) activeDetailTab() detailTab {
-	if slices.Contains(visibleDetailTabs(m.stack), m.detailTab) {
+	if slices.Contains(visibleDetailTabs(m.stack, m.hasBuild()), m.detailTab) {
 		return m.detailTab
 	}
 	return tabOverview
@@ -2759,17 +2908,29 @@ func (overviewPanel) Render(ctx panelContext, width int) []string {
 		out = append(out, theme.staleText.Render("status.json is stale: "+string(s.StaleReason)))
 	} else {
 		meta := theme.phaseBadge(sessionPhaseKey(s))
+		// A session paused for usage says so straight after the phase, ahead
+		// of the loop count and the update time. The line is cut at the pane's
+		// width, and on a default terminal that cut used to land inside the
+		// wake time, which is the one fact on the line the owner is waiting
+		// for. "host stopped" is not said at all here: the daemon stopped
+		// this host on purpose and will start it again, and the words would
+		// send the owner looking for a fault that is not there.
+		paused := usagePaused(s)
+		if paused {
+			meta += "  " + hostIndicator(s) + theme.awaitingFlag.Render(" "+usagePausedText(s))
+		}
 		if s.LoopCount > 0 {
 			meta += theme.dim.Render(fmt.Sprintf("  loop %d", s.LoopCount))
 		}
 		if s.UpdatedAt != "" {
 			meta += theme.dim.Render("  updated " + s.UpdatedAt)
 		}
-		meta += "  " + hostIndicator(s)
-		if s.HostRunning {
-			meta += theme.dim.Render(" host running")
-		} else {
-			meta += theme.dim.Render(" host stopped")
+		switch {
+		case paused:
+		case s.HostRunning:
+			meta += "  " + hostIndicator(s) + theme.dim.Render(" host running")
+		default:
+			meta += "  " + hostIndicator(s) + theme.dim.Render(" host stopped")
 		}
 		if age, ok := showsWedged(s, ctx.Now); ok {
 			meta += "  " + theme.errorText.Render(wedgedGlyph+" wedged "+durationShort(age))
@@ -3125,6 +3286,9 @@ type panelContext struct {
 	// pure function of its context — the same reason sessionDelegate carries
 	// Deps.Now instead of calling the clock itself.
 	Now time.Time
+	// Build is the project's build snapshot, for the Build tab. It is the one
+	// field that is not about the selected session.
+	Build buildview.Snapshot
 }
 
 // wavesPanel renders the plan's waves and tasks with their checkbox states.

@@ -44,17 +44,31 @@ func TestDetailTabKeysRouteToActions(t *testing.T) {
 	}
 }
 
-// TestVisibleDetailTabs pins the one tab whose presence depends on the repo:
-// Stack appears only with git-spice detected, and the digits index the visible
-// strip, so Notes is `3` in a plain repo and `4` in a git-spice one.
+// TestVisibleDetailTabs pins the two tabs whose presence depends on the
+// project. Stack appears only with git-spice detected, and the digits index
+// the visible strip, so Notes is `3` in a plain repo and `4` in a git-spice
+// one. Build appears only when the project has a build, and always LAST: the
+// two "with a build" rows are load-bearing, because a Build tab placed
+// anywhere else would move the digit of a tab the user already knows the
+// moment a build's data arrived.
 func TestVisibleDetailTabs(t *testing.T) {
-	plain := visibleDetailTabs(stackState{})
-	if want := []detailTab{tabOverview, tabWaves, tabNotes, tabDiff}; !equalTabs(plain, want) {
-		t.Fatalf("plain repo tabs = %v, want %v", plain, want)
+	cases := []struct {
+		name     string
+		st       stackState
+		hasBuild bool
+		want     []detailTab
+	}{
+		{"plain repo", stackState{}, false, []detailTab{tabOverview, tabWaves, tabNotes, tabDiff}},
+		{"git-spice repo", stackState{Detected: true}, false, []detailTab{tabOverview, tabWaves, tabStack, tabNotes, tabDiff}},
+		{"plain repo with a build", stackState{}, true, []detailTab{tabOverview, tabWaves, tabNotes, tabDiff, tabBuild}},
+		{"git-spice repo with a build", stackState{Detected: true}, true, []detailTab{tabOverview, tabWaves, tabStack, tabNotes, tabDiff, tabBuild}},
 	}
-	gs := visibleDetailTabs(stackState{Detected: true})
-	if want := []detailTab{tabOverview, tabWaves, tabStack, tabNotes, tabDiff}; !equalTabs(gs, want) {
-		t.Fatalf("git-spice repo tabs = %v, want %v", gs, want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := visibleDetailTabs(tc.st, tc.hasBuild); !equalTabs(got, tc.want) {
+				t.Fatalf("tabs = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
