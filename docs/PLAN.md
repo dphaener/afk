@@ -665,6 +665,7 @@ M0 Foundation ──▶ M1 Primitives ──▶ M2 Daemon ──▶ M3 Surfaces 
  T0.3 QA parity   T1.4 tokens        T2.4 govern
  T0.4 flaky test  T1.5 start-up
  T0.5 host tests
+ T0.6 dash focus
 ```
 
 T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent once T2.1 is in.
@@ -845,6 +846,56 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   load; `internal/ui -short` passes 50 of 50 with `-race`. Commands and counts saved as evidence.
   `make check` green.
 - **Amended 2026-10-12 (T0.5 done):** later tasks may assume the following. (1) No test in `internal/host` or `internal/ui -short` is known to be flaky, so a red run is a real fault; five host tests were, and each cause is under `## T0.5` in `docs/decisions.md`. (2) One was a real host fault: on shutdown the host now sends an `Exit` frame to every connection that reached it without being attached (held by the accept loop, or still in the listen queue), so a client connecting as a session ends is told "session ended" (11), not "dropped" (13). The frame protocol and the bare close on `Detach` are unchanged, and shutdown's extra waits share one `clientFlushGrace`. (3) `host.go` has a test seam, the package variable `afterAccept`, and the stuck-child test fixture acknowledges its write switch in `ack-no-write`; `setStuckChildFlag` waits for it. (4) The host fix uses `syscall.Accept` on the listener and has been run on Linux only. (5) A whole `internal/host` run with `-race` takes about a minute and `internal/ui -short` about two, so stress runs of either take hours.
+
+#### T0.6 — Bring over forge's dashboard focus rebuild
+- **Depends on:** T0.4, T0.5
+- **Goal:** `afk dash` has forge's two-pane focus model, so a key or a click always goes where the
+  screen says it will.
+- **Background:** afk was copied from forge at `9c847e1` (`docs/provenance.md`). One commit has landed
+  in forge since: `d9c6a62`, "Rebuild dashboard focus as two panes" (forge pull request #1, merged
+  2026-10-12). The old model kept four focus flags that could disagree, so keys reached the wrong
+  place (a steal or a dropped connection sent the user's typing into dashboard bindings such as `q`),
+  `enter` raced the 300ms auto-preview, and the dashboard held a session's one client slot for a pane
+  nobody could see. The new model is one focus (list or right side) and one view for the right side
+  (agent or overview). The owner uses `afk dash` to watch and unblock the daemon's sessions, and T2.3
+  and T3.2 both build on this code, so it goes in before them. The forge change was covered by tests
+  but its author had not yet walked through the dashboard by hand, so that falls to this task.
+- **Scope:** a port, not a redesign. Run `git -C ~/code/forge-cli fetch`, then read
+  `git -C ~/code/forge-cli diff 9c847e1 d9c6a62` (35 files: `dash.go`, `dash_test.go`, `README.md`,
+  and the rest in `internal/ui`, with its golden files). Apply it here with afk's names (`afk`,
+  `.afk/`, `/afk:go`). afk's own changes to these files since the copy are small and must survive:
+  T0.4's detach fix in `internal/ui/hostpane.go` and its tests in `hostpane_test.go`, and whatever
+  T2.3 has merged by the time this task starts. The behaviour to end up with, as forge's README
+  section on `dash` now states it:
+  - `enter`/`f` moves focus to the right side, and connects a running session that has no pane yet.
+    `ctrl+\` returns to the list, and so does `esc` from the overview.
+  - `ctrl+t` switches the right side between agent and overview, only while the right side has focus.
+  - With the list focused, nothing reaches the right side, by key or by mouse; a click there focuses
+    it.
+  - A row with no live agent shows its overview. `enter` never restarts a host; `r` does, from either
+    side, at once for a stopped host and after a confirmation for a wedged one.
+  - A steal or a dropped connection while the right side has focus keeps focus there and shows a
+    message saying what happened; `enter` reconnects.
+  - The pane always belongs to the selected row.
+
+  Also fix the two quality findings forge's own review left open: the arrival toast says "input goes
+  to X" for a click-to-focus whose focus was not honoured (gate that wording on the focus having been
+  honoured), and `agentPlaceholderText` spells the "restart in flight" test inline in place of calling
+  `restartingRow`. Update `README.md` and `dashUsage` to match, and add the forge commit to
+  `docs/provenance.md`.
+- **Must not:** change the frame protocol, `internal/host`, the status schema or the daemon; delete a
+  test for behaviour that still exists (a test of removed behaviour is rewritten for the new
+  behaviour, as forge did); bring over anything else from forge; name a provider outside
+  `internal/provider` (forge's text does in places, so check what is carried over).
+- **Acceptance:** `make check` green, including forge's new key-sequence matrix
+  (`internal/ui/focusmodel_test.go`) and the regenerated golden files. `grep -ri forge` over tracked
+  files still returns only deliberate provenance notes. None of the four old flags is left in
+  `internal/ui` outside comments. New cases for the two quality fixes. Then a walk-through against a
+  built binary (`go build -o /tmp/afk-check .`, in a throwaway repo, driven through tmux) with the
+  screens saved as evidence: each bullet above, with one running and one stopped scratch session; a
+  second `afk attach` stealing the session while the pane has focus, after which typed keys do not
+  reach dashboard bindings; and `afk dash --open <name>`. Anything the walk-through finds that forge
+  has too is fixed here and listed in `docs/decisions.md` so it can go back to forge.
 
 ---
 
@@ -1052,7 +1103,7 @@ with nobody at the keyboard.
   (which un-parks its task), and the non-loopback refusal.
 
 #### T3.2 — Dashboard: the build view
-- **Depends on:** T2.1
+- **Depends on:** T2.1, T0.6
 - **Scope:** in `afk dash`: a header segment with governor state and the tightest usage window; a
   Build tab listing master-plan tasks with ledger status; an inbox overlay to read and answer items;
   key bindings registered like every other key so `?` and `:` list them. All from files; no dialing.
