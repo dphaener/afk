@@ -22,6 +22,9 @@ var subcommands = map[string]func([]string){
 	"usage":  cmdUsage,
 	"inbox":  cmdInbox,
 	"tokens": cmdTokens,
+	"daemon": cmdDaemon,
+	"pause":  cmdPause,
+	"resume": cmdResume,
 	"_host":  cmdHost,
 }
 
@@ -187,6 +190,13 @@ Subcommands:
                  by the agent) adds one and sends a push notification if set up
   tokens         Show how many tokens a task or session used:
                  afk tokens [--project PATH] [--record] [SESSION|TASK]
+  daemon         Build the master plan's tasks unattended, one at a time, in the
+                 projects listed in afk's machine config; 'daemon --once' makes
+                 one pass and exits, 'daemon status' says what it is doing and why
+  pause          Stop the daemon from starting new tasks in a project:
+                 afk pause [project]
+  resume         Let the daemon start new tasks in a project again:
+                 afk resume [project]
 
 Use 'afk <subcommand> --help' for subcommand options.
 

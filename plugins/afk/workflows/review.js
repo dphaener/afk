@@ -50,6 +50,18 @@ const RESULT_SCHEMA = {
   required: ['verdict', 'findings'],
 }
 
+// The plugin's agent definitions (plugins/afk/agents/). A definition limits
+// the tools its agent starts with, which is most of what a fresh agent
+// carries. The QA check has its own type because it alone needs to write
+// evidence and drive a browser; the critic only reads and re-runs commands.
+const CHECK_AGENT_TYPES = { compliance: 'afk:reviewer', quality: 'afk:reviewer', qa: 'afk:qa' }
+const CRITIC_AGENT_TYPE = 'afk:reviewer'
+
+// The Workflow budget-ceiling message, as in execute.js (a script cannot
+// import, so the pattern is repeated). A message that merely mentions the
+// word "budget" is an ordinary agent error.
+const BUDGET_CEILING = /\b(budget (ceiling|exhausted|exceeded|limit)|(exceeded|exhausted|reached|hit) (the |your )?(token |turn |cost )?budget)\b/i
+
 const ISOLATION = 'You know nothing about how this work was executed and must not seek it.'
 
 const OUTPUT_FORMAT =
@@ -72,6 +84,24 @@ const promptsDir = args.pluginRoot + '/skills/reviewer/prompts/'
 
 function errorText(e) {
   return e && e.message ? e.message : String(e)
+}
+
+// One agent() call that names a plugin agent type. A session that started
+// before the plugin was updated, or an agent CLI without plugin agents, does
+// not know the type, and agent() then throws before any agent starts. The
+// wording of that refusal is not a contract, so any thrown error other than
+// the budget ceiling gets the same call once more without the type, on the
+// default agent. A null return is not retried: the agent ran and returned
+// nothing, which a refused type never does.
+async function spawn(prompt, opts, agentType) {
+  try {
+    return await agent(prompt, Object.assign({}, opts, { agentType: agentType }))
+  } catch (e) {
+    if (BUDGET_CEILING.test(errorText(e))) throw e
+    const why = errorText(e).replace(/\s+/g, ' ').trim().slice(0, 160)
+    log(opts.label + ': agent type ' + agentType + ' failed (' + why + '); retrying once without it, on the default agent')
+    return agent(prompt, opts)
+  }
 }
 
 function planNameLine() {
@@ -157,7 +187,7 @@ async function runCritic(name, findings) {
   let lastError = null
   for (const model of models) {
     try {
-      const out = await agent(prompt, { label: 'critic:' + name, model: model, schema: CRITIC_SCHEMA })
+      const out = await spawn(prompt, { label: 'critic:' + name, model: model, schema: CRITIC_SCHEMA }, CRITIC_AGENT_TYPE)
       if (out) return { out: out, error: null }
     } catch (e) {
       lastError = errorText(e)
@@ -173,7 +203,7 @@ const entries = await pipeline(
   args.checks,
   async (name) => {
     try {
-      const out = await agent(checkPrompt(name), { label: 'review:' + name, model: args.checkModel, schema: RESULT_SCHEMA })
+      const out = await spawn(checkPrompt(name), { label: 'review:' + name, model: args.checkModel, schema: RESULT_SCHEMA }, CHECK_AGENT_TYPES[name])
       if (!out) return { name: name, error: 'check agent returned no result' }
       return { name: name, found: out }
     } catch (e) {

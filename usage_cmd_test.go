@@ -40,6 +40,15 @@ func (f *fakeProvider) SessionTokens(provider.TokenQuery) ([]provider.TokenRecor
 	return nil, provider.ErrTokensUnsupported
 }
 
+// Unattended and UnattendedPreflight are here only to satisfy
+// provider.Provider; the usage command never launches a session.
+func (f *fakeProvider) Unattended([]string) ([]string, error) {
+	return nil, provider.ErrUnattendedUnsupported
+}
+func (f *fakeProvider) UnattendedPreflight(provider.UnattendedDeps) (bool, string) {
+	return false, ""
+}
+
 var usageNow = time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 
 func usageWindows(session, week, model float64) []provider.Window {

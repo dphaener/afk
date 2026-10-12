@@ -406,6 +406,11 @@ func TestSessionTokens(t *testing.T) {
 			if len(got) != len(tt.want) {
 				t.Errorf("got %d records, want %d", len(got), len(tt.want))
 			}
+			// First has its own test (TestSessionTokensFirst); clear it so the
+			// rows above keep pinning the counting rule alone.
+			for i := range got {
+				got[i].First = false
+			}
 			for i := 0; i < len(got) || i < len(tt.want); i++ {
 				switch {
 				case i >= len(got):
@@ -661,6 +666,126 @@ func TestPhaseAndRoleNames(t *testing.T) {
 		t.Run(tt.want, func(t *testing.T) {
 			if tt.got != tt.want {
 				t.Errorf("constant = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+// noStampLine is agentLine with the timestamp key removed, as a line whose
+// time could not be read.
+func noStampLine(agent, id string) string {
+	l := agentLine(agent, id, 0, "sonnet", usage{in: 1})
+	if agent == "" {
+		l = asstLine(id, 0, "sonnet", usage{in: 1})
+	}
+	return strings.Replace(l, `"timestamp":"`+stamp(0)+`",`, "", 1)
+}
+
+// TestSessionTokensFirst pins which record of each agent is marked First.
+// Load-bearing rows:
+//
+//   - "two agents interleaved in time": the sub-agent file sorts after the
+//     main file, so file order alone would still pass the main row but the
+//     sub-agent's earliest call is listed second in its file; only comparing
+//     timestamps per agent id picks it.
+//   - "calls out of file order": the earliest call is not the first line, so
+//     "first line of the agent" fails here.
+//   - "message id split across lines": the id is one record, and it is first
+//     once, not once per line.
+//   - "all calls lack a timestamp": the fallback to file order; exactly one
+//     record is marked and nothing panics on the zero times.
+//   - "undated call before a dated one": a zero time must not win by sorting
+//     before every real time.
+func TestSessionTokensFirst(t *testing.T) {
+	u := usage{in: 1, out: 2}
+	tests := []struct {
+		name  string
+		build func(t *testing.T, home string)
+		want  map[string]string // agent id -> message id marked First
+	}{
+		{
+			name: "one agent with three calls",
+			build: func(t *testing.T, home string) {
+				writeTranscript(t, home, mainRel(),
+					asstLine("m1", 1, "opus", u), asstLine("m2", 2, "opus", u), asstLine("m3", 3, "opus", u))
+			},
+			want: map[string]string{"": "m1"},
+		},
+		{
+			name: "calls out of file order",
+			build: func(t *testing.T, home string) {
+				writeTranscript(t, home, mainRel(),
+					asstLine("m2", 2, "opus", u), asstLine("m1", 1, "opus", u), asstLine("m3", 3, "opus", u))
+			},
+			want: map[string]string{"": "m1"},
+		},
+		{
+			name: "two agents interleaved in time",
+			build: func(t *testing.T, home string) {
+				writeTranscript(t, home, mainRel(), asstLine("m1", 1, "opus", u), asstLine("m4", 4, "opus", u))
+				writeTranscript(t, home, subRel("aaa"), agentLine("aaa", "a3", 3, "sonnet", u), agentLine("aaa", "a2", 2, "sonnet", u))
+				writeTranscript(t, home, subRel("bbb"), agentLine("bbb", "b5", 5, "sonnet", u), agentLine("bbb", "b6", 6, "sonnet", u))
+			},
+			want: map[string]string{"": "m1", "aaa": "a2", "bbb": "b5"},
+		},
+		{
+			name: "main session only",
+			build: func(t *testing.T, home string) {
+				writeTranscript(t, home, mainRel(), asstLine("only", 7, "opus", u))
+			},
+			want: map[string]string{"": "only"},
+		},
+		{
+			name: "message id split across lines",
+			build: func(t *testing.T, home string) {
+				writeTranscript(t, home, mainRel(),
+					asstLine("split", 1, "opus", usage{out: 5}), asstLine("split", 2, "opus", usage{out: 9}),
+					asstLine("later", 3, "opus", u))
+			},
+			want: map[string]string{"": "split"},
+		},
+		{
+			name: "all calls lack a timestamp",
+			build: func(t *testing.T, home string) {
+				writeTranscript(t, home, mainRel(), asstLine("m1", 1, "opus", u))
+				writeTranscript(t, home, subRel("nots"), noStampLine("nots", "n1"), noStampLine("nots", "n2"), noStampLine("nots", "n3"))
+			},
+			want: map[string]string{"": "m1", "nots": "n1"},
+		},
+		{
+			name: "undated call before a dated one",
+			build: func(t *testing.T, home string) {
+				writeTranscript(t, home, mainRel(), asstLine("m1", 1, "opus", u))
+				writeTranscript(t, home, subRel("mix"), noStampLine("mix", "x1"), agentLine("mix", "x2", 2, "sonnet", u), agentLine("mix", "x3", 1, "sonnet", u))
+			},
+			want: map[string]string{"": "m1", "mix": "x3"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			tt.build(t, home)
+			p, err := Lookup(ClaudeName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := p.SessionTokens(TokenQuery{Home: home, SessionID: tokenTestSession})
+			if err != nil {
+				t.Fatalf("SessionTokens: %v", err)
+			}
+			marked := map[string][]string{}
+			for _, r := range got {
+				if r.First {
+					marked[r.AgentID] = append(marked[r.AgentID], r.MessageID)
+				}
+			}
+			if len(marked) != len(tt.want) {
+				t.Errorf("marked = %v, want %v", marked, tt.want)
+			}
+			for agent, id := range tt.want {
+				if m := marked[agent]; len(m) != 1 || m[0] != id {
+					t.Errorf("agent %q marked %v, want exactly [%s]", agent, m, id)
+				}
 			}
 		})
 	}

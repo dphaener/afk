@@ -92,17 +92,19 @@ It returns `{checks: {compliance|quality|qa: {verdict, findings: [{severity, tas
 
 ### Agent path (no Workflow tool)
 
+If an Agent call is refused because its `subagent_type` is unknown, make the same call once without it.
+
 For each requested check, one fresh Agent call; then, only when that check returns a `blocker` or `major` finding, one critic Agent call:
 
 ```
-Agent(description: "Check N: {name}", model: "{balanced alias}", prompt: "<the full body of the check's prompt block — injected into this command's context, or read from its prompt file — emitted verbatim>
+Agent(description: "Check N: {name}", subagent_type: "{afk:reviewer, or afk:qa for the hands-on QA check}", model: "{balanced alias}", prompt: "<the full body of the check's prompt block — injected into this command's context, or read from its prompt file — emitted verbatim>
 
 ## Inputs
 - Plan path: {absolute plan path}
 - Diff command: `{diff command}`
 - Output format: <the Check Output Format below>")
 
-Agent(description: "Critic for Check N: {name}", model: "{reasoning alias}", prompt: "<the full body of the '# Adversarial Critic Prompt' block, emitted verbatim>
+Agent(description: "Critic for Check N: {name}", subagent_type: "afk:reviewer", model: "{reasoning alias}", prompt: "<the full body of the '# Adversarial Critic Prompt' block, emitted verbatim>
 
 ## Inputs
 - Plan path: {absolute plan path}

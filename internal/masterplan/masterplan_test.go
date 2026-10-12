@@ -291,3 +291,33 @@ func TestParseOwnPlan(t *testing.T) {
 	}
 	t.Fatal("docs/PLAN.md does not contain T1.1")
 }
+
+// TestTaskOwner: the "(owner + agent)" and "Owner inbox (owner approval)"
+// rows are load-bearing. They are ordinary tasks, and reading them as owner
+// tasks would make the daemon skip agent work.
+func TestTaskOwner(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  bool
+	}{
+		{"owner with note", "T0.0 — Stand up the VM (owner; not an agent task)", true},
+		{"owner alone", "Stand up the VM (owner)", true},
+		{"capitalised", "Stand up the VM (Owner)", true},
+		{"spaces inside bracket", "Stand up the VM ( owner )", true},
+		{"spaces around semicolon", "Stand up the VM (owner ; by hand)", true},
+		{"owner plus agent", "T4.1 — Nebari on the VM (owner + agent)", false},
+		{"owner and agent", "Nebari on the VM (owner and agent)", false},
+		{"owners", "Collect keys (owners)", false},
+		{"owner inbox owner approval", "Owner inbox (owner approval)", false},
+		{"no brackets", "Stand up the VM", false},
+		{"owner word without brackets", "owner; stand up the VM", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (Task{Title: tt.title}).Owner(); got != tt.want {
+				t.Errorf("Owner() for %q = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}

@@ -90,10 +90,13 @@ Every task is delegated via the **Agent tool** with a full 6-section prompt and 
 ```
 Agent(
   description: "Execute (WN.TM) {task title}",
+  subagent_type: "afk:task",
   prompt: "<the full body of the '# Six-Section Prompt Template' block injected into this command's context below, emitted verbatim, with these placeholders substituted: [Quote the EXACT task description from the plan. Include the task ID (WN.TM), title, What to do, Must NOT do, Files, and Acceptance Criteria verbatim.] → the verbatim task block from the plan (task ID, title, What to do, Must NOT do, Files, and Acceptance Criteria); [exact paths from plan's Files section] → file paths from task; [what the code must do, derived from Acceptance Criteria] → functionality requirement; [specific command or check to confirm correctness] → verification command; [which existing files to examine for patterns before writing anything] → files to read; [what to search for to understand conventions] → search targets; [files to create or modify] → write/edit targets; [commands to run for verification] → bash commands; [reference file] → pattern reference file; {plan-name} → plan directory name; [list from plan's Files section + test files if applicable + `.afk/{plan-name}/*.md` notepad files] → allowed file list; [absolute path to project root] → working directory; [From notepads: conventions discovered, gotchas found, decisions made in prior tasks. If notepads are empty: \"No prior wisdom — you are the first task.\"] → inherited wisdom text; [What prior tasks in this plan built that this task depends on. E.g., \"W1.T1 created the schema — use it as-is, do not modify it.\"] → dependency description>",
   model: "{alias resolved from registry for this tier}"   // consult the afk Model Registry loaded in context
 )
 ```
+
+Every delegation and fix call also names `subagent_type: "afk:task"`; if a call is refused because that type is unknown, make the same call once without it.
 
 Resolve the plan's tier to the Agent `model` parameter using the afk Model Registry loaded in context. Do not hardcode aliases here — the registry is the authority.
 
@@ -119,6 +122,7 @@ This is **real model selection** — the sub-agent runs on the model the registr
 ```
 Agent(
   description: "Execute (WN.TM) {task title}",
+  subagent_type: "afk:task",
   prompt: "[6-SECTION PROMPT WITH BEHAVIORAL GUIDANCE]",
   model: "{alias resolved from registry for this tier}"  // consult afk Model Registry
 )
@@ -141,6 +145,7 @@ The full delegation structure with behavioral guidance is:
 ```
 Agent(
   description: "Execute (WN.TM) {task title}",
+  subagent_type: "afk:task",
   model: "{alias resolved from registry for this tier}",  // consult afk Model Registry loaded in context
   prompt: "Your codename is **{codename}**. You MUST announce yourself by codename before beginning work.
 
@@ -249,6 +254,7 @@ Use this template for every fix delegation:
 ```
 Agent(
   description: "Fix discrepancy in (WN.TM) {task title}",
+  subagent_type: "afk:task",
   model: "{alias resolved from registry for the original task's tier}",
   prompt: "<the full body of the '# Fix Delegation Prompt' block injected into this command's context below, emitted verbatim, with these placeholders substituted: [Reproduce the original 6-section prompt in full] → original 6-section prompt text; [Describe exactly what was wrong: what the sub-agent claimed vs. what the code actually does] → discrepancy description; [Specific action required: e.g., 'The import path is wrong — change X to Y' / 'The function is missing the null check for Z'] → fix instruction; [Repeat original task verbatim] → original task text; [All 6 sections again] → all 6 sections repeated>"
 )
@@ -304,9 +310,9 @@ Use the `# Failure Retry Prompt` block injected into this command's context belo
 To run tasks in parallel, invoke multiple Agent calls in a SINGLE message:
 
 ```
-Agent(description: "Execute (W2.T1) ...", model: "{alias resolved from registry for balanced}", prompt: "FULL PROMPT FOR W2.T1...")
-Agent(description: "Execute (W2.T2) ...", model: "{alias resolved from registry for light}", prompt: "FULL PROMPT FOR W2.T2...")
-Agent(description: "Execute (W2.T3) ...", model: "{alias resolved from registry for heavy}", prompt: "FULL PROMPT FOR W2.T3...")
+Agent(description: "Execute (W2.T1) ...", subagent_type: "afk:task", model: "{alias resolved from registry for balanced}", prompt: "FULL PROMPT FOR W2.T1...")
+Agent(description: "Execute (W2.T2) ...", subagent_type: "afk:task", model: "{alias resolved from registry for light}", prompt: "FULL PROMPT FOR W2.T2...")
+Agent(description: "Execute (W2.T3) ...", subagent_type: "afk:task", model: "{alias resolved from registry for heavy}", prompt: "FULL PROMPT FOR W2.T3...")
 ```
 // Resolve each alias from the afk Model Registry loaded in context before making the call.
 

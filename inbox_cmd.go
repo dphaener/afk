@@ -502,28 +502,8 @@ func inboxInferSession(env inboxEnv) string {
 }
 
 // inboxNotification decides whether a newly added item sends a push
-// notification, and builds it. It is pure so the whole "who gets bothered,
-// and with what" table is testable without a server.
-//
-// No address configured is silence, not an error: most projects have no
-// afk.toml. Which kinds notify, and how loudly, is notify.NtfyPriority's
-// table. The message ends with the command that shows the item, because a
-// notification is read on a phone and acted on at a terminal later.
+// notification. The rules live in notify.InboxMessage so the build loop shares
+// them; this adapts an inbox.Item to it.
 func inboxNotification(item inbox.Item, ntfyURL string) (notify.NtfyMessage, bool) {
-	if ntfyURL == "" {
-		return notify.NtfyMessage{}, false
-	}
-	prio, ok := notify.NtfyPriority(item.Kind, item.Blocking)
-	if !ok {
-		return notify.NtfyMessage{}, false
-	}
-	body := item.Body
-	if body != "" {
-		body += "\n\n"
-	}
-	body += "afk inbox show " + item.ID
-	if item.Task != "" {
-		body += " (" + item.Task + ")"
-	}
-	return notify.NtfyMessage{Title: "afk: " + item.Title, Body: body, Priority: prio}, true
+	return notify.InboxMessage(item.ID, item.Task, item.Kind, item.Title, item.Body, item.Blocking, ntfyURL)
 }

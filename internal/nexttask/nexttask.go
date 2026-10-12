@@ -52,6 +52,11 @@ type Decision struct {
 	// Task is the id of the task to run, or empty.
 	Task   string
 	Reason Reason
+	// Owner is true when Task names a task whose title marks it as the
+	// owner's (masterplan.Task.Owner). Next still chooses it exactly where
+	// it would choose an ordinary task; the daemon decides what to do with
+	// one, because only the daemon knows an agent must not be launched.
+	Owner bool
 	// InProgress holds the running and shipping tasks, in plan order. Set
 	// only with ReasonInProgress.
 	InProgress []string
@@ -188,6 +193,20 @@ func Unmet(task masterplan.Task, l ledger.Ledger) []string {
 //
 // A plan with no tasks is ReasonAllDone.
 func Next(tasks []masterplan.Task, l ledger.Ledger, openItems func(id string) bool) Decision {
+	d := choose(tasks, l, openItems)
+	if d.Task != "" {
+		for _, t := range tasks {
+			if t.ID == d.Task {
+				d.Owner = t.Owner()
+				break
+			}
+		}
+	}
+	return d
+}
+
+// choose is the ordering rules of Next, before Owner is filled in.
+func choose(tasks []masterplan.Task, l ledger.Ledger, openItems func(id string) bool) Decision {
 	inPlan := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
 		inPlan[t.ID] = true

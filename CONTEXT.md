@@ -48,6 +48,28 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Token record**: one model call's usage as a provider reports it: when, which model, which role and phase, and the four token counts.
 - **Role**: who made a model call inside a session: `conductor`, `planner`, `research`, `crucible`, `task`, `fix`, `verifier`, a `review:` check, `critic`, or `unknown`/`other` when it cannot be told.
 - **Transcript**: the file an agent CLI keeps of one conversation, one JSON object per line; the source of token records.
+- **Start-up context**: everything an agent is sent before it does anything: the system prompt, tool definitions, the skills list, connector listings and `CLAUDE.md`. It is the size of the agent's first call.
+- **First call**: an agent's first model call; its input is the start-up context plus the prompt it was given.
+- **Agent definition**: a file under `plugins/afk/agents/` that names an agent type and the tools it may use, so an agent starts with only what its role needs.
+- **Agent type**: the name a spawn uses to pick an agent definition; a spawn with no type, or a type the session does not know, gets the default agent with every tool.
+- **Build loop**: the daemon's repeated pass over each project: look at what is on disk, decide one thing to do, do it, wait for the next tick.
+- **Daemon**: `afk daemon`, the always-on process that runs the build loop; it keeps nothing in memory that is not on disk, so it can be killed and restarted at any point.
+- **Tick**: one pass of the build loop over every project, every few seconds.
+- **Unattended mode**: the agent CLI's permission mode that never stops to ask, named on the command line when the daemon starts an agent.
+- **Unattended preflight**: the check, before the daemon starts an agent, that this machine can run unattended mode without a dialog; when it fails an inbox item says what to do and nothing starts.
+- **Stall**: a session that has been asking something at the terminal for longer than the stall limit with no inbox item explaining why.
+- **Pause flag**: `.afk/build/paused`, written by `afk pause`; while it exists the daemon starts no new task for that project.
+- **Decision log**: `.afk/log/decisions.jsonl`, one line for every decision made in the loop and who or what made it.
+- **Machine config**: `config.toml` in afk's config folder, listing the projects the daemon runs and its timings; one per machine.
+- **Local config**: `afk.local.toml`, laid over `afk.toml` key by key and never committed; where private values such as the ntfy address go.
+- **Un-park**: to return a parked task to `running` once every item it waited for has been answered.
+- **Ship**: what the daemon does with a finished session: push the branch, open a pull request, wait for CI, merge, check the deploy and clean up.
+- **Ship state**: how far a task's ship has got (`committed`, `pushed`, `pr_open`, `handed_back`, `ci_green`, `merged`, `deploy_healthy`, `stopped`), saved in the ledger before the step that leaves it.
+- **Hand-back**: sending a failed CI run back to the session that wrote the code, by typing one line into it that points at a file describing the failure.
+- **Stop the line**: after a merge whose deploy never became healthy, the daemon starts nothing more for that project until the owner runs `afk resume`.
+- **Owner task**: a master-plan task whose title carries `(owner)` or `(owner; …)`; the daemon never starts an agent for it and asks the owner to confirm it in the inbox.
+- **Ledger init**: `afk ledger init`, which creates a project's ledger, optionally marking the tasks already finished; without a ledger the daemon starts nothing.
+- **Required-env check**: before a merge, looking in the branch's changes for a newly required environment variable, and parking until the owner has set it.
 - **Attached**: a client the session host has registered as the session's current client; a connection the host has accepted but not yet registered is not attached.
 - **Stress run**: running one test or a whole test package many times in a row, with and without CPU load, to find a test that fails only sometimes.
 - **Flaky test**: a test that sometimes fails although nothing it checks is broken.

@@ -41,6 +41,8 @@ earlier forge behaviour in these areas:
   `workflows/review.js`.
 - the autonomous prompt's use of `afk inbox add` (plugin version 5.1.0): the port's autonomous prompt
   does not call it.
+- the agent definitions (plugin version 5.2.0): the port has no agent definitions and spawns every
+  agent with the default tools, so its agents start with the full tool set and cost more to start.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

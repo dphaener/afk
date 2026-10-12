@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/nexttask"
@@ -14,9 +15,12 @@ import (
 //
 // Load-bearing rows: "task" has the id first and two spaces (scripts split on
 // it); "waiting with failed" proves the failed sentence is appended rather
-// than replacing the wait; "blocked by failed" carries the recovery command.
+// than replacing the wait; "blocked by failed" carries the recovery command;
+// "owner task" must NOT have the id-two-spaces-title shape, because that shape
+// is what a script launches an agent for, and an owner task must never get one.
 func TestNextLine(t *testing.T) {
-	tasks := []masterplan.Task{{ID: "T1.1", Title: "First"}, {ID: "T1.2", Title: "Second"}}
+	tasks := []masterplan.Task{{ID: "T1.1", Title: "First"}, {ID: "T1.2", Title: "Second"},
+		{ID: "T0.0", Title: "Stand up the VM (owner; not an agent task)"}}
 	l := ledger.Ledger{Tasks: []ledger.Entry{
 		{ID: "T1.1", Status: ledger.Running},
 		{ID: "T1.2", Status: ledger.Shipping},
@@ -27,6 +31,8 @@ func TestNextLine(t *testing.T) {
 		want string
 	}{
 		{"task", nexttask.Decision{Task: "T1.2"}, "T1.2  Second"},
+		{"owner task", nexttask.Decision{Task: "T0.0", Owner: true}, "T0.0 is yours to do; the daemon will ask you to confirm it in the inbox. It is: Stand up the VM (owner; not an agent task)"},
+		{"owner task not in the plan read", nexttask.Decision{Task: "T9.9", Owner: true}, "T9.9 is yours to do; the daemon will ask you to confirm it in the inbox."},
 		{"in progress, one", nexttask.Decision{Reason: nexttask.ReasonInProgress, InProgress: []string{"T1.1"}}, "Nothing to start: T1.1 is already running."},
 		{"in progress, shipping", nexttask.Decision{Reason: nexttask.ReasonInProgress, InProgress: []string{"T1.2"}}, "Nothing to start: T1.2 is already shipping."},
 		{"in progress, two", nexttask.Decision{Reason: nexttask.ReasonInProgress, InProgress: []string{"T1.1", "T1.2"}}, "Nothing to start: T1.1 is already running; T1.2 is already shipping."},
@@ -88,6 +94,95 @@ func TestNextOutcomes(t *testing.T) {
 			}
 			if stdout != tt.want {
 				t.Errorf("stdout %q want %q", stdout, tt.want)
+			}
+		})
+	}
+}
+
+// TestNextOwnerTask runs the command for a plan whose next task is the
+// owner's. Load-bearing: exit 0 with one line on stdout, as for any other
+// answer, and once the owner task is done the next line is an ordinary task
+// again; "(owner + agent)" is an agent's task and keeps the ordinary shape.
+func TestNextOwnerTask(t *testing.T) {
+	const plan = "#### T0.0 — Stand up the VM (owner; not an agent task)\n\n- **Depends on:** none\n\n" +
+		"#### T0.1 — Wire it up (owner + agent)\n\n- **Depends on:** T0.0\n"
+	tests := []struct {
+		name   string
+		ledger []string
+		want   string
+	}{
+		{name: "owner task is next", want: "T0.0 is yours to do; the daemon will ask you to confirm it in the inbox. It is: Stand up the VM (owner; not an agent task)\n"},
+		{name: "owner task done", ledger: []string{"T0.0=done"}, want: "T0.1  Wire it up (owner + agent)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := ledgerCmdProject(t, plan)
+			seedLedger(t, project, tt.ledger...)
+			code, stdout, stderr := runNextCmd(t, project)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			if stdout != tt.want {
+				t.Errorf("stdout %q want %q", stdout, tt.want)
+			}
+		})
+	}
+}
+
+// TestNextWithInbox runs afk next against a real inbox folder.
+//
+// Load-bearing rows: "answered item" releases the parked task (the whole point
+// of reading the inbox); "open item" keeps it parked; "item missing" keeps it
+// parked, since a deleted item is not an answer.
+func TestNextWithInbox(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer bool
+		add    bool
+		want   string
+	}{
+		{name: "answered item", add: true, answer: true, want: "T1.1  First\n"},
+		{name: "open item", add: true, want: "Nothing to start: waiting on you for T1.1 (inbox items ITEM).\n"},
+		{name: "item missing", want: "Nothing to start: waiting on you for T1.1 (inbox items abcd23).\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := ledgerCmdProject(t, ledgerCmdPlan)
+			id := "abcd23"
+			if tt.add {
+				store := inbox.Store{Dir: inbox.Dir(project)}
+				it, err := store.Add(inbox.NewItem{Task: "T1.1", Kind: "question", Blocking: true, Title: "Which?"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				id = it.ID
+				if tt.answer {
+					if _, err := store.Answer(id, "yes", "cli"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := ledger.Update(project, func(l *ledger.Ledger) error {
+				if _, err := l.Set("T1.1", ledger.Parked, nil); err != nil {
+					return err
+				}
+				for i := range l.Tasks {
+					if l.Tasks[i].ID == "T1.1" {
+						l.Tasks[i].ParkedOn = []string{id}
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := runNextCmd(t, project)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			want := strings.ReplaceAll(tt.want, "ITEM", id)
+			if stdout != want {
+				t.Errorf("stdout %q want %q", stdout, want)
 			}
 		})
 	}

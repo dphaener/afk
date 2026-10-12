@@ -220,6 +220,34 @@ func TestRunTokensFixture(t *testing.T) {
 			t.Errorf("row %s:\n got  %v\n want %v", key, got, w)
 		}
 	}
+	// The start-up section, worked out by hand with jq from the first call
+	// (earliest timestamp, usage maxed over lines sharing a message id) of each
+	// of the fixture's 13 transcripts, then summed by role. Weighted is
+	// in + 5 out + 1.25 cw + 0.1 cr of those calls; share is of 2871239.
+	// role, agents, average tokens, weighted, share
+	wantStartUp := [][]string{
+		{"planner", "1", "121269", "120841", "4.2%"},
+		{"research", "1", "34921", "44366", "1.5%"},
+		{"task", "5", "35927", "165003", "5.7%"},
+		{"verifier", "3", "37087", "97801", "3.4%"},
+		{"review:compliance", "1", "35151", "45273", "1.6%"},
+		{"review:qa", "1", "35152", "22699", "0.8%"},
+		{"review:quality", "1", "35149", "22716", "0.8%"},
+		{"total", "13", "42503", "518699", "18.1%"},
+	}
+	_, startUp, found := strings.Cut(out, "start-up (the first call of each agent)\n")
+	if !found {
+		t.Fatalf("start-up section missing:\n%s", out)
+	}
+	suLines := strings.Split(strings.TrimRight(startUp, "\n"), "\n")
+	if len(suLines) != len(wantStartUp)+1 {
+		t.Fatalf("start-up has %d lines, want %d:\n%s", len(suLines), len(wantStartUp)+1, startUp)
+	}
+	for i, w := range wantStartUp {
+		if got := strings.Fields(suLines[i+1]); strings.Join(got, " ") != strings.Join(w, " ") {
+			t.Errorf("start-up row %d:\n got  %v\n want %v", i, got, w)
+		}
+	}
 	if _, err := os.Stat(ledger); err == nil {
 		t.Fatalf("reading without --record wrote the ledger")
 	}

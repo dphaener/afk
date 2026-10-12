@@ -229,3 +229,44 @@ func TestNtfySendRedact(t *testing.T) {
 		})
 	}
 }
+
+// TestInboxMessage mirrors the table that used to live in package main.
+// Load-bearing rows: "no address" (silence, not an error, since most projects
+// have no afk.toml), "non-blocking question" (never notifies even with an
+// address) and "body and task" (the exact message shape: body, blank line,
+// the show command, the task in brackets). Priorities are NtfyPriority's
+// table; these rows only prove kind and blocking pass through unchanged.
+func TestInboxMessage(t *testing.T) {
+	const url = "https://ntfy.example/topic"
+	cases := []struct {
+		name     string
+		id, task string
+		kind     string
+		title    string
+		body     string
+		blocking bool
+		url      string
+		wantSend bool
+		want     NtfyMessage
+	}{
+		{name: "no address", id: "aaaaaa", kind: "failure", blocking: true, title: "CI failed twice"},
+		{name: "non-blocking question", id: "aaaaaa", kind: "question", title: "Which queue?", url: url},
+		{name: "non-blocking notice", id: "aaaaaa", kind: "notice", title: "Idea", url: url},
+		{name: "blocking question", id: "aaaaaa", kind: "question", blocking: true, title: "Which queue?", url: url,
+			wantSend: true, want: NtfyMessage{Title: "afk: Which queue?", Body: "afk inbox show aaaaaa", Priority: 4}},
+		{name: "blocking failure is the loudest", id: "aaaaaa", kind: "failure", blocking: true, title: "CI failed twice", url: url,
+			wantSend: true, want: NtfyMessage{Title: "afk: CI failed twice", Body: "afk inbox show aaaaaa", Priority: 5}},
+		{name: "body and task", id: "bbbbbb", task: "T4.3", kind: "env_var", blocking: true, title: "Set STRIPE_KEY", body: "The deploy needs it.", url: url,
+			wantSend: true, want: NtfyMessage{Title: "afk: Set STRIPE_KEY", Body: "The deploy needs it.\n\nafk inbox show bbbbbb (T4.3)", Priority: 4}},
+		{name: "task without a body", id: "bbbbbb", task: "T4.2a", kind: "external_action", title: "Approve DNS", url: url,
+			wantSend: true, want: NtfyMessage{Title: "afk: Approve DNS", Body: "afk inbox show bbbbbb (T4.2a)", Priority: 3}},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			got, send := InboxMessage(tt.id, tt.task, tt.kind, tt.title, tt.body, tt.blocking, tt.url)
+			if send != tt.wantSend || got != tt.want {
+				t.Errorf("got (%+v, %v), want (%+v, %v)", got, send, tt.want, tt.wantSend)
+			}
+		})
+	}
+}

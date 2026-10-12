@@ -314,3 +314,106 @@ func TestRenderTasks(t *testing.T) {
 		t.Fatalf("NaN:\n%s", buf.String())
 	}
 }
+
+func first(phase, role string, in, out, cw, cr int64) provider.TokenRecord {
+	r := rec(phase, role, "m", in, out, cw, cr)
+	r.First = true
+	return r
+}
+
+// TestStartUp: only First records count, so the not-first row must leave the
+// numbers unchanged; the two-agents row pins the average (rounded, over the
+// agents, from input + cache write + cache read and not output) and the
+// weighted sum (output included); the two-roles row pins the table order
+// (earliest phase, then role) against input given in the opposite order.
+func TestStartUp(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []provider.TokenRecord
+		want []StartUpRow
+	}{
+		{name: "no first calls", in: []provider.TokenRecord{rec("execute", "task", "m", 1, 1, 1, 1)}, want: []StartUpRow{}},
+		{name: "nothing at all", in: nil, want: []StartUpRow{}},
+		{
+			name: "one role two agents",
+			in: []provider.TokenRecord{
+				first("execute", "task", 2, 100, 1000, 0),
+				rec("execute", "task", "m", 2, 50, 10, 5000),
+				first("execute", "task", 2, 0, 0, 2000),
+			},
+			want: []StartUpRow{{Role: "task", Agents: 2, AvgTokens: 1502, Tokens: 3004, Weighted: 1954}},
+		},
+		{
+			name: "two roles in table order",
+			in: []provider.TokenRecord{
+				first("review", "review:qa", 2, 0, 100, 0),
+				first("execute", "verifier", 2, 0, 0, 100),
+				first("execute", "task", 2, 0, 200, 0),
+			},
+			want: []StartUpRow{
+				{Role: "task", Agents: 1, AvgTokens: 202, Tokens: 202, Weighted: 252},
+				{Role: "verifier", Agents: 1, AvgTokens: 102, Tokens: 102, Weighted: 12},
+				{Role: "review:qa", Agents: 1, AvgTokens: 102, Tokens: 102, Weighted: 127},
+			},
+		},
+		{
+			name: "main session first call",
+			in:   []provider.TokenRecord{first("plan", "planner", 2, 10, 90, 8)},
+			want: []StartUpRow{{Role: "planner", Agents: 1, AvgTokens: 100, Tokens: 100, Weighted: 2 + 50 + 112.5 + 0.8}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := StartUp(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("rows = %+v, want %+v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("row %d = %+v, want %+v", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRenderStartUp: the no-rows row must print nothing at all (no heading),
+// and the known-total row pins the total's share: 1954 of 19540 is 10.0%.
+func TestRenderStartUp(t *testing.T) {
+	t.Run("no rows prints nothing", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := RenderStartUp(&buf, nil, 1000); err != nil || buf.Len() != 0 {
+			t.Fatalf("err %v, out %q", err, buf.String())
+		}
+	})
+	t.Run("share against a known total", func(t *testing.T) {
+		rows := StartUp([]provider.TokenRecord{
+			first("execute", "task", 2, 100, 1000, 0),
+			first("execute", "task", 2, 0, 0, 2000),
+		})
+		var buf bytes.Buffer
+		if err := RenderStartUp(&buf, rows, 19540); err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+		if len(lines) != 4 || lines[0] != "start-up (the first call of each agent)" {
+			t.Fatalf("shape:\n%s", buf.String())
+		}
+		for i, want := range [][]string{
+			{"role", "agents", "average", "tokens", "weighted", "share"},
+			{"task", "2", "1502", "1954", "10.0%"},
+			{"total", "2", "1502", "1954", "10.0%"},
+		} {
+			if got := strings.Fields(lines[i+1]); strings.Join(got, " ") != strings.Join(want, " ") {
+				t.Errorf("line %d = %v, want %v", i+1, got, want)
+			}
+		}
+	})
+	t.Run("zero total", func(t *testing.T) {
+		var buf bytes.Buffer
+		RenderStartUp(&buf, []StartUpRow{{Role: "task", Agents: 1, AvgTokens: 5, Tokens: 5, Weighted: 5}}, 0)
+		if strings.Contains(buf.String(), "NaN") || strings.Contains(buf.String(), "Inf") {
+			t.Fatalf("bad zero total:\n%s", buf.String())
+		}
+	})
+}

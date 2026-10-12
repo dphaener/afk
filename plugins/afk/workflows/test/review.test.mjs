@@ -4,11 +4,14 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import {
   FORBIDDEN_API,
   PLAN_PATH,
   PLUGIN_ROOT,
+  EXECUTE_SCRIPT,
   REVIEW_SCRIPT,
+  WORKFLOWS_DIR,
   boom,
   extractMeta,
   nothing,
@@ -301,19 +304,29 @@ describe('review.js errors and fallback', () => {
     assert.deepEqual(rec.result.checks.quality.findings, [MAJOR('quality')])
   })
 
+  // A throw on a typed call is first retried without the agent type, on the
+  // same model, so the fallback model is reached only when that throws too.
   it('retries a thrown critic once with criticFallbackModel', async () => {
     const rec = await review(
       makeReviewArgs(['quality']),
-      { 'critic:quality': [boom('Unknown model alias: critic-alias')] },
+      { 'critic:quality': [boom('Unknown model alias: critic-alias'), boom('Unknown model alias: critic-alias')] },
       {},
       { quality: [MAJOR('quality')] }
     )
-    assert.deepEqual(callsOf(rec, 'critic:quality').map((c) => c.model), ['critic-alias', 'critic-fallback-alias'])
+    assert.deepEqual(
+      callsOf(rec, 'critic:quality').map((c) => [c.model, c.opts.agentType]),
+      [
+        ['critic-alias', 'afk:reviewer'],
+        ['critic-alias', undefined],
+        ['critic-fallback-alias', 'afk:reviewer'],
+      ]
+    )
     assert.equal(rec.result.checks.quality.verdict, 'FAIL')
   })
 
   it("reports a thrown check call as that check's FAIL with a blocker naming the error", async () => {
-    const rec = await review(makeReviewArgs(), { 'review:qa': [boom('SENTINEL-ERROR check agent crashed')] })
+    const crash = () => boom('SENTINEL-ERROR check agent crashed')
+    const rec = await review(makeReviewArgs(), { 'review:qa': [crash(), crash()] })
     const qa = rec.result.checks.qa
     assert.equal(qa.verdict, 'FAIL')
     assert.ok(
@@ -323,6 +336,165 @@ describe('review.js errors and fallback', () => {
     assert.equal(callsOf(rec, 'critic:qa').length, 0, 'no critic runs for a check that threw')
     assert.equal(rec.result.checks.compliance.verdict, 'PASS', 'other checks are unaffected')
     assert.equal(rec.result.checks.quality.verdict, 'PASS')
+  })
+})
+
+// Each check and critic names a plugin agent definition (plugins/afk/agents/),
+// which limits the tools it starts with. A session that started before the
+// plugin was updated does not know the types, and agent() then throws.
+//
+// Load-bearing: the refused-type run (without the retry every check of such a
+// session would be reported as failed to run), the budget row (a budget stop
+// must not start another agent), the labels row (token accounting detects an
+// agent's role from its label), and the null row (a check that ran and
+// returned nothing is not a refused type).
+describe('review.js agent types', () => {
+  const REFUSED = (type) =>
+    `agent({agentType}): agent type '${type}' not found. Available agents: claude, Explore, general-purpose, Plan`
+
+  // A session that knows no afk agent type: every typed call throws.
+  const refusing = (inner) => (call) => (call.opts.agentType ? boom(REFUSED(call.opts.agentType)) : inner(call))
+
+  it("each check's and critic's call carries its agent type, and labels and the other options are unchanged", async () => {
+    const rec = await review(makeReviewArgs(), {}, {}, majorEverywhere)
+    const types = Object.fromEntries(rec.calls.map((c) => [c.label, c.opts.agentType]))
+    assert.deepEqual(types, {
+      'review:compliance': 'afk:reviewer',
+      'review:quality': 'afk:reviewer',
+      'review:qa': 'afk:qa',
+      'critic:compliance': 'afk:reviewer',
+      'critic:quality': 'afk:reviewer',
+      'critic:qa': 'afk:reviewer',
+    })
+    for (const c of rec.calls) {
+      assert.deepEqual(Object.keys(c.opts).sort(), ['agentType', 'label', 'model', 'schema'], c.label)
+    }
+    assert.ok(!rec.logs.some((l) => /agent type/.test(l)), 'nothing is logged when the type is accepted')
+  })
+
+  it('a refused agent type is retried once without it, with one log line, and the run result is the same', async () => {
+    const typed = await review(makeReviewArgs(), {}, {}, majorEverywhere)
+    const rec = await runScript(REVIEW_SCRIPT, {
+      args: makeReviewArgs(),
+      respond: refusing(respond({}, {}, majorEverywhere)),
+    })
+    if (rec.error) throw rec.error
+    assert.deepEqual(rec.result, typed.result)
+    assert.equal(rec.calls.length, typed.calls.length * 2, 'every call is made once with the type and once without')
+    for (const want of typed.calls) {
+      const [first, second] = callsOf(rec, want.label)
+      assert.equal(first.opts.agentType, want.opts.agentType)
+      assert.ok(first.threw)
+      assert.ok(!('agentType' in second.opts), 'the retry names no agent type')
+      assert.deepEqual({ ...first.opts, agentType: undefined }, { ...second.opts, agentType: undefined }, 'the retry is the same call')
+      assert.equal(second.prompt, want.prompt)
+      assert.equal(second.model, want.model, 'the retry stays on the same model')
+    }
+    const lines = rec.logs.filter((l) => /agent type/.test(l))
+    assert.equal(lines.length, typed.calls.length, 'one log line for each refused call')
+    assert.ok(lines.some((l) => /^review:qa: agent type afk:qa failed \(.*not found.*\); retrying once without it/.test(l)))
+  })
+
+  it('an agent type check stopped by the budget ceiling is not retried without the type', async () => {
+    const rec = await review(makeReviewArgs(['quality']), {
+      'review:quality': [boom('Token budget exhausted: the turn budget ceiling was reached')],
+    })
+    assert.equal(rec.calls.length, 1)
+    assert.equal(rec.result.checks.quality.verdict, 'FAIL')
+    assert.match(rec.result.checks.quality.findings[0].text, /failed to run: Token budget exhausted/)
+    assert.ok(!rec.logs.some((l) => /agent type/.test(l)))
+  })
+
+  it('an agent type critic stopped by the budget ceiling is not retried without the type', async () => {
+    const args = makeReviewArgs(['quality'])
+    delete args.criticFallbackModel
+    const rec = await review(
+      args,
+      { 'critic:quality': [boom('Token budget exhausted: the turn budget ceiling was reached')] },
+      {},
+      { quality: [MAJOR('quality')] }
+    )
+    assert.equal(callsOf(rec, 'critic:quality').length, 1)
+    assert.equal(rec.result.checks.quality.verdict, 'FAIL')
+  })
+
+  it('an agent type check that returns nothing is not retried without the type', async () => {
+    const rec = await review(makeReviewArgs(['quality']), { 'review:quality': [nothing()] })
+    assert.equal(rec.calls.length, 1)
+    assert.match(rec.result.checks.quality.findings[0].text, /check agent returned no result/)
+  })
+})
+
+// The definitions the two scripts name must exist, and their tool lists are
+// pinned here because the agent CLI drops a tool name it does not know without
+// a warning: a typo in a list silently takes a tool away from every agent of
+// that type.
+//
+// Load-bearing: the qa rows. The QA check keeps every tool it is not denied,
+// so its browser tools (built in or from a connector) stay; an allow list
+// could not name them. It must never be denied ToolSearch: without it the CLI
+// loads every on-demand tool in full, which measured 43,258 tokens on the
+// first call against 15,813 for the default agent (measured for T1.5).
+describe('plugin agent definitions', () => {
+  const AGENTS_DIR = new URL('../agents/', WORKFLOWS_DIR)
+
+  function definition(name) {
+    const text = readFileSync(new URL(`${name}.md`, AGENTS_DIR), 'utf8')
+    const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text)
+    assert.ok(m, `${name}.md starts with a frontmatter block`)
+    const keys = {}
+    for (const line of m[1].split('\n')) {
+      const kv = /^([A-Za-z]+): (.+)$/.exec(line)
+      assert.ok(kv, `${name}.md frontmatter line "${line}" is "key: value"`)
+      keys[kv[1]] = kv[2]
+    }
+    return { keys, body: m[2] }
+  }
+
+  const list = (value) => value.split(',').map((s) => s.trim())
+
+  const rows = [
+    { name: 'task', tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'] },
+    { name: 'verifier', tools: ['Read', 'Glob', 'Grep', 'Bash'] },
+    { name: 'reviewer', tools: ['Read', 'Glob', 'Grep', 'Bash'] },
+    { name: 'research', tools: ['Read', 'Glob', 'Grep', 'Bash'] },
+    { name: 'web-research', tools: ['WebSearch', 'WebFetch', 'Read'] },
+    { name: 'qa', denied: ['Agent', 'NotebookEdit', 'Artifact', 'SendFeedback', 'ReportFindings', 'ListAgents'] },
+  ]
+
+  it('the agents folder holds exactly the six definitions', () => {
+    assert.deepEqual(readdirSync(AGENTS_DIR).sort(), rows.map((r) => `${r.name}.md`).sort())
+  })
+
+  for (const row of rows) {
+    it(`${row.name}: name, description, tool restriction and a body that keeps CLAUDE.md`, () => {
+      const { keys, body } = definition(row.name)
+      assert.equal(keys.name, row.name, 'the name is the file name; the type is afk:<name>')
+      assert.ok(keys.description && !keys.description.includes('\n'))
+      assert.match(body, /CLAUDE\.md/)
+      assert.match(body, /prompt/)
+      if (row.tools) {
+        assert.deepEqual(Object.keys(keys).sort(), ['description', 'name', 'tools'])
+        assert.deepEqual(list(keys.tools), row.tools)
+        assert.ok(!list(keys.tools).includes('StructuredOutput'), 'a schema call adds StructuredOutput by itself')
+      } else {
+        assert.deepEqual(Object.keys(keys).sort(), ['description', 'disallowedTools', 'name'], 'a deny list only, no allow list')
+        assert.deepEqual(list(keys.disallowedTools), row.denied)
+        for (const kept of ['ToolSearch', 'Bash', 'Write', 'Read', 'Edit', 'Skill']) {
+          assert.ok(!list(keys.disallowedTools).includes(kept), `the QA check keeps ${kept}`)
+        }
+        assert.ok(!list(keys.disallowedTools).some((t) => /browser|chrome|mcp__/i.test(t)), 'no browser or connector tool is denied')
+      }
+    })
+  }
+
+  it('every agent type the workflow scripts name has a definition', () => {
+    const named = new Set()
+    for (const script of [EXECUTE_SCRIPT, REVIEW_SCRIPT]) {
+      for (const m of readScript(script).matchAll(/'afk:([a-z-]+)'/g)) named.add(m[1])
+    }
+    assert.deepEqual([...named].sort(), ['qa', 'reviewer', 'task', 'verifier'])
+    for (const name of named) assert.ok(existsSync(new URL(`${name}.md`, AGENTS_DIR)), `agents/${name}.md exists`)
   })
 })
 

@@ -1,0 +1,30 @@
+Where these fixtures came from. gh version 2.102.0 (2026-09-30), run in this
+repository (dphaener/afk) on 2026-10-11. Only read-only commands were run.
+
+Printed by the real command, byte for byte:
+
+  pr-list-merged.json    gh pr list --head t2-1 --state all --json number,state,mergeable,mergeCommit,isCrossRepository --limit 20
+  pr-list-none.json      the same command with --head no-such-branch-xyz (exit 0)
+  checks-pass.json       gh pr checks 11 --json name,bucket (exit 0)
+  pr-view-head.json      gh pr view 11 --json headRefName,headRefOid
+  run-list-success.json  gh run list --branch t2-1 --commit 7e11c07370c013210a5a92dfd36f1f8419d85758 --json databaseId,conclusion,headSha --limit 100
+
+Written by hand in the shape of the real ones, because this repository has no
+pull request in that condition to read:
+
+  pr-list-several.json, pr-list-merged-and-closed.json, pr-list-closed-only.json,
+  pr-list-conflicting.json, pr-list-fork-only.json
+      An open or closed pull request is assumed to print "mergeCommit":null.
+  checks-pending.json, checks-failed.json, checks-cancel.json, checks-unknown-bucket.json
+      The bucket words pass, fail, pending, skipping and cancel are the ones
+      `gh pr checks --help` lists. "mystery" is not a real bucket.
+  run-list-mixed.json
+      Two rows are real output of `gh run list --status failure` with the head
+      commit of one changed; "cancelled" and "" (still running) are assumed
+      spellings of the conclusion.
+
+Not seen from a real gh while writing this, and so taken from the help text or
+assumed: the exit code for pending checks (the help says 8), the exit code for
+failing checks, and the exact line "no checks reported on the '<branch>'
+branch". The adapter reads what was printed before it looks at the exit code,
+so it does not depend on the first two.

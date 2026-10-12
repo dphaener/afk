@@ -1,15 +1,16 @@
-// Package projectconfig reads the committed project file, afk.toml
-// (docs/PLAN.md section 4.6).
+// Package projectconfig reads the project file, afk.toml, and the private
+// afk.local.toml laid over it (docs/PLAN.md section 4.6).
 //
-// It understands two things: the top-level plan key (the master plan's path)
-// and the ntfy address under [notify]. Every other key and table ([ship],
-// [policy], anything unknown) is ignored on purpose: later tasks own those
-// sections and each will read its own part, so this reader must never reject
-// a file another part of afk understands. The plan reader and the inbox
+// It understands three things: the top-level plan key (the master plan's
+// path), the ntfy address under [notify], and the [ship] table that tells the
+// daemon how to merge and deploy. Every other key and table ([policy], an
+// unknown key inside [ship], anything unknown) is ignored on purpose: other
+// parts of afk own those and read their own part, so this reader must never
+// reject a file another part of afk understands. The plan reader and the inbox
 // reader were written separately and are folded into this one loader so the
 // file is read and parsed once.
 //
-// It reads one file under the root it is given. It does not read the machine
+// It reads two files under the root it is given. It does not read the machine
 // config, the user's config directory or the environment.
 package projectconfig
 
@@ -20,13 +21,19 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 // FileName is the project config file, at the project root.
 const FileName = "afk.toml"
+
+// LocalFileName is the private overlay beside FileName. It is git-ignored and
+// holds values that must not be committed, such as the ntfy topic.
+const LocalFileName = "afk.local.toml"
 
 // DefaultPlan is the master plan path used when the file or the plan key is absent.
 const DefaultPlan = "docs/PLAN.md"
@@ -37,6 +44,65 @@ type Config struct {
 	Plan string
 	// Notify is the [notify] table.
 	Notify Notify
+	// Ship is the [ship] table, with defaults filled in for absent keys.
+	Ship Ship
+}
+
+// Defaults for the [ship] table (docs/PLAN.md section 4.6). Base has none: the
+// caller falls back to the session's own base branch.
+const (
+	DefaultMergeMethod   = "merge"
+	DefaultCIReruns      = 1
+	DefaultCIFixCycles   = 2
+	DefaultDeploys       = true
+	DefaultDeployTimeout = 15 * time.Minute
+)
+
+// Ship is the [ship] table: how the daemon merges a finished session and
+// checks the deploy.
+type Ship struct {
+	// Base is the branch pull requests target. Empty means the session's base.
+	Base string
+	// MergeMethod is merge, squash or rebase.
+	MergeMethod string
+	// CIReruns is how many times a red CI is re-run before it goes back to the session.
+	CIReruns int
+	// CIFixCycles is how many times a red CI is handed back before the task parks.
+	CIFixCycles int
+	// Deploys says merging deploys, so the daemon checks health after the merge.
+	Deploys bool
+	// HealthURL is polled after the merge when Deploys is true. Empty means none.
+	HealthURL string
+	// DeployTimeout is how long the deploy may take to turn healthy.
+	DeployTimeout time.Duration
+	// RequiredEnvPattern is a regular expression; a diff that adds a match
+	// parks the task before the merge. Empty means no check.
+	RequiredEnvPattern string
+}
+
+// defaultShip is the [ship] table when no file sets a key.
+func defaultShip() Ship {
+	return Ship{
+		MergeMethod:   DefaultMergeMethod,
+		CIReruns:      DefaultCIReruns,
+		CIFixCycles:   DefaultCIFixCycles,
+		Deploys:       DefaultDeploys,
+		DeployTimeout: DefaultDeployTimeout,
+	}
+}
+
+// EnvPattern returns the compiled RequiredEnvPattern, or nil when it is empty
+// or does not compile. Load has already checked that it compiles, so nil from
+// a loaded Config means only "no pattern".
+func (s Ship) EnvPattern() *regexp.Regexp {
+	if s.RequiredEnvPattern == "" {
+		return nil
+	}
+	re, err := regexp.Compile(s.RequiredEnvPattern)
+	if err != nil {
+		return nil
+	}
+	return re
 }
 
 // Notify is the [notify] table.
@@ -51,30 +117,176 @@ func (c Config) PlanPath(root string) string {
 }
 
 // file mirrors the TOML layout. It declares only what Config carries; the
-// decoder skips every other key without complaint.
+// decoder skips every other key without complaint. Fields are pointers or
+// any so a key that is absent differs from one set to an empty value: the
+// overlay needs that, because a local ntfy_url = "" must beat a committed
+// address.
 type file struct {
 	// Plan is decoded as any so a wrong type is reported by us, with advice,
-	// rather than as a decoder message.
+	// rather than as a decoder message. nil means the key is absent.
 	Plan   any `toml:"plan"`
 	Notify struct {
-		NtfyURL string `toml:"ntfy_url"`
+		NtfyURL *string `toml:"ntfy_url"`
 	} `toml:"notify"`
+	Ship struct {
+		Base               *string `toml:"base"`
+		MergeMethod        *string `toml:"merge_method"`
+		CIReruns           *int    `toml:"ci_reruns"`
+		CIFixCycles        *int    `toml:"ci_fix_cycles"`
+		Deploys            *bool   `toml:"deploys"`
+		HealthURL          *string `toml:"health_url"`
+		DeployTimeout      *string `toml:"deploy_timeout"`
+		RequiredEnvPattern *string `toml:"required_env_pattern"`
+	} `toml:"ship"`
 }
 
-// Load reads {root}/afk.toml. A missing file, or a file without a plan key,
-// gives the default plan; a missing [notify] ntfy_url gives an empty address.
+// Load reads {root}/afk.toml, then {root}/afk.local.toml, and lays the second
+// over the first key by key (docs/PLAN.md section 4.6): a key present in the
+// local file wins, even when empty; a key absent from it keeps the committed
+// value. Either file may be missing. With both missing, or without a plan
+// key in either, the plan is the default; a missing ntfy_url gives an empty
+// address.
 //
-// The plan path must stay inside the project. The daemon reads and acts on
-// whatever file it names, so an absolute path or one climbing out with ".."
-// would let a committed config point it at files outside the checkout.
+// The local file exists because the committed one is shared: a private value
+// such as the ntfy topic belongs in the git-ignored afk.local.toml.
+//
+// Each file is checked on its own, so an error names the file the bad value
+// came from. The plan path must stay inside the project. The daemon reads and
+// acts on whatever file it names, so an absolute path or one climbing out with
+// ".." would let a config point it at files outside the checkout.
 func Load(root string) (Config, error) {
-	path := filepath.Join(root, FileName)
+	base, err := readFile(filepath.Join(root, FileName))
+	if err != nil {
+		return Config{}, err
+	}
+	local, err := readFile(filepath.Join(root, LocalFileName))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := Config{Plan: DefaultPlan, Ship: defaultShip()}
+	for _, f := range []*checked{base, local} {
+		if f == nil {
+			continue
+		}
+		if f.plan != nil {
+			cfg.Plan = *f.plan
+		}
+		if f.ntfy != nil {
+			cfg.Notify.NtfyURL = *f.ntfy
+		}
+		f.ship.apply(&cfg.Ship)
+	}
+	return cfg, nil
+}
+
+// checked holds one file's validated values; nil means the key was absent.
+type checked struct {
+	plan *string
+	ntfy *string
+	ship shipKeys
+}
+
+// shipKeys holds one file's validated [ship] values; nil means absent.
+type shipKeys struct {
+	base, mergeMethod, healthURL, envPattern *string
+	reruns, fixCycles                        *int
+	deploys                                  *bool
+	timeout                                  *time.Duration
+}
+
+// apply lays the keys this file set over s, so a later file wins key by key.
+func (k shipKeys) apply(s *Ship) {
+	if k.base != nil {
+		s.Base = *k.base
+	}
+	if k.mergeMethod != nil {
+		s.MergeMethod = *k.mergeMethod
+	}
+	if k.reruns != nil {
+		s.CIReruns = *k.reruns
+	}
+	if k.fixCycles != nil {
+		s.CIFixCycles = *k.fixCycles
+	}
+	if k.deploys != nil {
+		s.Deploys = *k.deploys
+	}
+	if k.healthURL != nil {
+		s.HealthURL = *k.healthURL
+	}
+	if k.timeout != nil {
+		s.DeployTimeout = *k.timeout
+	}
+	if k.envPattern != nil {
+		s.RequiredEnvPattern = *k.envPattern
+	}
+}
+
+// checkShip validates one file's [ship] table. Errors name the file, never
+// repeat health_url (it may carry a password) and say what to change.
+func checkShip(name string, raw *file) (shipKeys, error) {
+	r := raw.Ship
+	var k shipKeys
+	if r.Base != nil {
+		b := strings.TrimSpace(*r.Base)
+		k.base = &b
+	}
+	if r.MergeMethod != nil {
+		m := strings.TrimSpace(*r.MergeMethod)
+		if m != "merge" && m != "squash" && m != "rebase" {
+			return k, fmt.Errorf("%s: [ship] merge_method %q is not one of merge, squash or rebase. Change it to one of those three words.", name, m)
+		}
+		k.mergeMethod = &m
+	}
+	for _, c := range []struct {
+		key string
+		in  *int
+		out **int
+	}{{"ci_reruns", r.CIReruns, &k.reruns}, {"ci_fix_cycles", r.CIFixCycles, &k.fixCycles}} {
+		if c.in == nil {
+			continue
+		}
+		if *c.in < 0 {
+			return k, fmt.Errorf("%s: [ship] %s is %d, which is below zero. Set it to 0 or more.", name, c.key, *c.in)
+		}
+		v := *c.in
+		*c.out = &v
+	}
+	k.deploys = r.Deploys
+	if r.HealthURL != nil {
+		h := strings.TrimSpace(*r.HealthURL)
+		if h != "" {
+			u, err := url.Parse(h)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return k, fmt.Errorf("%s: [ship] health_url must be empty or a web address that starts with http:// or https:// and names a server, for example https://example.com/health", name)
+			}
+		}
+		k.healthURL = &h
+	}
+	if r.DeployTimeout != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*r.DeployTimeout))
+		if err != nil || d <= 0 {
+			return k, fmt.Errorf("%s: [ship] deploy_timeout %q must be a length of time above zero, such as \"15m\" or \"1h30m\". Change it to one.", name, *r.DeployTimeout)
+		}
+		k.timeout = &d
+	}
+	if r.RequiredEnvPattern != nil {
+		if _, err := regexp.Compile(*r.RequiredEnvPattern); err != nil {
+			return k, fmt.Errorf("%s: [ship] required_env_pattern does not compile as a regular expression (%v). Fix the pattern, or set it to \"\" for none.", name, err)
+		}
+		k.envPattern = r.RequiredEnvPattern
+	}
+	return k, nil
+}
+
+// readFile reads and validates one config file. A missing file is nil, nil.
+func readFile(path string) (*checked, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Config{Plan: DefaultPlan}, nil
+		return nil, nil
 	}
 	if err != nil {
-		return Config{}, fmt.Errorf("cannot read %s: %w. Check the file's permissions.", path, err)
+		return nil, fmt.Errorf("cannot read %s: %w. Check the file's permissions.", path, err)
 	}
 
 	var raw file
@@ -85,20 +297,32 @@ func Load(root string) (Config, error) {
 		// names types, not values (MetaData.badtype). Its syntax messages
 		// are not audited here; TestLoad's "broken toml" row checks only
 		// that a value written next to a syntax error is not echoed.
-		return Config{}, fmt.Errorf("%s is not valid TOML: %v. Fix the syntax and try again.", path, err)
+		return nil, fmt.Errorf("%s is not valid TOML: %v. Fix the syntax and try again.", path, err)
 	}
 
-	plan, err := checkPlan(path, raw.Plan)
-	if err != nil {
-		return Config{}, err
-	}
-	ntfy := strings.TrimSpace(raw.Notify.NtfyURL)
-	if ntfy != "" {
-		if err := checkURL(ntfy); err != nil {
-			return Config{}, err
+	var out checked
+	if raw.Plan != nil {
+		plan, err := checkPlan(path, raw.Plan)
+		if err != nil {
+			return nil, err
 		}
+		out.plan = &plan
 	}
-	return Config{Plan: plan, Notify: Notify{NtfyURL: ntfy}}, nil
+	if raw.Notify.NtfyURL != nil {
+		ntfy := strings.TrimSpace(*raw.Notify.NtfyURL)
+		if ntfy != "" {
+			if err := checkURL(filepath.Base(path), ntfy); err != nil {
+				return nil, err
+			}
+		}
+		out.ntfy = &ntfy
+	}
+	ship, err := checkShip(filepath.Base(path), &raw)
+	if err != nil {
+		return nil, err
+	}
+	out.ship = ship
+	return &out, nil
 }
 
 // checkPlan validates the decoded plan value and returns the cleaned path, or
@@ -130,8 +354,8 @@ func checkPlan(path string, v any) (string, error) {
 // checkURL requires an http or https address with a host. The error never
 // repeats the address: url.Parse echoes its input, and the address may carry a
 // password.
-func checkURL(raw string) error {
-	const bad = "afk.toml: [notify] ntfy_url must be a web address that starts with http:// or https:// and names a server, for example https://ntfy.sh/my-topic"
+func checkURL(name, raw string) error {
+	bad := name + ": [notify] ntfy_url must be a web address that starts with http:// or https:// and names a server, for example https://ntfy.sh/my-topic"
 	u, err := url.Parse(raw)
 	if err != nil {
 		return errors.New(bad)

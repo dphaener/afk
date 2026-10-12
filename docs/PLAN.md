@@ -218,6 +218,38 @@ empty fields omitted. Unknown keys and unknown statuses are rejected. A missing 
 is pending; a damaged file is an error and is never read as empty. Writers take the lock file
 `.afk/build/.ledger.lock`.
 
+Amended 2026-10-11 (T2.2): an entry also carries four ship fields, each omitted when empty or zero.
+`ship` is where the ship has got to, one of `committed`, `pushed`, `pr_open`, `handed_back`,
+`ci_green`, `merged`, `deploy_healthy` or `stopped` (§5.4); `ship_at` is when that state was entered
+(RFC 3339 UTC; the timed rules measure from it, and it moves on a re-run and on a push of a newer
+head); `ci_reruns` counts re-runs of failed checks for the current head; `ci_fix_cycles` counts
+hand-backs to the session. All four go back to empty or zero when the task is done. An unknown `ship`
+word is rejected like an unknown status. `afk ledger set` takes several ids before the status, and
+`afk ledger init [--done-through ID] [--done ID,ID]` creates a missing ledger and never changes an
+existing one.
+
+### 4.2a Daemon files (new)
+
+Amended 2026-10-11 (T2.1): three small files the build daemon adds, each with one writer and none
+inside `status.json`, the ledger or `usage.json`.
+
+| File | Writer | Shape |
+|---|---|---|
+| `.afk/build/paused` | `afk pause` (removed by `afk resume`) | `{"at":"<RFC 3339 UTC>"}`. The daemon reads only whether the file exists, so a damaged flag still pauses. |
+| `.afk/build/daemon.json` | the daemon | `{"at","kind","task","session","reason"}`, every key always present. It says what the daemon last did for the project and why, and `at` is when the project entered that state, not when it was last looked at. A missing or damaged file means "not looked at yet". |
+| `.afk/{session}/unattended` | session creation (`session.Config.Unattended`) | An empty file. Its existence means the session's agent runs in the provider's unattended permission mode; every host spawn and every restart of its agent reads it. |
+
+The machine also holds `daemon.lock` and `running.json` in afk's state folder (beside `usage.json`);
+they make the daemon one per machine and are not per project.
+
+Amended 2026-10-11 (T2.2): two more files in `.afk/build/`, each written only by the daemon through
+`internal/daemonstate`, by atomic rename.
+
+| File | Writer | Shape |
+|---|---|---|
+| `.afk/build/stopped` | the daemon, when a deploy does not turn healthy in `deploy_timeout` (removed by `afk resume`) | `{"at":"<RFC 3339 UTC>","task","reason"}`. Existence is the signal, so a damaged marker still stops the line. It is written before the ledger saves the `stopped` ship state. |
+| `.afk/build/ship-poll` | the daemon | `{"at":"<RFC 3339 UTC>","failing_since":"<RFC 3339 UTC or empty>"}`, both keys always present. `at` is when GitHub was last asked (the ship asks at most every 20 seconds); `failing_since` is set while those reads keep failing and cleared when one works. A missing or damaged file means "never asked". |
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -263,6 +295,8 @@ deploys = true
 health_url = ""                 # polled after merge when deploys = true
 deploy_timeout = "15m"
 required_env_pattern = ""       # regex; a diff adding a match parks the task before merge (§5.4)
+after_merge = ""                # shell command run in the main checkout after a merge (T2.2a)
+after_merge_timeout = "10m"
 
 [policy]
 notes = """
@@ -278,11 +312,34 @@ ntfy_url = ""                   # set this in afk.local.toml, not here (see belo
 2026-10-11: an ntfy topic name works as a password, since anyone who knows it can read and post to
 it, so it must not sit in a committed file of a project that may be public. The loader reads
 `afk.toml`, then lays `afk.local.toml` over it key by key; either file may be missing. `afk.toml` is
-committed and `afk.local.toml` is gitignored. Until T2.1 lands this, `afk.toml` itself is gitignored
-in this repo as a stopgap.
+committed and `afk.local.toml` is gitignored.
+
+Amended 2026-10-11 (T2.1): the overlay is in. `internal/projectconfig` lays `afk.local.toml` over
+`afk.toml` key by key (a key set in the local file wins, even to an empty value), and this repo's
+`.gitignore` now lists `afk.local.toml` and no longer lists `afk.toml`. A project that already has an
+`afk.toml` holding an `ntfy_url` must move that line to `afk.local.toml` before committing the file.
 
 Machine config `~/.config/afk/config.toml`: projects the daemon runs, governor thresholds (§6.3), web
 bind address and token, provider choice.
+
+Amended 2026-10-11 (T2.1): T2.1 reads these keys from `config.toml` (in `$XDG_CONFIG_HOME/afk` when
+that is an absolute path, otherwise `~/.config/afk`): `provider` (the agent's name; empty means the
+default), `[daemon] tick` (default `"5s"`, at least `"1s"`), `[daemon] stall_after` (default `"10m"`)
+and one `[[project]]` per project with `path` (absolute, or starting with `~/`) and an optional `name`
+(defaults to the folder name, and must be unique). Unknown keys are ignored, so later tasks add the
+governor and web keys to the same file. The dashboard's `config.json` is a separate file with its own
+keys (`search_roots`, `scan_interval`, `max_depth`); the two are not merged.
+
+Amended 2026-10-11 (T2.2): `[ship]` is read by `internal/projectconfig` (from `afk.toml`, then
+`afk.local.toml` over it, key by key) with these defaults when a key is absent: `merge_method`
+`"merge"`, `ci_reruns` 1, `ci_fix_cycles` 2, `deploys` true, `deploy_timeout` `"15m"`, and `base`,
+`health_url` and `required_env_pattern` empty. An empty `base` falls back to the session's own base
+branch (`base_branch` in its `status.json`); if that is empty too, the task parks and nothing is
+guessed. The deploy is polled only when `deploys` is true and `health_url` is not empty; with no
+`health_url` the ship goes straight from the merge to `deploy_healthy`. `health_url` must be empty or
+an `http://` or `https://` address, `merge_method` one of `merge`, `squash` or `rebase`, the two counts
+at least 0, `deploy_timeout` above zero, and `required_env_pattern` a regular expression that
+compiles; anything else is an error naming the file and the key, and the address is never echoed.
 
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
@@ -318,6 +375,10 @@ Everything else in the plan is for the agent. The plan is **re-read on every cyc
 added and split while the build runs. A dependency naming an unknown task, or a cycle, is a `failure`
 inbox item and the loop stops for that project.
 
+Amended 2026-10-11 (T2.2): a task whose title carries `(owner)` or `(owner; …)` (case does not
+matter, and spaces inside the brackets are allowed) is the owner's to do and is never launched.
+`(owner + agent)` is an ordinary task, and so is prose such as `(owner approval)`.
+
 ### 5.2 Next task (pure function)
 
 Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason there is none.
@@ -329,11 +390,20 @@ Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason
 - Nothing ready: report why (`all done` · `waiting on owner` with the item ids · `blocked by failed
   T…`). "Waiting on owner" and "blocked" each raise one notification, not one per tick.
 
+Amended 2026-10-11 (T2.2): an owner task (§5.1) that is `pending` and ready is chosen like any other,
+but the daemon raises one blocking item (`Your task: T0.0 — …`) and parks it instead of launching;
+the owner's answer marks it `done`. A project with no ledger file launches nothing and raises one
+blocking item, `This project has no task list yet`, until `afk ledger init` creates the file.
+
 ### 5.3 One task
 
 1. Governor says launching is allowed (§6.3), else wait.
 2. Create the session: branch `afk/t4-3`, its worktree, seeded `status.json`, and a description of
    `Implement T4.3 from docs/PLAN.md`. Ledger → `running`.
+   Amended 2026-10-11 (T2.1): the session and the branch are both `t4-3` (the task id in lower case
+   with the dot turned into a hyphen), not `afk/t4-3`. A session's name, its branch and its worktree
+   folder are one name everywhere else in afk (`afk attach t4-3`, `.afk/t4-3/`), and a name with a
+   slash is not a valid session name. A later attempt at the same task appends `-2`, `-3` and so on.
 3. Spawn the detached session host running the provider's CLI with the autonomous conductor, **in the
    provider's unattended permission mode, named on the command line** (Claude Code:
    `--permission-mode bypassPermissions`). Before the first launch, the provider's preflight checks
@@ -375,6 +445,17 @@ committed ──▶ pushed ──▶ pr_open ──▶ ci_green ──▶ merged
 - **After `done`:** ledger `done`, clean the session (worktree removed, state archived), log.
 - Each state is persisted in the ledger before the action that leaves it, so a daemon restart resumes
   mid-ship without repeating a push or a merge.
+
+Amended 2026-10-11 (T2.2): as built, the saved states are `committed`, `pushed`, `pr_open`,
+`handed_back`, `ci_green`, `merged`, `deploy_healthy` and `stopped`. `handed_back` is a red CI or a
+conflict given to the session, with a new commit awaited for up to an hour (then the task parks);
+the daemon pushes that commit itself once it is two minutes old. `stopped` is a deploy that did not
+turn healthy: the daemon writes `.afk/build/stopped` first, then saves the state, and `afk resume`
+removing the marker is what lets the task finish as `done`. A pull request with no checks, or only
+skipped ones, is never merged: five minutes after it opened the task parks, and answering the item
+waits another five. After the merge the daemon fast-forwards the local base branch (never a merge
+commit) and deletes the remote branch before it looks at the deploy. A pause does not stop a ship
+that is already in progress.
 
 ### 5.5 Autonomous policy (what replaces the human)
 
@@ -800,6 +881,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
 - **Acceptance:** before-and-after sizes per agent type in `docs/decisions.md`; a scratch-repo
   autonomous run after the trim still ends `phase: done` with all three checks run; `afk tokens` for
   that run shows the start-up share.
+- Amended 2026-10-11 (T1.5 done): later tasks may assume the following. (1) The plugin (5.2.0) ships agent definitions in `plugins/afk/agents/` (`afk:task`, `afk:verifier`, `afk:reviewer`, `afk:qa`, `afk:research`, `afk:web-research`); the workflow scripts and the skills spawn every agent with one, and a refused type is retried once without it. A task agent now has only `Bash`, `Read`, `Edit` and `Write`: no skills, no connector tools. (2) A sub-agent starts at about 10,000 to 12,000 tokens (QA about 21,000), down from about 35,000; the main session's own first call, about 120,000 tokens, is now the largest start-up cost and is untrimmed. (3) `provider.TokenRecord.First` marks each agent's first call and `afk tokens SESSION` prints a start-up section from it; the ledger file is unchanged. (4) `scripts/startup-context.sh [PROJECTS_DIR] SESSION_ID` itemises a session's start-up context. (5) A session started from an agent's shell inherits `CLAUDE_CODE_CHILD_SESSION=1` and saves no transcripts, and a new repository stops at the agent CLI's trust question, so T2.1 must launch from a clean environment and T4.1 must have the owner trust the project folder once. (6) Use allow lists in agent definitions; a deny list that removes `ToolSearch` loads every connector tool in full. See `## T1.5` in `docs/decisions.md`.
 
 ---
 
@@ -827,6 +909,7 @@ with nobody at the keyboard.
   restarted adopts the running session and starts no duplicate; pause honoured; the launch argv
   carries the unattended mode; a failed preflight raises an item and launches nothing; a finished
   task has ledger lines for each phase.
+- Amended 2026-10-11 (T2.1 done): later tasks may assume the following. (1) Session and branch are both the task id in lower case with a hyphen (`t4-3`, then `t4-3-2` on a later attempt), not `afk/t4-3`. (2) `internal/daemon` is a pure `Decide(Observation) Action` plus `Tick`/`Once`/`Run` with every outside call in `daemon.Deps`; there is no daemon object and nothing is kept between ticks, so T2.2 to T2.4 add a rule to `Decide` and a dep, not state. (3) At `phase: done` the ledger goes to `shipping` and stays there; `shipping` blocks every other launch for the project until T2.2 moves it (by hand: merge, then `afk ledger set <id> done`). (4) The provider has `Unattended(argv)` and `UnattendedPreflight`; a session is unattended when `session.Config.Unattended` is set or `.afk/{session}/unattended` exists, and the host's restart and the dashboard's relaunch keep the mode, so T2.3 need not pass it. (5) The daemon cannot type into a session: an un-parked task returns to `running` but its agent stays idle until T2.2 delivers a prompt, and a stall or a stopped host is reported once per attempt as a blocking `failure` item the task parks on (T2.3 replaces the stopped-host item with recovery). (6) Machine config is `config.toml` (`provider`, `[daemon] tick`, `stall_after`, `[[project]] path`), read by `internal/daemonconfig`; T2.4 adds its governor keys there. (7) `internal/decisionlog.Append` writes PLAN §4.4 lines and the daemon logs transitions only; `tokens.Record` and `notify.InboxMessage` are the shared helpers; `daemonstate` owns `.afk/build/paused`, `.afk/build/daemon.json` and the machine lock. (8) `afk pause` also holds back an un-park, and `afk resume` only removes the pause flag (T2.2 adds clearing a stopped line). (9) The daemon's real wiring (`realDaemonDeps`: preflight, `session.Create`, token recording, ntfy) has never run against a real agent; its first run is supervised (T4.2). See `## T2.1` in `docs/decisions.md`.
 
 #### T2.2 — Ship in code
 - **Depends on:** T2.1
@@ -834,14 +917,67 @@ with nobody at the keyboard.
   interfaces. Delivering a follow-up prompt to an idle session (for CI hand-backs) through the host's
   client protocol; note that this takes the session's single client slot, as the dashboard's restart
   does today. Session clean-up after `done`.
+  Two gaps found on the daemon's first real run (2026-10-11), when it was started on this repo with
+  no ledger, took all 19 tasks as pending and launched a session for T0.0, the owner's VM checklist:
+  - **Owner tasks are never launched.** A task whose title carries `(owner)` or `(owner; …)` is the
+    owner's to do. When it is the next task, the daemon launches nothing: it raises one blocking
+    `external_action` item naming the task and parks it, and answering the item marks the task
+    `done`. A title such as `(owner + agent)` is an ordinary task. Add the rule to §5.1 and to the
+    pure next-task and `Decide` functions.
+  - **Starting on a project that is already part-built.** New command `afk ledger init [--project
+    DIR] [--done-through ID] [--done ID,ID]`: creates the ledger, marking as `done` every task up to
+    and including `--done-through` in plan order, plus the listed ids; with no flags it creates an
+    empty ledger (a new project). It refuses when a ledger already exists. `afk ledger set` accepts
+    several task ids before the status. With **no ledger file**, the daemon launches nothing for that
+    project and raises one blocking item that says to run `afk ledger init` and shows both forms.
 - **Acceptance:** table tests over fake `git`/`gh`: green first time; red then green on re-run; red →
   hand-back → green; park at the hand-back cap; required-env match parks before merge; deploy healthy;
   deploy timeout stops the line and `afk resume` clears it; a crash between every pair of states
-  resumes without repeating a push or a merge. Then one real end-to-end run against a throwaway
+  resumes without repeating a push or a merge. Table tests for: an owner task raises an item and
+  launches nothing, and its answer marks it `done`; `(owner + agent)` launches; no ledger file
+  launches nothing and raises one item, once; `afk ledger init` with each flag, with both, with none,
+  with an unknown id, and over an existing ledger. Then one real end-to-end run against a throwaway
   private GitHub repo with a trivial CI workflow, recorded in `docs/decisions.md`.
+- Amended 2026-10-12 (T2.2 done): later tasks may assume the following. (1) `internal/ship` is a pure `Decide(Facts) Step` plus `Advance`, one step per daemon pass, behind `Git` and `GH` interfaces; the daemon reaches it through the optional `Deps.Ship`, `SendPrompt`, `Clean` and `NotifyUrgent`. (2) The ledger entry carries `ship`, `ship_at`, `ci_reruns` and `ci_fix_cycles` while its status is `shipping`; a new attempt clears them with `pr` and `merged_sha`. (3) The daemon can type into a session with `host.SendInput` (it takes the client slot for about half a second); T2.3 can use it for its "continue" prompt, and an un-parked session is sent its resume command. (4) After a merge the daemon fast-forwards the project checkout's base branch, cleans the session and deletes the merged branch. (5) A pull request with no checks, or a cancelled check, is never merged; the task parks. (6) A stopped line is `.afk/build/stopped`, cleared by `afk resume` together with a pause; a pause does not stop a ship in progress. (7) With no ledger file the daemon starts nothing: T4.1 seeds nebari with `afk ledger init --done-through`. Owner tasks (`(owner)` or `(owner; …)` in the title) are confirmed in the inbox, never launched. (8) Not yet seen: a real agent receiving a typed line, a real deploy check, a park or a stopped line against GitHub; the supervised run of T4.2 is the first. See `## T2.2` in `docs/decisions.md`.
+
+#### T2.2a — Pick up new code after a merge
+- **Depends on:** T2.2
+- **Goal:** while afk builds itself, each merged task is installed and running before the next one
+  starts, with nothing done by hand.
+- **Background:** a running daemon keeps the code it started with. After every merge to this repo the
+  owner has had to run `make install`, `afk plugin install --target claude` and `systemctl --user
+  restart afkd`. A project that is not afk itself needs none of this.
+- **Scope:**
+  - **`after_merge`.** New key under `[ship]` in `afk.toml` (§4.6): a shell command, empty by
+    default. The ship state machine runs it in the project's main checkout after the merge and the
+    fast-forward of the base branch, and before the deploy check. It is a persisted ship state like
+    the others, so a crash never runs it twice for one merge and never skips it. Its output goes to a
+    file under `.afk/build/`. A non-zero exit or a timeout (`after_merge_timeout`, default `10m`)
+    stops the line (§5.4) with a blocking `failure` item carrying the end of the output.
+  - **Restart on a new binary.** At start the daemon records the identity of its own executable
+    (size and modification time, or a hash). At the top of each pass, if the file on disk differs, it
+    writes a decision-log line and exits 0; the service manager starts the new one. It exits only
+    between passes, never in the middle of a ship step. Unknown or unreadable executable: carry on
+    and say so once in `afk daemon status`.
+  - **The unit file.** `contrib/afkd.service` changes to `Restart=always`, keeping `RestartSec=30`
+    and `KillMode=process`; `contrib/README.md` says why, and that a daemon run by hand in a terminal
+    simply exits on a new binary and must be started again.
+  - **This repo.** Commit an `afk.toml` with `after_merge = "make install && afk plugin install
+    --target claude"`. `afk.local.toml` stays uncommitted.
+- **Must not:** restart or signal session hosts; run `after_merge` for a task that did not merge;
+  run it inside a session's worktree.
+- **Acceptance:** table tests over the fake `git`/`gh`: `after_merge` runs once after a merge and
+  before the deploy check; empty means no step; a failure stops the line and `afk resume` clears it;
+  a crash before, during and after the command resumes without a second run. Tests for the binary
+  check: unchanged carries on, changed exits 0 between passes with one log line, unreadable carries
+  on. Then one real check on the VM, recorded in `docs/decisions.md`: with the daemon running under
+  systemd, rebuild the binary with `make install` and see the unit restart on the next pass with
+  running sessions untouched.
+- **Note:** the daemon that runs this task has neither feature, so after it merges the owner installs
+  and restarts by hand one last time.
 
 #### T2.3 — Automatic recovery
-- **Depends on:** T0.4, T0.5, T2.1
+- **Depends on:** T0.4, T0.5, T2.1, T2.2a
 - **Scope:** §5.6. Wedge detection with no client attached; automatic restart with a cap and backoff;
   host relaunch after a reboot; a "continue" prompt after a restart when the session comes back idle
   mid-task.
@@ -956,7 +1092,7 @@ with nobody at the keyboard.
 | Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? **Answered 2026-10-11:** not observed. The probe was run three times back to back (Claude Code 2.1.296) and each time exited 0 with a full report, in about 1.5 seconds. Nobody tried to provoke throttling, because tripping a rate limit on the owner's account on purpose is not a machine's call, so what it does when throttled is still unknown. `afk usage` reuses a reading under 5 minutes old, and the governor treats a reading over 30 minutes old as stale and holds. | T1.3 |
 | Nebari's health-check URL, and how to tell a deploy of *this* commit finished (as opposed to the old container still answering). | T4.1 |
 | Does a merge to nebari's main trigger the Coolify deploy today, or does a webhook need adding? | T4.1 |
-| What the 28k of extra start-up context in implementation and review agents consists of. | T1.5 |
+| What the 28k of extra start-up context in implementation and review agents consists of. **Answered 2026-10-11:** tools and listings the agents never use. On the T1.4 session every sub-agent started at about 35,000 tokens, and about 26,700 of a task agent's were removable: the `Artifact` tool definition (about 15,000), the skills list (5,500), `SendFeedback` (2,500) and other unused tools and connector names (3,700). Part sizes are estimated from measured character counts. The plugin's agent definitions now leave them out, and the itemised tables are in `docs/decisions.md` under `## T1.5`. | T1.5 |
 | How a subscription weights cache reads, cache writes and output against its limits. Unpublished; compare the token ledger with the usage percentages the governor records. | after T2.4 |
 | Licence for the open-source release. | before release |
 

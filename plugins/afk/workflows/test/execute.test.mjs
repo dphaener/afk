@@ -497,23 +497,27 @@ describe('execute.js (6) retries, fixes, and escalation', () => {
     assert.doesNotMatch(attempts[1].prompt, /did not report/)
   })
 
+  // A throw on a typed call is first retried without the agent type (13), so
+  // an attempt fails on a throw only when that retry throws too: two booms.
   it('counts a thrown task agent as a failed attempt and re-runs the task agent', async () => {
     const args = makeArgs([task('W1.T1', { tier: 'light' })])
-    const rec = await run(args, { scripts: { 'W1.T1': { task: [boom('agent crashed')] } } })
+    const rec = await run(args, { scripts: { 'W1.T1': { task: [boom('agent crashed'), boom('agent crashed')] } } })
     assertCompleted(rec)
-    assert.deepEqual(attemptCalls(rec, 'W1.T1').map((c) => kindOf(c.label)), ['task', 'task'])
+    const calls = attemptCalls(rec, 'W1.T1')
+    assert.deepEqual(calls.map((c) => kindOf(c.label)), ['task', 'task', 'task'])
+    assert.match(calls[2].prompt, /attempt 2 of 3/)
     assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
   })
 
   it('fails a task whose task agent fails 3 times without a verify FAIL', async () => {
     const args = makeArgs([task('W1.T1', { tier: 'light' })])
     const rec = await run(args, {
-      scripts: { 'W1.T1': { task: [boom('crash 1'), nothing(), boom('crash 3')] } },
+      scripts: { 'W1.T1': { task: [boom('crash 1'), boom('crash 1 again'), nothing(), boom('crash 3'), boom('crash 3 again')] } },
     })
     assertCompleted(rec)
     const attempts = attemptCalls(rec, 'W1.T1')
-    assert.deepEqual(attempts.map((c) => kindOf(c.label)), ['task', 'task', 'task'])
-    assert.deepEqual(attempts.map((c) => c.model), ['tiny', 'tiny', 'mid'])
+    assert.deepEqual(attempts.map((c) => kindOf(c.label)), ['task', 'task', 'task', 'task', 'task'])
+    assert.deepEqual(attempts.map((c) => c.model), ['tiny', 'tiny', 'tiny', 'mid', 'mid'], 'each throw is retried once without the agent type, on the same model')
     assert.deepEqual(ids(rec.result.failed), ['W1.T1'])
   })
 })
@@ -523,10 +527,10 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
   it('retries a thrown call once with the tier fallback model (unknown alias)', async () => {
     const args = makeArgs([task('W1.T1', { tier: 'heavy' })])
     const rec = await run(args, {
-      scripts: { 'W1.T1': { task: [boom('Unknown model alias: big')] } },
+      scripts: { 'W1.T1': { task: [boom('Unknown model alias: big'), boom('Unknown model alias: big')] } },
     })
     assertCompleted(rec)
-    assert.deepEqual(callsFor(rec, 'W1.T1', 'task').map((c) => c.model), ['big', 'mid'])
+    assert.deepEqual(callsFor(rec, 'W1.T1', 'task').map((c) => c.model), ['big', 'big', 'mid'])
     assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
   })
 
@@ -577,20 +581,29 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
   it('counts a throw after the fallback as one failed attempt, then retries on the task tier', async () => {
     const args = makeArgs([task('W1.T1', { tier: 'heavy' })])
     const rec = await run(args, {
-      scripts: { 'W1.T1': { task: [boom('Unknown model alias: big'), boom('Unknown model alias: mid')] } },
+      scripts: {
+        'W1.T1': {
+          task: [
+            boom('Unknown model alias: big'),
+            boom('Unknown model alias: big'),
+            boom('Unknown model alias: mid'),
+            boom('Unknown model alias: mid'),
+          ],
+        },
+      },
     })
     assertCompleted(rec)
-    assert.deepEqual(callsFor(rec, 'W1.T1', 'task').map((c) => c.model), ['big', 'mid', 'big'])
+    assert.deepEqual(callsFor(rec, 'W1.T1', 'task').map((c) => c.model), ['big', 'big', 'mid', 'mid', 'big'])
     assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
   })
 
   it('does not treat a throw that merely mentions "budget" as the budget ceiling', async () => {
     const args = makeArgs([task('W1.T1', { tier: 'heavy' }), task('W2.T1', { deps: ['W1.T1'] })])
     const rec = await run(args, {
-      scripts: { 'W1.T1': { task: [boom('Unknown model alias: budget-model')] } },
+      scripts: { 'W1.T1': { task: [boom('Unknown model alias: budget-model'), boom('Unknown model alias: budget-model')] } },
     })
     assertCompleted(rec)
-    assert.deepEqual(callsFor(rec, 'W1.T1', 'task').map((c) => c.model), ['big', 'mid'])
+    assert.deepEqual(callsFor(rec, 'W1.T1', 'task').map((c) => c.model), ['big', 'big', 'mid'])
     assert.deepEqual(ids(rec.result.passed), ['W1.T1', 'W2.T1'])
     assert.ok(!rec.logs.some((l) => /Budget stop/i.test(l)))
   })
@@ -678,6 +691,149 @@ describe('execute.js (7) agent errors, fallback models, and budget', () => {
     assert.equal(entry(rec.result.skipped, 'W2.T1').reason, 'budget')
     assert.deepEqual(rec.result.mark, [], 'budget stops stay [ ] for a re-run')
     assert.ok(rec.logs.some((l) => /budget/i.test(l)))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Each agent names a plugin agent definition (plugins/afk/agents/), which
+// limits the tools it starts with. A session that started before the plugin
+// was updated does not know the types, and agent() then throws.
+//
+// Load-bearing: the refused-type run (without the retry every task of such a
+// session would fail all three attempts), the budget row (a budget stop must
+// never start another agent), the labels row (token accounting detects an
+// agent's role from its label), and the null row (an agent that ran and
+// returned nothing is not a refused type; repeating it would double the cost
+// of every real failure).
+describe('execute.js (13) agent types', () => {
+  const REFUSED = (type) =>
+    `agent({agentType}): agent type '${type}' not found. Available agents: claude, Explore, general-purpose, Plan`
+
+  // A session that knows no afk agent type: every typed call throws.
+  const refusing = (respondOpts = {}) => {
+    const inner = responder(respondOpts)
+    return (call, rec) => (call.opts.agentType ? boom(REFUSED(call.opts.agentType)) : inner(call, rec))
+  }
+
+  const fixScripts = () => ({
+    'W1.T1': { task: [ok(selfReport('done', failingCheck))], verify: [ok(failVerdict('d')), ok(PASS)] },
+  })
+
+  it("each role's call carries its agent type, and labels and the other options are unchanged", async () => {
+    const rec = await run(makeArgs([task('W1.T1', { tier: 'heavy', title: 'Write the parser' })]), { scripts: fixScripts() })
+    assertCompleted(rec)
+    assert.deepEqual(
+      rec.calls.map((c) => [c.label, c.opts.agentType]),
+      [
+        ['W1.T1 Write the parser', 'afk:task'],
+        ['verify:W1.T1', 'afk:verifier'],
+        ['fix:W1.T1#1', 'afk:task'],
+        ['verify:W1.T1', 'afk:verifier'],
+      ]
+    )
+    for (const c of rec.calls) {
+      assert.deepEqual(Object.keys(c.opts).sort(), ['agentType', 'label', 'model', 'phase', 'schema'], c.label)
+      assert.equal(c.opts.phase, 'Execute')
+    }
+    assert.ok(!rec.logs.some((l) => /agent type/.test(l)), 'nothing is logged when the type is accepted')
+  })
+
+  it('a refused agent type is retried once without it, with one log line, and the run result is the same', async () => {
+    const args = () => makeArgs([task('W1.T1', { tier: 'heavy' }), task('W2.T1', { deps: ['W1.T1'] })])
+    const typed = await run(args(), { scripts: fixScripts() })
+    const rec = await runScript(EXECUTE_SCRIPT, { args: args(), respond: refusing({ scripts: fixScripts() }) })
+    assertOnlyWorkAgents(rec)
+    assertCompleted(rec)
+    assert.deepEqual(rec.result, typed.result)
+    assert.deepEqual(ids(rec.result.passed), ['W1.T1', 'W2.T1'])
+
+    assert.equal(rec.calls.length, typed.calls.length * 2, 'every call is made once with the type and once without')
+    for (let i = 0; i < rec.calls.length; i += 2) {
+      const [first, second] = [rec.calls[i], rec.calls[i + 1]]
+      const want = typed.calls[i / 2]
+      assert.equal(first.opts.agentType, want.opts.agentType)
+      assert.ok(first.threw)
+      assert.ok(!('agentType' in second.opts), 'the retry names no agent type')
+      assert.deepEqual({ ...first.opts, agentType: undefined }, { ...second.opts, agentType: undefined }, 'the retry is the same call')
+      assert.equal(second.label, want.label, 'labels are unchanged')
+      assert.equal(second.prompt, want.prompt, 'the retry does not use up a task attempt')
+      assert.equal(second.model, want.model, 'the retry stays on the same model')
+    }
+    const lines = rec.logs.filter((l) => /agent type/.test(l))
+    assert.equal(lines.length, typed.calls.length, 'one log line for each refused call')
+    assert.match(lines[0], /^W1\.T1 Task W1\.T1: agent type afk:task failed \(.*not found.*\); retrying once without it/)
+  })
+
+  it('an agent type call stopped by the budget ceiling is not retried without the type', async () => {
+    const rec = await run(makeArgs([task('W1.T1', { tier: 'heavy' })]), {
+      scripts: { 'W1.T1': { task: [boom('Token budget exhausted: the turn budget ceiling was reached')] } },
+    })
+    assertCompleted(rec)
+    assert.equal(rec.calls.length, 1)
+    assert.equal(rec.calls[0].opts.agentType, 'afk:task')
+    assert.equal(entry(rec.result.skipped, 'W1.T1').reason, 'budget')
+    assert.ok(!rec.logs.some((l) => /agent type/.test(l)))
+  })
+
+  it('an agent type call is not retried without the type once the budget is gone', async () => {
+    let seen = null
+    const exhausted = () => Boolean(seen && seen.calls.some((c) => c.end !== null))
+    const budget = { total: 1000, spent: () => (exhausted() ? 1000 : 0), remaining: () => (exhausted() ? 0 : 1000) }
+    const rec = await run(
+      makeArgs([task('W1.T1', { tier: 'heavy' })]),
+      { scripts: { 'W1.T1': { task: [boom('agent crashed')] } }, onCall: (_c, r) => (seen = r) },
+      { budget }
+    )
+    assertCompleted(rec)
+    assert.equal(rec.calls.length, 1, 'neither the retry without the type nor the fallback model starts')
+    assert.equal(entry(rec.result.skipped, 'W1.T1').reason, 'budget')
+  })
+
+  it('an agent type call that returns nothing is not retried without the type: it is a failed attempt', async () => {
+    const rec = await run(makeArgs([task('W1.T1', { tier: 'balanced' })]), { scripts: { 'W1.T1': { task: [nothing()] } } })
+    assertCompleted(rec)
+    const calls = callsFor(rec, 'W1.T1', 'task')
+    assert.deepEqual(calls.map((c) => c.opts.agentType), ['afk:task', 'afk:task'])
+    assert.match(calls[1].prompt, /attempt 2 of 3/)
+    assert.ok(!rec.logs.some((l) => /agent type/.test(l)))
+  })
+
+  it('the retry without the agent type comes before the fallback model, which names the type again', async () => {
+    const rec = await run(makeArgs([task('W1.T1', { tier: 'heavy' })]), {
+      scripts: { 'W1.T1': { task: [boom('Unknown model alias: big'), boom('Unknown model alias: big')] } },
+    })
+    assertCompleted(rec)
+    assert.deepEqual(
+      callsFor(rec, 'W1.T1', 'task').map((c) => [c.model, c.opts.agentType]),
+      [
+        ['big', 'afk:task'],
+        ['big', undefined],
+        ['mid', 'afk:task'],
+      ]
+    )
+    assert.ok(callsFor(rec, 'W1.T1', 'task').every((c) => !/attempt 2 of 3/.test(c.prompt)), 'all three calls are one attempt')
+    assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
+  })
+
+  it('a refused agent type on the verifier and on the fallback model is retried without it too', async () => {
+    const rec = await runScript(EXECUTE_SCRIPT, {
+      args: makeArgs([task('W1.T1', { tier: 'heavy' })]),
+      respond: refusing({ scripts: { 'W1.T1': { task: [nothing()] } } }),
+    })
+    assertOnlyWorkAgents(rec)
+    assertCompleted(rec)
+    assert.deepEqual(
+      rec.calls.map((c) => [kindOf(c.label), c.model, c.opts.agentType]),
+      [
+        ['task', 'big', 'afk:task'],
+        ['task', 'big', undefined],
+        ['task', 'mid', 'afk:task'],
+        ['task', 'mid', undefined],
+        ['verify', 'mid', 'afk:verifier'],
+        ['verify', 'mid', undefined],
+      ]
+    )
+    assert.deepEqual(ids(rec.result.passed), ['W1.T1'])
   })
 })
 
