@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{template "title" .}} - afk</title>
+<style>
+:root { color-scheme: light dark; --bg: #fafafa; --fg: #1b1b1b; --muted: #5c5c5c; --card: #fff; --line: #d6d6d6; --accent: #0b5cad; --warn: #8a4b00; }
+@media (prefers-color-scheme: dark) { :root { --bg: #121212; --fg: #ececec; --muted: #a3a3a3; --card: #1c1c1c; --line: #3a3a3a; --accent: #7db7f0; --warn: #f0b36b; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main, .bar { max-width: 40rem; margin: 0 auto; padding: 0 1rem; }
+.bar { display: flex; gap: 1.25rem; align-items: center; min-height: 48px; border-bottom: 1px solid var(--line); }
+.bar a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+a { color: var(--accent); }
+h1 { font-size: 1.4rem; margin: 1rem 0 .5rem; }
+h2 { font-size: 1.1rem; margin: 1.5rem 0 .5rem; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .75rem 1rem; margin: .75rem 0; }
+.muted { color: var(--muted); }
+.warn { color: var(--warn); font-weight: 600; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: .5rem 0; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { margin: .5rem 0; }
+button { min-height: 44px; padding: 0 1.25rem; font: inherit; font-weight: 600; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: var(--bg); cursor: pointer; }
+button.quiet { background: transparent; color: var(--accent); }
+textarea, input[type=text] { width: 100%; min-height: 44px; font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+label.choice { display: flex; align-items: center; gap: .75rem; min-height: 44px; }
+label.choice input { width: 1.25rem; height: 1.25rem; }
+form { margin: .75rem 0; }
+</style>
+</head>
+<body>
+<div class="bar"><a href="/">Overview</a><a href="/usage">Usage</a></div>
+<main>
+{{template "content" .}}
+</main>
+</body>
+</html>

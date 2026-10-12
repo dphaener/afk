@@ -50,11 +50,15 @@ func NtfyPriority(kind string, blocking bool) (priority int, send bool) {
 	return 0, false
 }
 
-// NtfyMessage is one push notification.
+// NtfyMessage is one push notification. Click, when set, is sent as ntfy's
+// Click header, which is the address ntfy opens when the notification is
+// tapped. It is empty when the owner has not set a public web address, and
+// then no header is sent at all.
 type NtfyMessage struct {
 	Title    string
 	Body     string
 	Priority int
+	Click    string
 }
 
 // Ntfy publishes messages to one ntfy topic URL.
@@ -91,6 +95,9 @@ func (n Ntfy) Send(ctx context.Context, m NtfyMessage) error {
 	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	req.Header.Set("Priority", strconv.Itoa(prio))
 	req.Header.Set("Title", headerTitle(m.Title))
+	if m.Click != "" {
+		req.Header.Set("Click", m.Click)
+	}
 
 	client := n.Client
 	if client == nil {
@@ -130,6 +137,35 @@ func headerTitle(s string) string {
 		}
 	}
 	return s
+}
+
+// ItemLink is the web address of one inbox item, for a notification's Click
+// header. It is empty when there is no public address, or no project or item
+// to point at, so a notification without a configured address carries no
+// link. The address holds no token and no query string: the web page's cookie
+// (or a typed ?token= on first visit) is what authenticates the tap.
+func ItemLink(publicURL, project, id string) string {
+	base := trimBase(publicURL)
+	if base == "" || project == "" || id == "" {
+		return ""
+	}
+	return base + "/p/" + url.PathEscape(project) + "/inbox/" + url.PathEscape(id)
+}
+
+// ProjectLink is the web address of one project's page, or "" when there is no
+// public address or no project name.
+func ProjectLink(publicURL, project string) string {
+	base := trimBase(publicURL)
+	if base == "" || project == "" {
+		return ""
+	}
+	return base + "/p/" + url.PathEscape(project)
+}
+
+// trimBase drops one trailing slash so the link builders never produce a
+// double slash.
+func trimBase(publicURL string) string {
+	return strings.TrimSuffix(publicURL, "/")
 }
 
 // cutBody trims s to at most maxNtfyBody bytes without splitting a character.

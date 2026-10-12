@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/projectconfig"
@@ -50,11 +51,18 @@ type inboxFixture struct {
 	sends       []inboxSend
 	configRoots []string
 	globs       []string
+
+	// machine and machineErr are what the fake machine config read answers;
+	// machineLoads counts the reads. A new fixture has no machine config, as
+	// most machines do.
+	machine      daemonconfig.Config
+	machineErr   error
+	machineLoads int
 }
 
 func newInboxFixture(t *testing.T) *inboxFixture {
 	t.Helper()
-	f := &inboxFixture{t: t, project: t.TempDir()}
+	f := &inboxFixture{t: t, project: t.TempDir(), machineErr: errors.New("no config.toml in tests")}
 	tick, next := 0, 0
 	f.env = inboxEnv{
 		stdout: &f.stdout,
@@ -86,6 +94,10 @@ func newInboxFixture(t *testing.T) *inboxFixture {
 		send: func(_ context.Context, url string, m notify.NtfyMessage) error {
 			f.sends = append(f.sends, inboxSend{url: url, msg: m})
 			return f.sendErr
+		},
+		loadMachine: func() (daemonconfig.Config, error) {
+			f.machineLoads++
+			return f.machine, f.machineErr
 		},
 	}
 	return f
@@ -957,6 +969,71 @@ func TestInboxNotification(t *testing.T) {
 	}
 }
 
+// TestInboxItemLink pins the link `afk inbox add` puts in its notification.
+//
+// Load-bearing rows:
+//   - "config could not be read", "no public address" and "no project is this
+//     folder" are the three ways to have no link, and each must be an empty
+//     string and nothing else: the notification then goes out as it always
+//     did.
+//   - "the name is the configured one": the page serves a project under its
+//     name in the machine config, so a link built from the folder's name
+//     would open "no such project".
+//   - "two entries for one checkout": the daemon keeps the first, so the link
+//     must use the first.
+//   - "an address but no token": the page is off, and a link would open
+//     nothing.
+//
+// No link ever holds the token or any query string.
+func TestInboxItemLink(t *testing.T) {
+	const token = "tok-3f9a1c7e5b2d4a68"
+	on := daemonconfig.Web{Token: token, PublicURL: "https://afk.example"}
+	projects := []daemonconfig.Project{
+		{Name: "blog", Path: "/p/blog"},
+		{Name: "my app", Path: "/p/app-folder"},
+		{Name: "again", Path: "/wt/app-session"},
+	}
+	// sameDir stands in for the main-checkout lookup: /wt/app-session is a
+	// worktree of /p/app-folder.
+	sameDir := func(configured, root string) bool {
+		if configured == "/wt/app-session" {
+			configured = "/p/app-folder"
+		}
+		return configured == root
+	}
+	cases := []struct {
+		name   string
+		cfg    daemonconfig.Config
+		cfgErr error
+		root   string
+		want   string
+	}{
+		{name: "the name is the configured one", cfg: daemonconfig.Config{Web: on, Projects: projects},
+			root: "/p/app-folder", want: "https://afk.example/p/my%20app/inbox/abc234"},
+		{name: "two entries for one checkout", cfg: daemonconfig.Config{Web: on, Projects: projects[1:]},
+			root: "/p/app-folder", want: "https://afk.example/p/my%20app/inbox/abc234"},
+		{name: "found through a worktree's path", cfg: daemonconfig.Config{Web: on, Projects: projects[2:]},
+			root: "/p/app-folder", want: "https://afk.example/p/again/inbox/abc234"},
+		{name: "no project is this folder", cfg: daemonconfig.Config{Web: on, Projects: projects}, root: "/p/elsewhere"},
+		{name: "no projects at all", cfg: daemonconfig.Config{Web: on}, root: "/p/app-folder"},
+		{name: "config could not be read", cfg: daemonconfig.Config{Web: on, Projects: projects},
+			cfgErr: errors.New("config.toml: not valid TOML"), root: "/p/app-folder"},
+		{name: "no public address", cfg: daemonconfig.Config{Web: daemonconfig.Web{Token: token}, Projects: projects}, root: "/p/app-folder"},
+		{name: "an address but no token", cfg: daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example"}, Projects: projects}, root: "/p/app-folder"},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			got := inboxItemLink(tt.cfg, tt.cfgErr, tt.root, "abc234", sameDir)
+			if got != tt.want {
+				t.Errorf("link = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(got, token) || strings.ContainsAny(got, "?#") {
+				t.Errorf("link %q holds the token or a query", got)
+			}
+		})
+	}
+}
+
 // TestRunInboxWritesTheFourteenKeys reads the file `afk inbox add` wrote as
 // raw JSON. Every other test reads items back through the store, which would
 // not notice a key going missing; the web page and the daemon will read the
@@ -997,7 +1074,7 @@ func TestRunInboxWritesTheFourteenKeys(t *testing.T) {
 // and no request at all when the project has no afk.toml.
 func TestRunInboxRealConfigAndSender(t *testing.T) {
 	type request struct {
-		method, path, priority, title, body string
+		method, path, priority, title, body, click string
 	}
 	var (
 		mu       sync.Mutex
@@ -1006,7 +1083,7 @@ func TestRunInboxRealConfigAndSender(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		requests = append(requests, request{r.Method, r.URL.Path, r.Header.Get("Priority"), r.Header.Get("Title"), string(body)})
+		requests = append(requests, request{r.Method, r.URL.Path, r.Header.Get("Priority"), r.Header.Get("Title"), string(body), r.Header.Get("Click")})
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1038,9 +1115,86 @@ func TestRunInboxRealConfigAndSender(t *testing.T) {
 		if len(requests) != 1 {
 			t.Fatalf("requests = %d, want exactly 1: %+v", len(requests), requests)
 		}
-		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa"}
+		// No machine config, so no Click header: the last field is empty.
+		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa", ""}
 		if requests[0] != want {
 			t.Errorf("request = %+v, want %+v", requests[0], want)
+		}
+	})
+
+	// The link reaches ntfy as its Click header when the machine config has
+	// a web page with a public address and lists this project. The project
+	// is listed by a worktree's path on purpose: the daemon serves it from
+	// the main checkout under the configured name, so the match has to go
+	// through the same main-checkout lookup (the fixture's fake git says
+	// every folder belongs to the project's checkout).
+	t.Run("machine_config_names_the_project_so_the_link_is_sent", func(t *testing.T) {
+		mu.Lock()
+		requests = nil
+		mu.Unlock()
+
+		f := newInboxFixture(t)
+		wire(f)
+		f.machineErr = nil
+		f.machine = daemonconfig.Config{
+			Web: daemonconfig.Web{Token: "tok-3f9a1c7e5b2d4a68", PublicURL: "https://afk.example"},
+			Projects: []daemonconfig.Project{
+				{Name: "my app", Path: filepath.Join(t.TempDir(), "a-session-worktree")},
+			},
+		}
+		toml := "[notify]\nntfy_url = \"" + srv.URL + "/afk-test\"\n"
+		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := f.run(args...); code != 0 {
+			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
+		}
+		if f.stderr.Len() != 0 {
+			t.Errorf("stderr should be empty:\n%s", f.stderr.String())
+		}
+		if got := f.stdout.String(); got != "Added inbox item aaaaaa.\n" {
+			t.Errorf("stdout = %q, want only the added line", got)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(requests) != 1 {
+			t.Fatalf("requests = %d, want exactly 1: %+v", len(requests), requests)
+		}
+		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa",
+			"https://afk.example/p/my%20app/inbox/aaaaaa"}
+		if requests[0] != want {
+			t.Errorf("request = %+v, want %+v", requests[0], want)
+		}
+	})
+
+	// A machine config that cannot be read changes nothing the owner sees:
+	// same exit, same output, same notification, only no link.
+	t.Run("broken_machine_config_is_silent", func(t *testing.T) {
+		mu.Lock()
+		requests = nil
+		mu.Unlock()
+
+		f := newInboxFixture(t)
+		wire(f)
+		f.machineErr = errors.New("config.toml: web.bind is not host:port")
+		toml := "[notify]\nntfy_url = \"" + srv.URL + "/afk-test\"\n"
+		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := f.run(args...); code != 0 {
+			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
+		}
+		if f.stderr.Len() != 0 {
+			t.Errorf("stderr should be empty:\n%s", f.stderr.String())
+		}
+		if got := f.stdout.String(); got != "Added inbox item aaaaaa.\n" {
+			t.Errorf("stdout = %q, want only the added line", got)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa", ""}
+		if len(requests) != 1 || requests[0] != want {
+			t.Errorf("requests = %+v, want exactly %+v", requests, want)
 		}
 	})
 
@@ -1059,6 +1213,11 @@ func TestRunInboxRealConfigAndSender(t *testing.T) {
 		}
 		if got := inboxItemFiles(t, f.project); len(got) != 1 {
 			t.Errorf("item files = %v, want one", got)
+		}
+		// With nothing to send there is no link to build, so the machine
+		// config is not read at all.
+		if f.machineLoads != 0 {
+			t.Errorf("the machine config was read %d times for an item that sends nothing, want never", f.machineLoads)
 		}
 		mu.Lock()
 		defer mu.Unlock()

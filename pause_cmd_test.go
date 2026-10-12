@@ -246,3 +246,160 @@ func TestResumeClearsStop(t *testing.T) {
 		})
 	}
 }
+
+// logKinds reads a project's decision log and returns the kinds in order,
+// failing the test if any line is not chosen_by owner.
+func logKinds(t *testing.T, root string) []string {
+	t.Helper()
+	entries, err := decisionlog.Read(decisionlog.Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, e := range entries {
+		if e.ChosenBy != "owner" {
+			t.Errorf("chosen_by = %q", e.ChosenBy)
+		}
+		kinds = append(kinds, e.Kind)
+	}
+	return kinds
+}
+
+// TestPauseProject calls the helper the web page's pause button shares with
+// `afk pause`.
+//
+// Load-bearing rows: "already paused" keeps the first time in the flag (the
+// flag says how long the project has been paused) and reports already; "fresh"
+// writes the flag and one pause line; "folder cannot be written" returns an
+// error, with no panic and no decision line.
+func TestPauseProject(t *testing.T) {
+	first := time.Date(2026, 10, 10, 8, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		prepause    bool
+		blockAfk    bool
+		wantAlready bool
+		wantErr     bool
+		wantAt      string
+		wantKinds   []string
+	}{
+		{name: "fresh", wantAt: "2026-10-11T09:00:00Z", wantKinds: []string{"pause"}},
+		{name: "already paused", prepause: true, wantAlready: true, wantAt: "2026-10-10T08:00:00Z", wantKinds: []string{"pause"}},
+		{name: "folder cannot be written", blockAfk: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tt.prepause {
+				if err := daemonstate.Pause(root, first); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.blockAfk {
+				if err := os.WriteFile(filepath.Join(root, ".afk"), []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			already, err := pauseProject(root, now)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if already != tt.wantAlready {
+				t.Errorf("already = %v, want %v", already, tt.wantAlready)
+			}
+			if tt.wantErr {
+				if daemonstate.Paused(root) {
+					t.Error("flag written despite error")
+				}
+				if _, statErr := os.Stat(decisionlog.Path(root)); statErr == nil {
+					t.Error("decision log written despite error")
+				}
+				return
+			}
+			data, err := os.ReadFile(daemonstate.PausePath(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), tt.wantAt) {
+				t.Errorf("flag = %q, want time %s", data, tt.wantAt)
+			}
+			if got := logKinds(t, root); strings.Join(got, ",") != strings.Join(tt.wantKinds, ",") {
+				t.Errorf("log kinds = %v, want %v", got, tt.wantKinds)
+			}
+		})
+	}
+}
+
+// TestResumeProject calls the helper the web page's resume button shares with
+// `afk resume`.
+//
+// Load-bearing rows: "nothing to do" reports neither flag and writes no
+// decision line; "stop marker only" reads the task and reason before the
+// marker is removed and logs only stop_cleared; "folder cannot be written"
+// returns an error, with no panic.
+func TestResumeProject(t *testing.T) {
+	const stopJSON = `{"at":"2026-10-11T00:00:00Z","task":"T0.1","reason":"deploy did not come up"}`
+	tests := []struct {
+		name      string
+		paused    bool
+		stop      string
+		blockAfk  bool
+		want      resumeOutcome
+		wantErr   bool
+		wantKinds []string
+	}{
+		{name: "paused", paused: true, want: resumeOutcome{WasPaused: true}, wantKinds: []string{"resume"}},
+		{name: "stop marker only", stop: stopJSON,
+			want:      resumeOutcome{WasStopped: true, StopTask: "T0.1", StopReason: "deploy did not come up"},
+			wantKinds: []string{"stop_cleared"}},
+		{name: "paused and stopped", paused: true, stop: stopJSON,
+			want:      resumeOutcome{WasPaused: true, WasStopped: true, StopTask: "T0.1", StopReason: "deploy did not come up"},
+			wantKinds: []string{"resume", "stop_cleared"}},
+		{name: "nothing to do"},
+		{name: "folder cannot be written", blockAfk: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+			if tt.paused {
+				if err := daemonstate.Pause(root, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.stop != "" {
+				if err := os.MkdirAll(filepath.Dir(daemonstate.StopPath(root)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(daemonstate.StopPath(root), []byte(tt.stop), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.blockAfk {
+				if err := os.WriteFile(filepath.Join(root, ".afk"), []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := resumeProject(root, now)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("outcome = %+v, want %+v", got, tt.want)
+			}
+			if tt.wantErr {
+				if _, statErr := os.Stat(decisionlog.Path(root)); statErr == nil {
+					t.Error("decision log written despite error")
+				}
+				return
+			}
+			if daemonstate.Paused(root) || daemonstate.Stopped(root) {
+				t.Error("a flag file is left behind")
+			}
+			if got := logKinds(t, root); strings.Join(got, ",") != strings.Join(tt.wantKinds, ",") {
+				t.Errorf("log kinds = %v, want %v", got, tt.wantKinds)
+			}
+		})
+	}
+}

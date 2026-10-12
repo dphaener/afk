@@ -709,6 +709,11 @@ stale_after = "30m"            # how old a usage reading may be before it is not
 probe_interval = "5m"          # how often the daemon reads usage again (1m or more)
 on_unknown_usage = "run"       # "run" or "hold": what to do when the agent cannot report usage at all
 
+[web]
+bind = "127.0.0.1:4253"        # host:port the web page listens on (this is the default); the port is 1 to 65535
+token = "paste-a-secret-here"  # at least 16 characters, no spaces; leave it out and the page is off
+public_url = "https://afk.example"  # optional: where you open the page from; starts with http:// or https://, no ? or #
+
 [[project]]
 path = "~/code/my-app"         # an absolute path, or one starting with ~/
 name = "my-app"                # optional; defaults to the folder name
@@ -716,6 +721,37 @@ name = "my-app"                # optional; defaults to the folder name
 [[project]]
 path = "/srv/another-app"
 ```
+
+#### The web page
+
+`afk daemon` can also serve a small web page, so you can see what it is doing and unblock it from a phone. It shows each project's current task, the usage reading and the inbox, lets you answer an inbox item, and has Pause and Resume buttons. It is off until you set a token.
+
+**Turn it on.** Make a token and put it in the `[web]` table of `config.toml` (see above). `openssl rand -hex 16` prints a good one (32 characters). Restart `afk daemon`; its log then says `web page: listening on http://127.0.0.1:4253`. Without `token` the log says the page is off, no port is opened, and the daemon runs as it did before. The token must be at least 16 characters with no spaces; a shorter or spaced one stops `afk daemon` with a message naming `web.token` and the file. The token is never written to the log.
+
+**Where it listens.** `bind` defaults to `127.0.0.1:4253`, which only this machine can reach. If you bind an address other machines can reach (`0.0.0.0:4253`, `:4253`, a LAN address or any name other than `localhost`), a token is required: with none, `afk daemon` exits 1 naming `web.bind`, `web.token` and `config.toml`. If the port is taken, it exits 1 saying so.
+
+**Plain HTTP.** The page speaks plain HTTP and has no TLS of its own. It is meant to sit behind Tailscale or a reverse proxy; do not put it on the open internet as it is.
+
+**Sign in once.** Open the page with the token on the end of the address, for example `http://127.0.0.1:4253/?token=<your token>`. afk stores a cookie in your browser (kept 180 days) and sends you on to the same page without the token in the address, so it stays out of your history. After that, open the page without it. A request with no token, or the wrong one, gets a 401 page that says what to do. Changing the token signs every browser out.
+
+**What each page shows.**
+
+- `/` — every project: the task being worked on and its phase, how many tasks are done, the last ship, whether it is paused or stopped, how many questions block work, and the usage reading.
+- `/p/<project>` — the same for one project, the daemon's state, a Pause or Resume button, and the project's inbox.
+- `/p/<project>/inbox/<id>` — one inbox item. If it is open, the form takes your answer (a choice, your own text, or both; typed text wins). The answer is stored with the channel `web` (the item then reads "Given ... through web"), and the daemon un-parks the task on its next pass, exactly as after `afk inbox answer`. A second answer to the same item is refused and the first is kept.
+- `/usage` — each usage window, when it resets, and what the governor decided.
+
+**Pause and resume.** The buttons do what [`afk pause` and `afk resume`](#afk-pause-and-afk-resume--hold-and-release-the-daemon) do, including clearing a stopped line, and write to the decision log in the same way.
+
+**The JSON API.** Every page has a JSON twin under `/api`: `GET /api/`, `GET /api/usage`, `GET /api/p/<project>`, `GET /api/p/<project>/inbox`, `GET /api/p/<project>/inbox/<id>`, and `POST` to `/api/p/<project>/inbox/<id>/answer` (a body of `{"answer": "text"}` with `Content-Type: application/json`), `/api/p/<project>/pause` and `/api/p/<project>/resume`. Send the token in a header:
+
+```bash
+curl -H "Authorization: Bearer <your token>" http://127.0.0.1:4253/api/p/my-app
+```
+
+Every address needs the token, including ones that do not exist. A POST whose `Origin` header names another site is refused with 403, and a body over 64 KB with 413.
+
+**Links in notifications.** When `public_url` is set (and the token is, so the page is on), an inbox notification carries a link to the item at `<public_url>/p/<project>/inbox/<id>`. The link never holds the token; the cookie covers that. Set `public_url` to the address you use from your phone, without a trailing slash. Its scheme also decides whether the cookie is marked Secure: only an `https://` address does that, so a page used over plain HTTP still works.
 
 **Usage.** The daemon asks the usage governor (see [`afk usage`](#afk-usage--show-how-much-of-your-usage-is-spent)) before it starts anything, and while a task runs. What it does for each governor action:
 
@@ -823,6 +859,8 @@ afk resume [project]
 ```
 
 `afk pause` writes `.afk/build/paused` in the project's main checkout, so the daemon starts no new task there. A task that is running finishes, and a parked task is not started again until you resume. `afk resume` removes the file, and it also clears a stopped line (see "The stopped line" in the daemon section), printing which of the two it cleared. `project` is a project name from `config.toml` or a folder; with nothing given it is the current folder's main checkout, even from inside a session's worktree.
+
+The Pause and Resume buttons on the daemon's web page (see "The web page" in the daemon section) do the same thing.
 
 **Exit codes:** 0 when done (resuming a project that was not paused or stopped is still 0), 1 when the project or the config could not be used or the file could not be written or removed, 2 when the command was written wrongly.
 

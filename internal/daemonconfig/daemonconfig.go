@@ -19,7 +19,10 @@
 // here and not in a project's afk.toml because usage belongs to the account,
 // which every project on the machine shares.
 //
-// Unknown keys are ignored: later tasks add web keys to the same file, and an
+// The [web] table (bind, token, public_url) configures the daemon's web page.
+// This package only reads and checks it; it opens no listener.
+//
+// Unknown keys are ignored: later tasks add keys to the same file, and an
 // older daemon must not refuse a file a newer one wrote.
 package daemonconfig
 
@@ -27,10 +30,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
@@ -105,6 +112,50 @@ func (g Governor) Thresholds() governor.Thresholds {
 		StaleAfter: g.StaleAfter, OnUnknownUsage: g.OnUnknownUsage}
 }
 
+// DefaultWebBind is where the web page listens when [web] gives no bind: the
+// loopback address, so the page is not reachable from other machines unless
+// the owner asks for it.
+const DefaultWebBind = "127.0.0.1:4253"
+
+// minTokenLen is the shortest token accepted. A shorter secret is too easy to
+// guess for a page that can answer inbox items and pause the build loop.
+const minTokenLen = 16
+
+// Web is the [web] table.
+//
+// An empty Token means the page is off, not open: PLAN T3.1 requires every
+// request to carry the configured token, so with no token there is nothing a
+// request could present, and serving anyway would serve anyone.
+type Web struct {
+	// Bind is the host:port to listen on. Never empty after Load.
+	Bind string
+	// Token is the shared secret every request must carry. Empty = page off.
+	Token string
+	// PublicURL is the address the owner reaches the page at, with no
+	// trailing slash; empty when not set. Notifications link to it.
+	PublicURL string
+}
+
+// Enabled reports whether the web page should be started.
+func (w Web) Enabled() bool { return w.Token != "" }
+
+// LoopbackBind reports whether addr (host:port) listens on this machine only.
+// It is true only for an IP literal that IsLoopback accepts, or the name
+// "localhost". An empty host, 0.0.0.0 and :: listen on every interface, and
+// any other hostname is false because a name may resolve to anything,
+// including a public address, so it cannot be trusted to stay local.
+func LoopbackBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Config is the parsed machine config.
 type Config struct {
 	// Provider is a name handed to provider.Lookup by the caller; empty
@@ -122,6 +173,9 @@ type Config struct {
 	Projects       []Project
 	// Governor is always filled: absent keys carry the governor defaults.
 	Governor Governor
+	// Web is always filled: an absent table carries the default bind and no
+	// token, so the page is off.
+	Web Web
 }
 
 type rawFile struct {
@@ -143,6 +197,11 @@ type rawFile struct {
 		ProbeInterval  string   `toml:"probe_interval"`
 		OnUnknownUsage string   `toml:"on_unknown_usage"`
 	} `toml:"governor"`
+	Web struct {
+		Bind      string `toml:"bind"`
+		Token     string `toml:"token"`
+		PublicURL string `toml:"public_url"`
+	} `toml:"web"`
 	Project []struct {
 		Path string `toml:"path"`
 		Name string `toml:"name"`
@@ -167,7 +226,7 @@ func Path(d Deps) string {
 func Load(d Deps) (Config, error) {
 	cfg := Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
 		MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
-		Governor: defaultGovernor()}
+		Governor: defaultGovernor(), Web: Web{Bind: DefaultWebBind}}
 	path := Path(d)
 	if path == "" {
 		return cfg, errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")
@@ -212,6 +271,10 @@ func Load(d Deps) (Config, error) {
 	}
 
 	if cfg.Governor, err = loadGovernor(path, raw); err != nil {
+		return Config{}, err
+	}
+
+	if cfg.Web, err = loadWeb(path, raw); err != nil {
 		return Config{}, err
 	}
 
@@ -314,4 +377,41 @@ func loadGovernor(path string, raw rawFile) (Governor, error) {
 		return Governor{}, fmt.Errorf("%s: governor.on_unknown_usage is %q; write %q or %q", path, g.OnUnknownUsage, governor.UnknownRun, governor.UnknownHold)
 	}
 	return g, nil
+}
+
+// loadWeb checks the [web] table. No error repeats the token: the message may
+// end up in a terminal log or a screenshot.
+func loadWeb(path string, raw rawFile) (Web, error) {
+	r := raw.Web
+	w := Web{Bind: DefaultWebBind, Token: r.Token}
+	if b := strings.TrimSpace(r.Bind); b != "" {
+		w.Bind = b
+	}
+	_, port, err := net.SplitHostPort(w.Bind)
+	if err != nil {
+		return Web{}, fmt.Errorf("%s: web.bind is %q, which is not host:port; write it like \"127.0.0.1:4253\"", path, w.Bind)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return Web{}, fmt.Errorf("%s: web.bind is %q, whose port is not a number from 1 to 65535; write it like \"127.0.0.1:4253\"", path, w.Bind)
+	}
+	if w.Token != "" {
+		if strings.IndexFunc(w.Token, unicode.IsSpace) >= 0 {
+			return Web{}, fmt.Errorf("%s: web.token contains white space; write a token of %d or more characters with no spaces", path, minTokenLen)
+		}
+		if len([]rune(w.Token)) < minTokenLen {
+			return Web{}, fmt.Errorf("%s: web.token is too short; write a token of at least %d characters", path, minTokenLen)
+		}
+	}
+	if w.Token == "" && !LoopbackBind(w.Bind) {
+		return Web{}, fmt.Errorf("%s: web.bind is %q, which can be reached from other machines, and web.token is not set; set web.token to a secret of at least %d characters, or bind to 127.0.0.1", path, w.Bind, minTokenLen)
+	}
+	if pu := strings.TrimSpace(r.PublicURL); pu != "" {
+		u, err := url.Parse(pu)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(pu, "#") {
+			return Web{}, fmt.Errorf("%s: web.public_url is %q; write a full address such as \"https://afk.example\" that starts with http:// or https:// and has no ? or #", path, pu)
+		}
+		w.PublicURL = strings.TrimRight(pu, "/")
+	}
+	return w, nil
 }

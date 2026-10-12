@@ -172,6 +172,9 @@ name = "bee"
 			if want.Governor == (Governor{}) {
 				want.Governor = defGov
 			}
+			if want.Web == (Web{}) {
+				want.Web = Web{Bind: DefaultWebBind}
+			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -199,5 +202,114 @@ func TestLoadReadError(t *testing.T) {
 	d.ReadFile = func(string) ([]byte, error) { return nil, errors.New("boom") }
 	if _, err := Load(d); err == nil || !strings.Contains(err.Error(), "config.toml") {
 		t.Errorf("want error naming config.toml, got %v", err)
+	}
+}
+
+// TestLoadWeb: the non-loopback refusal rows and the ":4253" row are
+// load-bearing. They are the only thing between a typo'd bind and a page that
+// pauses the build loop for anyone on the network; ":4253" is the easy
+// mistake because Go reads it as every interface. The 5-character token row
+// also checks the error never repeats the secret.
+func TestLoadWeb(t *testing.T) {
+	const tok = "0123456789abcdef"
+	cases := []struct {
+		name   string
+		toml   string
+		want   Web
+		errHas []string
+		errNot []string
+	}{
+		{name: "no web table", toml: "", want: Web{Bind: "127.0.0.1:4253"}},
+		{name: "token with default bind", toml: "[web]\ntoken = \"" + tok + "\"\n",
+			want: Web{Bind: "127.0.0.1:4253", Token: tok}},
+		{name: "0.0.0.0 no token", toml: "[web]\nbind = \"0.0.0.0:4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
+		{name: "empty host no token", toml: "[web]\nbind = \":4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
+		{name: "ipv6 any no token", toml: "[web]\nbind = \"[::]:4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
+		{name: "hostname no token", toml: "[web]\nbind = \"myhost:4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
+		{name: "0.0.0.0 with token", toml: "[web]\nbind = \"0.0.0.0:4253\"\ntoken = \"" + tok + "\"\n",
+			want: Web{Bind: "0.0.0.0:4253", Token: tok}},
+		{name: "empty host with token", toml: "[web]\nbind = \":4253\"\ntoken = \"" + tok + "\"\n",
+			want: Web{Bind: ":4253", Token: tok}},
+		{name: "ipv6 any with token", toml: "[web]\nbind = \"[::]:4253\"\ntoken = \"" + tok + "\"\n",
+			want: Web{Bind: "[::]:4253", Token: tok}},
+		{name: "hostname with token", toml: "[web]\nbind = \"myhost:4253\"\ntoken = \"" + tok + "\"\n",
+			want: Web{Bind: "myhost:4253", Token: tok}},
+		{name: "127.0.0.1 no token", toml: "[web]\nbind = \"127.0.0.1:9000\"\n", want: Web{Bind: "127.0.0.1:9000"}},
+		{name: "ipv6 loopback no token", toml: "[web]\nbind = \"[::1]:9000\"\n", want: Web{Bind: "[::1]:9000"}},
+		{name: "localhost no token", toml: "[web]\nbind = \"localhost:9000\"\n", want: Web{Bind: "localhost:9000"}},
+		{name: "bind without port", toml: "[web]\nbind = \"127.0.0.1\"\n", errHas: []string{"config.toml", "web.bind"}},
+		{name: "port zero", toml: "[web]\nbind = \"127.0.0.1:0\"\n", errHas: []string{"config.toml", "web.bind", "65535"}},
+		{name: "port too big", toml: "[web]\nbind = \"127.0.0.1:70000\"\n", errHas: []string{"config.toml", "web.bind", "65535"}},
+		{name: "port not a number", toml: "[web]\nbind = \"127.0.0.1:http\"\n", errHas: []string{"web.bind"}},
+		{name: "short token", toml: "[web]\ntoken = \"abcde\"\n", errHas: []string{"config.toml", "web.token"}, errNot: []string{"abcde"}},
+		{name: "token with space", toml: "[web]\ntoken = \"0123456789 abcdefXYZ\"\n", errHas: []string{"web.token", "white space"}, errNot: []string{"abcdefXYZ"}},
+		{name: "public_url ftp", toml: "[web]\npublic_url = \"ftp://x\"\n", errHas: []string{"config.toml", "web.public_url"}},
+		{name: "public_url bare host", toml: "[web]\npublic_url = \"example.com\"\n", errHas: []string{"web.public_url"}},
+		{name: "public_url with query", toml: "[web]\npublic_url = \"https://afk.example/?a=b\"\n", errHas: []string{"web.public_url"}},
+		{name: "public_url with fragment", toml: "[web]\npublic_url = \"https://afk.example/#x\"\n", errHas: []string{"web.public_url"}},
+		{name: "public_url without host", toml: "[web]\npublic_url = \"https://\"\n", errHas: []string{"web.public_url"}},
+		{name: "public_url trailing slash trimmed", toml: "[web]\npublic_url = \"https://afk.example/\"\n",
+			want: Web{Bind: "127.0.0.1:4253", PublicURL: "https://afk.example"}},
+		{name: "public_url http with port", toml: "[web]\npublic_url = \"http://10.0.0.2:4253\"\n",
+			want: Web{Bind: "127.0.0.1:4253", PublicURL: "http://10.0.0.2:4253"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Load(deps(nil, map[string]string{home: c.toml}))
+			if len(c.errHas) > 0 {
+				if err == nil {
+					t.Fatalf("want error containing %v, got none", c.errHas)
+				}
+				for _, s := range c.errHas {
+					if !strings.Contains(err.Error(), s) {
+						t.Errorf("error %q lacks %q", err, s)
+					}
+				}
+				for _, s := range c.errNot {
+					if strings.Contains(err.Error(), s) {
+						t.Errorf("error %q repeats %q", err, s)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Web != c.want {
+				t.Errorf("Web = %+v, want %+v", got.Web, c.want)
+			}
+			if got.Web.Enabled() != (c.want.Token != "") {
+				t.Errorf("Enabled = %v with token %q", got.Web.Enabled(), c.want.Token)
+			}
+		})
+	}
+}
+
+// TestLoopbackBind: the 0.0.0.0, "::", empty-host and hostname rows are
+// load-bearing; each listens beyond this machine or may resolve to something
+// that does, so none may pass for loopback.
+func TestLoopbackBind(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:4253", true},
+		{"127.5.5.5:1", true},
+		{"[::1]:4253", true},
+		{"localhost:4253", true},
+		{"0.0.0.0:4253", false},
+		{"[::]:4253", false},
+		{":4253", false},
+		{"myhost:4253", false},
+		{"192.168.1.5:4253", false},
+		{"127.0.0.1", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		t.Run(c.addr, func(t *testing.T) {
+			if got := LoopbackBind(c.addr); got != c.want {
+				t.Errorf("LoopbackBind(%q) = %v, want %v", c.addr, got, c.want)
+			}
+		})
 	}
 }

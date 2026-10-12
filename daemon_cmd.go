@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,6 +29,7 @@ import (
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/tokens"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/web"
 )
 
 // This file is the daemon's command line and its wiring, and nothing else.
@@ -89,7 +91,12 @@ type daemonEnv struct {
 	//
 	// gov is the [governor] table of the machine config: the usage limits the
 	// real loop hands to its usage source and its login check.
-	newDeps func(p provider.Provider, providerName string, gov daemonconfig.Governor, log func(format string, args ...any)) daemon.Deps
+	//
+	// publicURL is the address the owner reaches the web page at, or "" when
+	// the page is off or has none. It is all of the [web] table the loop is
+	// given, and it is there for one thing: the link in a notification. The
+	// token is never handed over.
+	newDeps func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, log func(format string, args ...any)) daemon.Deps
 	// signalContext returns a context that ends when the process is asked to
 	// stop.
 	signalContext func() (context.Context, context.CancelFunc)
@@ -98,6 +105,9 @@ type daemonEnv struct {
 	// a new build installed over it is noticed (PLAN T2.2a). Nil means the
 	// daemon never looks. An error means the file cannot be seen.
 	binary func() (daemon.Binary, error)
+	// listen opens the web page's port. It is a field so a test hands back a
+	// listener of its own and no test ever binds a fixed port.
+	listen func(addr string) (net.Listener, error)
 }
 
 func realDaemonEnv() daemonEnv {
@@ -128,8 +138,8 @@ func realDaemonEnv() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: host.Alive,
-		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, log func(string, ...any)) daemon.Deps {
-			return realDaemonDeps(p, providerName, home, st, gov, now, os.Stderr, log)
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, log func(string, ...any)) daemon.Deps {
+			return realDaemonDeps(p, providerName, home, st, gov, publicURL, now, os.Stderr, log)
 		},
 		signalContext: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -140,6 +150,7 @@ func realDaemonEnv() daemonEnv {
 			}
 			return daemon.ReadBinary(exe)
 		},
+		listen: func(addr string) (net.Listener, error) { return net.Listen("tcp", addr) },
 	}
 }
 
@@ -238,7 +249,7 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	for _, d := range dropped {
 		logf("%s", d)
 	}
-	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, logf)
+	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, webPublicURL(cfg.Web), logf)
 	settings := daemonSettings(cfg)
 
 	if *once {
@@ -273,6 +284,37 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 
 	ctx, stop := env.signalContext()
 	defer stop()
+
+	// The web page. It is opened here and nowhere earlier: after the machine
+	// lock, so a second daemon that is about to be refused never takes the
+	// port from the one that is running, and after the --once return, because
+	// a single pass is over before anyone could open a page. It is opened
+	// before the loop so that a port that cannot be had is an exit with a
+	// message the owner sees at start-up, not a line lost in a running log.
+	//
+	// The stop is deferred, not tied to ctx: the new-version way out below
+	// returns without ctx ever ending, and a listener left open there would
+	// keep the port from the daemon the service manager starts next.
+	//
+	// Neither log line may hold the token, and the address is the configured
+	// bind, which has none.
+	if cfg.Web.Enabled() {
+		h, err := web.New(web.Config{Token: cfg.Web.Token, PublicURL: cfg.Web.PublicURL}, daemonWebDeps(projects, env.state, env.now))
+		if err != nil {
+			fmt.Fprintf(stderr, "afk daemon: could not set up the web page: %v. Check the [web] table in %s.\n", err, cfgPath)
+			return 1
+		}
+		ln, err := env.listen(cfg.Web.Bind)
+		if err != nil {
+			fmt.Fprintf(stderr, "afk daemon: could not open the web page on %s: %v. Another program may be using that port; change [web] bind in %s.\n", cfg.Web.Bind, err, cfgPath)
+			return 1
+		}
+		defer serveDaemonWeb(ln, h, logf)()
+		logf("web page: listening on http://%s", cfg.Web.Bind)
+	} else {
+		logf("web page: off (set [web] token in %s to turn it on)", cfgPath)
+	}
+
 	logf("afk daemon started (pid %d): %d project(s), looking every %s", env.pid, len(projects), cfg.Tick)
 	// Both ways out are exit 0. Being asked to stop is not a failure, and
 	// neither is stopping for a new version: the daemon chose to, between two
@@ -285,6 +327,19 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	}
 	logf("afk daemon stopped. Every session is still running; the next start picks them up.")
 	return 0
+}
+
+// webPublicURL is the address a notification may link to, or "" for no link.
+// Pure.
+//
+// A public address with no token gives no link. With no token the page is
+// off (daemonconfig.Web), so the link would open nothing, and a notification
+// that leads to an error page is worse than one with only the command in it.
+func webPublicURL(w daemonconfig.Web) string {
+	if !w.Enabled() {
+		return ""
+	}
+	return w.PublicURL
 }
 
 // binaryUnknownText is what the daemon's log and `afk daemon status` both say
@@ -398,6 +453,11 @@ type daemonNotifier struct {
 	loadConfig func(root string) (projectconfig.Config, error)
 	send       func(ctx context.Context, url string, m notify.NtfyMessage) error
 	logf       func(format string, args ...any)
+	// publicURL is where the owner reaches the web page, or "" for no page.
+	// When set, each notification carries a link that opens what it is about
+	// (ntfy's Click header, see notify.NtfyMessage). The link never holds the
+	// token: the browser proves itself with its cookie.
+	publicURL string
 }
 
 // item tells the owner about an inbox item the loop just added, with the
@@ -411,17 +471,20 @@ func (n daemonNotifier) item(p daemon.Project, it inbox.Item) {
 	if !ok {
 		return
 	}
+	msg.Click = notify.ItemLink(n.publicURL, p.Name, it.ID)
 	n.deliver(p, url, msg)
 }
 
 // idle sends the one notification with no item behind it. Priority 3 is
-// ntfy's default: the build has stopped moving, but nothing is on fire.
+// ntfy's default: the build has stopped moving, but nothing is on fire. With
+// no item to open, its link goes to the project's page.
 func (n daemonNotifier) idle(p daemon.Project, title, body string) {
 	url, ok := n.address(p)
 	if !ok {
 		return
 	}
-	n.deliver(p, url, notify.NtfyMessage{Title: "afk: " + title, Body: body, Priority: 3})
+	n.deliver(p, url, notify.NtfyMessage{Title: "afk: " + title, Body: body, Priority: 3,
+		Click: notify.ProjectLink(n.publicURL, p.Name)})
 }
 
 // urgent tells the owner about an item at ntfy's highest priority (5), the
@@ -444,6 +507,7 @@ func (n daemonNotifier) urgent(p daemon.Project, it inbox.Item) {
 		return
 	}
 	msg.Priority = 5
+	msg.Click = notify.ItemLink(n.publicURL, p.Name, it.ID)
 	n.deliver(p, url, msg)
 }
 
@@ -474,8 +538,12 @@ func (n daemonNotifier) deliver(p daemon.Project, url string, m notify.NtfyMessa
 // st is where afk's state folder is found and gov is the machine config's
 // [governor] table. Both go to the usage source and the login check only
 // (daemon_governor.go); the loop itself never sees a threshold.
-func realDaemonDeps(p provider.Provider, providerName, home string, st usagestate.Deps, gov daemonconfig.Governor, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
+//
+// publicURL is the web page's public address, or "": it goes to the notifier
+// only, for the link in a notification.
+func realDaemonDeps(p provider.Provider, providerName, home string, st usagestate.Deps, gov daemonconfig.Governor, publicURL string, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
 	n := daemonNotifier{
+		publicURL:  publicURL,
 		loadConfig: projectconfig.Load,
 		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
 			return notify.Ntfy{URL: url}.Send(ctx, m)
