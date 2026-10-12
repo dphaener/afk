@@ -35,6 +35,17 @@ const (
 	// DefaultStallAfter is how long a running session may go without any
 	// status change before the daemon calls it stalled.
 	DefaultStallAfter = 10 * time.Minute
+	// DefaultMaxRestarts is how many automatic recoveries (a restart of a
+	// wedged agent, or a relaunch of a gone host) the daemon makes for one
+	// task before it parks the task with a failure item (docs/PLAN.md §5.6).
+	// Three rides out a one-off hang or a reboot, and is few enough that a
+	// session which keeps dying reaches a person quickly.
+	DefaultMaxRestarts = 3
+	// DefaultRestartBackoff is the wait before the second recovery; each
+	// later one waits twice as long as the one before (docs/PLAN.md §5.6).
+	// The first recovery has no wait. A restart stops a working agent, so a
+	// cause that keeps coming back must not be answered in a tight loop.
+	DefaultRestartBackoff = time.Minute
 
 	fileName = "config.toml"
 	// minTick keeps a typo such as "5ms" from turning the loop into a
@@ -71,7 +82,14 @@ type Config struct {
 	Provider   string
 	Tick       time.Duration
 	StallAfter time.Duration
-	Projects   []Project
+	// MaxRestarts is the number of automatic recoveries allowed per task.
+	// Zero is valid and means no session is ever restarted: the task parks
+	// at once when its session stops answering.
+	MaxRestarts int
+	// RestartBackoff is the wait before the second recovery; it doubles for
+	// each recovery after that. Always above zero.
+	RestartBackoff time.Duration
+	Projects       []Project
 }
 
 type rawFile struct {
@@ -79,6 +97,10 @@ type rawFile struct {
 	Daemon   struct {
 		Tick       string `toml:"tick"`
 		StallAfter string `toml:"stall_after"`
+		// MaxRestarts is a pointer so an absent key (use the default) can be
+		// told apart from max_restarts = 0 (never restart).
+		MaxRestarts    *int   `toml:"max_restarts"`
+		RestartBackoff string `toml:"restart_backoff"`
 	} `toml:"daemon"`
 	Project []struct {
 		Path string `toml:"path"`
@@ -102,7 +124,8 @@ func Path(d Deps) string {
 // Load reads config.toml. A missing file is not an error: it yields the
 // defaults and no projects, so a fresh machine can run `afk daemon status`.
 func Load(d Deps) (Config, error) {
-	cfg := Config{Tick: DefaultTick, StallAfter: DefaultStallAfter}
+	cfg := Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+		MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}
 	path := Path(d)
 	if path == "" {
 		return cfg, errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")
@@ -132,6 +155,18 @@ func Load(d Deps) (Config, error) {
 	}
 	if cfg.StallAfter, err = duration(path, "daemon.stall_after", raw.Daemon.StallAfter, DefaultStallAfter); err != nil {
 		return Config{}, err
+	}
+	if raw.Daemon.MaxRestarts != nil {
+		cfg.MaxRestarts = *raw.Daemon.MaxRestarts
+	}
+	if cfg.MaxRestarts < 0 {
+		return Config{}, fmt.Errorf("%s: daemon.max_restarts is %d, which is negative; write 0 or more (0 means never restart a session)", path, cfg.MaxRestarts)
+	}
+	if cfg.RestartBackoff, err = duration(path, "daemon.restart_backoff", raw.Daemon.RestartBackoff, DefaultRestartBackoff); err != nil {
+		return Config{}, err
+	}
+	if cfg.RestartBackoff <= 0 {
+		return Config{}, fmt.Errorf("%s: daemon.restart_backoff is %s, which is not a wait above zero; write it like \"1m\"", path, cfg.RestartBackoff)
 	}
 
 	var home string

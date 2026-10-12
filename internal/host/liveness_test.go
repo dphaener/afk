@@ -718,3 +718,213 @@ func TestShippedLivenessScheduleIsTheDocumentedOne(t *testing.T) {
 		t.Errorf("livenessTiming = %+v, want the documented constants %+v: the runtime reads the var, not the constants, so drifting it IS a shipped-schedule change", livenessTiming, want)
 	}
 }
+
+// The tests below cover a host started with ServeConfig.ProbeUnattached, the
+// switch the daemon's sessions run with. Nothing above this line was changed
+// for them: with the switch off, every rule the tests above pin still holds.
+
+// awaitProbeConnectionGone waits until the host has dropped the one
+// connection startServeWithConfig's own readiness check made. That dial is
+// attached and dropped like any client, so until the drop is logged the host
+// briefly has a client, and a test about a session with NO client would be
+// measuring the wrong thing: with the flag ignored, a probe sent in that
+// window would still be allowed. The readiness dial sends no frame, so it can
+// never cause a nudge of its own.
+func awaitProbeConnectionGone(t *testing.T, cfg ServeConfig) {
+	t.Helper()
+	awaitLogLine(t, cfg.LogPath, "client detached; host still serving")
+}
+
+// awaitLogCountAbove polls host.log until it holds more than n occurrences of
+// want, and returns the count it saw. Used to wait for "the host probed
+// again" without sleeping for a guessed number of probe cycles.
+func awaitLogCountAbove(t *testing.T, cfg ServeConfig, want string, n int) int {
+	t.Helper()
+	deadline := time.Now().Add(testBudget)
+	for {
+		got := strings.Count(hostLog(t, cfg), want)
+		if got > n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("host.log never held more than %d of %q (has %d); log:\n%s", n, want, got, hostLog(t, cfg))
+		}
+		time.Sleep(testPollStep)
+	}
+}
+
+// TestLivenessProbesAnUnattachedSessionWhenAsked is the reason
+// ProbeUnattached exists: a session the daemon runs has no client, so without
+// the switch its wedge would never be seen (TestLivenessNeverProbesAnUnattachedSession
+// pins that side). No client is ever attached here; the child is driven only
+// through its control directory.
+//
+// Load-bearing assertions: wedged_since appearing in host.json (the daemon
+// reads nothing else, and reverting the call site in evaluateLiveness to
+// h.attached() makes exactly this one fail); the nudge line in host.log (the
+// verdict must come from an unanswered probe, never from silence alone, with
+// or without a client); and the verdict clearing once the child writes again
+// (the daemon restarts a session whose verdict has lasted, so a verdict that
+// outlived the wedge would stop a working agent).
+func TestLivenessProbesAnUnattachedSessionWhenAsked(t *testing.T) {
+	compressLivenessTiming(t)
+	cfg, ctrlDir := stuckChildServeConfig(t)
+	cfg.ProbeUnattached = true
+	h := startServeWithConfig(t, cfg)
+	awaitProbeConnectionGone(t, cfg)
+
+	awaitMeta(t, cfg, "published last_output_at with no client attached", func(m Meta) bool {
+		return m.LastOutputAt != ""
+	})
+	setStuckChildFlag(t, ctrlDir, stuckChildNoWriteFlag, true)
+
+	m := awaitMeta(t, cfg, "recorded wedged_since for an unattached child that stopped writing", func(m Meta) bool {
+		return m.WedgedSince != ""
+	})
+	wedgedSince, err := time.Parse(time.RFC3339, m.WedgedSince)
+	if err != nil {
+		t.Fatalf("wedged_since %q is not the RFC3339 that Meta's other timestamps use: %v", m.WedgedSince, err)
+	}
+	if age := time.Since(wedgedSince); age < 0 || age > testBudget {
+		t.Errorf("wedged_since is %s old, want a plausible detection time", age)
+	}
+	log := hostLog(t, cfg)
+	if !strings.Contains(log, "nudged pty to force a repaint") {
+		t.Errorf("the host wedged an unattached session without probing it first; log:\n%s", log)
+	}
+	if !strings.Contains(log, "marking it wedged") {
+		t.Errorf("the wedge is not in host.log; log:\n%s", log)
+	}
+	if n := strings.Count(log, "client attached"); n != 1 {
+		t.Errorf("host.log has %d attaches, want only the readiness check's: this test is about a session with no client; log:\n%s", n, log)
+	}
+	if h.returned() {
+		t.Fatalf("Serve returned when its CHILD wedged: %v", h.err)
+	}
+
+	setStuckChildFlag(t, ctrlDir, stuckChildNoWriteFlag, false)
+	cleared := awaitMeta(t, cfg, "cleared wedged_since once output resumed", func(m Meta) bool {
+		return m.WedgedSince == ""
+	})
+	if cleared.LastOutputAt == "" {
+		t.Error("last_output_at is empty after the child resumed writing")
+	}
+	awaitLogLine(t, cfg.LogPath, "clearing wedged_since")
+}
+
+// TestLivenessLeavesAResponsiveUnattachedChildAlone is the false-positive
+// guard for the switch: a healthy agent waiting at a prompt, with nobody
+// attached, says nothing for as long as it waits, and with ProbeUnattached it
+// is now probed. It must answer the probe and never be called wedged, or the
+// daemon would restart every session that is merely waiting.
+//
+// Load-bearing assertions: at least two nudges after the child was up (with
+// none, the test would only prove the threshold is longer than the test; the
+// second one can only be sent once the first probe is concluded, a full
+// interval later, so by then the first has had its whole deadline), and no
+// wedge line after that point with wedged_since empty.
+//
+// The log is read from the point the child's banner was published, because
+// the silence clock starts with the host and not with the child: on a loaded
+// machine the child can still be starting when the first nudge goes out, and
+// a signal sent before it has installed its handler is one it cannot answer.
+// That is a slow start, not the behaviour under test.
+func TestLivenessLeavesAResponsiveUnattachedChildAlone(t *testing.T) {
+	compressLivenessTiming(t)
+	cfg, _ := probeChildServeConfig(t)
+	cfg.ProbeUnattached = true
+	h := startServeWithConfig(t, cfg)
+	awaitProbeConnectionGone(t, cfg)
+
+	awaitMeta(t, cfg, "published the child's banner as last_output_at", func(m Meta) bool {
+		return m.LastOutputAt != "" && m.WedgedSince == ""
+	})
+	upAt := len(hostLog(t, cfg))
+	startNudges := strings.Count(hostLog(t, cfg)[:upAt], "nudged pty to force a repaint")
+
+	awaitLogCountAbove(t, cfg, "nudged pty to force a repaint", startNudges+1)
+
+	since := hostLog(t, cfg)[upAt:]
+	if strings.Contains(since, "marking it wedged") {
+		t.Errorf("the host wedged an unattached child that answered its nudges; log since the child was up:\n%s", since)
+	}
+	if m := readMetaNow(t, cfg); m.WedgedSince != "" {
+		t.Errorf("wedged_since = %q for a silent child that answered every nudge, want empty", m.WedgedSince)
+	}
+	if n := strings.Count(hostLog(t, cfg), "client attached"); n != 1 {
+		t.Errorf("host.log has %d attaches, want only the readiness check's", n)
+	}
+	if h.returned() {
+		t.Fatalf("Serve returned while idle: %v", h.err)
+	}
+}
+
+// TestAClientStillGetsASupervisedSession pins that the switch takes nothing
+// from a person: a host that probes by itself still hands the session to
+// whoever attaches, and the verdict the daemon reads is the same before,
+// during and after that attach.
+//
+// Load-bearing assertions, in order: the first client's resize is applied
+// (the serve loop honours control frames only from the client that holds the
+// session, so this is the proof it was given the session); wedged_since is
+// byte-for-byte the value from before the attach while the client is attached
+// and after it detaches (an attach must neither clear nor restart the
+// verdict, or the daemon's count of how long a wedge has lasted would reset
+// every time someone looked); the detach ends in a plain close, with no
+// Stolen frame; the host probes again after the detach (the nudge count
+// grows with nobody attached, which is the "keeps probing afterwards" half);
+// and a second client attaches and receives the child's output once it
+// writes again, which also clears the verdict.
+func TestAClientStillGetsASupervisedSession(t *testing.T) {
+	compressLivenessTiming(t)
+	cfg, ctrlDir := stuckChildServeConfig(t)
+	cfg.ProbeUnattached = true
+	h := startServeWithConfig(t, cfg)
+	awaitProbeConnectionGone(t, cfg)
+
+	awaitMeta(t, cfg, "published last_output_at with no client attached", func(m Meta) bool {
+		return m.LastOutputAt != ""
+	})
+	setStuckChildFlag(t, ctrlDir, stuckChildNoWriteFlag, true)
+	before := awaitMeta(t, cfg, "recorded wedged_since before anyone attached", func(m Meta) bool {
+		return m.WedgedSince != ""
+	})
+
+	// A real size change, never a same-size resize: that one makes the host
+	// nudge by itself, and the nudge counts below must be the monitor's.
+	first := h.dial(t)
+	sendFrame(t, first, Resize, EncodeResize(40, 120))
+	awaitLogLine(t, cfg.LogPath, "resized pty to 40x120")
+
+	// One more probe with the client attached, so the verdict has been
+	// through at least one evaluation in that state before it is compared.
+	nudges := strings.Count(hostLog(t, cfg), "nudged pty to force a repaint")
+	nudges = awaitLogCountAbove(t, cfg, "nudged pty to force a repaint", nudges)
+	if got := readMetaNow(t, cfg).WedgedSince; got != before.WedgedSince {
+		t.Errorf("wedged_since = %q while a client is attached, want the %q recorded before the attach", got, before.WedgedSince)
+	}
+
+	sendFrame(t, first, Detach, nil)
+	expectEOF(t, first)
+	awaitLogLine(t, cfg.LogPath, "client requested detach")
+
+	// Counted again only now that the detach is in the log, so the probe
+	// waited for next can only have been sent with nobody attached.
+	nudges = strings.Count(hostLog(t, cfg), "nudged pty to force a repaint")
+	awaitLogCountAbove(t, cfg, "nudged pty to force a repaint", nudges)
+	if got := readMetaNow(t, cfg).WedgedSince; got != before.WedgedSince {
+		t.Errorf("wedged_since = %q after the client detached, want the %q recorded before the attach", got, before.WedgedSince)
+	}
+	if h.returned() {
+		t.Fatalf("Serve returned after a detach: %v", h.err)
+	}
+
+	second := h.dial(t)
+	secondOut := drainClient(t, second)
+	sendFrame(t, second, Resize, EncodeResize(41, 121))
+	setStuckChildFlag(t, ctrlDir, stuckChildNoWriteFlag, false)
+	awaitBuffer(t, secondOut, stuckChildHeartbeatMarker)
+	awaitMeta(t, cfg, "cleared wedged_since once output resumed", func(m Meta) bool {
+		return m.WedgedSince == ""
+	})
+}

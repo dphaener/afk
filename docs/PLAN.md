@@ -233,6 +233,16 @@ Amended 2026-10-12 (T2.2a): the `ship` words now include `after_merge`, between 
 `deploy_healthy`, `stopped`. It is saved only when the project's `afk.toml` sets `[ship] after_merge`;
 without that key the ship goes from `merged` to `deploy_healthy` as before.
 
+Amended 2026-10-12 (T2.3): an entry also carries `restarts`, `restart_at` and `continue_pending`, each
+omitted when empty, zero or false. `restarts` counts the automatic recoveries of the current attempt
+and is saved before each one, so a crash mid-recovery still counts it; a negative value is refused on
+load. `restart_at` is when the last recovery finished (RFC 3339 UTC); the backoff, the new host's
+grace and the wait before the continue prompt are all timed from it. `continue_pending` is true from a
+recovery until the session's resume command has been typed into the new agent, and is cleared by that.
+All three are cleared when the task starts a new attempt or gets a new session, is un-parked, or
+leaves `running` (done, failed, shipping). Giving up leaves `restarts` in the parked entry; the
+un-park clears it.
+
 ### 4.2a Daemon files (new)
 
 Amended 2026-10-11 (T2.1): three small files the build daemon adds, each with one writer and none
@@ -364,6 +374,11 @@ value is the text of a shell command, run through `sh -c` in the main checkout) 
 `[ship] after_merge_timeout`). The command's text is never echoed in an error, a stop reason, an item
 title or a notification; the log tail in a failure item may show it.
 
+Amended 2026-10-12 (T2.3): `[daemon]` also reads `max_restarts` (default 3; a whole number of
+recoveries per task, at least 0, where 0 means never restart; a negative value is an error naming
+`daemon.max_restarts`) and `restart_backoff` (default `"1m"`; a length of time above zero, else an
+error naming the key). They are machine config only; `afk.toml` is not read for them.
+
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
 One line per task per phase per role, written when a task ends: `{at, task, session, phase:
@@ -442,6 +457,11 @@ blocking item, `This project has no task list yet`, until `afk ledger init` crea
      "session is asking something at the terminal". Under bypassed permissions this should not happen;
      when it does, a human needs to look.
 5. Record every transition in the decision log.
+
+   Amended 2026-10-12 (T2.3): the stopped-host item ("Session stopped running: …") is now raised only
+   when recovery is not available (the loop has no means to relaunch a host); when recovery is available
+   and has used its `max_restarts`, the task parks on a "Session could not be recovered: …" item
+   instead (§5.6). A stall item, like both, now parks the task, so answering it un-parks the task.
 
 ### 5.4 Ship (state machine in code)
 
@@ -523,6 +543,29 @@ The conductor in autonomous mode follows these, in this order of precedence:
 - **Host gone entirely** (VM reboot): relaunch the host with the resume argv.
 - **Daemon restart:** reconcile ledger against sessions on disk; adopt running sessions, never start a
   second one for a task that has one.
+
+Amended 2026-10-12 (T2.3): how recovery was built.
+
+- The host probes by itself when it is started with `--probe-unattached`, which every unattended
+  session's host gets. It publishes `wedged_since` in `host.json` after about 35 seconds of silence and
+  an unanswered repaint request, and clears it on any output. The daemon only reads that field; it never
+  dials the host to find out, and never holds the client slot, so a human attaching can always take the
+  session.
+- A wedge verdict must have stood for a minute before the daemon acts, because it clears on any output
+  and a restart interrupts the agent. A host that is gone must have been gone for the one-minute grace.
+- To restart, the daemon asks the host with a short connection (a restart request, with the host's
+  refusal returned as text); the host runs the stop ladder and starts the provider's resume command.
+  To relaunch a gone host, the daemon starts a new host with the resume command when `status.json` has
+  a session id, and a fresh launch of the same session when it does not (or the file cannot be read),
+  which picks its work up from the files.
+- The continue prompt is the session's resume command (`/afk:go --session <name>`) typed 30 seconds
+  after the new agent started, with `continue_pending` saved first and cleared after. Typing it again is
+  safe because the conductor acts from its recorded phase.
+- At most `max_restarts` recoveries per task (default 3), the first at once and each later one after
+  `restart_backoff` doubled each time (1m, 2m with the defaults). `restarts` is saved before the action
+  and counts a refused or failed attempt. At the limit the task parks on an item titled "Session could
+  not be recovered: …"; answering it gives a fresh set.
+- Parked and shipping tasks are not recovered; a pause does not stop the recovery of a running one.
 
 ### 5.7 A lean task cycle
 
@@ -1074,6 +1117,7 @@ with nobody at the keyboard.
   unchanged); daemon tests: wedged → restarted → resumes; restart cap reached → parked with an item; a
   human `afk attach` during daemon supervision still gets the session, and the daemon recovers its
   view after they detach.
+- Amended 2026-10-12 (T2.3 done): later tasks may assume the following. (1) A session host started with `--probe-unattached` checks for a wedge with nobody attached, and `session.SpawnHost` passes that flag for every unattended session; a host started before this change, or by hand, does not. (2) The daemon never holds a session's client slot: it reads `wedged_since` from `host.json`, and connects only for a moment to ask for a restart (`host.RequestRestart`) or to type a line (`host.SendInput`). (3) For a `running` task, a wedge that has stood for a minute is restarted and a host gone past its grace is relaunched (`HostSpawn.ResumeID`: the resume command when `status.json` has a session id, else the launch command); 30 seconds after the agent is back the daemon types `/afk:go --session <name>`. Parked and shipping sessions are not recovered. (4) The ledger entry carries `restarts`, `restart_at` and `continue_pending`, cleared on a new attempt, on an un-park and when the task leaves `running`; `[daemon] max_restarts` (default 3) and `restart_backoff` (default `"1m"`, doubling) are in `config.toml`, and at the cap the task parks on a blocking item titled "Session could not be recovered: …". (5) `daemon.Deps.Restart` and `Relaunch` are optional; without them a gone host is reported as before. T2.4 can reuse `Restart`, `SendPrompt` and the continue step for its pause and resume, and must clear or respect `continue_pending` if it stops a session itself. (6) Recovery runs under a pause. (7) Not yet seen: a real agent restarted, resumed or typed to by the daemon, a real reboot, and a healthy agent probed at a terminal nobody has attached to (its size is 0x0); the supervised run of T4.2 is the first. See `## T2.3` in `docs/decisions.md`.
 
 #### T2.4 — Governor in the loop
 - **Depends on:** T2.1, T1.3
@@ -1178,6 +1222,7 @@ with nobody at the keyboard.
 | What exactly a session emits when it hits a usage limit (text, hook, whether a reset time is present). Never observed; capture it the first time it happens. | T2.4 |
 | Is the login-expiry warning detectable ahead of time, or only the logged-out state? | T2.4 |
 | Liveness with no client: host-side schedule, or daemon holds the client slot? | T2.3 |
+| **Answered 2026-10-12** (the row above): host-side schedule. The host probes by itself when started with `--probe-unattached`, because a daemon holding the client slot would lock out a human who attaches. | T2.3 |
 | Does `claude -p "/usage"` behave when its backing request is throttled, and how often is safe to probe? **Answered 2026-10-11:** not observed. The probe was run three times back to back (Claude Code 2.1.296) and each time exited 0 with a full report, in about 1.5 seconds. Nobody tried to provoke throttling, because tripping a rate limit on the owner's account on purpose is not a machine's call, so what it does when throttled is still unknown. `afk usage` reuses a reading under 5 minutes old, and the governor treats a reading over 30 minutes old as stale and holds. | T1.3 |
 | Nebari's health-check URL, and how to tell a deploy of *this* commit finished (as opposed to the old container still answering). | T4.1 |
 | Does a merge to nebari's main trigger the Coolify deploy today, or does a webhook need adding? | T4.1 |

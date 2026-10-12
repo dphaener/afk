@@ -37,8 +37,8 @@ import (
 // of Deps, so the tests drive the whole loop with a fake agent that only
 // writes status.json and a fake ship that only saves its progress. Git,
 // GitHub, the health check and the session's terminal are never touched from
-// this package: the ship behind Deps.Ship owns the first three and
-// Deps.SendPrompt the last. The inbox, the ledger, the decision log and the state
+// this package: the ship behind Deps.Ship owns the first three, and
+// Deps.SendPrompt, Deps.Restart and Deps.Relaunch the last. The inbox, the ledger, the decision log and the state
 // files are used directly: they are plain files under Root with one writer
 // package each, and faking them would only test the fake.
 
@@ -49,7 +49,7 @@ type Project struct {
 	Name, Root string
 }
 
-// Settings are the loop's two limits, from machine config.
+// Settings are the loop's limits, from machine config.
 type Settings struct {
 	// StallAfter is how long a session may ask something at the terminal
 	// before the owner is told.
@@ -57,6 +57,22 @@ type Settings struct {
 	// HostGrace is how long a session may be without a running host before
 	// it is reported gone. Zero means DefaultHostGrace.
 	HostGrace time.Duration
+	// MaxRestarts is how many times one attempt's session may be recovered
+	// (its agent restarted, or its host started again) before the task is
+	// parked for the owner (PLAN §5.6). It is used as given, with no default
+	// here: zero is a real setting that means never recover, and the caller
+	// passes the machine config's value, which carries the default.
+	MaxRestarts int
+	// RestartBackoff is the wait before the second recovery of an attempt;
+	// it doubles for each one after that. Used as given, like MaxRestarts.
+	RestartBackoff time.Duration
+	// ContinueAfter is how long after a recovery the session is told to
+	// carry on. Zero means DefaultContinueAfter.
+	ContinueAfter time.Duration
+	// WedgeConfirm is how long a host's verdict that its agent has stopped
+	// answering must have stood before the agent is restarted. Zero means
+	// DefaultWedgeConfirm.
+	WedgeConfirm time.Duration
 	// Binary is the identity of afk's program file recorded when the daemon
 	// started. The zero value means unknown, and Run then never stops for a
 	// new binary.
@@ -69,6 +85,22 @@ const (
 	// starting the host takes seconds, and a session seen in that gap must
 	// not be reported dead.
 	DefaultHostGrace = 60 * time.Second
+
+	// DefaultContinueAfter is the wait between a session being recovered and
+	// its resume command being typed. The resumed agent needs time to start
+	// before a typed line reaches a prompt and not a program that is still
+	// loading. It is a margin, not a guarantee, in the same way the pauses
+	// host.SendInput makes around its Enter are: nothing on disk says
+	// "the prompt is ready", so a slow start can still lose the line.
+	DefaultContinueAfter = 30 * time.Second
+
+	// DefaultWedgeConfirm is how long a wedge verdict must have stood. It is
+	// one of the host's re-probe intervals (wedgeProbeInterval in
+	// internal/host/liveness.go, the least gap between two probes of one
+	// silent agent, also sixty seconds), so a verdict that any output would
+	// have cleared has had the chance to clear before a working agent is
+	// stopped.
+	DefaultWedgeConfirm = 60 * time.Second
 
 	// defaultStallAfter is used when Settings carries no limit. A zero
 	// limit would report a stall the moment a session asked anything, so a
@@ -132,6 +164,7 @@ func Kinds() []string {
 		string(ActUnpark), string(ActLaunch), string(ActIdle),
 		string(ActNoLedger), string(ActOwner), string(ActOwnerDone),
 		string(ActShipStep),
+		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
 }
@@ -146,6 +179,10 @@ const (
 	ruleTokens    = "PLAN §4.7"
 	ruleShip      = "PLAN §5.4"
 	ruleRestart   = "PLAN §T2.2a"
+	// ruleRecovery is the rule for everything done to a session that stopped
+	// or hung. It is not ruleRestart, which was taken first and is about the
+	// daemon's own program file.
+	ruleRecovery = "PLAN §5.6"
 )
 
 // KindDaemonRestart is the decision-log kind for the daemon stopping because
@@ -196,10 +233,23 @@ type ShipRequest struct {
 	Stop func(task, reason string) error
 }
 
+// RelaunchRequest asks for a new host for a session whose host is gone.
+type RelaunchRequest struct {
+	// Worktree is the session's worktree and Session its name, both as
+	// discovered on this tick.
+	Worktree, Session string
+	// ResumeID is the agent's own conversation id, from the session's
+	// status.json. When it is not empty the new host resumes that
+	// conversation. When it is empty (the session had not recorded one yet,
+	// or its status file could not be read) the new host starts the session's
+	// ordinary launch command, and the agent picks its work up from its files.
+	ResumeID string
+}
+
 // Deps is every call the loop makes outside the project's plain files. Now,
 // LoadBuild, Sessions, Preflight, Launch and RecordTokens must be set; Notify,
-// NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt and
-// Clean may be nil.
+// NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt,
+// Restart, Relaunch and Clean may be nil.
 type Deps struct {
 	// Now is the clock. The package never reads the real one, so a test
 	// moves time by hand.
@@ -244,8 +294,23 @@ type Deps struct {
 	Ship func(ShipRequest) ship.Outcome
 	// SendPrompt types one line into a session's terminal and presses Enter.
 	// Nil means nothing is typed: an un-parked session is then left for the
-	// owner to resume, as before.
+	// owner to resume, as before, and a recovered session is not told to
+	// carry on.
 	SendPrompt func(worktree, session, text string) error
+	// Restart asks the session's host to restart its agent, resuming the same
+	// conversation, and waits for the host's answer. ("", nil) means the agent
+	// was restarted. A non-empty refused is the host's own reason for not
+	// doing it (there is no conversation to resume, say), and nothing was
+	// restarted. An error means the request could not be made or its outcome
+	// is not known: the agent may or may not have been restarted. Nil means
+	// the loop cannot restart an agent, and a session that has stopped
+	// answering is then left alone, as it was before the loop could recover
+	// one.
+	Restart func(worktree, session string) (refused string, err error)
+	// Relaunch starts a new host for a session whose host is gone. Nil means
+	// the loop cannot do that, and a gone host is then reported to the owner
+	// with an inbox item, as before.
+	Relaunch func(RelaunchRequest) error
 	// Clean removes a shipped task's session: its worktree, its files and its
 	// merged branch. A session that is not there is not an error. Nil means
 	// nothing is cleaned and the task is marked done all the same.
@@ -419,11 +484,21 @@ func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 func (t *pass) run(s Settings) daemonstate.State {
 	root := t.p.Root
 	o := Observation{
-		Now:        t.now,
-		StallAfter: s.StallAfter,
-		HostGrace:  s.HostGrace,
-		Paused:     daemonstate.Paused(root),
-		NoLedger:   !t.d.ledgerExists(root),
+		Now:            t.now,
+		StallAfter:     s.StallAfter,
+		HostGrace:      s.HostGrace,
+		MaxRestarts:    s.MaxRestarts,
+		RestartBackoff: s.RestartBackoff,
+		ContinueAfter:  s.ContinueAfter,
+		WedgeConfirm:   s.WedgeConfirm,
+		// Decide is told what this executor can carry out, so it never
+		// answers with an action whose function is nil. That is the only
+		// guard: restart, relaunch and continueSession call theirs unchecked.
+		CanRestart:  t.d.Restart != nil,
+		CanRelaunch: t.d.Relaunch != nil,
+		CanPrompt:   t.d.SendPrompt != nil,
+		Paused:      daemonstate.Paused(root),
+		NoLedger:    !t.d.ledgerExists(root),
 	}
 	o.StopReason, o.Stopped = t.d.stopped(root)
 	if o.StallAfter <= 0 {
@@ -431,6 +506,12 @@ func (t *pass) run(s Settings) daemonstate.State {
 	}
 	if o.HostGrace <= 0 {
 		o.HostGrace = DefaultHostGrace
+	}
+	if o.ContinueAfter <= 0 {
+		o.ContinueAfter = DefaultContinueAfter
+	}
+	if o.WedgeConfirm <= 0 {
+		o.WedgeConfirm = DefaultWedgeConfirm
 	}
 
 	tasks, planPath, l, err := t.d.LoadBuild(root)
@@ -525,6 +606,14 @@ func (t *pass) run(s Settings) daemonstate.State {
 		return t.park(a)
 	case ActStall, ActHostGone:
 		return t.report(a)
+	case ActRestart:
+		return t.restart(a)
+	case ActRelaunch:
+		return t.relaunch(a)
+	case ActContinue:
+		return t.continueSession(a)
+	case ActGiveUp:
+		return t.giveUp(a)
 	case ActUnpark:
 		return t.unpark(a)
 	case ActShipStep:
@@ -605,6 +694,11 @@ func viewOf(rows []discover.SessionState, name string) (*SessionView, *discover.
 		// The zero time when it cannot be read: Decide then measures from
 		// the attempt's start instead.
 		v.UpdatedAt, _ = parseTime(r.UpdatedAt)
+		// The zero time, which Decide reads as "not wedged", when the host
+		// published no verdict or one that cannot be read. An unreadable
+		// verdict must not restart anything: there is no telling how long it
+		// has stood.
+		v.WedgedSince, _ = parseTime(r.WedgedSince)
 		return v, r
 	}
 	return nil, nil
@@ -812,6 +906,9 @@ func (t *pass) launch(a Action) daemonstate.State {
 		e.Ship, e.ShipAt = "", ""
 		e.CIReruns, e.CIFixCycles = 0, 0
 		e.PR, e.MergedSHA = 0, ""
+		// And with a fresh set of restarts, for the same reason: the count
+		// and the pending prompt belong to the session of the attempt before.
+		clearRecovery(e)
 	})
 	if err != nil {
 		return t.ledgerTrouble(a, err)
@@ -824,8 +921,22 @@ func (t *pass) launch(a Action) daemonstate.State {
 
 // start creates the session for a running entry. It is the second half of a
 // launch, and all of an ActCreate: the entry's recorded session is created
-// again with no ledger change and no new attempt.
+// again as the same attempt.
+//
+// An ActCreate makes one ledger change, and only when there is something to
+// clear: the entry's recovery fields go back to zero before the session is
+// created. They describe the session that is no longer on disk. Left in
+// place, a pending continue prompt would be typed into the new session on top
+// of the first prompt it was just started with, and the old session's
+// restarts would count against a session that has never been restarted. A
+// launch has cleared them already in its own ledger write. A paused project
+// never gets here (Decide waits instead of creating).
 func (t *pass) start(kind ActionKind, task, name, reason string) daemonstate.State {
+	if e, ok := t.obs.Ledger.Get(task); kind == ActCreate && ok && hasRecovery(e) {
+		if err := t.change(task, ledger.Running, clearRecovery); err != nil {
+			return t.ledgerTrouble(Action{Kind: kind, Task: task, Session: name}, err)
+		}
+	}
 	req := LaunchRequest{
 		Project:     t.p,
 		Task:        task,
@@ -915,6 +1026,7 @@ func (t *pass) ship(a Action) daemonstate.State {
 	t.tokens(a)
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
 		e.Status = ledger.Shipping
+		clearRecovery(e)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
@@ -936,6 +1048,7 @@ func (t *pass) fail(a Action) daemonstate.State {
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
 		e.Status = ledger.Failed
 		e.FinishedAt = stamp(t.now)
+		clearRecovery(e)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
@@ -1003,6 +1116,11 @@ func (t *pass) park(a Action) daemonstate.State {
 // comes from a limit (no checks in time, no commit after a hand-back, too
 // many hand-backs) is decided from that clock or those counters, so with the
 // old values the very next step would park again on the same limit, for ever.
+//
+// The recovery fields are cleared on both paths for the same reason. A task
+// parked because its session could not be recovered holds a restart count at
+// the limit, and the next tick would give up on it again. A pending continue
+// prompt is dropped as well: resume, below, types the same line.
 func (t *pass) unpark(a Action) daemonstate.State {
 	if a.Resume == ledger.Shipping {
 		if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
@@ -1010,6 +1128,7 @@ func (t *pass) unpark(a Action) daemonstate.State {
 			e.ParkedOn = nil
 			e.ShipAt = stamp(t.now)
 			e.CIReruns, e.CIFixCycles = 0, 0
+			clearRecovery(e)
 		}); err != nil {
 			return t.ledgerTrouble(a, err)
 		}
@@ -1021,6 +1140,7 @@ func (t *pass) unpark(a Action) daemonstate.State {
 	if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
 		e.Status = ledger.Running
 		e.ParkedOn = nil
+		clearRecovery(e)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
@@ -1035,8 +1155,9 @@ func (t *pass) unpark(a Action) daemonstate.State {
 }
 
 // resumeCommand is the line that makes a session pick its work up again from
-// its own files. The stall and stopped-host items give the owner the same
-// line to type by hand.
+// its own files. The loop types it into a session it has un-parked (resume)
+// or recovered (continueSession), and the stall and stopped-host items give
+// the owner the same line to type by hand.
 func resumeCommand(sess string) string {
 	return "/afk:go --session " + sess
 }
@@ -1350,6 +1471,7 @@ func (t *pass) shipDone(a Action, out ship.Outcome) daemonstate.State {
 		}
 		e.Ship, e.ShipAt = "", ""
 		e.CIReruns, e.CIFixCycles = 0, 0
+		clearRecovery(e)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
@@ -1401,6 +1523,11 @@ func (t *pass) report(a Action) daemonstate.State {
 // something. `afk attach` is the right tool here because the host is alive:
 // attach connects to a running host and never starts one.
 //
+// "Cannot yet wake a session" is still true of this case after PLAN §5.6: the
+// loop restarts an agent that has stopped answering, but an agent that is
+// answering and waiting for a person is not broken, and no restart would
+// supply what it is asking for.
+//
 // The body cannot name its own item's id, which the store picks when the
 // item is written, so it says where the id is shown.
 func stallBody(task, sess string) string {
@@ -1418,6 +1545,12 @@ func stallBody(task, sess string) string {
 // only connects to a live host and would report that there is none; the
 // dashboard is what starts a stopped host again, and it does so in the mode
 // the session was created in.
+//
+// This is the text for a loop with no Deps.Relaunch only, which is the one
+// case where "afk cannot yet wake a session by itself" is still true of a
+// stopped host. With a Relaunch the loop starts the host again by itself
+// (relaunch), and what the owner is sent when that stops working is
+// recoveryBody.
 func hostGoneBody(task, sess string) string {
 	return fmt.Sprintf("The session for %s has stopped running: its host process is gone. "+
 		"afk cannot yet wake a session by itself, so someone has to look.\n\n"+
@@ -1429,6 +1562,246 @@ func hostGoneBody(task, sess string) string {
 		"Or, if the session is beyond saving: run `afk clean %s`, then `afk ledger set %s pending`, "+
 		"and afk starts the task again in a new session.",
 		task, sess, resumeCommand(sess), task, sess, task)
+}
+
+// hasRecovery reports whether an entry holds anything clearRecovery would
+// clear.
+func hasRecovery(e ledger.Entry) bool {
+	return e.Restarts != 0 || e.RestartAt != "" || e.ContinuePending
+}
+
+// clearRecovery puts an entry's recovery fields back to zero. It is called
+// wherever the entry starts a new attempt, gets a new session, is un-parked,
+// or leaves `running`: the count, the time and the pending prompt are about
+// one session's current run of trouble and mean nothing after any of those.
+func clearRecovery(e *ledger.Entry) {
+	e.Restarts, e.RestartAt, e.ContinuePending = 0, "", false
+}
+
+// restartedAt saves the moment a recovery finished as the entry's restart
+// time, over the one saved before the recovery began.
+//
+// The clock is read again here, and the tick's own time is not used: that
+// was read once, before the recovery, and a restart alone can spend several
+// seconds stopping the old agent. Everything timed from restart_at (the wait
+// before the continue prompt, the new host's grace) is about the new agent,
+// so it is timed from when the new agent started.
+//
+// A save that fails is logged and nothing more. The earlier time is still
+// there, and it only makes the prompt and the grace a few seconds early.
+func (t *pass) restartedAt(a Action) {
+	at := stamp(t.d.Now())
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) { e.RestartAt = at }); err != nil {
+		t.d.logf("%s: the time %s (%s) was started again could not be saved: %v", t.p.Name, a.Task, a.Session, err)
+	}
+}
+
+// noContinue clears the pending continue prompt after a recovery that did not
+// bring an agent back: there is nobody to tell to carry on.
+func (t *pass) noContinue(a Action) {
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) { e.ContinuePending = false }); err != nil {
+		t.d.logf("%s: the ledger could not be changed for %s (%s): %v", t.p.Name, a.Task, a.Kind, err)
+	}
+}
+
+// restart asks the host of a session that has stopped answering to restart
+// its agent, resuming the same conversation.
+//
+// The ledger is written before the host is asked, and that order is the
+// whole safety of the restart limit. The count lives only in the ledger. A
+// daemon killed between the two must find the count already raised when it
+// comes back; in the other order a daemon that dies after each restart (or a
+// restart that takes the daemon down with it) would find the count unchanged
+// every time and restart the same session without limit. The cost is a
+// restart that is counted and never made, which only brings the limit one
+// step closer.
+//
+// The continue prompt is marked pending in that same first write, so a
+// daemon killed after the agent was restarted still tells it to carry on.
+// What follows depends on the host's answer:
+//
+//   - restarted: the restart time is saved again (see restartedAt).
+//   - refused: the host did nothing, so the pending prompt is dropped. The
+//     count stays: a session that cannot be restarted must still reach the
+//     limit and be handed to the owner.
+//   - not known: the prompt stays pending, because the agent may well have
+//     been restarted (the answer was lost, or a person attached and took the
+//     connection). If it was not, the session is still wedged, Decide never
+//     sends a prompt to a wedged session, and the next restart is asked for
+//     after the backoff.
+func (t *pass) restart(a Action) daemonstate.State {
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
+		e.Restarts++
+		e.RestartAt = stamp(t.now)
+		e.ContinuePending = true
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+
+	st := stateOf(a)
+	var chosen string
+	refused, err := t.d.Restart(t.row.WorktreePath, a.Session)
+	switch {
+	case err != nil:
+		t.d.logf("%s: asked the session %s for %s to restart its agent, and what happened is not known: %v",
+			t.p.Name, a.Session, a.Task, err)
+		chosen = fmt.Sprintf("asked its host to restart the agent; not known whether it did: %v", err)
+		st.Reason = fmt.Sprintf("asked the session for %s (%s) to restart; what happened is not known yet", a.Task, a.Session)
+	case refused != "":
+		t.noContinue(a)
+		t.d.logf("%s: the session %s for %s refused to restart its agent: %s", t.p.Name, a.Session, a.Task, refused)
+		chosen = fmt.Sprintf("asked its host to restart the agent; the host refused: %s", refused)
+		st.Reason = fmt.Sprintf("the session for %s (%s) has stopped answering and could not be restarted: %s", a.Task, a.Session, refused)
+	default:
+		t.restartedAt(a)
+		chosen = "restarted its agent, resuming the same conversation"
+		st.Reason = fmt.Sprintf("restarted the session for %s (%s), which had stopped answering", a.Task, a.Session)
+	}
+	t.record("restart", a.Task, a.Session, fmt.Sprintf("%s. What now?", upperFirst(a.Reason)), chosen, ruleRecovery)
+	return st
+}
+
+// relaunch starts a new host for a session whose host is gone.
+//
+// The new host resumes the agent's conversation when the session recorded
+// its id, and only then is a continue prompt owed: a resumed agent sits at an
+// empty prompt. With no id (the session had not got that far, or its status
+// file cannot be read) the new host runs the session's ordinary launch
+// command, which carries its own first prompt, and a second line typed on
+// top of that would do harm.
+//
+// The ledger is written before the host is started, for the reason given on
+// restart. A relaunch that fails drops the pending prompt (nothing was
+// started) and keeps the count; the next one is tried after the host's grace
+// and the backoff, both of which Decide times from the restart time saved
+// here.
+func (t *pass) relaunch(a Action) daemonstate.State {
+	req := RelaunchRequest{Worktree: t.row.WorktreePath, Session: a.Session}
+	// A stale view's other status fields mean nothing, the session id among
+	// them, and resuming a conversation by an id that was not read is worse
+	// than starting a fresh one.
+	if !t.obs.Session.Stale {
+		req.ResumeID = t.row.SessionID
+	}
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
+		e.Restarts++
+		e.RestartAt = stamp(t.now)
+		e.ContinuePending = req.ResumeID != ""
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+
+	how := "as a new conversation that picks the work up from the session's files"
+	if req.ResumeID != "" {
+		how = "resuming the same conversation"
+	}
+	st := stateOf(a)
+	var chosen string
+	if err := t.d.Relaunch(req); err != nil {
+		t.noContinue(a)
+		t.d.logf("%s: the session %s for %s could not be started again: %v", t.p.Name, a.Session, a.Task, err)
+		chosen = fmt.Sprintf("tried to start its host again and could not: %v", err)
+		st.Reason = fmt.Sprintf("the session for %s (%s) has stopped running and could not be started again: %v", a.Task, a.Session, err)
+	} else {
+		t.restartedAt(a)
+		chosen = "started its host again, " + how
+		st.Reason = fmt.Sprintf("started the session for %s (%s) again, %s", a.Task, a.Session, how)
+	}
+	t.record("relaunch", a.Task, a.Session, fmt.Sprintf("%s. What now?", upperFirst(a.Reason)), chosen, ruleRecovery)
+	return st
+}
+
+// continueSession types the session's resume command into a session that was
+// recovered and has had time to start. See resume for why it is that command
+// and not a sentence: the same reasoning holds, and a restarted conductor
+// acts from the phase and files it recorded.
+//
+// The line is typed first and the pending flag cleared after. A send that
+// fails leaves the flag set and records nothing, so the next tick tries
+// again: the host may be busy with a person who has just attached. The other
+// order would lose the prompt for good on one failed send, and a recovered
+// agent that is never told to carry on sits at an empty prompt until a person
+// notices. The cost of this order is a daemon killed between the two, which
+// types the line a second time; the command is safe to repeat.
+func (t *pass) continueSession(a Action) daemonstate.State {
+	if err := t.d.SendPrompt(t.row.WorktreePath, a.Session, resumeCommand(a.Session)); err != nil {
+		t.d.logf("%s: the session %s for %s was started again, but could not be told to carry on: %v; trying again on the next pass",
+			t.p.Name, a.Session, a.Task, err)
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,
+			Reason: fmt.Sprintf("the session for %s (%s) was started again but could not be told to carry on yet (%v); trying again on the next pass",
+				a.Task, a.Session, err)}
+	}
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) { e.ContinuePending = false }); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("continue", a.Task, a.Session,
+		fmt.Sprintf("%s. What now?", upperFirst(a.Reason)),
+		fmt.Sprintf("typed `%s` into it", resumeCommand(a.Session)), ruleRecovery)
+	return stateOf(a)
+}
+
+// giveUp raises the item for a session that stopped or hung with every
+// restart used, and parks the task on it. It follows report: the item first,
+// because the ledger entry needs its id, and a tick that dies between the two
+// is finished by Decide's rule e, which parks on the open item and raises no
+// second one.
+//
+// The restart count is left in the parked entry, where `afk ledger` shows it,
+// and is cleared by the un-park.
+func (t *pass) giveUp(a Action) daemonstate.State {
+	e, _ := t.obs.Ledger.Get(a.Task)
+	it, err := t.add(inbox.NewItem{
+		Task: a.Task, Session: a.Session, Kind: "failure", Blocking: true,
+		Title: fitTitle(RecoveryTitlePrefix + fmt.Sprintf("%s (%s)", a.Task, a.Session)),
+		Body:  recoveryBody(a.Task, a.Session, e.Restarts),
+	})
+	if err != nil {
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,
+			Reason: fmt.Sprintf("%s, and the inbox item saying so could not be written (%v); trying again on the next pass", a.Reason, err)}
+	}
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
+		e.Status = ledger.Parked
+		e.ParkedOn = []string{it.ID}
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("give_up", a.Task, a.Session,
+		fmt.Sprintf("%s. What now?", upperFirst(a.Reason)),
+		fmt.Sprintf("tell the owner and park %s on inbox %s", a.Task, it.ID), ruleRecovery)
+	st := stateOf(a)
+	st.Reason = fmt.Sprintf("%s; see inbox item %s", a.Reason, it.ID)
+	return st
+}
+
+// recoveryBody tells the owner what to do about a session afk has stopped
+// trying to recover. It names both ways of looking, because it cannot know
+// which fits: the dashboard starts a stopped host again, and attach connects
+// to one that is still running.
+//
+// With no restarts made the first sentence is a different one. That happens
+// only when the machine is set never to restart (max_restarts = 0), and
+// "restarted it 0 times" would read as a fault in afk and not as the setting
+// it is.
+func recoveryBody(task, sess string, restarts int) string {
+	var first string
+	switch {
+	case restarts <= 0:
+		first = fmt.Sprintf("The session for %s stopped or hung, and afk is set not to restart sessions "+
+			"(`max_restarts = 0` in afk's config.toml).", task)
+	case restarts == 1:
+		first = fmt.Sprintf("afk restarted the session for %s once and it stopped or hung again, so afk has stopped trying.", task)
+	default:
+		first = fmt.Sprintf("afk restarted the session for %s %d times and it stopped or hung again, so afk has stopped trying.", task, restarts)
+	}
+	return first + fmt.Sprintf("\n\n"+
+		"What to do next, either:\n"+
+		"1. Look at it. Run `afk dash` and open the session %s, which also starts its host again if that has stopped, "+
+		"or run `afk attach %s` if it is still running. If the agent is idle there, type `%s`.\n"+
+		"2. When it is working again, answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
+		"afk carries on with %s and a fresh set of restarts.\n\n"+
+		"Or, if the session is beyond saving: run `afk clean %s`, then `afk ledger set %s pending`, "+
+		"and afk starts the task again in a new session.",
+		sess, sess, resumeCommand(sess), task, sess, task)
 }
 
 // upperFirst capitalises a reason so it can open a sentence. Reasons from

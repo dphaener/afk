@@ -110,8 +110,14 @@ func escalate(ladder []rung, exited <-chan struct{}, send func(syscall.Signal)) 
 //
 // No prompt argument — internal/session passes `/afk:go --session <name>`
 // when it FIRST spawns a session, and that prompt runs the afk lifecycle.
-// The lifecycle has already run by the time anything is wedged, so passing it
-// again would restart completed work.
+// The resumed conversation already holds that prompt, so the argv does not
+// repeat it. Typing it again is not harmful, though: the conductor acts from
+// the phase and files it recorded (plugins/afk/skills/go/SKILL.md, "on
+// resume, act from the recorded phase"), so it carries on and does not redo
+// finished work. The daemon relies on exactly that: after a restart it types
+// the command into the resumed session to get it moving again (docs/PLAN.md
+// §5.6). That is the daemon's step, made once the new child is up; this argv
+// still passes no prompt.
 //
 // And no --fork-session: it mints a new session id, which would orphan the id
 // recorded in status.json and silently break hook targeting

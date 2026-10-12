@@ -20,6 +20,7 @@ package daemon
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -30,10 +31,10 @@ import (
 	"github.com/dphaener/afk/internal/state"
 )
 
-// The title prefixes of the two reports the loop raises about a session it
+// The title prefixes of the reports the loop raises about a session it
 // cannot move by itself. The executor starts each item's title with one of
-// them, and Decide finds an earlier report by the same prefix, so the two
-// must stay distinct: neither may begin with the other.
+// them, and Decide finds an earlier stall or host-gone report by the same
+// prefix, so they must stay distinct: none may begin with another.
 //
 // They are titles and not a field of the item because the inbox schema
 // (PLAN §4.3) has no field for "what raised this", and a title is the one
@@ -45,6 +46,11 @@ const (
 	// HostGoneTitlePrefix starts the title of the item raised when a
 	// session's host process is no longer running.
 	HostGoneTitlePrefix = "Session stopped running: "
+	// RecoveryTitlePrefix starts the title of the item raised when a session
+	// stopped or hung and the loop has used up its restarts (PLAN §5.6).
+	// Decide never searches for it: the task parks on that item, and a
+	// parked task is not looked at again until the item is answered.
+	RecoveryTitlePrefix = "Session could not be recovered: "
 )
 
 // SessionName is the session (and branch, and worktree folder) a task attempt
@@ -81,6 +87,14 @@ type SessionView struct {
 	// it can say yes for a host that is gone. It does not say no for one
 	// that is alive.
 	HostRunning bool
+	// WedgedSince is the host's own verdict from host.json: the moment it
+	// decided its agent had stopped answering. The zero time means not
+	// wedged. Like HostRunning it is advisory: the host sets it after a
+	// spell of silence and an unanswered repaint request, and clears it on
+	// the first byte of output (internal/host/liveness.go), so a working
+	// agent can carry it for a moment. That is why the loop acts on it only
+	// once it has stood for WedgeConfirm.
+	WedgedSince time.Time
 }
 
 // Observation is everything Decide looks at: plain values the executor read
@@ -94,6 +108,28 @@ type Observation struct {
 	// before the owner is told. HostGrace is how long a session may go
 	// without a running host before it is reported gone.
 	StallAfter, HostGrace time.Duration
+	// MaxRestarts is how many times one attempt may be recovered (its agent
+	// restarted, or its host started again) before the task is given up on.
+	// Zero is a real setting: never recover, give up on the first trouble.
+	MaxRestarts int
+	// RestartBackoff is the wait before the second recovery; it doubles for
+	// each one after that (see backoffFor). The first has no wait.
+	RestartBackoff time.Duration
+	// ContinueAfter is how long after a recovery the session is told to
+	// carry on. The resumed agent needs that long to reach a prompt; a line
+	// typed sooner is lost.
+	ContinueAfter time.Duration
+	// WedgeConfirm is how long the host's wedge verdict must have stood
+	// before the loop acts on it. A restart stops the agent, so a verdict
+	// that the next byte of output would have cleared must not cause one.
+	WedgeConfirm time.Duration
+	// CanRestart, CanRelaunch and CanPrompt say whether the executor has
+	// the means to restart a session's agent, to start a session's host
+	// again, and to type a line into a session. Each is optional there, so
+	// Decide must not choose an action nothing can carry out: with no
+	// relaunch a gone host is reported to the owner as before, with no
+	// restart a wedge is left alone, with no prompt nothing is typed.
+	CanRestart, CanRelaunch, CanPrompt bool
 	// Paused is the project's pause flag.
 	Paused bool
 	// NoLedger means the project has no ledger file at all. That is not the
@@ -176,6 +212,20 @@ const (
 	// step waits on. ActShip is the hand-over into shipping; this is every
 	// tick after it.
 	ActShipStep ActionKind = "shipping"
+	// ActRestart: the session's agent has stopped answering while its host
+	// is still running. Ask the host to restart the agent, resuming the same
+	// conversation.
+	ActRestart ActionKind = "restart"
+	// ActRelaunch: the session's host is gone (a reboot, a crash). Start a
+	// new host for the same session.
+	ActRelaunch ActionKind = "relaunch"
+	// ActContinue: the session was recovered and its agent has had time to
+	// start. Type the session's resume command so the work goes on; a
+	// resumed agent otherwise sits at an empty prompt.
+	ActContinue ActionKind = "continue"
+	// ActGiveUp: the session stopped or hung again with every restart used.
+	// Tell the owner and park the task.
+	ActGiveUp ActionKind = "give_up"
 )
 
 // KindLineStopped is the state kind of a tick held back by the stop marker.
@@ -332,24 +382,40 @@ func stoppedReason(o Observation) string {
 //
 //	a. Its session is not on disk: create it again, or wait when paused or
 //	   when the line is stopped.
-//	b. status.json cannot be read: wait, unless the host is gone.
+//	b. status.json cannot be read: rules e, f and g, then wait. There is no
+//	   phase to read, so c and d are skipped, and nothing can be said to
+//	   stall.
 //	c. Phase done: ship.
 //	d. Phase failed: fail.
 //	e. An open blocking item for the task or session: park on it.
-//	f. The host is not running, past HostGrace: report it gone.
-//	g. The session is asking something, past StallAfter: report a stall.
-//	h. Otherwise wait.
+//	f. The host is not running, past HostGrace, or the agent has stopped
+//	   answering for WedgeConfirm: recover the session (see decideRecovery).
+//	   That is a relaunch or a restart, a wait for the backoff, or giving up
+//	   once MaxRestarts is used. Where the executor cannot relaunch, a gone
+//	   host is reported to the owner; where it cannot restart, a wedge is
+//	   left alone.
+//	g. The session was recovered ContinueAfter ago and is up and answering:
+//	   tell it to carry on.
+//	h. The session is asking something, past StallAfter: report a stall.
+//	i. Otherwise wait.
 //
 // The order carries meaning. A finished session (c, d) is acted on before
 // anything about its host, so that a host which is gone by the time its
-// session says done or failed is not reported as a dead session: the work is
-// over either way. Nothing here assumes the host does exit. The ship that
-// follows relies on the opposite for one step only, the hand-back of a red
-// CI, which types into the session and so needs its host alive after done;
-// when the host is not there that prompt fails and the task parks with an
-// item saying how to reach the session.
-// Parking (e) comes before the two reports because a parked session sits at
-// a prompt by design, and the owner has already been sent the question.
+// session says done or failed is not reported as a dead session, and is not
+// started again: the work is over either way, and a relaunch would resume a
+// conversation that has nothing left to do. Nothing here assumes the host
+// does exit. The ship that follows relies on the opposite for one step only,
+// the hand-back of a red CI, which types into the session and so needs its
+// host alive after done; when the host is not there that prompt fails and
+// the task parks with an item saying how to reach the session.
+// Parking (e) comes before recovery and the stall report because a parked
+// session sits at a prompt by design, and the owner has already been sent the
+// question. That holds for an unreadable status too: the owner being asked is
+// a stronger signal than a silent agent, and restarting an agent that is
+// waiting for an answer would throw the question away.
+// Recovery (f) comes before the continue prompt (g) because a line typed
+// into an agent that is not answering goes nowhere, and would be recorded as
+// delivered.
 func decideRunning(o Observation, e ledger.Entry) Action {
 	act := func(kind ActionKind, reason string) Action {
 		return Action{Kind: kind, Task: e.ID, Session: e.Session, Reason: reason}
@@ -376,26 +442,41 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 	// An unreadable start time is the zero time, which reads as "started
 	// long ago": such an entry gets no grace and counts every report as
 	// its own. Both lean towards telling the owner once over staying
-	// silent or telling them again and again.
+	// silent or telling them again and again. An unreadable restart time is
+	// the zero time as well, which reads as "no recovery to wait for".
 	startedAt, _ := parseTime(e.StartedAt)
+	restartAt, _ := parseTime(e.RestartAt)
 
-	hostGone := func() Action {
-		if reported(o.Items, e.ID, HostGoneTitlePrefix, startedAt) {
-			return act(ActWait, alreadyReported)
+	continueDue := func() (Action, bool) {
+		// At ContinueAfter, not over it: the wait is a margin for the agent
+		// to start, and nothing is gained by one more tick.
+		if !e.ContinuePending || !o.CanPrompt || !s.HostRunning || !s.WedgedSince.IsZero() ||
+			o.Now.Sub(restartAt) < o.ContinueAfter {
+			return Action{}, false
 		}
-		return act(ActHostGone, fmt.Sprintf("the session for %s (%s) has stopped running", e.ID, e.Session))
+		return act(ActContinue, fmt.Sprintf(
+			"the session for %s (%s) was started again; telling it to carry on", e.ID, e.Session)), true
 	}
 
 	if s.Stale {
 		// An unreadable status.json is never a failure by itself: the
 		// writers replace it all the time and a reader can catch it
 		// mid-change. But host liveness comes from host.json, so a dead
-		// host is still seen here, and it must be: a session with no
-		// host never repairs its status file, and waiting on it would
-		// be waiting for ever. The grace is measured from the entry's
-		// start because the status file's own time is what is missing.
-		if !s.HostRunning && o.Now.Sub(startedAt) > o.HostGrace {
-			return hostGone()
+		// or wedged host is still seen here, and it must be: a session
+		// with no host never repairs its status file, and waiting on it
+		// would be waiting for ever. The grace is measured from the
+		// entry's start, or from the last recovery when that is later,
+		// because the status file's own time is what is missing.
+		if a, ok := parkOn(o, e); ok {
+			return a
+		}
+		if a, ok := decideRecovery(o, e, s, latest(startedAt, restartAt)); ok {
+			return a
+		}
+		// A session relaunched with an unreadable status still resumed a
+		// conversation and still sits at an empty prompt.
+		if a, ok := continueDue(); ok {
+			return a
 		}
 		return act(ActWait, fmt.Sprintf("running %s; its status file cannot be read right now", e.ID))
 	}
@@ -407,24 +488,59 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 		return act(ActFail, fmt.Sprintf("the session for %s ended as failed", e.ID))
 	}
 
+	if a, ok := parkOn(o, e); ok {
+		return a
+	}
+
+	ref := lastActivity(o, e, s, startedAt, restartAt)
+	if a, ok := decideRecovery(o, e, s, ref); ok {
+		return a
+	}
+	if a, ok := continueDue(); ok {
+		return a
+	}
+
+	// "Over" the limit, not "at" it: a prompt exactly at the stall limit
+	// waits one more tick.
+	if s.AwaitingInput && o.Now.Sub(ref) > o.StallAfter {
+		if reported(o.Items, e.ID, StallTitlePrefix, startedAt) {
+			return act(ActWait, alreadyReported)
+		}
+		return act(ActStall, fmt.Sprintf("the session for %s (%s) is asking something at the terminal", e.ID, e.Session))
+	}
+
+	return act(ActWait, fmt.Sprintf("running %s, phase %s", e.ID, s.Phase))
+}
+
+// parkOn is rule e: the open blocking items about the entry's task or
+// session, as the action that parks on them. It is shared by the readable
+// and the unreadable status paths so that the two cannot drift apart.
+func parkOn(o Observation, e ledger.Entry) (Action, bool) {
 	var blocking []string
 	for _, it := range o.Items {
 		if it.Open() && it.Blocking && concerns(it, e) {
 			blocking = append(blocking, it.ID)
 		}
 	}
-	if len(blocking) > 0 {
-		a := act(ActPark, fmt.Sprintf("%s is waiting on the owner: inbox %s", e.ID, strings.Join(blocking, ", ")))
-		a.Items = blocking
-		return a
+	if len(blocking) == 0 {
+		return Action{}, false
 	}
+	return Action{
+		Kind: ActPark, Task: e.ID, Session: e.Session, Items: blocking,
+		Reason: fmt.Sprintf("%s is waiting on the owner: inbox %s", e.ID, strings.Join(blocking, ", ")),
+	}, true
+}
 
-	// ref is the last moment anything is known to have happened to this
-	// attempt: the session wrote its status, the attempt began, or the
-	// owner answered one of its items. An answer counts because it is the
-	// owner acting on the session; without it a task would stall again on
-	// the very tick its answer un-parked it.
-	ref := latest(s.UpdatedAt, startedAt)
+// lastActivity is the last moment anything is known to have happened to this
+// attempt: the session wrote its status, the attempt began, the loop last
+// recovered the session, or the owner answered one of its items. An answer
+// counts because it is the owner acting on the session; without it a task
+// would stall again on the very tick its answer un-parked it. A recovery
+// counts for the same reason on the other side: a host that was only just
+// started again must get its grace again, or a tick that came before the new
+// host was seen running would relaunch it a second time.
+func lastActivity(o Observation, e ledger.Entry, s *SessionView, startedAt, restartAt time.Time) time.Time {
+	ref := latest(latest(s.UpdatedAt, startedAt), restartAt)
 	for _, it := range o.Items {
 		if !concerns(it, e) {
 			continue
@@ -433,21 +549,116 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 			ref = latest(ref, at)
 		}
 	}
-	idle := o.Now.Sub(ref)
+	return ref
+}
 
-	// "Over" the limit, not "at" it, for both: a host exactly at its grace
-	// or a prompt exactly at the stall limit waits one more tick.
-	if !s.HostRunning && idle > o.HostGrace {
-		return hostGone()
+// decideRecovery is rule f: what to do about a session that has stopped. The
+// second result is false when there is nothing to recover, or nothing this
+// rule may do about it, and the caller carries on with its later rules.
+//
+// Two things count as stopped. Gone: the host is not running and has not
+// been for longer than HostGrace, measured from graceFrom (the caller's last
+// sign of life; "over" the grace, not "at" it, as before). Wedged: the host
+// is running and has published a wedge verdict.
+//
+// A gone host with no means to relaunch is reported to the owner exactly as
+// it was before recovery existed, once per attempt. A wedge with no means to
+// restart is left alone: nobody was told about wedges before, and an inbox
+// item the owner can do nothing with from their phone is worse than none.
+//
+// A wedge must have stood for WedgeConfirm before anything is done. The
+// host's verdict is advisory and clears on any byte of output, and a restart
+// stops the agent in the middle of whatever it was doing, so a verdict that
+// is about to clear must not cost a working agent its turn. A gone host needs
+// no such wait: HostGrace has already been one.
+//
+// Then, in this order: the cap, the backoff, the action. The cap comes first
+// so that a session out of restarts is given up on at once and not after one
+// more wait. The backoff is "at or over", unlike the grace and the stall
+// limit, which are "over": those two guard against acting too soon on a
+// reading that may still change, so the boundary leans towards waiting, while
+// the backoff is a wait the loop chose for itself and has fully served when
+// it is reached. An unreadable restart time is the zero time, so its backoff
+// reads as served; the cap is what still bounds such an entry.
+func decideRecovery(o Observation, e ledger.Entry, s *SessionView, graceFrom time.Time) (Action, bool) {
+	act := func(kind ActionKind, reason string) (Action, bool) {
+		return Action{Kind: kind, Task: e.ID, Session: e.Session, Reason: reason}, true
 	}
-	if s.AwaitingInput && idle > o.StallAfter {
-		if reported(o.Items, e.ID, StallTitlePrefix, startedAt) {
+
+	gone := !s.HostRunning && o.Now.Sub(graceFrom) > o.HostGrace
+	wedged := s.HostRunning && !s.WedgedSince.IsZero()
+	switch {
+	case !gone && !wedged:
+		return Action{}, false
+	case gone && !o.CanRelaunch:
+		startedAt, _ := parseTime(e.StartedAt)
+		if reported(o.Items, e.ID, HostGoneTitlePrefix, startedAt) {
 			return act(ActWait, alreadyReported)
 		}
-		return act(ActStall, fmt.Sprintf("the session for %s (%s) is asking something at the terminal", e.ID, e.Session))
+		return act(ActHostGone, fmt.Sprintf("the session for %s (%s) has stopped running", e.ID, e.Session))
+	case wedged && !o.CanRestart:
+		return Action{}, false
+	case wedged && o.Now.Sub(s.WedgedSince) < o.WedgeConfirm:
+		return act(ActWait, fmt.Sprintf(
+			"the session for %s (%s) has stopped answering; waiting to be sure before restarting it", e.ID, e.Session))
 	}
 
-	return act(ActWait, fmt.Sprintf("running %s, phase %s", e.ID, s.Phase))
+	what := "has stopped answering"
+	if gone {
+		what = "has stopped running"
+	}
+	if e.Restarts >= o.MaxRestarts {
+		if e.Restarts == 0 {
+			return act(ActGiveUp, fmt.Sprintf(
+				"the session for %s (%s) %s, and afk is set not to restart sessions", e.ID, e.Session, what))
+		}
+		return act(ActGiveUp, fmt.Sprintf(
+			"the session for %s (%s) %s again after %s; giving up on it", e.ID, e.Session, what, restartCount(e.Restarts)))
+	}
+	restartAt, _ := parseTime(e.RestartAt)
+	if o.Now.Sub(restartAt) < backoffFor(e.Restarts, o.RestartBackoff) {
+		return act(ActWait, fmt.Sprintf(
+			"the session for %s (%s) %s again; waiting before trying to recover it again (%s so far)",
+			e.ID, e.Session, what, restartCount(e.Restarts)))
+	}
+	if gone {
+		return act(ActRelaunch, fmt.Sprintf("the session for %s (%s) has stopped running; starting it again", e.ID, e.Session))
+	}
+	return act(ActRestart, fmt.Sprintf("the session for %s (%s) has stopped answering; restarting it", e.ID, e.Session))
+}
+
+// restartCount is "1 restart" or "N restarts", for a reason shown to the
+// owner.
+func restartCount(n int) string {
+	if n == 1 {
+		return "1 restart"
+	}
+	return fmt.Sprintf("%d restarts", n)
+}
+
+// backoffShiftCap is the most doublings backoffFor applies. Sixteen turns a
+// one-minute base into about forty-five days, far past any wait that would
+// ever be served, and keeps the shift itself from growing without bound for
+// a count read from a hand-edited ledger.
+const backoffShiftCap = 16
+
+// backoffFor is the wait before the next recovery of an attempt that has
+// already been recovered restarts times: none before the first, base before
+// the second, and twice the wait before for each one after that. With the
+// defaults (PLAN §5.6) that is at once, after one minute, after two minutes.
+//
+// It cannot overflow. The doublings are capped, and a base large enough to
+// overflow inside the cap gives the longest wait there is, where a wrapped
+// shift would give a negative one, which reads as no wait at all.
+func backoffFor(restarts int, base time.Duration) time.Duration {
+	if restarts <= 0 || base <= 0 {
+		return 0
+	}
+	shift := min(restarts-1, backoffShiftCap)
+	if base > math.MaxInt64>>shift {
+		return math.MaxInt64
+	}
+	return base << shift
 }
 
 // alreadyReported is the reason given when a stall or a dead host has been

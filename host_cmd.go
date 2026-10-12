@@ -23,7 +23,7 @@ This subcommand is spawned by 'afk new'; it is not meant to be invoked
 directly.
 
 Usage:
-  afk _host --name <name> --worktree <dir> --socket <path> --log <path> --meta <path> [--provider <name>] -- <argv...>
+  afk _host --name <name> --worktree <dir> --socket <path> --log <path> --meta <path> [--provider <name>] [--probe-unattached] -- <argv...>
 
 Options:
 `)
@@ -49,6 +49,10 @@ Options:
 // hostFlags holds the parsed `_host` flags.
 type hostFlags struct {
 	name, worktree, socket, logPath, metaPath, provider string
+	// probeUnattached is --probe-unattached: check the child for a wedge even
+	// with no client attached. The spawner passes it for sessions the daemon
+	// runs, which nobody attaches to; see host.ServeConfig.ProbeUnattached.
+	probeUnattached bool
 }
 
 // newHostFlagSet declares the `_host` flags. It is split from cmdHost so tests
@@ -62,18 +66,22 @@ func newHostFlagSet(errorHandling flag.ErrorHandling) (*flag.FlagSet, *hostFlags
 	fs.StringVar(&f.logPath, "log", "", "Host log file path")
 	fs.StringVar(&f.metaPath, "meta", "", "host.json path")
 	fs.StringVar(&f.provider, "provider", "", "Provider the child runs (empty means claude); selects the resume command on restart")
+	fs.BoolVar(&f.probeUnattached, "probe-unattached", false, "Check the child for a wedge even while no client is attached (for sessions nobody watches)")
 	return fs, f
 }
 
 // serveConfig builds the ServeConfig from the parsed flags and the child argv.
 // Provider is applied here rather than through buildServeConfig's parameter
 // list: it is optional, and an empty value is the claude default.
+// ProbeUnattached is applied here for the same reason: it is optional, and
+// false is what every session a person runs wants.
 func (f *hostFlags) serveConfig(childArgv []string) (host.ServeConfig, error) {
 	cfg, err := buildServeConfig(f.name, f.worktree, f.socket, f.logPath, f.metaPath, childArgv)
 	if err != nil {
 		return host.ServeConfig{}, err
 	}
 	cfg.Provider = f.provider
+	cfg.ProbeUnattached = f.probeUnattached
 	return cfg, nil
 }
 

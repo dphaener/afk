@@ -79,6 +79,105 @@ type rig struct {
 	promptOn  bool
 	prompts   []typed
 	promptErr error
+
+	// restartOn and relaunchOn set Deps.Restart and Deps.Relaunch. Both are
+	// off unless a test turns them on, so every test written before the loop
+	// could recover a session runs as it did. restarts and relaunches are the
+	// calls made; restartRefused, restartErr and relaunchErr are what the
+	// fakes answer.
+	restartOn, relaunchOn   bool
+	restarts                []restartCall
+	relaunches              []relaunchCall
+	restartRefused          string
+	restartErr, relaunchErr error
+	// noRestarts is `max_restarts = 0`. backoff and wedgeConfirm replace the
+	// rig's restart backoff and the loop's own wedge-confirm default when
+	// they are set.
+	noRestarts            bool
+	backoff, wedgeConfirm time.Duration
+}
+
+// recoveryTakes is how far a fake restart or relaunch that works moves the
+// clock, as the host's signal ladder would. It is what lets a test tell the
+// restart time saved before the call from the one saved after. The limits
+// every rig runs with unless a test says otherwise (maxRestarts and
+// restartBackoff, the shipped defaults) are beside TestDecide.
+const recoveryTakes = 9 * time.Second
+
+// restartCall is one restart the loop asked for. counted is the entry's
+// `restarts` as the ledger file held it while the call was being made.
+type restartCall struct {
+	worktree, session string
+	counted           int
+}
+
+// relaunchCall is the same for a relaunch.
+type relaunchCall struct {
+	req     RelaunchRequest
+	counted int
+}
+
+// countedOnDisk reads the restart count of the entry that names sess straight
+// from the ledger file, the way a daemon started a moment later would.
+func (r *rig) countedOnDisk(sess string) int {
+	r.t.Helper()
+	l, err := ledger.Load(r.root)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	for _, e := range l.Tasks {
+		if e.Session == sess {
+			return e.Restarts
+		}
+	}
+	r.t.Fatalf("no ledger entry names the session %s", sess)
+	return 0
+}
+
+// wedge has the session's host say its agent stopped answering now, the way
+// a host writes wedged_since into host.json. It is a file, like hostup, so
+// it is still there for a rig made by restart.
+func (r *rig) wedge(name string) {
+	r.t.Helper()
+	if err := os.WriteFile(filepath.Join(r.sessionDir(name), "wedged"), []byte(stamp(*r.clock)), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// unwedge clears the verdict, as the host does on the first byte of output.
+func (r *rig) unwedge(name string) {
+	r.t.Helper()
+	if err := os.Remove(filepath.Join(r.sessionDir(name), "wedged")); err != nil && !os.IsNotExist(err) {
+		r.t.Fatal(err)
+	}
+}
+
+// fakeRestart is Deps.Restart: it records the call and the count on disk,
+// then answers as the test set it to. A restart that works takes a while and
+// leaves an agent that is answering again.
+func (r *rig) fakeRestart(worktree, sess string) (string, error) {
+	r.restarts = append(r.restarts, restartCall{worktree, sess, r.countedOnDisk(sess)})
+	if r.restartErr != nil {
+		return "", r.restartErr
+	}
+	if r.restartRefused != "" {
+		return r.restartRefused, nil
+	}
+	r.advance(recoveryTakes)
+	r.unwedge(sess)
+	return "", nil
+}
+
+// fakeRelaunch is Deps.Relaunch. A relaunch that works takes a while and
+// leaves a running host that has no verdict yet.
+func (r *rig) fakeRelaunch(req RelaunchRequest) error {
+	r.relaunches = append(r.relaunches, relaunchCall{req, r.countedOnDisk(req.Session)})
+	if r.relaunchErr != nil {
+		return r.relaunchErr
+	}
+	r.advance(recoveryTakes)
+	r.unwedge(req.Session)
+	return os.WriteFile(filepath.Join(r.sessionDir(req.Session), "hostup"), nil, 0o644)
 }
 
 // typed is one line the loop asked to have typed into a session.
@@ -217,6 +316,12 @@ func (r *rig) deps() Deps {
 			r.prompts = append(r.prompts, typed{worktree, sess, text})
 			return r.promptErr
 		}
+	}
+	if r.restartOn {
+		d.Restart = r.fakeRestart
+	}
+	if r.relaunchOn {
+		d.Relaunch = r.fakeRelaunch
 	}
 	return d
 }
@@ -371,6 +476,11 @@ func (r *rig) sessions(root string) ([]discover.SessionState, error) {
 		ss := discover.SessionState{Name: name, WorktreePath: wt}
 		_, hostErr := os.Stat(filepath.Join(r.sessionDir(name), "hostup"))
 		ss.HostRunning = hostErr == nil
+		// Like HostRunning, the verdict comes from host.json and so is set
+		// for a session whose status cannot be read too.
+		if data, err := os.ReadFile(filepath.Join(r.sessionDir(name), "wedged")); err == nil {
+			ss.WedgedSince = string(data)
+		}
 		res := state.ReadStatus(statusPath)
 		if res.Stale {
 			ss.StatusStale, ss.StaleReason, ss.Kind = true, res.Reason, session.KindStaleStatus
@@ -389,7 +499,15 @@ func (r *rig) sessions(root string) ([]discover.SessionState, error) {
 }
 
 func (r *rig) settings() Settings {
-	return Settings{StallAfter: stallAfter, HostGrace: hostGrace}
+	s := Settings{StallAfter: stallAfter, HostGrace: hostGrace,
+		MaxRestarts: maxRestarts, RestartBackoff: restartBackoff, WedgeConfirm: r.wedgeConfirm}
+	if r.noRestarts {
+		s.MaxRestarts = 0
+	}
+	if r.backoff > 0 {
+		s.RestartBackoff = r.backoff
+	}
+	return s
 }
 
 func (r *rig) advance(d time.Duration) { *r.clock = r.clock.Add(d) }
@@ -1943,6 +2061,7 @@ func TestKinds(t *testing.T) {
 		string(ActPark), string(ActHostGone), string(ActStall), string(ActUnpark), string(ActLaunch),
 		string(ActIdle), string(ActNoLedger), string(ActOwner), string(ActOwnerDone),
 		string(ActShipStep),
+		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
 	got := Kinds()
@@ -2841,6 +2960,662 @@ func TestTickUnparkTypesTheResumeCommand(t *testing.T) {
 			r.ticks(3, 5*time.Second)
 			if len(r.prompts) != tc.wantPrompts {
 				t.Errorf("prompts after three more ticks = %v, want still %d", r.prompts, tc.wantPrompts)
+			}
+		})
+	}
+}
+
+// The recovery tests (PLAN §5.6) run the loop with a fake Restart and a fake
+// Relaunch. A session is wedged or its host stopped by a file under the
+// session's folder, the way the real verdict and the real host are read from
+// host.json, so every one of them also holds across rig.restart.
+
+// running takes T1.1 from nothing to a session that is working: launched, and
+// a minute later in phase executing with a fresh status.
+func (r *rig) running() {
+	r.t.Helper()
+	r.tick()
+	r.advance(time.Minute)
+	r.setPhase("t1-1", state.PhaseExecuting)
+	r.wantStatus("T1.1", ledger.Running)
+}
+
+// wantRecovery checks the three recovery fields of T1.1's entry.
+func (r *rig) wantRecovery(restarts int, pending bool) ledger.Entry {
+	r.t.Helper()
+	e := r.entry("T1.1")
+	if e.Restarts != restarts || e.ContinuePending != pending {
+		r.t.Fatalf("restarts %d, continue_pending %v; want %d and %v (entry %+v, logs %v)",
+			e.Restarts, e.ContinuePending, restarts, pending, e, r.logs)
+	}
+	return e
+}
+
+// TestTickWedgedSessionIsRestartedAndToldToContinue is the whole of a
+// recovery that works: one restart request, then the session's resume command
+// typed once.
+//
+// Load-bearing: the restart time is the one read after the restart finished
+// and not the tick's own, because the continue prompt is timed from it and a
+// line typed before the new agent is up is lost; the prompt goes out at
+// ContinueAfter and not a second sooner; and the ticks after it type nothing,
+// which is what fails if continue_pending is not cleared.
+func TestTickWedgedSessionIsRestartedAndToldToContinue(t *testing.T) {
+	r := newRig(t, task("T1.1"))
+	r.restartOn, r.promptOn = true, true
+	r.running()
+	wt := filepath.Join(r.root, "wt", "t1-1")
+
+	r.wedge("t1-1")
+	r.advance(DefaultWedgeConfirm)
+	asked := stamp(*r.clock)
+	st := r.tick()
+	if st.Kind != string(ActRestart) || st.Task != "T1.1" || st.Session != "t1-1" {
+		t.Errorf("state = %+v, want a restart of T1.1", st)
+	}
+	if want := []restartCall{{worktree: wt, session: "t1-1", counted: 1}}; !slices.Equal(r.restarts, want) {
+		t.Fatalf("restarts = %+v, want %+v", r.restarts, want)
+	}
+	e := r.wantRecovery(1, true)
+	if e.RestartAt == asked || e.RestartAt != stamp(*r.clock) {
+		t.Errorf("restart_at = %s; want %s, when the restart finished, not %s, when it was asked for", e.RestartAt, stamp(*r.clock), asked)
+	}
+
+	r.advance(DefaultContinueAfter - time.Second)
+	r.tick()
+	if len(r.prompts) != 0 {
+		t.Fatalf("prompts a second before ContinueAfter = %+v, want none", r.prompts)
+	}
+	r.wantRecovery(1, true)
+	r.advance(time.Second)
+	st = r.tick()
+	if st.Kind != string(ActContinue) {
+		t.Errorf("state = %+v, want a continue", st)
+	}
+	if want := []typed{{worktree: wt, session: "t1-1", text: "/afk:go --session t1-1"}}; !slices.Equal(r.prompts, want) {
+		t.Fatalf("prompts = %+v, want %+v", r.prompts, want)
+	}
+	r.wantRecovery(1, false)
+
+	r.ticks(20, 5*time.Second)
+	if len(r.prompts) != 1 || len(r.restarts) != 1 {
+		t.Errorf("after twenty more ticks: prompts %d, restarts %d; want 1 and 1", len(r.prompts), len(r.restarts))
+	}
+	r.wantStatus("T1.1", ledger.Running)
+	if n := len(r.items()); n != 0 {
+		t.Errorf("items = %d, want 0: a recovery that works tells the owner nothing", n)
+	}
+	r.wantDecisions("launch", "restart", "continue")
+}
+
+// TestTickWedgedWaitsToBeSure: a verdict younger than WedgeConfirm asks for
+// nothing and changes nothing; the same verdict, once it has stood that
+// long, is acted on. The first half is the load-bearing one: the host clears
+// its verdict on any output, and a restart on a young one stops a working
+// agent. The paused row is here because a pause holds back new work only,
+// and a wedged session is work already paid for.
+func TestTickWedgedWaitsToBeSure(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		name := "not paused"
+		if paused {
+			name = "paused"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, task("T1.1"))
+			r.restartOn = true
+			r.running()
+			if paused {
+				if err := daemonstate.Pause(r.root, *r.clock); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.wedge("t1-1")
+			before := r.ledgerText()
+
+			st := r.tick()
+			r.advance(DefaultWedgeConfirm - time.Second)
+			st2 := r.tick()
+			for _, s := range []daemonstate.State{st, st2} {
+				if s.Kind != string(ActWait) || !strings.Contains(s.Reason, "waiting to be sure") {
+					t.Errorf("state before the verdict has stood = %+v", s)
+				}
+			}
+			if len(r.restarts) != 0 || r.ledgerText() != before {
+				t.Fatalf("restarts %d before WedgeConfirm, or the ledger changed:\n%s", len(r.restarts), r.ledgerText())
+			}
+
+			r.advance(time.Second)
+			r.tick()
+			if len(r.restarts) != 1 {
+				t.Fatalf("restarts at WedgeConfirm = %d, want 1 (logs: %v)", len(r.restarts), r.logs)
+			}
+			r.wantRecovery(1, true)
+		})
+	}
+}
+
+// TestTickRelaunchesAGoneHost: a host that is gone past the grace is started
+// again once, resuming the conversation the session recorded.
+//
+// Load-bearing rows: the first pins that the id handed over is status.json's
+// session_id and that the continue prompt follows. The other two are where a
+// prompt would do harm: with no id the new host runs the ordinary launch
+// command, which carries its own first prompt. "the status cannot be read" is
+// the one that fails if the id of a stale view is ever trusted.
+func TestTickRelaunchesAGoneHost(t *testing.T) {
+	cases := []struct {
+		name string
+		// status rewrites the session's status.json before its host stops.
+		status      func(st *state.Status)
+		wantResume  string
+		wantPrompts int
+	}{
+		{name: "the session recorded its conversation", status: func(*state.Status) {}, wantResume: "sid-t1-1", wantPrompts: 1},
+		{name: "no conversation yet in phase planning", status: func(st *state.Status) {
+			st.Phase, st.SessionID = state.PhasePlanning, ""
+		}},
+		{name: "the status cannot be read", status: func(st *state.Status) { st.SessionID = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, task("T1.1"))
+			r.relaunchOn, r.promptOn = true, true
+			r.running()
+			r.writeStatus("t1-1", tc.status)
+			r.stopHost("t1-1")
+
+			// Inside the grace nothing is started: a host that is only slow to
+			// appear must not get a second one beside it.
+			r.tick()
+			if len(r.relaunches) != 0 {
+				t.Fatalf("relaunches inside the grace = %+v, want none", r.relaunches)
+			}
+			r.advance(hostGrace + time.Second)
+			st := r.tick()
+			if st.Kind != string(ActRelaunch) {
+				t.Errorf("state = %+v, want a relaunch", st)
+			}
+			want := []relaunchCall{{req: RelaunchRequest{
+				Worktree: filepath.Join(r.root, "wt", "t1-1"), Session: "t1-1", ResumeID: tc.wantResume}, counted: 1}}
+			if !slices.Equal(r.relaunches, want) {
+				t.Fatalf("relaunches = %+v, want %+v", r.relaunches, want)
+			}
+			if e := r.wantRecovery(1, tc.wantResume != ""); e.RestartAt != stamp(*r.clock) {
+				t.Errorf("restart_at = %s, want %s, when the new host was up", e.RestartAt, stamp(*r.clock))
+			}
+
+			r.ticks(12, 5*time.Second)
+			if len(r.prompts) != tc.wantPrompts {
+				t.Fatalf("prompts a minute later = %+v, want %d", r.prompts, tc.wantPrompts)
+			}
+			if tc.wantPrompts == 1 && r.prompts[0].text != "/afk:go --session t1-1" {
+				t.Errorf("prompt = %+v, want the resume command", r.prompts[0])
+			}
+			r.wantRecovery(1, false)
+			r.wantStatus("T1.1", ledger.Running)
+			if len(r.relaunches) != 1 || len(r.items()) != 0 {
+				t.Errorf("relaunches %d, items %d; want 1 and 0", len(r.relaunches), len(r.items()))
+			}
+			if r.count("relaunch") != 1 || r.count("continue") != tc.wantPrompts {
+				t.Errorf("decision log = %v", r.decisions())
+			}
+		})
+	}
+}
+
+// TestTickRecoveryGivesUpAtTheCap: a session that wedges again after every
+// restart is restarted at once, then after the backoff, then after twice the
+// backoff, and at the cap the task parks on one item.
+//
+// Load-bearing: the tick one second short of each backoff asks for nothing
+// (the wedge confirm is cut to a second here so that the backoff is the only
+// thing that can be holding it back); twenty ticks after the park add no
+// item and no restart; and the answer un-parks with a count of zero, shown by
+// the fourth restart going out at once. With the old count left in place the
+// tick after the answer would give up again, for ever.
+func TestTickRecoveryGivesUpAtTheCap(t *testing.T) {
+	r := newRig(t, task("T1.1"))
+	r.restartOn = true
+	r.wedgeConfirm = time.Second
+	r.running()
+
+	// Each restart "works", and the new agent hangs like the one before it.
+	rewedge := func(want int) {
+		t.Helper()
+		if len(r.restarts) != want {
+			t.Fatalf("restarts = %d, want %d (logs: %v)", len(r.restarts), want, r.logs)
+		}
+		r.wantRecovery(want, true)
+		r.wedge("t1-1")
+		r.advance(r.wedgeConfirm)
+	}
+	r.wedge("t1-1")
+	r.advance(r.wedgeConfirm)
+	r.tick()
+	rewedge(1)
+
+	for i, wait := range []time.Duration{restartBackoff, 2 * restartBackoff} {
+		// The clock already stands wedgeConfirm past the last restart.
+		r.advance(wait - r.wedgeConfirm - time.Second)
+		st := r.tick()
+		if len(r.restarts) != i+1 || st.Kind != string(ActWait) || !strings.Contains(st.Reason, "waiting before trying to recover it again") {
+			t.Fatalf("a second short of the backoff %v: restarts %d, state %+v", wait, len(r.restarts), st)
+		}
+		r.advance(time.Second)
+		r.tick()
+		rewedge(i + 2)
+	}
+
+	st := r.tick()
+	items := r.items()
+	if len(items) != 1 {
+		t.Fatalf("items at the cap = %d, want 1 (state %+v, logs %v)", len(items), st, r.logs)
+	}
+	it := items[0]
+	if it.Title != RecoveryTitlePrefix+"T1.1 (t1-1)" || it.Kind != "failure" || !it.Blocking || it.Task != "T1.1" || it.Session != "t1-1" {
+		t.Errorf("give-up item = %+v", it)
+	}
+	wantContains(t, "the give-up body", it.Body,
+		"restarted the session for T1.1 3 times", "afk dash", "afk attach t1-1", "/afk:go --session t1-1",
+		"afk inbox answer", "fresh set of restarts", "afk clean t1-1", "afk ledger set T1.1 pending")
+	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) {
+		t.Errorf("parked on %v, want [%s]", e.ParkedOn, it.ID)
+	}
+	if st.Kind != string(ActGiveUp) || !strings.Contains(st.Reason, it.ID) {
+		t.Errorf("state = %+v", st)
+	}
+	if len(r.notified) != 1 || r.notified[0].ID != it.ID {
+		t.Errorf("notified = %+v, want the one item", r.notified)
+	}
+
+	r.ticks(20, time.Minute)
+	if len(r.items()) != 1 || len(r.restarts) != 3 {
+		t.Fatalf("twenty ticks after the cap: items %d, restarts %d; want 1 and 3", len(r.items()), len(r.restarts))
+	}
+	r.wantStatus("T1.1", ledger.Parked)
+
+	r.answer(it.ID)
+	r.advance(5 * time.Second)
+	if st := r.tick(); st.Kind != string(ActUnpark) {
+		t.Errorf("state on answer = %+v", st)
+	}
+	r.wantStatus("T1.1", ledger.Running)
+	if e := r.wantRecovery(0, false); e.RestartAt != "" {
+		t.Errorf("un-parked entry still holds restart_at %s", e.RestartAt)
+	}
+	// Still wedged, and the fresh set starts with no wait.
+	r.advance(5 * time.Second)
+	r.tick()
+	if len(r.restarts) != 4 || r.restarts[3].counted != 1 {
+		t.Errorf("restarts after the answer = %+v, want a fourth that counted 1", r.restarts)
+	}
+	if n := len(r.items()); n != 1 {
+		t.Errorf("items = %d, want still 1", n)
+	}
+	r.wantDecisions("launch", "restart", "restart", "restart", "give_up", "unpark", "restart")
+}
+
+// TestTickRecoveryOffParksAtOnce: with max_restarts = 0 nothing is ever
+// restarted or relaunched, and the first trouble parks the task. The body is
+// the load-bearing part: "restarted it 0 times" would read as afk failing and
+// not as the setting it is.
+func TestTickRecoveryOffParksAtOnce(t *testing.T) {
+	cases := []struct {
+		name    string
+		trouble func(r *rig)
+	}{
+		{name: "a wedge", trouble: func(r *rig) {
+			r.wedge("t1-1")
+			r.advance(DefaultWedgeConfirm)
+		}},
+		{name: "a gone host", trouble: func(r *rig) {
+			r.stopHost("t1-1")
+			r.advance(hostGrace + time.Second)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, task("T1.1"))
+			r.restartOn, r.relaunchOn, r.promptOn, r.noRestarts = true, true, true, true
+			r.running()
+			tc.trouble(r)
+			st := r.tick()
+			if st.Kind != string(ActGiveUp) {
+				t.Errorf("state = %+v, want a give-up", st)
+			}
+			items := r.items()
+			if len(items) != 1 || !strings.HasPrefix(items[0].Title, RecoveryTitlePrefix) || !items[0].Blocking {
+				t.Fatalf("items = %+v, want the one give-up item", items)
+			}
+			wantContains(t, "the body", items[0].Body, "afk is set not to restart sessions", "max_restarts = 0", "afk dash")
+			if strings.Contains(items[0].Body, "0 times") || strings.Contains(items[0].Body, "restarted the session") {
+				t.Errorf("the body speaks of restarts that were never made:\n%s", items[0].Body)
+			}
+			r.wantStatus("T1.1", ledger.Parked)
+			r.wantRecovery(0, false)
+			r.ticks(5, time.Minute)
+			if len(r.restarts)+len(r.relaunches)+len(r.prompts) != 0 || len(r.items()) != 1 {
+				t.Errorf("restarts %d, relaunches %d, prompts %d, items %d; want 0, 0, 0 and 1",
+					len(r.restarts), len(r.relaunches), len(r.prompts), len(r.items()))
+			}
+			r.wantDecisions("launch", "give_up")
+		})
+	}
+}
+
+// TestTickRecoveryRestartOutcomes: what the loop keeps of each of the host's
+// three answers to a restart request.
+//
+// Load-bearing rows: "refused" drops the pending prompt (nothing was
+// restarted, so there is nobody to tell) and keeps the count, which is what
+// lets a session that can never be restarted reach the cap. "not known"
+// keeps the prompt pending, because the agent may have been restarted and
+// would otherwise sit at an empty prompt for good.
+func TestTickRecoveryRestartOutcomes(t *testing.T) {
+	cases := []struct {
+		name        string
+		refused     string
+		err         error
+		wantPending bool
+		// wantLater: restart_at was saved a second time, after the restart.
+		wantLater  bool
+		wantChosen string
+		wantLog    string
+	}{
+		{name: "restarted", wantPending: true, wantLater: true, wantChosen: "restarted its agent"},
+		{name: "refused", refused: "no conversation to resume", wantChosen: "the host refused: no conversation to resume",
+			wantLog: "no conversation to resume"},
+		{name: "not known", err: errors.New("the session was taken by another client"), wantPending: true,
+			wantChosen: "not known whether it did: the session was taken by another client",
+			wantLog:    "the session was taken by another client"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, task("T1.1"))
+			r.restartOn, r.promptOn = true, true
+			r.restartRefused, r.restartErr = tc.refused, tc.err
+			r.running()
+			r.wedge("t1-1")
+			r.advance(DefaultWedgeConfirm)
+			asked := stamp(*r.clock)
+			st := r.tick()
+
+			if st.Kind != string(ActRestart) || len(r.restarts) != 1 {
+				t.Fatalf("state %+v, restarts %+v; want one restart", st, r.restarts)
+			}
+			e := r.wantRecovery(1, tc.wantPending)
+			if later := e.RestartAt != asked; later != tc.wantLater {
+				t.Errorf("restart_at = %s, asked at %s; saved again afterwards: %v, want %v", e.RestartAt, asked, later, tc.wantLater)
+			}
+			var lines []decisionlog.Entry
+			for _, d := range r.loggedDecisions() {
+				if d.Kind == "restart" {
+					lines = append(lines, d)
+				}
+			}
+			if len(lines) != 1 || !strings.Contains(lines[0].Chosen, tc.wantChosen) || lines[0].Rule != "PLAN §5.6" {
+				t.Errorf("restart lines in the decision log = %+v, want one choosing %q", lines, tc.wantChosen)
+			}
+			if tc.wantLog != "" {
+				wantContains(t, "the log", strings.Join(r.logs, "\n"), tc.wantLog, "T1.1", "t1-1")
+			}
+
+			// Inside the backoff, and short of ContinueAfter, nothing more.
+			r.ticks(5, 5*time.Second)
+			if len(r.restarts) != 1 || len(r.prompts) != 0 || len(r.items()) != 0 {
+				t.Errorf("restarts %d, prompts %d, items %d; want 1, 0 and 0", len(r.restarts), len(r.prompts), len(r.items()))
+			}
+			r.wantStatus("T1.1", ledger.Running)
+			r.wantRecovery(1, tc.wantPending)
+		})
+	}
+}
+
+// TestTickRecoverySavesBeforeTheCall is the crash-loop guard. The fake reads
+// the ledger file while it is being called and then fails, standing in for a
+// daemon that dies in the middle of a recovery.
+//
+// Load-bearing: the count the fake saw is 1, so it was on disk before the
+// request went out. Moved after the call, a daemon that dies on every
+// recovery would find a count of zero every time and recover the same session
+// without limit. The second half is the same promise seen from the next
+// daemon: it starts from the saved count and the saved time, and so waits out
+// the backoff (five minutes here, to stand clear of the host's grace) before
+// asking again.
+func TestTickRecoverySavesBeforeTheCall(t *testing.T) {
+	const backoff = 5 * time.Minute
+	died := errors.New("the daemon was killed here")
+	cases := []struct {
+		name    string
+		trouble func(r *rig)
+		on      func(r *rig)
+		// counted is what each call saw on disk.
+		counted func(r *rig) []int
+	}{
+		{
+			name: "restart",
+			trouble: func(r *rig) {
+				r.wedge("t1-1")
+				r.advance(DefaultWedgeConfirm)
+			},
+			on: func(r *rig) { r.restartOn = true },
+			counted: func(r *rig) []int {
+				var out []int
+				for _, c := range r.restarts {
+					out = append(out, c.counted)
+				}
+				return out
+			},
+		},
+		{
+			name: "relaunch",
+			trouble: func(r *rig) {
+				r.stopHost("t1-1")
+				r.advance(hostGrace + time.Second)
+			},
+			on: func(r *rig) { r.relaunchOn = true },
+			counted: func(r *rig) []int {
+				var out []int
+				for _, c := range r.relaunches {
+					out = append(out, c.counted)
+				}
+				return out
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newRig(t, task("T1.1"))
+			first.backoff = backoff
+			tc.on(first)
+			first.restartErr, first.relaunchErr = died, died
+			first.running()
+			tc.trouble(first)
+			first.tick()
+			if got := tc.counted(first); !slices.Equal(got, []int{1}) {
+				t.Fatalf("the count on disk during the call = %v, want [1]: the ledger is saved before the request", got)
+			}
+
+			second := first.restart()
+			second.backoff = backoff
+			tc.on(second)
+			second.advance(backoff - time.Second)
+			second.tick()
+			if got := tc.counted(second); len(got) != 0 {
+				t.Fatalf("the next daemon asked again inside the backoff (saw %v)", got)
+			}
+			second.advance(time.Second)
+			second.tick()
+			if got := tc.counted(second); !slices.Equal(got, []int{2}) {
+				t.Fatalf("the count on disk at the backoff = %v, want [2] (logs: %v)", got, second.logs)
+			}
+			second.wantStatus("T1.1", ledger.Running)
+		})
+	}
+}
+
+// TestTickRecoveryFieldsAreCleared: restarts, restart_at and continue_pending
+// go back to zero wherever the entry gets a new session or leaves `running`.
+// Each row starts from an entry that holds all three.
+//
+// Load-bearing rows: "created again" is the one where a leftover
+// continue_pending would do harm at once, typed into a new session on top of
+// the prompt it was just started with; its prompt count is the check. "done
+// with its host gone" is the order of Decide's rules seen from the executor:
+// a finished session is shipped and its host is never started again.
+func TestTickRecoveryFieldsAreCleared(t *testing.T) {
+	cases := []struct {
+		name string
+		// arrange changes the entry and the session before the one tick.
+		arrange      func(r *rig, e *ledger.Entry)
+		wantStatus   ledger.Status
+		wantSession  string
+		wantLaunches int
+	}{
+		{name: "a new attempt", arrange: func(r *rig, e *ledger.Entry) { e.Status = ledger.Pending },
+			wantStatus: ledger.Running, wantSession: "t1-1-2", wantLaunches: 2},
+		{name: "created again", arrange: func(r *rig, e *ledger.Entry) {
+			if err := os.RemoveAll(filepath.Join(r.root, "wt", "t1-1")); err != nil {
+				r.t.Fatal(err)
+			}
+		}, wantStatus: ledger.Running, wantSession: "t1-1", wantLaunches: 2},
+		{name: "done with its host gone", arrange: func(r *rig, e *ledger.Entry) {
+			r.setPhase("t1-1", state.PhaseDone)
+			r.stopHost("t1-1")
+		}, wantStatus: ledger.Shipping, wantSession: "t1-1", wantLaunches: 1},
+		{name: "failed with its host gone", arrange: func(r *rig, e *ledger.Entry) {
+			r.setPhase("t1-1", state.PhaseFailed)
+			r.stopHost("t1-1")
+		}, wantStatus: ledger.Failed, wantSession: "t1-1", wantLaunches: 1},
+		{name: "un-parked back to shipping", arrange: func(r *rig, e *ledger.Entry) {
+			it, err := r.store().Add(inbox.NewItem{Task: "T1.1", Kind: "failure", Blocking: true, Title: "CI is red"})
+			if err != nil {
+				r.t.Fatal(err)
+			}
+			r.answer(it.ID)
+			e.Status, e.Ship, e.ParkedOn = ledger.Parked, string(ship.Pushed), []string{it.ID}
+		}, wantStatus: ledger.Shipping, wantSession: "t1-1", wantLaunches: 1},
+		{name: "shipped", arrange: func(r *rig, e *ledger.Entry) {
+			r.shipFn = r.greenShip
+			e.Status, e.Ship = ledger.Shipping, string(ship.DeployHealthy)
+		}, wantStatus: ledger.Done, wantSession: "t1-1", wantLaunches: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, task("T1.1"))
+			r.restartOn, r.relaunchOn, r.promptOn = true, true, true
+			r.running()
+			e := r.entry("T1.1")
+			e.Restarts, e.RestartAt, e.ContinuePending = 2, stamp(r.clock.Add(-time.Hour)), true
+			tc.arrange(r, &e)
+			r.setEntry(e)
+
+			r.advance(hostGrace + time.Minute)
+			r.tick()
+			got := r.wantStatus("T1.1", tc.wantStatus)
+			if got.Restarts != 0 || got.RestartAt != "" || got.ContinuePending {
+				t.Errorf("entry still holds recovery fields: %+v", got)
+			}
+			if got.Session != tc.wantSession || len(r.launches) != tc.wantLaunches {
+				t.Errorf("session %s, launches %d; want %s and %d", got.Session, len(r.launches), tc.wantSession, tc.wantLaunches)
+			}
+			r.ticks(10, 5*time.Second)
+			if len(r.prompts)+len(r.restarts)+len(r.relaunches) != 0 {
+				t.Errorf("prompts %+v, restarts %+v, relaunches %+v; want nothing typed and nothing recovered",
+					r.prompts, r.restarts, r.relaunches)
+			}
+		})
+	}
+}
+
+// TestTickRecoveryWhileAPersonAttaches: a person attaching to a supervised
+// session changes no file the loop reads, so the test changes none either.
+// What an attach can do is take the session's one connection for a moment, so
+// that a restart request or a typed line comes back as "not known" or fails.
+// Here each does so once and works on the next try.
+//
+// Load-bearing: the task is never parked and no item is raised (a taken
+// connection is not a broken session), and the recovery still ends with the
+// resume command delivered and continue_pending cleared. The decision log
+// holds one `continue`, for the send that worked: a failed send is not a
+// thing that happened.
+func TestTickRecoveryWhileAPersonAttaches(t *testing.T) {
+	taken := errors.New("the session was taken by another client")
+	r := newRig(t, task("T1.1"))
+	r.restartOn, r.promptOn = true, true
+	r.running()
+	r.wedge("t1-1")
+	r.advance(DefaultWedgeConfirm)
+
+	r.restartErr = taken
+	r.tick()
+	r.wantRecovery(1, true)
+	r.wantStatus("T1.1", ledger.Running)
+
+	// Still wedged, so the first request did nothing. The next one is asked
+	// for at the backoff, and nothing is typed into a wedged session meanwhile.
+	r.restartErr = nil
+	r.ticks(11, 5*time.Second)
+	if len(r.restarts) != 1 || len(r.prompts) != 0 {
+		t.Fatalf("inside the backoff: restarts %d, prompts %d; want 1 and 0", len(r.restarts), len(r.prompts))
+	}
+	r.advance(5 * time.Second)
+	r.tick()
+	if len(r.restarts) != 2 {
+		t.Fatalf("restarts at the backoff = %d, want 2 (logs: %v)", len(r.restarts), r.logs)
+	}
+	r.wantRecovery(2, true)
+
+	r.promptErr = taken
+	r.advance(DefaultContinueAfter)
+	st := r.tick()
+	if len(r.prompts) != 1 || st.Kind != string(ActWait) || r.count("continue") != 0 {
+		t.Fatalf("a send that failed: prompts %d, state %+v, continue lines %d", len(r.prompts), st, r.count("continue"))
+	}
+	r.wantRecovery(2, true)
+
+	r.promptErr = nil
+	r.advance(5 * time.Second)
+	r.tick()
+	r.wantRecovery(2, false)
+	r.ticks(10, 5*time.Second)
+	if len(r.prompts) != 2 || r.count("continue") != 1 || len(r.restarts) != 2 {
+		t.Errorf("prompts %d, continue lines %d, restarts %d; want 2, 1 and 2", len(r.prompts), r.count("continue"), len(r.restarts))
+	}
+	r.wantStatus("T1.1", ledger.Running)
+	if n := len(r.items()); n != 0 {
+		t.Errorf("items = %d, want 0", n)
+	}
+	r.wantDecisions("launch", "restart", "restart", "continue")
+}
+
+// TestViewOfWedgedSince pins how the host's verdict reaches Decide. The
+// load-bearing row is the unreadable one: it must read as "not wedged",
+// because a verdict of unknown age cannot be shown to have stood for
+// WedgeConfirm and must not restart an agent.
+func TestViewOfWedgedSince(t *testing.T) {
+	at := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name   string
+		row    discover.SessionState
+		wedged time.Time
+	}{
+		{name: "no verdict", row: discover.SessionState{Name: "t1-1", HostRunning: true}},
+		{name: "a verdict", row: discover.SessionState{Name: "t1-1", HostRunning: true, WedgedSince: stamp(at)}, wedged: at},
+		{name: "a verdict with an offset is the same instant",
+			row: discover.SessionState{Name: "t1-1", HostRunning: true, WedgedSince: "2026-10-11T11:00:00+02:00"}, wedged: at},
+		{name: "an unreadable verdict is no verdict", row: discover.SessionState{Name: "t1-1", HostRunning: true, WedgedSince: "a while ago"}},
+		{name: "a stale status still carries the verdict",
+			row: discover.SessionState{Name: "t1-1", StatusStale: true, Kind: session.KindStaleStatus, HostRunning: true, WedgedSince: stamp(at)}, wedged: at},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, _ := viewOf([]discover.SessionState{tc.row}, "t1-1")
+			if v == nil {
+				t.Fatal("no view")
+			}
+			if !v.WedgedSince.Equal(tc.wedged) || v.WedgedSince.IsZero() != tc.wedged.IsZero() {
+				t.Errorf("WedgedSince = %v, want %v", v.WedgedSince, tc.wedged)
 			}
 		})
 	}

@@ -76,3 +76,11 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **After-merge command**: the shell command a project names in `[ship] after_merge`; the daemon runs it once in the main checkout after a merge, before it checks the deploy.
 - **Run record**: `.afk/build/after-merge.json`, which says for which task and merge the after-merge command started and how it ended, so it is never run twice.
 - **Binary identity**: the size and modification time of the daemon's own program file, noted at start; when they change on disk the daemon stops between passes so the service manager starts the new version.
+- **Wedged**: a session whose agent is still running but has stopped answering; the host notices by asking the agent's screen to repaint and getting nothing back.
+- **Client-less probing**: a session host checking for a wedge when nobody is attached, switched on with `--probe-unattached` for unattended sessions.
+- **Restart ladder**: how a host stops a wedged agent, one signal at a time from polite to forced, before starting it again in the same conversation.
+- **Relaunch**: starting a new host for a session whose host is gone, for example after the machine restarted.
+- **Recovery**: one automatic restart or relaunch of a running task's session by the daemon.
+- **Restart cap**: `max_restarts`, the most recoveries the daemon makes for one attempt at a task before it parks the task with an inbox item.
+- **Backoff**: the wait before each recovery after the first, starting at `restart_backoff` and doubling each time.
+- **Continue prompt**: the session's resume command, typed by the daemon once after a recovery so the agent carries on from where its files say it was.

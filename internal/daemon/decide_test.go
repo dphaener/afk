@@ -25,6 +25,14 @@ var (
 const (
 	stallAfter = 10 * time.Minute
 	hostGrace  = 60 * time.Second
+
+	// The recovery limits of the rows that switch recovery on (see
+	// recovering). They are the shipped defaults, so a row reads as the
+	// schedule the owner gets.
+	maxRestarts    = 3
+	restartBackoff = time.Minute
+	continueAfter  = 30 * time.Second
+	wedgeConfirm   = 60 * time.Second
 )
 
 // ago is the RFC 3339 text of a time d before now, the form the ledger and
@@ -88,6 +96,54 @@ func view(change func(*SessionView)) *SessionView {
 		change(v)
 	}
 	return v
+}
+
+// recovering is an Observation change for a daemon with every means of
+// recovery wired and the limits above. Rows change the fields they test. A
+// row without it runs as the loop did before recovery existed: no means, so
+// a gone host is reported and a wedge is left alone.
+func recovering(change func(*Observation)) func(*Observation) {
+	return func(o *Observation) {
+		o.MaxRestarts, o.RestartBackoff = maxRestarts, restartBackoff
+		o.ContinueAfter, o.WedgeConfirm = continueAfter, wedgeConfirm
+		o.CanRestart, o.CanRelaunch, o.CanPrompt = true, true, true
+		if change != nil {
+			change(o)
+		}
+	}
+}
+
+// recovered is a running entry that has been recovered restarts times, the
+// last of them before ago, and may still be waiting to be told to carry on.
+func recovered(id string, restarts int, before time.Duration, continuePending bool) ledger.Entry {
+	e := running(id)
+	e.Restarts, e.RestartAt, e.ContinuePending = restarts, ago(before), continuePending
+	return e
+}
+
+// wedged is a view change: the host is running and has said for d that its
+// agent is not answering.
+func wedged(d time.Duration) func(*SessionView) {
+	return func(v *SessionView) { v.WedgedSince = now.Add(-d) }
+}
+
+// gone is a view change: the host is not running and the session's last sign
+// of life was an hour ago, far past the grace.
+func gone(v *SessionView) {
+	v.HostRunning = false
+	v.UpdatedAt = now.Add(-time.Hour)
+}
+
+// stale is a view change: status.json cannot be read.
+func stale(v *SessionView) {
+	v.Stale = true
+	v.Phase = ""
+	v.UpdatedAt = time.Time{}
+}
+
+// both applies two view changes in order.
+func both(a, b func(*SessionView)) func(*SessionView) {
+	return func(v *SessionView) { a(v); b(v) }
 }
 
 // item is an open, non-blocking notice. The helpers below change one thing
@@ -200,6 +256,40 @@ func createdAgo(it inbox.Item, before time.Duration) inbox.Item {
 //   - "a stopped line with nothing running waits": the only row whose state
 //     is stored as line_stopped with no task, which is what `afk daemon
 //     status` shows while the owner looks at the deploy.
+//   - "wedged for less than the confirm time waits" against "wedged for the
+//     confirm time is restarted": the host's verdict clears on any output,
+//     and a restart stops a working agent. Without the first row a moment's
+//     false verdict costs a task its turn.
+//   - "restarts at the cap and wedged gives up", "restarts at the cap and
+//     host gone gives up" and the two "max restarts 0" rows: the cap is the
+//     only thing between a session that always hangs and a restart loop that
+//     never tells the owner. Zero is a real setting and must give up at
+//     once, not restart once.
+//   - "wedged inside the backoff waits" against "wedged exactly at the
+//     backoff is restarted": the backoff is "at or over" on purpose, unlike
+//     the grace and the stall limit, which are "over". Those guard against
+//     acting on a reading that may still change; the backoff is a wait the
+//     loop set itself and has served in full when it is reached.
+//   - "host gone inside the grace measured from the relaunch waits": without
+//     restart_at in the grace, the tick after a relaunch would find the old
+//     status time, call the new host gone and relaunch it again, burning the
+//     whole cap in three ticks.
+//   - "phase done with a gone host ships and is not relaunched" and its
+//     wedged and failed twins: recovery moved above the done/failed check
+//     would resume a conversation whose work is finished. This is the row
+//     the mutation check turns red.
+//   - "an open blocking item with a wedged host parks" and "stale with an
+//     open blocking item and a wedged host parks": a parked session sits at
+//     a prompt by design, and restarting it throws the question away.
+//   - "continue pending but wedged takes the restart path": a line typed
+//     into an agent that is not answering goes nowhere and would be recorded
+//     as delivered.
+//   - "host gone without the means to relaunch is reported as before" and
+//     "wedged without the means to restart waits": a daemon wired without
+//     recovery must behave exactly as it did, and must never choose an
+//     action nothing can carry out.
+//   - "paused project with a wedged running session is restarted": pause
+//     stops new work, and a running task carries on under it.
 func TestDecide(t *testing.T) {
 	// T1.2 builds on T1.1; T1.3 stands alone, so it is the task that can run
 	// while T1.1 is parked or failed.
@@ -223,7 +313,10 @@ func TestDecide(t *testing.T) {
 		// stands for a listing that failed.
 		parked    map[string]*SessionView
 		parkedErr error
-		want      Action // Reason is checked through reasonHas, not here
+		// obs changes the Observation after it is built; nil leaves recovery
+		// switched off, as it is for every row written before recovery.
+		obs  func(*Observation)
+		want Action // Reason is checked through reasonHas, not here
 		// reasonHas lists text the reason must hold. Whole sentences are not
 		// pinned: the rows fix what the owner must be told, not the wording.
 		reasonHas []string
@@ -1102,6 +1195,441 @@ func TestDecide(t *testing.T) {
 			want:      Action{Kind: ActWait, LineStopped: true},
 			reasonHas: []string{"the line is stopped"},
 		},
+
+		// Rule 3f: recovery. Every row below has a session that is wedged
+		// (host running, verdict published) or gone (host not running, past
+		// the grace) unless its name says otherwise.
+		{
+			name:      "wedged for the confirm time is restarted",
+			obs:       recovering(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(wedged(wedgeConfirm)),
+			want:      Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"T1.1", "t1-1", "stopped answering"},
+		},
+		{
+			name:      "wedged for less than the confirm time waits",
+			obs:       recovering(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(wedged(wedgeConfirm - time.Second)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"stopped answering", "waiting to be sure"},
+		},
+		{
+			// The confirm wait comes before the cap: a verdict that may clear
+			// by itself must not park a task either.
+			name:      "wedged for less than the confirm time waits even at the cap",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", maxRestarts, time.Hour, false)),
+			session:   view(wedged(wedgeConfirm - time.Second)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting to be sure"},
+		},
+		{
+			name:      "wedged without the means to restart waits",
+			obs:       recovering(func(o *Observation) { o.CanRestart = false }),
+			ledger:    led(running("T1.1")),
+			session:   view(wedged(time.Hour)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// A wedged agent that had asked something is still told about as
+			// a stall when nothing can restart it: the wedge is ignored, the
+			// rules after it are not.
+			name:   "wedged without the means to restart still stalls",
+			obs:    recovering(func(o *Observation) { o.CanRestart = false }),
+			ledger: led(running("T1.1")),
+			session: view(both(wedged(time.Hour), func(v *SessionView) {
+				v.AwaitingInput = true
+				v.UpdatedAt = now.Add(-stallAfter - time.Second)
+			})),
+			want: Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "host gone past the grace is relaunched",
+			obs:       recovering(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(gone),
+			want:      Action{Kind: ActRelaunch, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"T1.1", "t1-1", "stopped running"},
+		},
+		{
+			name:    "host gone without the means to relaunch is reported as before",
+			obs:     recovering(func(o *Observation) { o.CanRelaunch = false }),
+			ledger:  led(running("T1.1")),
+			session: view(gone),
+			want:    Action{Kind: ActHostGone, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// The old once-per-attempt limit still holds on that path.
+			name:      "host gone without the means to relaunch is reported once",
+			obs:       recovering(func(o *Observation) { o.CanRelaunch = false }),
+			ledger:    led(running("T1.1")),
+			items:     []inbox.Item{answered(titled(item("hg1", "T1.1", "t1-1"), HostGoneTitlePrefix), 20*time.Minute)},
+			session:   view(gone),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"already reported"},
+		},
+		{
+			// A host exactly at its grace is not gone yet, with or without
+			// the means to relaunch it.
+			name:      "host gone exactly at the grace is not relaunched",
+			obs:       recovering(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(func(v *SessionView) { v.HostRunning = false; v.UpdatedAt = now.Add(-hostGrace) }),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// Relaunched a grace ago, and the new host is not seen yet. The
+			// status time is an hour old, so only restart_at holds this back.
+			name:      "host gone inside the grace measured from the relaunch waits",
+			obs:       recovering(func(o *Observation) { o.RestartBackoff = time.Second }),
+			ledger:    led(recovered("T1.1", 1, hostGrace, false)),
+			session:   view(gone),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "host gone past the grace measured from the relaunch is relaunched again",
+			obs:     recovering(func(o *Observation) { o.RestartBackoff = time.Second }),
+			ledger:  led(recovered("T1.1", 1, hostGrace+time.Second, false)),
+			session: view(gone),
+			want:    Action{Kind: ActRelaunch, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "wedged inside the backoff waits",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, restartBackoff-time.Second, false)),
+			session:   view(wedged(time.Hour)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting before trying to recover it again", "1 restart"},
+		},
+		{
+			name:    "wedged exactly at the backoff is restarted",
+			obs:     recovering(nil),
+			ledger:  led(recovered("T1.1", 1, restartBackoff, false)),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// The second wait is twice the first: one backoff is not enough
+			// after two recoveries.
+			name:      "wedged inside the doubled backoff waits",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 2, 2*restartBackoff-time.Second, false)),
+			session:   view(wedged(time.Hour)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"2 restarts"},
+		},
+		{
+			name:    "wedged exactly at the doubled backoff is restarted",
+			obs:     recovering(nil),
+			ledger:  led(recovered("T1.1", 2, 2*restartBackoff, false)),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "host gone inside the backoff waits for the relaunch",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 2, 2*restartBackoff-time.Second, false)),
+			session:   view(gone),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"stopped running", "waiting before trying to recover"},
+		},
+		{
+			// A restart time that cannot be read is the zero time: its
+			// backoff reads as served, and the cap still bounds the entry.
+			name: "wedged with an unreadable backoff time is restarted",
+			obs:  recovering(nil),
+			ledger: led(func() ledger.Entry {
+				e := recovered("T1.1", 2, 0, false)
+				e.RestartAt = "yesterday"
+				return e
+			}()),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "restarts at the cap and wedged gives up",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", maxRestarts, time.Hour, false)),
+			session:   view(wedged(time.Hour)),
+			want:      Action{Kind: ActGiveUp, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"T1.1", "t1-1", "3 restarts"},
+		},
+		{
+			name:      "restarts at the cap and host gone gives up",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", maxRestarts, time.Hour, false)),
+			session:   view(gone),
+			want:      Action{Kind: ActGiveUp, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"stopped running", "3 restarts"},
+		},
+		{
+			// Out of restarts is said at once, not after one more backoff.
+			name:    "restarts at the cap gives up inside the backoff too",
+			obs:     recovering(nil),
+			ledger:  led(recovered("T1.1", maxRestarts, time.Second, false)),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActGiveUp, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "one restart below the cap and wedged is restarted",
+			obs:     recovering(nil),
+			ledger:  led(recovered("T1.1", maxRestarts-1, time.Hour, false)),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "max restarts 0 gives up on the first wedged session",
+			obs:       recovering(func(o *Observation) { o.MaxRestarts = 0 }),
+			ledger:    led(running("T1.1")),
+			session:   view(wedged(wedgeConfirm)),
+			want:      Action{Kind: ActGiveUp, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"T1.1", "t1-1", "set not to restart"},
+		},
+		{
+			name:      "max restarts 0 and host gone gives up with no relaunch",
+			obs:       recovering(func(o *Observation) { o.MaxRestarts = 0 }),
+			ledger:    led(running("T1.1")),
+			session:   view(gone),
+			want:      Action{Kind: ActGiveUp, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"set not to restart"},
+		},
+		{
+			name:    "phase done with a gone host ships and is not relaunched",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(gone, func(v *SessionView) { v.Phase = state.PhaseDone })),
+			want:    Action{Kind: ActShip, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "phase done with a wedged host ships and is not restarted",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(wedged(time.Hour), func(v *SessionView) { v.Phase = state.PhaseDone })),
+			want:    Action{Kind: ActShip, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "phase failed with a wedged or gone host fails and gives up nothing",
+			obs:     recovering(func(o *Observation) { o.MaxRestarts = 0 }),
+			ledger:  led(running("T1.1")),
+			session: view(both(gone, func(v *SessionView) { v.Phase = state.PhaseFailed })),
+			want:    Action{Kind: ActFail, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "phase failed with a wedged host fails",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(wedged(time.Hour), func(v *SessionView) { v.Phase = state.PhaseFailed })),
+			want:    Action{Kind: ActFail, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "an open blocking item with a wedged host parks",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			name:    "an open blocking item with a gone host parks before any relaunch",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(gone),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			name:      "paused project with a wedged running session is restarted",
+			obs:       recovering(nil),
+			paused:    true,
+			ledger:    led(running("T1.1")),
+			session:   view(wedged(time.Hour)),
+			want:      Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"restarting"},
+		},
+		{
+			name:    "a stopped line with a gone running session is still relaunched",
+			obs:     recovering(nil),
+			stopped: true,
+			ledger:  led(running("T1.1")),
+			session: view(gone),
+			want:    Action{Kind: ActRelaunch, Task: "T1.1", Session: "t1-1"},
+		},
+
+		// Rule 3g: the continue prompt after a recovery.
+		{
+			name:      "continue pending before the continue time waits",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, continueAfter-time.Second, true)),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "continue pending exactly at the continue time is told to continue",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, continueAfter, true)),
+			session:   view(nil),
+			want:      Action{Kind: ActContinue, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"T1.1", "t1-1", "carry on"},
+		},
+		{
+			name:    "continue pending but wedged takes the restart path",
+			obs:     recovering(nil),
+			ledger:  led(recovered("T1.1", 1, time.Hour, true)),
+			session: view(wedged(time.Hour)),
+			want:    Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// Wedged again, but too recently to act on: nothing is typed
+			// into an agent that is not answering.
+			name:      "continue pending and wedged for less than the confirm time waits",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, time.Hour, true)),
+			session:   view(wedged(time.Second)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting to be sure"},
+		},
+		{
+			name:      "continue pending and wedged without the means to restart waits",
+			obs:       recovering(func(o *Observation) { o.CanRestart = false }),
+			ledger:    led(recovered("T1.1", 1, time.Hour, true)),
+			session:   view(wedged(time.Hour)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "continue pending without the means to prompt waits",
+			obs:       recovering(func(o *Observation) { o.CanPrompt = false }),
+			ledger:    led(recovered("T1.1", 1, time.Hour, true)),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// The relaunched host is not up yet and is inside its grace:
+			// there is nothing to type into.
+			name:      "continue pending with the host not running yet waits",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, continueAfter, true)),
+			session:   view(func(v *SessionView) { v.HostRunning = false }),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a recovered session with nothing pending is not told to continue",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, time.Hour, false)),
+			session:   view(nil),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "an open blocking item parks before the continue prompt",
+			obs:     recovering(nil),
+			ledger:  led(recovered("T1.1", 1, time.Hour, true)),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(nil),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			// A recovery is a sign of life: the stall clock starts again
+			// from it, as it does from an answered item.
+			name:   "a recovery restarts the stall clock",
+			obs:    recovering(nil),
+			ledger: led(recovered("T1.1", 1, stallAfter, false)),
+			session: view(func(v *SessionView) {
+				v.AwaitingInput = true
+				v.UpdatedAt = now.Add(-time.Hour)
+			}),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+
+		// Rule 3b with recovery: the status cannot be read.
+		{
+			name:    "stale status and host gone is relaunched",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(stale, func(v *SessionView) { v.HostRunning = false })),
+			want:    Action{Kind: ActRelaunch, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "stale status and host gone without the means to relaunch is reported as before",
+			obs:     recovering(func(o *Observation) { o.CanRelaunch = false }),
+			ledger:  led(running("T1.1")),
+			session: view(both(stale, func(v *SessionView) { v.HostRunning = false })),
+			want:    Action{Kind: ActHostGone, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// The stale grace runs from the later of the start and the last
+			// recovery; the status time is what cannot be read.
+			name:      "stale status and host gone inside the grace from the relaunch waits",
+			obs:       recovering(func(o *Observation) { o.RestartBackoff = time.Second }),
+			ledger:    led(recovered("T1.1", 1, hostGrace, false)),
+			session:   view(both(stale, func(v *SessionView) { v.HostRunning = false })),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"status file cannot be read"},
+		},
+		{
+			name:    "stale status and wedged is restarted",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(stale, wedged(wedgeConfirm))),
+			want:    Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "stale status and wedged without the means to restart waits",
+			obs:       recovering(func(o *Observation) { o.CanRestart = false }),
+			ledger:    led(running("T1.1")),
+			session:   view(both(stale, wedged(time.Hour))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"status file cannot be read"},
+		},
+		{
+			name:    "stale status and wedged at the cap gives up",
+			obs:     recovering(nil),
+			ledger:  led(recovered("T1.1", maxRestarts, time.Hour, false)),
+			session: view(both(stale, wedged(time.Hour))),
+			want:    Action{Kind: ActGiveUp, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "stale with an open blocking item and a wedged host parks",
+			obs:     recovering(nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(both(stale, wedged(time.Hour))),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			// New with recovery, and true with it switched off too: the
+			// owner being asked outranks an unreadable status.
+			name:    "stale with an open blocking item parks with no recovery wired and nothing wedged",
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(stale),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			name:      "stale status with the host running and continue pending is told to continue",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, continueAfter, true)),
+			session:   view(stale),
+			want:      Action{Kind: ActContinue, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"carry on"},
+		},
+		{
+			name:      "stale status with continue pending before the continue time waits",
+			obs:       recovering(nil),
+			ledger:    led(recovered("T1.1", 1, continueAfter-time.Second, true)),
+			session:   view(stale),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"status file cannot be read"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1110,14 +1638,18 @@ func TestDecide(t *testing.T) {
 			if tasks == nil {
 				tasks = plan
 			}
-			got := Decide(Observation{
+			o := Observation{
 				Now: now, InboxErr: tc.inboxErr,
 				StallAfter: stallAfter, HostGrace: hostGrace,
 				Paused: tc.paused, BuildErr: tc.buildErr,
 				NoLedger: tc.noLedger, Stopped: tc.stopped, StopReason: tc.stopReason,
 				Tasks: tasks, Ledger: tc.ledger, Items: tc.items, Session: tc.session,
 				Parked: tc.parked, ParkedErr: tc.parkedErr,
-			})
+			}
+			if tc.obs != nil {
+				tc.obs(&o)
+			}
+			got := Decide(o)
 			if got.Kind != tc.want.Kind || got.Task != tc.want.Task || got.Session != tc.want.Session {
 				t.Errorf("Decide = {%s task=%q session=%q}, want {%s task=%q session=%q}\nreason: %s",
 					got.Kind, got.Task, got.Session, tc.want.Kind, tc.want.Task, tc.want.Session, got.Reason)
@@ -1174,6 +1706,62 @@ func TestTitlePrefixesAreDistinct(t *testing.T) {
 	}
 	if strings.HasPrefix(StallTitlePrefix, HostGoneTitlePrefix) || strings.HasPrefix(HostGoneTitlePrefix, StallTitlePrefix) {
 		t.Errorf("prefixes overlap: %q and %q", StallTitlePrefix, HostGoneTitlePrefix)
+	}
+}
+
+// TestBackoffFor pins the wait before each recovery.
+//
+// Load-bearing rows: "none before the first" (the first recovery must not
+// wait: the session is already down), "the base before the second" and
+// "doubled before the third" (the schedule the README promises: at once,
+// after one minute, after two), and the two overflow rows. A count from a
+// hand-edited ledger, or a very long base, must give a long wait and never a
+// wrapped, negative one, which Decide would read as no wait at all.
+func TestBackoffFor(t *testing.T) {
+	const longest = time.Duration(1<<63 - 1)
+	cases := []struct {
+		name     string
+		restarts int
+		base     time.Duration
+		want     time.Duration
+	}{
+		{"none before the first", 0, time.Minute, 0},
+		{"a negative count is no wait", -1, time.Minute, 0},
+		{"the base before the second", 1, time.Minute, time.Minute},
+		{"doubled before the third", 2, time.Minute, 2 * time.Minute},
+		{"doubled again before the fourth", 3, time.Minute, 4 * time.Minute},
+		{"the doubling stops at sixteen", 17, time.Minute, time.Minute << 16},
+		{"a huge count is the same as the cap", 1 << 30, time.Minute, time.Minute << 16},
+		{"a base too long to double is the longest wait", 17, 10000 * time.Hour, longest},
+		{"a zero base is no wait", 3, 0, 0},
+		{"a negative base is no wait", 3, -time.Minute, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := backoffFor(tc.restarts, tc.base)
+			if got != tc.want {
+				t.Errorf("backoffFor(%d, %s) = %s, want %s", tc.restarts, tc.base, got, tc.want)
+			}
+			if got < 0 {
+				t.Errorf("backoffFor(%d, %s) = %s is negative", tc.restarts, tc.base, got)
+			}
+		})
+	}
+}
+
+// TestRecoveryTitlePrefixIsDistinct holds the give-up item's title to the
+// rule the other two prefixes are held to. Decide looks for stall and
+// host-gone reports by prefix, so a give-up item that began with either would
+// be read as one of them and silence a report the owner is owed in the same
+// attempt.
+func TestRecoveryTitlePrefixIsDistinct(t *testing.T) {
+	if RecoveryTitlePrefix == "" {
+		t.Fatal("the recovery title prefix is empty")
+	}
+	for _, other := range []string{StallTitlePrefix, HostGoneTitlePrefix} {
+		if strings.HasPrefix(RecoveryTitlePrefix, other) || strings.HasPrefix(other, RecoveryTitlePrefix) {
+			t.Errorf("prefixes overlap: %q and %q", RecoveryTitlePrefix, other)
+		}
 	}
 }
 
