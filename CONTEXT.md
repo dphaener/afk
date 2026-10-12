@@ -48,3 +48,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Token record**: one model call's usage as a provider reports it: when, which model, which role and phase, and the four token counts.
 - **Role**: who made a model call inside a session: `conductor`, `planner`, `research`, `crucible`, `task`, `fix`, `verifier`, a `review:` check, `critic`, or `unknown`/`other` when it cannot be told.
 - **Transcript**: the file an agent CLI keeps of one conversation, one JSON object per line; the source of token records.
+- **Attached**: a client the session host has registered as the session's current client; a connection the host has accepted but not yet registered is not attached.
+- **Stress run**: running one test or a whole test package many times in a row, with and without CPU load, to find a test that fails only sometimes.
+- **Flaky test**: a test that sometimes fails although nothing it checks is broken.

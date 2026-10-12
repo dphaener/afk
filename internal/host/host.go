@@ -99,6 +99,17 @@ const (
 	fallbackTERM = "xterm-256color"
 )
 
+// afterAccept runs in acceptLoop each time it has accepted a connection,
+// before that connection is offered to the serve loop, and is handed the
+// channel that closes when shutdown begins. It does nothing in the shipped
+// host. It exists because the window it sits in — a connection the kernel has
+// already told the client is open, which the host has not yet attached — is a
+// few instructions wide, so a test that needs a shutdown to land inside it has
+// to hold it open rather than hope for it. Package-level for the same reason
+// livenessTiming is; newHostRuntime copies it once, so a host that outlives a
+// test never reads the variable again.
+var afterAccept = func(done <-chan struct{}) {}
+
 // resizeNudgeDelay is the gap between the two Setsize calls of a redraw
 // nudge. Long enough that a child which coalesces SIGWINCH still observes
 // two distinct sizes, short enough to be invisible. Package-level so tests
@@ -342,6 +353,20 @@ type hostRuntime struct {
 	inputDropped  uint64
 	inputDropLast time.Time
 
+	// accepting is true from the moment run starts acceptLoop until shutdown
+	// has collected what it left behind. Serve-loop-owned: shutdown runs on
+	// the same goroutine as run, as Serve's deferred call. acceptDone closes
+	// when acceptLoop returns, and unattached (guarded by mu) is the
+	// connection it was holding when shutdown began, if any. See
+	// endUnattached.
+	accepting  bool
+	acceptDone chan struct{}
+	unattached []*clientConn
+
+	// afterAccept is the package-level seam of the same name, copied at
+	// construction; see there.
+	afterAccept func(done <-chan struct{})
+
 	done         chan struct{} // closed when the host is shutting down
 	shutdownOnce sync.Once
 }
@@ -423,6 +448,8 @@ func newHostRuntime(cfg ServeConfig, logger *log.Logger, ln net.Listener) *hostR
 		probes:      make(chan struct{}, 1),
 		restartDone: make(chan restartHandoff, 1),
 		live:        newLiveness(livenessTiming, time.Now()),
+		acceptDone:  make(chan struct{}),
+		afterAccept: afterAccept,
 		done:        make(chan struct{}),
 	}
 	return h
@@ -483,6 +510,7 @@ func (h *hostRuntime) closeCurrentPTY() {
 // a detach is worse than the wedge it is reporting. Input goes to writeChild
 // instead; see readClient.
 func (h *hostRuntime) run(signals <-chan os.Signal) error {
+	h.accepting = true
 	go h.acceptLoop()
 	// Started here rather than in newHostRuntime: it republishes host.json,
 	// which Serve has only just written, and it must not race that first
@@ -572,12 +600,24 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 
 // acceptLoop feeds accepted connections to the serve loop. Accept is not
 // gated on whether a client is already attached — a new connection steals.
+//
+// It stops when shutdown begins. A connection it is holding at that moment
+// was never attached, but its client has no way to know that: a dial returns
+// as soon as the kernel has queued the connection, long before this loop sees
+// it. So the connection is ended the way an attached client's is, with an Exit
+// frame, and left in h.unattached for shutdown to wait on. Closing it bare, as
+// this loop once did, told that client the connection had dropped when the
+// session had ended.
 func (h *hostRuntime) acceptLoop() {
+	defer close(h.acceptDone)
 	for {
 		conn, err := h.ln.Accept()
 		if err != nil {
 			select {
 			case <-h.done:
+				// Also how shutdown stops this loop: it expires the
+				// listener's deadline, which fails the Accept above. See
+				// endUnattached.
 				return
 			default:
 			}
@@ -594,10 +634,14 @@ func (h *hostRuntime) acceptLoop() {
 			continue
 		}
 		c := newClientConn(conn, h.log)
+		h.afterAccept(h.done)
 		select {
 		case h.clients <- c:
 		case <-h.done:
-			c.close()
+			c.end()
+			h.mu.Lock()
+			h.unattached = append(h.unattached, c)
+			h.mu.Unlock()
 			return
 		}
 	}
@@ -965,9 +1009,14 @@ func (h *hostRuntime) drainPTY(g *childProc) {
 	}
 }
 
-// shutdown stops the goroutines and closes the attached client with a
-// trailing Exit frame, which is what tells it the session ended rather than
-// that it was dropped (a bare EOF, see DetachDropped). Idempotent.
+// shutdown stops the goroutines and closes every client with a trailing Exit
+// frame, which is what tells it the session ended rather than that it was
+// dropped (a bare EOF, see DetachDropped). Idempotent.
+//
+// "Every client" is the attached one and any whose connection reached the
+// host without being attached; see endUnattached for the second kind. They
+// share one clientFlushGrace for the flush rather than getting one each, so
+// the time shutdown takes does not grow with the number of clients.
 func (h *hostRuntime) shutdown() {
 	h.shutdownOnce.Do(func() { close(h.done) })
 	// Before anything else, and before Serve's later deferred removal of
@@ -979,8 +1028,177 @@ func (h *hostRuntime) shutdown() {
 	c := h.client
 	h.client = nil
 	h.mu.Unlock()
+	var ending []*clientConn
 	if c != nil {
-		c.endAndWait(clientFlushGrace)
+		// Ended before the unattached connections are collected, so the
+		// child's final output is already flushing while that happens.
+		c.end()
+		ending = append(ending, c)
+	}
+	ending = append(ending, h.endUnattached()...)
+	waitFlushed(ending, clientFlushGrace)
+}
+
+// endUnattached ends, with an Exit frame, every connection that reached the
+// host before shutdown without being attached, and returns them so shutdown
+// can wait for the frames to leave. It does not wait for that itself.
+//
+// Such a connection is in one of two places. acceptLoop may be holding it,
+// having accepted it and not yet handed it to the serve loop, which has
+// stopped receiving. Or it may still be in the listen queue, never accepted:
+// connecting to a unix socket succeeds once the kernel has queued the
+// connection, with no part played by this process. Either way the client
+// thinks it is connected, and both used to end badly for it. The first got a
+// bare close and the second a reset when Serve closed the listener, and attach
+// reports each as "connection dropped" for a session that in fact ended. It
+// was seen as TestServeSIGTERMBehavesLikeExit failing about one run in
+// fifteen, and a user hits it by opening a session at the moment it ends.
+//
+// The order matters. acceptLoop is stopped first and its connection
+// collected, and only then is the queue emptied, so nothing is accepting
+// behind the drain's back when it finds the queue empty.
+//
+// Stopping acceptLoop means expiring the listener's deadline, because the
+// loop is normally parked inside Accept and closing h.done does not wake it.
+// An expired deadline fails that Accept, and every later one before it
+// reaches the kernel (internal/poll's FD.Accept checks the deadline first),
+// which is also why the queue cannot be emptied by calling Accept and has to
+// go through acceptQueued.
+//
+// Every step is bounded by clientFlushGrace: the wait for acceptLoop, and the
+// drain, which a client dialing in a loop could otherwise keep fed for ever.
+// A connection missed because a bound ran out is reset as before, which
+// attach reports as a drop and discovery then corrects; the same honest
+// direction endAndWait fails in.
+func (h *hostRuntime) endUnattached() []*clientConn {
+	if !h.accepting {
+		// acceptLoop never started (Serve failed before run), or a second
+		// shutdown call. Nothing was accepted, and nobody will close
+		// acceptDone, so do not wait on it.
+		return nil
+	}
+	h.accepting = false
+
+	ln, ok := h.ln.(*net.UnixListener)
+	if !ok {
+		// bindLocked only ever returns a unix listener. Without one there
+		// is neither a deadline to stop acceptLoop with nor a queue this
+		// code knows how to read, so the connections are left to the
+		// listener's close, as they were before.
+		return nil
+	}
+	limit := time.Now().Add(clientFlushGrace)
+	if err := ln.SetDeadline(time.Now()); err != nil {
+		h.log.Printf("stopping the accept loop: %v", err)
+	}
+	select {
+	case <-h.acceptDone:
+	case <-time.After(clientFlushGrace):
+		// Draining anyway is safe: the kernel gives each queued connection
+		// to exactly one accepter. The connection acceptLoop holds is then
+		// ended by acceptLoop itself, just not waited for.
+		h.log.Printf("the accept loop did not stop within %s; draining the listen queue without it", clientFlushGrace)
+	}
+
+	h.mu.Lock()
+	ended := h.unattached
+	h.unattached = nil
+	h.mu.Unlock()
+
+	queued, err := acceptQueued(ln, limit)
+	if err != nil {
+		h.log.Printf("draining the listen queue: %v", err)
+	}
+	for _, conn := range queued {
+		c := newClientConn(conn, h.log)
+		c.end()
+		ended = append(ended, c)
+	}
+	if len(ended) > 0 {
+		h.log.Printf("told %d connection(s) that had not attached yet that the session ended", len(ended))
+	}
+	return ended
+}
+
+// acceptQueued takes every connection waiting in ln's listen queue without
+// ever waiting for one to arrive, and gives up at limit.
+//
+// It calls accept(2) on the listener's descriptor directly because that is the
+// only way to ask "is anything queued right now?". ln.Accept parks until a
+// connection arrives, and a listener deadline does not turn it into a poll: a
+// deadline in the future makes it wait that long on an empty queue, which
+// would add the wait to every shutdown, and an expired one fails it before it
+// looks at the queue at all. The descriptor is already non-blocking (the net
+// package opens every socket that way so it can use the poller), so accept
+// returns EAGAIN the moment the queue is empty.
+//
+// Control is used rather than RawConn.Read because Read takes the descriptor's
+// read lock, which an acceptLoop still parked in Accept would hold, and fails
+// on the expired deadline for the same reason Accept does.
+//
+// ForkLock and CloseOnExec are the syscall package's documented way to create
+// a descriptor that a concurrent fork and exec cannot leak into a child; the
+// accepted socket must not be inherited by anything the process starts.
+func acceptQueued(ln *net.UnixListener, limit time.Time) ([]net.Conn, error) {
+	rc, err := ln.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	var conns []net.Conn
+	var acceptErr error
+	err = rc.Control(func(fd uintptr) {
+		for time.Now().Before(limit) {
+			syscall.ForkLock.RLock()
+			nfd, _, err := syscall.Accept(int(fd))
+			if err == nil {
+				syscall.CloseOnExec(nfd)
+			}
+			syscall.ForkLock.RUnlock()
+			switch {
+			case err == nil:
+			case errors.Is(err, syscall.EINTR), errors.Is(err, syscall.ECONNABORTED):
+				// Interrupted, or the client gave up while queued: neither
+				// says the queue is empty.
+				continue
+			case errors.Is(err, syscall.EAGAIN):
+				return
+			default:
+				acceptErr = err
+				return
+			}
+			// net.FileConn works on a duplicate of the descriptor, so the
+			// original is closed either way.
+			f := os.NewFile(uintptr(nfd), "afk-host-queued-client")
+			conn, err := net.FileConn(f)
+			_ = f.Close()
+			if err != nil {
+				acceptErr = err
+				continue
+			}
+			conns = append(conns, conn)
+		}
+	})
+	if err != nil {
+		return conns, err
+	}
+	return conns, acceptErr
+}
+
+// waitFlushed waits for every connection in conns to finish its flush, for at
+// most d in total. One timer for all of them, not one each: the wait is for
+// the slowest client, and must not add up across clients.
+func waitFlushed(conns []*clientConn, d time.Duration) {
+	if len(conns) == 0 {
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	for _, c := range conns {
+		select {
+		case <-c.flushed:
+		case <-timer.C:
+			return
+		}
 	}
 }
 
@@ -1193,22 +1411,26 @@ func (c *clientConn) close() {
 	c.signal()
 }
 
-// endAndWait is close plus a bounded wait for the flush, used on shutdown so
-// the child's final output — and the Exit frame after it — reaches the client
-// before the socket closes. A client that is too far behind to receive Exit
-// within d sees a bare EOF and reads it as DetachDropped, which discovery then
-// corrects; that is the honest direction to fail in.
-func (c *clientConn) endAndWait(d time.Duration) {
+// end is close for a session that is ending: the connection is closed after
+// its queued frames and a trailing Exit frame. Like close it does not wait.
+// A connection that was already closed stays a bare close.
+func (c *clientConn) end() {
 	c.mu.Lock()
 	if !c.closed {
 		c.ended = true
 	}
 	c.mu.Unlock()
 	c.close()
-	select {
-	case <-c.flushed:
-	case <-time.After(d):
-	}
+}
+
+// endAndWait is end plus a bounded wait for the flush, so the child's final
+// output — and the Exit frame after it — reaches the client before the socket
+// closes. A client that is too far behind to receive Exit within d sees a bare
+// EOF and reads it as DetachDropped, which discovery then corrects; that is
+// the honest direction to fail in.
+func (c *clientConn) endAndWait(d time.Duration) {
+	c.end()
+	waitFlushed([]*clientConn{c}, d)
 }
 
 // listenExclusive binds the host's unix socket. A leftover socket file is

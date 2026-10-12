@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -451,6 +452,192 @@ func TestServeSIGTERMBehavesLikeExit(t *testing.T) {
 	assertGone(t, cfg.MetaPath)
 }
 
+// acceptHold is the test side of the afterAccept seam: once armed, it parks
+// the host's accept loop on the next connection it accepts and keeps it parked
+// until the host begins shutting down.
+type acceptHold struct {
+	armed atomic.Bool
+	// parked receives once per connection the accept loop was parked on.
+	parked chan struct{}
+	// forced counts the connections that were held across the start of
+	// shutdown, which is the ordering the test exists to produce.
+	forced atomic.Int32
+}
+
+// holdAcceptedUntilShutdown installs an acceptHold. Like
+// compressRestartLadder it must be called BEFORE the host starts:
+// newHostRuntime copies the seam once, and registering the restore first is
+// what makes t.Cleanup's LIFO order run it after the host has stopped.
+func holdAcceptedUntilShutdown(t *testing.T) *acceptHold {
+	t.Helper()
+	a := &acceptHold{parked: make(chan struct{}, 1)}
+	prev := afterAccept
+	t.Cleanup(func() { afterAccept = prev })
+	afterAccept = func(done <-chan struct{}) {
+		if !a.armed.Load() {
+			return
+		}
+		a.parked <- struct{}{}
+		<-done
+		a.forced.Add(1)
+	}
+	return a
+}
+
+// TestServeTellsUnattachedClientsTheSessionEnded forces the ordering behind
+// TestServeSIGTERMBehavesLikeExit's intermittent failure (about one run in
+// fifteen): net.Dial returns as soon as the kernel has queued the connection,
+// which is before the host has accepted it, let alone attached it, so a
+// shutdown can begin while a client that believes it is connected is still on
+// its way in. Such a client used to get a bare close or a reset, which attach
+// reports as "connection dropped" for a session that had in fact ended.
+//
+// Left to the scheduler that window is a few instructions wide, so the test
+// holds it open with the afterAccept seam instead of hoping for it: the accept
+// loop is parked with the first pending client in hand, every later pending
+// client is therefore still in the listen backlog, and only then is the host
+// told to stop. A version that merely dialed and signalled would pass on the
+// broken host most of the time, which is the flaky test this replaces.
+//
+// The pending count is what separates the two places a client can be. The
+// "one pending" row has only the client the accept loop is holding, and fails
+// if that hand-back loses its Exit. The other rows add clients that were never
+// accepted at all, and fail if the backlog is not drained; with the hand-back
+// fixed and the backlog not, client 0 passes and the rest are reset. Both are
+// load-bearing, since they are separate code in shutdown. The three ways of
+// ending the session are separate rows because each leaves the serve loop
+// through its own branch, and all of them must reach the same shutdown.
+func TestServeTellsUnattachedClientsTheSessionEnded(t *testing.T) {
+	tests := []struct {
+		name    string
+		pending int
+		// end makes the host shut down, through the attached client or not.
+		end func(t *testing.T, attached net.Conn)
+	}{
+		{
+			name:    "client asks for exit, one pending client in the accept loop's hand",
+			pending: 1,
+			end: func(t *testing.T, attached net.Conn) {
+				sendFrame(t, attached, Exit, nil)
+			},
+		},
+		{
+			name:    "client asks for exit, more pending clients still in the listen backlog",
+			pending: 8,
+			end: func(t *testing.T, attached net.Conn) {
+				sendFrame(t, attached, Exit, nil)
+			},
+		},
+		{
+			name:    "host is signalled, pending clients in hand and in the backlog",
+			pending: 8,
+			end: func(t *testing.T, attached net.Conn) {
+				if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+					t.Fatalf("signalling the host: %v", err)
+				}
+			},
+		},
+		{
+			name:    "child exits on its own, pending clients in hand and in the backlog",
+			pending: 8,
+			end: func(t *testing.T, attached net.Conn) {
+				// End-of-file at the start of a line: cat reads zero bytes
+				// and exits.
+				sendFrame(t, attached, Data, []byte{0x04})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// As in TestServeSIGTERMBehavesLikeExit: the test binary must
+			// never be killed by its own SIGTERM.
+			guard := make(chan os.Signal, 1)
+			signal.Notify(guard, syscall.SIGTERM)
+			defer signal.Stop(guard)
+
+			hold := holdAcceptedUntilShutdown(t)
+			h := startServe(t, "exec cat")
+
+			// Prove the attached client is past the accept loop before
+			// arming the hold: its input only comes back once the serve
+			// loop has attached it, and the accept loop hands a connection
+			// over only after the seam has run for it. Arming any earlier
+			// could park this client instead of a pending one.
+			attached := h.dial(t)
+			sendFrame(t, attached, Resize, EncodeResize(24, 80))
+			sendFrame(t, attached, Data, []byte("attached\n"))
+			readUntil(t, attached, "attached")
+			hold.armed.Store(true)
+
+			pending := make([]net.Conn, 0, tt.pending)
+			for i := 0; i < tt.pending; i++ {
+				pending = append(pending, h.dial(t))
+				if i > 0 {
+					continue
+				}
+				// Wait until the accept loop is parked on the first one, so
+				// the rest cannot be accepted before shutdown begins.
+				select {
+				case <-hold.parked:
+				case <-time.After(testBudget):
+					t.Fatalf("the accept loop never accepted the first pending client")
+				}
+			}
+
+			tt.end(t, attached)
+
+			expectFrame(t, attached, Exit)
+			expectEOF(t, attached)
+			for i, conn := range pending {
+				where := "still in the listen backlog"
+				if i == 0 {
+					where = "held by the accept loop"
+				}
+				if err := expectSessionEnded(conn); err != nil {
+					t.Errorf("pending client %d (%s) was not told the session ended: %v", i, where, err)
+				}
+			}
+			if err := h.waitDone(t); err != nil {
+				t.Errorf("Serve = %v, want nil", err)
+			}
+
+			// Without this the assertions above could pass because the host
+			// happened to attach every client before it stopped.
+			if got := hold.forced.Load(); got != 1 {
+				t.Errorf("the accept loop was held across the start of shutdown %d times, want 1: the ordering under test was not forced", got)
+			}
+			assertGone(t, h.cfg.Socket)
+			assertGone(t, h.cfg.MetaPath)
+		})
+	}
+}
+
+// expectSessionEnded reads conn to its end and reports an error unless it
+// carried exactly one Exit frame followed by EOF, which is what attach needs to
+// report that the session ended. An error rather than a t.Fatal so one test can
+// report every pending client, since which ones fail says which path is broken.
+func expectSessionEnded(conn net.Conn) error {
+	if err := conn.SetReadDeadline(time.Now().Add(testBudget)); err != nil {
+		return fmt.Errorf("SetReadDeadline: %w", err)
+	}
+	typ, _, err := ReadFrame(conn)
+	if err != nil {
+		return fmt.Errorf("want an Exit frame, got %w", err)
+	}
+	if typ != Exit {
+		return fmt.Errorf("want an Exit frame, got a %v frame", typ)
+	}
+	typ, _, err = ReadFrame(conn)
+	if err == nil {
+		return fmt.Errorf("want EOF after the Exit frame, got a %v frame", typ)
+	}
+	if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("want EOF after the Exit frame, got %w", err)
+	}
+	return nil
+}
+
 func TestServeChildExitEndsHost(t *testing.T) {
 	h := startServe(t, "sleep 1; exit 3")
 	conn := h.dial(t)
@@ -491,8 +678,19 @@ exec cat`, doneFile)
 	readUntil(t, conn, "still-alive")
 }
 
+// The refused host must leave the first host's socket and host.json alone.
+// Serve returns from listenExclusive's ErrHostAlreadyRunning before it
+// registers the deferred release that calls removeOurMeta, so nothing in the
+// refusal path can remove either file.
+//
+// The test has to wait for host.json before starting the second host:
+// startServe reports ready as soon as the socket accepts a connection, but
+// Serve writes host.json only after it has spawned the child. Without the
+// wait, the os.Stat below could run before the first host wrote the file and
+// report "removed" a file that never existed yet.
 func TestServeRefusesWhenALiveHostIsListening(t *testing.T) {
 	first := startServe(t, "exec cat")
+	awaitMeta(t, first.cfg, "was written by the first host", func(Meta) bool { return true })
 
 	second := serveConfigFor(t, "")
 	marker := filepath.Join(second.Worktree, "second-child-ran")
@@ -800,7 +998,15 @@ func stuckChildServeConfig(t *testing.T) (ServeConfig, string) {
 
 // setStuckChildFlag flips one of the fixture's switches. The fixture polls
 // its control directory for these marker files, so creating or removing one
-// is the whole coordination protocol.
+// is how the switch is flipped.
+//
+// For the write switch it then waits for the fixture's acknowledgement, so the
+// call returns only once the fixture has acted on the new value: after "stop
+// writing" no further heartbeat can be written. The fixture notices a change
+// only once per stuckChildPollInterval, and a caller that assumes it did
+// sooner sees one stray heartbeat. The read switch is not acknowledged
+// because a fixture blocked in Read cannot look at it (see
+// stuckChildWriteLoop).
 func setStuckChildFlag(t *testing.T, ctrlDir, name string, on bool) {
 	t.Helper()
 	path := filepath.Join(ctrlDir, name)
@@ -808,10 +1014,11 @@ func setStuckChildFlag(t *testing.T, ctrlDir, name string, on bool) {
 		if err := os.WriteFile(path, nil, 0o644); err != nil {
 			t.Fatalf("setting fixture flag %s: %v", name, err)
 		}
-		return
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("clearing fixture flag %s: %v", name, err)
+	}
+	if name == stuckChildNoWriteFlag {
+		awaitStuckChildWriteAck(t, ctrlDir, on)
 	}
 }
 
@@ -831,6 +1038,28 @@ func awaitLogLine(t *testing.T, path, want string) {
 	}
 	data, _ := os.ReadFile(path)
 	t.Fatalf("host log %s never contained %q; log so far:\n%s", path, want, data)
+}
+
+// floodUntilInputDropped sends chunk as client input until host.log reports
+// dropped input, and fails if that has not happened within testBudget. It
+// exists because the number of chunks needed depends on how much the PTY will
+// absorb before a write blocks, which this test cannot know; the log line is
+// the only signal that the queue overflowed. There is no sleep: each send is
+// the pacing, and the host reads its socket without ever blocking on the
+// child, so the sends cannot stall.
+func floodUntilInputDropped(t *testing.T, conn net.Conn, chunk []byte, logPath string) {
+	t.Helper()
+	deadline := time.Now().Add(testBudget)
+	sent := 0
+	for time.Now().Before(deadline) {
+		sendFrame(t, conn, Data, chunk)
+		sent++
+		if data, err := os.ReadFile(logPath); err == nil && strings.Contains(string(data), "bytes of input") {
+			return
+		}
+	}
+	data, _ := os.ReadFile(logPath)
+	t.Fatalf("host log %s never contained %q after %d chunks of %d bytes; log so far:\n%s", logPath, "bytes of input", sent, len(chunk), data)
 }
 
 // TestServeStaysLiveWhenTheChildStopsReadingItsInput is the regression test
@@ -873,15 +1102,23 @@ func TestServeStaysLiveWhenTheChildStopsReadingItsInput(t *testing.T) {
 	// the writer. An unterminated byte stream is discarded by the driver
 	// instead of blocking, which would let this test pass without ever
 	// wedging anything.
+	//
+	// The flood has no fixed size, because no size is safe: the host logs
+	// "bytes of input" only when queueInput finds the 64-chunk queue full,
+	// which needs the PTY to be full first (the writer blocks in ptmx.Write
+	// and the queue then backs up behind it). A fixed 4*childInputQueueDepth
+	// chunks (about 22KB) did not always get there: in 15 of 40 saved runs
+	// (.afk/t0-5/evidence/w1-t3-before.txt) the log held no drop line at all,
+	// so the PTY plus the queue absorbed the whole flood. How much the PTY
+	// accepts is the kernel's and the fixture's to decide, so send until the
+	// host reports the drop, checking the log between sends, bounded by
+	// testBudget.
 	chunk := []byte(strings.Repeat("0123456789\n", 8))
-	for i := 0; i < 4*childInputQueueDepth; i++ {
-		sendFrame(t, conn, Data, chunk)
-	}
+	floodUntilInputDropped(t, conn, chunk, cfg.LogPath)
 
 	// A real size change, so "resized" in the log is unambiguous.
 	sendFrame(t, conn, Resize, EncodeResize(40, 120))
 	awaitLogLine(t, cfg.LogPath, "resized pty to 40x120")
-	awaitLogLine(t, cfg.LogPath, "bytes of input")
 
 	sendFrame(t, conn, Detach, nil)
 	expectEOF(t, conn)

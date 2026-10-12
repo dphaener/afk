@@ -726,6 +726,7 @@ T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent 
   under CPU load; the whole `internal/host` package passes 100 of 100 with `-race` and 50 of 50 under
   load; `internal/ui -short` passes 50 of 50 with `-race`. Commands and counts saved as evidence.
   `make check` green.
+- **Amended 2026-10-12 (T0.5 done):** later tasks may assume the following. (1) No test in `internal/host` or `internal/ui -short` is known to be flaky, so a red run is a real fault; five host tests were, and each cause is under `## T0.5` in `docs/decisions.md`. (2) One was a real host fault: on shutdown the host now sends an `Exit` frame to every connection that reached it without being attached (held by the accept loop, or still in the listen queue), so a client connecting as a session ends is told "session ended" (11), not "dropped" (13). The frame protocol and the bare close on `Detach` are unchanged, and shutdown's extra waits share one `clientFlushGrace`. (3) `host.go` has a test seam, the package variable `afterAccept`, and the stuck-child test fixture acknowledges its write switch in `ack-no-write`; `setStuckChildFlag` waits for it. (4) The host fix uses `syscall.Accept` on the listener and has been run on Linux only. (5) A whole `internal/host` run with `-race` takes about a minute and `internal/ui -short` about two, so stress runs of either take hours.
 
 ---
 
