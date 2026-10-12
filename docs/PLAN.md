@@ -295,6 +295,8 @@ deploys = true
 health_url = ""                 # polled after merge when deploys = true
 deploy_timeout = "15m"
 required_env_pattern = ""       # regex; a diff adding a match parks the task before merge (§5.4)
+after_merge = ""                # shell command run in the main checkout after a merge (T2.2a)
+after_merge_timeout = "10m"
 
 [policy]
 notes = """
@@ -937,8 +939,44 @@ with nobody at the keyboard.
   private GitHub repo with a trivial CI workflow, recorded in `docs/decisions.md`.
 - Amended 2026-10-12 (T2.2 done): later tasks may assume the following. (1) `internal/ship` is a pure `Decide(Facts) Step` plus `Advance`, one step per daemon pass, behind `Git` and `GH` interfaces; the daemon reaches it through the optional `Deps.Ship`, `SendPrompt`, `Clean` and `NotifyUrgent`. (2) The ledger entry carries `ship`, `ship_at`, `ci_reruns` and `ci_fix_cycles` while its status is `shipping`; a new attempt clears them with `pr` and `merged_sha`. (3) The daemon can type into a session with `host.SendInput` (it takes the client slot for about half a second); T2.3 can use it for its "continue" prompt, and an un-parked session is sent its resume command. (4) After a merge the daemon fast-forwards the project checkout's base branch, cleans the session and deletes the merged branch. (5) A pull request with no checks, or a cancelled check, is never merged; the task parks. (6) A stopped line is `.afk/build/stopped`, cleared by `afk resume` together with a pause; a pause does not stop a ship in progress. (7) With no ledger file the daemon starts nothing: T4.1 seeds nebari with `afk ledger init --done-through`. Owner tasks (`(owner)` or `(owner; …)` in the title) are confirmed in the inbox, never launched. (8) Not yet seen: a real agent receiving a typed line, a real deploy check, a park or a stopped line against GitHub; the supervised run of T4.2 is the first. See `## T2.2` in `docs/decisions.md`.
 
+#### T2.2a — Pick up new code after a merge
+- **Depends on:** T2.2
+- **Goal:** while afk builds itself, each merged task is installed and running before the next one
+  starts, with nothing done by hand.
+- **Background:** a running daemon keeps the code it started with. After every merge to this repo the
+  owner has had to run `make install`, `afk plugin install --target claude` and `systemctl --user
+  restart afkd`. A project that is not afk itself needs none of this.
+- **Scope:**
+  - **`after_merge`.** New key under `[ship]` in `afk.toml` (§4.6): a shell command, empty by
+    default. The ship state machine runs it in the project's main checkout after the merge and the
+    fast-forward of the base branch, and before the deploy check. It is a persisted ship state like
+    the others, so a crash never runs it twice for one merge and never skips it. Its output goes to a
+    file under `.afk/build/`. A non-zero exit or a timeout (`after_merge_timeout`, default `10m`)
+    stops the line (§5.4) with a blocking `failure` item carrying the end of the output.
+  - **Restart on a new binary.** At start the daemon records the identity of its own executable
+    (size and modification time, or a hash). At the top of each pass, if the file on disk differs, it
+    writes a decision-log line and exits 0; the service manager starts the new one. It exits only
+    between passes, never in the middle of a ship step. Unknown or unreadable executable: carry on
+    and say so once in `afk daemon status`.
+  - **The unit file.** `contrib/afkd.service` changes to `Restart=always`, keeping `RestartSec=30`
+    and `KillMode=process`; `contrib/README.md` says why, and that a daemon run by hand in a terminal
+    simply exits on a new binary and must be started again.
+  - **This repo.** Commit an `afk.toml` with `after_merge = "make install && afk plugin install
+    --target claude"`. `afk.local.toml` stays uncommitted.
+- **Must not:** restart or signal session hosts; run `after_merge` for a task that did not merge;
+  run it inside a session's worktree.
+- **Acceptance:** table tests over the fake `git`/`gh`: `after_merge` runs once after a merge and
+  before the deploy check; empty means no step; a failure stops the line and `afk resume` clears it;
+  a crash before, during and after the command resumes without a second run. Tests for the binary
+  check: unchanged carries on, changed exits 0 between passes with one log line, unreadable carries
+  on. Then one real check on the VM, recorded in `docs/decisions.md`: with the daemon running under
+  systemd, rebuild the binary with `make install` and see the unit restart on the next pass with
+  running sessions untouched.
+- **Note:** the daemon that runs this task has neither feature, so after it merges the owner installs
+  and restarts by hand one last time.
+
 #### T2.3 — Automatic recovery
-- **Depends on:** T0.4, T0.5, T2.1
+- **Depends on:** T0.4, T0.5, T2.1, T2.2a
 - **Scope:** §5.6. Wedge detection with no client attached; automatic restart with a cap and backoff;
   host relaunch after a reboot; a "continue" prompt after a restart when the session comes back idle
   mid-task.
