@@ -386,6 +386,8 @@ func TestViewIncludesStackAndDiffPanels(t *testing.T) {
 	}
 
 	// The Stack tab has the whole tree, siblings and owners included.
+	m = focusOverview(t, m)
+	m.status = "" // the focus toast covers the right pane's top rows
 	m, _ = update(t, m, keyRune('3'))
 	out = render(m)
 	for _, want := range []string{"main", "feat-b", "feat-c", "[feat-a]"} {

@@ -86,14 +86,18 @@ func (m Model) View() tea.View {
 	} else {
 		list := m.renderList(listOuter, bodyHeight)
 		// A visible pane takes over the main region; otherwise the detail pane
-		// renders. A pane that is alive but hidden (paneHidden) deliberately
-		// renders as the detail view: the pane stays alive and resizing, the
-		// detail shows the summary, and ctrl+t toggles back.
+		// renders. A pane that is alive behind the overview (view ==
+		// viewOverview) deliberately renders as the detail view: the pane
+		// stays alive and resizing, the detail shows the summary, and ctrl+t
+		// switches back.
 		var main string
-		if m.shouldRenderPane() {
+		switch {
+		case m.shouldRenderPane():
 			main = m.renderPane(mainOuter, bodyHeight)
 			paneShown = true
-		} else {
+		case m.agentPlaceholderDrawn():
+			main = m.renderAgentPlaceholder(mainOuter, bodyHeight)
+		default:
 			main = m.renderDetail(mainOuter, bodyHeight)
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, list, main)
@@ -144,10 +148,10 @@ func (m Model) View() tea.View {
 	// bare nil check), which is why the gate below never assigns at all in the
 	// hiding cases, and why paneCursor returns nil rather than a hidden Cursor.
 	//
-	// The gate is the INPUT MODE, not m.paneFocused, and the difference is the
+	// The gate is the INPUT MODE, not m.focus, and the difference is the
 	// decision this feature turns on (D4): the cursor marks where keystrokes
 	// land. A footer modal leaves the pane fully drawn and still focused while
-	// owning the keyboard, so paneFocused alone would blink a cursor inside a
+	// owning the keyboard, so the focus alone would blink a cursor inside a
 	// session that is receiving nothing the user types. activeInputMode is the
 	// same predicate routeMouse asks (model.go), for the same reason.
 	//
@@ -162,58 +166,181 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// shouldRenderPane decides whether View should render the pane or fall through
-// to renderDetail. The pane renders when it exists, is not hidden, AND:
-//   - The pane is for the selected session (cursor on the paned row), OR
-//   - The keyboard is routed to the pane (paneFocused — a tick can move the
-//     cursor off the paned session while the user is typing, and hiding the
-//     pane they are typing into would be hostile), OR
-//   - There is no selection (selected() → ok=false, reachable when the paned
-//     session's row leaves discovery and the list empties; without this the pane
-//     stops rendering while cleanRequested still blocks `c` pointing at an invisible
-//     pane).
-//
-// paneHidden is checked first and unconditionally: it is an explicit ctrl+t from
-// the user, so it outranks every reason below, all of which infer intent from the
-// cursor. In particular the paneFocused clause must not resurrect a hidden pane —
-// togglePaneSummary clears focus on hide precisely so the two can never disagree,
-// and this ordering means a future path that hides without clearing focus degrades
-// to a stale grid rather than to keystrokes routed off-screen.
-func (m Model) shouldRenderPane() bool {
-	if m.pane == nil || m.paneHidden {
+// paneForSelection reports whether a live pane belongs to the selected row:
+// one is installed AND either the cursor is on its row or there is no
+// selection at all (selected() → ok=false, reachable when the paned session's
+// row leaves discovery and the list empties; without this the pane stops
+// rendering while cleanRequested still blocks `c` pointing at an invisible
+// pane). It is the "pane" half of the focus model — modeSnapshot copies it
+// into modeState.pane — and it deliberately does not consult focus: a
+// pane for a row the cursor has left is not the selection's pane whoever
+// holds the keyboard, so the frame and the dispatch cannot disagree about
+// which session is on screen.
+func (m Model) paneForSelection() bool {
+	if m.pane == nil {
 		return false
 	}
 	s, ok := m.selected()
 	if !ok {
-		return true // no selection — render the pane
+		return true
 	}
-	if s.Name == m.paneName {
-		return true // pane is for the selected session
-	}
-	if m.paneFocused {
-		return true // keyboard routed to the pane — must stay visible
-	}
-	return false
+	return s.Name == m.paneName
+}
+
+// shouldRenderPane decides whether View should render the pane or fall
+// through to renderDetail: the view is the agent's AND a pane belongs to
+// the selected row. The view is checked first and unconditionally: it is an
+// explicit ctrl+t from the user, so it outranks the cursor-derived half.
+//
+// There is no longer a "keyboard routed to the pane" clause keeping a pane
+// drawn after a discovery tick moves the cursor off its row. The two-axis
+// model cannot tell that case apart from `f` pressed on a row whose pane is
+// elsewhere, and the latter must draw the overview; keeping the paned row
+// selected across ticks is the pane-lifecycle work this derivation leaves to
+// selection pinning rather than to a render-time exception.
+func (m Model) shouldRenderPane() bool {
+	return m.view == viewAgent && m.paneForSelection()
 }
 
 // detailDrawn is "the detail box is the surface in the main region": the
-// single predicate `f` branches on (applyKeyAction's actionFocusPane case),
-// the invariant reconcileDetailFocus enforces, and the gate that decides
-// whether `f` is advertised at all (normalBindingEnabled). Defining it once
-// is the point — three near-identical spellings of "the detail pane is drawn"
-// is exactly the drift that leaves the key advertised where it does nothing.
+// single predicate `f` branches on (applyKeyAction's actionFocusPane case)
+// and the gate that decides whether `f` is advertised at all
+// (normalBindingEnabled). Defining it once is the point — three
+// near-identical spellings of "the detail pane is drawn" is exactly the drift
+// that leaves the key advertised where it does nothing.
 //
 // Both terms are load-bearing. !shouldRenderPane alone is NOT enough: it is
 // false whenever pane == nil, so `m.pane != nil || !m.shouldRenderPane()`
 // reduces to true and would advertise `f` over the empty state. View (above)
 // draws the detail box under exactly this conjunction.
-//
-// It is deliberately NOT the same question as routeConds.detailShown
-// (model.go), which is !shouldRenderPane alone and gates the tab rules. That
-// gate is left as it is: the tab keys are harmless in the empty state, and
-// repointing them here would fold an unrelated behaviour change into this one.
 func (m Model) detailDrawn() bool {
-	return !m.shouldRenderPane() && m.hasActiveProject()
+	return m.detailInMain() && m.hasActiveProject()
+}
+
+// detailInMain is "neither the pane nor the agent placeholder is drawn": with
+// either agent surface up there is no tab strip or overview to act on.
+func (m Model) detailInMain() bool {
+	return !m.shouldRenderPane() && !m.agentPlaceholderDrawn()
+}
+
+// agentPlaceholderDrawn reports whether the right side draws the agent
+// placeholder: the agent view with no pane for the selected row, for a row
+// that HAS an agent to show — running, or with a restart of ours in flight.
+//
+// A row with no live agent (stopped, host gone, pending, worktree fault,
+// cleaning, finished) never gets the placeholder: the right side draws its
+// OVERVIEW whatever the sticky view says, because "no agent running" is not
+// something the user can read anything from, and the overview is. The view
+// preference itself is left alone, so the next running row still shows its
+// agent. `r` is how such a row gets an agent again (restartSelected), never
+// enter.
+//
+// For a row that has an agent: with the right side focused the placeholder is
+// always drawn — the keyboard is on the agent surface, connecting or lost.
+// With the list focused it is drawn only for a lost pane (the row keeps
+// saying why its agent is gone) or a restart in flight; a running row with no
+// pane yet is one preview away from its agent, and shows the overview
+// meanwhile so browsing does not flash a placeholder on every move.
+func (m Model) agentPlaceholderDrawn() bool {
+	if m.view != viewAgent || m.paneForSelection() || !m.hasActiveProject() {
+		return false
+	}
+	s, ok := m.selected()
+	if !ok {
+		return m.focus == focusRight
+	}
+	if !m.rowHasAgent(s) {
+		return false
+	}
+	if s.Name == m.paneLost.name || m.restartingRow(s.Name) {
+		return true
+	}
+	return m.focus == focusRight
+}
+
+// agentCanRun is "this row has a live host an attach could reach".
+func (m Model) agentCanRun(s Session) bool {
+	return s.HostRunning && !s.Pending && !isWorktreeFault(s.Kind) && !m.cleaningSessions[cleanIDFor(s)]
+}
+
+// rowHasAgent is "the agent view has an agent to show for this row": a live
+// host, or one this dashboard is restarting right now. It is the predicate
+// that sends a row's right side to the overview (agentPlaceholderDrawn), stops
+// enter from connecting it (focusRightSide), and makes ctrl+t inert on it
+// (toggleView).
+func (m Model) rowHasAgent(s Session) bool {
+	return m.agentCanRun(s) || m.restartingRow(s.Name)
+}
+
+// restartingRow reports whether a host restart this dashboard dispatched for
+// name, in the current project, has not reported back yet.
+func (m Model) restartingRow(name string) bool {
+	return name != "" && m.restartInFlight.name == name && m.restartInFlight.gen == m.projectGen
+}
+
+// agentPlaceholderText is the placeholder's title and its two lines: what the
+// agent view is showing instead of an agent, and the action that changes
+// that, empty where there is none. The order is the order of specificity: an
+// outstanding restart or dial, then a lost connection, says more about the
+// row than its discovered state does. Rows with no live agent never reach here (they draw
+// the overview — see agentPlaceholderDrawn).
+func (m Model) agentPlaceholderText() (title, line, action string) {
+	s, ok := m.selected()
+	if !ok {
+		switch {
+		case m.attachInFlight.name != "":
+			return m.attachInFlight.name, "connecting to " + m.attachInFlight.name + "…", ""
+		case m.restartingRow(m.restartInFlight.name):
+			return m.restartInFlight.name, "restarting " + m.restartInFlight.name + "…", ""
+		}
+		return "Agent", "no session selected", ""
+	}
+	title = displayName(s)
+	switch {
+	case m.restartingRow(s.Name):
+		return title, "restarting " + s.Name + "…", ""
+	case m.attachInFlight.name == s.Name:
+		// Ahead of the lost case: paneLost survives until the reconnect
+		// installs, and while that dial is out enter only joins it, so
+		// offering "enter to reconnect" would advertise a key that does
+		// nothing new (placeholderConnectLive reads this action line).
+		return title, "connecting to " + s.Name + "…", ""
+	case s.Name == m.paneLost.name:
+		return title, m.paneLost.message, "enter to reconnect"
+	}
+	return title, s.Name + " is running", "enter to connect"
+}
+
+// placeholderConnectLive is whether enter in the agent placeholder would
+// start a new connect. It reads agentPlaceholderText's action line rather
+// than re-deriving the states, so the footer and the box offer enter in
+// exactly the same states: not while the row's connect or restart is already
+// out (enter only joins it there), and not with no row selected.
+func (m Model) placeholderConnectLive() bool {
+	_, _, action := m.agentPlaceholderText()
+	return action != ""
+}
+
+// renderAgentPlaceholder draws the agent view's stand-in: the pane's box and
+// title line, so the view reads as the agent surface it replaces, with the
+// state and the action in place of the emulator screen.
+func (m Model) renderAgentPlaceholder(outerW, outerH int) string {
+	contentW, _ := paneContentDims(outerW, outerH)
+	title, line, action := m.agentPlaceholderText()
+	hint := focusBindingHint(m.keys.Focus)
+	style := theme.paneBox
+	if m.focus == focusRight {
+		hint = "[" + m.keys.Toggle.Help().Key + " " + m.keys.Toggle.Help().Desc +
+			" · " + unfocusPaneKey.Help().Key + " " + unfocusPaneKey.Help().Desc + "]"
+		style = theme.paneBoxFocused
+	}
+	lines := []string{paneTitleBlock(title, hint, contentW), "", truncate(line, contentW)}
+	if action != "" {
+		lines = append(lines, theme.dim.Render(truncate(action, contentW)))
+	}
+	return sizedBox(style, contentW+2, outerH-boxBorderCells).
+		MaxHeight(outerH).
+		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 // layoutDims computes the dashboard body layout from the current terminal
@@ -355,7 +482,7 @@ const (
 // show how to detach (ctrl+\), while unfocused panes use the same combined
 // binding the footer, full help, palette, and detail edge expose.
 func (m Model) paneTitleHint() string {
-	if m.paneFocused {
+	if m.paneOwnsKeyboard() {
 		return paneFocusHint
 	}
 	return focusBindingHint(m.keys.Focus)
@@ -454,34 +581,33 @@ func (m Model) renderPane(outerW, outerH int) string {
 // paneBoxStyle picks the pane border: accent while the child owns keyboard
 // input, neutral otherwise.
 func (m Model) paneBoxStyle() lipgloss.Style {
-	if m.paneFocused {
+	if m.paneOwnsKeyboard() {
 		return theme.paneBoxFocused
 	}
 	return theme.paneBox
 }
 
 // listBoxStyle picks the sidebar border: accent while the dashboard owns
-// keyboard input — no focused pane, no focused detail pane, and no open
-// creation form (the form owns input while active, so the sidebar goes
-// neutral with it). detailFocused joined the gate in W3.T1: without it the
-// sidebar kept its accent while the detail pane also wore one, two boxes
-// claiming the keyboard at once (styles.go's accent convention doc).
+// keyboard input — the list is focused and no creation form is open (the
+// form owns input while active, so the sidebar goes neutral with it). Any
+// right focus, pane or overview, turns it neutral: two boxes must never
+// claim the keyboard at once (styles.go's accent convention doc).
 func (m Model) listBoxStyle() lipgloss.Style {
-	if m.formOpen || (m.pane != nil && m.paneFocused) || m.detailFocused {
+	if m.formOpen || m.focus == focusRight {
 		return theme.listBox
 	}
 	return theme.listBoxFocused
 }
 
 // detailBoxStyle picks the detail pane's border: accent while it owns
-// keyboard input (m.detailFocused), neutral otherwise. Mirrors paneBoxStyle
+// keyboard input (detailOwnsKeyboard), neutral otherwise. Mirrors paneBoxStyle
 // above; renderDetail hands the one returned style to both boxDetailBody
 // (which colors all four border sides via sizedBox) and labelBorders (which
 // repaints only the top/bottom edges FROM THE SAME STYLE) — a mismatched pair
 // of calls here is exactly how an indicator ends up with an accent top/bottom
 // and gray verticals (see boxDetailBody's doc).
 func (m Model) detailBoxStyle() lipgloss.Style {
-	if m.detailFocused {
+	if m.detailOwnsKeyboard() {
 		return theme.detailBoxFocused
 	}
 	return theme.detailBox
@@ -1414,49 +1540,34 @@ var helpToggleKey = key.NewBinding(key.WithKeys("?"))
 // whether it still dispatches.
 func (m Model) normalBindingEnabled(b key.Binding) bool {
 	switch {
-	case slices.Equal(b.Keys(), m.keys.Toggle.Keys()):
-		return m.canShowAgentSurface()
-	// Focus is split from Toggle because the two no longer answer the same
-	// question. Ctrl-T shows an agent surface, while the combined binding
-	// focuses whichever surface is already drawn in the main region.
+	// The combined binding focuses whichever surface is drawn in the main
+	// region.
 	case slices.Equal(b.Keys(), m.keys.Focus.Keys()):
-		return m.pane != nil || m.detailDrawn()
+		return m.pane != nil || m.detailDrawn() || m.agentPlaceholderDrawn()
 	case slices.Equal(b.Keys(), m.keys.Restart.Keys()):
-		s, ok := m.selected()
-		if !ok {
-			return false
-		}
-		_, wedged := showsWedged(s, m.deps.Now())
-		return wedged
-	case slices.Equal(b.Keys(), detailTabNextKey.Keys()),
-		slices.Equal(b.Keys(), detailTabPrevKey.Keys()),
-		slices.Equal(b.Keys(), detailTabJumpKey.Keys()):
-		return !m.shouldRenderPane()
+		return m.restartKeyLive()
 	}
 	return b.Enabled()
 }
 
-// canShowAgentSurface is Ctrl-T's presentation gate. An already drawn pane can
-// be hidden, and a hidden pane can be revealed only while its own row remains
-// selected. Otherwise the selected ordinary session must be able to open or
-// restart an agent even before it has a pane. Pending rows, worktree faults,
-// and rows being cleaned cannot produce an agent surface, so help and the
-// palette must not offer a chord whose handler will refuse them.
-func (m Model) canShowAgentSurface() bool {
-	if m.pane != nil && m.shouldRenderPane() {
-		return true
-	}
+// restartKeyLive is whether `r` acts on the selected row right now — the
+// same gates restartSelected (model.go) applies, so help and the palette name
+// the key exactly where it does something: a stopped row it would restart
+// straight away, or a running row the dashboard already shows as WEDGED, where
+// it asks for confirmation first.
+func (m Model) restartKeyLive() bool {
 	s, ok := m.selected()
 	if !ok {
 		return false
 	}
-	if m.paneHidden && s.Name == m.paneName {
+	if m.restartableStopped(s) {
 		return true
 	}
-	if s.Pending || isWorktreeFault(s.Kind) {
+	if !s.HostRunning || s.Pending || m.cleaningSessions[cleanIDFor(s)] {
 		return false
 	}
-	return !m.cleaningByName(s.Name)
+	_, wedged := showsWedged(s, m.deps.Now())
+	return wedged
 }
 
 // findBinding returns the first binding in bindings whose Keys() equal keys,
@@ -1527,29 +1638,22 @@ func renderModeHelp(km help.KeyMap, showAll bool, width int) string {
 }
 
 // renderNormalHelpKeyMap builds inputNormal's help.KeyMap. Full is the mode's
-// whole registered set (mode.go), with Toggle/Focus/Restart's enabled bit set
-// from live state so `?`'s full-help view never advertises a key that is
-// currently a no-op. Short is the same curated subset the retired hand-rolled
-// ladder showed — movement, attach, pane detach, new, clean, restart, focus,
-// toggle, quit — in the same priority order, including the one state that
-// reorders it: a HIDDEN pane leads with Toggle, because ctrl+t is the only
-// way back to a pane the user cannot see (see the retired ladder's comment,
-// preserved here). Everything else the mode carries (paging, the project
-// switcher, labels, the filter prompt, the mouse-release chord) is absent from
-// Short by the same design the retired ladder documented — oversubscribed
-// even before this task — and reachable only through `?`.
+// whole registered set (mode.go), with Focus/Restart's enabled bit set from
+// live state so `?`'s full-help view never advertises a key that is currently
+// a no-op. Short is a curated subset — movement, restart, focus, pane close,
+// new, clean, quit. ctrl+t is in neither: it is not a list key (the list
+// controls nothing on the right side), so normal mode has no rule for it.
+// Everything else the mode carries (paging, the project switcher, labels, the
+// filter prompt, the mouse-release chord) is absent from Short — the line is
+// oversubscribed — and reachable only through `?`.
 //
-// State-conditional items (Restart, Focus, Toggle when not hidden) are placed
-// right after movement, ahead of New/Clean/close-pane, rather than after them as
-// the retired ladder had it. That ladder never had to answer whether they
-// SURVIVE a width budget — it built one unbounded string and left cutting to
-// whichever caller truncated it. help.Model's ellipsis truncation is now part
-// of THIS function's own output, so a key that only matters in the current
-// state (a wedged selection's Restart, an open pane's Focus/Toggle) has to
-// outrank the always-available New/Clean to still be legible at the widths
-// TestToggleKeyAdvertisedOnlyWithPane/TestHelpAdvertisesRestartOnlyOnAWedgedSelection
-// exercise (m.width 120, the suite default) — 9 enabled items do not fit in
-// 120 columns in any order, so ordering is the whole mechanism.
+// State-conditional items (Restart, Focus) are placed right after movement,
+// ahead of New/Clean/close-pane. help.Model's ellipsis truncation is part of
+// THIS function's output, so a key that only matters in the current state (a
+// stopped or wedged selection's Restart) has to outrank the always-available
+// New/Clean to still be legible at the widths
+// TestHelpAdvertisesRestartWhereItActs exercises (m.width 120, the suite
+// default) — ordering is the whole mechanism.
 func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 	reg := m.modes()
 	full := append([]key.Binding(nil), reg.spec(inputNormal).keys.bindings...)
@@ -1565,19 +1669,9 @@ func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 	clean := findBinding(full, m.keys.Clean.Keys())
 	restart := findBinding(full, m.keys.Restart.Keys())
 	focus := findBinding(full, m.keys.Focus.Keys())
-	toggle := findBinding(full, m.keys.Toggle.Keys())
 	quit := findBinding(full, m.keys.Quit.Keys())
 
-	hidden := m.pane != nil && m.paneHidden
-	var short []key.Binding
-	if hidden {
-		short = append(short, toggle)
-	}
-	short = append(short, up, down, restart, focus)
-	if !hidden {
-		short = append(short, toggle)
-	}
-	short = append(short, closePane, newSession, clean, quit)
+	short := []key.Binding{up, down, restart, focus, closePane, newSession, clean, quit}
 
 	// `?` documents itself on both views, mirroring bubbles/list's own
 	// ShowFullHelp/CloseFullHelp convention (same chord, a label naming
@@ -1633,12 +1727,39 @@ func (m Model) renderHelp() string {
 	spin := m.helpSpinnerPrefix()
 	width := m.width - lipgloss.Width(spin)
 
-	switch mode {
-	case inputPane:
+	switch {
+	case mode == inputDetail && m.agentPlaceholderDrawn():
+		// The agent placeholder: inputDetail by derivation, but only
+		// placeholderKey's keys act there (model.go dispatchKey). enter and
+		// `r` are advertised only where they would act, on normal mode's
+		// never-advertise-a-no-op rule: while a connect or restart for the
+		// row is already out, enter only joins it.
+		var short []key.Binding
+		if m.placeholderConnectLive() {
+			short = append(short, m.keys.Focus)
+		}
+		short = append(short, m.keys.Toggle, unfocusPaneKey)
+		if m.restartKeyLive() {
+			short = append(short, m.keys.Restart)
+		}
+		return theme.helpLine.Render(spin + renderModeHelp(curatedKeyMap{short: short}, false, width))
+	case mode == inputPane:
 		km, prefix := m.renderPaneHelpKeyMap()
 		return theme.helpLine.Render(spin + prefix + renderModeHelp(km, false, width-lipgloss.Width(prefix)))
-	case inputNormal:
+	case mode == inputNormal:
 		return theme.helpLine.Render(spin + renderModeHelp(m.renderNormalHelpKeyMap(), m.helpShowAll, width))
+	case mode == inputDetail:
+		// `r` is in detail mode's keymap but acts only on a stopped or wedged
+		// row; disabling it elsewhere drops it from the line, on normal mode's
+		// never-advertise-a-no-op rule.
+		reg := m.modes()
+		bindings := append([]key.Binding(nil), reg.spec(inputDetail).keys.bindings...)
+		for i := range bindings {
+			if slices.Equal(bindings[i].Keys(), m.keys.Restart.Keys()) {
+				bindings[i].SetEnabled(m.restartKeyLive())
+			}
+		}
+		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: bindings}, false, width))
 	default:
 		reg := m.modes()
 		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(mode).keys, false, width))
@@ -2288,9 +2409,9 @@ func (m Model) renderDetail(outerW, outerH int) string {
 // which keys act on it.
 //
 // Resizing outranks focus for the same reason: resize mode can be entered
-// from a focused detail pane and leaves detailFocused set, but while it owns
-// the keyboard esc cancels the resize rather than releasing the focus, so the
-// edge names resize mode's commit and cancel keys instead.
+// from a focused detail pane and leaves the focus on the right, but while it
+// owns the keyboard esc cancels the resize rather than releasing the focus,
+// so the edge names resize mode's commit and cancel keys instead.
 func (m Model) detailBoxLabels() (title, hint string) {
 	s, ok := m.selected()
 	title = "Details"
@@ -2301,8 +2422,8 @@ func (m Model) detailBoxLabels() (title, hint string) {
 		commit, cancel := m.resizeHints()
 		return title, fmt.Sprintf("%s: save split · %s: cancel", commit, cancel)
 	}
-	if m.detailFocused {
-		return title, m.detailFocusedHint()
+	if m.detailOwnsKeyboard() {
+		return title, m.detailReleaseHint()
 	}
 	if !ok {
 		return title, ""
@@ -2321,11 +2442,11 @@ func (m Model) detailBoxLabels() (title, hint string) {
 		focus.Key, focus.Desc, m.keys.Clean.Help().Key, m.keys.Label.Help().Key)
 }
 
-// detailFocusedHint is detailBoxLabels' focused-mode hint: the one live way
+// detailReleaseHint is detailBoxLabels' focused-mode hint: the one live way
 // out, read from mode.go's own inputDetail release binding via findBinding
 // rather than a duplicated literal, so the footer (mode.go's declaration) and
 // this edge cannot say two different things about the same key.
-func (m Model) detailFocusedHint() string {
+func (m Model) detailReleaseHint() string {
 	reg := m.modes()
 	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc", "ctrl+\\"})
 	return fmt.Sprintf("%s: %s", release.Help().Key, release.Help().Desc)

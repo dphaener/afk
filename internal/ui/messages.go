@@ -28,14 +28,14 @@
 //
 //   - No "→" arrows, and no parenthesised hints. "opened x · enter/f to focus",
 //     never "opened x (press enter to focus)".
-//   - "ctrl+t to show", not "press ctrl+t to show it": the hint names the key
+//   - "r to restart", not "press r to restart it": the hint names the key
 //     and the verb it performs, nothing more.
 //   - Key names are spelled the way bubbles/key spells a chord — "ctrl+g",
 //     not "ctrl-g". The help row an inch below the toast carries the same
 //     spelling (defaultKeyMap's WithHelp in model.go, mouseCaptureHint in
 //     views.go), so the two surfaces never disagree about a chord.
 //   - At most ONE em-dash clause of qualification inside the outcome, never
-//     two: "x isn't running — its host record was stale · ctrl+t to restart".
+//     two: "x isn't running — its host record was stale · r to restart".
 //   - The in-flight family ("creating x…", "opening x…") keeps its shape. A
 //     trailing ellipsis already reads as "in progress", and there is no
 //     outcome yet to lead with.
@@ -260,13 +260,17 @@ type sessionsLoadedMsg struct {
 // hostRestartedMsg carries the outcome of the restart flow's host spawn (the
 // step that precedes the attach for a session whose host is stopped).
 //
-// focusOnArrival travels with the restart because the pane open happens in this
-// message's handler, not at dispatch. Ctrl+t leaves it false; click-to-focus
-// leaves it true; startup-open also leaves it false.
+// focusOnArrival and selectionBound travel with the restart because the pane
+// open happens in this message's handler, not at dispatch. `r` from the right
+// side sets focusOnArrival (the user is on the right, so the agent lands
+// focused); `r` from the session list sets selectionBound instead (the
+// keyboard stays on the list, and the pane follows the selection); the
+// startup open sets neither.
 type hostRestartedMsg struct {
 	name           string
 	worktree       string
 	focusOnArrival bool
+	selectionBound bool
 	focusRequest   bool
 	// gen carries the originating request's project generation through the
 	// restart, because Update REBUILDS a paneOpenRequest from this message: a
@@ -373,6 +377,15 @@ type paneOpenRequest struct {
 	preview        bool
 	focusOnArrival bool
 
+	// selectionBound marks an open made for the SELECTED row without moving
+	// the focus — `r` restarting a stopped row from the session list. Such a
+	// pane belongs to that selection: if the list-focused cursor has left the
+	// row by the time it lands, applyPaneAttached drops it rather than install
+	// a pane that would hold the host's one client slot undrawn. The startup
+	// and post-create opens deliberately do not set it — they may target a row
+	// that was never selected.
+	selectionBound bool
+
 	// focusRequest marks an open that a click-to-focus asked for, and exists ONLY
 	// to select applyPaneAttached's arrival wording. focusOnArrival cannot carry
 	// that because startup and other non-click workflows have their own wording.
@@ -402,7 +415,7 @@ type paneOpenRequest struct {
 // "could not launch claude".
 // restarted records whether this open followed a restart-flow host spawn. That
 // is what lets an unreachable host be phrased as "the host we just started
-// died, read its log" instead of "your host record was stale, ctrl+t to
+// died, read its log" instead of "your host record was stale, r to
 // restart" — advice that has already been tried and failed.
 // The request's dial WINDOW is deliberately not echoed back here. It is consumed
 // entirely on the way out (req.wait → hostPaneConfig.Wait, below), and nothing in
@@ -419,6 +432,7 @@ type paneAttachedMsg struct {
 	restarted      bool
 	preview        bool
 	focusOnArrival bool
+	selectionBound bool
 	focusRequest   bool
 	gen            int
 	previewGen     int
@@ -685,6 +699,7 @@ func (m *Model) restartHostCmd(req paneOpenRequest) tea.Cmd {
 			name:           name,
 			worktree:       worktree,
 			focusOnArrival: req.focusOnArrival,
+			selectionBound: req.selectionBound,
 			focusRequest:   req.focusRequest,
 			gen:            req.gen,
 			err:            err,
@@ -928,18 +943,19 @@ func afkBinary() string {
 //
 // An ErrHostNotReachable failure is the one the user can act on, and its
 // phrasing turns on msg.restarted: an unreachable host on a first attempt means
-// the host record was stale and ctrl+t will fix it, while an unreachable host
-// right after a restart means the host we just spawned died on startup and only
-// its log says why. Model.applyPaneAttached pairs this with markHostStopped, so
-// the "ctrl+t to restart" hint is true by the time it is read.
+// the host record was stale and `r` (wedgeRecoveryKey, the one restart key)
+// will fix it, while an unreachable host right after a restart means the host
+// we just spawned died on startup and only its log says why.
+// Model.applyPaneAttached pairs this with markHostStopped, so the row reads
+// stopped and the "r to restart" hint is true by the time it is read.
 func paneAttachFailedStatus(msg paneAttachedMsg) string {
 	if errors.Is(msg.err, host.ErrHostNotReachable) {
 		if msg.restarted {
 			return fmt.Sprintf("%s didn't start — see %s",
 				msg.name, hostLogPath(msg.worktree, msg.name))
 		}
-		return fmt.Sprintf("%s isn't running — its host record was stale · ctrl+t to restart",
-			msg.name)
+		return fmt.Sprintf("%s isn't running — its host record was stale · %s to restart",
+			msg.name, wedgeRecoveryKey)
 	}
 	return fmt.Sprintf("opening %s failed: %v — see %s",
 		msg.name, msg.err, hostLogPath(msg.worktree, msg.name))
@@ -1036,8 +1052,8 @@ func spawnWarnings(output string) []string {
 // the outcome ("created x — connecting…"). It is appended to the outcome
 // alone, before any key hint: the house style at the top of this file wants
 // the final "·" to introduce the hint, so the caller with a hint
-// ("created x · ctrl+t to show the agent") wraps the outcome in this and adds the hint
-// afterwards.
+// ("created x · enter/f to open the agent") wraps the outcome in this and
+// adds the hint afterwards.
 func appendWarningSuffix(status string, warnings []string) string {
 	if len(warnings) == 0 {
 		return status
@@ -1075,6 +1091,7 @@ func (m Model) attachPaneCmd(req paneOpenRequest) tea.Cmd {
 				restarted:      req.restarted,
 				preview:        req.preview,
 				focusOnArrival: req.focusOnArrival,
+				selectionBound: req.selectionBound,
 				focusRequest:   req.focusRequest,
 				gen:            req.gen,
 				previewGen:     req.previewGen,
@@ -1088,6 +1105,7 @@ func (m Model) attachPaneCmd(req paneOpenRequest) tea.Cmd {
 			restarted:      req.restarted,
 			preview:        req.preview,
 			focusOnArrival: req.focusOnArrival,
+			selectionBound: req.selectionBound,
 			focusRequest:   req.focusRequest,
 			gen:            req.gen,
 			previewGen:     req.previewGen,

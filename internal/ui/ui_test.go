@@ -518,49 +518,123 @@ func runningSess(name string) Session {
 	return s
 }
 
-func TestToggleNoSelectionNoOp(t *testing.T) {
-	m := testModel()
-	got, cmd := update(t, m, keyCtrlT)
-	if cmd != nil {
-		t.Fatalf("ctrl+t with no selected session should dispatch nothing, got %T", cmd())
+// TestListFocusCtrlTIsInert is row (a) of the W2.T1 key table: with the list
+// focused, ctrl+t does nothing at all — no Cmd, and not one field of focus,
+// view, pane or dial state moves. The user's model is that the list cannot
+// control the right side "even if the overview pane is currently focused on
+// the right side", and ctrl+t is a right-side key.
+//
+// Every row is a state where the OLD ctrl+t did something from the list, and
+// each is load-bearing for the meaning it used to carry: attach and restart
+// (running/stopped rows with no pane), hide (a drawn pane), reveal (a hidden
+// pane), replace (the cursor off the paned row), and claim (a preview dial in
+// flight).
+func TestListFocusCtrlTIsInert(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) Model
+	}{
+		{"no selection", func(t *testing.T) Model { return testModel() }},
+		{"running row, no pane", func(t *testing.T) Model { return testModel(runningSess("live")) }},
+		{"stopped row, no pane", func(t *testing.T) Model { return testModel(stoppedSess("live")) }},
+		{"pane drawn", func(t *testing.T) Model {
+			m := testModel(runningSess("live"))
+			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "live"})
+			return m
+		}},
+		{"pane behind the overview", func(t *testing.T) Model {
+			m := testModel(runningSess("live"))
+			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "live"})
+			m.view = viewOverview
+			return m
+		}},
+		{"cursor off the paned row", func(t *testing.T) Model {
+			m := testModel(runningSess("a"), runningSess("b"))
+			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "a"})
+			m.selectSessionIndex(1)
+			return m
+		}},
+		{"preview dial in flight", func(t *testing.T) Model {
+			m := testModel(runningSess("live"))
+			m, dial := update(t, m, previewTimerMsg{gen: m.previewGen, name: "live"})
+			if dial == nil {
+				t.Fatal("setup: the preview must dispatch its dial")
+			}
+			return m
+		}},
 	}
-	if got.pane != nil || got.attachInFlight.name != "" {
-		t.Fatalf("ctrl+t with no selected session changed pane state: pane=%v inFlight=%+v",
-			got.pane != nil, got.attachInFlight)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.setup(t)
+			m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
+				t.Error("ctrl+t from the list opened a pane")
+				return newFakePane("unexpected"), nil
+			}
+			m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
+				t.Error("ctrl+t from the list spawned a host")
+				return session.HostProcess{}, nil
+			}
+			if m.focus != focusList {
+				t.Fatalf("setup: focus = %v, want the list", m.focus)
+			}
+			before := m
+
+			got, cmd := update(t, m, keyCtrlT)
+			if cmd != nil {
+				t.Fatalf("ctrl+t from the list returned a Cmd (%T)", cmd())
+			}
+			if got.focus != before.focus || got.view != before.view ||
+				got.pane != before.pane || got.paneName != before.paneName ||
+				got.attachInFlight != before.attachInFlight || got.previewGen != before.previewGen ||
+				got.status != before.status {
+				t.Fatalf("ctrl+t from the list changed state:\n before focus=%v view=%v pane=%q inFlight=%+v gen=%d status=%q\n after  focus=%v view=%v pane=%q inFlight=%+v gen=%d status=%q",
+					before.focus, before.view, before.paneName, before.attachInFlight, before.previewGen, before.status,
+					got.focus, got.view, got.paneName, got.attachInFlight, got.previewGen, got.status)
+			}
+		})
 	}
 }
 
-// TestToggleWithNoPaneOpensRunningSelectedSession proves ctrl+t is the explicit
-// route from the overview to a HostRunning session. The pane is shown, but the
-// list keeps keyboard ownership: switching surfaces is not a focus gesture.
-func TestToggleWithNoPaneOpensRunningSelectedSession(t *testing.T) {
+// TestEnterWithNoPaneOpensAndFocusesRunningSelectedSession is row (a)'s
+// connect: enter on a HostRunning row with no pane dials it through
+// openPaneFor exactly once and moves the focus right at the keypress, and the
+// arriving pane owns the keyboard. The focus moving at the KEYPRESS is the
+// load-bearing half — waiting for the arrival is what let typed keys hit list
+// bindings during the dial.
+func TestEnterWithNoPaneOpensAndFocusesRunningSelectedSession(t *testing.T) {
 	m := testModel(runningSess("live"))
 	m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
-		t.Fatal("ctrl+t on a running session must not spawn a host")
+		t.Error("enter on a running session must not spawn a host")
 		return session.HostProcess{}, nil
 	}
 	fp := newFakePane("LIVE")
-	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return fp, nil }
-
-	got, cmd := update(t, m, keyCtrlT)
-	if cmd == nil {
-		t.Fatalf("ctrl+t on a running session should dispatch the attach cmd")
+	opens := 0
+	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
+		opens++
+		return fp, nil
 	}
-	if got.modal != inputNormal {
-		t.Fatalf("attach should stay in normal mode, got %v", got.modal)
+
+	got, cmd := update(t, m, keyEnter)
+	if cmd == nil {
+		t.Fatalf("enter on a running session should dispatch the attach cmd")
+	}
+	if got.focus != focusRight || got.view != viewAgent {
+		t.Fatalf("focus/view = %v/%v at the keypress, want right/agent", got.focus, got.view)
+	}
+	if got.attachInFlight.name != "live" || got.attachInFlight.preview {
+		t.Fatalf("attachInFlight = %+v, want an explicit dial for live", got.attachInFlight)
 	}
 	attached := drainForPaneAttached(t, cmd)
-	if attached.focusOnArrival {
-		t.Fatal("ctrl+t is a surface toggle, so its pane must not claim keyboard focus on arrival")
+	if !attached.focusOnArrival {
+		t.Fatal("enter's dial must carry focusOnArrival — the pane lands focused")
 	}
 	got, _ = update(t, got, attached)
-	if got.pane != fp || got.paneName != "live" || got.paneHidden {
-		t.Fatalf("pane=%v name=%q hidden=%v, want live's agent surface shown",
-			got.pane == fp, got.paneName, got.paneHidden)
+	if got.pane != fp || got.paneName != "live" || !got.paneOwnsKeyboard() {
+		t.Fatalf("pane=%v name=%q focused=%v, want live's pane installed and focused",
+			got.pane == fp, got.paneName, got.paneOwnsKeyboard())
 	}
-	if got.paneFocused || got.detailFocused {
-		t.Fatalf("ctrl+t transferred keyboard ownership: paneFocused=%v detailFocused=%v",
-			got.paneFocused, got.detailFocused)
+	if opens != 1 {
+		t.Fatalf("OpenHostPane called %d times, want exactly 1", opens)
 	}
 	if s, ok := got.selected(); !ok || s.Name != "live" {
 		t.Fatalf("selected = %q (ok=%v), want the list to retain live", s.Name, ok)
@@ -580,16 +654,19 @@ func TestToggleOnStaleSessionWithLiveHostStillAttaches(t *testing.T) {
 		return session.HostProcess{}, nil
 	}
 
-	_, cmd := update(t, m, keyCtrlT)
+	_, cmd := update(t, m, keyEnter)
 	if cmd == nil {
-		t.Fatalf("ctrl+t on a stale session with a live host should still attach")
+		t.Fatalf("enter on a stale session with a live host should still attach")
 	}
 }
 
-// TestToggleWithNoPaneRestartsStoppedSelectedSession walks the whole two-step
-// restart flow. As with a direct attach, the arriving agent surface is visible
-// but unfocused so keyboard ownership remains with the list.
-func TestToggleWithNoPaneRestartsStoppedSelectedSession(t *testing.T) {
+// TestRestartKeyFromTheListRestartsAStoppedSession walks the whole two-step
+// restart chain from `r` on the session list: spawn the host, then the open
+// hostRestartedMsg chains into. The keyboard stays on the list — `r` is a
+// restart, not a focus gesture — so both legs carry selectionBound rather than
+// focusOnArrival, and the restarted pane is SHOWN in the agent view with the
+// list still owning input.
+func TestRestartKeyFromTheListRestartsAStoppedSession(t *testing.T) {
 	var gotName, gotWorktree string
 	m := testModel(sess("stopped")) // HostRunning is false
 	m.deps.SpawnHost = func(name, worktree string) (session.HostProcess, error) {
@@ -599,12 +676,15 @@ func TestToggleWithNoPaneRestartsStoppedSelectedSession(t *testing.T) {
 	fp := newFakePane("RESTARTED")
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return fp, nil }
 
-	afterToggle, cmd := update(t, m, keyCtrlT)
+	afterKey, cmd := update(t, m, keyRune('r'))
 	if cmd == nil {
-		t.Fatalf("ctrl+t on a stopped session should dispatch the restart cmd")
+		t.Fatalf("r on a stopped session should dispatch the restart cmd")
 	}
-	if !strings.Contains(afterToggle.status, "restarting stopped") {
-		t.Fatalf("status = %q, want restarting notice while the spawn runs", afterToggle.status)
+	if !strings.Contains(afterKey.status, "restarting stopped") {
+		t.Fatalf("status = %q, want restarting notice while the spawn runs", afterKey.status)
+	}
+	if afterKey.focus != focusList {
+		t.Fatalf("focus = %v at the keypress, want the list", afterKey.focus)
 	}
 
 	msg := cmd()
@@ -618,11 +698,11 @@ func TestToggleWithNoPaneRestartsStoppedSelectedSession(t *testing.T) {
 	if hr.err != nil {
 		t.Fatalf("hostRestartedMsg.err = %v, want nil", hr.err)
 	}
-	if hr.focusOnArrival {
-		t.Fatal("ctrl+t's restart must not claim keyboard focus")
+	if hr.focusOnArrival || !hr.selectionBound {
+		t.Fatalf("list r's restart = focusOnArrival:%v selectionBound:%v, want false/true", hr.focusOnArrival, hr.selectionBound)
 	}
 
-	afterSpawn, attachCmd := update(t, afterToggle, hr)
+	afterSpawn, attachCmd := update(t, afterKey, hr)
 	if attachCmd == nil {
 		t.Fatalf("a successful restart should chain into the attach cmd")
 	}
@@ -630,13 +710,44 @@ func TestToggleWithNoPaneRestartsStoppedSelectedSession(t *testing.T) {
 		t.Fatalf("status = %q, want the restarted notice", afterSpawn.status)
 	}
 	attached := drainForPaneAttached(t, attachCmd)
-	if attached.focusOnArrival {
-		t.Fatal("ctrl+t's chained attach must preserve focusOnArrival=false")
+	if attached.focusOnArrival || !attached.selectionBound {
+		t.Fatalf("chained attach = focusOnArrival:%v selectionBound:%v, want false/true", attached.focusOnArrival, attached.selectionBound)
 	}
 	afterSpawn, _ = update(t, afterSpawn, attached)
-	if afterSpawn.pane != fp || afterSpawn.paneName != "stopped" || afterSpawn.paneFocused {
-		t.Fatalf("pane=%v name=%q focused=%v, want stopped's agent shown with list ownership",
-			afterSpawn.pane == fp, afterSpawn.paneName, afterSpawn.paneFocused)
+	if afterSpawn.pane != fp || afterSpawn.paneName != "stopped" || !afterSpawn.shouldRenderPane() || afterSpawn.focus != focusList {
+		t.Fatalf("pane=%v name=%q drawn=%v focus=%v, want stopped's agent installed, drawn, list-focused",
+			afterSpawn.pane == fp, afterSpawn.paneName, afterSpawn.shouldRenderPane(), afterSpawn.focus)
+	}
+}
+
+// TestRestartKeyArrivalForALeftRowIsDropped pins selectionBound's purpose: a
+// list `r` whose row the cursor has left by the time the pane lands must not
+// install a pane for an unselected row, holding the host's one client slot
+// undrawn (plan W3.T1 a). The connection is closed, not leaked.
+func TestRestartKeyArrivalForALeftRowIsDropped(t *testing.T) {
+	m := testModel(sess("stopped"), sess("other"))
+	m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
+		return session.HostProcess{PID: 4242}, nil
+	}
+	fp := newFakePane("RESTARTED")
+	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return fp, nil }
+
+	m, cmd := update(t, m, keyRune('r'))
+	if cmd == nil {
+		t.Fatal("setup: r on a stopped session should dispatch the restart")
+	}
+	hr := cmd().(hostRestartedMsg)
+	m, _ = update(t, m, keyDown)
+	m, open := update(t, m, hr)
+	if open == nil {
+		t.Fatal("setup: the restart should chain into the open")
+	}
+	m, _ = update(t, m, drainForPaneAttached(t, open))
+	if m.pane != nil {
+		t.Fatalf("pane installed for %q with the cursor on another row", m.paneName)
+	}
+	if fp.closed != 1 {
+		t.Errorf("abandoned connection closed %d times, want 1", fp.closed)
 	}
 }
 
@@ -648,9 +759,12 @@ func TestRestartFailureShowsHostLogGuidance(t *testing.T) {
 		return session.HostProcess{}, errors.New("fork/exec: permission denied")
 	}
 
-	_, cmd := update(t, m, keyCtrlT)
+	// From the stopped row's focused overview, so the failure's focus rule
+	// is exercised too.
+	m, _ = update(t, m, keyEnter)
+	m, cmd := update(t, m, keyRune('r'))
 	if cmd == nil {
-		t.Fatal("ctrl+t on a stopped session should dispatch the restart")
+		t.Fatal("r on a stopped session should dispatch the restart")
 	}
 	hr := cmd().(hostRestartedMsg)
 	if hr.err == nil {
@@ -660,6 +774,11 @@ func TestRestartFailureShowsHostLogGuidance(t *testing.T) {
 	got, reload := update(t, m, hr)
 	if reload == nil {
 		t.Fatalf("a failed restart should still trigger a reload")
+	}
+	// The row still has no live agent, so the right side still draws its
+	// overview — worth reading, and `r` retries from there. The keyboard stays.
+	if got.focus != focusRight || !got.detailDrawn() {
+		t.Fatalf("focus = %v detailDrawn = %v after a failed restart, want the focused overview kept", got.focus, got.detailDrawn())
 	}
 	for _, want := range []string{"stopped", "permission denied", "/wt/stopped/.afk/stopped/host.log"} {
 		if !strings.Contains(got.status, want) {
@@ -683,7 +802,7 @@ func TestPaneAttachFailedStatus(t *testing.T) {
 		{
 			name:         "unreachable on a first attempt offers the restart",
 			err:          unreachable,
-			wantContains: []string{"svc", "isn't running", "ctrl+t to restart"},
+			wantContains: []string{"svc", "isn't running", "r to restart"},
 		},
 		{
 			name:         "unreachable right after a restart points at host.log",
@@ -736,8 +855,8 @@ func TestPaneAttachFailedStatusTextsAreDistinct(t *testing.T) {
 
 // TestUnreachableHostFlipsSessionToStopped is the false-positive correction: a
 // session the list showed as RUNNING whose host does not answer is shown as
-// stopped, so the very next explicit toggle takes the restart branch instead of retrying a
-// connect that cannot work.
+// stopped, so the restart key now acts on it instead of a connect being retried
+// that cannot work.
 func TestUnreachableHostFlipsSessionToStopped(t *testing.T) {
 	m := testModel(runningSess("ghost"))
 	msg := paneAttachedMsg{
@@ -753,22 +872,22 @@ func TestUnreachableHostFlipsSessionToStopped(t *testing.T) {
 	if got.sessions[0].HostRunning {
 		t.Fatalf("an unreachable host on a running-marked session should flip HostRunning to false")
 	}
-	if !strings.Contains(got.status, "ctrl+t to restart") {
+	if !strings.Contains(got.status, "r to restart") {
 		t.Fatalf("status = %q, want it to offer the restart", got.status)
 	}
 
-	// And the next ctrl+t now takes the restart branch.
+	// And `r` now takes the restart branch.
 	var spawned bool
 	got.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
 		spawned = true
 		return session.HostProcess{}, nil
 	}
-	_, cmd := update(t, got, keyCtrlT)
+	_, cmd := update(t, got, keyRune('r'))
 	if cmd == nil {
 		t.Fatalf("expected a restart cmd after the session was marked stopped")
 	}
 	if _, ok := cmd().(hostRestartedMsg); !ok || !spawned {
-		t.Fatalf("ctrl+t after the correction should re-spawn the host (spawned=%v)", spawned)
+		t.Fatalf("r after the correction should re-spawn the host (spawned=%v)", spawned)
 	}
 }
 
@@ -791,18 +910,18 @@ func TestDeadHostCorrectionSurvivesTheNextDiscoveryTick(t *testing.T) {
 		t.Fatalf("the correction must survive a reload that reports the same dead PID")
 	}
 
-	// Ctrl+t must therefore still take the restart branch, not retry the connect.
+	// `r` must therefore still take the restart branch.
 	var spawned bool
 	m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
 		spawned = true
 		return session.HostProcess{}, nil
 	}
-	_, cmd := update(t, m, keyCtrlT)
+	_, cmd := update(t, m, keyRune('r'))
 	if cmd == nil {
-		t.Fatal("ctrl+t after the reload should dispatch the restart")
+		t.Fatal("r after the reload should dispatch the restart")
 	}
 	if _, ok := cmd().(hostRestartedMsg); !ok || !spawned {
-		t.Fatalf("ctrl+t after a reload should still restart (spawned=%v)", spawned)
+		t.Fatalf("r after a reload should still restart (spawned=%v)", spawned)
 	}
 }
 
@@ -828,10 +947,12 @@ func TestDeadHostCorrectionLapsesWhenTheHostPIDChanges(t *testing.T) {
 	}
 }
 
-// TestHelpAdvertisesOpenAndDetach pins the footer contract: ctrl+t is labelled
-// with the pane action, ctrl+\ is advertised as the way to close a pane (the
-// retired detachKey's role — mode.go's real closePane binding, W6.T2), and no
-// stale multiplexer wording survives anywhere in the rendered dashboard.
+// TestHelpAdvertisesOpenAndDetach pins the list footer contract: enter/f is
+// the way to the right side (and so the way to open an agent), ctrl+\ is
+// advertised as the way to close a pane (the retired detachKey's role —
+// mode.go's real closePane binding, W6.T2), ctrl+t is NOT advertised because
+// it is not a list key, and no stale multiplexer wording survives anywhere in
+// the rendered dashboard.
 func TestHelpAdvertisesOpenAndDetach(t *testing.T) {
 	m := testModel(runningSess("live"))
 	reg := m.modes()
@@ -842,12 +963,14 @@ func TestHelpAdvertisesOpenAndDetach(t *testing.T) {
 	help := xansi.Strip(m.renderHelp())
 	for _, want := range []string{
 		m.keys.Focus.Help().Key + " " + m.keys.Focus.Help().Desc,
-		"ctrl+t " + m.keys.Toggle.Help().Desc,
 		closePane.Help().Key + " " + closePane.Help().Desc,
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help = %q, want it to contain %q", help, want)
 		}
+	}
+	if strings.Contains(help, "ctrl+t") {
+		t.Fatalf("help = %q, want no ctrl+t — it does nothing while the list is focused", help)
 	}
 	// The needle is split so a residue check (`grep -rni` for the literal
 	// multiplexer name) matches only real usages, never this negative
@@ -887,139 +1010,148 @@ func TestHelpAdvertisesTheFocusKeyOnlyWithAFocusableSurface(t *testing.T) {
 	}
 }
 
-// TestTogglePaneSummary covers the toggle state matrix: ctrl+t with no selection,
-// ctrl+t opening the selected session when no pane exists (covered above),
-// ctrl+t hiding an unfocused pane, ctrl+t hiding a focused pane, round-trip
-// focus restoration, no-forward to the child, the creation form keeping
-// ownership of ctrl+t, clean blocked while hidden, resize running while hidden,
-// and every reveal path (f, enter, a honored click, an arriving pane).
+// TestTogglePaneSummary covers ctrl+t's state matrix under the two-axis model:
+// ctrl+t is a right-side key that flips the VIEW and never the focus, plus the
+// surroundings that must keep working while the agent sits behind the
+// overview.
 //
-// The load-bearing rows are: focused pane hides AND unfocuses (so an invisible
-// pane never routes keys), round-trip preserves focus (so toggling back is
-// lossless), ctrl+t is intercepted and never forwarded to the child, ctrl+t
-// belongs to the creation form while it is open (bubbles' textarea binds it to
-// TransposeCharacterBackward, and a pane hidden behind the form is a pane the
-// user cannot get back to from there), clean is refused while the pane is hidden
-// with distinct guidance, resize runs even while hidden (so the emulator grid
-// stays current), and the two reveal paths that set focus — a honored focus
-// request and an arriving pane — clear paneHidden, because focused-while-hidden
-// routes the keyboard into a child that is not on screen.
+// The load-bearing rows are: the flip keeps focus right in both directions
+// (objective 3 — the old hide dropped focus and a reveal restored it from a
+// stored flag); ctrl+t into the agent view with no pane connects under
+// enter's rules; ctrl+t is intercepted and never forwarded to the child;
+// ctrl+t belongs to the creation form while it is open (bubbles' textarea binds
+// it to TransposeCharacterBackward); clean is refused while a pane is
+// installed behind the overview; resize runs even while the pane is not drawn
+// (so the emulator grid stays current); a honored click shows the agent
+// view, because a focused-but-undrawn pane routes the keyboard into a child
+// that is not on screen; and an UNFOCUSED arrival leaves the overview in
+// place, because only ctrl+t changes the view.
 func TestTogglePaneSummary(t *testing.T) {
+	focusedAgent := func(t *testing.T, m Model) Model {
+		t.Helper()
+		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
+		m, _ = update(t, m, keyEnter)
+		if !m.paneOwnsKeyboard() {
+			t.Fatalf("setup: enter should have focused the installed pane")
+		}
+		return m
+	}
+	behindOverview := func(t *testing.T, m Model) Model {
+		t.Helper()
+		m = focusedAgent(t, m)
+		m, _ = update(t, m, keyCtrlT)
+		m, _ = update(t, m, chord('\\'))
+		if m.view != viewOverview || m.focus != focusList || m.pane == nil {
+			t.Fatalf("setup: view=%v focus=%v pane=%v, want the pane behind the overview with the list focused",
+				m.view, m.focus, m.pane != nil)
+		}
+		return m
+	}
 	tests := []struct {
 		name   string
-		setup  func(Model) Model
+		setup  func(*testing.T, Model) Model
 		act    func(*testing.T, Model) (Model, tea.Cmd)
 		checks func(*testing.T, Model, tea.Cmd)
 	}{
 		{
-			name: "ctrl+t with an unfocused visible pane: hides it, m.pane stays non-nil, View shows detail",
-			setup: func(m Model) Model {
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				if m.paneFocused {
-					t.Fatalf("setup: pane should be unfocused")
-				}
-				return m
-			},
+			name:  "ctrl+t from the focused agent: overview drawn, focus stays right, pane kept (load-bearing: ctrl+t never moves focus)",
+			setup: focusedAgent,
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
-				return update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+				return update(t, m, keyCtrlT)
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
+				if cmd != nil {
+					t.Fatalf("a view flip with the pane installed must dispatch nothing, got %T", cmd())
+				}
 				if m.pane == nil {
-					t.Fatalf("ctrl+t should not close or detach the pane, m.pane should stay non-nil")
+					t.Fatalf("ctrl+t should not close or detach the pane")
 				}
-				if !m.paneHidden {
-					t.Fatalf("paneHidden = false, want true after hiding")
+				if m.view != viewOverview || m.focus != focusRight {
+					t.Fatalf("view/focus = %v/%v, want overview/right", m.view, m.focus)
 				}
-				// The hide writes a status, whose toast floats over the detail
+				if m.paneOwnsKeyboard() || !m.detailOwnsKeyboard() {
+					t.Fatalf("pane=%v detail=%v, want the overview to own the keyboard", m.paneOwnsKeyboard(), m.detailOwnsKeyboard())
+				}
+				// The flip writes a status, whose toast floats over the detail
 				// box's top-right corner — where the tab strip is. Age the
 				// toast out so the assertion reads the strip, not the toast.
 				m.statusChangedAt = time.Time{}
 				view := render(m)
 				if !strings.Contains(view, "Overview") || !strings.Contains(view, "Waves") {
-					t.Fatalf("View() should render the detail pane (its tab strip) while the pane is hidden:\n%s", view)
+					t.Fatalf("View() should render the detail pane (its tab strip) behind ctrl+t:\n%s", view)
 				}
 			},
 		},
 		{
-			name: "ctrl+t with a focused pane: hides it AND unfocuses (load-bearing: invisible pane must not route keys)",
-			setup: func(m Model) Model {
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				m.paneFocused = true
-				return m
-			},
+			name:  "ctrl+t twice from the focused agent: back on the agent with the keyboard (load-bearing: round trip is lossless)",
+			setup: focusedAgent,
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
-				return update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+				m, _ = update(t, m, keyCtrlT)
+				return update(t, m, keyCtrlT)
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
-				if m.pane == nil {
-					t.Fatalf("ctrl+t should not close the pane")
+				if cmd != nil {
+					t.Fatalf("revealing the installed pane must dispatch nothing, got %T", cmd())
 				}
-				if !m.paneHidden {
-					t.Fatalf("paneHidden = false, want true")
-				}
-				if m.paneFocused {
-					t.Fatalf("paneFocused = true, want false — an invisible focused pane routes keys at nothing the user can see")
-				}
-			},
-		},
-		{
-			name: "ctrl+t twice from a focused pane: focus restored on toggle-back (load-bearing: round-trip is lossless)",
-			setup: func(m Model) Model {
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				m.paneFocused = true
-				return m
-			},
-			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
-				m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-				return update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-			},
-			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
-				if m.paneHidden {
-					t.Fatalf("paneHidden = true, want false after toggling back")
-				}
-				if !m.paneFocused {
-					t.Fatalf("paneFocused = false, want true — round-trip must restore focus")
+				if m.view != viewAgent || !m.paneOwnsKeyboard() {
+					t.Fatalf("view=%v paneOwnsKeyboard=%v, want the agent drawn and focused", m.view, m.paneOwnsKeyboard())
 				}
 				if !strings.Contains(m.status, "input goes to sess") {
-					t.Fatalf("status = %q, want it to reflect restored focus", m.status)
+					t.Fatalf("status = %q, want it to say where input goes", m.status)
+				}
+			},
+		},
+		{
+			name: "ctrl+t from the focused overview with no pane: connects under enter's rules, focus stays right",
+			setup: func(t *testing.T, m Model) Model {
+				m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return newFakePane("SESS"), nil }
+				m.view = viewOverview
+				m, _ = update(t, m, keyEnter)
+				if !m.detailOwnsKeyboard() {
+					t.Fatalf("setup: enter in overview view should focus the overview")
+				}
+				return m
+			},
+			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
+				return update(t, m, keyCtrlT)
+			},
+			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
+				if cmd == nil || m.attachInFlight.name != "sess" || !m.attachInFlight.focusOnArrival {
+					t.Fatalf("ctrl+t into the agent view should dial sess focused: cmd=%v inFlight=%+v", cmd != nil, m.attachInFlight)
+				}
+				if m.view != viewAgent || m.focus != focusRight {
+					t.Fatalf("view/focus = %v/%v, want agent/right", m.view, m.focus)
+				}
+				m, _ = update(t, m, drainForPaneAttached(t, cmd))
+				if !m.paneOwnsKeyboard() {
+					t.Fatalf("the connected pane should land owning the keyboard")
 				}
 			},
 		},
 		{
 			name: "ctrl+t while pane focused is not forwarded to child (load-bearing: Claude Code must not act on it)",
-			setup: func(m Model) Model {
-				fp := newFakePane("X")
-				m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "sess"})
-				m.pane = fp
-				m.paneFocused = true
-				return m
+			setup: func(t *testing.T, m Model) Model {
+				return focusedAgent(t, m)
 			},
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
-				return update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+				return update(t, m, keyCtrlT)
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
 				fp := m.pane.(*fakePane)
-				if len(fp.keys) != 0 {
-					t.Fatalf("ctrl+t was forwarded to the child (%d keys written), but it must be intercepted", len(fp.keys))
+				if len(fp.keys) != 0 || len(fp.texts) != 0 {
+					t.Fatalf("ctrl+t was forwarded to the child (%d keys, %d texts), but it must be intercepted", len(fp.keys), len(fp.texts))
 				}
 			},
 		},
 		{
-			name: "c while pane hidden: refused with status, no clean dispatched (load-bearing: host is alive, clean removes worktrees)",
-			setup: func(m Model) Model {
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-				if !m.paneHidden {
-					t.Fatalf("setup: pane should be hidden")
-				}
-				return m
-			},
+			name:  "c while the pane is behind the overview: refused with status, no clean dispatched (load-bearing: host is alive, clean removes worktrees)",
+			setup: behindOverview,
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
 				return update(t, m, keyRune('c'))
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
-				if !strings.Contains(m.status, "hidden behind the summary") || !strings.Contains(m.status, "ctrl+t") {
-					t.Fatalf("status = %q, want it to explain why clean is blocked and how to reveal the pane", m.status)
+				if !strings.Contains(m.status, "behind the overview") || !strings.Contains(m.status, "ctrl+\\") {
+					t.Fatalf("status = %q, want it to explain why clean is blocked and how to close the pane", m.status)
 				}
 				if m.modal != inputNormal {
 					t.Fatalf("mode = %v, want inputNormal — clean must not dispatch", m.modal)
@@ -1031,7 +1163,7 @@ func TestTogglePaneSummary(t *testing.T) {
 		},
 		{
 			name: "ctrl+t while the creation form is open: the form owns the key (load-bearing: bubbles binds ctrl+t in the textarea)",
-			setup: func(m Model) Model {
+			setup: func(t *testing.T, m Model) Model {
 				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
 				m, _ = update(t, m, keyRune('n'))
 				if !m.formOpen {
@@ -1045,11 +1177,11 @@ func TestTogglePaneSummary(t *testing.T) {
 				return m
 			},
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
-				return update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+				return update(t, m, keyCtrlT)
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
-				if m.paneHidden {
-					t.Fatalf("ctrl+t must not hide the pane behind the form — cancelling the form would then land on the summary, not the pane the user was watching")
+				if m.view == viewOverview {
+					t.Fatalf("ctrl+t must not flip the view behind the form")
 				}
 				if !m.formOpen {
 					t.Fatalf("ctrl+t must not close the form")
@@ -1060,86 +1192,56 @@ func TestTogglePaneSummary(t *testing.T) {
 			},
 		},
 		{
-			name: "WindowSizeMsg while pane hidden: resize still called (load-bearing: prevents stale-grid regression)",
-			setup: func(m Model) Model {
-				fp := newFakePane("X")
-				m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "sess"})
-				m.pane = fp
-				m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-				if !m.paneHidden {
-					t.Fatalf("setup: pane should be hidden")
-				}
-				return m
-			},
+			name:  "WindowSizeMsg while the pane is behind the overview: resize still called (load-bearing: prevents stale-grid regression)",
+			setup: behindOverview,
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
 				return update(t, m, tea.WindowSizeMsg{Width: 200, Height: 60})
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
 				fp := m.pane.(*fakePane)
 				if len(fp.resizes) == 0 {
-					t.Fatalf("WindowSizeMsg should still Resize the hidden pane (got %d resizes)", len(fp.resizes))
+					t.Fatalf("WindowSizeMsg should still Resize the undrawn pane (got %d resizes)", len(fp.resizes))
 				}
 			},
 		},
 		{
-			// This row used to assert the opposite — that `f` on a hidden pane
-			// revealed and focused the SESSION. That was the old contract, and
-			// it is what made the Diff tab unreachable for a running session:
-			// ctrl+t is the only route to the tab strip, and `f` undid it. `f`
-			// now focuses whatever is drawn, which behind a hidden pane is the
-			// detail view. ctrl+t still reveals the session (the row below), so
-			// nothing became unreachable.
-			name: "f while hidden: focuses the detail pane, leaving the pane hidden",
-			setup: func(m Model) Model {
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-				return m
-			},
+			name:  "f with the pane behind the overview: focuses the overview, the pane stays behind it",
+			setup: behindOverview,
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
 				return update(t, m, keyRune('f'))
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
-				if !m.paneHidden {
-					t.Fatalf("paneHidden = false, want the pane left hidden after pressing f")
+				if cmd != nil {
+					t.Fatalf("focusing the overview must dispatch nothing, got %T", cmd())
 				}
-				if m.paneFocused {
-					t.Fatalf("paneFocused = true, want the keyboard on the detail pane, not the session")
-				}
-				if !m.detailFocused {
-					t.Fatalf("detailFocused = false, want f to focus the drawn surface")
+				if m.view != viewOverview || m.paneOwnsKeyboard() || !m.detailOwnsKeyboard() {
+					t.Fatalf("view=%v pane=%v detail=%v, want the overview focused and the pane left behind it",
+						m.view, m.paneOwnsKeyboard(), m.detailOwnsKeyboard())
 				}
 			},
 		},
 		{
-			name: "ctrl+t on a hidden unfocused pane reveals it without taking list focus",
-			setup: func(m Model) Model {
-				m.setSessions([]Session{runningSess("sess")})
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+			name: "ctrl+t from the focused overview reveals the installed agent with the keyboard",
+			setup: func(t *testing.T, m Model) Model {
+				m = behindOverview(t, m)
+				m, _ = update(t, m, keyRune('f'))
 				return m
 			},
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
 				return update(t, m, keyCtrlT)
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
-				if m.paneHidden {
-					t.Fatalf("paneHidden = true, want false after toggling back to the agent")
+				if cmd != nil {
+					t.Fatalf("revealing the installed pane must dispatch nothing, got %T", cmd())
 				}
-				if m.paneFocused {
-					t.Fatalf("paneFocused = true, want the list to retain keyboard ownership")
+				if m.view != viewAgent || !m.paneOwnsKeyboard() {
+					t.Fatalf("view=%v paneOwnsKeyboard=%v, want the agent drawn and focused", m.view, m.paneOwnsKeyboard())
 				}
 			},
 		},
 		{
-			name: "click-to-focus on the hidden pane's own session: reveals it (load-bearing: focus must never point at an invisible pane)",
-			setup: func(m Model) Model {
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-				if !m.paneHidden {
-					t.Fatalf("setup: pane should be hidden")
-				}
-				return m
-			},
+			name:  "click-to-focus on the hidden pane's own session: reveals it (load-bearing: focus must never point at an invisible pane)",
+			setup: behindOverview,
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
 				return update(t, m, freshRequestMsg("sess"))
 			},
@@ -1147,11 +1249,11 @@ func TestTogglePaneSummary(t *testing.T) {
 				if m.pane == nil {
 					t.Fatalf("a honored click must not close the pane")
 				}
-				if !m.paneFocused {
-					t.Fatalf("paneFocused = false, want true — the click hands the keyboard to the session")
+				if !m.paneOwnsKeyboard() {
+					t.Fatalf("paneOwnsKeyboard = false, want true — the click hands the keyboard to the session")
 				}
-				if m.paneHidden {
-					t.Fatalf("paneHidden = true with paneFocused = true: the click routes keystrokes into a child that is not on screen")
+				if m.view == viewOverview {
+					t.Fatalf("view = overview with paneOwnsKeyboard = true: the click routes keystrokes into a child that is not on screen")
 				}
 				if fp := m.pane.(*fakePane); fp.closed != 0 {
 					t.Fatalf("the installed pane was closed %d times; a focus request must not detach it", fp.closed)
@@ -1159,20 +1261,15 @@ func TestTogglePaneSummary(t *testing.T) {
 			},
 		},
 		{
-			name: "switching sessions while hidden: the arriving pane is shown (load-bearing: applyPaneAttached must clear paneHidden)",
-			setup: func(m Model) Model {
+			name: "switching sessions while hidden: the arriving pane installs behind the overview (load-bearing: only ctrl+t changes the view)",
+			setup: func(t *testing.T, m Model) Model {
 				m.setSessions([]Session{runningSess("sess"), runningSess("other")})
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "sess"})
-				m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-				if !m.paneHidden {
-					t.Fatalf("setup: pane should be hidden")
-				}
-				return m
+				return behindOverview(t, m)
 			},
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
 				// The cursor moves with the switch, because shouldRenderPane renders a
 				// pane only for the SELECTED session: leaving the cursor on "sess" would
-				// hide the arriving pane for that reason instead of for paneHidden, and
+				// hide the arriving pane for that reason instead of for the view, and
 				// the row would pass while asserting nothing.
 				m.selectSessionIndex(1)
 				return update(t, m, paneAttachedMsg{pane: newFakePane("OTHER"), name: "other"})
@@ -1181,12 +1278,13 @@ func TestTogglePaneSummary(t *testing.T) {
 				if m.paneName != "other" {
 					t.Fatalf("paneName = %q, want other — the switch should install the arriving pane", m.paneName)
 				}
-				if m.paneHidden {
-					t.Fatalf("paneHidden = true after a pane arrived: opening or switching a session must show that pane, not leave the summary over it")
+				// An unfocused arrival is passive: the view is the user's ctrl+t
+				// choice, so the overview stays and the pane waits behind it.
+				if m.view != viewOverview {
+					t.Fatalf("view = %v after an unfocused arrival, want the overview kept", m.view)
 				}
-				view := render(m)
-				if !strings.Contains(view, "OTHER") {
-					t.Fatalf("View() should render the newly-arrived pane:\n%s", view)
+				if view := render(m); strings.Contains(view, "OTHER") {
+					t.Fatalf("the arrival should sit behind the overview, not be drawn:\n%s", view)
 				}
 			},
 		},
@@ -1195,67 +1293,167 @@ func TestTogglePaneSummary(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := testModel(runningSess("sess"))
-			m = tt.setup(m)
+			m = tt.setup(t, m)
 			got, cmd := tt.act(t, m)
 			tt.checks(t, got, cmd)
 		})
 	}
 }
 
-// TestToggleKeyAdvertisedWheneverItCanShowAnAgentSurface pins Ctrl-T's help
-// contract: it is advertised whenever it can reveal, open, or restart the
-// selected agent surface, including before a pane exists, and it LEADS while
-// the pane is hidden (when Ctrl-T is the only way back).
+// TestRightFocusKeyTable is rows (b) and (c) of the W2.T1 key table, driven
+// through Update with the right side focused.
 //
-// It no longer also asserts every other live binding survives alongside it at
-// the suite's default 120-column width — W6.T2 made renderHelp itself
-// width-bound (via help.Model), and ↑/↓ + enter + n + c + f + q + toggle
-// together measure past 120 in any order, so SOME of them are legitimately
-// off this particular render. Nothing is dropped from the KEYMAP (only from
-// this one width's Short render): TestFullHelpOmitsNoEnabledBinding
-// covers that every enabled binding this test's states could show is still in
-// FullHelp (`?`).
-func TestToggleKeyAdvertisedWheneverItCanShowAnAgentSurface(t *testing.T) {
+// Agent view, load-bearing in both directions: ctrl+\ and ctrl+t are the ONLY
+// keys the dashboard takes (plus the ctrl+g mouse chord), so esc, q, ctrl+c,
+// tab and ctrl+w — every one of which the dashboard binds somewhere else —
+// must reach the child, and must neither quit nor move focus. A rule added
+// to inputPane for any of them takes the key away from every hosted agent.
+//
+// Overview view: ctrl+t flips to the agent with focus kept right; ctrl+\ and
+// esc return to the list; q and ctrl+c quit as detail mode always has; and a
+// key with a list meaning (n, c, enter) is swallowed rather than acting.
+func TestRightFocusKeyTable(t *testing.T) {
+	type want struct {
+		forwarded bool
+		focus     paneFocus
+		view      rightView
+		quit      bool
+	}
+	agent := func(t *testing.T) (Model, *fakePane) {
+		t.Helper()
+		fp := newFakePane("X")
+		m := testModel(runningSess("live"))
+		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "live"})
+		m, _ = update(t, m, keyEnter)
+		if !m.paneOwnsKeyboard() {
+			t.Fatalf("setup: enter should have focused the installed pane")
+		}
+		return m, fp
+	}
+	overview := func(t *testing.T) (Model, *fakePane) {
+		t.Helper()
+		m, fp := agent(t)
+		m, _ = update(t, m, keyCtrlT)
+		if !m.detailOwnsKeyboard() {
+			t.Fatalf("setup: ctrl+t should have put the focused overview on the right")
+		}
+		return m, fp
+	}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) (Model, *fakePane)
+		key   tea.KeyPressMsg
+		want  want
+	}{
+		{"agent: esc reaches the child", agent, tea.KeyPressMsg{Code: tea.KeyEsc}, want{forwarded: true, focus: focusRight, view: viewAgent}},
+		{"agent: q reaches the child", agent, tea.KeyPressMsg{Code: 'q', Text: "q"}, want{forwarded: true, focus: focusRight, view: viewAgent}},
+		{"agent: ctrl+c reaches the child", agent, chord('c'), want{forwarded: true, focus: focusRight, view: viewAgent}},
+		{"agent: tab reaches the child", agent, tea.KeyPressMsg{Code: tea.KeyTab}, want{forwarded: true, focus: focusRight, view: viewAgent}},
+		{"agent: ctrl+w reaches the child", agent, chord('w'), want{forwarded: true, focus: focusRight, view: viewAgent}},
+		{"agent: ctrl+t flips to the overview", agent, chord('t'), want{focus: focusRight, view: viewOverview}},
+		{"agent: ctrl+\\ returns to the list", agent, chord('\\'), want{focus: focusList, view: viewAgent}},
+
+		{"overview: ctrl+t flips to the agent", overview, chord('t'), want{focus: focusRight, view: viewAgent}},
+		{"overview: ctrl+\\ returns to the list", overview, chord('\\'), want{focus: focusList, view: viewOverview}},
+		{"overview: esc returns to the list", overview, tea.KeyPressMsg{Code: tea.KeyEsc}, want{focus: focusList, view: viewOverview}},
+		{"overview: q quits", overview, tea.KeyPressMsg{Code: 'q', Text: "q"}, want{focus: focusRight, view: viewOverview, quit: true}},
+		{"overview: ctrl+c quits", overview, chord('c'), want{focus: focusRight, view: viewOverview, quit: true}},
+		{"overview: n is swallowed", overview, tea.KeyPressMsg{Code: 'n', Text: "n"}, want{focus: focusRight, view: viewOverview}},
+		{"overview: c is swallowed", overview, tea.KeyPressMsg{Code: 'c', Text: "c"}, want{focus: focusRight, view: viewOverview}},
+		{"overview: enter is swallowed", overview, tea.KeyPressMsg{Code: tea.KeyEnter}, want{focus: focusRight, view: viewOverview}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, fp := tc.setup(t)
+			got, cmd := update(t, m, tc.key)
+
+			forwarded := len(fp.keys)+len(fp.texts) > 0
+			if forwarded != tc.want.forwarded {
+				t.Errorf("forwarded to the child = %v (keys=%v texts=%v), want %v", forwarded, fp.keys, fp.texts, tc.want.forwarded)
+			}
+			if got.quitting != tc.want.quit {
+				t.Errorf("quitting = %v, want %v", got.quitting, tc.want.quit)
+			}
+			if tc.want.quit {
+				return // quit tears the pane down; focus is moot
+			}
+			if got.focus != tc.want.focus || got.view != tc.want.view {
+				t.Errorf("focus/view = %v/%v, want %v/%v", got.focus, got.view, tc.want.focus, tc.want.view)
+			}
+			if got.pane != fp {
+				t.Errorf("the pane was replaced or closed (pane=%v)", got.pane)
+			}
+			if got.formOpen || got.modal != inputNormal {
+				t.Errorf("a list action fired: formOpen=%v modal=%v", got.formOpen, got.modal)
+			}
+			if cmd != nil && !tc.want.forwarded {
+				t.Errorf("returned a Cmd (%T), want none", cmd())
+			}
+		})
+	}
+}
+
+// TestToggleKeyAdvertisedOnlyWhereItActs pins ctrl+t's help contract under
+// the two-axis model: it is a right-side key, so the list's footer never
+// advertises it — not before a pane exists, not with one drawn, not with one
+// behind the overview — and the footers of the two right-side modes always
+// do, because there it is the only way between the agent and the overview.
+func TestToggleKeyAdvertisedOnlyWhereItActs(t *testing.T) {
+	toggle := m0Toggle()
 	m := testModel(runningSess("live"))
-	toggle := m.keys.Toggle.Help().Key + " " + m.keys.Toggle.Help().Desc
-	focus := m.keys.Focus.Help().Key + " " + m.keys.Focus.Help().Desc
-	if help := xansi.Strip(m.renderHelp()); !strings.Contains(help, toggle) || !strings.Contains(help, focus) {
-		t.Fatalf("help with a selected runnable session should advertise enter/f focus and Ctrl-T agent/view before a pane exists:\n%s", help)
+	if help := xansi.Strip(m.renderHelp()); strings.Contains(help, toggle) {
+		t.Fatalf("list help before a pane exists advertises %q:\n%s", toggle, help)
 	}
 
 	m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "live"})
-	if help := xansi.Strip(m.renderHelp()); !strings.Contains(help, toggle) {
-		t.Fatalf("help with a visible pane should advertise Ctrl-T:\n%s", help)
+	if help := xansi.Strip(m.renderHelp()); strings.Contains(help, toggle) {
+		t.Fatalf("list help with a drawn pane advertises %q:\n%s", toggle, help)
 	}
 
-	m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-	help := xansi.Strip(m.renderHelp())
-	if !strings.Contains(help, toggle) {
-		t.Fatalf("help while pane is hidden should advertise the way back:\n%s", help)
+	m.view = viewOverview
+	if help := xansi.Strip(m.renderHelp()); strings.Contains(help, toggle) {
+		t.Fatalf("list help with the pane behind the overview advertises %q:\n%s", toggle, help)
 	}
-	if !strings.HasPrefix(xansi.Strip(help), m.keys.Toggle.Help().Key) {
-		t.Fatalf("a hidden pane's toggle should LEAD the help line, got:\n%s", help)
+
+	// The right side: the focused overview (detail mode) and, after ctrl+t,
+	// the focused agent (pane mode). Their keymaps are what `?` and the footer
+	// read, and ctrl+t has to be in both.
+	m, _ = update(t, m, keyEnter)
+	reg := m.modes()
+	for _, mode := range []inputMode{inputDetail, inputPane} {
+		if b := findBinding(reg.spec(mode).keys.bindings, []string{"ctrl+t"}); b.Help().Key != "ctrl+t" {
+			t.Fatalf("%v keymap does not carry ctrl+t", mode)
+		}
 	}
+	if derivedMode(m) != inputDetail {
+		t.Fatalf("setup: enter in overview view should focus the overview, mode = %v", derivedMode(m))
+	}
+	if help := xansi.Strip(m.renderHelp()); !strings.Contains(help, "ctrl+t") {
+		t.Fatalf("focused overview footer should advertise ctrl+t, the way to the agent:\n%s", help)
+	}
+}
+
+// m0Toggle is ctrl+t's footer label as defaultKeyMap declares it.
+func m0Toggle() string {
+	k := defaultKeyMap().Toggle.Help()
+	return k.Key + " " + k.Desc
 }
 
 // TestHelpLineSurvivesTruncationWithAPane is the width budget on the help line,
 // the same contract TestConfirmCleanBarFitsAnEightyColumnTerminal pins on the
-// modal. With a pane open the full binding set runs 135 columns and truncate()
-// cuts at m.width from the END, so the toggle has to LEAD the line: appended, it
-// fell off any terminal at or below 129 — including 120, which is what the rest
-// of the suite renders at and what a great many terminals actually are.
+// modal. With the pane behind the overview and the list focused, the way back
+// to the agent starts with enter/f (focus the right side, then ctrl+t there),
+// so enter/f must survive truncate()'s cut from the END of the line.
 //
-// Both rows are load-bearing, for the same reason and at the two widths that
-// matter: while the pane is hidden the transient status message is the only other
-// place ctrl+t is named, so a truncated help line leaves a user who has lost the
-// status with nothing on screen that says how to get the session back.
+// Both rows are load-bearing, at the two widths that matter: 80, and 120 —
+// what the rest of the suite renders at and what a great many terminals are.
 func TestHelpLineSurvivesTruncationWithAPane(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
 			m := testModel(runningSess("live"))
 			m.width = width
 			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "live"})
-			m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+			m.view = viewOverview
 
 			// truncate() is what View applies to the footer; renderHelp itself is
 			// unbounded, so assert on the same cut the user sees.
@@ -1263,73 +1461,80 @@ func TestHelpLineSurvivesTruncationWithAPane(t *testing.T) {
 			if w := lipgloss.Width(help); w > m.width {
 				t.Fatalf("help line exceeds width %d (got %d): %q", m.width, w, help)
 			}
-			for _, want := range []string{m.keys.Toggle.Help().Key, m.keys.Toggle.Help().Desc} {
+			for _, want := range []string{m.keys.Focus.Help().Key, m.keys.Focus.Help().Desc} {
 				if !strings.Contains(help, want) {
-					t.Fatalf("help line at width %d lost %q — the way back to a hidden pane must survive truncation:\n%s", m.width, want, help)
+					t.Fatalf("help line at width %d lost %q — the way back to a pane behind the overview must survive truncation:\n%s", m.width, want, help)
 				}
 			}
 		})
 	}
 }
 
-// TestPaneTeardownClearsHiddenState pins clearPaneHiddenState at both teardown
-// sites. Both rows are load-bearing in the same way and for a defect that is
-// currently invisible: every read of paneHidden is gated on pane != nil, so a
-// leftover paneHidden == true with pane == nil changes nothing you can see today.
-// That is exactly what makes it worth a test — the next paneHidden-first check
-// would silently inherit a flag set by a session that has already ended, and no
-// existing assertion would catch it.
-func TestPaneTeardownClearsHiddenState(t *testing.T) {
-	hidden := func(t *testing.T) (Model, *fakePane) {
+// TestPaneTeardownHandsFocusBack pins forgetPane's focus rule at both teardown
+// sites. The pane is the only right-side surface that can vanish under a
+// focused keyboard: the overview is always drawable, so a right focus that
+// outlives its pane in AGENT view would leave typed keys landing on a surface
+// the user never chose. Both rows are load-bearing in the same way — the
+// first because a session ending is the common path, the second because quit
+// tears the pane down on a path that never goes through paneExitedMsg. The
+// view is deliberately NOT asserted reset: it is a dashboard-wide preference,
+// not state about the pane that ended.
+func TestPaneTeardownHandsFocusBack(t *testing.T) {
+	focused := func(t *testing.T) (Model, *fakePane) {
 		fp := newFakePane("X")
 		m := testModel(runningSess("live"))
-		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "live"})
-		m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-		if !m.paneHidden {
-			t.Fatalf("setup: pane should be hidden")
+		m.focus = focusRight // connect moves the focus at request time
+		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "live", focusOnArrival: true})
+		if !m.paneOwnsKeyboard() {
+			t.Fatalf("setup: pane should own the keyboard")
 		}
 		return m, fp
 	}
 
-	t.Run("session ends while hidden", func(t *testing.T) {
-		m, fp := hidden(t)
+	t.Run("session ends while focused", func(t *testing.T) {
+		m, fp := focused(t)
 		m, _ = update(t, m, paneExitedMsg{pane: fp, err: nil})
 		if m.pane != nil {
 			t.Fatalf("pane should be gone after paneExitedMsg")
 		}
-		if m.paneHidden {
-			t.Fatalf("paneHidden must not survive the pane it describes")
+		if m.focus != focusList {
+			t.Fatalf("focus = %v after the focused pane ended, want %v", m.focus, focusList)
 		}
 	})
 
-	t.Run("quit while hidden and previously focused", func(t *testing.T) {
-		m, _ := hidden(t)
-		m.paneFocusedBeforeHide = true
+	t.Run("quit while focused", func(t *testing.T) {
+		m, _ := focused(t)
+		m, _ = update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
 		m, _ = update(t, m, keyRune('q'))
-		if m.paneHidden || m.paneFocusedBeforeHide {
-			t.Fatalf("quit left toggle state set: paneHidden=%v paneFocusedBeforeHide=%v", m.paneHidden, m.paneFocusedBeforeHide)
+		if m.pane != nil || m.focus != focusList {
+			t.Fatalf("quit left pane=%v focus=%v, want no pane and list focus", m.pane != nil, m.focus)
 		}
 	})
 }
 
-// TestHiddenCleanRefusalFitsAnEightyColumnTerminal pins the other place the
-// toggle is named. The clean guard is the one refusal a user meets while the pane
-// is hidden, and its message has to tell them the pane is there and how to reach
-// it; at 115 columns the original ran off an 80-column terminal mid-sentence.
+// TestHiddenCleanRefusalFitsAnEightyColumnTerminal pins the clean guard a
+// user meets while the pane is behind the overview: its message has to say the
+// pane is there and name the one chord that closes it from the list, and fit
+// an 80-column terminal (the original ran off it mid-sentence). It must NOT
+// name ctrl+t: the old advice was "ctrl+t, then ctrl+\\", and ctrl+t does
+// nothing from the list now.
 func TestHiddenCleanRefusalFitsAnEightyColumnTerminal(t *testing.T) {
 	m := testModel(runningSess("live"))
 	m.width = 80
 	m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "live"})
-	m, _ = update(t, m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	m.view = viewOverview
 	m, _ = update(t, m, keyRune('c'))
 
 	if w := lipgloss.Width(m.status); w > m.width {
 		t.Fatalf("hidden clean refusal exceeds width %d (got %d): %q", m.width, w, m.status)
 	}
-	for _, want := range []string{"ctrl+t", "ctrl+\\"} {
+	for _, want := range []string{"behind the overview", "ctrl+\\"} {
 		if !strings.Contains(m.status, want) {
 			t.Fatalf("hidden clean refusal must name %q: %q", want, m.status)
 		}
+	}
+	if strings.Contains(m.status, "ctrl+t") {
+		t.Fatalf("hidden clean refusal names ctrl+t, a key the list does not act on: %q", m.status)
 	}
 }
 
@@ -2238,36 +2443,41 @@ func TestSecondCleanOnACleaningSessionIsRefused(t *testing.T) {
 	}
 }
 
-// TestToggleOnACleaningSessionIsRefused guards the other side of the in-flight
-// set: a clean stops the session's host and deletes its worktree, so opening a
-// pane over it would put a live view on a host the clean is about to SIGKILL.
-func TestToggleOnACleaningSessionIsRefused(t *testing.T) {
+// TestEnterOnACleaningSessionOpensNoPane guards the other side of the
+// in-flight set: a clean stops the session's host and deletes its worktree, so
+// opening a pane over it would put a live view on a host the clean is about to
+// SIGKILL. A cleaning row has no live agent, so enter focuses its overview —
+// which is where the clean's progress is read — and dials nothing.
+func TestEnterOnACleaningSessionOpensNoPane(t *testing.T) {
 	m := testModel(runningSess("a"))
+	opens := 0
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
-		t.Fatal("ctrl+t on a cleaning session must never open a pane")
-		return nil, nil
+		opens++
+		return newFakePane("X"), nil
 	}
 	m, _ = confirmClean(t, m)
 
-	got, cmd := update(t, m, keyCtrlT)
+	got, cmd := update(t, m, keyEnter)
 	if cmd != nil {
-		t.Fatalf("ctrl+t on a cleaning session must not dispatch, got %v", cmd)
+		t.Fatalf("enter on a cleaning session must not dispatch, got %v", cmd)
 	}
-	if got.pane != nil {
-		t.Fatalf("no pane should be opened over a cleaning session")
+	if got.pane != nil || opens != 0 {
+		t.Fatalf("no pane should be opened over a cleaning session (opens=%d)", opens)
 	}
-	if !strings.Contains(got.status, "can't open a") {
-		t.Fatalf("status = %q, want the refusal stated", got.status)
+	if got.focus != focusRight || !got.detailDrawn() {
+		t.Fatalf("focus = %v detailDrawn = %v, want the cleaning row's overview focused", got.focus, got.detailDrawn())
 	}
 }
 
 // TestEveryPaneEntranceRefusesACleaningSession is the in-flight guard over EVERY
-// path that reaches attachPaneCmd, not just the ctrl+t keypress. Guarding only
-// the keypress leaves the async chains open, and the sharpest of those needs no
-// unusual timing at all: ctrl+t on a STOPPED session dispatches a host restart,
+// path that reaches attachPaneCmd, not just the keypresses. Guarding only the
+// keypresses leaves the async chains open, and the sharpest of those needs no
+// unusual timing at all: `r` on a STOPPED session dispatches a host restart,
 // and `c`,`y` on it while that restart is in flight lands hostRestartedMsg on a
 // session the clean is about to SIGKILL. The post-create auto-open and the
-// startup pane are the same shape.
+// startup pane are the same shape. Enter is the one entrance that does not
+// state a refusal: a cleaning row has no live agent, so enter focuses its
+// overview, which says what is happening.
 //
 // Each case drives the real entrance rather than calling openPaneFor directly, so
 // a future caller that bypasses the gate fails here.
@@ -2291,18 +2501,21 @@ func TestEveryPaneEntranceRefusesACleaningSession(t *testing.T) {
 		// arrive drives the entrance with "a" already mid-clean and returns the
 		// resulting Model plus Cmd.
 		arrive func(t *testing.T, m Model) (Model, tea.Cmd)
+		// focusesOverview marks enter: no refusal toast, the overview is focused.
+		focusesOverview bool
 	}{
 		{
-			entrance: "ctrl+t",
+			entrance: "enter",
 			arrive: func(t *testing.T, m Model) (Model, tea.Cmd) {
-				return update(t, m, keyCtrlT)
+				return update(t, m, keyEnter)
 			},
+			focusesOverview: true,
 		},
 		{
-			entrance: "ctrl+t on a stopped session (must not even restart the host)",
+			entrance: "r on a stopped session (must not even restart the host)",
 			stopped:  true,
 			arrive: func(t *testing.T, m Model) (Model, tea.Cmd) {
-				return update(t, m, keyCtrlT)
+				return update(t, m, keyRune('r'))
 			},
 		},
 		{
@@ -2356,7 +2569,13 @@ func TestEveryPaneEntranceRefusesACleaningSession(t *testing.T) {
 			if got.pane != nil {
 				t.Fatalf("%s opened a pane over a cleaning session", tt.entrance)
 			}
-			if !strings.Contains(got.status, "can't open a") {
+			if tt.focusesOverview {
+				if got.focus != focusRight || !got.detailDrawn() {
+					t.Fatalf("%s: focus = %v detailDrawn = %v, want the overview focused", tt.entrance, got.focus, got.detailDrawn())
+				}
+				return
+			}
+			if !strings.Contains(got.status, "can't open a") && !strings.Contains(got.status, "can't restart a") {
 				t.Fatalf("%s: status = %q, want the refusal stated, never silence", tt.entrance, got.status)
 			}
 		})
@@ -2704,9 +2923,12 @@ func TestPlaceholderSurvivesDiscoveryTicksThenYieldsToTheRealSession(t *testing.
 
 // TestPlaceholderRowIsInert proves the per-session keys ignore a placeholder.
 // `c` is the dangerous one: it must NOT fall through to the empty-selection
-// branch that runs a bare `afk clean`.
+// branch that runs a bare `afk clean`. `r` must not spawn a host for a row
+// that has none yet. Enter is not in this list: a pending row has no live
+// agent, so enter focuses its overview (no Cmd, no spawn — see
+// TestEnterAndFocusKeyCurrentViewMatrix), which is a focus move, not inertness.
 func TestPlaceholderRowIsInert(t *testing.T) {
-	for _, k := range []tea.KeyMsg{keyCtrlT, keyRune('c')} {
+	for _, k := range []tea.KeyMsg{keyCtrlT, keyRune('r'), keyRune('c')} {
 		t.Run(fmt.Sprintf("%v", k), func(t *testing.T) {
 			m := testModel()
 			m, _ = submitForm(t, m, "mmm")
@@ -2817,7 +3039,7 @@ func TestSpawnFinishedSuccessWithAPaneOpenOnlyReloads(t *testing.T) {
 	if _, ok := cmd().(sessionsLoadedMsg); !ok {
 		t.Fatalf("expected the reload cmd, got %T", cmd())
 	}
-	if !strings.Contains(got.status, "background") || !strings.Contains(got.status, "ctrl+t to open") {
+	if !strings.Contains(got.status, "background") || !strings.Contains(got.status, got.keys.Focus.Help().Key+" to open") {
 		t.Fatalf("status = %q, want the where-it-went guidance", got.status)
 	}
 }
@@ -3864,10 +4086,10 @@ func TestStderrTail(t *testing.T) {
 
 // --- embedded pane over a session's detached host ---
 
-// TestToggleOpenedPaneRendersInView is the acceptance-criteria test: a pane
-// opened over a session's host by ctrl+t appears in View() without taking the
-// keyboard from the list.
-func TestToggleOpenedPaneRendersInView(t *testing.T) {
+// TestEnterOpenedPaneRendersInView is the acceptance-criteria test: a pane
+// opened over a session's host by enter appears in View() and owns the
+// keyboard once it lands.
+func TestEnterOpenedPaneRendersInView(t *testing.T) {
 	fp := newFakePane("HELLO-FROM-PANE")
 	m := testModel(runningSess("live"))
 	var gotCfg hostPaneConfig
@@ -3876,9 +4098,9 @@ func TestToggleOpenedPaneRendersInView(t *testing.T) {
 		return fp, nil
 	}
 
-	m2, cmd := update(t, m, keyCtrlT)
+	m2, cmd := update(t, m, keyEnter)
 	if cmd == nil {
-		t.Fatalf("ctrl+t on a running session should return a connect cmd")
+		t.Fatalf("enter on a running session should return a connect cmd")
 	}
 	msg := cmd()
 	attached, ok := msg.(paneAttachedMsg)
@@ -3901,11 +4123,11 @@ func TestToggleOpenedPaneRendersInView(t *testing.T) {
 	if m3.pane == nil || m3.paneName != "live" {
 		t.Fatalf("pane state not stored: pane=%v name=%q", m3.pane != nil, m3.paneName)
 	}
-	if attached.focusOnArrival {
-		t.Fatal("ctrl+t must attach with focusOnArrival=false")
+	if !attached.focusOnArrival {
+		t.Fatal("enter must attach with focusOnArrival=true")
 	}
-	if m3.paneFocused {
-		t.Fatalf("a ctrl+t-opened pane must leave keyboard ownership with the list")
+	if !m3.paneOwnsKeyboard() {
+		t.Fatalf("an enter-opened pane must own the keyboard once it lands")
 	}
 	out := render(m3)
 	if !strings.Contains(out, "HELLO-FROM-PANE") {
@@ -3925,7 +4147,7 @@ func TestPaneOpenFailureShowsErrorStatus(t *testing.T) {
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
 		return nil, errors.New("socket permission denied")
 	}
-	_, cmd := update(t, m, keyCtrlT)
+	_, cmd := update(t, m, keyEnter)
 	if cmd == nil {
 		t.Fatalf("expected a connect cmd")
 	}
@@ -3954,11 +4176,11 @@ func TestPaneOpenFailureShowsErrorStatus(t *testing.T) {
 	}
 }
 
-// TestToggleOnAnotherSessionSwitchesThePane is the multi-session acceptance test:
-// ctrl+t on a session that is NOT the one in the pane switches to it. The
+// TestEnterOnAnotherSessionSwitchesThePane is the multi-session acceptance
+// test: enter on a session that is NOT the one in the pane switches to it. The
 // outgoing session is detached (Close), never terminated — its host is a
-// separate process that keeps running — so switching back is another toggle.
-func TestToggleOnAnotherSessionSwitchesThePane(t *testing.T) {
+// separate process that keeps running — so switching back is another enter.
+func TestEnterOnAnotherSessionSwitchesThePane(t *testing.T) {
 	first := newFakePane("SESSION-A")
 	second := newFakePane("SESSION-B")
 	m := testModel(runningSess("a"), runningSess("b"))
@@ -3971,9 +4193,9 @@ func TestToggleOnAnotherSessionSwitchesThePane(t *testing.T) {
 	}
 	m.selectSessionIndex(1) // select "b", the session NOT in the pane
 
-	mid, cmd := update(t, m, keyCtrlT)
+	mid, cmd := update(t, m, keyEnter)
 	if cmd == nil {
-		t.Fatalf("ctrl+t on a different running session should dispatch a connect")
+		t.Fatalf("enter on a different running session should dispatch a connect")
 	}
 	if !strings.Contains(mid.status, "switching to b") {
 		t.Fatalf("status = %q, want the switching notice", mid.status)
@@ -4008,11 +4230,11 @@ func TestToggleOnAnotherSessionSwitchesThePane(t *testing.T) {
 	if subCmd == nil {
 		t.Fatalf("the new pane needs its own redraw/exit subscription armed")
 	}
-	if attached.focusOnArrival {
-		t.Fatal("ctrl+t must switch agent surfaces with focusOnArrival=false")
+	if !attached.focusOnArrival {
+		t.Fatal("enter must switch agent surfaces with focusOnArrival=true")
 	}
-	if got.paneFocused {
-		t.Fatalf("a ctrl+t-switched pane must leave keyboard ownership with the list")
+	if !got.paneOwnsKeyboard() {
+		t.Fatalf("an enter-switched pane must own the keyboard once it lands")
 	}
 	if !strings.Contains(got.status, "switched to b") || !strings.Contains(got.status, "a still running") {
 		t.Fatalf("status = %q, want it to name both the new and the backgrounded session", got.status)
@@ -4022,49 +4244,72 @@ func TestToggleOnAnotherSessionSwitchesThePane(t *testing.T) {
 	}
 }
 
-// TestToggleWithHiddenPaneTargetsTheSelectedAgent ensures paneHidden never
-// turns the old pane into a global Ctrl-T target. A different selected session
-// either replaces it through the normal focus-neutral lifecycle path or, when
-// it cannot produce an agent surface, leaves the hidden pane untouched.
+// TestToggleWithHiddenPaneTargetsTheSelectedAgent ensures a pane left behind
+// the overview never becomes a global target. With the cursor on another row,
+// enter focuses THAT row's overview (the view is the overview), and ctrl+t
+// from there switches the right side to the selected row's agent: a running
+// row connects, replacing the old pane only once the new one arrives — and
+// arriving focused, because ctrl+t into the agent view connects under enter's
+// rules. A row with no live agent makes ctrl+t inert (plan W3.T1 d): a stopped
+// row is restarted by `r` instead, and a pending, faulted or cleaning row
+// stays on its overview. Either way the old pane stays undrawn: it belongs to
+// a different row.
 func TestToggleWithHiddenPaneTargetsTheSelectedAgent(t *testing.T) {
 	hiddenOldPane := func(t *testing.T, target Session) Model {
 		t.Helper()
 		m := testModel(runningSess("a"), target)
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("A"), name: "a"})
+		m, _ = update(t, m, keyEnter)
 		m, _ = update(t, m, keyCtrlT)
-		if !m.paneHidden || m.paneFocused {
-			t.Fatalf("setup: pane a must be hidden and unfocused: hidden=%v focused=%v", m.paneHidden, m.paneFocused)
+		m, _ = update(t, m, chord('\\'))
+		if m.view != viewOverview || m.focus != focusList || m.paneName != "a" {
+			t.Fatalf("setup: view=%v focus=%v pane=%q, want a's pane behind the overview with the list focused",
+				m.view, m.focus, m.paneName)
 		}
 		m.selectSessionIndex(1)
 		return m
 	}
+	// toSelectedAgent is the user's route: enter focuses the selected row's
+	// overview, then ctrl+t switches the right side to its agent.
+	toSelectedAgent := func(t *testing.T, m Model) (Model, tea.Cmd) {
+		t.Helper()
+		m, cmd := update(t, m, keyEnter)
+		if cmd != nil || !m.detailOwnsKeyboard() {
+			t.Fatalf("enter in overview view must focus the overview with no lifecycle work: cmd=%v detail=%v",
+				cmd != nil, m.detailOwnsKeyboard())
+		}
+		return update(t, m, keyCtrlT)
+	}
 
-	t.Run("running selected row replaces hidden pane without taking focus", func(t *testing.T) {
+	t.Run("running selected row replaces the hidden pane and lands focused", func(t *testing.T) {
 		m := hiddenOldPane(t, runningSess("b"))
 		old := m.pane
 		incoming := newFakePane("B")
 		m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return incoming, nil }
 
-		mid, cmd := update(t, m, keyCtrlT)
+		mid, cmd := toSelectedAgent(t, m)
 		if cmd == nil {
-			t.Fatal("ctrl+t must attach the selected running session")
+			t.Fatal("ctrl+t into the agent view must attach the selected running session")
 		}
-		if mid.pane != old || !mid.paneHidden || mid.paneFocused || mid.detailFocused {
-			t.Fatalf("hidden old pane changed before replacement arrived: same=%v hidden=%v paneFocus=%v detailFocus=%v",
-				mid.pane == old, mid.paneHidden, mid.paneFocused, mid.detailFocused)
+		if mid.pane != old || mid.view != viewAgent || mid.focus != focusRight || mid.paneOwnsKeyboard() {
+			t.Fatalf("before the arrival: same=%v view=%v focus=%v paneFocus=%v, want a kept undrawn, agent view, right focus",
+				mid.pane == old, mid.view, mid.focus, mid.paneOwnsKeyboard())
 		}
 		attached := drainForPaneAttached(t, cmd)
-		if attached.name != "b" || attached.focusOnArrival {
-			t.Fatalf("attached request = name:%q focus:%v, want b and focus-neutral", attached.name, attached.focusOnArrival)
+		if attached.name != "b" || !attached.focusOnArrival {
+			t.Fatalf("attached request = name:%q focus:%v, want b, focused", attached.name, attached.focusOnArrival)
 		}
 		got, _ := update(t, mid, attached)
-		if got.pane != incoming || got.paneName != "b" || got.paneHidden || got.paneFocused || got.detailFocused {
-			t.Fatalf("selected pane result = incoming:%v name:%q hidden:%v paneFocus:%v detailFocus:%v",
-				got.pane == incoming, got.paneName, got.paneHidden, got.paneFocused, got.detailFocused)
+		if got.pane != incoming || got.paneName != "b" || !got.paneOwnsKeyboard() {
+			t.Fatalf("selected pane result = incoming:%v name:%q paneFocus:%v",
+				got.pane == incoming, got.paneName, got.paneOwnsKeyboard())
+		}
+		if old.(*fakePane).closed != 1 {
+			t.Fatalf("the old pane should be detached exactly once by the swap, got %d", old.(*fakePane).closed)
 		}
 	})
 
-	t.Run("stopped selected row restarts and replaces hidden pane without taking focus", func(t *testing.T) {
+	t.Run("stopped selected row: ctrl+t is inert, r restarts and replaces the hidden pane", func(t *testing.T) {
 		m := hiddenOldPane(t, sess("b"))
 		old := m.pane
 		incoming := newFakePane("B")
@@ -4073,27 +4318,40 @@ func TestToggleWithHiddenPaneTargetsTheSelectedAgent(t *testing.T) {
 		}
 		m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return incoming, nil }
 
-		mid, cmd := update(t, m, keyCtrlT)
-		if cmd == nil || mid.pane != old || !mid.paneHidden {
-			t.Fatalf("restart must leave hidden pane installed until replacement: cmd=%v same=%v hidden=%v",
-				cmd != nil, mid.pane == old, mid.paneHidden)
+		mid, cmd := toSelectedAgent(t, m)
+		if cmd != nil || mid.pane != old || mid.view != viewOverview || mid.focus != focusRight {
+			t.Fatalf("ctrl+t on a stopped row must be inert: cmd=%v same=%v view=%v focus=%v",
+				cmd != nil, mid.pane == old, mid.view, mid.focus)
+		}
+		mid, cmd = update(t, mid, keyRune('r'))
+		if cmd == nil || mid.pane != old {
+			t.Fatalf("r must restart, leaving the hidden pane installed until replacement: cmd=%v same=%v",
+				cmd != nil, mid.pane == old)
 		}
 		restarted, ok := cmd().(hostRestartedMsg)
 		if !ok {
 			t.Fatalf("restart command returned an unexpected message")
 		}
-		if restarted.name != "b" || restarted.focusOnArrival {
-			t.Fatalf("restart request = name:%q focus:%v, want b and focus-neutral", restarted.name, restarted.focusOnArrival)
+		if restarted.name != "b" || !restarted.focusOnArrival {
+			t.Fatalf("restart request = name:%q focus:%v, want b, focused (r from the right side)", restarted.name, restarted.focusOnArrival)
 		}
 		mid, attachCmd := update(t, mid, restarted)
-		if attachCmd == nil || mid.pane != old || !mid.paneHidden {
+		if attachCmd == nil || mid.pane != old {
 			t.Fatal("successful restart must attach b without revealing a")
 		}
-		attached := drainForPaneAttached(t, attachCmd)
-		got, _ := update(t, mid, attached)
-		if got.pane != incoming || got.paneName != "b" || got.paneHidden || got.paneFocused || got.detailFocused {
-			t.Fatalf("restarted pane result = incoming:%v name:%q hidden:%v paneFocus:%v detailFocus:%v",
-				got.pane == incoming, got.paneName, got.paneHidden, got.paneFocused, got.detailFocused)
+		got, _ := update(t, mid, drainForPaneAttached(t, attachCmd))
+		// The view is the overview, so b's agent installs behind it, one
+		// ctrl+t away; the swap still detaches a.
+		if got.pane != incoming || got.paneName != "b" || got.view != viewOverview || !got.detailOwnsKeyboard() {
+			t.Fatalf("restarted pane result = incoming:%v name:%q view:%v detail:%v",
+				got.pane == incoming, got.paneName, got.view, got.detailOwnsKeyboard())
+		}
+		if old.(*fakePane).closed != 1 {
+			t.Fatalf("the old pane should be detached exactly once by the swap, got %d", old.(*fakePane).closed)
+		}
+		got, _ = update(t, got, keyCtrlT)
+		if !got.paneOwnsKeyboard() || got.paneName != "b" {
+			t.Fatalf("ctrl+t after the restart should put the keyboard in b: paneFocus=%v name=%q", got.paneOwnsKeyboard(), got.paneName)
 		}
 	})
 
@@ -4107,10 +4365,9 @@ func TestToggleWithHiddenPaneTargetsTheSelectedAgent(t *testing.T) {
 		{"cleaning selected row", runningSess("b"), func(m *Model) {
 			m.cleaningSessions = map[cleanID]bool{cleanIDFor(m.sessions[1]): true}
 		}},
-		{"absent selected row", runningSess("b"), func(m *Model) { m.setSessions(nil) }},
 	}
 	for _, tc := range invalid {
-		t.Run(tc.name+" does not reveal old pane", func(t *testing.T) {
+		t.Run(tc.name+": ctrl+t is inert and does not reveal the old pane", func(t *testing.T) {
 			m := hiddenOldPane(t, tc.target)
 			tc.setup(&m)
 			old := m.pane
@@ -4121,13 +4378,18 @@ func TestToggleWithHiddenPaneTargetsTheSelectedAgent(t *testing.T) {
 				return session.HostProcess{}, nil
 			}
 
-			got, cmd := update(t, m, keyCtrlT)
+			got, cmd := toSelectedAgent(t, m)
 			if cmd != nil {
 				t.Fatal("inert selected row dispatched lifecycle work")
 			}
-			if got.pane != old || !got.paneHidden || got.paneFocused || got.detailFocused {
-				t.Fatalf("old pane was revealed or refocused: same=%v hidden=%v paneFocus=%v detailFocus=%v",
-					got.pane == old, got.paneHidden, got.paneFocused, got.detailFocused)
+			if got.pane != old || got.shouldRenderPane() || got.paneOwnsKeyboard() {
+				t.Fatalf("old pane was revealed or focused: same=%v drawn=%v paneFocus=%v",
+					got.pane == old, got.shouldRenderPane(), got.paneOwnsKeyboard())
+			}
+			// No live agent: ctrl+t does not even flip the sticky view, and
+			// the right side keeps the keyboard on the row's overview.
+			if got.view != viewOverview || got.focus != focusRight || !got.detailOwnsKeyboard() {
+				t.Fatalf("view/focus = %v/%v detail=%v, want overview/right on the overview", got.view, got.focus, got.detailOwnsKeyboard())
 			}
 			if opens != 0 || spawns != 0 {
 				t.Fatalf("lifecycle calls = open:%d spawn:%d, want none", opens, spawns)
@@ -4155,9 +4417,12 @@ func TestSwitchBackAndForthNeverEndsASession(t *testing.T) {
 		cursor int
 		want   string
 	}{{1, "b"}, {0, "a"}} {
+		// Back to the list first: the previous step's pane landed focused,
+		// and enter there would go to the session, not to the dashboard.
+		m, _ = update(t, m, chord('\\'))
 		m.selectSessionIndex(step.cursor)
 		var cmd tea.Cmd
-		m, cmd = update(t, m, keyCtrlT)
+		m, cmd = update(t, m, keyEnter)
 		if cmd == nil {
 			t.Fatalf("switching to %s should dispatch a connect", step.want)
 		}
@@ -4178,10 +4443,11 @@ func TestSwitchBackAndForthNeverEndsASession(t *testing.T) {
 	}
 }
 
-// TestToggleOnAStoppedSessionWhileAPaneIsOpenSwitchesAfterTheRestart covers the
-// switch whose target has no host yet: the restart runs first and the pane swap
-// happens off its result, with the session on screen untouched throughout.
-func TestToggleOnAStoppedSessionWhileAPaneIsOpenSwitchesAfterTheRestart(t *testing.T) {
+// TestRestartKeyOnAStoppedSessionWhileAPaneIsOpenSwitchesAfterTheRestart
+// covers the switch whose target has no host yet: `r` runs the restart first
+// and the pane swap happens off its result, with the session on screen
+// untouched throughout. From the list the keyboard stays on the list.
+func TestRestartKeyOnAStoppedSessionWhileAPaneIsOpenSwitchesAfterTheRestart(t *testing.T) {
 	live, restarted := newFakePane("LIVE"), newFakePane("RESTARTED")
 	m := testModel(runningSess("a"), sess("b")) // b's host is stopped
 	m, _ = update(t, m, paneAttachedMsg{pane: live, name: "a"})
@@ -4191,9 +4457,9 @@ func TestToggleOnAStoppedSessionWhileAPaneIsOpenSwitchesAfterTheRestart(t *testi
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return restarted, nil }
 	m.selectSessionIndex(1)
 
-	m, cmd := update(t, m, keyCtrlT)
+	m, cmd := update(t, m, keyRune('r'))
 	if cmd == nil {
-		t.Fatalf("ctrl+t on a stopped session should dispatch the restart")
+		t.Fatalf("r on a stopped session should dispatch the restart")
 	}
 	hr, ok := cmd().(hostRestartedMsg)
 	if !ok {
@@ -4209,8 +4475,9 @@ func TestToggleOnAStoppedSessionWhileAPaneIsOpenSwitchesAfterTheRestart(t *testi
 		t.Fatalf("a successful restart should chain into the connect")
 	}
 	attached := attachCmd().(paneAttachedMsg)
-	if attached.focusOnArrival {
-		t.Fatal("ctrl+t's restarted switch must not claim keyboard focus")
+	if attached.focusOnArrival || !attached.selectionBound {
+		t.Fatalf("list r's restarted switch = focusOnArrival:%v selectionBound:%v, want false/true",
+			attached.focusOnArrival, attached.selectionBound)
 	}
 	m, _ = update(t, m, attached)
 	if m.paneName != "b" {
@@ -4219,8 +4486,9 @@ func TestToggleOnAStoppedSessionWhileAPaneIsOpenSwitchesAfterTheRestart(t *testi
 	if live.closed != 1 {
 		t.Fatalf("the outgoing session should be detached once, got %d", live.closed)
 	}
-	if m.paneFocused {
-		t.Fatal("the restarted target should be shown with keyboard ownership still on the list")
+	if !m.shouldRenderPane() || m.focus != focusList {
+		t.Fatalf("drawn=%v focus=%v, want the restarted target shown with the list keeping the keyboard",
+			m.shouldRenderPane(), m.focus)
 	}
 }
 
@@ -4484,9 +4752,9 @@ func TestQuitClosesPaneAndQuitsImmediately(t *testing.T) {
 		if fp.closed != 1 {
 			t.Fatalf("%v should Close (detach) the pane exactly once, got %d", k, fp.closed)
 		}
-		if got.pane != nil || got.paneName != "" || got.paneFocused {
+		if got.pane != nil || got.paneName != "" || got.paneOwnsKeyboard() {
 			t.Fatalf("%v should clear the pane state: pane=%v name=%q focused=%v",
-				k, got.pane != nil, got.paneName, got.paneFocused)
+				k, got.pane != nil, got.paneName, got.paneOwnsKeyboard())
 		}
 	}
 }
@@ -4604,7 +4872,7 @@ func TestPaneExitedReasonDecidesWhetherTheHostIsMarkedStopped(t *testing.T) {
 		wantStatus  string
 	}{
 		{"stolen", host.DetachStolen, true, "another client took over a"},
-		{"dropped", host.DetachDropped, true, "connection to a dropped — it may still be running · ctrl+t to reopen the agent"},
+		{"dropped", host.DetachDropped, true, "connection to a dropped — it may still be running · enter/f to reopen the agent"},
 		{"exited", host.DetachExited, false, "session ended: a"},
 		{"zero reason reads as exited", 0, false, "session ended: a"},
 	} {
@@ -4722,9 +4990,9 @@ func TestToggleFullPaneLifecycleOpenRedrawExitReload(t *testing.T) {
 	m := testModel(runningSess("a"))
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return fp, nil }
 
-	m, openCmd := update(t, m, keyCtrlT)
+	m, openCmd := update(t, m, keyEnter)
 	if openCmd == nil {
-		t.Fatalf("ctrl+t on a running session should return a connect cmd")
+		t.Fatalf("enter on a running session should return a connect cmd")
 	}
 	openMsg := openCmd()
 	attached, ok := openMsg.(paneAttachedMsg)
@@ -4815,7 +5083,7 @@ func focusedModel(t *testing.T, fp *fakePane) Model {
 	m := testModel(sess("a"))
 	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
 	m, _ = update(t, m, keyRune('f'))
-	if !m.paneFocused {
+	if !m.paneOwnsKeyboard() {
 		t.Fatalf("precondition: pane should be focused after pressing f")
 	}
 	return m
@@ -4825,11 +5093,11 @@ func TestFocusKeyFocusesActivePane(t *testing.T) {
 	fp := newFakePane("X")
 	m := testModel(sess("a"))
 	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
-	if m.paneFocused {
+	if m.paneOwnsKeyboard() {
 		t.Fatalf("a freshly opened pane starts unfocused")
 	}
 	got, cmd := update(t, m, keyRune('f'))
-	if !got.paneFocused {
+	if !got.paneOwnsKeyboard() {
 		t.Fatalf("f should focus the active pane")
 	}
 	if cmd != nil {
@@ -4850,14 +5118,19 @@ func TestFocusKeyFocusesActivePane(t *testing.T) {
 // load-bearing half: it is the only state left in which `f` really does
 // nothing, and it is what proves the entry predicate is not a condition that
 // reduces to true.
+//
+// Under the two-axis model the detail box is focused when the VIEW is the
+// overview; in agent view the same key connects the selected session instead
+// (TestEnterAndFocusKeyCurrentViewMatrix).
 func TestFocusKeyWithNoPaneFocusesTheDetailPane(t *testing.T) {
 	t.Run("detail pane drawn", func(t *testing.T) {
 		m := testModel(sess("a"))
+		m.view = viewOverview
 		got, cmd := update(t, m, keyRune('f'))
-		if !got.detailFocused {
+		if !got.detailOwnsKeyboard() {
 			t.Fatalf("f should focus the detail pane when it is the drawn surface")
 		}
-		if got.paneFocused {
+		if got.paneOwnsKeyboard() {
 			t.Fatalf("f must not set pane focus when there is no pane")
 		}
 		if cmd != nil {
@@ -4872,7 +5145,7 @@ func TestFocusKeyWithNoPaneFocusesTheDetailPane(t *testing.T) {
 		m := testModel()
 		m.activeProject = -1
 		got, cmd := update(t, m, keyRune('f'))
-		if got.detailFocused || got.paneFocused {
+		if got.detailOwnsKeyboard() || got.paneOwnsKeyboard() {
 			t.Fatalf("f must focus nothing with no detail box and no pane")
 		}
 		if cmd != nil {
@@ -4893,7 +5166,7 @@ func TestEnterOnHostedSessionFocusesPane(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("enter on the hosted session should focus (no jump cmd), got a cmd")
 	}
-	if !got.paneFocused {
+	if !got.paneOwnsKeyboard() {
 		t.Fatalf("enter on the hosted session should focus the pane")
 	}
 }
@@ -4909,8 +5182,8 @@ func TestEnterOnHostedSessionFocusesEvenIfStale(t *testing.T) {
 	m := testModel(s)
 	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
 	got, cmd := update(t, m, keyEnter)
-	if cmd != nil || !got.paneFocused {
-		t.Fatalf("enter on the hosted (but stale-on-disk) session should focus: focused=%v cmd=%v", got.paneFocused, cmd != nil)
+	if cmd != nil || !got.paneOwnsKeyboard() {
+		t.Fatalf("enter on the hosted (but stale-on-disk) session should focus: focused=%v cmd=%v", got.paneOwnsKeyboard(), cmd != nil)
 	}
 	if strings.Contains(got.status, "stale") {
 		t.Fatalf("status = %q, should not report staleness for the hosted pane", got.status)
@@ -4924,7 +5197,7 @@ func TestFocusedPaneForwardsText(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("forwarding is synchronous, expected nil cmd")
 	}
-	if !got.paneFocused {
+	if !got.paneOwnsKeyboard() {
 		t.Fatalf("typing should not change focus")
 	}
 	if len(fp.texts) != 1 || fp.texts[0] != "x" {
@@ -5016,7 +5289,7 @@ func TestEscapeChordDetachesFocus(t *testing.T) {
 	fp := newFakePane("X")
 	m := focusedModel(t, fp)
 	got, cmd := update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
-	if got.paneFocused {
+	if got.paneOwnsKeyboard() {
 		t.Fatalf("ctrl+\\ should detach focus back to the dashboard")
 	}
 	if cmd != nil {
@@ -5687,6 +5960,9 @@ func TestViewDoesNotPanic(t *testing.T) {
 	pending := Session{SessionState: discover.SessionState{Name: "pending"}, Pending: true}
 
 	m := testModel(rich, stale, awaiting, pending)
+	// The overview's panels are what this exercises; in the agent view a row
+	// with no live agent draws the agent placeholder instead.
+	m.view = viewOverview
 	m.lastLoad = time.Unix(999_000, 0)
 	m.status = "some status"
 
@@ -5703,6 +5979,7 @@ func TestViewDoesNotPanic(t *testing.T) {
 	// The placeholder's detail pane is a separate branch from the panel loop, so
 	// it needs the cursor parked on it to be rendered at all.
 	onPending := testModel(rich, pending)
+	onPending.view = viewOverview
 	onPending.selectSessionIndex(1)
 	pendingOut := render(onPending)
 	for _, want := range []string{"pending", "creating session"} {
@@ -7264,7 +7541,7 @@ func TestPreviewArmsOnCursorMoveAndOpensThatSession(t *testing.T) {
 	if m.pane == nil || m.paneName != "b" {
 		t.Fatalf("pane state after the preview landed: pane=%v name=%q", m.pane != nil, m.paneName)
 	}
-	if m.paneFocused {
+	if m.paneOwnsKeyboard() {
 		t.Fatalf("a previewed pane must arrive with the keyboard still on the dashboard")
 	}
 }
@@ -7332,9 +7609,10 @@ func TestPreviewTimerFromASupersededGenerationIsInert(t *testing.T) {
 	}
 }
 
-// TestDetailScrollKeysMoveTheViewportOffsetByExpectedAmounts drives the four
-// W4.T1 bindings through Update against a 100x24 bigPlanSession and checks the
-// offset after each key against the row budget the frame actually draws.
+// TestDetailScrollKeysMoveTheViewportOffsetByExpectedAmounts drives the
+// focused overview's line and half-page keys (down/up, ctrl+d/ctrl+u) through
+// Update against a 100x24 bigPlanSession and checks the offset after each key
+// against the row budget the frame actually draws.
 //
 // Every step is load-bearing on its own, not just the sequence as a whole:
 // mode.go's dispatch already proves the right action fires (mode_test.go's
@@ -7342,7 +7620,7 @@ func TestPreviewTimerFromASupersededGenerationIsInert(t *testing.T) {
 // were fully wired and still completely dead — detailViewport had no content,
 // so every scroll clamped straight back to offset 0 regardless of direction.
 // A test that only checked "the offset changed" would still pass if, say,
-// shift+down and shift+up were swapped, or if ctrl+d's half-page magnitude
+// down and up were swapped, or if ctrl+d's half-page magnitude
 // were wrong; checking the exact number after each individual key pins the
 // direction (up vs down) and the magnitude (1 line vs Height()/2).
 //
@@ -7363,6 +7641,7 @@ func TestDetailScrollKeysMoveTheViewportOffsetByExpectedAmounts(t *testing.T) {
 	m := testModel(bigPlanSession("alpha"))
 	m.detailTab = tabWaves // the Overview shows one wave; only the Waves tab overflows
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = focusOverview(t, m)
 
 	_, mainOuter, bodyHeight := m.layoutDims()
 	if bodyHeight != 22 {
@@ -7383,9 +7662,9 @@ func TestDetailScrollKeysMoveTheViewportOffsetByExpectedAmounts(t *testing.T) {
 	}
 	topRender := renderAt(m)
 
-	m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift})
+	m, _ = update(t, m, keyDown)
 	if got := m.detailViewport.YOffset(); got != 1 {
-		t.Fatalf("after shift+down, YOffset = %d, want 1", got)
+		t.Fatalf("after down, YOffset = %d, want 1", got)
 	}
 
 	m, _ = update(t, m, chord('d')) // ctrl+d
@@ -7397,9 +7676,9 @@ func TestDetailScrollKeysMoveTheViewportOffsetByExpectedAmounts(t *testing.T) {
 		t.Fatalf("renderDetail is identical scrolled (YOffset=%d) and unscrolled; the scroll has no visible effect", 1+half)
 	}
 
-	m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift})
+	m, _ = update(t, m, keyUp)
 	if got := m.detailViewport.YOffset(); got != half {
-		t.Fatalf("after shift+up, YOffset = %d, want %d", got, half)
+		t.Fatalf("after up, YOffset = %d, want %d", got, half)
 	}
 
 	m, _ = update(t, m, chord('u')) // ctrl+u
@@ -7443,7 +7722,7 @@ func TestDetailScrollReachesTheLastLineOfContent(t *testing.T) {
 			m := testModel(bigPlanSession("alpha"))
 			m.detailTab = tabWaves // the Overview shows one wave; only the Waves tab overflows
 			m, _ = update(t, m, tea.WindowSizeMsg{Width: tc.width, Height: tc.height})
-			assertDetailScrollReachesLastLine(t, m)
+			assertDetailScrollReachesLastLine(t, focusOverview(t, m))
 		})
 		t.Run(fmt.Sprintf("%dx%d/diff", tc.width, tc.height), func(t *testing.T) {
 			m := diffScrollModel(t, tc.width, tc.height)
@@ -7457,11 +7736,11 @@ func TestDetailScrollReachesTheLastLineOfContent(t *testing.T) {
 // offset — that the last line of m's active tab's body is on screen and the
 // readout reads 100%. Asserting on the render is what makes the test honest:
 // an offset can look right on a viewport the frame sizes differently. The
-// shift+down-at-the-bottom row pins that the ceiling is a ceiling and not
+// down-at-the-bottom row pins that the ceiling is a ceiling and not
 // merely where ctrl+d happened to stop. Callers must have already sized m
-// (a WindowSizeMsg) and put it on the tab under test with content taller
-// than the pane; a fixture that doesn't overflow fails fast below rather
-// than passing vacuously.
+// (a WindowSizeMsg), focused the overview, and put it on the tab under test
+// with content taller than the pane; a fixture that doesn't overflow fails
+// fast below rather than passing vacuously.
 func assertDetailScrollReachesLastLine(t *testing.T, m Model) {
 	t.Helper()
 	_, mainOuter, bodyHeight := m.layoutDims()
@@ -7483,7 +7762,7 @@ func assertDetailScrollReachesLastLine(t *testing.T, m Model) {
 			break
 		}
 	}
-	m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift})
+	m, _ = update(t, m, keyDown)
 	bottomOffset := m.detailViewport.YOffset()
 
 	frame := xansi.Strip(m.renderDetail(mainOuter, bodyHeight))
@@ -7499,9 +7778,9 @@ func assertDetailScrollReachesLastLine(t *testing.T, m Model) {
 		t.Errorf("readout at the bottom reads %q, want 100%%", strings.TrimSpace(strings.Trim(readoutRow, "│ ")))
 	}
 
-	m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift})
+	m, _ = update(t, m, keyDown)
 	if got := m.detailViewport.YOffset(); got != bottomOffset {
-		t.Errorf("shift+down at the bottom moved YOffset %d -> %d; the ceiling is not a ceiling", bottomOffset, got)
+		t.Errorf("down at the bottom moved YOffset %d -> %d; the ceiling is not a ceiling", bottomOffset, got)
 	}
 
 	for i := 0; i < 1000 && m.detailViewport.YOffset() > 0; i++ {
@@ -7523,9 +7802,11 @@ func TestDetailScrollOffsetResetsWhenSelectionChanges(t *testing.T) {
 	m.detailTab = tabWaves // the Overview shows one wave; only the Waves tab overflows
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
 
+	m = focusOverview(t, m)
 	for i := 0; i < 3; i++ {
 		m, _ = update(t, m, chord('d'))
 	}
+	m, _ = update(t, m, keyEsc)
 	if got := m.detailViewport.YOffset(); got == 0 {
 		t.Fatalf("fixture broken: scrolling alpha's detail pane left YOffset at 0")
 	}
@@ -7553,9 +7834,11 @@ func TestDetailScrollOffsetResetsWhenATickChangesTheSelectedSession(t *testing.T
 	m.detailTab = tabWaves // the Overview shows one wave; only the Waves tab overflows
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
 
+	m = focusOverview(t, m)
 	for i := 0; i < 3; i++ {
 		m, _ = update(t, m, chord('d'))
 	}
+	m, _ = update(t, m, keyEsc)
 	if got := m.detailViewport.YOffset(); got == 0 {
 		t.Fatalf("fixture broken: scrolling alpha's detail pane left YOffset at 0")
 	}
@@ -7610,6 +7893,7 @@ func TestDetailViewportOffsetClampedOnResize(t *testing.T) {
 			m := testModel(s)
 			m.detailTab = tabWaves // the Overview shows one wave; only the Waves tab overflows
 			m, _ = update(t, m, tea.WindowSizeMsg{Width: tc.fromW, Height: tc.fromH})
+			m = focusOverview(t, m)
 
 			for i := 0; i < 1000; i++ {
 				before := m.detailViewport.YOffset()
@@ -7691,7 +7975,9 @@ func TestPageUpDownStillPageTheSessionListNotTheDetailPane(t *testing.T) {
 		m := testModel(bigPlanSession("alpha"))
 		m.detailTab = tabWaves // the Overview shows one wave; only the Waves tab overflows
 		m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+		m = focusOverview(t, m)
 		m, _ = update(t, m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+		m, _ = update(t, m, keyEsc)
 
 		scrolled := m.detailViewport.YOffset()
 		if scrolled == 0 {
@@ -7721,10 +8007,7 @@ func TestPageUpDownStillPageTheSessionListNotTheDetailPane(t *testing.T) {
 		m := testModel(sessions...)
 		m.detailTab = tabWaves
 		m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
-		m, _ = update(t, m, keyRune('f'))
-		if !m.detailFocused {
-			t.Fatalf("setup: f should have focused the detail pane")
-		}
+		m = focusOverview(t, m)
 
 		before, ok := m.selected()
 		if !ok {
@@ -7742,12 +8025,12 @@ func TestPageUpDownStillPageTheSessionListNotTheDetailPane(t *testing.T) {
 	})
 }
 
-// TestDetailScrollKeysAreInertWhileThePaneIsOnScreen pins scrollDetail's
-// shouldRenderPane gate: with a live, unhidden pane for the selected session
-// the main region draws the pane, not the detail view, so a scroll key must
-// not move state on the surface that isn't there. Both rows are load-bearing
+// TestDetailScrollKeysAreInertWhileThePaneIsOnScreen pins that a scroll key
+// with the right side focused moves the overview only when the overview is
+// what is drawn: with a live pane for the selected session on screen, ctrl+d
+// belongs to the session and the offset stays put. Both rows are load-bearing
 // as a pair — the second proves the gate is the PANE's presence and not the
-// key being dead, by hiding the pane (ctrl+t's paneHidden) and scrolling.
+// key being dead, by putting the pane behind the overview and scrolling.
 func TestDetailScrollKeysAreInertWhileThePaneIsOnScreen(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -7763,14 +8046,17 @@ func TestDetailScrollKeysAreInertWhileThePaneIsOnScreen(t *testing.T) {
 			m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
 			m.pane = newFakePane("x")
 			m.paneName = "alpha"
-			m.paneHidden = tc.hidden
+			m.focus = focusRight
+			if tc.hidden {
+				m.view = viewOverview
+			}
 			if m.shouldRenderPane() == tc.hidden {
-				t.Fatalf("fixture broken: shouldRenderPane() = %v with paneHidden=%v", m.shouldRenderPane(), tc.hidden)
+				t.Fatalf("fixture broken: shouldRenderPane() = %v with viewOverview=%v", m.shouldRenderPane(), tc.hidden)
 			}
 
 			m, _ = update(t, m, chord('d'))
 			if got := m.detailViewport.YOffset(); !tc.want(got) {
-				t.Fatalf("after ctrl+d with paneHidden=%v, YOffset = %d", tc.hidden, got)
+				t.Fatalf("after ctrl+d with viewOverview=%v, YOffset = %d", tc.hidden, got)
 			}
 		})
 	}
@@ -8096,8 +8382,10 @@ func TestPreviewTimerDroppedWhenATickReshuffledTheRow(t *testing.T) {
 //
 //   - "stopped host" also asserts no restart Cmd and never spawns: a cursor move
 //     must not start processes.
-//   - "already in the pane" is the re-dial that would get the pane the user is
-//     looking at Stolen out from under itself (a host serves exactly one client).
+//   - "being cleaned" is the dial that would put a live pane on a host the
+//     clean is about to SIGKILL. (The old "already in the pane" row is no
+//     longer reachable by a cursor move: moving off the paned row detaches its
+//     pane — see TestMovingOffThePanedRowDetachesIt.)
 func TestSchedulePreviewRefusalsStillInvalidate(t *testing.T) {
 	tests := []struct {
 		name string
@@ -8124,10 +8412,10 @@ func TestSchedulePreviewRefusalsStillInvalidate(t *testing.T) {
 			landsOn:  "b",
 		},
 		{
-			name: "already in the pane: re-dialing would steal it from itself",
+			name: "being cleaned: never dial a host the clean is about to stop",
 			setup: func(t *testing.T) Model {
 				m := testModel(runningSess("a"), runningSess("b"))
-				m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("B-ON-SCREEN"), name: "b"})
+				m.markCleaning(cleanIDFor(runningSess("b")))
 				m.selectSessionIndex(1)
 				return m
 			},
@@ -8175,9 +8463,9 @@ func TestSchedulePreviewRefusalsStillInvalidate(t *testing.T) {
 //
 // All four rows are load-bearing because each guards a different surface:
 // formOpen and both modal modes own the main region or the footer, so a pane
-// appearing under them is invisible; paneFocused means the user is TYPING into a
+// appearing under them is invisible; paneOwnsKeyboard means the user is TYPING into a
 // session, and swapping the pane out from under a keystroke is the most hostile
-// thing this feature could do. The paneFocused row deliberately names the pane
+// thing this feature could do. The paneOwnsKeyboard row deliberately names the pane
 // "a" while the cursor sits on "b", so the already-in-pane check cannot be what
 // drops the timer.
 func TestPreviewTimerDroppedByModelState(t *testing.T) {
@@ -8189,7 +8477,7 @@ func TestPreviewTimerDroppedByModelState(t *testing.T) {
 		{"keyboard routed into another pane", func(m *Model) {
 			m.pane = newFakePane("A-BEING-TYPED-INTO")
 			m.paneName = "a"
-			m.paneFocused = true
+			m.focus = focusRight
 		}},
 		{"clean confirmation modal up", func(m *Model) {
 			m.modal = inputConfirmClean
@@ -8294,7 +8582,7 @@ func TestToggleRacingAPreview(t *testing.T) {
 		}
 		staleGen := m.previewGen
 
-		m, attach := update(t, m, keyCtrlT)
+		m, attach := update(t, m, keyEnter)
 		if attach == nil {
 			t.Fatalf("setup: ctrl+t on a running session must dispatch a connect")
 		}
@@ -8326,7 +8614,7 @@ func TestToggleRacingAPreview(t *testing.T) {
 		m := testModel(runningSess("a"), runningSess("b"))
 		m.deps.OpenHostPane = recordingOpen(&opened, newFakePane("A"))
 
-		m, attach := update(t, m, keyCtrlT)
+		m, attach := update(t, m, keyEnter)
 		if attach == nil {
 			t.Fatalf("setup: ctrl+t on a running session must dispatch a connect")
 		}
@@ -8334,6 +8622,9 @@ func TestToggleRacingAPreview(t *testing.T) {
 			t.Fatalf("setup: attachInFlight = %+v, want an explicit open of a", m.attachInFlight)
 		}
 
+		// Enter focused the right side; the cursor is the list's, so the
+		// user goes back to it while the dial is still out.
+		m, _ = update(t, m, chord('\\'))
 		m, armed := update(t, m, keyDown)
 		if s, _ := m.selected(); s.Name != "b" {
 			t.Fatalf("setup: the move must still land on b, got %q", s.Name)
@@ -8363,9 +8654,9 @@ func TestToggleRacingAPreview(t *testing.T) {
 		}
 		staleGen := m.previewGen
 
-		m, attach := update(t, m, keyCtrlT)
+		m, attach := update(t, m, keyEnter)
 		if attach == nil {
-			t.Fatalf("setup: ctrl+t must dispatch a connect")
+			t.Fatalf("setup: enter must dispatch a connect")
 		}
 		failed, ok := attach().(paneAttachedMsg)
 		if !ok || failed.err == nil {
@@ -8404,13 +8695,16 @@ func TestToggleRacingAPreview(t *testing.T) {
 // session.
 //
 // All four rows are load-bearing:
-//   - "cursor moved off the paned session" is the one the auto-preview makes
-//     common (browsing away from an open pane); it must show the row's DETAIL, or
-//     navigation becomes impossible while a pane is open.
+//   - "cursor moved off the paned session" must show the row's DETAIL, never
+//     the pane, or the screen names one session while showing another. The
+//     cursor is moved directly, not by a key: a key move also detaches the
+//     pane (TestMovingOffThePanedRowDetachesIt), and this row pins the render
+//     rule on its own.
 //   - "cursor back on the paned session" is the return trip.
-//   - "focused with the cursor elsewhere" is the hostile case: a tick or a
-//     keystroke can move the cursor while the user is typing into the pane, and
-//     hiding what they are typing into would be worse than a stale cursor.
+//   - "a tick reshuffles the list under a focused pane" is the hostile case: a
+//     discovery pass that reorders rows must not move the selection off the
+//     session the user is typing into. The selection is pinned by name while
+//     the right side is focused, so the pane keeps rendering and owning input.
 //   - "no selection at all" is reachable when the paned session's row leaves
 //     discovery (an external `afk clean`); the pane must keep rendering, or the
 //     user is left with an invisible pane the keymap still guards against.
@@ -8422,27 +8716,43 @@ func TestPaneVersusDetailRenderSelection(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		arrange  func(m *Model)
+		arrange  func(t *testing.T, m *Model)
 		wantPane bool
 	}{
 		{
 			name:     "cursor moved off the paned session renders that row's detail",
-			arrange:  func(m *Model) { m.selectSessionIndex(1) },
+			arrange:  func(_ *testing.T, m *Model) { m.selectSessionIndex(1) },
 			wantPane: false,
 		},
 		{
 			name:     "cursor back on the paned session renders the pane",
-			arrange:  func(m *Model) { m.selectSessionIndex(0) },
+			arrange:  func(_ *testing.T, m *Model) { m.selectSessionIndex(0) },
 			wantPane: true,
 		},
 		{
-			name:     "focused with the cursor elsewhere still renders the pane",
-			arrange:  func(m *Model) { m.selectSessionIndex(1); m.paneFocused = true },
+			name: "a tick reshuffles the list under a focused pane",
+			arrange: func(t *testing.T, m *Model) {
+				*m, _ = update(t, *m, keyEnter)
+				if !m.paneOwnsKeyboard() {
+					t.Fatalf("setup: enter should focus the installed pane")
+				}
+				*m, _ = update(t, *m, sessionsLoadedMsg{
+					gen:      m.projectGen,
+					sessions: []Session{runningSess("b"), runningSess("a")},
+					at:       time.Unix(3, 0),
+				})
+				if s, _ := m.selected(); s.Name != "a" {
+					t.Fatalf("selection after the reshuffle = %q, want the paned session a pinned", s.Name)
+				}
+				if !m.paneOwnsKeyboard() {
+					t.Fatalf("the focused pane lost the keyboard to a reshuffle")
+				}
+			},
 			wantPane: true,
 		},
 		{
 			name: "no selection at all renders the pane",
-			arrange: func(m *Model) {
+			arrange: func(_ *testing.T, m *Model) {
 				*m = m.applyLoaded(sessionsLoadedMsg{gen: m.projectGen, sessions: nil, at: time.Unix(3, 0)})
 			},
 			wantPane: true,
@@ -8450,12 +8760,15 @@ func TestPaneVersusDetailRenderSelection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := testModel(sess("a"), sess("b"))
+			// Running rows: in the agent view a list-focused row with no live
+			// agent draws the agent placeholder, and this test is about the
+			// pane-versus-overview choice.
+			m := testModel(runningSess("a"), runningSess("b"))
 			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane(paneBody), name: "a"})
 			if m.pane == nil {
 				t.Fatalf("setup: the pane must be installed")
 			}
-			tt.arrange(&m)
+			tt.arrange(t, &m)
 
 			if got := m.shouldRenderPane(); got != tt.wantPane {
 				t.Fatalf("shouldRenderPane() = %v, want %v", got, tt.wantPane)
@@ -8471,50 +8784,52 @@ func TestPaneVersusDetailRenderSelection(t *testing.T) {
 	}
 }
 
-// TestToggleAttachKeepsKeyboardOwnershipWithTheList covers ctrl+t's
-// focus-on-arrival contract and the leak a failed attach must not create.
+// TestEnterAttachFocusContract covers enter's focus-on-arrival contract and
+// the leak a failed attach must not create.
 //
 // The LEAK half is the load-bearing one. Both halves pass if focusOnArrival is a
-// Model flag set by attachSelected; only the leak half fails, because a flag on
+// Model flag set by connectSelected; only the leak half fails, because a flag on
 // the Model survives the failed attach and gets consumed by the next arrival to
 // come along — which, cursor movement being what it does, is a preview. The user
 // would find their keystrokes going into a session they never asked to focus,
-// after an attach they watched fail.
-func TestToggleAttachKeepsKeyboardOwnershipWithTheList(t *testing.T) {
-	t.Run("ctrl+t opens the agent unfocused with a preview still pending", func(t *testing.T) {
+// after an attach they watched fail. The failure must also hand the keyboard
+// back to the list: the right side has nothing to receive it, and enter — the
+// retry — is a list key.
+func TestEnterAttachFocusContract(t *testing.T) {
+	t.Run("enter opens the agent focused with a preview still pending", func(t *testing.T) {
 		fp := newFakePane("A")
 		m := testModel(runningSess("a"), runningSess("b"))
 		m.selectSessionIndex(1)
 		m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return fp, nil }
 
-		// The preview armed here is never delivered: ctrl+t must not wait on it.
+		// The preview armed here is never delivered: enter must not wait on it.
 		m, armed := update(t, m, keyUp)
 		if armed == nil {
 			t.Fatalf("setup: the move onto a must arm a preview")
 		}
 
-		m, attach := update(t, m, keyCtrlT)
+		m, attach := update(t, m, keyEnter)
 		if attach == nil {
-			t.Fatalf("setup: ctrl+t must dispatch a connect")
+			t.Fatalf("setup: enter must dispatch a connect")
 		}
 		msg, ok := attach().(paneAttachedMsg)
 		if !ok {
 			t.Fatalf("setup: want a paneAttachedMsg, got %T", attach())
 		}
-		if msg.focusOnArrival {
-			t.Fatalf("ctrl+t's attach must carry focusOnArrival=false on the message")
+		if !msg.focusOnArrival {
+			t.Fatalf("enter's attach must carry focusOnArrival=true on the message")
 		}
-		if m.paneFocused {
-			t.Fatalf("focus must not be taken while the dial is still in flight")
+		if m.focus != focusRight || m.paneOwnsKeyboard() {
+			t.Fatalf("while the dial is in flight: focus=%v paneFocus=%v, want right with no pane yet", m.focus, m.paneOwnsKeyboard())
 		}
 
 		m, _ = update(t, m, msg)
-		if m.paneName != "a" || m.paneFocused {
-			t.Fatalf("after arrival: name=%q focused=%v, want a/false", m.paneName, m.paneFocused)
+		if m.paneName != "a" || !m.paneOwnsKeyboard() {
+			t.Fatalf("after arrival: name=%q focused=%v, want a/true", m.paneName, m.paneOwnsKeyboard())
 		}
 	})
 
-	t.Run("a failed ctrl+t does not leak focus onto a later preview", func(t *testing.T) {
+	t.Run("a failed enter does not leak focus onto a later preview", func(t *testing.T) {
 		m := testModel(runningSess("a"))
 		m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
 			return nil, errors.New("socket permission denied")
@@ -8525,9 +8840,9 @@ func TestToggleAttachKeepsKeyboardOwnershipWithTheList(t *testing.T) {
 		// Model-held focus flag would have been written into, and this subtest
 		// would then pass with the flag on the Model — the mutation it exists to
 		// catch.
-		m, attach := update(t, m, keyCtrlT)
+		m, attach := update(t, m, keyEnter)
 		if attach == nil {
-			t.Fatalf("setup: ctrl+t must dispatch a connect")
+			t.Fatalf("setup: enter must dispatch a connect")
 		}
 		failed, ok := attach().(paneAttachedMsg)
 		if !ok || failed.err == nil {
@@ -8540,8 +8855,11 @@ func TestToggleAttachKeepsKeyboardOwnershipWithTheList(t *testing.T) {
 		// diagnostic for the wrong reason. The behavior is the contract; the
 		// first subtest covers the wire.
 		m, _ = update(t, m, failed)
-		if m.pane != nil || m.paneFocused {
-			t.Fatalf("after the failure: pane=%v focused=%v, want nil/false", m.pane != nil, m.paneFocused)
+		if m.pane != nil || m.paneOwnsKeyboard() {
+			t.Fatalf("after the failure: pane=%v focused=%v, want nil/false", m.pane != nil, m.paneOwnsKeyboard())
+		}
+		if m.focus != focusList {
+			t.Fatalf("after the failure: focus = %v, want the keyboard handed back to the list", m.focus)
 		}
 
 		// The next arrival is a preview's, which carries no focus.
@@ -8553,7 +8871,7 @@ func TestToggleAttachKeepsKeyboardOwnershipWithTheList(t *testing.T) {
 		if got.paneName != "a" {
 			t.Fatalf("setup: the preview should have installed, name=%q", got.paneName)
 		}
-		if got.paneFocused {
+		if got.paneOwnsKeyboard() {
 			t.Fatalf("a preview must arrive unfocused — the failed enter's focus must not survive it")
 		}
 	})
@@ -8643,10 +8961,11 @@ func TestCleanRefusedOpenDoesNotWedgePreviews(t *testing.T) {
 
 // --- fix cycle: the four blockers the first pass shipped ---
 
-// TestToggleDuringAPreviewDialClaimsItWithoutDialingAgain is blocker 1. A preview
-// whose dial is outstanding is a connection to the session's host; dialing a
-// SECOND time makes the host send Stolen to the first, so ctrl+t racing a
-// preview would tear down the very pane it was pressed to focus.
+// TestEnterDuringAPreviewDialClaimsItWithoutDialingAgain is blocker 1, and
+// the heart of the retired 300ms race. A preview whose dial is outstanding is
+// a connection to the session's host; dialing a SECOND time makes the host
+// send Stolen to the first, so enter racing a preview would tear down the
+// very pane it was pressed to focus.
 //
 // Both assertions are load-bearing and neither implies the other:
 //   - the open COUNT staying at 1 is the Objective-4 invariant: at most one attach
@@ -8654,10 +8973,12 @@ func TestCleanRefusedOpenDoesNotWedgePreviews(t *testing.T) {
 //     again. It is not "at most one attach in flight" outright — two opens naming
 //     different sessions both dispatch, and the second overwrites attachInFlight,
 //     which is how docs/performance/pane-preview-races.md's B1 happens.
-//   - the claimed preview arriving visibly but unfocused is the toggle contract.
-//     A guard that merely refuses a second dial but leaves the preview stale can
-//     still let it lose to or replace another explicit target.
-func TestToggleDuringAPreviewDialClaimsItWithoutDialingAgain(t *testing.T) {
+//   - the claimed preview arriving FOCUSED is enter's contract. A guard that
+//     merely refuses a second dial but leaves the preview stale drops the one
+//     connection enter is waiting on — which is what the old detail-ownership
+//     clause in stalePreview did, because right focus with no pane yet reads as
+//     detail ownership.
+func TestEnterDuringAPreviewDialClaimsItWithoutDialingAgain(t *testing.T) {
 	var opened []hostPaneConfig
 	fp := newFakePane("B-PREVIEW")
 	m := testModel(runningSess("a"), runningSess("b"))
@@ -8687,32 +9008,35 @@ func TestToggleDuringAPreviewDialClaimsItWithoutDialingAgain(t *testing.T) {
 
 	// The preview's result has NOT been delivered: its dial is still outstanding,
 	// which is the whole window this test is about.
-	m, cmd := update(t, m, keyCtrlT)
+	m, cmd := update(t, m, keyEnter)
 	if cmd != nil {
-		t.Fatalf("ctrl+t must not dispatch a second dial to a host already being dialed")
+		t.Fatalf("enter must not dispatch a second dial to a host already being dialed")
 	}
 	if len(opened) != 1 {
 		t.Fatalf("opens = %d (%+v), want still exactly 1 — a second connection would get the first Stolen", len(opened), opened)
 	}
 	if !strings.Contains(m.status, "opening b") {
-		t.Fatalf("status = %q, want ctrl+t to claim the in-flight preview as its explicit open", m.status)
+		t.Fatalf("status = %q, want enter to claim the in-flight preview as its explicit open", m.status)
+	}
+	if m.focus != focusRight {
+		t.Fatalf("focus = %v, want the claim to move focus right at the keypress", m.focus)
 	}
 
 	m, _ = update(t, m, attached)
-	if m.paneName != "b" {
-		t.Fatalf("paneName = %q, want the preview's pane installed", m.paneName)
+	if m.paneName != "b" || fp.closed != 0 {
+		t.Fatalf("paneName = %q closed=%d, want the claimed preview's pane installed", m.paneName, fp.closed)
 	}
-	if m.paneFocused {
-		t.Fatalf("ctrl+t must show the claimed preview without taking keyboard ownership from the list")
+	if !m.paneOwnsKeyboard() {
+		t.Fatalf("enter must land in the claimed preview with the keyboard")
 	}
 }
 
-// TestToggleDifferentTargetBeatsStalePreviewInEitherDeliveryOrder pins the two
-// result orders for preview A racing an explicit ctrl+t to selected target B.
+// TestEnterDifferentTargetBeatsStalePreviewInEitherDeliveryOrder pins the two
+// result orders for preview A racing an explicit enter on selected target B.
 // The preview is the loser in both orders: its handle is closed, it cannot
 // clear B's outstanding record when B has not arrived yet, and it cannot
 // replace B after B is visible.
-func TestToggleDifferentTargetBeatsStalePreviewInEitherDeliveryOrder(t *testing.T) {
+func TestEnterDifferentTargetBeatsStalePreviewInEitherDeliveryOrder(t *testing.T) {
 	for _, previewFirst := range []bool{true, false} {
 		name := "explicit B arrives before stale preview A"
 		if previewFirst {
@@ -8734,13 +9058,13 @@ func TestToggleDifferentTargetBeatsStalePreviewInEitherDeliveryOrder(t *testing.
 			}
 			previewA := drainForPaneAttached(t, previewCmd)
 			m.selectSessionIndex(1)
-			m, explicitCmd := update(t, m, keyCtrlT)
+			m, explicitCmd := update(t, m, keyEnter)
 			if explicitCmd == nil {
-				t.Fatal("ctrl+t on selected b must dispatch the explicit target dial")
+				t.Fatal("enter on selected b must dispatch the explicit target dial")
 			}
 			explicitB := drainForPaneAttached(t, explicitCmd)
-			if explicitB.focusOnArrival {
-				t.Fatal("ctrl+t's explicit target must keep keyboard ownership with the list")
+			if !explicitB.focusOnArrival {
+				t.Fatal("enter's explicit target must carry focusOnArrival")
 			}
 			if m.attachInFlight.name != "b" || m.attachInFlight.preview {
 				t.Fatalf("attachInFlight = %+v, want explicit b", m.attachInFlight)
@@ -8766,9 +9090,9 @@ func TestToggleDifferentTargetBeatsStalePreviewInEitherDeliveryOrder(t *testing.
 				}
 			}
 
-			if m.pane != paneB || m.paneName != "b" || m.paneFocused {
-				t.Fatalf("final pane=%v name=%q focused=%v, want visible unfocused B",
-					m.pane == paneB, m.paneName, m.paneFocused)
+			if m.pane != paneB || m.paneName != "b" || !m.paneOwnsKeyboard() {
+				t.Fatalf("final pane=%v name=%q focused=%v, want visible focused B",
+					m.pane == paneB, m.paneName, m.paneOwnsKeyboard())
 			}
 			if paneB.closed != 0 {
 				t.Fatalf("winning pane B closed %d times, want 0", paneB.closed)
@@ -8793,13 +9117,14 @@ func TestToggleDifferentTargetBeatsStalePreviewInEitherDeliveryOrder(t *testing.
 // keypress would exercise the join path instead (see the test above).
 func TestSurplusArrivalStillHonoursExplicitFocusRequest(t *testing.T) {
 	installed, surplus := newFakePane("B-PREVIEW"), newFakePane("B-FROM-ENTER")
-	m := testModel(runningSess("a"), runningSess("b"))
+	m := testModel(runningSess("b"), runningSess("a"))
 
 	m, _ = update(t, m, paneAttachedMsg{pane: installed, name: "b", preview: true})
-	if m.paneName != "b" || m.paneFocused {
-		t.Fatalf("setup: want b installed and unfocused, got name=%q focused=%v", m.paneName, m.paneFocused)
+	if m.paneName != "b" || m.paneOwnsKeyboard() {
+		t.Fatalf("setup: want b installed and unfocused, got name=%q focused=%v", m.paneName, m.paneOwnsKeyboard())
 	}
 
+	m.focus = focusRight // connect moves the focus at request time
 	got, cmd := update(t, m, paneAttachedMsg{pane: surplus, name: "b", focusOnArrival: true})
 	if cmd != nil {
 		t.Fatalf("no subscription may be armed for a rejected connection")
@@ -8813,7 +9138,7 @@ func TestSurplusArrivalStillHonoursExplicitFocusRequest(t *testing.T) {
 	if installed.closed != 0 {
 		t.Fatalf("the installed pane must not be closed, got %d", installed.closed)
 	}
-	if !got.paneFocused {
+	if !got.paneOwnsKeyboard() {
 		t.Fatalf("the request that produced the surplus asked for the keyboard — dropping its focus loses the explicit focus gesture")
 	}
 }
@@ -8876,8 +9201,8 @@ func TestCtrlBackslashClosesAnUnfocusedPaneSoCleanIsReachable(t *testing.T) {
 		fp := newFakePane("A-PREVIEW")
 		m := testModel(runningSess("a"))
 		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a", preview: true})
-		if m.pane == nil || m.paneFocused {
-			t.Fatalf("setup: want an unfocused preview pane, got pane=%v focused=%v", m.pane != nil, m.paneFocused)
+		if m.pane == nil || m.paneOwnsKeyboard() {
+			t.Fatalf("setup: want an unfocused preview pane, got pane=%v focused=%v", m.pane != nil, m.paneOwnsKeyboard())
 		}
 
 		// Before the fix this is where `c` dead-ends: refused, pointing at a chord
@@ -8891,8 +9216,8 @@ func TestCtrlBackslashClosesAnUnfocusedPaneSoCleanIsReachable(t *testing.T) {
 		if cmd != nil {
 			t.Fatalf("closing a pane dispatches nothing — nothing about the session changed")
 		}
-		if m.pane != nil || m.paneName != "" || m.paneFocused {
-			t.Fatalf("the pane must be gone: pane=%v name=%q focused=%v", m.pane != nil, m.paneName, m.paneFocused)
+		if m.pane != nil || m.paneName != "" || m.paneOwnsKeyboard() {
+			t.Fatalf("the pane must be gone: pane=%v name=%q focused=%v", m.pane != nil, m.paneName, m.paneOwnsKeyboard())
 		}
 		if fp.closed != 1 {
 			t.Fatalf("the pane was closed %d times, want exactly 1", fp.closed)
@@ -8910,8 +9235,9 @@ func TestCtrlBackslashClosesAnUnfocusedPaneSoCleanIsReachable(t *testing.T) {
 	t.Run("focused pane only hands the keyboard back", func(t *testing.T) {
 		fp := newFakePane("A-FOCUSED")
 		m := testModel(runningSess("a"))
+		m.focus = focusRight // connect moves the focus at request time
 		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a", focusOnArrival: true})
-		if !m.paneFocused {
+		if !m.paneOwnsKeyboard() {
 			t.Fatalf("setup: the pane must be focused")
 		}
 
@@ -8919,7 +9245,7 @@ func TestCtrlBackslashClosesAnUnfocusedPaneSoCleanIsReachable(t *testing.T) {
 		if m.pane == nil || m.paneName != "a" {
 			t.Fatalf("the first press must leave the pane up: pane=%v name=%q", m.pane != nil, m.paneName)
 		}
-		if m.paneFocused {
+		if m.paneOwnsKeyboard() {
 			t.Fatalf("the first press must return input to the dashboard")
 		}
 		if fp.closed != 0 {
@@ -8937,14 +9263,17 @@ func TestCtrlBackslashClosesAnUnfocusedPaneSoCleanIsReachable(t *testing.T) {
 	})
 }
 
-// TestToggleOnAStoppedSessionKeepsListFocusAfterTheRestart pins ctrl+t's
-// stopped-host path: focusOnArrival=false must survive both async boundaries.
+// TestRestartCarriesTheFocusRequestAcrossBothBoundaries pins the stopped-host
+// path: the focus request must survive both async boundaries (the spawn, then
+// the open hostRestartedMsg chains into) in both directions.
 //
 // The startup row is why the flag is carried rather than hardcoded: `afk dash
 // --open` and `afk new`'s handoff restart the same way and must NOT grab the
-// keyboard, since nobody pressed a key for that pane.
-func TestToggleOnAStoppedSessionKeepsListFocusAfterTheRestart(t *testing.T) {
-	t.Run("ctrl+t's restart keeps focus off the pane", func(t *testing.T) {
+// keyboard, since nobody pressed a key for that pane — while `r` pressed on the
+// right side (the stopped row's focused overview), on the same path, must land
+// focused.
+func TestRestartCarriesTheFocusRequestAcrossBothBoundaries(t *testing.T) {
+	t.Run("r from the right side lands focused", func(t *testing.T) {
 		m := testModel(sess("stopped")) // sess() has HostRunning false
 		m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
 			return session.HostProcess{PID: 4242}, nil
@@ -8953,16 +9282,17 @@ func TestToggleOnAStoppedSessionKeepsListFocusAfterTheRestart(t *testing.T) {
 			return newFakePane("RESTARTED"), nil
 		}
 
-		m, restart := update(t, m, keyCtrlT)
+		m, _ = update(t, m, keyEnter)
+		m, restart := update(t, m, keyRune('r'))
 		if restart == nil {
-			t.Fatalf("setup: ctrl+t on a stopped session must dispatch the restart")
+			t.Fatalf("setup: r on a stopped session's overview must dispatch the restart")
 		}
 		hr, ok := restart().(hostRestartedMsg)
 		if !ok {
 			t.Fatalf("setup: restart produced %T, want hostRestartedMsg", restart())
 		}
-		if hr.focusOnArrival {
-			t.Fatalf("a ctrl+t-initiated restart must keep focusOnArrival=false: %+v", hr)
+		if !hr.focusOnArrival {
+			t.Fatalf("a right-side r restart must carry focusOnArrival=true: %+v", hr)
 		}
 
 		m, open := update(t, m, hr)
@@ -8973,13 +9303,13 @@ func TestToggleOnAStoppedSessionKeepsListFocusAfterTheRestart(t *testing.T) {
 		if !ok {
 			t.Fatalf("setup: the chained cmd produced %T, want paneAttachedMsg", open())
 		}
-		if attached.focusOnArrival {
-			t.Fatalf("the request built off the restart must keep focusOnArrival=false: %+v", attached)
+		if !attached.focusOnArrival {
+			t.Fatalf("the request built off the restart must keep focusOnArrival=true: %+v", attached)
 		}
 
 		m, _ = update(t, m, attached)
-		if m.paneName != "stopped" || m.paneFocused {
-			t.Fatalf("after the restart landed: name=%q focused=%v, want stopped/false", m.paneName, m.paneFocused)
+		if m.paneName != "stopped" || !m.paneOwnsKeyboard() {
+			t.Fatalf("after the restart landed: name=%q focused=%v, want stopped/true", m.paneName, m.paneOwnsKeyboard())
 		}
 	})
 
@@ -9013,7 +9343,7 @@ func TestToggleOnAStoppedSessionKeepsListFocusAfterTheRestart(t *testing.T) {
 		if m.paneName != "fresh" {
 			t.Fatalf("setup: paneName = %q, want fresh", m.paneName)
 		}
-		if m.paneFocused {
+		if m.paneOwnsKeyboard() {
 			t.Fatalf("the startup pane must arrive with the keyboard on the dashboard")
 		}
 	})
@@ -9496,12 +9826,12 @@ func TestUnfocusKeyStillWorksOnAWedgedPane(t *testing.T) {
 	m := testModel(wedgedSess("alpha", 12*time.Minute))
 	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "alpha"})
 	m, _ = update(t, m, keyRune('f'))
-	if !m.paneFocused {
+	if !m.paneOwnsKeyboard() {
 		t.Fatalf("setup: pane should be focused after pressing f")
 	}
 
 	got, cmd := update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
-	if got.paneFocused {
+	if got.paneOwnsKeyboard() {
 		t.Fatalf("ctrl+\\ should still detach focus back to the dashboard even on a wedged pane")
 	}
 	if cmd != nil {
@@ -9591,13 +9921,19 @@ func TestConfirmRestartYRevalidatesTheWedgeVerdict(t *testing.T) {
 // TestWedgedBadgeRequiresARunningHost is fix cycle 1's answer to the
 // stale-verdict finding: a SIGKILLed host leaves its host.json (and the
 // wedged_since inside it) on disk forever, so a verdict is only as live as
-// the host that wrote it. With HostRunning false the badge must not render
-// and the restart key must be inert — the Restart frame would dial a socket
-// nobody serves.
+// the host that wrote it. With HostRunning false the badge must not render,
+// and the restart key must NOT take the wedged path — the Restart frame would
+// dial a socket nobody serves. The row is simply stopped, so `r` respawns its
+// host (restartSelected's stopped branch), with no confirmation and no frame.
 func TestWedgedBadgeRequiresARunningHost(t *testing.T) {
 	s := wedgedSess("alpha", 12*time.Minute)
 	s.HostRunning = false
 	m := testModel(s)
+	frames := 0
+	m.deps.SendRestart = func(string, string) (bool, error) { frames++; return true, nil }
+	m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
+		return session.HostProcess{PID: 4242}, nil
+	}
 
 	row := m.renderRow(s, false, 60)
 	if strings.Contains(row, wedgedGlyph) {
@@ -9605,20 +9941,29 @@ func TestWedgedBadgeRequiresARunningHost(t *testing.T) {
 	}
 
 	got, cmd := update(t, m, keyRune('r'))
-	if got.modal == inputConfirmRestart || cmd != nil {
-		t.Fatalf("the restart key must be inert when the host is gone (mode=%v cmd=%v)", got.modal, cmd != nil)
+	if got.modal == inputConfirmRestart {
+		t.Fatal("the wedged confirmation must not open when the host is gone")
+	}
+	if cmd == nil {
+		t.Fatal("r on a stopped row must restart its host")
+	}
+	if _, ok := cmd().(hostRestartedMsg); !ok {
+		t.Fatal("r on a stopped row must run the host restart, not the wedged child restart")
+	}
+	if frames != 0 {
+		t.Fatalf("SendRestart called %d times, want 0 — no host serves that socket", frames)
 	}
 }
 
-// TestHelpAdvertisesRestartOnlyOnAWedgedSelection restores keyMap's "help can
-// never drift from handled keys" invariant for the Restart binding: the help
-// line names it exactly when it is live — the selected row's own wedge
-// verdict, the same showsWedged gate restartWedgedSelected fires on — and
-// stays byte-compatible with today's line everywhere else (the unfocused line
-// is already oversubscribed at 80 columns, so an unconditional entry would
-// displace keys that are always live to advertise one that usually is not).
-func TestHelpAdvertisesRestartOnlyOnAWedgedSelection(t *testing.T) {
-	want := "r restart wedged (confirm)"
+// TestHelpAdvertisesRestartWhereItActs restores keyMap's "help can never drift
+// from handled keys" invariant for the Restart binding: the help line names it
+// exactly when `r` acts on the selection — a stopped row it restarts at once, a
+// running row the dashboard shows as WEDGED — and never on a healthy running
+// row, where the key is inert (the unfocused line is already oversubscribed at
+// 80 columns, so an unconditional entry would displace keys that are always
+// live). The focused overview applies the same gate.
+func TestHelpAdvertisesRestartWhereItActs(t *testing.T) {
+	want := "r restart"
 
 	wedged := testModel(wedgedSess("alpha", 12*time.Minute))
 	if help := xansi.Strip(wedged.renderHelp()); !strings.Contains(help, want) {
@@ -9629,12 +9974,24 @@ func TestHelpAdvertisesRestartOnlyOnAWedgedSelection(t *testing.T) {
 	if help := xansi.Strip(healthy.renderHelp()); strings.Contains(help, want) {
 		t.Fatalf("help must not advertise the restart key for a healthy selection, got %q", help)
 	}
+	if help := xansi.Strip(focusOverview(t, healthy).renderHelp()); strings.Contains(help, want) {
+		t.Fatalf("the focused overview must not advertise the restart key for a healthy selection, got %q", help)
+	}
 
 	deadHost := wedgedSess("alpha", 12*time.Minute)
 	deadHost.HostRunning = false
-	stale := testModel(deadHost)
-	if help := xansi.Strip(stale.renderHelp()); strings.Contains(help, want) {
-		t.Fatalf("help must not advertise the restart key when the verdict's host is gone, got %q", help)
+	stopped := testModel(deadHost)
+	if help := xansi.Strip(stopped.renderHelp()); !strings.Contains(help, want) {
+		t.Fatalf("help must advertise the restart key on a stopped selection, got %q", help)
+	}
+	stopped, _ = update(t, stopped, keyEnter)
+	if help := xansi.Strip(stopped.renderHelp()); !strings.Contains(help, want) {
+		t.Fatalf("the stopped row's focused overview must advertise the restart key, got %q", help)
+	}
+
+	pending := testModel(Session{SessionState: sampleState("alpha"), Pending: true})
+	if help := xansi.Strip(pending.renderHelp()); strings.Contains(help, want) {
+		t.Fatalf("help must not advertise the restart key on a pending row, got %q", help)
 	}
 }
 
@@ -9765,16 +10122,17 @@ func TestResizeKeyClosesNormalFullHelpAndStaysOffTheShortLine(t *testing.T) {
 // TestFullHelpOmitsNoEnabledBinding's complement for inputNormal specifically:
 // that generic test walks mode.go's own keymap, which knows nothing about
 // live Model state, so it cannot exercise renderNormalHelpKeyMap's dynamic
-// SetEnabled calls (Focus/Toggle live with a pane, Restart live on a wedged
-// selection). This asserts full help tracks all three, in both directions —
+// SetEnabled calls (Focus live wherever there is a right side, Restart live on
+// a wedged selection). This asserts full help tracks both, in both directions —
 // present when the action does something, absent when it would be a no-op —
 // which is the behavior SetEnabled(false) is standing in for the retired
-// ladder's conditional strings.
+// ladder's conditional strings. ctrl+t is asserted ABSENT throughout: it is a
+// right-side key and the list's full help must never offer it.
 func TestNormalModeFullHelpReflectsPaneAndWedgeState(t *testing.T) {
 	noPane := testModel(runningSess("live"))
 	full := xansi.Strip(renderModeHelp(noPane.renderNormalHelpKeyMap(), true, 100000))
-	if !fullHelpHasItem(full, noPane.keys.Toggle.Help().Key, noPane.keys.Toggle.Help().Desc) {
-		t.Errorf("no pane: full help = %q, want it to advertise %q/%q",
+	if fullHelpHasItem(full, noPane.keys.Toggle.Help().Key, noPane.keys.Toggle.Help().Desc) {
+		t.Errorf("no pane: full help = %q, must not advertise %q/%q from the list",
 			full, noPane.keys.Toggle.Help().Key, noPane.keys.Toggle.Help().Desc)
 	}
 	for _, b := range []key.Binding{noPane.keys.Restart} {
@@ -9801,11 +10159,13 @@ func TestNormalModeFullHelpReflectsPaneAndWedgeState(t *testing.T) {
 
 	withPane, _ := update(t, noPane, paneAttachedMsg{pane: newFakePane("X"), name: "live"})
 	full = xansi.Strip(renderModeHelp(withPane.renderNormalHelpKeyMap(), true, 100000))
-	for _, b := range []key.Binding{withPane.keys.Focus, withPane.keys.Toggle} {
-		if !fullHelpHasItem(full, b.Help().Key, b.Help().Desc) {
-			t.Errorf("pane open: full help = %q, want it to contain %q/%q",
-				full, b.Help().Key, b.Help().Desc)
-		}
+	if !fullHelpHasItem(full, withPane.keys.Focus.Help().Key, withPane.keys.Focus.Help().Desc) {
+		t.Errorf("pane open: full help = %q, want it to contain %q/%q",
+			full, withPane.keys.Focus.Help().Key, withPane.keys.Focus.Help().Desc)
+	}
+	if fullHelpHasItem(full, withPane.keys.Toggle.Help().Key, withPane.keys.Toggle.Help().Desc) {
+		t.Errorf("pane open: full help = %q, must not advertise %q/%q from the list",
+			full, withPane.keys.Toggle.Help().Key, withPane.keys.Toggle.Help().Desc)
 	}
 
 	wedged := testModel(wedgedSess("alpha", 12*time.Minute))
@@ -10194,19 +10554,19 @@ func spawnSeamRecorder(t *testing.T, m *Model) (scratchCalls *int, gotName, gotW
 	return &calls, &name, &worktree
 }
 
-// TestToggleOnStoppedScratchSessionRestartsThroughTheScratchSeam is the
-// regression test for the rejected blocker: ctrl+t on a stopped scratch row
+// TestRestartKeyOnStoppedScratchSessionRestartsThroughTheScratchSeam is the
+// regression test for the rejected blocker: `r` on a stopped scratch row
 // must respawn its host with HostSpawn.Scratch set (via the scratch seam),
 // never through the conductor seam. Both halves are load-bearing — the
 // scratch seam being called with the row's own name/worktree, and the
 // conductor seam not being called at all.
-func TestToggleOnStoppedScratchSessionRestartsThroughTheScratchSeam(t *testing.T) {
+func TestRestartKeyOnStoppedScratchSessionRestartsThroughTheScratchSeam(t *testing.T) {
 	m := testModel(stoppedScratchSess("scratch-1"))
 	calls, gotName, gotWorktree := spawnSeamRecorder(t, &m)
 
-	after, cmd := update(t, m, keyCtrlT)
+	after, cmd := update(t, m, keyRune('r'))
 	if cmd == nil {
-		t.Fatal("ctrl+t on a stopped scratch session should dispatch the restart cmd")
+		t.Fatal("r on a stopped scratch session should dispatch the restart cmd")
 	}
 	if !strings.Contains(after.status, "restarting scratch-1") {
 		t.Fatalf("status = %q, want restarting notice", after.status)
@@ -10227,7 +10587,7 @@ func TestToggleOnStoppedScratchSessionRestartsThroughTheScratchSeam(t *testing.T
 // TestStartupPaneOnStoppedScratchSessionRestartsThroughTheScratchSeam covers
 // the second restart dispatch site (maybeOpenInitialPane): `afk dash --open
 // scratch-1` microseconds after its host stopped must take the same scratch
-// seam ctrl+t does.
+// seam `r` does.
 func TestStartupPaneOnStoppedScratchSessionRestartsThroughTheScratchSeam(t *testing.T) {
 	m := testModel(stoppedScratchSess("scratch-1"))
 	calls, gotName, _ := spawnSeamRecorder(t, &m)
@@ -10355,7 +10715,7 @@ func TestCleanSucceededStatusScratchClaimsNoArchive(t *testing.T) {
 // resolved: the creation form open WITH a pane already focused. It is reachable
 // only asynchronously — openNewForm deliberately allows an open pane (the create
 // is a background spawn), and a focus REQUEST from another process reaches
-// applyPaneAttached, which sets paneFocused with no form guard.
+// applyPaneAttached, which sets paneOwnsKeyboard with no form guard.
 func formPaneCornerModel(t *testing.T) (Model, *fakePane) {
 	t.Helper()
 	m := testModel(sess("a"))
@@ -10364,11 +10724,12 @@ func formPaneCornerModel(t *testing.T) (Model, *fakePane) {
 	// is the only order that reaches this state: a focused pane forwards `n` to
 	// its child, so the form can never be opened from one.
 	fp := newFakePane("X")
-	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "sess", focusOnArrival: true})
+	m.focus = focusRight // connect moves the focus at request time
+	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a", focusOnArrival: true})
 	m.pane = fp
-	if !m.formOpen || !m.paneFocused || m.pane == nil {
-		t.Fatalf("setup: want the form open over a focused pane, got formOpen=%v paneFocused=%v pane=%v",
-			m.formOpen, m.paneFocused, m.pane != nil)
+	if !m.formOpen || !m.paneOwnsKeyboard() || m.pane == nil {
+		t.Fatalf("setup: want the form open over a focused pane, got formOpen=%v paneOwnsKeyboard=%v pane=%v",
+			m.formOpen, m.paneOwnsKeyboard(), m.pane != nil)
 	}
 	return m, fp
 }
@@ -10389,7 +10750,7 @@ func formPaneCornerModel(t *testing.T) (Model, *fakePane) {
 //   - the printable key reaching the name buffer and NOT the child is the
 //     defect itself: no keystroke may land in a session the user cannot see;
 //   - esc cancelling proves the form is escapable again;
-//   - the pane resuming afterwards proves nothing is stranded — paneFocused was
+//   - the pane resuming afterwards proves nothing is stranded — paneOwnsKeyboard was
 //     never cleared, so the child gets the keyboard back the moment the form
 //     that outranked it closes.
 func TestFormOutranksAFocusedPane(t *testing.T) {
@@ -10412,10 +10773,10 @@ func TestFormOutranksAFocusedPane(t *testing.T) {
 		t.Errorf("esc was forwarded to the child (%d keys), but it belongs to the form", len(fp.keys))
 	}
 
-	// The pane layer resumes: paneFocused was never cleared, so with the form
+	// The pane layer resumes: paneOwnsKeyboard was never cleared, so with the form
 	// gone the child owns the keyboard again.
-	if !m.paneFocused || m.pane == nil {
-		t.Fatalf("cancelling the form stranded the pane: paneFocused=%v pane=%v", m.paneFocused, m.pane != nil)
+	if !m.paneOwnsKeyboard() || m.pane == nil {
+		t.Fatalf("cancelling the form stranded the pane: paneOwnsKeyboard=%v pane=%v", m.paneOwnsKeyboard(), m.pane != nil)
 	}
 	m, _ = update(t, m, keyRune('z'))
 	if len(fp.keys)+len(fp.texts) == 0 {
@@ -10432,9 +10793,9 @@ func TestPasteFollowsTheModeThatOwnsInput(t *testing.T) {
 	t.Run("focused pane owns input: the paste reaches the child", func(t *testing.T) {
 		m := testModel(sess("a"))
 		fp := newFakePane("X")
-		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "sess"})
+		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
 		m.pane = fp
-		m.paneFocused = true
+		m.focus = focusRight
 
 		m, _ = update(t, m, tea.PasteMsg{Content: "hello"})
 		if len(fp.pastes) != 1 || fp.pastes[0] != "hello" {
@@ -10455,7 +10816,7 @@ func TestPasteFollowsTheModeThatOwnsInput(t *testing.T) {
 		fp := newFakePane("X")
 		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "sess"})
 		m.pane = fp
-		m.paneFocused = true
+		m.focus = focusRight
 		m.modal = inputSpawnError
 
 		m, _ = update(t, m, tea.PasteMsg{Content: "hello"})
@@ -10526,7 +10887,7 @@ func TestFaultRowIsInertForToggleAndAutoPreview(t *testing.T) {
 			s.HostRunning = true
 			m := testModel(s)
 
-			got, cmd := update(t, m, keyCtrlT)
+			got, cmd := update(t, m, keyEnter)
 			if cmd != nil {
 				t.Errorf("ctrl+t on a %s row dispatched %T, want no cmd", kind, cmd())
 			}
@@ -10556,7 +10917,7 @@ func TestFaultRowIsInertForToggleAndAutoPreview(t *testing.T) {
 func TestStrandedRowIsNotInertForToggleAndAutoPreview(t *testing.T) {
 	m := testModel(strandedSess("standalone"))
 
-	got, cmd := update(t, m, keyCtrlT)
+	got, cmd := update(t, m, keyEnter)
 	if cmd == nil {
 		t.Fatal("ctrl+t on a stranded row dispatched nothing, want the attach")
 	}
@@ -12020,25 +12381,25 @@ func TestNameOnlyPathsRefuseAnySameNameClean(t *testing.T) {
 		if opens != 0 {
 			t.Fatalf("OpenHostPane called %d times for a focus request, want 0", opens)
 		}
-		if got.pane != nil || got.paneFocused {
+		if got.pane != nil || got.paneOwnsKeyboard() {
 			t.Fatal("no pane may be opened or focused over a cleaning session")
 		}
 	})
 
-	// Driven through ctrl+t, not openPaneFor directly, because the row
-	// under the cursor is the healthy twin: attachSelected's own row-keyed
+	// Driven through enter, not openPaneFor directly, because the row
+	// under the cursor is the healthy twin: connectSelected's own row-keyed
 	// check (cleanIDFor) misses the stranded key by design, so this passes only
 	// if the name-only gate inside openPaneFor holds.
-	t.Run("the accepted over-refusal: ctrl+t on the healthy twin is blocked too", func(t *testing.T) {
+	t.Run("the accepted over-refusal: enter on the healthy twin is blocked too", func(t *testing.T) {
 		m := testModel(runningSess("twin"))
 		m.markCleaning(strandedKey)
 
-		got, cmd := update(t, m, keyCtrlT)
+		got, cmd := update(t, m, keyEnter)
 		if cmd != nil {
-			t.Fatalf("ctrl+t dispatched %T while a same-named clean was in flight", cmd())
+			t.Fatalf("enter dispatched %T while a same-named clean was in flight", cmd())
 		}
 		if got.attachInFlight.name != "" {
-			t.Fatalf("ctrl+t left a dial in flight for %q", got.attachInFlight.name)
+			t.Fatalf("enter left a dial in flight for %q", got.attachInFlight.name)
 		}
 		if !strings.Contains(got.status, "can't open twin") {
 			t.Fatalf("status = %q, want the refusal stated", got.status)
@@ -12233,7 +12594,7 @@ func TestApplyLoadedNotifiesSessionTransitions(t *testing.T) {
 		},
 		{
 			name:  "awaiting-input-on-the-hidden-pane",
-			setup: func(m *Model) { m.paneName = "a"; m.paneHidden = true },
+			setup: func(m *Model) { m.paneName = "a"; m.view = viewOverview },
 			snapshots: [][]Session{
 				{sess("a")},
 				{awaiting(sess("a"))},
@@ -12833,6 +13194,408 @@ func TestRestartToastNamesProvider(t *testing.T) {
 			got, _ := update(t, tc.m, restartChildRequestedMsg{name: tc.msgName, restarted: true})
 			if !strings.Contains(got.status, tc.want) || strings.Contains(got.status, tc.banned) {
 				t.Errorf("status %q: want %q, not %q", got.status, tc.want, tc.banned)
+			}
+		})
+	}
+}
+
+// TestMovingOffThePanedRowDetachesIt pins W3.T1(a): with the list focused, the
+// pane follows the selection. A pane whose row the selection leaves is
+// detached at once, so it never holds its host's single client slot while
+// undrawn. Rows:
+//
+//   - "cursor move" is the common path (browsing away), and also proves the
+//     preview for the new row still arms: detaching must not cost the browse.
+//   - "behind the overview" is load-bearing because the undrawn-slot hazard
+//     is WORST there: the pane is invisible in either case.
+//   - "tick reshuffle" moves the selection with no key; holdSelection, not
+//     schedulePreview, has to catch it.
+func TestMovingOffThePanedRowDetachesIt(t *testing.T) {
+	attached := func(t *testing.T) (Model, *fakePane) {
+		fp := newFakePane("A")
+		m := testModel(runningSess("a"), runningSess("b"))
+		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
+		if m.pane != fp || m.focus != focusList {
+			t.Fatalf("setup: pane a should be installed with the list focused")
+		}
+		return m, fp
+	}
+
+	t.Run("cursor move", func(t *testing.T) {
+		m, fp := attached(t)
+		m, cmd := update(t, m, keyDown)
+		if m.pane != nil || m.paneName != "" || fp.closed != 1 {
+			t.Fatalf("after the move: pane=%v name=%q closed=%d, want detached exactly once", m.pane != nil, m.paneName, fp.closed)
+		}
+		if cmd == nil {
+			t.Fatalf("the move onto running b must still arm its preview")
+		}
+	})
+
+	t.Run("behind the overview", func(t *testing.T) {
+		m, fp := attached(t)
+		m.view = viewOverview
+		m, _ = update(t, m, keyDown)
+		if m.pane != nil || fp.closed != 1 {
+			t.Fatalf("a pane behind the overview survived the move: pane=%v closed=%d", m.pane != nil, fp.closed)
+		}
+	})
+
+	t.Run("tick reshuffle", func(t *testing.T) {
+		m, fp := attached(t)
+		m, _ = update(t, m, sessionsLoadedMsg{
+			gen:      m.projectGen,
+			sessions: []Session{runningSess("b"), runningSess("a")},
+			at:       time.Unix(3, 0),
+		})
+		if s, _ := m.selected(); s.Name != "b" {
+			t.Fatalf("setup: with the list focused the index holds, so b should now be selected; got %q", s.Name)
+		}
+		if m.pane != nil || fp.closed != 1 {
+			t.Fatalf("the tick moved the selection off a but its pane survived: pane=%v closed=%d", m.pane != nil, fp.closed)
+		}
+	})
+}
+
+// TestLostPaneKeepsTheKeyboardOnTheAgentPlaceholder pins W3.T1(c): a pane that
+// ends under a FOCUSED keyboard without its session ending — stolen, dropped,
+// or a read error — keeps focus right in the agent view, draws a reconnect
+// placeholder, swallows everything but its own keys, and reconnects with one
+// dial on enter. Every row is load-bearing: the three reasons reach
+// paneExitedMsg with different fields (reason vs err), and the q/c/n presses
+// are exactly the list bindings (quit, clean, new) a keyboard handed back to
+// the list would have fired. The session-ended path is the counterpart and
+// stays in TestPaneTeardownHandsFocusBack.
+func TestLostPaneKeepsTheKeyboardOnTheAgentPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		exit     func(p paneHandle) paneExitedMsg
+		wantLine string
+	}{
+		{"stolen", func(p paneHandle) paneExitedMsg {
+			return paneExitedMsg{pane: p, reason: host.DetachStolen}
+		}, "another client took over a"},
+		{"dropped", func(p paneHandle) paneExitedMsg {
+			return paneExitedMsg{pane: p, reason: host.DetachDropped}
+		}, "disconnected from a"},
+		{"read error", func(p paneHandle) paneExitedMsg {
+			return paneExitedMsg{pane: p, err: errors.New("boom")}
+		}, "disconnected from a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel(runningSess("a"), runningSess("b"))
+			opens := 0
+			m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
+				opens++
+				return newFakePane("A"), nil
+			}
+			m, cmd := update(t, m, keyEnter)
+			m = settleConnect(t, m, cmd)
+			if !m.paneOwnsKeyboard() || opens != 1 {
+				t.Fatalf("setup: enter should land a focused pane with one dial (focused=%v opens=%d)", m.paneOwnsKeyboard(), opens)
+			}
+
+			m, _ = update(t, m, tc.exit(m.pane))
+			if m.pane != nil || m.focus != focusRight || m.view != viewAgent {
+				t.Fatalf("after the loss: pane=%v focus=%v view=%v, want no pane, right, agent", m.pane != nil, m.focus, m.view)
+			}
+			out := render(m)
+			for _, want := range []string{tc.wantLine, "enter to reconnect"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("placeholder missing %q:\n%s", want, out)
+				}
+			}
+
+			for _, k := range []tea.KeyPressMsg{{Code: 'q', Text: "q"}, {Code: 'c', Text: "c"}, {Code: 'n', Text: "n"}, {Code: 'j', Text: "j"}} {
+				var kc tea.Cmd
+				m, kc = update(t, m, k)
+				if kc != nil || m.quitting || m.formOpen || m.modal != inputNormal {
+					t.Fatalf("%q leaked to a list binding: cmd=%v quitting=%v form=%v modal=%v", k.String(), kc != nil, m.quitting, m.formOpen, m.modal)
+				}
+				if s, _ := m.selected(); s.Name != "a" {
+					t.Fatalf("%q moved the selection to %q", k.String(), s.Name)
+				}
+			}
+
+			m, cmd = update(t, m, keyEnter)
+			if cmd == nil {
+				t.Fatalf("enter on the placeholder must reconnect")
+			}
+			m = settleConnect(t, m, cmd)
+			if opens != 2 {
+				t.Fatalf("dials = %d after the reconnect, want exactly one more (2)", opens)
+			}
+			if m.paneName != "a" || !m.paneOwnsKeyboard() {
+				t.Fatalf("reconnect landed paneName=%q focused=%v, want a focused", m.paneName, m.paneOwnsKeyboard())
+			}
+			if strings.Contains(render(m), "enter to reconnect") {
+				t.Fatalf("the lost-pane placeholder outlived the reconnect")
+			}
+		})
+	}
+
+	t.Run("ctrl+t and ctrl+\\ still act", func(t *testing.T) {
+		m := testModel(runningSess("a"))
+		fp := newFakePane("A")
+		m.focus = focusRight // connect moves the focus at request time
+		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a", focusOnArrival: true})
+		m, _ = update(t, m, paneExitedMsg{pane: fp, reason: host.DetachStolen})
+
+		m, cmd := update(t, m, chord('t'))
+		if cmd != nil || m.view != viewOverview || m.focus != focusRight {
+			t.Fatalf("ctrl+t: cmd=%v view=%v focus=%v, want a pure flip to the overview", cmd != nil, m.view, m.focus)
+		}
+		// Back to the agent view: a lost row has no pane, so this reconnects
+		// (the Cmd is left unsettled). While that dial is out the placeholder
+		// says so and offers no enter, because enter would only join it.
+		m, cmd = update(t, m, chord('t'))
+		if cmd == nil {
+			t.Fatalf("ctrl+t back to the agent view should reconnect the lost row")
+		}
+		if _, line, action := m.agentPlaceholderText(); line != "connecting to a…" || action != "" {
+			t.Fatalf("with the reconnect out: line=%q action=%q, want the dial named and no enter offer", line, action)
+		}
+		m, _ = update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+		if m.focus != focusList || m.view != viewAgent {
+			t.Fatalf("ctrl+\\: focus=%v view=%v, want list in the agent view", m.focus, m.view)
+		}
+		// The lost note outlives the release: if the reconnect fails, the
+		// placeholder goes back to naming why the row was lost.
+		if !m.agentPlaceholderDrawn() || m.paneLost.name != "a" || m.paneLost.message != "another client took over a" {
+			t.Fatalf("the lost note should stay on the row after the keyboard leaves: drawn=%v lost=%+v", m.agentPlaceholderDrawn(), m.paneLost)
+		}
+	})
+}
+
+// TestNoLiveAgentRowDrawsItsOverviewInTheAgentView pins W3.T1(d): a row with
+// no live agent (stopped, finished, pending, worktree fault, cleaning) draws
+// its OVERVIEW on the right whatever the sticky view says, with the list or
+// the right side focused, and the view preference itself is left on the agent
+// so the next running row still shows its agent. The two running rows are the
+// contrast: list-focused it is one preview away from its agent and shows the
+// overview meanwhile; right-focused with no pane it is the agent placeholder.
+func TestNoLiveAgentRowDrawsItsOverviewInTheAgentView(t *testing.T) {
+	done := stoppedSess("d")
+	done.Phase = state.PhaseDone
+	fault := runningSess("f")
+	fault.Kind = session.KindWorktreeMissing
+	for _, tc := range []struct {
+		name            string
+		row             Session
+		arrange         func(m *Model)
+		wantPlaceholder bool
+		// focusOnly pins the row to the focus arrange set; the others are
+		// asserted with the list AND the right side focused.
+		focusOnly bool
+		want      []string
+	}{
+		{name: "stopped", row: stoppedSess("s")},
+		{name: "finished", row: done},
+		{name: "pending", row: Session{SessionState: discover.SessionState{Name: "p"}, Pending: true}},
+		{name: "worktree fault", row: fault},
+		{name: "cleaning", row: runningSess("c"),
+			arrange: func(m *Model) { m.markCleaning(cleanIDByName("c")) }},
+		{name: "running, list focused", row: runningSess("r"), focusOnly: true},
+		{name: "running, right focused", row: runningSess("r"),
+			arrange:         func(m *Model) { m.focus = focusRight },
+			wantPlaceholder: true, focusOnly: true, want: []string{"r is running", "enter to connect"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel(tc.row)
+			if tc.arrange != nil {
+				tc.arrange(&m)
+			}
+			focuses := []paneFocus{focusList, focusRight}
+			if tc.focusOnly {
+				focuses = []paneFocus{m.focus}
+			}
+			for _, focus := range focuses {
+				m.focus = focus
+				if got := m.agentPlaceholderDrawn(); got != tc.wantPlaceholder {
+					t.Fatalf("focus=%v: placeholder drawn = %v, want %v", focus, got, tc.wantPlaceholder)
+				}
+				if !tc.wantPlaceholder && !m.detailDrawn() {
+					t.Fatalf("focus=%v: the overview is not drawn", focus)
+				}
+				if m.view != viewAgent {
+					t.Fatalf("focus=%v: view = %v, want the sticky agent preference untouched", focus, m.view)
+				}
+			}
+			out := render(m)
+			for _, w := range tc.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("missing %q:\n%s", w, out)
+				}
+			}
+		})
+	}
+}
+
+// TestSecondRestartKeyIsInertWhileOneIsInFlight: `r` twice on a stopped row
+// spawns ONE host — a second spawn's bind probe steals the first host's pane.
+// While the restart runs the row has an agent coming, so the agent view draws
+// the "restarting" placeholder, and enter JOINS the restart (focus right, no
+// second dispatch) so the arrival lands focused.
+func TestSecondRestartKeyIsInertWhileOneIsInFlight(t *testing.T) {
+	m := testModel(stoppedSess("a"))
+	spawns := 0
+	m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
+		spawns++
+		return session.HostProcess{PID: 4242}, nil
+	}
+	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return newFakePane("A"), nil }
+
+	m, first := update(t, m, keyRune('r'))
+	if first == nil {
+		t.Fatalf("r on a stopped row must dispatch the restart")
+	}
+	if !strings.Contains(render(m), "restarting a…") {
+		t.Fatalf("placeholder should say the restart is in flight:\n%s", render(m))
+	}
+	m, second := update(t, m, keyRune('r'))
+	if second != nil {
+		t.Fatalf("a second r during the restart dispatched %T, want it inert", second())
+	}
+	m, joined := update(t, m, keyEnter)
+	if joined != nil || m.focus != focusRight {
+		t.Fatalf("enter during the restart: cmd=%v focus=%v, want it to join (no Cmd, focus right)", joined != nil, m.focus)
+	}
+	m = settleConnect(t, m, first)
+	if spawns != 1 {
+		t.Fatalf("spawns = %d, want 1", spawns)
+	}
+	if m.paneName != "a" || !m.paneOwnsKeyboard() {
+		t.Fatalf("settled paneName=%q focused=%v, want a focused", m.paneName, m.paneOwnsKeyboard())
+	}
+}
+
+// TestFocusedConnectAbandonedByACursorMoveIsDropped: enter on a, ctrl+\ back
+// to the list, then a move to b before a's dial lands. The arrival belongs to
+// a row that is no longer selected; installing it would hold a's client slot
+// undrawn, and focusing it would put the keyboard in a session the frame does
+// not show.
+func TestFocusedConnectAbandonedByACursorMoveIsDropped(t *testing.T) {
+	fp := newFakePane("A")
+	m := testModel(runningSess("a"), runningSess("b"))
+	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return fp, nil }
+
+	m, dial := update(t, m, keyEnter)
+	if dial == nil {
+		t.Fatalf("setup: enter must dial a")
+	}
+	m, _ = update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+	m, _ = update(t, m, keyDown)
+	m, _ = update(t, m, dial())
+	if m.pane != nil || fp.closed != 1 {
+		t.Fatalf("abandoned arrival: pane=%v closed=%d, want dropped and closed once", m.pane != nil, fp.closed)
+	}
+	if m.focus != focusList {
+		t.Fatalf("focus = %v, want the list the user went back to", m.focus)
+	}
+}
+
+// TestRestartKeyMatrix pins `r` as the one restart key (plan W3.T1 d2) across
+// every surface it can be pressed on. Load-bearing rows:
+//
+//   - "stopped, list" and "stopped, focused overview" are the acceptance
+//     pair: exactly one restart chain (one spawn, then one open) from either
+//     side, no confirmation — respawning a stopped host destroys nothing. The
+//     two differ only in where the keyboard ends up: the list keeps it, the
+//     right side gets the arriving agent.
+//   - "live agent pane" is the negative that keeps `r` typeable: in a focused
+//     pane it is the child's key, so it forwards and restarts nothing.
+//   - the two "wedged" rows keep today's confirm flow for a running host,
+//     from the list and from the overview alike.
+//   - "healthy running" is inert: there is nothing to restart.
+func TestRestartKeyMatrix(t *testing.T) {
+	type outcome struct {
+		spawns, opens int
+		modal         inputMode
+		forwarded     bool
+		focus         paneFocus
+		ownsKeyboard  bool
+	}
+	for _, tc := range []struct {
+		name  string
+		row   Session
+		setup func(t *testing.T, m Model) Model
+		want  outcome
+	}{
+		{
+			name: "stopped, list",
+			row:  stoppedSess("a"),
+			want: outcome{spawns: 1, opens: 1, focus: focusList},
+		},
+		{
+			name: "stopped, focused overview",
+			row:  stoppedSess("a"),
+			setup: func(t *testing.T, m Model) Model {
+				m, _ = update(t, m, keyEnter)
+				if !m.detailOwnsKeyboard() {
+					t.Fatal("setup: enter on a stopped row must focus its overview")
+				}
+				return m
+			},
+			want: outcome{spawns: 1, opens: 1, focus: focusRight, ownsKeyboard: true},
+		},
+		{
+			name: "live agent pane",
+			row:  runningSess("a"),
+			setup: func(t *testing.T, m Model) Model {
+				m, cmd := update(t, m, keyEnter)
+				m = settleConnect(t, m, cmd)
+				if !m.paneOwnsKeyboard() {
+					t.Fatal("setup: enter on a running row must land a focused pane")
+				}
+				return m
+			},
+			want: outcome{opens: 1, forwarded: true, focus: focusRight, ownsKeyboard: true},
+		},
+		{
+			name: "wedged, list",
+			row:  wedgedSess("a", 12*time.Minute),
+			want: outcome{modal: inputConfirmRestart, focus: focusList},
+		},
+		{
+			name: "wedged, focused overview",
+			row:  wedgedSess("a", 12*time.Minute),
+			setup: func(t *testing.T, m Model) Model {
+				return focusOverview(t, m)
+			},
+			want: outcome{modal: inputConfirmRestart, focus: focusRight},
+		},
+		{
+			name: "healthy running, list",
+			row:  runningSess("a"),
+			want: outcome{focus: focusList},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel(tc.row)
+			var got outcome
+			var pane *fakePane
+			m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
+				got.spawns++
+				return session.HostProcess{PID: 4242}, nil
+			}
+			m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
+				got.opens++
+				pane = newFakePane("A")
+				return pane, nil
+			}
+			if tc.setup != nil {
+				m = tc.setup(t, m)
+			}
+
+			m, cmd := update(t, m, keyRune('r'))
+			m = settleConnect(t, m, cmd)
+
+			got.modal = m.modal
+			got.focus = m.focus
+			got.ownsKeyboard = m.paneOwnsKeyboard()
+			got.forwarded = pane != nil && len(pane.keys)+len(pane.texts) > 0
+			if got != tc.want {
+				t.Fatalf("r = %+v, want %+v", got, tc.want)
 			}
 		})
 	}

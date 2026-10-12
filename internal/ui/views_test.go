@@ -221,7 +221,7 @@ func TestScratchSessionDetailPanelSectionAbsent(t *testing.T) {
 		}
 	}
 
-	m, _ = update(t, m, keyRune('2'))
+	m, _ = update(t, focusOverview(t, m), keyRune('2'))
 	waves := xansi.Strip(m.renderDetail(80, 30))
 	if !strings.Contains(waves, "A one-off session has no plan.") {
 		t.Errorf("expected the Waves tab to say a one-off has no plan, got:\n%s", waves)
@@ -813,7 +813,7 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 		if row := lastInnerRow(m.renderDetail(mainOuter, outerH)); !strings.Contains(row, "0%") {
 			t.Fatalf("overflowing frame's last row is %q, want a 0%% readout at the top", row)
 		}
-		m := m
+		m := focusOverview(t, m)
 		m, _ = update(t, m, tea.WindowSizeMsg{
 			Width:  100,
 			Height: outerH + lipgloss.Height(m.renderHeader()) + lipgloss.Height(m.renderFooter()),
@@ -822,7 +822,7 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 			t.Fatalf("fixture broken: bodyHeight = %d, want %d", got, outerH)
 		}
 		for i := 0; i < 10; i++ {
-			m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift})
+			m, _ = update(t, m, keyDown)
 		}
 		frame := m.renderDetail(mainOuter, outerH)
 		if !strings.Contains(xansi.Strip(frame), last) {
@@ -1127,7 +1127,7 @@ func TestDetailFocusReleasesSidebarAccent(t *testing.T) {
 	}
 
 	m, _ = update(t, m, keyEnter)
-	if !m.detailFocused {
+	if !m.detailOwnsKeyboard() {
 		t.Fatalf("precondition: enter should focus the detail pane")
 	}
 
@@ -1205,54 +1205,48 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 	})
 	t.Run("release", func(t *testing.T) {
 		m := newModel()
+		m.focus = focusRight // connect moves the focus at request time
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha", focusOnArrival: true})
 		m, _ = update(t, m, chord('\\'))
 		if want := "input goes to the dashboard — alpha still running in the pane · enter/x to focus"; m.status != want {
 			t.Fatalf("release status = %q, want %q", m.status, want)
 		}
 	})
-	t.Run("reveal", func(t *testing.T) {
+	// ctrl+t is a right-side key, so the round trip starts with enter. Back in
+	// the agent view the keyboard is in the session, and the toast names the
+	// way out rather than a focus key the user no longer needs.
+	t.Run("view round trip", func(t *testing.T) {
 		m := newModel()
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
+		m, _ = update(t, m, keyEnter)
 		m, _ = update(t, m, chord('t'))
 		m, _ = update(t, m, chord('t'))
-		if want := "pane revealed — alpha still running · enter/x to focus"; m.status != want {
-			t.Fatalf("reveal status = %q, want %q", m.status, want)
+		if want := "input goes to alpha · ctrl+\\ to return"; m.status != want {
+			t.Fatalf("round-trip status = %q, want %q", m.status, want)
 		}
 	})
 }
 
-// TestAgentSurfaceToggleHelpTracksWhatCtrlTCanActuallyDo ensures Ctrl-T is
-// discoverable before a pane exists for a selected real session (including a
-// stopped one that will restart), but stays absent for the rows whose handler
-// cannot produce an agent surface.
-func TestAgentSurfaceToggleHelpTracksWhatCtrlTCanActuallyDo(t *testing.T) {
+// TestNormalHelpNeverOffersCtrlT pins objective 2 on the help surfaces: with
+// the list focused ctrl+t controls nothing, so neither the short line nor `?`'s
+// full view may offer it, whatever the selected row is — including the rows
+// where ctrl+t used to attach, restart, hide or reveal.
+func TestNormalHelpNeverOffersCtrlT(t *testing.T) {
 	cases := []struct {
 		name        string
 		setup       func(*Model)
 		hiddenOther bool
-		want        bool
 	}{
-		{"running session without a pane", func(*Model) {}, false, true},
-		{"stopped session without a pane", func(m *Model) { m.sessions[0].HostRunning = false }, false, true},
-		{"pending session", func(m *Model) { m.sessions[0].Pending = true }, false, false},
-		{"worktree fault", func(m *Model) { m.sessions[0].Kind = session.KindWorktreeMissing }, false, false},
+		{"running session without a pane", func(*Model) {}, false},
+		{"stopped session without a pane", func(m *Model) { m.sessions[0].HostRunning = false }, false},
+		{"pending session", func(m *Model) { m.sessions[0].Pending = true }, false},
+		{"worktree fault", func(m *Model) { m.sessions[0].Kind = session.KindWorktreeMissing }, false},
 		{"cleaning session", func(m *Model) {
 			m.cleaningSessions = map[cleanID]bool{cleanIDFor(m.sessions[0]): true}
-		}, false, false},
-		{"same-name clean with another identity", func(m *Model) {
-			m.cleaningSessions = map[cleanID]bool{
-				{name: m.sessions[0].Name, kind: session.KindStatusWithoutWorktree}: true,
-			}
-		}, false, false},
-		{"running selection with another pane hidden", func(*Model) {}, true, true},
-		{"stopped selection with another pane hidden", func(m *Model) { m.sessions[0].HostRunning = false }, true, true},
-		{"pending selection with another pane hidden", func(m *Model) { m.sessions[0].Pending = true }, true, false},
-		{"fault selection with another pane hidden", func(m *Model) { m.sessions[0].Kind = session.KindWorktreeMissing }, true, false},
-		{"cleaning selection with another pane hidden", func(m *Model) {
-			m.cleaningSessions = map[cleanID]bool{cleanIDFor(m.sessions[0]): true}
-		}, true, false},
-		{"no selection with another pane hidden", func(m *Model) { m.setSessions(nil) }, true, false},
+		}, false},
+		{"running selection with another pane hidden", func(*Model) {}, true},
+		{"stopped selection with another pane hidden", func(m *Model) { m.sessions[0].HostRunning = false }, true},
+		{"no selection with another pane hidden", func(m *Model) { m.setSessions(nil) }, true},
 	}
 
 	for _, tc := range cases {
@@ -1263,32 +1257,36 @@ func TestAgentSurfaceToggleHelpTracksWhatCtrlTCanActuallyDo(t *testing.T) {
 			if tc.hiddenOther {
 				m.pane = newFakePane("OLD")
 				m.paneName = "other"
-				m.paneHidden = true
+				m.view = viewOverview
 			}
-			if got := m.normalBindingEnabled(m.keys.Toggle); got != tc.want {
-				t.Fatalf("ctrl+t enabled = %v, want %v", got, tc.want)
+			if mode := derivedMode(m); mode != inputNormal {
+				t.Fatalf("precondition: mode = %v, want normal", mode)
+			}
+			for _, all := range []bool{false, true} {
+				m.helpShowAll = all
+				if help := xansi.Strip(m.renderHelp()); strings.Contains(help, m.keys.Toggle.Help().Key) {
+					t.Errorf("showAll=%v: list-focused help offers %q: %q", all, m.keys.Toggle.Help().Key, help)
+				}
 			}
 		})
 	}
 }
 
-// TestNormalHelpAt80KeepsCombinedFocusAndAgentToggle guards the compact
-// ordering: a no-pane selected session must still show both discoverable keys
-// at the narrowest supported terminal width.
-func TestNormalHelpAt80KeepsCombinedFocusAndAgentToggle(t *testing.T) {
+// TestNormalHelpAt80KeepsCombinedFocus guards the compact ordering: a no-pane
+// selected session must still show the one way to the right side at the
+// narrowest supported terminal width, and no ctrl+t beside it.
+func TestNormalHelpAt80KeepsCombinedFocus(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	m.width = 80
 	help := xansi.Strip(m.renderHelp())
 	if got := lipgloss.Width(help); got > m.width {
 		t.Fatalf("help width = %d, want at most %d: %q", got, m.width, help)
 	}
-	for _, want := range []string{
-		m.keys.Focus.Help().Key + " " + m.keys.Focus.Help().Desc,
-		m.keys.Toggle.Help().Key + " " + m.keys.Toggle.Help().Desc,
-	} {
-		if !strings.Contains(help, want) {
-			t.Errorf("80-column help dropped %q: %q", want, help)
-		}
+	if want := m.keys.Focus.Help().Key + " " + m.keys.Focus.Help().Desc; !strings.Contains(help, want) {
+		t.Errorf("80-column help dropped %q: %q", want, help)
+	}
+	if strings.Contains(help, m.keys.Toggle.Help().Key) {
+		t.Errorf("80-column list help offers %q: %q", m.keys.Toggle.Help().Key, help)
 	}
 }
 
@@ -1306,7 +1304,7 @@ func TestDetailBoxFocusChangesDimensionsNotAtAll(t *testing.T) {
 	blurred := m.renderDetail(mainOuter, bodyHeight)
 
 	focused, _ := update(t, m, keyRune('f'))
-	if !focused.detailFocused {
+	if !focused.detailOwnsKeyboard() {
 		t.Fatalf("precondition: f should focus the detail pane")
 	}
 	focusedFrame := focused.renderDetail(mainOuter, bodyHeight)
@@ -1335,10 +1333,9 @@ func TestDetailFocusedFooterFitsWidth80KeepsReleaseKeys(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	m.width = 80
 
-	m, _ = update(t, m, keyRune('f'))
-	if !m.detailFocused {
-		t.Fatalf("precondition: f should focus the detail pane")
-	}
+	// f on a running row in the agent view connects; focusOverview focuses
+	// the overview itself, which is the footer under test.
+	m = focusOverview(t, m)
 
 	footer := m.renderHelp()
 	if got := lipgloss.Width(footer); got > m.width {
@@ -1367,7 +1364,7 @@ func TestDetailBoxLabelsShowsReleaseHintWhileFocused(t *testing.T) {
 	}
 
 	m, _ = update(t, m, keyRune('f'))
-	if !m.detailFocused {
+	if !m.detailOwnsKeyboard() {
 		t.Fatalf("precondition: f should focus the detail pane")
 	}
 
@@ -1382,5 +1379,95 @@ func TestDetailBoxLabelsShowsReleaseHintWhileFocused(t *testing.T) {
 	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc", "ctrl+\\"})
 	if !strings.Contains(hint, release.Help().Key) || !strings.Contains(hint, release.Help().Desc) {
 		t.Errorf("focused hint = %q, want it to name the release binding %q: %q", hint, release.Help().Key, release.Help().Desc)
+	}
+}
+
+// TestAgentPlaceholderTextNothingSelected pins the no-selection branch of
+// agentPlaceholderText, which must agree with restartingRow about what "a
+// restart is in flight" means. The "stale gen" row is load-bearing: a restart
+// dispatched in another project generation must not paint "restarting" over
+// the current project's empty selection. The "current gen" row is the one that
+// proves the branch consults the in-flight restart at all.
+func TestAgentPlaceholderTextNothingSelected(t *testing.T) {
+	cases := []struct {
+		name     string
+		setup    func(m *Model)
+		wantLine string
+	}{
+		{"restart in flight, current gen", func(m *Model) {
+			m.restartInFlight = inFlightRestart{name: "a", gen: m.projectGen}
+		}, "restarting a…"},
+		{"restart in flight, stale gen", func(m *Model) {
+			m.restartInFlight = inFlightRestart{name: "a", gen: m.projectGen + 1}
+		}, "no session selected"},
+		{"no restart in flight", func(m *Model) {}, "no session selected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel()
+			tc.setup(&m)
+			if _, ok := m.selected(); ok {
+				t.Fatalf("setup: nothing should be selected")
+			}
+			if _, line, action := m.agentPlaceholderText(); line != tc.wantLine || action != "" {
+				t.Errorf("line, action = %q, %q; want %q, empty action", line, action, tc.wantLine)
+			}
+		})
+	}
+}
+
+// TestPlaceholderFooterOffersEnterOnlyWhenItConnects pins that the agent
+// placeholder's footer and its box agree about enter: both offer it exactly
+// when enter would start a new connect. While the row's dial or restart is
+// already out, enter only joins it, so advertising it there names a key that
+// does nothing new. The "lost, reconnect dialing" row is load-bearing: the
+// lost note outlives the reconnect's dispatch, and if it outranks the dial in
+// agentPlaceholderText the box and footer offer a reconnect that is already
+// happening. ctrl+t and ctrl+\ are live in every state and must always show.
+func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
+	cases := []struct {
+		name      string
+		setup     func(m *Model)
+		wantEnter bool
+	}{
+		{"idle running row", func(m *Model) {}, true},
+		{"lost pane", func(m *Model) {
+			m.paneLost = lostPane{name: "a", message: "another client took over a"}
+		}, true},
+		{"dial out", func(m *Model) {
+			m.attachInFlight = inFlightOpen{name: "a"}
+		}, false},
+		{"restart out", func(m *Model) {
+			m.restartInFlight = inFlightRestart{name: "a", gen: m.projectGen}
+		}, false},
+		{"lost, reconnect dialing", func(m *Model) {
+			m.paneLost = lostPane{name: "a", message: "another client took over a"}
+			m.attachInFlight = inFlightOpen{name: "a"}
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel(runningSess("a"))
+			m.width = 200
+			m.focus = focusRight
+			m.view = viewAgent
+			tc.setup(&m)
+			if !m.agentPlaceholderDrawn() {
+				t.Fatalf("setup: the agent placeholder should be drawn")
+			}
+			footer := m.renderHelp()
+			enterKey := m.keys.Focus.Help().Key
+			if got := strings.Contains(footer, enterKey); got != tc.wantEnter {
+				t.Errorf("footer offers %q = %v, want %v: %q", enterKey, got, tc.wantEnter, footer)
+			}
+			if _, _, action := m.agentPlaceholderText(); (action != "") != tc.wantEnter {
+				t.Errorf("box action = %q, want an action = %v", action, tc.wantEnter)
+			}
+			for _, b := range []key.Binding{m.keys.Toggle, unfocusPaneKey} {
+				if !strings.Contains(footer, b.Help().Key) {
+					t.Errorf("footer dropped %q: %q", b.Help().Key, footer)
+				}
+			}
+		})
 	}
 }

@@ -146,7 +146,9 @@ func TestRenderPaneOutputUnchangedForFittingTitle(t *testing.T) {
 	_, mainOuter, bodyHeight := m.layoutDims()
 
 	for _, focused := range []bool{false, true} {
-		m.paneFocused = focused
+		if focused {
+			m.focus = focusRight
+		}
 
 		contentW, _ := paneContentDims(mainOuter, bodyHeight)
 		legacyTitleText := "▶ " + m.paneName
@@ -672,14 +674,18 @@ func mouseModel(t *testing.T) (Model, *fakePane, int, int, int, int) {
 	return m, fp, originX, originY, cols, rows
 }
 
-// TestMouseInPaneReachesTheSessionRegardlessOfFocus is the scroll-follows-mouse
-// contract: a wheel notch over the pane reaches the session whether or not the
-// KEYBOARD is focused there. Gating this on m.paneFocused would make the common
-// gesture — look at the pane, scroll it — a two-step one.
-func TestMouseInPaneReachesTheSessionRegardlessOfFocus(t *testing.T) {
+// TestMouseInPaneFollowsFocus is the mouse-follows-keyboard contract: a wheel
+// notch over the pane reaches the session only when the right side has focus.
+// With the list focused the pane is out of reach — "when on the left pane, you
+// can't control anything in the right pane" — and the wheel is dropped, not
+// deferred. The focus=right row is the old scroll-follows-mouse behaviour and
+// must keep forwarding to the same cell.
+func TestMouseInPaneFollowsFocus(t *testing.T) {
 	for _, focused := range []bool{false, true} {
 		m, fp, originX, originY, _, _ := mouseModel(t)
-		m.paneFocused = focused
+		if focused {
+			m.focus = focusRight
+		}
 
 		msg := tea.MouseWheelMsg{
 			X: originX, Y: originY,
@@ -687,6 +693,12 @@ func TestMouseInPaneReachesTheSessionRegardlessOfFocus(t *testing.T) {
 		}
 		if _, cmd := update(t, m, msg); cmd != nil {
 			t.Errorf("focused=%v: the mouse path must return no Cmd, got one", focused)
+		}
+		if !focused {
+			if len(fp.mice) != 0 {
+				t.Errorf("focus=list: forwarded %v, want nothing", fp.mice)
+			}
+			continue
 		}
 		if len(fp.mice) != 1 {
 			t.Fatalf("focused=%v: recorded %d mouse events, want 1", focused, len(fp.mice))
@@ -746,6 +758,10 @@ func TestMouseIsDroppedWhenTheDashboardOwnsInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		m, fp, originX, originY, _, _ := mouseModel(t)
+		// focus=right so the click is not the click-to-focus gesture: this test is
+		// about the guards, and a focus=list click in the right region is
+		// deliberately answered (TestMouseClickFocusesRightSide).
+		m.focus = focusRight
 		c.apply(&m)
 
 		if _, cmd := update(t, m, mouseAt(originX, originY)); cmd != nil {
@@ -777,7 +793,9 @@ func TestMouseChordTogglesRealCaptureFromBothBranches(t *testing.T) {
 
 	for _, focused := range []bool{false, true} {
 		m, fp, _, _, _, _ := mouseModel(t)
-		m.paneFocused = focused
+		if focused {
+			m.focus = focusRight
+		}
 		if !m.mouseCapture {
 			t.Fatalf("focused=%v: precondition — capture starts on", focused)
 		}
@@ -842,7 +860,7 @@ func TestMouseCaptureStateSurvivesTruncationOnTheFocusedHelpLine(t *testing.T) {
 	m := testModel(sess("live"))
 	m.pane = newFakePane("X")
 	m.paneName = "live"
-	m.paneFocused = true
+	m.focus = focusRight
 
 	for _, capture := range []bool{true, false} {
 		m.mouseCapture = capture
@@ -1072,7 +1090,9 @@ func frameModel(name string, width, height int, focused bool) (Model, *fakePane)
 	m := testModel(runningSess(name))
 	m.pane = fp
 	m.paneName = name
-	m.paneFocused = focused
+	if focused {
+		m.focus = focusRight
+	}
 	m.width, m.height = width, height
 	_, mainOuter, bodyHeight := m.layoutDims()
 	fp.sizeCols, fp.sizeRows = paneContentDims(mainOuter, bodyHeight)
@@ -1530,7 +1550,10 @@ func TestDashboardMouseIsDroppedWhileThePaneIsOpenButUndrawn(t *testing.T) {
 		wantVisible bool
 	}{
 		{"unfocused — detail panels replace the pane", false, false},
-		{"focused — the pane stays drawn off-cursor", true, true},
+		// Under the two-axis model focus no longer keeps an off-cursor pane
+		// drawn (shouldRenderPane is view + selection only), so the focused row
+		// is also undrawn and must also drop.
+		{"focused — the cursor left the paned row, so the pane is not drawn", true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, fp := frameModel("live", 80, 24, c.focused)
@@ -1643,16 +1666,19 @@ func TestDashboardMouseWithNoPaneIsANoOp(t *testing.T) {
 	}
 }
 
-// TestDashboardMouseForwardsRegardlessOfFocus is scroll-follows-mouse stated as a
-// frame-truth assertion: the same MEASURED cell forwards identically whether or
-// not the keyboard is focused on the pane. Gating the wheel on m.paneFocused
-// would make "glance at the pane, scroll it" a two-step gesture.
+// TestDashboardMouseForwardsByFocus is the focus routing stated as frame-truth
+// assertions: the same MEASURED cell forwards only when the keyboard is focused
+// on the right side. With the list focused, a wheel or motion event over the
+// pane forwards nothing, and a left click there is the click-to-focus gesture —
+// consumed (nothing forwarded) and focus moves right. Load-bearing: the
+// focus=list click row, which fails if the click were forwarded as well as
+// focusing.
 //
 // The origin is measured per focus state rather than once, because the two states
 // render different title hints — a difference in their widths that changed the
 // title's wrap would move the origin, and this test would then be comparing two
 // different cells.
-func TestDashboardMouseForwardsRegardlessOfFocus(t *testing.T) {
+func TestDashboardMouseForwardsByFocus(t *testing.T) {
 	for _, focused := range []bool{false, true} {
 		t.Run(fmt.Sprintf("focused=%v", focused), func(t *testing.T) {
 			m, fp := frameModel("live", 80, 24, focused)
@@ -1660,21 +1686,137 @@ func TestDashboardMouseForwardsRegardlessOfFocus(t *testing.T) {
 			if originX != 32 || originY != 3 {
 				t.Fatalf("the frame puts the content at (%d, %d), want (32, 3)", originX, originY)
 			}
-			msg := tea.MouseWheelMsg{
+			wheel := tea.MouseWheelMsg{
 				X: originX + 5, Y: originY + 2,
 				Button: tea.MouseWheelDown,
 			}
-			update(t, m, msg)
-			if len(fp.mice) != 1 {
-				t.Fatalf("recorded %d mouse events, want 1", len(fp.mice))
+			motion := tea.MouseMotionMsg{X: originX + 5, Y: originY + 2, Button: tea.MouseLeft}
+			click := tea.MouseClickMsg{X: originX + 5, Y: originY + 2, Button: tea.MouseLeft}
+
+			if !focused {
+				for _, msg := range []tea.MouseMsg{wheel, motion} {
+					if nm, cmd := update(t, m, msg); cmd != nil || nm.focus != focusList {
+						t.Errorf("%T with focus=list: cmd=%v focus=%v, want no Cmd and focus unchanged",
+							msg, cmd != nil, nm.focus)
+					}
+				}
+				nm, _ := update(t, m, click)
+				if nm.focus != focusRight {
+					t.Errorf("click over the pane with focus=list left focus=%v, want focusRight", nm.focus)
+				}
+				if len(fp.mice) != 0 {
+					t.Fatalf("focus=list forwarded %v, want nothing (click is consumed)", fp.mice)
+				}
+				return
+			}
+
+			update(t, m, wheel)
+			update(t, m, click)
+			if len(fp.mice) != 2 {
+				t.Fatalf("recorded %d mouse events, want 2 (wheel + click)", len(fp.mice))
 			}
 			if _, isWheel := fp.mice[0].(termpane.MouseWheel); !isWheel {
 				t.Errorf("delivered %T, want termpane.MouseWheel", fp.mice[0])
 			}
-			if got := fp.mice[0].Mouse(); got.X != 5 || got.Y != 2 {
-				t.Errorf("arrived at (%d, %d), want (5, 2)", got.X, got.Y)
+			for i, ev := range fp.mice {
+				if got := ev.Mouse(); got.X != 5 || got.Y != 2 {
+					t.Errorf("event %d arrived at (%d, %d), want (5, 2)", i, got.X, got.Y)
+				}
 			}
 		})
+	}
+}
+
+// TestMouseClickFocusesRightSide pins the click entrance: with the list focused
+// a left click inside the right region is enter/f — the pane installed lands
+// focus=right in the agent view, and with no pane for the selected row it
+// connects (one Cmd, focus moved at the click). The overview view focuses the
+// overview and starts no connect. Neither click is forwarded to a pane.
+func TestMouseClickFocusesRightSide(t *testing.T) {
+	t.Run("agent view, pane installed", func(t *testing.T) {
+		m, fp, originX, originY, _, _ := mouseModel(t)
+		nm, cmd := update(t, m, mouseAt(originX+1, originY+1))
+		if nm.focus != focusRight || nm.view != viewAgent {
+			t.Errorf("focus=%v view=%v, want focusRight/viewAgent", nm.focus, nm.view)
+		}
+		if cmd != nil {
+			t.Errorf("focusing an installed pane must not dial, got a Cmd")
+		}
+		if len(fp.mice) != 0 {
+			t.Errorf("click forwarded %v, want consumed", fp.mice)
+		}
+	})
+	t.Run("agent view, no pane connects", func(t *testing.T) {
+		m, _, originX, originY, _, _ := mouseModel(t)
+		m.pane, m.paneName = nil, ""
+		nm, cmd := update(t, m, mouseAt(originX+1, originY+1))
+		if nm.focus != focusRight || nm.view != viewAgent {
+			t.Errorf("focus=%v view=%v, want focusRight/viewAgent", nm.focus, nm.view)
+		}
+		if cmd == nil {
+			t.Errorf("a click with no pane must start the connect, like enter")
+		}
+	})
+	t.Run("overview view", func(t *testing.T) {
+		m, fp, originX, originY, _, _ := mouseModel(t)
+		m.view = viewOverview
+		nm, cmd := update(t, m, mouseAt(originX+1, originY+1))
+		if nm.focus != focusRight || nm.view != viewOverview {
+			t.Errorf("focus=%v view=%v, want focusRight/viewOverview", nm.focus, nm.view)
+		}
+		if cmd != nil || len(fp.mice) != 0 {
+			t.Errorf("overview click: cmd=%v forwarded=%v, want neither", cmd != nil, fp.mice)
+		}
+	})
+	t.Run("right click does not focus", func(t *testing.T) {
+		m, _, originX, originY, _, _ := mouseModel(t)
+		nm, cmd := update(t, m, tea.MouseClickMsg{X: originX + 1, Y: originY + 1, Button: tea.MouseRight})
+		if nm.focus != focusList || cmd != nil {
+			t.Errorf("right click: focus=%v cmd=%v, want unchanged", nm.focus, cmd != nil)
+		}
+	})
+	t.Run("release does not focus", func(t *testing.T) {
+		m, _, originX, originY, _, _ := mouseModel(t)
+		nm, _ := update(t, m, tea.MouseReleaseMsg{X: originX + 1, Y: originY + 1, Button: tea.MouseLeft})
+		if nm.focus != focusList {
+			t.Errorf("release moved focus to %v", nm.focus)
+		}
+	})
+	t.Run("mouse released to the terminal", func(t *testing.T) {
+		m, _, originX, originY, _, _ := mouseModel(t)
+		m.mouseCapture = false
+		nm, _ := update(t, m, mouseAt(originX+1, originY+1))
+		if nm.focus != focusList {
+			t.Errorf("click with capture off moved focus to %v", nm.focus)
+		}
+	})
+}
+
+// TestMouseClickInListReturnsFocus: with the right side focused, a click in the
+// list region moves focus to the list and forwards nothing; the list has no
+// other mouse behaviour, so selection is untouched. A wheel over the list is
+// dropped without moving focus.
+func TestMouseClickInListReturnsFocus(t *testing.T) {
+	for _, view := range []rightView{viewAgent, viewOverview} {
+		m, fp, _, originY, _, _ := mouseModel(t)
+		m.view = view
+		m.focus = focusRight
+		before := m.list.Index()
+
+		nm, cmd := update(t, m, tea.MouseWheelMsg{X: 2, Y: originY, Button: tea.MouseWheelDown})
+		if nm.focus != focusRight || cmd != nil {
+			t.Errorf("view=%v: wheel over the list: focus=%v cmd=%v, want unchanged", view, nm.focus, cmd != nil)
+		}
+		nm, cmd = update(t, m, mouseAt(2, originY))
+		if nm.focus != focusList || cmd != nil {
+			t.Errorf("view=%v: click in the list: focus=%v cmd=%v, want focusList and no Cmd", view, nm.focus, cmd != nil)
+		}
+		if nm.list.Index() != before {
+			t.Errorf("view=%v: selection moved %d -> %d", view, before, nm.list.Index())
+		}
+		if len(fp.mice) != 0 {
+			t.Errorf("view=%v: forwarded %v, want nothing", view, fp.mice)
+		}
 	}
 }
 
@@ -2470,6 +2612,14 @@ func TestDashboardMouseChordDoesNotDisturbTheGeometry(t *testing.T) {
 					}
 					continue
 				}
+				// Only a focused pane receives the retaken mouse; with the list
+				// focused the click is the focus gesture and forwards nothing.
+				if !focused {
+					if len(fp.mice) != 0 {
+						t.Fatalf("focus=list forwarded %v after the mouse was retaken", fp.mice)
+					}
+					continue
+				}
 				if len(fp.mice) != 1 {
 					t.Fatalf("recorded %d mouse events after the mouse was retaken, want 1", len(fp.mice))
 				}
@@ -2510,9 +2660,9 @@ func helpLineAt80(m Model) string {
 //
 // The wants are built from the keymap rather than written out, so a relabelled
 // binding cannot leave this test asserting a string the dashboard no longer
-// draws. Only the leading items are asserted (up/down/focus/toggle) —
-// renderNormalHelpKeyMap orders an open pane's Focus/Toggle right after
-// movement (ahead of close-pane/new/clean), on the reasoning that a
+// draws. Only the leading items are asserted (up/down/focus) —
+// renderNormalHelpKeyMap orders Focus right after movement (ahead of
+// close-pane/new/clean), on the reasoning that a
 // key that only matters in the CURRENT state should outrank the
 // always-available ones once a width budget forces a choice — comfortably
 // inside the 80-column budget regardless of how much of the rest of the line
@@ -2528,12 +2678,15 @@ func TestHelpLineAt80KeepsTheDiscoverableKeysAndTheCaptureState(t *testing.T) {
 				m.keys.Up.Help().Key + " " + m.keys.Up.Help().Desc,
 				m.keys.Down.Help().Key + " " + m.keys.Down.Help().Desc,
 				m.keys.Focus.Help().Key + " " + m.keys.Focus.Help().Desc,
-				m.keys.Toggle.Help().Key + " " + m.keys.Toggle.Help().Desc,
 			} {
 				if !strings.Contains(shown, want) {
 					t.Errorf("the unfocused 80-column help line is %q, want it to contain %q",
 						shown, want)
 				}
+			}
+			// ctrl+t is not a list key: the unfocused line must not offer it.
+			if strings.Contains(shown, m.keys.Toggle.Help().Key) {
+				t.Errorf("the unfocused 80-column help line is %q, want no %q", shown, m.keys.Toggle.Help().Key)
 			}
 
 			focused, _ := frameModel("live", 80, 24, true)
@@ -2816,7 +2969,7 @@ func TestMouseBoundsMinimumIsAppliedByBothCallers(t *testing.T) {
 		m := testModel(runningSess("live"))
 		m.pane = fp
 		m.paneName = "live"
-		m.paneFocused = true
+		m.focus = focusRight
 		m.width, m.height = 80, 24
 		// Left at newFakePane's 80x24 default on purpose: that IS the disagreement.
 		_, mainOuter, bodyHeight := m.layoutDims()

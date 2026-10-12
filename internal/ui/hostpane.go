@@ -112,20 +112,21 @@ func hostSocketPath(worktree, name string) (string, error) {
 	return host.SocketPath(worktree, name)
 }
 
-// wedgeRecoveryKey names the keybinding that requests a restart of a wedged
-// session's child (W6.T3 binds it to that action). Named once, here, so the
-// banner text this file draws and the key W6.T3 wires can never name two
+// wedgeRecoveryKey names the dashboard's one restart key (Model.restartSelected):
+// it restarts a wedged session's child after a confirmation, and respawns a
+// stopped session's host straight away. Named once, here, so the banner text
+// this file draws and the key the dashboard binds can never name two
 // different keys.
 const wedgeRecoveryKey = "r"
 
 // wedgeHintDashboard and wedgeHintAttach are the per-surface halves of the
 // wedge banner: the same "session unresponsive" fact, but recovery guidance
 // matched to what each surface actually does with keys. The dashboard binds
-// wedgeRecoveryKey on the session list and forwards it to the child while a
-// pane is focused — so its hint names the key AND the chord that leaves the
-// focused pane first. `afk attach` forwards every non-chord key to the
-// child and handles no restart at all, so its hint must not invite any
-// in-place keypress; the restart lives in the dashboard.
+// wedgeRecoveryKey on the session list and the focused overview, and forwards
+// it to the child while a pane is focused — so its hint names the key AND the
+// chord that leaves the focused pane first. `afk attach` forwards every
+// non-chord key to the child and handles no restart at all, so its hint must
+// not invite any in-place keypress; the restart lives in the dashboard.
 var wedgeHintDashboard = fmt.Sprintf(`press %q to restart (from a focused pane: ctrl+\ first)`, wedgeRecoveryKey)
 
 const wedgeHintAttach = `detach (ctrl+\) and restart it from the dashboard`

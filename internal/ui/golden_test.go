@@ -345,7 +345,7 @@ func TestGoldenDialogs(t *testing.T) {
 func TestGoldenToast(t *testing.T) {
 	t.Run("dash-120x40-toast", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
-		m.notify(notifyInfo, "restarted feat-billing — claude is resuming its conversation · ctrl+t to reopen the agent")
+		m.notify(notifyInfo, "restarted feat-billing — claude is resuming its conversation · enter/f to reopen the agent")
 		assertGolden(t, "dash-120x40-toast", render(m))
 	})
 	t.Run("dash-120x40-toast-error", func(t *testing.T) {

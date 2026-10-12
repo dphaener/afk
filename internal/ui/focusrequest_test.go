@@ -269,7 +269,7 @@ func TestFocusRequestOpensAndFocusesNamedSession(t *testing.T) {
 	if m.pane == nil || m.paneName != "target" {
 		t.Fatalf("pane not installed: pane=%v name=%q", m.pane != nil, m.paneName)
 	}
-	if !m.paneFocused {
+	if !m.paneOwnsKeyboard() {
 		t.Fatal("the pane must be FOCUSED: without it the click only opens a view and keys still go to the dashboard")
 	}
 	if !strings.Contains(m.status, "input goes to target") {
@@ -285,17 +285,84 @@ func TestFocusRequestOpensAndFocusesNamedSession(t *testing.T) {
 	if m.paneName != "other" {
 		t.Fatalf("setup: paneName = %q, want the preview installed", m.paneName)
 	}
-	if m.paneFocused {
+	if m.paneOwnsKeyboard() {
 		t.Error("the preview inherited the click's focus: a consumed request must not focus the next pane to arrive")
 	}
 }
 
+// TestFocusRequestArrivalWording pins when a click-to-focus arrival may say
+// "input goes to X". Load-bearing rows: the two not-honoured ones. The click's
+// connect moves focus right at request time, then dials; if the user goes back
+// to the list or switches to the overview before the pane arrives, the arrival
+// leaves focus and view as the user left them, so the keyboard is NOT in the
+// session and the toast must not claim it is. The honoured row guards the
+// other direction: the gate must not silence the true wording.
+func TestFocusRequestArrivalWording(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(m *Model)
+		wantInput bool
+		wantFocus paneFocus
+		wantView  rightView
+	}{
+		{
+			name:      "focus honoured",
+			setup:     func(m *Model) { m.focus = focusRight },
+			wantInput: true,
+			wantFocus: focusRight,
+			wantView:  viewAgent,
+		},
+		{
+			name:      "user returned to the list before the pane arrived",
+			setup:     func(m *Model) { m.focus = focusList },
+			wantInput: false,
+			wantFocus: focusList,
+			wantView:  viewAgent,
+		},
+		{
+			name: "user switched to the overview before the pane arrived",
+			setup: func(m *Model) {
+				m.focus = focusRight
+				m.view = viewOverview
+			},
+			wantInput: false,
+			wantFocus: focusRight,
+			wantView:  viewOverview,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := focusRequestModel(t, newFakeFocusWatcher(), runningSess("target"))
+			tc.setup(&m)
+			attached := paneAttachedMsg{
+				pane:           newFakePane("SESSION-PANE"),
+				name:           "target",
+				focusOnArrival: true,
+				focusRequest:   true,
+			}
+			m, _ = update(t, m, attached)
+			if m.pane == nil || m.paneName != "target" {
+				t.Fatalf("pane not installed: pane=%v name=%q", m.pane != nil, m.paneName)
+			}
+			if got := strings.Contains(m.status, "input goes to"); got != tc.wantInput {
+				t.Errorf("status = %q, contains \"input goes to\" = %v, want %v", m.status, got, tc.wantInput)
+			}
+			if m.focus != tc.wantFocus {
+				t.Errorf("focus = %v, want %v", m.focus, tc.wantFocus)
+			}
+			if m.view != tc.wantView {
+				t.Errorf("view = %v, want %v", m.view, tc.wantView)
+			}
+		})
+	}
+}
+
 // TestFocusRequestSwitchingPanesClosesTheOutgoingOne is the leak test, and it is
-// the load-bearing one for the CLICK path specifically: ctrl+t and a click reach
+// the load-bearing one for the CLICK path specifically: enter and a click reach
 // applyPaneAttached through the same swap, but only the click path had an early
-// return above it. Ctrl-T establishes the outgoing pane without focusing it;
-// the external focus request remains the operation that intentionally takes
-// keyboard ownership on B's arrival.
+// return above it. Enter then ctrl+\ establishes the outgoing pane drawn with
+// the keyboard on the list; the click is what takes keyboard ownership on B's
+// arrival.
 //
 // The honored-focus branch returned as soon as it had focused the arriving pane,
 // jumping over the `previous.Close()` that detaches the pane being replaced. After
@@ -315,13 +382,15 @@ func TestFocusRequestSwitchingPanesClosesTheOutgoingOne(t *testing.T) {
 	m, dir := focusRequestModel(t, w, runningSess("a"), runningSess("b"))
 
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return paneA, nil }
-	m, cmd := update(t, m, keyCtrlT)
+	m, cmd := update(t, m, keyEnter)
 	m, _ = update(t, m, drainForPaneAttached(t, cmd))
-	if m.pane != paneA || m.paneName != "a" {
-		t.Fatalf("precondition: pane A not installed (pane==A: %v, name=%q)", m.pane == paneA, m.paneName)
+	if m.pane != paneA || m.paneName != "a" || !m.paneOwnsKeyboard() {
+		t.Fatalf("precondition: enter must install pane A focused (pane==A: %v, name=%q, focused=%v)",
+			m.pane == paneA, m.paneName, m.paneOwnsKeyboard())
 	}
-	if m.paneFocused {
-		t.Fatal("precondition: ctrl+t must install pane A with keyboard ownership on the list")
+	m, _ = update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+	if m.paneOwnsKeyboard() || !m.shouldRenderPane() {
+		t.Fatal("precondition: ctrl+\\ must leave pane A drawn with keyboard ownership on the list")
 	}
 
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return paneB, nil }
@@ -336,13 +405,61 @@ func TestFocusRequestSwitchingPanesClosesTheOutgoingOne(t *testing.T) {
 	if m.pane != paneB || m.paneName != "b" {
 		t.Fatalf("pane B not installed: pane==B %v, name=%q", m.pane == paneB, m.paneName)
 	}
-	if !m.paneFocused {
+	if !m.paneOwnsKeyboard() {
 		t.Error("pane B must still be FOCUSED: closing the outgoing pane must not cost the click its focus")
 	}
 	if paneB.closed != 0 {
 		t.Errorf("arriving pane B was closed %d times, want 0", paneB.closed)
 	}
 	_ = dir
+}
+
+// TestFocusRequestEntersThroughTheSameDoorAsEnter pins W3.T1(e): a click lands
+// focus=right, view=agent AT REQUEST TIME, exactly as enter does, rather than
+// waiting for the arrival. Each row is load-bearing:
+//
+//   - "from the overview" proves the click selects the agent view: a click on a
+//     notification is a request to be IN the session, whatever view the user
+//     last left the right side on.
+//   - "keys during the dial" proves the request-time focus is real: q, c and n
+//     typed while the dial is out reach the agent placeholder and are
+//     swallowed, where the old arrival-time focus left them on the list's
+//     quit, clean and new-session bindings.
+//   - "arrival" proves the dispatched dial still lands the pane focused.
+func TestFocusRequestEntersThroughTheSameDoorAsEnter(t *testing.T) {
+	w := newFakeFocusWatcher()
+	m, _ := focusRequestModel(t, w, runningSess("a"), runningSess("b"))
+	m.view = viewOverview
+	opens := 0
+	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) {
+		opens++
+		return newFakePane("B"), nil
+	}
+
+	m, cmd := update(t, m, freshRequestMsg("b"))
+	if m.focus != focusRight || m.view != viewAgent {
+		t.Fatalf("from the overview: focus/view = %v/%v at request time, want right/agent", m.focus, m.view)
+	}
+	if s, _ := m.selected(); s.Name != "b" {
+		t.Fatalf("selection = %q, want the clicked session b", s.Name)
+	}
+
+	for _, k := range []tea.KeyPressMsg{{Code: 'q', Text: "q"}, {Code: 'c', Text: "c"}, {Code: 'n', Text: "n"}} {
+		var kc tea.Cmd
+		m, kc = update(t, m, k)
+		if kc != nil || m.quitting || m.formOpen || m.modal != inputNormal {
+			t.Fatalf("keys during the dial: %q leaked to a list binding (cmd=%v quitting=%v form=%v modal=%v)",
+				k.String(), kc != nil, m.quitting, m.formOpen, m.modal)
+		}
+	}
+
+	m, _ = update(t, m, drainForPaneAttached(t, cmd))
+	if opens != 1 {
+		t.Fatalf("arrival: %d dials, want exactly 1", opens)
+	}
+	if m.paneName != "b" || !m.paneOwnsKeyboard() {
+		t.Fatalf("arrival: paneName=%q focused=%v, want b focused", m.paneName, m.paneOwnsKeyboard())
+	}
 }
 
 // TestFocusRequestIgnoresTheSelectedRow is the point of carrying the name in a
@@ -440,8 +557,8 @@ func TestFocusRequestStaleAndUnknownDoNothing(t *testing.T) {
 			if opens != 0 {
 				t.Errorf("OpenHostPane called %d times, want 0", opens)
 			}
-			if m.pane != nil || m.paneFocused {
-				t.Errorf("pane=%v focused=%v, want neither", m.pane != nil, m.paneFocused)
+			if m.pane != nil || m.paneOwnsKeyboard() {
+				t.Errorf("pane=%v focused=%v, want neither", m.pane != nil, m.paneOwnsKeyboard())
 			}
 			// The focus, once request-borne, has no Model residue to check: the
 			// refusal returns no Cmd, so no paneAttachedMsg carrying focusRequest is
@@ -498,9 +615,9 @@ func TestFocusRequestMalformedAndMissingAreNoOps(t *testing.T) {
 
 			m, cmd := update(t, m, fr)
 			runAllCmds(t, cmd)
-			if opens != 0 || m.pane != nil || m.paneFocused || m.status != "" {
+			if opens != 0 || m.pane != nil || m.paneOwnsKeyboard() || m.status != "" {
 				t.Errorf("expected a complete no-op: opens=%d pane=%v focused=%v status=%q",
-					opens, m.pane != nil, m.paneFocused, m.status)
+					opens, m.pane != nil, m.paneOwnsKeyboard(), m.status)
 			}
 		})
 	}
@@ -585,7 +702,7 @@ func TestFocusRequestOnTheOpenPaneJustFocuses(t *testing.T) {
 	if opens != 0 {
 		t.Errorf("OpenHostPane called %d times, want 0 for the session already in the pane", opens)
 	}
-	if !m.paneFocused {
+	if !m.paneOwnsKeyboard() {
 		t.Error("the already-open pane must be focused")
 	}
 	if m.pane != fp {
@@ -596,62 +713,146 @@ func TestFocusRequestOnTheOpenPaneJustFocuses(t *testing.T) {
 	}
 }
 
-// TestFocusRequestRestartsAStoppedHost mirrors what enter and --open do for a
-// session whose host is down: restart first, then open, then focus. A notification
-// can be clicked long after its session's host exited, so this is an ordinary
-// case rather than an edge one.
-func TestFocusRequestRestartsAStoppedHost(t *testing.T) {
+// TestFocusRequestOnAStoppedHostFocusesItsOverview pins the click on a
+// session whose host is down to enter's rule (plan W3.T1 d/e): the right side
+// is focused in the agent view, the row draws its overview because it has no
+// live agent, and nothing is spawned. A notification can be clicked long after
+// its session's host exited, so this is an ordinary case — and `r` from that
+// overview is what brings the agent back, landing focused.
+func TestFocusRequestOnAStoppedHostFocusesItsOverview(t *testing.T) {
 	w := newFakeFocusWatcher()
 	m, _ := focusRequestModel(t, w, sess("target"))
-	var spawned string
+	spawns := 0
 	m.deps.SpawnHost = func(name, worktree string) (session.HostProcess, error) {
-		spawned = name
+		spawns++
 		return session.HostProcess{PID: 4242}, nil
 	}
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return newFakePane("X"), nil }
 
 	m, cmd := update(t, m, freshRequestMsg("target"))
-	if cmd == nil {
-		t.Fatal("expected the restart to be dispatched")
+	if hasHostRestarted(t, cmd) {
+		t.Fatal("a click on a stopped session must not restart its host")
 	}
-	hr := drainForHostRestarted(t, cmd)
-	if spawned != "target" {
-		t.Fatalf("SpawnHost called with %q, want target", spawned)
+	if spawns != 0 {
+		t.Fatalf("SpawnHost called %d times, want 0", spawns)
+	}
+	if m.focus != focusRight || m.view != viewAgent {
+		t.Fatalf("focus/view = %v/%v, want right/agent", m.focus, m.view)
+	}
+	if !m.detailDrawn() || m.agentPlaceholderDrawn() {
+		t.Fatalf("detailDrawn=%v placeholder=%v, want the stopped row's overview drawn",
+			m.detailDrawn(), m.agentPlaceholderDrawn())
 	}
 
-	m, openCmd := update(t, m, hr)
+	m, restart := update(t, m, keyRune('r'))
+	if restart == nil {
+		t.Fatal("r on the focused overview must dispatch the restart")
+	}
+	m, openCmd := update(t, m, drainForHostRestarted(t, restart))
 	if openCmd == nil {
 		t.Fatal("the restart must chain into the pane open")
 	}
-	attached := drainForPaneAttached(t, openCmd)
-	m, _ = update(t, m, attached)
-
-	if !m.paneFocused || m.paneName != "target" {
-		t.Fatalf("after a restart the pane must be open AND focused: name=%q focused=%v",
-			m.paneName, m.paneFocused)
+	m, _ = update(t, m, drainForPaneAttached(t, openCmd))
+	if !m.paneOwnsKeyboard() || m.paneName != "target" || spawns != 1 {
+		t.Fatalf("after r the pane must be open AND focused: name=%q focused=%v spawns=%d",
+			m.paneName, m.paneOwnsKeyboard(), spawns)
 	}
 }
 
-// TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview covers the one open
-// path with no previewGen bump of its own: restartHostCmd, which reaches a pane
-// through hostRestartedMsg instead of through openPaneFor.
+// TestFocusRequestOnAStoppedHostDetachesAnotherRowsPane pins the pane-follows-
+// selection rule (plan W3.T1(a), objective 5) on the one selection change that
+// skips schedulePreview: a click on a STOPPED session. The click moves the
+// cursor onto the stopped row and opens nothing, so a pane installed for
+// another row would stay connected but undrawn — holding that host's single
+// client slot — and `c` on the clicked row would then be refused for a pane
+// nobody can see.
 //
-// A CLICK is what makes this reachable, and it is the only thing that does. Every
-// keyboard route to a stopped session passes through a cursor move first, and
-// schedulePreview bumps the generation on every move — including the moves that
-// refuse to arm, which is exactly why a stopped row cannot leave a live timer
-// behind. A click arrives from a file watcher with no cursor move at all, so a
-// timer armed for the row the user last sat on is still live, and a host spawn is
-// far slower than the 300ms settle. Without the bump in restartHostCmd it fires
-// mid-restart and steals the pane to a session nobody clicked.
+// Both rows are load-bearing: "list focus" is pane A released with ctrl+\
+// before the click; "pane focused" proves the detach does not depend on the
+// list holding the keyboard when the click lands, which followSelection's own
+// focus gate would otherwise let through.
+func TestFocusRequestOnAStoppedHostDetachesAnotherRowsPane(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		releaseFn bool
+	}{
+		{name: "list focus", releaseFn: true},
+		{name: "pane focused", releaseFn: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newFakeFocusWatcher()
+			paneA := newFakePane("PANE-A")
+			m, _ := focusRequestModel(t, w, runningSess("a"), sess("target"))
+			m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return paneA, nil }
+			m, cmd := update(t, m, keyEnter)
+			m, _ = update(t, m, drainForPaneAttached(t, cmd))
+			if m.pane != paneA || m.paneName != "a" {
+				t.Fatalf("precondition: enter must install pane A (name=%q)", m.paneName)
+			}
+			if tc.releaseFn {
+				m, _ = update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+			}
+
+			m, _ = update(t, m, freshRequestMsg("target"))
+			if s, _ := m.selected(); s.Name != "target" {
+				t.Fatalf("selection = %q, want the clicked session target", s.Name)
+			}
+			if m.pane != nil || m.paneName != "" {
+				t.Fatalf("pane for %q still installed after a click selected target", m.paneName)
+			}
+			if paneA.closed != 1 {
+				t.Fatalf("pane A closed %d times, want exactly 1", paneA.closed)
+			}
+			if m.focus != focusRight || !m.detailDrawn() {
+				t.Fatalf("focus=%v detailDrawn=%v, want the stopped row's overview focused",
+					m.focus, m.detailDrawn())
+			}
+
+			m.setSessions([]Session{runningSess("a"), sess("target")})
+			if m.pane != nil || paneA.closed != 1 {
+				t.Fatalf("after a tick: pane=%v closed=%d", m.pane != nil, paneA.closed)
+			}
+
+			m, _ = update(t, m, keyEsc)
+			m, _ = update(t, m, tea.KeyPressMsg{Code: 'c', Text: "c"})
+			if strings.Contains(m.status, "close the pane first") {
+				t.Fatalf("c on target refused for an invisible pane: %q", m.status)
+			}
+			if m.confirmTarget != "target" {
+				t.Fatalf("confirmTarget = %q, want the clean confirm for target", m.confirmTarget)
+			}
+		})
+	}
+}
+
+// hasHostRestarted reports whether running cmd (and any batch it expands to)
+// produces a hostRestartedMsg. Unlike drainForHostRestarted it does not fail
+// when there is none — the absence is what the caller asserts.
+func hasHostRestarted(t *testing.T, cmd tea.Cmd) bool {
+	t.Helper()
+	for _, msg := range collectMsgs(t, cmd) {
+		if _, ok := msg.(hostRestartedMsg); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview covers the one
+// selection change with no schedulePreview of its own: a click. Every keyboard
+// route to a row passes through a cursor move first, and schedulePreview bumps
+// the generation on every move. A click arrives from a file watcher with no
+// cursor move at all, so a timer armed for the row the user last sat on is
+// still live, and without a bump it fires after the click and installs a pane
+// for a session nobody clicked.
 //
 // Both halves are load-bearing:
 //   - the timer being inert is the fix, asserted through applyPreviewTimer rather
 //     than by reading previewGen back. That is deliberate: a bump written to a
-//     discarded copy (restartHostCmd's value-receiver trap) would still satisfy a
-//     field read taken from the returned Model, but cannot satisfy this.
-//   - the clicked session still arriving open and focused is what stops the fix
-//     from being "cancel everything" — the bump must not cost the click its pane.
+//     discarded copy (a value-receiver trap) would still satisfy a field read
+//     taken from the returned Model, but cannot satisfy this.
+//   - the clicked session still arriving open and focused once `r` restarts it
+//     is what stops the fix from being "cancel everything".
 func TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview(t *testing.T) {
 	w := newFakeFocusWatcher()
 	m, _ := focusRequestModel(t, w, sess("target"), runningSess("other"))
@@ -671,28 +872,29 @@ func TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview(t *testing.T) {
 	staleName := m.sessions[m.listSelection()].Name
 
 	m, cmd := update(t, m, freshRequestMsg("target"))
-	if cmd == nil {
-		t.Fatal("setup: a click on a stopped session must dispatch the restart")
-	}
-	hr := drainForHostRestarted(t, cmd)
+	runAllCmds(t, cmd)
 
-	// The pre-click timer fires, exactly as it would mid-spawn.
+	// The pre-click timer fires after the click.
 	m, fired := update(t, m, previewTimerMsg{gen: staleGen, name: staleName})
 	if fired != nil {
-		t.Errorf("the pre-click preview timer dispatched a dial for %q; the restart must invalidate it", staleName)
+		t.Errorf("the pre-click preview timer dispatched a dial for %q; the click must invalidate it", staleName)
 	}
 	if len(opened) != 0 {
-		t.Errorf("opens = %d (%+v), want 0 — the stale timer dialed during the restart", len(opened), opened)
+		t.Errorf("opens = %d (%+v), want 0 — the stale timer dialed after the click", len(opened), opened)
 	}
 
-	m, openCmd := update(t, m, hr)
+	m, restart := update(t, m, keyRune('r'))
+	if restart == nil {
+		t.Fatal("r on the clicked stopped session must dispatch the restart")
+	}
+	m, openCmd := update(t, m, drainForHostRestarted(t, restart))
 	if openCmd == nil {
 		t.Fatal("the restart must chain into the pane open")
 	}
 	m, _ = update(t, m, drainForPaneAttached(t, openCmd))
-	if m.paneName != "target" || !m.paneFocused {
+	if m.paneName != "target" || !m.paneOwnsKeyboard() {
 		t.Fatalf("paneName = %q focused = %v, want the clicked session open and focused",
-			m.paneName, m.paneFocused)
+			m.paneName, m.paneOwnsKeyboard())
 	}
 }
 
@@ -742,7 +944,11 @@ func TestWaitForRestartedHostMetaReturnsFinalErrorAtBound(t *testing.T) {
 	}
 }
 
-func TestStoppedToggleWaitsForMetadataBeforeOpening(t *testing.T) {
+// TestStoppedRestartWaitsForMetadataBeforeOpening pins the restart chain's
+// order for `r` on a stopped row from its focused overview: spawn, then
+// host-record readiness, then the pane open — and the focus request riding
+// through all three, since the keyboard is already on the right side.
+func TestStoppedRestartWaitsForMetadataBeforeOpening(t *testing.T) {
 	m := testModel(stoppedSess("alpha"))
 	var order []string
 	m.deps.SpawnHost = func(string, string) (session.HostProcess, error) {
@@ -752,7 +958,7 @@ func TestStoppedToggleWaitsForMetadataBeforeOpening(t *testing.T) {
 	m.deps.WaitHostReady = func(worktree, name string) error {
 		order = append(order, "metadata")
 		if worktree != m.sessions[0].WorktreePath || name != "alpha" {
-			t.Fatalf("readiness target = %q/%q, want selected stopped session", worktree, name)
+			t.Errorf("readiness target = %q/%q, want selected stopped session", worktree, name)
 		}
 		return nil
 	}
@@ -761,13 +967,17 @@ func TestStoppedToggleWaitsForMetadataBeforeOpening(t *testing.T) {
 		return newFakePane("X"), nil
 	}
 
-	m, restart := update(t, m, chord('t'))
+	m, _ = update(t, m, keyEnter)
+	if m.focus != focusRight || !m.detailDrawn() {
+		t.Fatalf("setup: enter on a stopped row must focus its overview (focus=%v detail=%v)", m.focus, m.detailDrawn())
+	}
+	m, restart := update(t, m, keyRune('r'))
 	if restart == nil {
-		t.Fatal("Ctrl-T did not dispatch stopped-host restart")
+		t.Fatal("r did not dispatch the stopped-host restart")
 	}
 	restarted, ok := restart().(hostRestartedMsg)
-	if !ok || restarted.err != nil || restarted.focusOnArrival {
-		t.Fatalf("restart result = %#v, want focus-neutral success", restarted)
+	if !ok || restarted.err != nil || !restarted.focusOnArrival {
+		t.Fatalf("restart result = %#v, want a focused success", restarted)
 	}
 	if len(order) != 2 || order[0] != "spawn" || order[1] != "metadata" {
 		t.Fatalf("pre-open order = %v, want spawn then metadata", order)
@@ -777,8 +987,8 @@ func TestStoppedToggleWaitsForMetadataBeforeOpening(t *testing.T) {
 		t.Fatal("ready restart did not chain into pane open")
 	}
 	attached := open().(paneAttachedMsg)
-	if attached.focusOnArrival {
-		t.Fatal("stopped Ctrl-T open requested keyboard focus")
+	if !attached.focusOnArrival {
+		t.Fatal("r's chained open lost its focus request")
 	}
 	if len(order) != 3 || order[2] != "open" {
 		t.Fatalf("order = %v, want open only after metadata readiness", order)
@@ -805,7 +1015,7 @@ func TestFocusRequestSkipsASessionBeingCleaned(t *testing.T) {
 	if opens != 0 {
 		t.Errorf("OpenHostPane called %d times for a session being cleaned, want 0", opens)
 	}
-	if m.pane != nil || m.paneFocused {
+	if m.pane != nil || m.paneOwnsKeyboard() {
 		t.Error("no pane may be opened or focused over a session being cleaned")
 	}
 }
@@ -827,9 +1037,9 @@ func TestFocusRequestPendingPlaceholderIsIgnored(t *testing.T) {
 	m, cmd := update(t, m, freshRequestMsg("target"))
 	runAllCmds(t, cmd)
 
-	if opens != 0 || m.pane != nil || m.paneFocused {
+	if opens != 0 || m.pane != nil || m.paneOwnsKeyboard() {
 		t.Errorf("a placeholder row must not be opened: opens=%d pane=%v focused=%v",
-			opens, m.pane != nil, m.paneFocused)
+			opens, m.pane != nil, m.paneOwnsKeyboard())
 	}
 }
 
@@ -1246,15 +1456,15 @@ func TestOnlyOneOfTwoDashboardsHonorsAClick(t *testing.T) {
 	if len(openedByA) != 1 || openedByA[0] != "target" {
 		t.Errorf("addressed dashboard opened %v, want exactly [target]", openedByA)
 	}
-	if !dashA.paneFocused {
+	if !dashA.paneOwnsKeyboard() {
 		t.Error("the addressed dashboard must focus the pane — that is the whole click")
 	}
 	if len(openedByB) != 0 {
 		t.Errorf("the OTHER dashboard opened %v; its connection would steal the session "+
 			"out of the addressed dashboard's pane (internal/host serves one client)", openedByB)
 	}
-	if dashB.pane != nil || dashB.paneFocused {
-		t.Errorf("the other dashboard changed state: pane=%v focused=%v", dashB.pane != nil, dashB.paneFocused)
+	if dashB.pane != nil || dashB.paneOwnsKeyboard() {
+		t.Errorf("the other dashboard changed state: pane=%v focused=%v", dashB.pane != nil, dashB.paneOwnsKeyboard())
 	}
 }
 
@@ -1317,7 +1527,7 @@ func TestPendingFocusIsReleasedOnEveryPaneAttachedPath(t *testing.T) {
 			// session must not arrive focused.
 			later := newFakePane("LATER")
 			m, _ = update(t, m, paneAttachedMsg{name: "other", pane: later})
-			if m.paneFocused {
+			if m.paneOwnsKeyboard() {
 				t.Error("an unrelated later open inherited the dead click's focus")
 			}
 		})
@@ -1732,8 +1942,8 @@ func TestFocusRequestFromAnotherProjectSwitchesThenOpens(t *testing.T) {
 	}
 
 	m, _ = update(t, m, attached)
-	if m.pane == nil || m.paneName != "target" || !m.paneFocused {
-		t.Fatalf("pane=%v name=%q focused=%v, want beta's target focused", m.pane != nil, m.paneName, m.paneFocused)
+	if m.pane == nil || m.paneName != "target" || !m.paneOwnsKeyboard() {
+		t.Fatalf("pane=%v name=%q focused=%v, want beta's target focused", m.pane != nil, m.paneName, m.paneOwnsKeyboard())
 	}
 	if _, found := dashmeta.ReadRequest(f.dirs["/proj/beta"], m.pid); found {
 		t.Error("the honored request must be consumed from the project it arrived in")

@@ -71,17 +71,19 @@ func TestCtrlWEntersResizeModeFromNormal(t *testing.T) {
 }
 
 func TestCtrlWEntersResizeModeFromDetailAndResumesDetailFocus(t *testing.T) {
-	m := testModel(runningSess("alpha"))
-	m, _ = update(t, m, keyRune('f'))
+	// f on a RUNNING row in the agent view connects (the dial state is the
+	// agent placeholder, which swallows ctrl+w); focusOverview focuses the
+	// overview itself.
+	m := focusOverview(t, testModel(runningSess("alpha")))
 	if activeInputMode(m.modeSnapshot()) != inputDetail {
-		t.Fatal("precondition: f should focus the detail pane")
+		t.Fatal("precondition: the overview should be focused")
 	}
 
 	m, _ = update(t, m, keyCtrlW)
 	if !m.resizing {
 		t.Fatal("ctrl+w did not enter resize mode from detail focus")
 	}
-	if !m.detailFocused {
+	if !m.detailOwnsKeyboard() {
 		t.Fatal("entering resize mode dropped detail focus")
 	}
 	if got := activeInputMode(m.modeSnapshot()); got != inputResize {
@@ -404,8 +406,7 @@ func TestResizeFooterShowsTheResizeHints(t *testing.T) {
 }
 
 func TestResizeDetailBoxEdgeNamesTheResizeKeys(t *testing.T) {
-	m := testModel(runningSess("alpha"))
-	m, _ = update(t, m, keyRune('f'))
+	m := focusOverview(t, testModel(runningSess("alpha")))
 	m, _ = update(t, m, keyCtrlW)
 
 	_, hint := m.detailBoxLabels()

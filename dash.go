@@ -51,11 +51,8 @@ var selectionWriteMu sync.Mutex
 // cmdDash implements `afk dash`: a Bubble Tea dashboard over the afk
 // sessions discovered in the current repo. It re-runs session discovery on a
 // --interval ticker (default 2s, file reads only) and never writes to any
-// .afk file. Keybindings: enter and f focus whichever surface is currently
-// drawn in the right-hand region; ctrl+t is the explicit agent/view toggle and
-// can attach a running selected session or restart a stopped host without
-// moving keyboard focus; n creates a session via the in-TUI form; p opens the
-// project switcher; c confirms and runs clean in-process; q quits.
+// .afk file. The keys are listed in dashUsage; the focus model they describe
+// is documented on paneFocus and rightView in internal/ui/model.go.
 //
 // --open <name> opens one named session's pane as soon as discovery reports it.
 // That is how `afk new` hands its terminal over: the created session's host
@@ -138,9 +135,11 @@ Usage:
 
 Keys:
   ↑/k, ↓/j   move selection, preview running session in agent pane
-  enter/f    focus view currently drawn on the right
-  ctrl+t     agent/view toggle; attach or restart without moving keyboard focus
-  ctrl-\     unfocus pane or detail view, else close pane (keeps running)
+  enter/f    focus the right side (connects a running session in agent view)
+  ctrl+t     switch the right side between agent and overview (right side focused only)
+  r          restart a stopped session; confirm to restart a wedged one
+  esc        back to the list from the overview
+  ctrl-\     back to the list from the right side; close the pane from the list
   ctrl-g     hand the mouse to the terminal (native selection), again to return it
   n          create a session (in-TUI form)
   p          open the project switcher (filterable list of discovered projects)

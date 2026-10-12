@@ -84,3 +84,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Restart cap**: `max_restarts`, the most recoveries the daemon makes for one attempt at a task before it parks the task with an inbox item.
 - **Backoff**: the wait before each recovery after the first, starting at `restart_backoff` and doubling each time.
 - **Continue prompt**: the session's resume command, typed by the daemon once after a recovery so the agent carries on from where its files say it was.
+- **Focus**: where the dashboard sends keys and clicks: the list of sessions, or the right side. There is only one, and the screen shows which.
+- **Right side**: the dashboard's larger pane beside the list; it shows the selected row's agent or its overview.
+- **Agent view**: the right side showing the selected session's live terminal.
+- **Overview**: the right side showing the selected session's summary (plan, progress, review) instead of its terminal; a row with no live agent always shows it.
+- **Walk-through**: driving a built afk by hand (through tmux) in a throwaway repository and saving the screens, to check behaviour the tests only describe.

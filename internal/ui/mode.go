@@ -10,7 +10,7 @@
 // .afk/tui-enhancements/decisions.md under "W4.T1") is a DERIVED mode, not a
 // stored one: the overlay-activity facts stay in the fields that already hold
 // them, because those fields feed View and are mutated from non-key paths all
-// over model.go (applyPaneAttached sets paneFocused, spawnFinishedMsg raises
+// over model.go (applyPaneAttached moves the focus, spawnFinishedMsg raises
 // the spawn-error modal, switchProject closes the switcher). activeInputMode
 // re-derives who owns the keyboard from a snapshot of those fields on every
 // keypress, walking ONE ordered precedence table — so the frame and the
@@ -181,23 +181,26 @@ type modeState struct {
 	// filter-editing state, read from the component rather than mirrored into a
 	// flag beside it, so the two cannot drift.
 	listFiltering bool
-	// paneFocused is the CONJUNCTION m.paneFocused && m.pane != nil, exactly
-	// the guard the old handleKey's pane branch used — a focused flag with no
-	// pane must not claim the keyboard.
-	paneFocused bool
+	// focus and view mirror Model.focus and Model.view verbatim: the two axes
+	// of the focus model (see paneFocus and rightView in model.go). They are
+	// copied raw, not masked, so the derivation below is the ONE place that
+	// says which surface a right-focused keyboard lands on — a mask here and
+	// a second rule in the precedence table would be two copies of it.
+	focus paneFocus
+	view  rightView
+	// pane is Model.paneForSelection(): a live pane exists AND belongs to the
+	// selected row (or there is no selection to disagree with it). It is
+	// independent of view on purpose: an installed pane behind the overview
+	// still reports true, and the precedence table is what decides that the
+	// overview owns the keyboard there. A pane installed for a row the cursor
+	// has left reports false, so the keyboard cannot route into a session
+	// that is not the one on screen.
+	pane bool
 	// paletteOpen mirrors Model.paletteOpen.
 	paletteOpen bool
-	// detailFocused is the CONJUNCTION m.detailFocused && !m.shouldRenderPane(),
-	// the detail pane's analogue of paneFocused above and for the same reason:
-	// a focus flag whose surface is not on screen must not claim the keyboard.
-	// A focus-on-arrival attach can install a pane under a focused detail view,
-	// and this is what stops the keyboard staying on a view that is no longer
-	// drawn. Masking is only half the job — Update reconciles the Model field
-	// itself, see Model.reconcileDetailFocus.
-	detailFocused bool
-	// resizing mirrors Model.resizing. Unlike the two focus flags it needs no
-	// conjunction: resize mode moves the divider between surfaces that are
-	// always drawn, whichever of them happens to be in the main region.
+	// resizing mirrors Model.resizing. It needs no conjunction: resize mode
+	// moves the divider between surfaces that are always drawn, whichever of
+	// them happens to be in the main region.
 	resizing bool
 }
 
@@ -211,11 +214,30 @@ func (m Model) modeSnapshot() modeState {
 		switcherOpen:  m.switcherOpen,
 		formOpen:      m.formOpen,
 		listFiltering: m.list.SettingFilter(),
-		paneFocused:   m.paneFocused && m.pane != nil,
+		focus:         m.focus,
+		view:          m.view,
+		pane:          m.paneForSelection(),
 		paletteOpen:   m.paletteOpen,
-		detailFocused: m.detailFocused && !m.shouldRenderPane(),
 		resizing:      m.resizing,
 	}
+}
+
+// paneOwnsKeyboard reports whether keystrokes route to the session pane
+// absent any overlay: the right side is focused and the pane is the drawn
+// surface. It is the Model-side spelling of the inputPane layer's predicate,
+// for the frame (border accents, the pane title hint) and the handlers that
+// need the answer without deriving a whole mode.
+func (m Model) paneOwnsKeyboard() bool {
+	return m.focus == focusRight && m.shouldRenderPane()
+}
+
+// detailOwnsKeyboard is paneOwnsKeyboard's complement on the right side: the
+// right side is focused and the pane is NOT the drawn surface, so the
+// overview's viewport is what the keys move. The two are exclusive by
+// construction — one focus value, one drawn surface — which is what lets `f`
+// mean "focus whatever is in the main region" with no ambiguity.
+func (m Model) detailOwnsKeyboard() bool {
+	return m.focus == focusRight && !m.shouldRenderPane()
 }
 
 // modes builds this Model's dispatch registry from its own keymap.
@@ -277,11 +299,24 @@ type modeLayer struct {
 //     everything else: it is the weakest claim on the keyboard there is, so
 //     every modal, the palette, the switcher, the form, the filter prompt and
 //     a focused pane all outrank it. Its position relative to inputPane is
-//     declared rather than relied on — the two snapshot conjunctions
-//     (paneFocused needs a pane, detailFocused needs the pane NOT to be the
-//     drawn surface) make them mutually exclusive by construction — but a
-//     hand-ordered table shadows a misplaced row silently, so the order is
-//     pinned by TestActiveInputModePrecedenceMatrix rather than left implicit.
+//     declared rather than relied on — the two predicates are exclusive by
+//     construction (one focus value; the pane either is or is not the drawn
+//     surface) — but a hand-ordered table shadows a misplaced row silently,
+//     so the order is pinned by TestActiveInputModePrecedenceMatrix rather
+//     than left implicit.
+//   - The pane and detail layers are the two-axis focus model as predicates.
+//     Right focus in agent view WITH a pane for the selected row is the pane;
+//     right focus in anything else is the detail — the overview, or, in agent
+//     view with no pane for a row that has an agent, the agent placeholder
+//     (connecting, restarting, lost). The placeholder is not a separate layer:
+//     Model.dispatchKey intercepts inputDetail when agentPlaceholderDrawn and
+//     hands the key to placeholderKey, so it shares detail's place in this
+//     table (weakest right-side claim) while answering only its own keys.
+//     Either way the keyboard follows the drawn surface and never falls
+//     through to normal mode, where typed keys would hit list bindings. List
+//     focus is normal mode whatever the right side shows: with the list
+//     focused nothing on the right owns the keyboard, however live the pane
+//     is.
 //   - Resize mode sits below every modal and overlay and the filter prompt,
 //     so a spawn error raised mid-resize still gets the keyboard and the
 //     resize resumes once it is dismissed. It sits ABOVE a focused pane: it
@@ -289,8 +324,8 @@ type modeLayer struct {
 //     focus-on-arrival attach landing mid-resize, and the explicit gesture the
 //     user is in the middle of keeps the keyboard — h/l must move the divider,
 //     not type into a session that just appeared. It sits above a focused
-//     detail pane because it is entered FROM one and leaves detailFocused set,
-//     so the detail focus resumes on exit.
+//     detail pane because it is entered FROM one and leaves the focus on the
+//     right, so the detail focus resumes on exit.
 var modePrecedence = []modeLayer{
 	{inputConfirmClean, func(s modeState) bool { return s.modal == inputConfirmClean }},
 	{inputSpawnError, func(s modeState) bool { return s.modal == inputSpawnError }},
@@ -302,8 +337,8 @@ var modePrecedence = []modeLayer{
 	{inputForm, func(s modeState) bool { return s.formOpen }},
 	{inputFilter, func(s modeState) bool { return s.listFiltering }},
 	{inputResize, func(s modeState) bool { return s.resizing }},
-	{inputPane, func(s modeState) bool { return s.paneFocused }},
-	{inputDetail, func(s modeState) bool { return s.detailFocused }},
+	{inputPane, func(s modeState) bool { return s.focus == focusRight && s.view == viewAgent && s.pane }},
+	{inputDetail, func(s modeState) bool { return s.focus == focusRight }},
 	{inputNormal, func(modeState) bool { return true }},
 }
 
@@ -322,7 +357,7 @@ func activeInputMode(s modeState) inputMode {
 
 // modeAction names, symbolically, what a mode does with a key it claims.
 // applyKeyAction (model.go) binds each one to its handler — actionConfirm in
-// confirm-clean is confirmClean, actionPaneToggle is togglePaneSummary, and so
+// confirm-clean is confirmClean, actionPaneToggle is toggleView, and so
 // on. Keeping the names symbolic here is what makes the routing testable
 // without invoking any handler.
 type modeAction int
@@ -336,7 +371,7 @@ const (
 	actionMouseToggle // toggleMouseCapture (ctrl+g)
 
 	// Pane actions.
-	actionPaneToggle  // togglePaneSummary (ctrl+t)
+	actionPaneToggle  // toggleView (ctrl+t, right focus only)
 	actionPaneUnfocus // focused pane: ctrl+\ returns input to the dashboard
 	actionPaneClose   // unfocused open pane: ctrl+\ closes (detaches)
 
@@ -355,7 +390,7 @@ const (
 	actionScratch
 	actionProjects
 	actionClean
-	actionRestartWedged
+	actionRestart
 	actionEditLabel
 	actionPageUp
 	actionPageDown
@@ -448,8 +483,8 @@ func (a modeAction) String() string {
 		return "projects"
 	case actionClean:
 		return "clean"
-	case actionRestartWedged:
-		return "restart-wedged"
+	case actionRestart:
+		return "restart"
 	case actionEditLabel:
 		return "edit-label"
 	case actionPageUp:
@@ -575,11 +610,6 @@ type routeConds struct {
 	// unconditionally it would cancel a pending preview on every stray Esc,
 	// which normal mode does not do today.
 	listFiltered bool
-	// detailShown is "the detail pane, not a session pane, is in the main
-	// region" (!shouldRenderPane). The tab keys are gated on it: with a pane on
-	// screen there is no tab strip to move, and an ungated tab would look bound
-	// in `?` and the palette while doing nothing.
-	detailShown bool
 }
 
 // modeRule is one row of a mode's routing table: a binding, the action it
@@ -592,8 +622,6 @@ type modeRule struct {
 	needsPane bool
 	// needsFilter gates the rule on routeConds.listFiltered.
 	needsFilter bool
-	// needsDetail gates the rule on routeConds.detailShown.
-	needsDetail bool
 }
 
 // modeKeyMap is one mode's action surface for Wave 6's help.Model and command
@@ -634,17 +662,10 @@ type modeSpec struct {
 	keys modeKeyMap
 }
 
-// The detail pane's tab keys. Package-level like helpToggleKey (views.go)
-// rather than local to newModeRegistry, because normalBindingEnabled must
-// recognise the same three bindings to hide them from `?` while a session
-// pane is on screen — the routing guard (needsDetail) hides them from the
-// palette, but help.Model never sees guards, only Enabled().
-//
-// tab and shift+tab are unbound in normal mode today (the form and the
-// palette use them, in their own modes), and no digit is bound anywhere. One
-// binding carries all five digits: paletteEntries lists one row per RULE and
-// re-presses its first key, so the palette offers "jump to tab" as one row
-// that lands on tab 1 — acceptable, since tab/shift+tab sit right beside it.
+// The detail pane's tab keys, bound only in detail mode: from the list they
+// would re-tab the right pane, which list focus must never control (plan
+// objective 2). One binding carries all five digits, so help lists "jump to
+// tab" as one row.
 var (
 	detailTabNextKey = key.NewBinding(
 		key.WithKeys("tab"),
@@ -673,6 +694,16 @@ var resizeToggleKey = key.NewBinding(
 	key.WithHelp("ctrl+w", "resize panes"),
 )
 
+// unfocusPaneKey is ctrl+\ in the agent view: the keyboard goes back to the
+// list. It is package-level because two surfaces answer it — a focused pane
+// (inputPane's rule) and the agent placeholder that stands in for one
+// (placeholderKey, model.go) — and one declaration is what keeps their key
+// and help text from drifting apart.
+var unfocusPaneKey = key.NewBinding(
+	key.WithKeys("ctrl+\\"),
+	key.WithHelp("ctrl+\\", "return to dashboard"),
+)
+
 // modeRegistry holds every mode's spec, indexed by inputMode.
 type modeRegistry [inputModeCount]modeSpec
 
@@ -694,9 +725,6 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 			continue
 		}
 		if rule.needsFilter && !conds.listFiltered {
-			continue
-		}
-		if rule.needsDetail && !conds.detailShown {
 			continue
 		}
 		if key.Matches(k, rule.binding) {
@@ -735,19 +763,16 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("ctrl+c", "quit"),
 	)
-	// unfocusPane and closePane are both ctrl+\ — the chord escalates rather
-	// than changing meaning (focused: keyboard back; unfocused: pane away),
-	// which is why they are two rules in two modes, not one binding.
-	unfocusPane := key.NewBinding(
-		key.WithKeys("ctrl+\\"),
-		key.WithHelp("ctrl+\\", "return to dashboard"),
-	)
+	// unfocusPaneKey (package-level) and closePane are both ctrl+\ — the
+	// chord escalates rather than changing meaning (focused: keyboard back;
+	// unfocused: pane away), which is why they are two rules in two modes,
+	// not one binding.
 	closePane := key.NewBinding(
 		key.WithKeys("ctrl+\\"),
 		key.WithHelp("ctrl+\\", "close pane"),
 	)
 	// releaseDetail is the focused detail pane's way out. It carries BOTH
-	// keys on one binding rather than two rules, because unlike unfocusPane /
+	// keys on one binding rather than two rules, because unlike unfocusPaneKey /
 	// closePane above there is no escalation here — esc and ctrl+\ are the
 	// same gesture, and one binding is one footer item saying so. esc is safe
 	// to bind unguarded in this mode for the reason it is NOT in normal mode:
@@ -887,28 +912,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("end"),
 		key.WithHelp("end", "last session"),
 	)
-	// Detail-pane scroll keys, chosen against the same constraint pageUp/
-	// pageDown were: they must avoid every single letter this mode already
-	// spends AND leave pgup/pgdn/home/end on the session list, since that
-	// pairing (dedicated detail keys, untouched list keys) is the whole point
-	// of adding new bindings rather than repointing the existing ones.
-	// viewport.DefaultKeyMap (bubbles/v2) binds line-at-a-time scroll to plain
-	// up/down/j/k and half-page to ctrl+u/ctrl+d. All four of those line keys
-	// are taken here — keys.Up is "up"/"k" and keys.Down is "down"/"j"
-	// (defaultKeyMap, model.go), the session-list cursor — so line-at-a-time
-	// instead gets the shift-modified arrows (shift+up/shift+down are their
-	// own distinct key strings under v2, the same fact that already lets
-	// shift+tab and tab differ — see the comment on formPrev above).
-	// Half-page keeps bubbles' own ctrl+u/ctrl+d verbatim: this mode's only
-	// other ctrl chords are ctrl+t/ctrl+\/ctrl+g/ctrl+c, so both are free.
-	detailScrollUp := key.NewBinding(
-		key.WithKeys("shift+up"),
-		key.WithHelp("shift+↑", "detail up"),
-	)
-	detailScrollDown := key.NewBinding(
-		key.WithKeys("shift+down"),
-		key.WithHelp("shift+↓", "detail down"),
-	)
+	// Half-page keeps bubbles' viewport.DefaultKeyMap chords verbatim.
 	detailHalfPageUp := key.NewBinding(
 		key.WithKeys("ctrl+u"),
 		key.WithHelp("ctrl+u", "detail half page up"),
@@ -917,18 +921,12 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("ctrl+d"),
 		key.WithHelp("ctrl+d", "detail half page down"),
 	)
-	// Focused-detail-pane scroll keys (inputDetail only). up/down/j/k, pgup/
-	// pgdn and home/end are FREE here in a way they are not in inputNormal:
-	// with the detail pane focused these keys have no session-list cursor to
-	// collide with (list keys are absent from this mode's whole rule table),
-	// so they get viewport.DefaultKeyMap's own bindings verbatim rather than
-	// the shift-modified workaround above. They are declared fresh rather
-	// than sharing keys.Up/keys.Down/pageUp/pageDown/listTop/listBottom
-	// because those carry help text for what the key does in NORMAL mode
-	// ("preview↑", "page up" for the session list) — reused here it would
-	// render a scroll gesture under a stale label. ctrl+u/ctrl+d are the one
-	// exception: detailHalfPageUp/Down above are reused as-is, because they
-	// already mean "half-page the detail viewport" in both modes.
+	// Focused-detail-pane scroll keys. up/down/j/k, pgup/pgdn and home/end
+	// are free in detail mode — the session-list cursor is not bound there —
+	// so they get viewport.DefaultKeyMap's own bindings verbatim. They are
+	// declared fresh rather than sharing keys.Up/keys.Down/pageUp/pageDown/
+	// listTop/listBottom because those carry the list's help text ("page up"
+	// for the session list), which would label a scroll gesture wrongly.
 	detailFocusUp := key.NewBinding(
 		key.WithKeys("up", "k"),
 		key.WithHelp("↑/k", "scroll up"),
@@ -1010,16 +1008,23 @@ func newModeRegistry(keys keyMap) modeRegistry {
 
 	var r modeRegistry
 
-	// Normal mode transcribes the old handleKey's unfocused path: the ctrl+t
-	// intercept, the ctrl+\ close (guarded on an open pane), then the
-	// modeless switch in its original order. Enter and f deliberately live on
-	// ONE binding and ONE rule: they are two physical gestures for focusing
-	// whichever main-region surface is already drawn, not separate lifecycle
-	// and focus operations.
+	// Normal mode is list focus. Its rules are the list's own bindings plus the
+	// ctrl+\ close (guarded on an open pane), in the old modeless switch's
+	// order. Enter and f deliberately live on ONE binding and ONE rule: they
+	// are two physical gestures for the one move "focus the right side"
+	// (focusRightSide, model.go), not separate lifecycle and focus operations.
+	// The overview's scroll and tab keys are deliberately absent for the same
+	// reason ctrl+t is (below): they would drive the right pane.
+	//
+	// ctrl+t is deliberately ABSENT, so it falls through to routeIgnored. It
+	// switches the right side's view, and with the list focused the user's
+	// model is that nothing on the right is under control — "When on the left
+	// pane, you can't control anything in the right pane" (plan Context). A
+	// rule here, even one mapped to a no-op, would also put ctrl+t in `?` and
+	// the palette as a list action, advertising a key that does nothing.
 	r[inputNormal] = modeSpec{
 		mode: inputNormal,
 		rules: []modeRule{
-			{binding: keys.Toggle, action: actionPaneToggle},
 			{binding: closePane, action: actionPaneClose, needsPane: true},
 			{binding: keys.Quit, action: actionQuit},
 			{binding: keys.Up, action: actionCursorUp},
@@ -1030,7 +1035,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: keys.Scratch, action: actionScratch},
 			{binding: keys.Project, action: actionProjects},
 			{binding: keys.Clean, action: actionClean},
-			{binding: keys.Restart, action: actionRestartWedged},
+			{binding: keys.Restart, action: actionRestart},
 			{binding: keys.Label, action: actionEditLabel},
 			{binding: keys.Filter, action: actionFilterStart},
 			{binding: filterClear, action: actionFilterClear, needsFilter: true},
@@ -1039,28 +1044,19 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: pageDown, action: actionPageDown},
 			{binding: listTop, action: actionListTop},
 			{binding: listBottom, action: actionListBottom},
-			{binding: detailScrollUp, action: actionDetailScrollUp},
-			{binding: detailScrollDown, action: actionDetailScrollDown},
-			{binding: detailHalfPageUp, action: actionDetailHalfPageUp},
-			{binding: detailHalfPageDown, action: actionDetailHalfPageDown},
-			{binding: detailTabNextKey, action: actionDetailTabNext, needsDetail: true},
-			{binding: detailTabPrevKey, action: actionDetailTabPrev, needsDetail: true},
-			{binding: detailTabJumpKey, action: actionDetailTabJump, needsDetail: true},
 			{binding: resizeToggleKey, action: actionEnterResize},
 		},
 		fall: routeIgnored,
 		// Help/palette order is intentionally independent of routing-rule order.
 		// The command palette shows only its first viewport without scrolling,
-		// so the two live-state surface controls follow movement immediately:
-		// Focus chooses keyboard ownership and Toggle chooses agent versus detail.
-		// Every unrelated binding retains its prior relative order after them,
-		// with resizeToggleKey last because the curated short help omits it and
-		// full help/palette should rank it behind the more common actions.
+		// so Focus, the one way to the right side, follows movement
+		// immediately. Every unrelated binding retains its prior relative order
+		// after it, with resizeToggleKey last because the curated short help
+		// omits it and full help/palette should rank it behind the more common
+		// actions.
 		keys: modeKeyMap{bindings: []key.Binding{
-			keys.Up, keys.Down, keys.Focus, keys.Toggle,
+			keys.Up, keys.Down, keys.Focus,
 			pageUp, pageDown, listTop, listBottom,
-			detailScrollUp, detailScrollDown, detailHalfPageUp, detailHalfPageDown,
-			detailTabNextKey, detailTabPrevKey, detailTabJumpKey,
 			keys.New, keys.Scratch,
 			keys.Project, keys.Clean, keys.Restart, keys.Label,
 			keys.Filter, filterClear, keys.Palette,
@@ -1085,38 +1081,45 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		}},
 	}
 
-	// Pane mode transcribes the focused-pane branch plus the ctrl+t intercept
-	// that today sits just above it: toggle, unfocus, mouse, and everything
-	// else — ctrl+c included, the session owns SIGINT — forwards to the child.
+	// Pane mode is right focus in agent view with the selected row's pane
+	// installed. Exactly two keys are the dashboard's — ctrl+t (switch to the
+	// overview; focus stays right) and ctrl+\ (focus back to the list) — plus
+	// the ctrl+g mouse chord, which forwards nothing either way. Everything
+	// else forwards to the child: esc, q, tab, ctrl+w, and ctrl+c (the session
+	// owns SIGINT) included. Adding a rule here takes a key away from every
+	// agent the dashboard hosts, which is why the plan pins this set.
 	r[inputPane] = modeSpec{
 		mode: inputPane,
 		rules: []modeRule{
 			{binding: keys.Toggle, action: actionPaneToggle},
-			{binding: unfocusPane, action: actionPaneUnfocus},
+			{binding: unfocusPaneKey, action: actionPaneUnfocus},
 			{binding: keys.Mouse, action: actionMouseToggle},
 		},
 		fall: routeChild,
 		keys: modeKeyMap{bindings: []key.Binding{
-			unfocusPane, keys.Mouse, keys.Toggle,
+			unfocusPaneKey, keys.Mouse, keys.Toggle,
 		}},
 	}
 
 	// Detail mode is a focused detail pane. Its key set is ENUMERATED rather
 	// than inherited: the fall-through is routeIgnored, so everything normal
-	// mode binds and this table omits — enter, n, c, l, r, p, /, o, : — is
+	// mode binds and this table omits — enter, n, c, l, p, /, o, : — is
 	// swallowed, which is the point. A scroll gesture must never open, clean
 	// or steal a session, and "ignored" is the only disposition that
 	// guarantees it for keys nobody has thought of yet.
 	//
 	// What survives, and why: the release chords (or the state is a trap), the
-	// universal q/ctrl+c/ctrl+g, ctrl+t (the way back to a hidden pane, and the
-	// way in for a running session), the three tab keys, because switching
+	// universal q/ctrl+c/ctrl+g, ctrl+t (switch the right side to the agent
+	// view, connecting the selected session if it has no pane — the same
+	// connect enter performs from the list; inert on a row with no live agent,
+	// which draws this overview in either view), `r` (restartSelected — the
+	// one restart key works from the overview as it does from the list, and
+	// the user asked for exactly that), the three tab keys, because switching
 	// tabs is reading — the same gesture as scrolling — and, finally, the ten
-	// scroll keys W2.T1 adds: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown,
-	// home, end — plus ctrl+w into resize mode, which keeps detailFocused set
-	// so the focus resumes when the resize ends. The tab rules are deliberately ungated: needsDetail asks "is
-	// the detail pane drawn", which this mode's own snapshot conjunction has
-	// already answered yes.
+	// scroll keys: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end —
+	// plus ctrl+w into resize mode, which leaves the focus on the right so it
+	// resumes when the resize ends. These scroll and tab keys are bound in
+	// this mode only: from the list they would drive the right pane.
 	//
 	// The bindings are ordered for TRUNCATION SURVIVAL, not for rule fidelity:
 	// renderHelp's default branch renders this whole keymap through one hard
@@ -1131,6 +1134,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: keys.Quit, action: actionQuit},
 			{binding: keys.Mouse, action: actionMouseToggle},
 			{binding: keys.Toggle, action: actionPaneToggle},
+			{binding: keys.Restart, action: actionRestart},
 			{binding: detailTabNextKey, action: actionDetailTabNext},
 			{binding: detailTabPrevKey, action: actionDetailTabPrev},
 			{binding: detailTabJumpKey, action: actionDetailTabJump},
@@ -1146,7 +1150,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		},
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
-			releaseDetail, keys.Quit, keys.Mouse, keys.Toggle,
+			releaseDetail, keys.Quit, keys.Mouse, keys.Toggle, keys.Restart,
 			detailTabNextKey, detailTabPrevKey, detailTabJumpKey,
 			detailFocusUp, detailFocusDown, detailHalfPageUp, detailHalfPageDown,
 			detailPageUp, detailPageDown, detailGotoTop, detailGotoBottom,
@@ -1186,10 +1190,9 @@ func newModeRegistry(keys keyMap) modeRegistry {
 
 	// Form mode transcribes the old handleFormKey's top-level table (its
 	// base-filter submachine stays inside the handlers, behind formBaseFiltering
-	// — see the modeAction doc). ctrl+t is deliberately ABSENT: bubbles' textarea binds it to
-	// TransposeCharacterBackward, and the old ctrl+t intercept was gated on
-	// !formOpen for exactly that reason (model.go:1673-1680) — here that
-	// gate is simply the rule not existing in this mode.
+	// — see the modeAction doc). ctrl+t is deliberately ABSENT: bubbles'
+	// textarea binds it to TransposeCharacterBackward, so the rule not
+	// existing in this mode is what keeps the chord the textarea's.
 	r[inputForm] = modeSpec{
 		mode: inputForm,
 		rules: []modeRule{

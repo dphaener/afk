@@ -61,7 +61,7 @@ func TestPaletteEntriesAreDerivedFromTheModeRules(t *testing.T) {
 
 		want := 0
 		for _, rule := range spec.rules {
-			if rule.needsPane || rule.needsFilter || rule.needsDetail {
+			if rule.needsPane || rule.needsFilter {
 				continue
 			}
 			want++
@@ -236,7 +236,7 @@ func TestPaletteHasOneRunnableCombinedFocusEntry(t *testing.T) {
 func TestEveryNormalRuleIsRunnableFromThePalette(t *testing.T) {
 	reg := newModeRegistry(defaultKeyMap())
 	spec := reg.spec(inputNormal)
-	conds := routeConds{paneOpen: true, listFiltered: true, detailShown: true}
+	conds := routeConds{paneOpen: true, listFiltered: true}
 
 	for _, rule := range spec.rules {
 		keys := rule.binding.Keys()
@@ -336,7 +336,7 @@ func TestPaletteModePrecedence(t *testing.T) {
 		{"palette over the filter prompt",
 			modeState{paletteOpen: true, listFiltering: true}, inputPalette},
 		{"palette over a focused pane",
-			modeState{paletteOpen: true, paneFocused: true}, inputPalette},
+			modeState{paletteOpen: true, focus: focusRight, pane: true}, inputPalette},
 		{"palette over resize mode",
 			modeState{paletteOpen: true, resizing: true}, inputPalette},
 	}

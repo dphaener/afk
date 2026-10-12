@@ -176,8 +176,8 @@ func TestSwitcherOpensOverTheRunningPane(t *testing.T) {
 	if m.pane != fp || fp.closed != 0 {
 		t.Errorf("pane = %v closed %d times, want the same pane still attached", m.pane, fp.closed)
 	}
-	if m.paneName != "one" || m.paneHidden {
-		t.Errorf("paneName = %q paneHidden = %t, want %q and false", m.paneName, m.paneHidden, "one")
+	if m.paneName != "one" || m.view == viewOverview {
+		t.Errorf("paneName = %q viewOverview = %t, want %q and false", m.paneName, m.view == viewOverview, "one")
 	}
 	if len(fp.keys) != 0 || len(fp.texts) != 0 {
 		t.Errorf("`p` was forwarded to the session as %v/%v, want nothing", fp.keys, fp.texts)
@@ -255,7 +255,7 @@ func TestSwitcherKeyPrecedence(t *testing.T) {
 			if m.modal != inputNormal {
 				t.Errorf("mode = %v, want inputNormal", m.modal)
 			}
-			if m.paneHidden {
+			if m.view == viewOverview {
 				t.Error("the pane behind the overlay must not be hidden")
 			}
 			// Both channels, not just keys: forwardKeyToPane routes a printable
@@ -404,7 +404,7 @@ func TestSwitcherMouseIsDroppedWhileTheOverlayIsUp(t *testing.T) {
 // this row, the precedence chosen for that combination would look arbitrary.
 func TestPWhileThePaneIsFocusedReachesTheSession(t *testing.T) {
 	m, fp, _ := switcherWiringModel(t)
-	m.paneFocused = true
+	m.focus = focusRight
 
 	m, _ = update(t, m, keyP)
 
@@ -1290,6 +1290,9 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 				if m.repo != "/roots/beta" {
 					t.Fatalf("precondition: the focus request must switch to beta, got %q", m.repo)
 				}
+				// A click moves the focus right at request time (plan W3.T1 e),
+				// and `p` is a list key: hand the keyboard back to the list first.
+				m, _ = update(t, m, chord('\\'))
 
 				m = openSwitcherOverlay(t, m)
 				// The overlay's cursor never seeds from m.activeProject, and beta
