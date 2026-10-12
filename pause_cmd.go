@@ -186,19 +186,105 @@ func targetFor(name, usageLine string, args []string, printUsage func(io.Writer)
 	return root, 0, true
 }
 
+// pauseStage names the step of pauseProject or resumeProject that failed, so
+// the command can word its error exactly as it did before the steps were
+// split out of it.
+type pauseStage int
+
+const (
+	stagePauseFlag pauseStage = iota
+	stageStopMarker
+	stageLogPause
+	stageLogResume
+	stageLogStopCleared
+)
+
+// pauseError is the failure of one step. The flag or marker steps leave the
+// state unchanged; the log steps mean the file change was made but the
+// decision line was not written.
+type pauseError struct {
+	stage pauseStage
+	err   error
+}
+
+func (e *pauseError) Error() string { return e.err.Error() }
+func (e *pauseError) Unwrap() error { return e.err }
+
+// resumeOutcome says what resumeProject found and cleared. The stopped task
+// and reason are read before the marker is removed, because they are gone once
+// it is.
+type resumeOutcome struct {
+	WasPaused  bool
+	WasStopped bool
+	StopTask   string
+	StopReason string
+}
+
+// pauseProject sets the project's pause flag and logs the owner's decision.
+// already reports that the flag was there before, in which case the first
+// time is kept (daemonstate.Pause). It prints nothing: the web page's pause
+// button calls it too, and the page reports the result its own way.
+func pauseProject(root string, now time.Time) (already bool, err error) {
+	already = daemonstate.Paused(root)
+	if err := daemonstate.Pause(root, now); err != nil {
+		return already, &pauseError{stage: stagePauseFlag, err: err}
+	}
+	if err := logPauseDecision(root, now, "pause", "paused"); err != nil {
+		return already, &pauseError{stage: stageLogPause, err: err}
+	}
+	return already, nil
+}
+
+// resumeProject clears the pause flag and the stop marker and logs what it
+// cleared. Resuming a project that was neither paused nor stopped changes
+// nothing and writes no log line, because nothing was decided. It prints
+// nothing: the web page's resume button calls it too, and the page reports the
+// result its own way.
+func resumeProject(root string, now time.Time) (resumeOutcome, error) {
+	var out resumeOutcome
+	// Read the stop marker before clearing it: the message names the task and
+	// the reason, which are gone once the file is.
+	out.StopTask, out.StopReason, _ = daemonstate.ReadStop(root)
+	was, err := daemonstate.Resume(root)
+	if err != nil {
+		return out, &pauseError{stage: stagePauseFlag, err: err}
+	}
+	out.WasPaused = was
+	wasStopped, err := daemonstate.ClearStop(root)
+	if err != nil {
+		return out, &pauseError{stage: stageStopMarker, err: err}
+	}
+	out.WasStopped = wasStopped
+	if was {
+		if err := logPauseDecision(root, now, "resume", "resumed"); err != nil {
+			return out, &pauseError{stage: stageLogResume, err: err}
+		}
+	}
+	if wasStopped {
+		chosen := "cleared the stop"
+		if out.StopTask != "" {
+			chosen += " after " + out.StopTask
+		}
+		if err := logPauseDecision(root, now, "stop_cleared", chosen); err != nil {
+			return out, &pauseError{stage: stageLogStopCleared, err: err}
+		}
+	}
+	return out, nil
+}
+
 // runPause implements `afk pause` and returns the exit code.
 func runPause(args []string, stdout, stderr io.Writer, env pauseEnv) int {
 	root, code, ok := targetFor("afk pause", pauseUsageLine, args, printPauseUsage, stderr, env)
 	if !ok {
 		return code
 	}
-	now := env.now()
-	if err := daemonstate.Pause(root, now); err != nil {
+	if _, err := pauseProject(root, env.now()); err != nil {
+		var pe *pauseError
+		if errors.As(err, &pe) && pe.stage == stageLogPause {
+			fmt.Fprintf(stderr, "afk pause: the project is paused, but the decision log could not be written: %v\n", pe.err)
+			return 1
+		}
 		fmt.Fprintf(stderr, "afk pause: %v. Check that you can write to %s.\n", err, filepath.Dir(daemonstate.PausePath(root)))
-		return 1
-	}
-	if err := logPauseDecision(root, now, "pause", "paused"); err != nil {
-		fmt.Fprintf(stderr, "afk pause: the project is paused, but the decision log could not be written: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "Paused %s. No new task will start; a task that is running will finish. Run \"afk resume\" to start again.\n", root)
@@ -213,45 +299,34 @@ func runResume(args []string, stdout, stderr io.Writer, env pauseEnv) int {
 	if !ok {
 		return code
 	}
-	// Read the stop marker before clearing it: the message names the task and
-	// the reason, which are gone once the file is.
-	stopTask, stopReason, _ := daemonstate.ReadStop(root)
-	was, err := daemonstate.Resume(root)
+	out, err := resumeProject(root, env.now())
 	if err != nil {
-		fmt.Fprintf(stderr, "afk resume: %v. Check that you can write to %s.\n", err, filepath.Dir(daemonstate.PausePath(root)))
+		var pe *pauseError
+		if errors.As(err, &pe) {
+			switch pe.stage {
+			case stageStopMarker:
+				fmt.Fprintf(stderr, "afk resume: %v. Check that you can write to %s.\n", pe.err, filepath.Dir(daemonstate.StopPath(root)))
+			case stageLogResume:
+				fmt.Fprintf(stderr, "afk resume: the project is resumed, but the decision log could not be written: %v\n", pe.err)
+			case stageLogStopCleared:
+				fmt.Fprintf(stderr, "afk resume: the stopped line is cleared, but the decision log could not be written: %v\n", pe.err)
+			default:
+				fmt.Fprintf(stderr, "afk resume: %v. Check that you can write to %s.\n", pe.err, filepath.Dir(daemonstate.PausePath(root)))
+			}
+			return 1
+		}
+		fmt.Fprintf(stderr, "afk resume: %v\n", err)
 		return 1
 	}
-	wasStopped, err := daemonstate.ClearStop(root)
-	if err != nil {
-		fmt.Fprintf(stderr, "afk resume: %v. Check that you can write to %s.\n", err, filepath.Dir(daemonstate.StopPath(root)))
-		return 1
-	}
-	if !was && !wasStopped {
+	if !out.WasPaused && !out.WasStopped {
 		fmt.Fprintf(stdout, "%s was not paused; nothing changed.\n", root)
 		return 0
 	}
-	now := env.now()
-	if was {
-		if err := logPauseDecision(root, now, "resume", "resumed"); err != nil {
-			fmt.Fprintf(stderr, "afk resume: the project is resumed, but the decision log could not be written: %v\n", err)
-			return 1
-		}
-	}
-	if wasStopped {
-		chosen := "cleared the stop"
-		if stopTask != "" {
-			chosen += " after " + stopTask
-		}
-		if err := logPauseDecision(root, now, "stop_cleared", chosen); err != nil {
-			fmt.Fprintf(stderr, "afk resume: the stopped line is cleared, but the decision log could not be written: %v\n", err)
-			return 1
-		}
-	}
-	if was {
+	if out.WasPaused {
 		fmt.Fprintf(stdout, "Resumed %s. The daemon may start new tasks again.\n", root)
 	}
-	if wasStopped {
-		fmt.Fprintf(stdout, "%s\n", stoppedMessage(root, stopTask, stopReason))
+	if out.WasStopped {
+		fmt.Fprintf(stdout, "%s\n", stoppedMessage(root, out.StopTask, out.StopReason))
 	}
 	return 0
 }

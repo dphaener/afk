@@ -1,0 +1,30 @@
+{{define "title"}}{{.Title}}{{end}}
+{{define "content"}}
+<p><a href="/p/{{pe .Project}}#inbox">Back to {{.Project}}</a></p>
+<h1>{{.Title}}</h1>
+<p class="muted">{{.Kind}}{{if .Task}}, task {{.Task}}{{end}}{{if .Blocking}}, <span class="warn">blocking work</span>{{end}}{{if .CreatedAt}}. Raised {{when .CreatedAt}}{{end}}.</p>
+{{if .Body}}<pre>{{.Body}}</pre>{{end}}
+{{if .Assumed}}<p><strong>If you do not answer, afk assumes:</strong></p><pre>{{.Assumed}}</pre>{{end}}
+{{if .Open}}
+<form method="post" action="/p/{{pe .Project}}/inbox/{{pe .ID}}/answer">
+  {{if .Options}}
+  <p><strong>Choose one</strong>, or write your own answer below.</p>
+  {{$rec := .Recommended}}
+  {{range $i, $o := .Options}}
+  <label class="choice"><input type="radio" name="choice" value="{{$o}}"{{if eq $o $rec}} checked{{end}}> <span>{{$o}}{{if eq $o $rec}} (recommended){{end}}</span></label>
+  {{end}}
+  <p><label for="answer">Or write your own</label><input type="text" id="answer" name="answer" autocomplete="off"></p>
+  {{else}}
+  <p><label for="answer"><strong>Your answer</strong></label></p>
+  <textarea id="answer" name="answer" rows="5" required></textarea>
+  {{end}}
+  <p><button type="submit">Send answer</button></p>
+</form>
+{{else}}
+<div class="card">
+  <strong>Answer:</strong>
+  <pre>{{.Answer}}</pre>
+  <span class="muted">Given {{when .AnsweredAt}}{{if .AnsweredVia}} through {{.AnsweredVia}}{{end}}.</span>
+</div>
+{{end}}
+{{end}}

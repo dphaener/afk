@@ -1324,3 +1324,58 @@ All three checks passed with no blocker or major finding, so no critic ran. `mak
 - Log a hold or a launch stop that begins while a task is running.
 - Have `afk inbox show` not say "the task is waiting for this" for an item that names no task.
 - One decision-log line, not two, on the pass that leaves a governor wait.
+
+## T3.1
+
+T3.1 adds a small web page served by `afk daemon`: status, usage, the inbox with an answer form, and pause and resume buttons, with the same data as JSON under `/api/`. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **When the page is on (A1).** Only when `[web] token` is set in `config.toml`. With no token and a loopback address the page is off and the daemon says so in one log line. With no token and an address other machines can reach, the daemon refuses to start. The master plan says every request needs the configured token, so with none there is nothing it could serve; a page open to everyone on the machine could answer inbox items and pause builds. This would normally have gone to the owner.
+- **The `[web]` keys (A2).** `bind` (default `127.0.0.1:4253`), `token` (at least 16 characters, no spaces) and `public_url` (an `http://` or `https://` address, used for links in notifications). An address counts as loopback only when it is a loopback IP or the name `localhost`. A hostname, `0.0.0.0`, `::` or a bare `:4253` can reach other machines.
+- **How a request shows it has the token (A3).** Open the page once with `?token=` and the token; the page sets a cookie and sends the browser to the same address without the token, so it does not stay in the address bar. The cookie holds a hash of the token, not the token. A program can send `Authorization: Bearer` instead. The cookie is `SameSite=Lax` so that a tap on a notification still carries it. The token is never written to a log.
+- **Protecting the buttons (A4).** Anything that changes something is a POST. The cookie is not sent on a POST from another site, and a POST whose `Origin` is another site is refused. A request body over 64 KB is refused.
+- **Addresses (A5).** `/` (every project), `/usage`, `/p/{project}`, `/p/{project}/inbox`, `/p/{project}/inbox/{id}`, and POSTs to `…/answer`, `/p/{project}/pause` and `/p/{project}/resume`. The JSON API is the same path with `/api` in front, served by the same code. Inbox ids are only unique inside a project, so every address names the project.
+- **Where the code lives (A6).** A new package, `internal/web`. Templates are built into the binary. Styles are inline and there is no JavaScript at all.
+- **What the status words mean (A7).** The current task is the first running or shipping task in plan order, or else the first parked one. Its phase is the session's own phase while it runs, "paused for usage" when the daemon paused it, the ship step while it ships, and "waiting on you" when parked. Done over total counts finished tasks against the plan's tasks, leaving out superseded ones. The last ship result is the stop marker when the line is stopped, or else the most recently finished task with its pull request and merge commit.
+- **The buttons and the commands share code (A8).** `afk pause` and `afk resume` were split so the page's buttons do exactly what the commands do, including the lines in the decision log.
+- **The link in a notification (A9).** `public_url/p/{project}/inbox/{id}`, with no token in it. The daemon knows the project's name. `afk inbox add` looks the project up in the machine config and sends no link when it is not listed there.
+- **Starting and stopping (A10).** The page starts after the daemon has its lock and before the build loop. If the port cannot be opened the daemon exits with a message. It is shut down whenever the daemon stops, including when it stops for a new version. `afk daemon --once` and `afk daemon status` never start it.
+- **Answering un-parks on the next pass.** The page only records the answer. The build loop un-parks the task on its next pass, a few seconds later, as it does for `afk inbox answer`. The page never writes the ledger.
+- **Tests, prerequisites, install (A11, A12, A13).** Tests are written with each package and request the pages without opening a port. Nothing had to be in place first. The conductor runs `make install` after the review approves.
+
+### Decided while building
+
+- **A POST from the public address is accepted too.** The plan refused any POST whose `Origin` was not the request's `Host`. Behind a reverse proxy that does not pass `Host` on, that would refuse every button, so the scheme and host of `[web] public_url` are accepted as well. Any other origin is still refused.
+- **No link without a token.** A notification carries a link only when both `token` and `public_url` are set; with no token the page is off and the link would open nothing.
+- **Secrets are hashed before they are compared**, so the time taken does not give away the token's length. A wrong token in one place does not spoil a right one in another, so an old bookmark cannot lock out a browser that holds the cookie.
+- **On an item with options, typed text wins over the selected option.** The first option is preselected, so only the typed text is a deliberate act.
+- **A project that cannot be read shows no current task and 0/0**, with the reason, and not counts from half-read data. Its pause state and inbox are still shown.
+- **A task finished with no time recorded** (a ledger seeded by `afk ledger init --done`) can still be the last ship result; among equals the later task id is shown.
+- **Unknown addresses get a plain 404 sentence**, and nothing a request sends is echoed back in an error.
+- **If the page stops answering after start-up**, the daemon logs one line and the build carries on. Restarting the daemon brings the page back.
+- **A failed pause or resume from the page** is worded as the commands word it and answers with an error, including the case where the change went through and only the decision log could not be written.
+- **`afk inbox add` finds the project's name through its main checkout**, as the daemon does, and reads the machine config only when a notification is really going out. Any problem there is silent.
+
+### Things a later task should know
+
+- **T3.2** can reuse `web.Summarize` for the build view's per-project line; it is a pure function over the plan, the ledger, the daemon's state and the inbox.
+- **`inbox.ViaWeb`, `ViaCLI` and `ViaTUI`** are now exported constants.
+- **`pauseProject` and `resumeProject`** in `pause_cmd.go` do what the commands do without printing; a TUI key should call them.
+- **The total counts owner tasks** like any other. If the owner never marks one done, done never reaches total.
+
+### Checked, and not checked
+
+- **Checked against a built binary** (a scratch build, never `~/bin`): in a throwaway paused repo with a scratch config, no token gave 401, the `?token=` visit gave a redirect and a cookie with no token in the address, the pages loaded with the cookie, an item was answered from the page and recorded as answered from the web, `/api/p/<project>` returned JSON with a bearer header, pause and resume changed the pause flag, the port closed on stop, and the daemon's log held no token. A bind of `0.0.0.0` with no token exited 1. `make check` was run in full, green.
+- **Not checked: a real phone, a reverse proxy or Tailscale.** Owner check: set `[web] token` (and `public_url` if you use a proxy) in `config.toml`, restart `afkd`, open the page once with `?token=`, then answer an item and press Pause and Resume from the phone. Expect the task to un-park within a few seconds of the answer.
+- **Not checked: a tap on a real ntfy notification** opening the item page.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes: this file and `CONTEXT.md` were edited outside the work plan's tasks (the planner and conductor write both, by design), and the quality check read two files in full and skimmed the rest.
+
+### Ideas left out
+
+- Serve the page under a sub-path. `public_url` may hold a path, but redirects and the cookie assume the page is at the root.
+- Mention the web page in `afk daemon --help` and the link in `afk inbox --help`.
+- Show the page's address in `afk daemon status`.

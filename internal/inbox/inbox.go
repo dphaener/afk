@@ -95,8 +95,17 @@ const (
 // validation message can list them in a fixed order.
 var kinds = []string{"question", "env_var", "external_action", "verification", "failure", "notice"}
 
+// The places an answer can come from, as stored in `answered_via`. They are
+// exported so each caller of Answer (the command, the web page, the
+// dashboard) names its own place instead of retyping the word.
+const (
+	ViaWeb = "web"
+	ViaCLI = "cli"
+	ViaTUI = "tui"
+)
+
 // vias is the closed set of places an answer can come from.
-var vias = []string{"web", "cli", "tui"}
+var vias = []string{ViaWeb, ViaCLI, ViaTUI}
 
 var (
 	// taskRe matches a master-plan task id such as T1.2 or T4.2a.

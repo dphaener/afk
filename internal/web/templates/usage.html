@@ -1,0 +1,28 @@
+{{define "title"}}Usage{{end}}
+{{define "content"}}
+<h1>Usage</h1>
+{{if not .Known}}
+<p>No usage reading exists yet. One appears after afk first checks how much of your plan is used.</p>
+{{else}}
+<p class="muted">Read {{when .At}}{{if .Source}} ({{.Source}}){{end}}.</p>
+{{range .Windows}}
+<div class="card">
+  <strong>{{.Kind}}{{if .Scope}} ({{.Scope}}){{end}}</strong>: {{pct .UsedPct}} used<br>
+  <span class="muted">{{if .ResetsAt}}Resets {{when .ResetsAt}}.{{else}}Reset time not known.{{end}}</span>
+</div>
+{{else}}
+<p class="muted">The reading holds no windows.</p>
+{{end}}
+<p>Extra usage: {{if .OverageEnabled}}on{{else}}off{{end}}.</p>
+<h2>What afk decided</h2>
+{{with .Governor}}
+<div class="card">
+  <strong>{{.Action}}</strong><br>
+  {{.Reason}}<br>
+  <span class="muted">Decided {{when .At}}.{{if .WakeAt}} Wakes {{when .WakeAt}}.{{end}}</span>
+</div>
+{{else}}
+<p class="muted">No decision has been recorded with this reading.</p>
+{{end}}
+{{end}}
+{{end}}

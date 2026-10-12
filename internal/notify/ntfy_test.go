@@ -270,3 +270,89 @@ func TestInboxMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestItemLink pins the inbox item address a notification taps through to.
+// Load-bearing rows: the empty public address (no link must mean no Click
+// header at all, so a notification never points at a guessed host), the
+// trailing-slash rows (a double slash would miss the route), and the escaping
+// row (a project name with a space must stay one path segment).
+func TestItemLink(t *testing.T) {
+	tests := []struct {
+		name, publicURL, project, id, want string
+	}{
+		{"plain", "https://afk.example", "myapp", "abc234", "https://afk.example/p/myapp/inbox/abc234"},
+		{"trailing slash trimmed", "https://afk.example/", "myapp", "abc234", "https://afk.example/p/myapp/inbox/abc234"},
+		{"project with a space is escaped", "https://afk.example/", "my app", "abc234", "https://afk.example/p/my%20app/inbox/abc234"},
+		{"empty public address gives no link", "", "myapp", "abc234", ""},
+		{"lone slash gives no link", "/", "myapp", "abc234", ""},
+		{"empty project gives no link", "https://afk.example", "", "abc234", ""},
+		{"empty id gives no link", "https://afk.example", "myapp", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ItemLink(tt.publicURL, tt.project, tt.id); got != tt.want {
+				t.Errorf("ItemLink(%q, %q, %q) = %q, want %q", tt.publicURL, tt.project, tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProjectLink pins the project page address. Load-bearing rows: the empty
+// public address and the empty project, which must both give no link for the
+// same reason as TestItemLink.
+func TestProjectLink(t *testing.T) {
+	tests := []struct {
+		name, publicURL, project, want string
+	}{
+		{"plain", "https://afk.example", "myapp", "https://afk.example/p/myapp"},
+		{"trailing slash trimmed", "https://afk.example/", "myapp", "https://afk.example/p/myapp"},
+		{"project with a space is escaped", "https://afk.example", "my app", "https://afk.example/p/my%20app"},
+		{"empty public address gives no link", "", "myapp", ""},
+		{"empty project gives no link", "https://afk.example", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ProjectLink(tt.publicURL, tt.project); got != tt.want {
+				t.Errorf("ProjectLink(%q, %q) = %q, want %q", tt.publicURL, tt.project, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNtfySendClick checks the Click header. Load-bearing rows: the unset row
+// (no Click field must mean no Click header, not an empty one, because ntfy
+// would then have nothing sensible to open), and the set row (the address goes
+// out unchanged). This uses its own server so ntfyServer stays as it was.
+func TestNtfySendClick(t *testing.T) {
+	tests := []struct {
+		name      string
+		click     string
+		wantSet   bool
+		wantValue string
+	}{
+		{"click unset sends no header", "", false, ""},
+		{"click set is sent as is", "https://afk.example/p/myapp/inbox/abc234", true, "https://afk.example/p/myapp/inbox/abc234"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotSet bool
+			var gotValues []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotValues, gotSet = r.Header["Click"]
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(200)
+			}))
+			t.Cleanup(srv.Close)
+			err := (Ntfy{URL: srv.URL + "/t"}).Send(context.Background(), NtfyMessage{Title: "t", Body: "b", Priority: 3, Click: tt.click})
+			if err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if gotSet != tt.wantSet {
+				t.Fatalf("Click header present = %v, want %v", gotSet, tt.wantSet)
+			}
+			if tt.wantSet && (len(gotValues) != 1 || gotValues[0] != tt.wantValue) {
+				t.Errorf("Click header = %q, want %q", gotValues, tt.wantValue)
+			}
+		})
+	}
+}

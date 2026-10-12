@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/projectconfig"
@@ -40,6 +41,10 @@ type inboxEnv struct {
 	glob       func(pattern string) ([]string, error)
 	loadConfig func(root string) (projectconfig.Config, error)
 	send       func(ctx context.Context, url string, m notify.NtfyMessage) error
+	// loadMachine reads the machine's config.toml. `afk inbox add` wants one
+	// thing from it: the web page's public address and this project's name
+	// there, to put a link in the notification (inboxItemLink).
+	loadMachine func() (daemonconfig.Config, error)
 }
 
 // cmdInbox implements `afk inbox`.
@@ -61,6 +66,7 @@ func cmdInbox(args []string) {
 		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
 			return notify.Ntfy{URL: url}.Send(ctx, m)
 		},
+		loadMachine: func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) },
 	}))
 }
 
@@ -468,6 +474,14 @@ func runInboxAdd(args []string, projDefault string, env inboxEnv) int {
 	if !ok {
 		return 0
 	}
+	// The machine config is read only now, when a notification is really
+	// going out, and whatever goes wrong with it is silent: the link is an
+	// extra, most machines have no config.toml at all, and the item and its
+	// notification must go out exactly as they do without one.
+	machine, machineErr := env.loadMachine()
+	msg.Click = inboxItemLink(machine, machineErr, project, item.ID, func(configured, root string) bool {
+		return mainCheckout(configured, env.gitCommonDir(configured)) == filepath.Clean(root)
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), inboxNotifyTimeout)
 	defer cancel()
 	if err := env.send(ctx, cfg.Notify.NtfyURL, msg); err != nil {
@@ -506,4 +520,30 @@ func inboxInferSession(env inboxEnv) string {
 // them; this adapts an inbox.Item to it.
 func inboxNotification(item inbox.Item, ntfyURL string) (notify.NtfyMessage, bool) {
 	return notify.InboxMessage(item.ID, item.Task, item.Kind, item.Title, item.Body, item.Blocking, ntfyURL)
+}
+
+// inboxItemLink is the address of an item's page on the web page `afk daemon`
+// serves, or "" when there is none to give: the machine config could not be
+// read, it sets no public address, the page is off (no token), or none of its
+// projects is the folder the item was written in. Pure; sameDir is asked
+// "is this configured path the project folder root?", so the git lookup that
+// answers it stays with the caller.
+//
+// The project's name in the address has to be the name the daemon serves it
+// under, which is the name in the machine config and not the folder's. The
+// first configured project that matches wins, because that is the one the
+// daemon keeps when two entries name the same checkout (daemonProjects).
+//
+// The link never holds the token. A browser that has opened the page once
+// proves itself with its cookie.
+func inboxItemLink(cfg daemonconfig.Config, cfgErr error, root, id string, sameDir func(configured, root string) bool) string {
+	if cfgErr != nil || webPublicURL(cfg.Web) == "" {
+		return ""
+	}
+	for _, p := range cfg.Projects {
+		if sameDir(p.Path, root) {
+			return notify.ItemLink(cfg.Web.PublicURL, p.Name, id)
+		}
+	}
+	return ""
 }

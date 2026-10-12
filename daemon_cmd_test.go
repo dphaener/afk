@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +62,14 @@ type daemonRig struct {
 	binaryReads int
 	// stderr is what the last runDaemon wrote to it, for a row's check.
 	stderr string
+	// publicURLs is the web page address each newDeps call was handed.
+	publicURLs []string
+	// listens are the addresses the fake "open the web page's port" was asked
+	// for, and listeners what it handed back, in order. listenErr, when set,
+	// is its answer instead. No row opens a real port.
+	listens   []string
+	listeners []*pipeListener
+	listenErr error
 }
 
 // daemonTestBinary is the program file the rig reports unless a test says
@@ -138,9 +148,10 @@ func (r *daemonRig) env() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: func(int) bool { return r.alive },
-		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, log func(string, ...any)) daemon.Deps {
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, log func(string, ...any)) daemon.Deps {
 			r.providers = append(r.providers, providerName)
 			r.governors = append(r.governors, gov)
+			r.publicURLs = append(r.publicURLs, publicURL)
 			return daemon.Deps{
 				Now: func() time.Time { return daemonTestNow },
 				LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
@@ -164,6 +175,15 @@ func (r *daemonRig) env() daemonEnv {
 				return daemonTestBinary, nil
 			}
 			return r.binary(r.binaryReads)
+		},
+		listen: func(addr string) (net.Listener, error) {
+			r.listens = append(r.listens, addr)
+			if r.listenErr != nil {
+				return nil, r.listenErr
+			}
+			ln := newPipeListener()
+			r.listeners = append(r.listeners, ln)
+			return ln, nil
 		},
 	}
 }
@@ -602,6 +622,261 @@ func TestRunDaemon(t *testing.T) {
 			}
 			if len(r.launches) != tt.launches {
 				t.Errorf("launches = %d, want %d", len(r.launches), tt.launches)
+			}
+			if tt.check != nil {
+				tt.check(t, r)
+			}
+		})
+	}
+}
+
+// daemonTestWebToken is the [web] token the web rows configure. It is unlike
+// anything else a row prints, so "the token is in the output" cannot match by
+// accident.
+const daemonTestWebToken = "tok-3f9a1c7e5b2d4a68"
+
+// TestRunDaemonWeb runs `afk daemon` with a [web] table against the rig. The
+// port is the rig's pipe listener: nothing binds, and a request to the page
+// travels over an in-memory connection.
+//
+// Load-bearing rows:
+//   - "token set" is the feature seen from the command: the port asked for is
+//     the configured bind, the page answers while the loop runs (401 without
+//     the token, 200 with it), and the listener is closed once the command
+//     returns.
+//   - "the port cannot be opened" must be exit 1 with the bind and the config
+//     file named, before the loop looks at any project, and must give the
+//     machine lock back: a daemon that kept it would lock out the next start.
+//   - "a bind other machines can reach, no token" is the non-loopback refusal
+//     seen from the command. Nothing may be opened for it.
+//   - "no token", "--once" and "status" must never ask for a port. With no
+//     token there is nothing a request could prove, and the other two are
+//     over before anyone could open a page.
+//   - "stopping for a new version closes the page": that way out returns
+//     without the stop signal, so a shutdown tied to the signal would leave
+//     the port held against the daemon that is started next.
+//
+// Every row also checks that nothing printed holds the token.
+func TestRunDaemonWeb(t *testing.T) {
+	const bind = "127.0.0.1:4999"
+	// oneProject writes a config with one paused project (so a pass has
+	// something to look at and nothing to start) and the given [web] table.
+	oneProject := func(r *daemonRig, webTable string) {
+		root := r.project()
+		if err := daemonstate.Pause(root, daemonTestNow); err != nil {
+			r.t.Fatal(err)
+		}
+		r.writeConfig(fmt.Sprintf("[daemon]\ntick = \"1s\"\n%s\n[[project]]\nname = \"demo\"\npath = %q\n", webTable, root))
+	}
+	withToken := fmt.Sprintf("[web]\nbind = %q\ntoken = %q\npublic_url = \"https://afk.example/\"\n", bind, daemonTestWebToken)
+	// running gives the row a daemon that is not asked to stop at once. The
+	// limit only keeps a broken row from hanging the suite.
+	running := func(r *daemonRig) context.CancelFunc {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		r.t.Cleanup(cancel)
+		r.ctx = ctx
+		return cancel
+	}
+	tests := []struct {
+		name        string
+		args        []string
+		setup       func(r *daemonRig)
+		code        int
+		out, errOut []string
+		errNot      []string
+		listens     []string
+		check       func(t *testing.T, r *daemonRig)
+	}{
+		{
+			name: "token set: the page is opened, answers while the loop runs, and is closed after",
+			setup: func(r *daemonRig) {
+				oneProject(r, withToken)
+				cancel := running(r)
+				// The second look at the program file is the top of the first
+				// pass: the loop is running and the page must be up. The row
+				// asks it twice from here and then asks the daemon to stop.
+				r.binary = func(read int) (daemon.Binary, error) {
+					if read == 2 {
+						ln := r.listeners[0]
+						if code := ln.get(r.t, "/api/usage", ""); code != http.StatusUnauthorized {
+							r.t.Errorf("the page answered %d without the token, want 401", code)
+						}
+						if code := ln.get(r.t, "/api/usage", daemonTestWebToken); code != http.StatusOK {
+							r.t.Errorf("the page answered %d with the token, want 200", code)
+						}
+						cancel()
+					}
+					return daemonTestBinary, nil
+				}
+			},
+			code:    0,
+			errOut:  []string{"web page: listening on http://" + bind, "afk daemon started", "afk daemon stopped"},
+			errNot:  []string{"web page: off", "stopped answering"},
+			listens: []string{bind},
+			check: func(t *testing.T, r *daemonRig) {
+				if r.binaryReads < 2 {
+					t.Fatal("the loop never ran, so the page was never asked")
+				}
+				if !r.listeners[0].isClosed() {
+					t.Error("the listener is still open after the daemon returned")
+				}
+				// The trailing slash of public_url is the config's to drop.
+				if len(r.publicURLs) != 1 || r.publicURLs[0] != "https://afk.example" {
+					t.Errorf("the loop's deps were built with public address %q, want https://afk.example", r.publicURLs)
+				}
+			},
+		},
+		{
+			name: "the port cannot be opened",
+			setup: func(r *daemonRig) {
+				oneProject(r, withToken)
+				running(r)
+				r.listenErr = errors.New("listen tcp " + bind + ": bind: address already in use")
+			},
+			code:    1,
+			errOut:  []string{"could not open the web page on " + bind, "address already in use", "change [web] bind in", "config.toml"},
+			errNot:  []string{"afk daemon started", "web page: listening"},
+			listens: []string{bind},
+			check: func(t *testing.T, r *daemonRig) {
+				if !strings.Contains(r.stderr, r.configPath()) {
+					t.Errorf("the message does not name the config file %s:\n%s", r.configPath(), r.stderr)
+				}
+				if r.ctx.Err() != nil {
+					t.Fatal("the run ended on the test's time limit: the loop ran with no page")
+				}
+				if _, ok := daemonstate.ReadState(r.roots[0]); ok {
+					t.Error("the loop looked at the project although the page could not be opened")
+				}
+				// The lock was given back: the next start, with the port
+				// free again, gets it.
+				r.listenErr = nil
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				r.ctx = ctx
+				var so, se bytes.Buffer
+				if code := runDaemon(nil, &so, &se, r.env()); code != 0 {
+					t.Errorf("the next start exited %d, want 0 (was the machine lock kept?): %s", code, se.String())
+				}
+			},
+		},
+		{
+			name: "no token: the page is off and no port is asked for",
+			setup: func(r *daemonRig) {
+				oneProject(r, "[web]\nbind = \""+bind+"\"\npublic_url = \"https://afk.example\"\n")
+			},
+			code:   0,
+			errOut: []string{"web page: off (set [web] token in", "config.toml", "afk daemon started"},
+			errNot: []string{"web page: listening"},
+			check: func(t *testing.T, r *daemonRig) {
+				if n := strings.Count(r.stderr, "web page: off"); n != 1 {
+					t.Errorf("the log says the page is off %d times, want once", n)
+				}
+				// No page, so no link: an address alone would lead nowhere.
+				if len(r.publicURLs) != 1 || r.publicURLs[0] != "" {
+					t.Errorf("the loop's deps were built with public address %q, want none", r.publicURLs)
+				}
+			},
+		},
+		{
+			name:   "no web table at all",
+			setup:  func(r *daemonRig) { oneProject(r, "") },
+			code:   0,
+			errOut: []string{"web page: off (set [web] token in"},
+		},
+		{
+			name:   "--once with a token never opens the page",
+			args:   []string{"--once"},
+			setup:  func(r *daemonRig) { oneProject(r, withToken) },
+			code:   0,
+			out:    []string{"demo: waiting"},
+			errNot: []string{"web page"},
+		},
+		{
+			name:   "status with a token never opens the page",
+			args:   []string{"status"},
+			setup:  func(r *daemonRig) { oneProject(r, withToken) },
+			code:   0,
+			out:    []string{"demo"},
+			errNot: []string{"web page"},
+		},
+		{
+			name:   "a bind other machines can reach, no token",
+			setup:  func(r *daemonRig) { oneProject(r, "[web]\nbind = \"0.0.0.0:4999\"\n") },
+			code:   1,
+			errOut: []string{"config.toml", "web.bind", "web.token", "0.0.0.0:4999"},
+			errNot: []string{"afk daemon started", "web page"},
+			check: func(t *testing.T, r *daemonRig) {
+				if !strings.Contains(r.stderr, r.configPath()) {
+					t.Errorf("the message does not name the config file %s:\n%s", r.configPath(), r.stderr)
+				}
+				if len(r.governors) != 0 {
+					t.Error("the loop's deps were built for a config that does not load")
+				}
+				if _, ok := daemonstate.ReadState(r.roots[0]); ok {
+					t.Error("the loop looked at the project under a config that was refused")
+				}
+			},
+		},
+		{
+			name: "stopping for a new version closes the page",
+			setup: func(r *daemonRig) {
+				oneProject(r, withToken)
+				running(r)
+				r.binary = func(read int) (daemon.Binary, error) {
+					b := daemonTestBinary
+					if read >= 2 { // 1 the start, 2 the top of the first pass
+						b.Size++
+					}
+					return b, nil
+				}
+			},
+			code:    0,
+			errOut:  []string{"web page: listening on http://" + bind, "found a new version of itself"},
+			listens: []string{bind},
+			check: func(t *testing.T, r *daemonRig) {
+				if r.ctx.Err() != nil {
+					t.Fatal("the run ended on the test's time limit, not on the new program file")
+				}
+				if !r.listeners[0].isClosed() {
+					t.Error("the listener is still open after the daemon stopped for a new version")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newDaemonRig(t)
+			tt.setup(r)
+			var so, se bytes.Buffer
+			code := runDaemon(tt.args, &so, &se, r.env())
+			r.stderr = se.String()
+			t.Logf("exit %d\nstdout: %s\nstderr: %s", code, so.String(), se.String())
+			if code != tt.code {
+				t.Errorf("exit code = %d, want %d", code, tt.code)
+			}
+			for _, w := range tt.out {
+				if !strings.Contains(so.String(), w) {
+					t.Errorf("stdout lacks %q", w)
+				}
+			}
+			for _, w := range tt.errOut {
+				if !strings.Contains(se.String(), w) {
+					t.Errorf("stderr lacks %q", w)
+				}
+			}
+			for _, w := range tt.errNot {
+				if strings.Contains(se.String(), w) {
+					t.Errorf("stderr holds %q, which it must not", w)
+				}
+			}
+			if strings.Contains(so.String()+se.String(), daemonTestWebToken) {
+				t.Error("the output holds the web token")
+			}
+			if !reflect.DeepEqual(r.listens, tt.listens) {
+				t.Errorf("ports asked for = %q, want %q", r.listens, tt.listens)
+			}
+			if len(r.launches) != 0 {
+				t.Errorf("launches = %d, want none: the project is paused", len(r.launches))
 			}
 			if tt.check != nil {
 				tt.check(t, r)
@@ -1143,14 +1418,20 @@ func TestDaemonPreflight(t *testing.T) {
 // Load-bearing rows: "send fails" and "config unreadable" (a notification
 // must never fail a pass; the only trace is a warning in the log, and the
 // warning must not repeat the address, which works as a password); "no
-// address" (most projects have none, and that is silence, not a warning).
+// address" (most projects have none, and that is silence, not a warning); and
+// the three "with the web page" rows against the rows above them, which send
+// the same message with no link: the link is there only when the page has a
+// public address, it opens the item (or, for the one notification with no
+// item, the project), and it holds no query string, so never the token.
 func TestDaemonNotifier(t *testing.T) {
+	const public = "https://afk.example"
 	const url = "https://user:secret@ntfy.example/topic"
 	item := inbox.Item{ID: "a1b2", Task: "T1.1", Kind: "failure", Blocking: true, Title: "It broke", Body: "Details."}
 	quiet := inbox.Item{ID: "c3d4", Kind: "notice", Title: "FYI"}
 	tests := []struct {
 		name    string
 		url     string
+		public  string
 		cfgErr  error
 		sendErr error
 		call    func(n daemonNotifier)
@@ -1171,6 +1452,18 @@ func TestDaemonNotifier(t *testing.T) {
 			want: &notify.NtfyMessage{Title: "afk: The line is stopped after T1.1", Body: "Check the deploy.\n\nafk inbox show e5f6 (T1.1)", Priority: 5}},
 		{name: "urgent, for a kind that would not notify", url: url, call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, quiet) },
 			want: &notify.NtfyMessage{Title: "afk: FYI", Body: "afk inbox show c3d4", Priority: 5}},
+		{name: "item, with the web page", url: url, public: public, call: func(n daemonNotifier) { n.item(daemon.Project{Name: "my app", Root: "/p"}, item) },
+			want: &notify.NtfyMessage{Title: "afk: It broke", Body: "Details.\n\nafk inbox show a1b2 (T1.1)", Priority: 5,
+				Click: "https://afk.example/p/my%20app/inbox/a1b2"}},
+		{name: "urgent, with the web page", url: url, public: public, call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, quiet) },
+			want: &notify.NtfyMessage{Title: "afk: FYI", Body: "afk inbox show c3d4", Priority: 5,
+				Click: "https://afk.example/p/demo/inbox/c3d4"}},
+		{name: "idle, with the web page", url: url, public: public, call: func(n daemonNotifier) {
+			n.idle(daemon.Project{Name: "demo", Root: "/p"}, "demo is waiting on you", "waiting on owner: T1.1 parked")
+		},
+			want: &notify.NtfyMessage{Title: "afk: demo is waiting on you", Body: "waiting on owner: T1.1 parked", Priority: 3,
+				Click: "https://afk.example/p/demo"}},
+		{name: "the web page but no address", public: public, call: func(n daemonNotifier) { n.item(daemon.Project{Name: "demo", Root: "/p"}, item) }},
 		{name: "urgent, no address", call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, item) }},
 		{name: "idle, no address", call: func(n daemonNotifier) { n.idle(daemon.Project{Name: "demo", Root: "/p"}, "t", "b") }},
 		{name: "send fails", url: url, sendErr: errors.New("could not reach https://user:xxxxx@ntfy.example/topic"),
@@ -1199,7 +1492,8 @@ func TestDaemonNotifier(t *testing.T) {
 					sent = append(sent, m)
 					return tt.sendErr
 				},
-				logf: daemonLogger(&log, func() time.Time { return daemonTestNow }),
+				logf:      daemonLogger(&log, func() time.Time { return daemonTestNow }),
+				publicURL: tt.public,
 			}
 			tt.call(n)
 			switch {
@@ -1207,6 +1501,11 @@ func TestDaemonNotifier(t *testing.T) {
 				t.Errorf("sent %+v, want nothing", sent)
 			case tt.want != nil && (len(sent) != 1 || sent[0] != *tt.want):
 				t.Errorf("sent %+v, want exactly %+v", sent, *tt.want)
+			}
+			for _, m := range sent {
+				if strings.ContainsAny(m.Click, "?#") {
+					t.Errorf("the link %q carries a query or a fragment; it must be the bare address", m.Click)
+				}
 			}
 			if tt.logHas == "" && log.Len() != 0 {
 				t.Errorf("logged %q, want silence", log.String())
@@ -1289,7 +1588,7 @@ func TestRealDaemonDeps(t *testing.T) {
 		}
 		return ""
 	}}
-	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), st, daemonconfig.Governor{}, func() time.Time { return daemonTestNow }, &log,
+	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), st, daemonconfig.Governor{}, "", func() time.Time { return daemonTestNow }, &log,
 		daemonLogger(&log, func() time.Time { return daemonTestNow }))
 	for name, isNil := range map[string]bool{
 		"Now": d.Now == nil, "LoadBuild": d.LoadBuild == nil, "Sessions": d.Sessions == nil,

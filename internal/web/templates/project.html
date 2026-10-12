@@ -1,0 +1,30 @@
+{{define "title"}}{{.Name}}{{end}}
+{{define "content"}}
+<h1>{{.Name}}</h1>
+{{if .Problem}}<p class="warn">Problem: {{.Problem}}</p>{{end}}
+{{if .Paused}}<p class="warn">Paused. Nothing new will start until you resume.</p>{{end}}
+{{with .Stopped}}<p class="warn">Stopped{{if .Task}} at {{.Task}}{{end}}{{if .Reason}}: {{.Reason}}{{end}}</p>{{end}}
+{{with .Current}}
+<p>Working on <strong>{{.Task}}</strong>{{if .Title}}: {{.Title}}{{end}}<br>
+<span class="muted">{{.Phase}}{{if .WaitingOn}} (waiting for {{range $i, $w := .WaitingOn}}{{if $i}}, {{end}}{{$w}}{{end}}){{end}}</span></p>
+{{else}}<p class="muted">No task is running right now.</p>{{end}}
+<p>{{.Done}} of {{.Total}} tasks done.<br><span class="muted">Last ship: {{.LastShip.Text}}</span></p>
+{{with .State}}<p class="muted">Daemon: {{.Kind}}{{if .Reason}} - {{.Reason}}{{end}}{{if .At}} ({{when .At}}){{end}}</p>{{end}}
+
+<form method="post" action="/p/{{pe .Name}}/{{if or .Paused .Stopped}}resume{{else}}pause{{end}}">
+  {{if or .Paused .Stopped}}<button type="submit">Resume</button>{{else}}<button type="submit" class="quiet">Pause</button>{{end}}
+</form>
+
+<h2 id="inbox">Inbox</h2>
+{{if .Inbox.Problem}}<p class="warn">{{.Inbox.Problem}}</p>{{end}}
+{{if .Inbox.Unreadable}}<p class="warn">{{.Inbox.Unreadable}} inbox file{{if ne .Inbox.Unreadable 1}}s{{end}} could not be read and {{if eq .Inbox.Unreadable 1}}is{{else}}are{{end}} not listed.</p>{{end}}
+<ul>
+{{range .Inbox.Items}}
+  <li class="card"><a href="/p/{{pe $.Name}}/inbox/{{pe .ID}}">{{.Title}}</a><br>
+  <span class="muted">{{.Kind}}{{if .Task}}, {{.Task}}{{end}}:
+  {{if .Open}}{{if .Blocking}}<span class="warn">open, blocking</span>{{else}}open{{end}}{{else}}answered{{end}}</span></li>
+{{else}}
+  <li class="muted">The inbox is empty.</li>
+{{end}}
+</ul>
+{{end}}

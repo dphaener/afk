@@ -1,0 +1,13 @@
+{{define "title"}}Something went wrong{{end}}
+{{define "content"}}
+<h1>Something went wrong ({{.Status}})</h1>
+<p>{{.Error}}</p>
+{{with .Item}}
+<div class="card">
+  <strong>{{.Title}}</strong>
+  <pre>{{.Answer}}</pre>
+  <span class="muted">Answered {{when .AnsweredAt}}{{if .AnsweredVia}} through {{.AnsweredVia}}{{end}}.</span>
+</div>
+{{end}}
+<p><a href="/">Back to the overview</a></p>
+{{end}}

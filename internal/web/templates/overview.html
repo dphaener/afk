@@ -1,0 +1,30 @@
+{{define "title"}}Overview{{end}}
+{{define "content"}}
+<h1>What afk is doing</h1>
+{{if not .Projects}}<p class="muted">No projects are set up in afk's config.toml yet.</p>{{end}}
+{{range .Projects}}
+<div class="card">
+  <h2 style="margin-top:0"><a href="/p/{{pe .Name}}">{{.Name}}</a></h2>
+  {{if .Problem}}<p class="warn">Problem: {{.Problem}}</p>{{end}}
+  {{if .Paused}}<p class="warn">Paused. Nothing new will start until you resume.</p>{{end}}
+  {{with .Stopped}}<p class="warn">Stopped{{if .Task}} at {{.Task}}{{end}}{{if .Reason}}: {{.Reason}}{{end}}</p>{{end}}
+  {{with .Current}}
+  <p>Working on <strong>{{.Task}}</strong>{{if .Title}}: {{.Title}}{{end}}<br>
+  <span class="muted">{{.Phase}}{{if .WaitingOn}} (waiting for {{range $i, $w := .WaitingOn}}{{if $i}}, {{end}}{{$w}}{{end}}){{end}}</span></p>
+  {{else}}<p class="muted">No task is running right now.</p>{{end}}
+  <p>{{.Done}} of {{.Total}} tasks done.<br>
+  <span class="muted">Last ship: {{.LastShip.Text}}</span></p>
+  {{if .OpenBlocking}}<p class="warn">{{.OpenBlocking}} open question{{if ne .OpenBlocking 1}}s{{end}} blocking work. <a href="/p/{{pe .Name}}#inbox">Answer</a></p>{{else}}<p class="muted">Nothing is blocked on you.</p>{{end}}
+</div>
+{{end}}
+<h2>Usage</h2>
+<p>
+{{if .Usage.Known}}
+  {{range .Usage.Windows}}{{.Kind}}{{if .Scope}} ({{.Scope}}){{end}}: {{pct .UsedPct}} used. {{end}}
+  {{with .Usage.Governor}}<span class="muted">Decision: {{.Action}}.</span>{{end}}
+  <a href="/usage">Details</a>
+{{else}}
+  <span class="muted">No usage reading has been taken yet.</span>
+{{end}}
+</p>
+{{end}}

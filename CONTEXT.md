@@ -95,3 +95,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Rate-limit marker**: `.afk/{session}/.rate-limited`, written by a hook when the agent CLI stops because of a usage limit; the daemon reads it and pauses the session.
 - **Login check**: the daemon asking the agent CLI, about once an hour, whether it is still logged in; logged out means nothing new starts.
 - **Spike**: a short hands-on experiment run before the work is planned, to find out how something really behaves.
+- **Web page**: the small site `afk daemon` serves for status, usage, the inbox and the pause and resume buttons; off until a web token is set.
+- **Web token**: the shared secret in `[web] token`; every request to the web page must carry it, as a cookie, a bearer header or a one-time `?token=` visit.
+- **Loopback**: an address only this machine can reach (`127.0.0.1`, `::1`, `localhost`); the web page's default, and the only kind allowed without a token.
+- **Public URL**: `[web] public_url`, the address the owner reaches the web page at from outside; used to put a link to an inbox item in a notification.
+- **Project summary**: what the web page shows for one project: current task and phase, tasks done over total, last ship result, and whether it is paused or stopped.

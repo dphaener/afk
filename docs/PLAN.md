@@ -406,6 +406,18 @@ and `on_unknown_usage` (default `"run"`; `"run"` or `"hold"`). Anything else is 
 and the key, and `afk daemon` and `afk usage` both read the table. The weekly launch line is
 `pause_at` minus 5.
 
+Amended 2026-10-12 (T3.1): `config.toml` also reads a `[web]` table: `bind` (default `"127.0.0.1:4253"`;
+`host:port` with a port from 1 to 65535), `token` (default empty, which turns the page off and opens no
+port; at least 16 characters, no white space) and `public_url` (default empty; an `http://` or `https://`
+address with a host and no `?` or `#`, trailing slashes dropped). A `bind` that is not loopback (an
+IP literal that is loopback, or `localhost`) with no token is an error naming the file and `web.bind`
+and `web.token`; any other bad value is an error naming the file and the key, and none repeats the
+token. With a token every route, `/api/` included, answers 401 without it. The token is accepted as the
+`afk_web` cookie (set, as a hash of the token, by a `?token=` visit that then redirects without it), an
+`Authorization: Bearer` header or `?token=`. A notification for an inbox item carries a `Click` link to
+`<public_url>/p/<project>/inbox/<id>` only when the page is on and `public_url` is set, and never the
+token.
+
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
 One line per task per phase per role, written when a task ends: `{at, task, session, phase:
@@ -1198,6 +1210,7 @@ with nobody at the keyboard.
   ntfy notifications link to the relevant inbox item when `web.public_url` is set.
 - **Acceptance:** handler tests for auth (no token, wrong token, cookie), each page, answering an item
   (which un-parks its task), and the non-loopback refusal.
+- Amended 2026-10-12 (T3.1 done): later tasks may assume the following. (1) The page is `internal/web`, started by `afk daemon` only when `[web] token` is set in `config.toml` (`bind` defaults to `127.0.0.1:4253`; a bind other machines can reach with no token stops the daemon); it is not started for `--once` or `status`. (2) Pages are `/`, `/usage`, `/p/{project}` and `/p/{project}/inbox/{id}`, with POSTs to `…/answer`, `/p/{project}/pause` and `/p/{project}/resume`; the JSON API is the same path under `/api`, with a bearer header. (3) An answer from the page is `inbox.Store.Answer(…, inbox.ViaWeb)` and nothing else: the build loop un-parks the task on its next pass, and the page never writes the ledger. (4) `web.Summarize` is the pure per-project summary (current task, phase, done/total, last ship result) that T3.2 can reuse, and `pauseProject`/`resumeProject` in `pause_cmd.go` are the pause and resume actions without printing. (5) Notifications carry a `Click` link to the item only when both `token` and `public_url` are set. (6) Not yet seen: the page behind a real proxy or tunnel, or from a real phone; T4.1 sets that up. See `## T3.1` in `docs/decisions.md`.
 
 #### T3.2 — Dashboard: the build view
 - **Depends on:** T2.1, T0.6
