@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -51,6 +52,12 @@ const (
 	// Decide never searches for it: the task parks on that item, and a
 	// parked task is not looked at again until the item is answered.
 	RecoveryTitlePrefix = "Session could not be recovered: "
+	// PauseFailedTitlePrefix starts the title of the item raised when a
+	// session was to be stopped for usage and its host is still running three
+	// tries later (PLAN §6.4). Like RecoveryTitlePrefix it is never searched
+	// for: the item is blocking and names the task, so the task parks on it
+	// on the next tick, before the usage rule is reached again.
+	PauseFailedTitlePrefix = "Session could not be stopped for usage: "
 )
 
 // SessionName is the session (and branch, and worktree folder) a task attempt
@@ -95,6 +102,54 @@ type SessionView struct {
 	// agent can carry it for a moment. That is why the loop acts on it only
 	// once it has stood for WedgeConfirm.
 	WedgedSince time.Time
+	// RateLimitedAt is the time in the session's rate-limit marker, written
+	// by the agent's own hook when a turn ends on a usage limit; the zero
+	// time when there is no marker. Nothing removes the marker when the
+	// session goes on, so its time is what matters, not its being there: it
+	// counts only when it is later than the attempt's start and its last
+	// restart (see decideUsage).
+	RateLimitedAt time.Time
+}
+
+// UsageView is the usage governor's verdict as the loop sees it: plain values
+// the executor worked out from the latest usage reading. Decide never reads
+// usage itself and never recomputes the verdict.
+type UsageView struct {
+	// Consulted false means the executor has no usage source, or did not ask
+	// on this tick. Every usage rule is off then, and the other fields mean
+	// nothing. It is a field of its own, and not "Action is empty", so that a
+	// daemon wired without a usage source behaves exactly as it did before
+	// the governor existed.
+	Consulted bool
+	// Action is the governor's word (internal/governor): run, no_launch,
+	// pause, hold or refuse.
+	Action governor.Action
+	// Reason is the governor's own sentence. Decide does not put it in any
+	// Reason of its own: it carries percentages and ages that change with
+	// every reading, and the loop writes its state file and its log whenever
+	// a reason changes.
+	Reason string
+	// At is when the reading behind the verdict was taken. A paused session
+	// is resumed only on a reading taken after its pause began.
+	At time.Time
+	// WakeAt is the governor's own wake time for a pause; the zero time when
+	// it does not know one.
+	WakeAt time.Time
+	// NextReset is the earliest reset still ahead among the usage windows,
+	// plus one minute; the zero time when none is known. It is the wake time
+	// for a session stopped by its rate-limit marker, where the governor
+	// itself is not pausing and so gives no WakeAt. The earliest, because the
+	// marker does not say which limit was hit: waking early costs one more
+	// reading (a resume still needs one that allows work), waking late can
+	// cost days.
+	NextReset time.Time
+}
+
+// LoginView is the last verdict on whether the agent's CLI is logged in on
+// this machine. Known false means there is no verdict (never checked, or the
+// tool cannot say), and no login rule applies: unknown is not logged out.
+type LoginView struct {
+	Known, LoggedIn bool
 }
 
 // Observation is everything Decide looks at: plain values the executor read
@@ -130,6 +185,25 @@ type Observation struct {
 	// relaunch a gone host is reported to the owner as before, with no
 	// restart a wedge is left alone, with no prompt nothing is typed.
 	CanRestart, CanRelaunch, CanPrompt bool
+	// Usage is the usage governor's verdict on this tick, and Login the last
+	// login verdict. Both are optional: the zero value of each switches its
+	// rules off (see UsageView and LoginView).
+	Usage UsageView
+	Login LoginView
+	// CanPause says whether the executor has the means to stop a session's
+	// agent. Like the three above it guards against choosing an action
+	// nothing can carry out. A pause also needs CanRelaunch: a session that
+	// was stopped and can never be started again is worse off than one left
+	// to the agent's own wait at the limit.
+	CanPause bool
+	// PauseRetry is how long after a pause a host that is still running is
+	// made to stop; after three times as long the owner is told. The executor
+	// always sets it above zero. At zero or below both are due at once, which
+	// reports the session on the first tick that still sees its host.
+	PauseRetry time.Duration
+	// RateLimitFallback is the wake delay for a session stopped by its
+	// rate-limit marker when no usage window gives a reset time.
+	RateLimitFallback time.Duration
 	// Paused is the project's pause flag.
 	Paused bool
 	// NoLedger means the project has no ledger file at all. That is not the
@@ -226,6 +300,28 @@ const (
 	// ActGiveUp: the session stopped or hung again with every restart used.
 	// Tell the owner and park the task.
 	ActGiveUp ActionKind = "give_up"
+	// ActUsageWait: a task would have been started, created again or
+	// un-parked, and nothing new starts because of usage. Nothing is done.
+	ActUsageWait ActionKind = "usage_wait"
+	// ActLoginWait: the same, because the agent is logged out on this
+	// machine. Nothing is done.
+	ActLoginWait ActionKind = "login_wait"
+	// ActUsagePause: stop the running session's agent because of usage. With
+	// Action.Force false this is the start of a pause: save it in the ledger
+	// with Action.WakeAt, then ask the host to end. With Force true the pause
+	// is already saved and the host did not go: make it stop, and leave the
+	// ledger alone so the time the pause began stands.
+	ActUsagePause ActionKind = "usage_pause"
+	// ActUsagePaused: the session is stopped for usage, or has been asked to
+	// stop. Wait.
+	ActUsagePaused ActionKind = "usage_paused"
+	// ActUsageStuck: the session was to be stopped for usage and its host is
+	// still running after every try, so it may still be spending. Tell the
+	// owner; the task then parks on that item.
+	ActUsageStuck ActionKind = "usage_stuck"
+	// ActUsageResume: a session stopped for usage may go on. Start a new
+	// host for it, resuming the same conversation.
+	ActUsageResume ActionKind = "usage_resume"
 )
 
 // KindLineStopped is the state kind of a tick held back by the stop marker.
@@ -254,6 +350,11 @@ const KindLineStopped = "line_stopped"
 // back to, ledger.Running or ledger.Shipping. It is decided here and not in
 // the executor because it is a choice with a wrong answer (see decideNext),
 // and so it belongs in the table.
+//
+// WakeAt is set on an ActUsagePause that starts a pause, and nowhere else: the
+// earliest time the session may be started again, or the zero time when only
+// a new usage reading decides. Force is set on an ActUsagePause that repeats
+// one: the session was asked to stop and its host is still running.
 type Action struct {
 	Kind          ActionKind
 	Task, Session string
@@ -261,6 +362,8 @@ type Action struct {
 	Items         []string
 	LineStopped   bool
 	Resume        ledger.Status
+	WakeAt        time.Time
+	Force         bool
 }
 
 // Decide chooses what the loop does on this tick. It reads no file, no clock
@@ -292,6 +395,16 @@ type Action struct {
 //     a pending task is launched; no task is idle.
 //  6. Nothing active and the project is paused: rule 5's answer stands only
 //     when it is about an owner task; anything else waits.
+//  7. Rule 5 chose to launch a task or to un-park one, and the agent is
+//     logged out or usage does not allow it: wait instead (see heldBack).
+//
+// Rule 7 comes last because it holds back only what would start an agent or
+// set one going again. An owner task, an idle project and a project with no
+// ledger start nothing, so they are answered as before whatever usage says;
+// the owner's own task is the thing they can still do while the agent's
+// usage is spent. It comes after rule 6 so that a project the owner paused
+// keeps saying "paused": `afk resume` is what they must run, and a sentence
+// about usage would send them to the wrong place.
 //
 // A running entry is watched, and a shipping one shipped, even when the
 // project is paused or the line is stopped. Both stop new work, not the work
@@ -364,7 +477,101 @@ func Decide(o Observation) Action {
 	if o.Paused && a.Kind != ActOwner && a.Kind != ActOwnerDone {
 		return Action{Kind: ActWait, Reason: "paused; no new task will start until `afk resume`"}
 	}
+	if h, ok := heldBack(o, a); ok {
+		return h
+	}
 	return a
+}
+
+// held is the usage governor's hold on new work: the action that stands in
+// for a start, and whether there is one. It is the answer for a launch and
+// for creating a session again; heldBack applies it, with two exceptions, to
+// an un-park.
+//
+// The login is checked first: with the agent logged out a launch would fail
+// at once, whatever usage says, and logging in is the thing the owner has to
+// do. An unknown login holds nothing, and so does usage that was not
+// consulted.
+//
+// The reasons are fixed sentences, one for each governor action, with no
+// percentage and no time in them. The loop writes its state file and its log
+// when the reason changes, and the governor's own sentence changes with every
+// reading; `afk usage` is where the numbers are.
+func held(o Observation) (Action, bool) {
+	if o.Login.Known && !o.Login.LoggedIn {
+		return Action{Kind: ActLoginWait, Reason: "the agent is logged out on this machine; " +
+			"nothing new starts until you log it in here"}, true
+	}
+	if !o.Usage.Consulted || o.Usage.Action == governor.ActionRun {
+		return Action{}, false
+	}
+	var reason string
+	switch o.Usage.Action {
+	case governor.ActionNoLaunch:
+		reason = "usage is close to the limit; nothing new starts until it resets. `afk usage` shows the numbers"
+	case governor.ActionPause:
+		reason = "usage has reached the pause line; nothing new starts until it resets. `afk usage` shows the numbers"
+	case governor.ActionHold:
+		reason = "afk has no recent usage reading; nothing new starts. `afk usage` shows why"
+	case governor.ActionRefuse:
+		reason = "extra usage is switched on for this account; nothing new starts until it is switched off. `afk usage` shows it"
+	default:
+		// A word this package does not know is not "run", and only "run"
+		// may start anything.
+		reason = "usage does not allow new work right now; nothing new starts. `afk usage` shows why"
+	}
+	return Action{Kind: ActUsageWait, Reason: reason}, true
+}
+
+// heldBack is rule 7: the held action that replaces a, when a would start an
+// agent or set one going again and held applies.
+//
+// Only a launch and an un-park are ever held. An un-park differs from a
+// launch in two ways:
+//
+//   - Back to shipping, it is never held. It starts no agent, and ship steps
+//     are not gated by usage: a task that is merged but not marked done costs
+//     nothing to finish and blocks everything after it until it is.
+//   - Back to running, it is not held under no_launch. A parked session is a
+//     running agent sitting at a prompt, and PLAN §6.3 lets a running session
+//     carry on at that level. pause, hold, refuse and a logged-out agent do
+//     hold it: the un-park types into the session and sets it spending again.
+func heldBack(o Observation, a Action) (Action, bool) {
+	switch a.Kind {
+	case ActLaunch:
+	case ActUnpark:
+		if a.Resume == ledger.Shipping {
+			return Action{}, false
+		}
+		loggedOut := o.Login.Known && !o.Login.LoggedIn
+		if !loggedOut && o.Usage.Action == governor.ActionNoLaunch {
+			return Action{}, false
+		}
+	default:
+		return Action{}, false
+	}
+	h, ok := held(o)
+	if !ok {
+		return Action{}, false
+	}
+	h.Task, h.Session = a.Task, a.Session
+	return h, true
+}
+
+// Notices says which of the two standing troubles the owner must be told
+// about on this tick: extra usage is switched on (the governor says refuse),
+// and the agent is logged out. Each is a fact about the machine and not about
+// a task, so it is asked beside Decide and not folded into its one Action:
+// the executor raises an item for each whatever the tick otherwise does, and
+// answers the item itself once the trouble is gone.
+//
+// There is no "login expires soon" notice. PLAN §6.5 asks for one "if
+// detectable", and it is not: the login check gives a yes or a no and no
+// date.
+func Notices(o Observation) (overage, loggedOut bool) {
+	overage = o.Usage.Consulted && o.Usage.Action == governor.ActionRefuse
+	loggedOut = o.Login.Known && !o.Login.LoggedIn
+	return overage, loggedOut
 }
 
 // stoppedReason is the sentence for a tick held back by the stop marker: that
@@ -380,14 +587,21 @@ func stoppedReason(o Observation) string {
 
 // decideRunning is rule 3: what to do about the one task in flight.
 //
-//	a. Its session is not on disk: create it again, or wait when paused or
-//	   when the line is stopped.
-//	b. status.json cannot be read: rules e, f and g, then wait. There is no
-//	   phase to read, so c and d are skipped, and nothing can be said to
+//	a. Its session is not on disk: create it again, or wait when paused,
+//	   when the line is stopped, or when the agent is logged out or usage
+//	   does not allow new work (see held).
+//	b. status.json cannot be read: rules e, u, f and g, then wait. There is
+//	   no phase to read, so c and d are skipped, and nothing can be said to
 //	   stall.
 //	c. Phase done: ship.
 //	d. Phase failed: fail.
 //	e. An open blocking item for the task or session: park on it.
+//	u. Usage (see decideUsage; it is lettered out of order because it was
+//	   added between e and f and the rest of this comment names those by
+//	   letter). The session is paused for usage: start it again when a new
+//	   reading allows, stop it harder when it has not stopped, otherwise
+//	   wait. It is not paused and usage has reached the pause line, extra
+//	   usage is on, or the session hit a usage limit: pause it.
 //	f. The host is not running, past HostGrace, or the agent has stopped
 //	   answering for WedgeConfirm: recover the session (see decideRecovery).
 //	   That is a relaunch or a restart, a wait for the backoff, or giving up
@@ -413,6 +627,16 @@ func stoppedReason(o Observation) string {
 // question. That holds for an unreadable status too: the owner being asked is
 // a stronger signal than a silent agent, and restarting an agent that is
 // waiting for an answer would throw the question away.
+// Usage (u) comes after c, d and e and before f, g and h, and each side has
+// its reason. A finished session still ships or fails first: its work is over
+// and a pause has nothing left to hold back. A blocking item still parks
+// first: the owner being asked is the stronger signal, and the pause is kept
+// in the ledger for when they answer. It comes before recovery because a
+// paused session's host is gone on purpose: recovery would take it for a
+// crash and start it again inside the limit it was stopped for, then count
+// that against the restart cap and give the task up. And it comes before the
+// continue prompt and the stall report because a paused session is not at a
+// prompt at all: there is nothing to type into and nobody to report.
 // Recovery (f) comes before the continue prompt (g) because a line typed
 // into an agent that is not answering goes nowhere, and would be recorded as
 // delivered.
@@ -434,6 +658,12 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 			// Creating a session is a new launch as far as the owner is
 			// concerned, and pause stops every one of those.
 			return act(ActWait, fmt.Sprintf("paused; %s has no session", e.ID))
+		}
+		// It is a new launch as far as usage is concerned too: an agent
+		// starts, so no_launch holds it as it holds any other start.
+		if h, ok := held(o); ok {
+			h.Task, h.Session = e.ID, e.Session
+			return h
 		}
 		return act(ActCreate, fmt.Sprintf(
 			"%s is running in the ledger but its session %s is not on disk; creating it again", e.ID, e.Session))
@@ -470,6 +700,9 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 		if a, ok := parkOn(o, e); ok {
 			return a
 		}
+		if a, ok := decideUsage(o, e, s); ok {
+			return a
+		}
 		if a, ok := decideRecovery(o, e, s, latest(startedAt, restartAt)); ok {
 			return a
 		}
@@ -489,6 +722,9 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 	}
 
 	if a, ok := parkOn(o, e); ok {
+		return a
+	}
+	if a, ok := decideUsage(o, e, s); ok {
 		return a
 	}
 
@@ -529,6 +765,170 @@ func parkOn(o Observation, e ledger.Entry) (Action, bool) {
 		Kind: ActPark, Task: e.ID, Session: e.Session, Items: blocking,
 		Reason: fmt.Sprintf("%s is waiting on the owner: inbox %s", e.ID, strings.Join(blocking, ", ")),
 	}, true
+}
+
+// decideUsage is rule u: what usage means for the one session in flight. The
+// second result is false when usage has nothing to say about it, and the
+// caller carries on with recovery, the continue prompt and the stall rule.
+//
+// A pause is the two usage fields of the ledger entry and nothing else (PLAN
+// §6.4): the task stays running, its session's agent is stopped through its
+// host, and the host ends with it. So "paused" is read from the entry, never
+// from the session, and a paused entry never leaves this rule with false:
+// every later rule would misread a host that is gone on purpose.
+//
+// The entry is paused. In this order:
+//
+//   - Before a readable wake time, with the host gone: wait, whether or not
+//     usage was consulted. The executor deliberately does not consult during
+//     a known wait (a week-long pause would otherwise probe thousands of
+//     times to learn nothing), so this must not depend on a reading.
+//   - Resume, when every one of these holds: usage was consulted; the reading
+//     was taken after the pause began; the governor says run or no_launch (a
+//     session that was running may carry on at no_launch, PLAN §6.3); the
+//     wake time has passed, where an empty or unreadable one reads as passed;
+//     the login is not known to be out; the executor can relaunch; and the
+//     host is not running. The reading's age is the one that looks wrong
+//     without its reason: a session stopped by its rate-limit marker is
+//     stopped while the last reading still says run, and that same reading
+//     would start it again on the next tick, to hit the limit and be stopped
+//     again every half minute. A reading taken in the very second of the
+//     pause does not count either: the pause is stored to the second, so such
+//     a reading cannot be shown to be the later of the two.
+//   - The host is still running and the executor can stop it: nothing until
+//     PauseRetry after the pause (the polite stop needs a moment), then stop
+//     it by force, and from three times PauseRetry tell the owner, because a
+//     session that will not stop is still spending. No earlier report is
+//     looked up and no count is kept: the item the executor raises is
+//     blocking and names the task, so rule e parks the task on the next tick
+//     before this rule runs again, exactly as giving up on recovery works. If
+//     the owner answers without ending the session, the un-parked task comes
+//     back here and is reported again, which is right: it is still spending.
+//     Both limits are "at or over", like the recovery backoff: they are waits
+//     the loop set itself, served in full when reached.
+//   - Otherwise wait, saying what is being waited for.
+//
+// The entry is not paused. Nothing happens unless usage was consulted: with
+// no usage source nothing could ever resume the session, so stopping it
+// would be stopping it for good. That holds for the rate-limit marker too.
+// Then a pause is due when the governor says pause or refuse (extra usage on
+// means a running agent may be spending real money), or the marker is fresh:
+// later than both the attempt's start and its last restart. The marker's time
+// and the restart time are whole seconds, and a marker in the same second as
+// the restart is not after it and is ignored; that leans towards not stopping
+// a session that has just been started again, and a session that really is
+// at its limit writes another marker. With a pause due but without the means
+// to stop and to start again, nothing is done and the caller carries on: the
+// agent's own wait at the limit is the backstop.
+//
+// The wake time of a new pause: the governor's own for its pause, which may
+// be the zero time; the zero time for a refuse, which no clock ends; and for
+// a marker the earliest reset still ahead, or now plus RateLimitFallback
+// when that is unknown or already past. A reset in the past cannot be the
+// reset that ends this limit, and using it would resume at once.
+//
+// Every reason here is fixed words plus, at most, the saved wake time, for
+// the reason given at held.
+func decideUsage(o Observation, e ledger.Entry, s *SessionView) (Action, bool) {
+	act := func(kind ActionKind, reason string) (Action, bool) {
+		return Action{Kind: kind, Task: e.ID, Session: e.Session, Reason: reason}, true
+	}
+	who := fmt.Sprintf("the session for %s (%s)", e.ID, e.Session)
+
+	if e.UsagePauseAt != "" {
+		// An unreadable pause time is the zero time, which reads as "paused
+		// long ago": any reading is newer than it and every retry is due.
+		// An unreadable wake time reads as passed, so a new reading decides.
+		pausedAt, _ := parseTime(e.UsagePauseAt)
+		wakeAt, wakeKnown := parseTime(e.UsageWakeAt)
+		beforeWake := wakeKnown && o.Now.Before(wakeAt)
+		until := ""
+		if beforeWake {
+			until = " until " + wakeText(wakeAt)
+		}
+
+		if beforeWake && !s.HostRunning {
+			return act(ActUsagePaused, fmt.Sprintf("%s is paused for usage%s", who, until))
+		}
+
+		loggedOut := o.Login.Known && !o.Login.LoggedIn
+		allowed := o.Usage.Action == governor.ActionRun || o.Usage.Action == governor.ActionNoLaunch
+		fresh := o.Usage.At.Truncate(time.Second).After(pausedAt)
+		if o.Usage.Consulted && fresh && allowed && !beforeWake && !loggedOut && o.CanRelaunch && !s.HostRunning {
+			return act(ActUsageResume, fmt.Sprintf("usage allows work again; starting %s again", who))
+		}
+
+		if s.HostRunning {
+			if o.CanPause {
+				waited := o.Now.Sub(pausedAt)
+				if waited >= 3*o.PauseRetry {
+					return act(ActUsageStuck, fmt.Sprintf(
+						"%s was to be stopped for usage and is still running; it may still be spending", who))
+				}
+				if waited >= o.PauseRetry {
+					a, _ := act(ActUsagePause, fmt.Sprintf(
+						"%s was asked to stop for usage and is still running; stopping it", who))
+					a.Force = true
+					return a, true
+				}
+			}
+			return act(ActUsagePaused, fmt.Sprintf(
+				"%s is paused for usage%s; waiting for it to stop", who, until))
+		}
+
+		switch {
+		case !o.Usage.Consulted:
+			return act(ActUsagePaused, fmt.Sprintf(
+				"%s is paused for usage, and no usage reading is available to say it may go on. "+
+					"`afk usage` shows why; `afk ledger set %s pending` moves the task by hand", who, e.ID))
+		case loggedOut:
+			return act(ActUsagePaused, fmt.Sprintf(
+				"%s is paused for usage, and the agent is logged out on this machine; "+
+					"it starts again once you log the agent in here", who))
+		case !o.CanRelaunch:
+			return act(ActUsagePaused, fmt.Sprintf(
+				"%s is paused for usage, and this afk cannot start a session again. "+
+					"`afk ledger set %s pending` starts the task over", who, e.ID))
+		}
+		return act(ActUsagePaused, fmt.Sprintf(
+			"%s is paused for usage; it starts again when a new usage reading allows it. `afk usage` shows the numbers", who))
+	}
+
+	if !o.Usage.Consulted {
+		return Action{}, false
+	}
+	startedAt, _ := parseTime(e.StartedAt)
+	restartAt, _ := parseTime(e.RestartAt)
+	marker := !s.RateLimitedAt.IsZero() && s.RateLimitedAt.After(startedAt) && s.RateLimitedAt.After(restartAt)
+
+	var wake time.Time
+	var why string
+	switch {
+	case o.Usage.Action == governor.ActionPause:
+		wake, why = o.Usage.WakeAt, "usage reached the pause line"
+	case o.Usage.Action == governor.ActionRefuse:
+		why = "extra usage is switched on for this account"
+	case marker:
+		wake, why = o.Now.Add(o.RateLimitFallback), "the session hit a usage limit"
+		if o.Usage.NextReset.After(o.Now) {
+			wake = o.Usage.NextReset
+		}
+	default:
+		return Action{}, false
+	}
+	if !o.CanPause || !o.CanRelaunch {
+		return Action{}, false
+	}
+	a, _ := act(ActUsagePause, fmt.Sprintf("%s; pausing %s", why, who))
+	a.WakeAt = wake
+	return a, true
+}
+
+// wakeText is a saved wake time as the owner reads it. It is always UTC and
+// says so: the local zone is part of the environment, which Decide does not
+// read, and a time with no zone beside it would be read as local.
+func wakeText(t time.Time) string {
+	return t.UTC().Format("Mon 2 Jan 15:04 UTC")
 }
 
 // lastActivity is the last moment anything is known to have happened to this

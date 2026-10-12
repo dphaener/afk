@@ -86,7 +86,10 @@ type daemonEnv struct {
 	alive func(pid int) bool
 	// newDeps builds what the loop reaches outside for. The real one starts
 	// agents; tests return fakes, which is the one reason it is a field.
-	newDeps func(p provider.Provider, providerName string, log func(format string, args ...any)) daemon.Deps
+	//
+	// gov is the [governor] table of the machine config: the usage limits the
+	// real loop hands to its usage source and its login check.
+	newDeps func(p provider.Provider, providerName string, gov daemonconfig.Governor, log func(format string, args ...any)) daemon.Deps
 	// signalContext returns a context that ends when the process is asked to
 	// stop.
 	signalContext func() (context.Context, context.CancelFunc)
@@ -112,9 +115,10 @@ func realDaemonEnv() daemonEnv {
 	// could never see it. The path as it was at the start is where the new
 	// build lands.
 	exe, exeErr := os.Executable()
+	st := usagestate.DefaultDeps()
 	return daemonEnv{
 		config:       daemonconfig.DefaultDeps(),
-		state:        usagestate.DefaultDeps(),
+		state:        st,
 		now:          now,
 		loc:          time.Local,
 		pid:          os.Getpid(),
@@ -124,8 +128,8 @@ func realDaemonEnv() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: host.Alive,
-		newDeps: func(p provider.Provider, providerName string, log func(string, ...any)) daemon.Deps {
-			return realDaemonDeps(p, providerName, home, now, os.Stderr, log)
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, log func(string, ...any)) daemon.Deps {
+			return realDaemonDeps(p, providerName, home, st, gov, now, os.Stderr, log)
 		},
 		signalContext: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -234,7 +238,7 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	for _, d := range dropped {
 		logf("%s", d)
 	}
-	deps := env.newDeps(prov, cfg.Provider, logf)
+	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, logf)
 	settings := daemonSettings(cfg)
 
 	if *once {
@@ -466,7 +470,11 @@ func (n daemonNotifier) deliver(p daemon.Project, url string, m notify.NtfyMessa
 
 // realDaemonDeps wires the loop to the real machine. Nothing here decides
 // anything; each field is one call into the package that owns the work.
-func realDaemonDeps(p provider.Provider, providerName, home string, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
+//
+// st is where afk's state folder is found and gov is the machine config's
+// [governor] table. Both go to the usage source and the login check only
+// (daemon_governor.go); the loop itself never sees a threshold.
+func realDaemonDeps(p provider.Provider, providerName, home string, st usagestate.Deps, gov daemonconfig.Governor, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
 	n := daemonNotifier{
 		loadConfig: projectconfig.Load,
 		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
@@ -500,6 +508,11 @@ func realDaemonDeps(p provider.Provider, providerName, home string, now func() t
 		afterMerge: ship.RunAfterMerge,
 		now:        now,
 	}
+	// One of each for the whole daemon, not one per project: usage and the
+	// login belong to the account on this machine, and every project's pass
+	// asks the same two.
+	usage := realUsageSource(p, st, gov, now, logf)
+	login := realLoginSource(p, st, gov, now, logf)
 	return daemon.Deps{
 		Now: now,
 		LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
@@ -541,6 +554,9 @@ func realDaemonDeps(p provider.Provider, providerName, home string, now func() t
 			_, err := session.SpawnHost(session.HostSpawn{Name: req.Session, Worktree: req.Worktree, ResumeID: req.ResumeID}, sd)
 			return err
 		},
+		Usage:       usage.view,
+		Login:       login.view,
+		StopSession: daemonStopSession(realStopDeps()),
 	}
 }
 
@@ -881,7 +897,10 @@ type daemonStatus struct {
 	// program file when it started. It is only worth a line while that daemon
 	// is running: the next start writes the record afresh.
 	BinaryUnknown bool
-	Projects      []daemonProjectStatus
+	// Usage is the governor's decision as usage.json holds it, or nil when it
+	// holds none. It is one for the machine, not one per project.
+	Usage    *usagestate.Governor
+	Projects []daemonProjectStatus
 }
 
 // daemonProjectStatus is one project's block.
@@ -912,6 +931,11 @@ func runDaemonStatus(stdout, stderr io.Writer, env daemonEnv) int {
 		return 1
 	}
 	in := daemonStatus{ConfigPath: daemonconfig.Path(env.config), Now: env.now(), Loc: env.loc}
+	// The stored decision is shown as it is; an unreadable usage.json is
+	// simply no line.
+	if f, ok := usagestate.Read(env.state); ok {
+		in.Usage = f.Governor
+	}
 	if dir, err := usagestate.Dir(env.state); err == nil {
 		in.PID, in.StartedAt, in.HasMachine = daemonstate.ReadMachine(dir)
 		in.Running = in.HasMachine && env.alive(in.PID)
@@ -998,6 +1022,18 @@ func daemonKindText(kind string) string {
 		return "telling a restarted session to carry on"
 	case string(daemon.ActGiveUp):
 		return "a session could not be recovered; waiting for you"
+	case string(daemon.ActUsageWait):
+		return "nothing new is started, because of the usage limits"
+	case string(daemon.ActLoginWait):
+		return "nothing new is started, because the agent is logged out"
+	case string(daemon.ActUsagePause):
+		return "stopping a session because of the usage limits"
+	case string(daemon.ActUsagePaused):
+		return "a session is paused because of the usage limits"
+	case string(daemon.ActUsageStuck):
+		return "a session that had to pause for usage would not stop; waiting for you"
+	case string(daemon.ActUsageResume):
+		return "starting a session that was paused for usage again"
 	}
 	return kind
 }
@@ -1025,6 +1061,15 @@ func daemonTaskRunning(st daemonstate.State) bool {
 		// These never have a session; listed so every kind the loop gained
 		// with shipping is answered here on purpose.
 		return false
+	case string(daemon.ActUsageResume):
+		// The paused session is being started again, like ActRelaunch.
+		return true
+	case string(daemon.ActUsageWait), string(daemon.ActLoginWait),
+		string(daemon.ActUsagePause), string(daemon.ActUsagePaused), string(daemon.ActUsageStuck):
+		// Held back or paused for usage: a session may be named, but its
+		// agent is stopped or was never started, so a running time would read
+		// as progress that is not happening.
+		return false
 	}
 	return false
 }
@@ -1035,8 +1080,21 @@ func daemonTaskRunning(st daemonstate.State) bool {
 // rewrites the state file, so its time is the last poll and not when the
 // shipping began. Showing that as "Since" would say a ship that has waited an
 // hour on CI began seconds ago.
+//
+// The six usage and login kinds do not churn, and are listed so that is a
+// decision and not an oversight: their reasons are fixed sentences with no
+// percentage or age in them (the loop keeps the governor's own sentence out
+// of its state for exactly this), so the file is rewritten only when the kind
+// or the wake time really changes and its time is when the wait began.
 func daemonStateChurns(st daemonstate.State) bool {
-	return st.Kind == string(daemon.ActShipStep)
+	switch st.Kind {
+	case string(daemon.ActShipStep):
+		return true
+	case string(daemon.ActUsageWait), string(daemon.ActLoginWait), string(daemon.ActUsagePause),
+		string(daemon.ActUsagePaused), string(daemon.ActUsageStuck), string(daemon.ActUsageResume):
+		return false
+	}
+	return false
 }
 
 // agoText says how long ago something was, for a report read by a person.
@@ -1103,6 +1161,11 @@ func renderDaemonStatus(in daemonStatus) string {
 	// is not there; the next start looks again and writes its own answer.
 	if in.Running && in.BinaryUnknown {
 		b.WriteString(binaryUnknownText + "\n")
+	}
+	// Machine-wide, so it comes before the projects: every one of them spends
+	// from the same account.
+	if line := usageStatusLine(in.Usage, loc); line != "" {
+		b.WriteString(line + "\n")
 	}
 
 	if len(in.Projects) == 0 {

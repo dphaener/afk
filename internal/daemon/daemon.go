@@ -73,6 +73,14 @@ type Settings struct {
 	// answering must have stood before the agent is restarted. Zero means
 	// DefaultWedgeConfirm.
 	WedgeConfirm time.Duration
+	// PauseRetry is how long after a session was asked to stop for usage a
+	// host that is still running is made to stop; after three times as long
+	// the owner is told (PLAN §6.4). Zero or less means DefaultPauseRetry.
+	PauseRetry time.Duration
+	// RateLimitFallback is how long a session stopped by its rate-limit
+	// marker waits when no usage window gives a reset time. Zero or less
+	// means DefaultRateLimitFallback.
+	RateLimitFallback time.Duration
 	// Binary is the identity of afk's program file recorded when the daemon
 	// started. The zero value means unknown, and Run then never stops for a
 	// new binary.
@@ -102,6 +110,18 @@ const (
 	// stopped.
 	DefaultWedgeConfirm = 60 * time.Second
 
+	// DefaultPauseRetry is the wait between asking a session's host to end
+	// for usage and making it. The polite stop is one request to the host,
+	// which then has to stop its agent before it can end, so a host that is
+	// still there a few seconds later is not yet a host that ignored the
+	// request; a minute later it is.
+	DefaultPauseRetry = time.Minute
+
+	// DefaultRateLimitFallback is the wait for a session that hit a usage
+	// limit when nothing says when the limit resets. An hour is a guess that
+	// leans towards waiting: resuming early only hits the limit again.
+	DefaultRateLimitFallback = time.Hour
+
 	// defaultStallAfter is used when Settings carries no limit. A zero
 	// limit would report a stall the moment a session asked anything, so a
 	// caller that forgot to set it gets the documented ten minutes and not
@@ -130,6 +150,14 @@ const (
 	// OwnerTitlePrefix starts the title of the item raised for a task that
 	// is the owner's to do. The task's id and title follow it.
 	OwnerTitlePrefix = "Your task: "
+	// OverageTitle is the blocking item raised when the account has extra
+	// usage switched on (the governor says refuse). The loop answers it by
+	// itself once a reading shows extra usage off.
+	OverageTitle = "Extra usage is switched on, so afk starts nothing"
+	// LoginTitle is the blocking item raised when the agent is logged out on
+	// this machine. The loop answers it by itself once a check shows the
+	// agent logged in.
+	LoginTitle = "The agent is logged out on this machine"
 )
 
 // maxItemTitle is the longest title the inbox stores, counted in characters
@@ -165,6 +193,8 @@ func Kinds() []string {
 		string(ActNoLedger), string(ActOwner), string(ActOwnerDone),
 		string(ActShipStep),
 		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
+		string(ActUsageWait), string(ActLoginWait), string(ActUsagePause),
+		string(ActUsagePaused), string(ActUsageStuck), string(ActUsageResume),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
 }
@@ -183,6 +213,10 @@ const (
 	// or hung. It is not ruleRestart, which was taken first and is about the
 	// daemon's own program file.
 	ruleRecovery = "PLAN §5.6"
+	// ruleGovernor is the rule for everything done because of usage, and
+	// ruleLogin for the login check.
+	ruleGovernor = "PLAN §6.3"
+	ruleLogin    = "PLAN §6.5"
 )
 
 // KindDaemonRestart is the decision-log kind for the daemon stopping because
@@ -249,7 +283,13 @@ type RelaunchRequest struct {
 // Deps is every call the loop makes outside the project's plain files. Now,
 // LoadBuild, Sessions, Preflight, Launch and RecordTokens must be set; Notify,
 // NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt,
-// Restart, Relaunch and Clean may be nil.
+// Restart, Relaunch, Clean, Usage, Login, StopSession and RateLimited may be
+// nil.
+//
+// The four usage fields are optional as a set and one at a time. With no
+// Usage the loop behaves exactly as it did before it had a usage governor:
+// no launch is held for usage and no session is paused. That is the promise
+// every caller and test written before the governor relies on.
 type Deps struct {
 	// Now is the clock. The package never reads the real one, so a test
 	// moves time by hand.
@@ -325,6 +365,36 @@ type Deps struct {
 	// means Run never checks. The caller resolves the path; this package
 	// never looks for its own executable.
 	Binary func() (Binary, error)
+	// Usage gives the usage governor's verdict from the latest usage
+	// reading, with Consulted set. It may run the agent CLI's usage probe, so
+	// the loop calls it only on a tick where the answer can change something
+	// (see consults). Nil means usage is never consulted: nothing is held
+	// back for usage and no session is paused, the rate-limit marker
+	// included, because nothing could ever say a paused session may go on.
+	Usage func() UsageView
+	// Login gives the last verdict on whether the agent is logged in on this
+	// machine. It is called on the same ticks as Usage. Nil means the login
+	// is unknown, and unknown holds nothing back.
+	Login func() LoginView
+	// StopSession asks the session's host to end its agent and itself. With
+	// force false it is a request the host may be slow to serve; with force
+	// true the caller makes the host stop. An error means the session may
+	// still be running; the loop logs it and tries again later. Nil means the
+	// loop cannot stop a session, and one that reaches a usage limit is then
+	// left running, with the agent's own wait at the limit as the backstop.
+	StopSession func(worktree, session string, force bool) error
+	// RateLimited reads the session's rate-limit marker: the time the agent's
+	// own hook wrote when a turn ended on a usage limit, and false when there
+	// is no readable marker. Nil means state.ReadRateLimited.
+	RateLimited func(worktree, session string) (time.Time, bool)
+}
+
+// rateLimited is Deps.RateLimited with its default.
+func (d Deps) rateLimited(worktree, sess string) (time.Time, bool) {
+	if d.RateLimited != nil {
+		return d.RateLimited(worktree, sess)
+	}
+	return state.ReadRateLimited(worktree, sess)
 }
 
 // ledgerExists is Deps.LedgerExists with its default.
@@ -497,8 +567,12 @@ func (t *pass) run(s Settings) daemonstate.State {
 		CanRestart:  t.d.Restart != nil,
 		CanRelaunch: t.d.Relaunch != nil,
 		CanPrompt:   t.d.SendPrompt != nil,
+		CanPause:    t.d.StopSession != nil,
 		Paused:      daemonstate.Paused(root),
 		NoLedger:    !t.d.ledgerExists(root),
+
+		PauseRetry:        s.PauseRetry,
+		RateLimitFallback: s.RateLimitFallback,
 	}
 	o.StopReason, o.Stopped = t.d.stopped(root)
 	if o.StallAfter <= 0 {
@@ -512,6 +586,12 @@ func (t *pass) run(s Settings) daemonstate.State {
 	}
 	if o.WedgeConfirm <= 0 {
 		o.WedgeConfirm = DefaultWedgeConfirm
+	}
+	if o.PauseRetry <= 0 {
+		o.PauseRetry = DefaultPauseRetry
+	}
+	if o.RateLimitFallback <= 0 {
+		o.RateLimitFallback = DefaultRateLimitFallback
 	}
 
 	tasks, planPath, l, err := t.d.LoadBuild(root)
@@ -555,6 +635,14 @@ func (t *pass) run(s Settings) daemonstate.State {
 				o.ParkedErr = err
 			case isWatched:
 				o.Session, t.row = viewOf(rows, e.Session)
+				// The marker is not part of what discovery reports, so it is
+				// read here, from the same worktree and name. Only for a
+				// running entry: a shipping session's agent has finished.
+				if o.Session != nil && e.Status == ledger.Running {
+					if at, ok := t.d.rateLimited(t.row.WorktreePath, e.Session); ok {
+						o.Session.RateLimitedAt = at
+					}
+				}
 			default:
 				o.Parked = make(map[string]*SessionView, len(parked))
 				t.parkedRows = make(map[string]*discover.SessionState, len(parked))
@@ -568,7 +656,23 @@ func (t *pass) run(s Settings) daemonstate.State {
 	}
 	t.obs = o
 
+	// Decide runs once without usage, and a second time with it only when
+	// the answer can change something (see consults): asking can start the
+	// agent CLI's usage probe, and an idle project must never cause one.
 	a := Decide(o)
+	if t.consults(o, a) {
+		// The login first: the usage source may skip its probe while the
+		// agent is known to be logged out, and should see this tick's verdict.
+		if t.d.Login != nil {
+			o.Login = t.d.Login()
+		}
+		if t.d.Usage != nil {
+			o.Usage = t.d.Usage()
+		}
+		t.obs = o
+		a = Decide(o)
+		t.notices(o)
+	}
 
 	// The project can be read again: close what was said about it, so a
 	// later error is not hidden behind an old one. Only when Decide did not
@@ -614,12 +718,19 @@ func (t *pass) run(s Settings) daemonstate.State {
 		return t.continueSession(a)
 	case ActGiveUp:
 		return t.giveUp(a)
+	case ActUsagePause:
+		return t.usagePause(a)
+	case ActUsageStuck:
+		return t.usageStuck(a)
+	case ActUsageResume:
+		return t.usageResume(a)
 	case ActUnpark:
 		return t.unpark(a)
 	case ActShipStep:
 		return t.shipStep(a)
 	default:
-		// ActWait and ActIdle change nothing.
+		// ActWait and ActIdle change nothing, and neither do ActUsageWait,
+		// ActLoginWait and ActUsagePaused: each is a state and nothing more.
 		return stateOf(a)
 	}
 }
@@ -707,6 +818,11 @@ func viewOf(rows []discover.SessionState, name string) (*SessionView, *discover.
 // stateOf is the state of a tick that did exactly what Decide said. A wait
 // that Decide marked as the stopped line is stored under its own kind, so
 // `afk daemon status` can tell it from every other wait.
+//
+// The three waits the usage governor causes (ActUsageWait, ActLoginWait,
+// ActUsagePaused) need no such step: each is an action kind of its own and so
+// a state kind of its own. That is what makes the state file change, and save
+// log a line, when the governor's verdict changes what the loop does.
 func stateOf(a Action) daemonstate.State {
 	kind := string(a.Kind)
 	if a.Kind == ActWait && a.LineStopped {
@@ -742,6 +858,7 @@ func (t *pass) save(st daemonstate.State) daemonstate.State {
 			t.d.NotifyIdle(t.p, fmt.Sprintf("%s is blocked by a failed task", t.p.Name), st.Reason)
 		}
 	}
+	t.governorChanged(prev, had, st)
 	return st
 }
 
@@ -908,7 +1025,9 @@ func (t *pass) launch(a Action) daemonstate.State {
 		e.PR, e.MergedSHA = 0, ""
 		// And with a fresh set of restarts, for the same reason: the count
 		// and the pending prompt belong to the session of the attempt before.
+		// So does a pause for usage: a new attempt is a new conversation.
 		clearRecovery(e)
+		clearUsagePause(e)
 	})
 	if err != nil {
 		return t.ledgerTrouble(a, err)
@@ -931,9 +1050,19 @@ func (t *pass) launch(a Action) daemonstate.State {
 // restarts would count against a session that has never been restarted. A
 // launch has cleared them already in its own ledger write. A paused project
 // never gets here (Decide waits instead of creating).
+//
+// The two usage-pause fields are cleared in that same change, on their own
+// condition, since an entry can hold them with no recovery field set. They
+// too describe the session that is gone. Left in place, the next tick would
+// read the new session as one paused for usage: it would stop the agent that
+// was just started, or resume a conversation and type a resume command over
+// the new session's first prompt.
 func (t *pass) start(kind ActionKind, task, name, reason string) daemonstate.State {
-	if e, ok := t.obs.Ledger.Get(task); kind == ActCreate && ok && hasRecovery(e) {
-		if err := t.change(task, ledger.Running, clearRecovery); err != nil {
+	if e, ok := t.obs.Ledger.Get(task); kind == ActCreate && ok && (hasRecovery(e) || hasUsagePause(e)) {
+		if err := t.change(task, ledger.Running, func(e *ledger.Entry) {
+			clearRecovery(e)
+			clearUsagePause(e)
+		}); err != nil {
 			return t.ledgerTrouble(Action{Kind: kind, Task: task, Session: name}, err)
 		}
 	}
@@ -1027,6 +1156,7 @@ func (t *pass) ship(a Action) daemonstate.State {
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
 		e.Status = ledger.Shipping
 		clearRecovery(e)
+		clearUsagePause(e)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
@@ -1049,6 +1179,7 @@ func (t *pass) fail(a Action) daemonstate.State {
 		e.Status = ledger.Failed
 		e.FinishedAt = stamp(t.now)
 		clearRecovery(e)
+		clearUsagePause(e)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
@@ -1121,6 +1252,13 @@ func (t *pass) park(a Action) daemonstate.State {
 // parked because its session could not be recovered holds a restart count at
 // the limit, and the next tick would give up on it again. A pending continue
 // prompt is dropped as well: resume, below, types the same line.
+//
+// The two usage-pause fields are another matter. Back to running they are
+// kept, and nothing is typed: a task that parked while its session was paused
+// for usage has no host to type into, and the kept fields are what make the
+// next tick start it again in the same conversation (Decide's rule u) and not
+// take the missing host for a crash. Back to shipping they are cleared: the
+// session has finished, so there is nothing left to pause or to start again.
 func (t *pass) unpark(a Action) daemonstate.State {
 	if a.Resume == ledger.Shipping {
 		if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
@@ -1129,6 +1267,7 @@ func (t *pass) unpark(a Action) daemonstate.State {
 			e.ShipAt = stamp(t.now)
 			e.CIReruns, e.CIFixCycles = 0, 0
 			clearRecovery(e)
+			clearUsagePause(e)
 		}); err != nil {
 			return t.ledgerTrouble(a, err)
 		}
@@ -1150,7 +1289,9 @@ func (t *pass) unpark(a Action) daemonstate.State {
 	// After the ledger, so the line is typed at most once: a daemon killed
 	// between the two leaves a running task whose session was not told, and
 	// the stall rule is what catches that.
-	t.resume(a)
+	if e, _ := t.obs.Ledger.Get(a.Task); !hasUsagePause(e) {
+		t.resume(a)
+	}
 	return stateOf(a)
 }
 
@@ -1472,6 +1613,7 @@ func (t *pass) shipDone(a Action, out ship.Outcome) daemonstate.State {
 		e.Ship, e.ShipAt = "", ""
 		e.CIReruns, e.CIFixCycles = 0, 0
 		clearRecovery(e)
+		clearUsagePause(e)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}

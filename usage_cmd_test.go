@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
 )
@@ -49,6 +50,12 @@ func (f *fakeProvider) UnattendedPreflight(provider.UnattendedDeps) (bool, strin
 	return false, ""
 }
 
+// Login is here only to satisfy provider.Provider; the usage command never
+// checks the login.
+func (f *fakeProvider) Login(context.Context, provider.LoginDeps) (provider.LoginStatus, error) {
+	return provider.LoginStatus{}, provider.ErrLoginUnsupported
+}
+
 var usageNow = time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 
 func usageWindows(session, week, model float64) []provider.Window {
@@ -70,7 +77,12 @@ func storedFile(prov string, age time.Duration) usagestate.File {
 // reading to store), "probe error with stored" and "with nothing" (a failure
 // still prints the governor line, which is hold when nothing fresh is known),
 // "write fails" (the report must survive a failed save) and the exit-2 rows
-// (a command written wrongly never probes).
+// (a command written wrongly never probes). The "config" rows pin that the
+// limits come from the machine config: "sets launch_below" changes the
+// verdict for the same reading and stores that verdict, "longer probe
+// interval" reuses a reading the default would have replaced and leaves the
+// file (and the decision in it) untouched, and "does not load" still prints
+// the report on the defaults with one line saying why.
 func TestRunUsage(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -85,6 +97,13 @@ func TestRunUsage(t *testing.T) {
 		wantNoOut  []string
 		wantFile   bool
 		wantFileSt bool // file content is the stored one, untouched
+		// config is what the fake machine config answers; nil leaves
+		// LoadConfig unset. configErr makes it fail instead.
+		config    *daemonconfig.Governor
+		configErr error
+		// wantGov is the action stored with the reading; "" means no check.
+		wantGov   string
+		wantNoErr []string
 	}{
 		{
 			name:      "fresh probe",
@@ -92,6 +111,44 @@ func TestRunUsage(t *testing.T) {
 			wantCalls: 1,
 			wantOut:   []string{"just now", "Session", "30%", "Week (all models)", "71%", "Week (Fable)", "13%", "reset time unknown", "Extra usage", "off", "Governor: run"},
 			wantFile:  true,
+			wantGov:   "run",
+		},
+		{
+			name:      "config sets launch_below",
+			fake:      fakeProvider{name: "fake", snap: provider.UsageSnapshot{At: usageNow, Windows: usageWindows(30, 71, 13)}},
+			config:    &daemonconfig.Governor{PauseAt: 90, LaunchBelow: 25, StaleAfter: 30 * time.Minute, ProbeInterval: 5 * time.Minute, OnUnknownUsage: "run"},
+			wantCalls: 1,
+			wantOut:   []string{"30%", "Governor: no_launch", "limit of 25%"},
+			wantFile:  true,
+			wantGov:   "no_launch",
+			wantNoErr: []string{"default limits"},
+		},
+		{
+			name:       "config sets a longer probe interval",
+			stored:     ptr(storedFile("fake", 6*time.Minute)),
+			fake:       fakeProvider{name: "fake", snap: provider.UsageSnapshot{At: usageNow, Windows: usageWindows(99, 99, 99)}},
+			config:     &daemonconfig.Governor{PauseAt: 90, LaunchBelow: 75, StaleAfter: 30 * time.Minute, ProbeInterval: 10 * time.Minute, OnUnknownUsage: "run"},
+			wantCalls:  0,
+			wantOut:    []string{"6 min ago", "10%"},
+			wantFile:   true,
+			wantFileSt: true,
+		},
+		{
+			name:      "config holds an unsupported provider",
+			fake:      fakeProvider{name: "fake", err: provider.ErrUsageUnsupported},
+			config:    &daemonconfig.Governor{PauseAt: 90, LaunchBelow: 75, StaleAfter: 30 * time.Minute, ProbeInterval: 5 * time.Minute, OnUnknownUsage: "hold"},
+			wantCalls: 1,
+			wantOut:   []string{"cannot report how much", "Governor: hold"},
+		},
+		{
+			name:      "config that does not load means the defaults and one line",
+			fake:      fakeProvider{name: "fake", snap: provider.UsageSnapshot{At: usageNow, Windows: usageWindows(30, 71, 13)}},
+			configErr: errors.New("/cfg/afk/config.toml: governor.pause_at is 3; write a percent above 5 and at most 100"),
+			wantCalls: 1,
+			wantOut:   []string{"Governor: run"},
+			wantErr:   []string{"/cfg/afk/config.toml", "governor.pause_at", "default limits"},
+			wantFile:  true,
+			wantGov:   "run",
 		},
 		{
 			name:       "stored 2 min is reused",
@@ -160,6 +217,7 @@ func TestRunUsage(t *testing.T) {
 			wantCalls: 1,
 			wantOut:   []string{"Governor: pause", "wake at Thu 12 Mar 14:01"},
 			wantFile:  true,
+			wantGov:   "pause",
 		},
 		{
 			name:      "overage on refuses",
@@ -245,6 +303,14 @@ func TestRunUsage(t *testing.T) {
 				State: st,
 				Local: time.UTC,
 			}
+			if tt.config != nil || tt.configErr != nil {
+				d.LoadConfig = func() (daemonconfig.Config, string, error) {
+					if tt.configErr != nil {
+						return daemonconfig.Config{}, "/cfg/afk/config.toml", tt.configErr
+					}
+					return daemonconfig.Config{Governor: *tt.config}, "/cfg/afk/config.toml", nil
+				}
+			}
 			var out, errb bytes.Buffer
 			code := runUsage(tt.args, &out, &errb, d)
 			if code != tt.wantCode {
@@ -268,9 +334,30 @@ func TestRunUsage(t *testing.T) {
 					t.Errorf("stderr missing %q:\n%s", w, errb.String())
 				}
 			}
+			for _, w := range tt.wantNoErr {
+				if strings.Contains(errb.String(), w) {
+					t.Errorf("stderr has %q:\n%s", w, errb.String())
+				}
+			}
+			if tt.configErr != nil {
+				if n := strings.Count(errb.String(), "\n"); n != 1 {
+					t.Errorf("stderr has %d lines, want one:\n%s", n, errb.String())
+				}
+			}
 			after, err := os.ReadFile(path)
 			if tt.failWrite {
 				return
+			}
+			if tt.wantGov != "" {
+				f, ok := usagestate.Read(st)
+				switch {
+				case !ok || f.Governor == nil:
+					t.Errorf("usage.json holds no governor object, want action %q", tt.wantGov)
+				case f.Governor.Action != tt.wantGov || f.Governor.Reason == "" || !f.Governor.At.Equal(usageNow):
+					t.Errorf("stored governor = %+v, want action %q with a reason, made at %s", *f.Governor, tt.wantGov, usageNow)
+				case (tt.wantGov == "pause") != (f.Governor.WakeAt != nil):
+					t.Errorf("stored wake_at = %v for action %q", f.Governor.WakeAt, tt.wantGov)
+				}
 			}
 			if (err == nil) != tt.wantFile {
 				t.Errorf("usage.json exists = %v, want %v", err == nil, tt.wantFile)

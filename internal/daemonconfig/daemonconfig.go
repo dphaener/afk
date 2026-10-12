@@ -13,8 +13,14 @@
 // XDG_CONFIG_HOME the two files can land in different folders. This reader
 // follows the spec so that config.toml sits next to usage.json.
 //
-// Unknown keys are ignored: later tasks add governor and web keys to the same
-// file, and an older daemon must not refuse a file a newer one wrote.
+// The [governor] table holds the usage limits (pause_at, launch_below,
+// stale_after, probe_interval, on_unknown_usage). An absent key takes its
+// default from internal/governor, so the numbers have one source. They live
+// here and not in a project's afk.toml because usage belongs to the account,
+// which every project on the machine shares.
+//
+// Unknown keys are ignored: later tasks add web keys to the same file, and an
+// older daemon must not refuse a file a newer one wrote.
 package daemonconfig
 
 import (
@@ -27,6 +33,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/dphaener/afk/internal/governor"
 )
 
 const (
@@ -75,6 +83,28 @@ type Project struct {
 	Path string
 }
 
+// Governor is the usage limits from the [governor] table. See
+// internal/governor for what each one does to a decision.
+type Governor struct {
+	// PauseAt is the percent of a window at which running work stops.
+	PauseAt float64
+	// LaunchBelow is the percent under which new work may start.
+	LaunchBelow float64
+	// StaleAfter is how old a usage reading may be before it is not trusted.
+	StaleAfter time.Duration
+	// ProbeInterval is how often the daemon refreshes the reading.
+	ProbeInterval time.Duration
+	// OnUnknownUsage is governor.UnknownRun or governor.UnknownHold: what to
+	// do when the tool cannot report usage at all.
+	OnUnknownUsage string
+}
+
+// Thresholds returns the limits in the form governor.Decide takes.
+func (g Governor) Thresholds() governor.Thresholds {
+	return governor.Thresholds{PauseAt: g.PauseAt, LaunchBelow: g.LaunchBelow,
+		StaleAfter: g.StaleAfter, OnUnknownUsage: g.OnUnknownUsage}
+}
+
 // Config is the parsed machine config.
 type Config struct {
 	// Provider is a name handed to provider.Lookup by the caller; empty
@@ -90,6 +120,8 @@ type Config struct {
 	// each recovery after that. Always above zero.
 	RestartBackoff time.Duration
 	Projects       []Project
+	// Governor is always filled: absent keys carry the governor defaults.
+	Governor Governor
 }
 
 type rawFile struct {
@@ -102,6 +134,15 @@ type rawFile struct {
 		MaxRestarts    *int   `toml:"max_restarts"`
 		RestartBackoff string `toml:"restart_backoff"`
 	} `toml:"daemon"`
+	Governor struct {
+		// Numbers are pointers so an absent key (use the default) can be told
+		// apart from a written zero, which is then rejected by name.
+		PauseAt        *float64 `toml:"pause_at"`
+		LaunchBelow    *float64 `toml:"launch_below"`
+		StaleAfter     string   `toml:"stale_after"`
+		ProbeInterval  string   `toml:"probe_interval"`
+		OnUnknownUsage string   `toml:"on_unknown_usage"`
+	} `toml:"governor"`
 	Project []struct {
 		Path string `toml:"path"`
 		Name string `toml:"name"`
@@ -125,7 +166,8 @@ func Path(d Deps) string {
 // defaults and no projects, so a fresh machine can run `afk daemon status`.
 func Load(d Deps) (Config, error) {
 	cfg := Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-		MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}
+		MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
+		Governor: defaultGovernor()}
 	path := Path(d)
 	if path == "" {
 		return cfg, errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")
@@ -167,6 +209,10 @@ func Load(d Deps) (Config, error) {
 	}
 	if cfg.RestartBackoff <= 0 {
 		return Config{}, fmt.Errorf("%s: daemon.restart_backoff is %s, which is not a wait above zero; write it like \"1m\"", path, cfg.RestartBackoff)
+	}
+
+	if cfg.Governor, err = loadGovernor(path, raw); err != nil {
+		return Config{}, err
 	}
 
 	var home string
@@ -211,4 +257,61 @@ func duration(path, key, val string, def time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: %s is %q, which is not a duration; write it like \"5s\" or \"10m\"", path, key, val)
 	}
 	return v, nil
+}
+
+func defaultGovernor() Governor {
+	th := governor.DefaultThresholds()
+	return Governor{PauseAt: th.PauseAt, LaunchBelow: th.LaunchBelow, StaleAfter: th.StaleAfter,
+		ProbeInterval: governor.DefaultProbeInterval, OnUnknownUsage: th.OnUnknownUsage}
+}
+
+// minProbeInterval keeps a typo such as "5s" from probing the provider's
+// usage endpoint in a tight loop.
+const minProbeInterval = time.Minute
+
+// maxPauseAt is 100 percent. The floor of 5 exists because the weekly launch
+// line is pause_at minus 5 (governor.weeklyMargin) and must stay above zero.
+const (
+	minPauseAt = 5
+	maxPauseAt = 100
+)
+
+func loadGovernor(path string, raw rawFile) (Governor, error) {
+	g := defaultGovernor()
+	r := raw.Governor
+	if r.PauseAt != nil {
+		g.PauseAt = *r.PauseAt
+	}
+	if g.PauseAt <= minPauseAt || g.PauseAt > maxPauseAt {
+		return Governor{}, fmt.Errorf("%s: governor.pause_at is %v; write a percent above %d and at most %d", path, g.PauseAt, minPauseAt, maxPauseAt)
+	}
+	if r.LaunchBelow != nil {
+		g.LaunchBelow = *r.LaunchBelow
+	}
+	if g.LaunchBelow <= 0 || g.LaunchBelow > g.PauseAt {
+		return Governor{}, fmt.Errorf("%s: governor.launch_below is %v; write a percent above 0 and at most governor.pause_at (%v)", path, g.LaunchBelow, g.PauseAt)
+	}
+	var err error
+	if g.StaleAfter, err = duration(path, "governor.stale_after", r.StaleAfter, g.StaleAfter); err != nil {
+		return Governor{}, err
+	}
+	if g.StaleAfter <= 0 {
+		return Governor{}, fmt.Errorf("%s: governor.stale_after is %s, which is not an age above zero; write it like \"30m\"", path, g.StaleAfter)
+	}
+	if g.ProbeInterval, err = duration(path, "governor.probe_interval", r.ProbeInterval, g.ProbeInterval); err != nil {
+		return Governor{}, err
+	}
+	if g.ProbeInterval < minProbeInterval {
+		return Governor{}, fmt.Errorf("%s: governor.probe_interval is %s, which is too short; use \"1m\" or more", path, g.ProbeInterval)
+	}
+	if g.StaleAfter <= g.ProbeInterval {
+		return Governor{}, fmt.Errorf("%s: governor.stale_after (%s) must be longer than governor.probe_interval (%s), or every reading goes stale between probes and new work is held for ever", path, g.StaleAfter, g.ProbeInterval)
+	}
+	if v := strings.TrimSpace(r.OnUnknownUsage); v != "" {
+		g.OnUnknownUsage = v
+	}
+	if g.OnUnknownUsage != governor.UnknownRun && g.OnUnknownUsage != governor.UnknownHold {
+		return Governor{}, fmt.Errorf("%s: governor.on_unknown_usage is %q; write %q or %q", path, g.OnUnknownUsage, governor.UnknownRun, governor.UnknownHold)
+	}
+	return g, nil
 }

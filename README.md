@@ -552,6 +552,8 @@ The `Governor:` line is the decision afk would make from the reading:
 - `hold` — The reading is missing or more than 30 minutes old. Nothing new starts and a running session is left alone.
 - `refuse` — Extra usage is switched on for the account. afk will not run until you turn it off.
 
+The limits in that list (75%, 85% for the week, 90%, 30 minutes) are the defaults. `afk usage` and the daemon both read them from the `[governor]` table in `config.toml` (see the daemon section), so a change there changes both.
+
 A provider with no way to report usage prints "Usage is unknown" and exits 0; the governor then says `run`.
 
 **Exit codes:** 0 when the report was printed, 1 when usage could not be read or the reading could not be saved, 2 when the command was written wrongly (an unknown flag, provider or extra word).
@@ -700,6 +702,13 @@ stall_after = "10m"            # how long a session may ask a question at the te
 max_restarts = 3               # recoveries per task before it parks (0 means never restart)
 restart_backoff = "1m"         # wait before the second recovery; each later one doubles it
 
+[governor]
+pause_at = 90                  # percent of a usage window at which running work is stopped (above 5, at most 100)
+launch_below = 75              # percent of the session window under which new work may start (above 0, at most pause_at)
+stale_after = "30m"            # how old a usage reading may be before it is not trusted (must be longer than probe_interval)
+probe_interval = "5m"          # how often the daemon reads usage again (1m or more)
+on_unknown_usage = "run"       # "run" or "hold": what to do when the agent cannot report usage at all
+
 [[project]]
 path = "~/code/my-app"         # an absolute path, or one starting with ~/
 name = "my-app"                # optional; defaults to the folder name
@@ -707,6 +716,31 @@ name = "my-app"                # optional; defaults to the folder name
 [[project]]
 path = "/srv/another-app"
 ```
+
+**Usage.** The daemon asks the usage governor (see [`afk usage`](#afk-usage--show-how-much-of-your-usage-is-spent)) before it starts anything, and while a task runs. What it does for each governor action:
+
+- `run` — Nothing changes. Tasks start and sessions carry on.
+- `no_launch` — Nothing new starts: no task is launched, created again or started again. A session that is running carries on, and so does a parked one that is answered. `afk daemon status` says why.
+- `hold` — The reading is missing or too old, so the daemon does not know. Nothing new starts, and a running session is left alone. The daemon sends one notification. If it does not clear, read the daemon's log: a usage folder or file that cannot be used is named there once.
+- `pause` — A window is at or past `pause_at`. The daemon stops the session's agent and waits for the reset (see "A pause" below).
+- `refuse` — Extra usage is switched on for the account. The daemon starts nothing, stops a session that is running (an agent left running could spend real money), and adds one blocking `failure` item to the inbox of every project, "Extra usage is switched on, so afk starts nothing", with an urgent notification. Switch extra usage off. The daemon reads usage again, answers the item itself and carries on.
+
+**A pause.** The daemon saves the pause in the task's ledger entry (`usage_pause_at` and `usage_wake_at`), then asks the session's host to end its agent, the same request `afk clean` sends. The task stays `running`. A paused session is not recovered, not prompted and not reported as stalled. If the host is still there a minute later, the daemon sends it a terminate signal and waits up to ten seconds, and repeats that for two minutes. After three minutes it adds a blocking item, "Session could not be stopped for usage: <task> (<session>)", saying the session may still be spending, and the task parks. Attach and quit it by hand; `afk attach` keeps the saved pause.
+
+The session starts again when a reading taken after the pause began says there is room (`run` or `no_launch`), the saved wake time has passed, the old host is gone, and the agent is not logged out. The clock alone never decides. A new host runs the agent's resume command, so the conversation is the same one, and about 30 seconds later afk types the session's resume command (`/afk:go --session <name>`). This does not count as a restart. Work in progress at the pause (the one call in flight, a command that was running) is lost and done again. If the new host cannot be started, the pause is dropped and ordinary recovery takes over, with its limit.
+
+Someone attached to a session when it is paused sees it taken over and then ended. `afk dash` shows a paused session as one whose agent is not running, the same as any session whose host has gone. A session you started by hand is never paused or held back: the governor looks only at tasks the daemon runs.
+
+**The rate-limit marker.** When the agent stops at a usage limit, the plugin writes `.afk/<session>/.rate-limited`. The daemon reads it on a pass with a running task. A marker newer than the session's start and last restart pauses the session, with no wait for the reading to reach `pause_at`. The wake time is the governor's own when it has one, otherwise one minute after the next reset of any usage window (the soonest one still ahead), otherwise one hour. The wake time is only when afk looks again: if the limit that was hit has not reset by then, the new reading keeps the session paused.
+
+**The login check.** The daemon checks that the agent is still logged in, about once an hour, and every `probe_interval` while it is logged out, so that logging in again is noticed soon. A check that cannot run keeps the last answer: not knowing is not the same as logged out. The check cannot warn you ahead of time, because the agent's status output has no expiry date; you learn of it when the login has ended. Logged out has two effects:
+
+- Nothing new starts, and a paused session stays paused. A session already running is left alone.
+- The daemon adds one blocking `failure` item, "The agent is logged out on this machine", to every project, with an urgent notification. Log in on this machine and the daemon answers the item on its next check.
+
+**When it is checked.** Usage and the login are looked at only on a pass where something is running or could start: a running task, or one about to be launched, created again or un-parked, or while one of the two items above is open. An idle project causes no checks. A reading younger than `probe_interval` is reused, and a failed read is not tried again for a minute.
+
+**Linux only.** The forced stop needs `/proc` to be sure it is signalling the right host. Elsewhere a session that ignores the polite stop is reported after three minutes, as above.
 
 **Pausing.** `afk pause [project]` stops the daemon from starting new tasks in a project; a task that is already running carries on and finishes. `afk resume [project]` lets it start again. See [`afk pause` and `afk resume`](#afk-pause-and-afk-resume--hold-and-release-the-daemon). Neither needs the daemon restarted.
 
@@ -755,7 +789,7 @@ On its next pass the daemon sees every item answered and marks the task `running
 
 If a check fails, the daemon adds a blocking `failure` item to your inbox that says what to do, and starts nothing until you answer it. A provider with no unattended mode afk knows (Codex and OpenCode today) cannot be used with the daemon.
 
-**What it writes.** In each project's main checkout: `.afk/build/daemon.json` (what it last did and why), `.afk/build/paused` (the pause flag), `.afk/build/stopped` (the stopped line, with the task and the reason), `.afk/build/after-merge.json` (the record of the `after_merge` command: the task, the merge commit, when it started and finished, its exit code and whether it timed out) and `.afk/build/after-merge.log` (the command's output, replaced on each run), `.afk/build/ship-poll` (when GitHub was last asked, so a one-second tick does not make a call each second, and when its reads started failing), `.afk/build/ledger.json` (each task's status) and `.afk/log/decisions.jsonl` (one line for each decision). Each unattended session also has an empty file, `.afk/<session>/unattended`, that keeps the unattended mode on when its host restarts the agent. In afk's state folder, `daemon.lock` and `running.json` enforce the one-daemon rule. The daemon logs to stderr, one line each with a time; under systemd that is the journal. A hand-back writes `ci-failure.md` in the session's `.afk/<session>/` folder, which is removed with the session.
+**What it writes.** In each project's main checkout: `.afk/build/daemon.json` (what it last did and why), `.afk/build/paused` (the pause flag), `.afk/build/stopped` (the stopped line, with the task and the reason), `.afk/build/after-merge.json` (the record of the `after_merge` command: the task, the merge commit, when it started and finished, its exit code and whether it timed out) and `.afk/build/after-merge.log` (the command's output, replaced on each run), `.afk/build/ship-poll` (when GitHub was last asked, so a one-second tick does not make a call each second, and when its reads started failing), `.afk/build/ledger.json` (each task's status) and `.afk/log/decisions.jsonl` (one line for each decision). Each unattended session also has an empty file, `.afk/<session>/unattended`, that keeps the unattended mode on when its host restarts the agent. In afk's state folder, `daemon.lock` and `running.json` enforce the one-daemon rule, and `governor.json` holds when the daemon last tried to read usage (`probe_tried_at`) and what the last login check found (`login_checked_at`, `login_known`, `logged_in`). `usage.json` also gains a `governor` object: the decision (`action`, `reason`, `wake_at` when there is one, and `at`), stored with the reading by the daemon and by `afk usage`. The pause adds `usage_pause_at` and `usage_wake_at` to a task's entry in `ledger.json`; both are cleared when the task starts again, finishes or leaves `running`. The daemon logs to stderr, one line each with a time; under systemd that is the journal. A hand-back writes `ci-failure.md` in the session's `.afk/<session>/` folder, which is removed with the session.
 
 **`afk daemon --once`** does a single pass over every project and prints one line each: `<project>: <what it did> (<task>, session <session>): <why>`. It takes the same lock as the daemon, so it exits 1 while a daemon is running. Use it to try a setup, or from cron.
 
@@ -772,6 +806,8 @@ my-app (/home/you/code/my-app)
   Running: session t4-3 has been in this state for 12m
   Tasks:   3 done, 1 running
 ```
+
+When `usage.json` holds a decision, a line under the daemon's own lines says what the daemon is acting on and when it was made, for example `Usage: nothing new is started. A window is past the limit for starting new work. (as of Mon 12 Oct 09:30)`. It is printed also when no project is configured.
 
 A paused project gets a `Paused:` line first. `Doing:` becomes `Last:` when no daemon is running, because then the file is only a record of how things were left. `Problem:` replaces `Tasks:` when the ledger cannot be read, and with nothing configured it prints how to add a project.
 

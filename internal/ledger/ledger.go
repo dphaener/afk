@@ -129,6 +129,17 @@ type Entry struct {
 	// not yet been sent the line that tells it to carry on. It is cleared
 	// once that line is typed, so a daemon restart does not type it twice.
 	ContinuePending bool `json:"continue_pending,omitempty"`
+	// UsagePauseAt is when the daemon stopped this running task's session
+	// because of usage, RFC 3339 UTC. It is saved before the session is
+	// stopped, so a daemon killed in between does not take the missing host
+	// for a crash and recover it. The task stays running; the pause is this
+	// field and nothing else. Set leaves it alone.
+	UsagePauseAt string `json:"usage_pause_at,omitempty"`
+	// UsageWakeAt is the earliest time the paused session may be started
+	// again, RFC 3339 UTC. Empty means only a fresh usage reading decides
+	// when it resumes. Like RestartAt, it is not checked on load: a value
+	// that does not parse is read as the zero time.
+	UsageWakeAt string `json:"usage_wake_at,omitempty"`
 }
 
 // ShipStates returns every valid value of Entry.Ship in the order a ship

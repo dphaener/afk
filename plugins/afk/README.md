@@ -217,7 +217,7 @@ Notifications fire when:
 - **Fix-loop cap** (2 fix cycles exhausted, default mode) → toast, session marked as awaiting input. In autonomous mode there is no toast and no awaiting-input state
 - **NEEDS_INPUT relay** (executor asks a question mid-interview, default mode) → toast, session marked as awaiting input
 
-**Rate-limit marker.** When the agent CLI stops because of a rate limit, the `StopFailure` hook (`hooks/on-stop-failure.sh`, registered for the `rate_limit` reason only) writes `.afk/{name}/.rate-limited`, one line `{"at":"<time>"}`, for the matching session. It never touches `status.json`. The next prompt you submit, or the next normal stop, removes the file. Nothing reads the marker yet; it is groundwork for the always-on runner. See `status-schema.md` section 10.
+**Rate-limit marker.** When the agent CLI stops because of a rate limit, the `StopFailure` hook (`hooks/on-stop-failure.sh`, registered for the `rate_limit` reason only) writes `.afk/{name}/.rate-limited`, one line `{"at":"<time>"}`, for the matching session. It never touches `status.json`. The next prompt you submit, or the next normal stop, removes the file. The build daemon (`afk daemon`) reads the marker and pauses that session until the usage limit resets. See `status-schema.md` section 10.
 
 Background work (delegated task subagents, background Phase-C review) runs without notifications — the session self-resumes on completion. The dashboard's "awaiting input" indicator pairs with `updated_at` to show age.
 

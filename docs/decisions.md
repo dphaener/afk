@@ -1141,3 +1141,186 @@ Both tests were run with their fix taken out, and failed, and with it in, and pa
 - **The first launch in a repository does not show the running row's agent.** The agent is previewed at the start only when the dashboard remembers a row from an earlier run. It has been that way since before the rebuild.
 - **A message can outlive what it describes by a few seconds.** "run-one still running in the pane" stays up for its usual few seconds after the cursor has moved to another row and the pane has gone. Evidence: i2.
 - **The wedged banner and the help line offer `r` on a one-off session, where `r` is refused.** The refusal explains itself, so nothing is lost, but the offer is misleading. Evidence: k1 and k2.
+
+## T2.4
+
+T2.4 puts the usage governor into the daemon. The daemon now asks it before starting anything and while a task runs, stops a running session when usage is nearly spent and starts it again after the reset, reads the rate-limit marker, and checks that the agent is still logged in. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### The spike
+
+The master plan asked for a spike on the VM before the pause was built. It was run on 2026-10-12 against real interactive sessions of the agent CLI (version 2.1.296, on its cheapest model), in throwaway repositories under tmux. Six short sessions. The screens and commands are in `.afk/t2-4/evidence/spike/`.
+
+Each session was given slow, countable work (create forty files, three seconds apart), in the main conversation and in a background sub-agent, so it was plain whether work had stopped.
+
+| Way to pause | Stops a background sub-agent | Safe to send without looking | Survives a long gap | Verdict |
+|---|---|---|---|---|
+| Escape typed into the terminal | No. The sub-agent kept creating files. | No. Two in a row open the Rewind menu, or clear typed text. | Yes for the main conversation (tried at six minutes) | Not enough |
+| Ctrl+C typed into the terminal | Only when the main conversation is idle. Mid-turn it stops the turn and nothing else. | No. Two within a second quit the CLI. | Yes | Not usable blind |
+| Freeze and thaw the process (SIGSTOP, SIGCONT) | Not confirmed | Yes | No. After a six-minute freeze the CLI said "The response stopped arriving". | No |
+| End the process (SIGINT or SIGTERM), resume the conversation later | Yes. Everything in the process is gone. | Yes. It works whatever the agent is doing. | Yes. Nothing is held open, and the conversation is on disk. | Chosen |
+
+What ending the process looked like: the CLI exited at once on either signal, no child was left, and the files stopped. Started again with its resume option in the same folder, the CLI restored the whole conversation and printed that a background agent "didn't finish before the previous session ended". One typed line then made it start that sub-agent again from where it had got to.
+
+What is lost is the one call in flight, and any command that was running at that moment.
+
+Not tried: a real usage limit (nobody trips one on purpose), a gap longer than six minutes, and a session running a Workflow script. The freeze was also found not to work at all under tmux, which thaws the process by itself.
+
+The spike agent ended its test sessions with `tmux kill-server`. The tmux server had no other sessions at the time. The real check for this task is told not to do that.
+
+### What was decided, and why
+
+- **How a session is paused (A1, A3, A25).** The daemon asks the session's host to end its agent, the same request `afk clean` sends. The host ends too. If the host is still there a minute later the daemon sends it a terminate signal and waits ten seconds. It never kills the host outright: a host killed while it is still stopping its agent would leave the agent running where afk can no longer reach it. If it is still there after three minutes, one blocking item says the session could not be stopped and may still be spending, and the task parks. This is the only way the spike found that stops background sub-agents, needs no reading of the screen, and survives a wait of hours.
+- **How it is started again (A4).** With what T2.3 built for a host that has gone: a new host runs the agent's resume command, and thirty seconds later the daemon types the session's own resume command, `/afk:go --session <name>`. This does not count against the session's restarts. If the new host cannot be started, the pause is dropped and ordinary recovery takes over, with its limit.
+- **Where the pause is written down (A2).** In the task's ledger entry: `usage_pause_at` and `usage_wake_at`. The task stays `running`. The pause is saved before the session is stopped, so a daemon killed in between does not see a missing host and start it again.
+- **A paused session is left alone.** It is not recovered, not prompted and not reported as stalled. A session that finishes, fails or has a blocking item is still handled first.
+- **When it starts again (A5, A28).** When a reading taken after the pause began says there is room (`run` or `no_launch`), the saved wake time has passed, the old host is gone, and the agent is not known to be logged out. The clock alone never decides, and neither does a reading from before the pause.
+- **Extra usage on, with a session running (A6).** The master plan says the daemon refuses to run. It also stops the running session, because an agent that carries on could spend real money. It starts again once extra usage is off.
+- **The rate-limit marker (A7).** A marker newer than the session's start and last restart pauses the session. The wake time is the governor's when it has one, otherwise one minute after the earliest reset still ahead among the reading's windows, otherwise one hour. The earliest and not the fullest window's, because the marker does not say which limit was hit and the reading may be minutes old; the wake time is only when the governor is next asked, so waking early costs one reading and waking late can cost days (changed after the real check, see below).
+- **When the governor is asked (A8).** Only on a pass with a running task, or one about to start, re-create or un-park something. A reading under `probe_interval` old is reused. A probe that fails is not tried again for a minute. An idle project causes no probes.
+- **Shape in the code (A9).** The loop gets four optional hooks: usage, login, stop a session, read the marker. The decision stays a pure function. With no usage hook every new rule is off, so everything that existed before behaves as before.
+- **Settings (A10).** A `[governor]` table in `config.toml`: `pause_at` (90), `launch_below` (75), `stale_after` (30 minutes), `probe_interval` (5 minutes, at least 1) and `on_unknown_usage` (`run`). The master plan named the keys and not the table.
+- **Files (A11).** `usage.json` gains a `governor` object with the action, the reason and the wake time. A new `governor.json` beside it holds when the daemon last tried a probe and what the last login check said.
+- **The login check (A12, A13).** A new provider call. Hourly, and every `probe_interval` while logged out so that logging in is noticed soon. A check that cannot run keeps the last answer: not knowing is not the same as logged out. Logged out stops new work and keeps a paused session paused; a session already running is left alone.
+- **Is the login's end visible ahead of time?** No. The CLI's status output has no date in it, so there is no warning ahead of time. The master plan asked for one only "if detectable".
+- **Messages (A14).** Extra usage on, and logged out, each raise one blocking item in every project the daemon runs with an urgent notification, and the daemon answers the item itself when the cause is gone. A hold and a pause each send one notification. Holding back new work at 75% sends none.
+- **Parked and shipping tasks (A15, A34).** An un-park waits like any start, except at the 75% line, where a running session may carry on and so may a parked one. A paused task that parks keeps its pause and is started again, not typed into, when it un-parks. Ship steps are not held back.
+- **Commands (A16).** `afk usage` reads the same settings and writes the governor's action. `afk daemon status` gains a `Usage:` line.
+- **Without the means (A17).** A daemon given no way to stop or start a session leaves it running. The CLI's own wait at a limit is then the only guard.
+- **No install from this session (A18).** `CLAUDE.md` says to run `make install` after every verified feature. This session does not. The daemon on this machine runs from `~/bin/afk` and restarts itself when that file changes, and it installs from main after each merge. Installing a branch that is not merged would put unmerged code under the running daemon. This would normally have gone to the owner.
+- **Tests and prerequisites (A19, A20).** Tests are written with each change. Nothing had to be in place first.
+- **The spike ran during planning (A21).** The work plan depends on its answer.
+- **Planning process (A22 to A33).** The work plan went through three adversarial reviews, the most the process allows. The third found three more gaps, fixed in the plan: wrong advice shown during a long pause, a rule that could never be reached, and a forced stop that could have left an agent running. The first two are described next. The second found three more gaps, also fixed in the plan: an old reading could resume a rate-limited session over and over, the decision log would have gained a line with every reading, and nothing ran the whole of `make check`. The first found five critical gaps, all fixed in the plan: an acceptance command that could never pass, a marker pause that nothing could end, a resume that wrote the ledger after acting, a stop that was retried for ever in silence, and a probe time limit shorter than the one `afk usage` uses.
+
+### Accepted risks
+
+- **A session running a Workflow script was not part of the spike.** The conductor's resume command re-reads the plan from disk and re-runs what is not ticked, so finished work is not redone. Work in flight at the pause is done again.
+- **A failed CI run handed back to a finished session is not held back by a pause.** The ship types into the session whatever the governor says.
+- **While a task runs, a hold or a stop on new launches is not logged by the loop.** Nothing changes for the running session, so the loop's state does not change. `usage.json` shows it.
+- **What a session prints at a real usage limit has still not been seen.**
+
+### The real check
+
+One real run, on 2026-10-12 (UTC), on this machine. Tools: go 1.25.14, git 2.53.0, jq 1.8.1, on Linux 7.0. The full transcripts are in `.afk/t2-4/evidence/w5-t2-pause-resume.txt` (scenarios 1 to 4, every set-up file and the clean-up), `w5-t2-refuse-login.txt` (5 and 6) and `w5-t2-marker.txt` (7).
+
+**What was run.** A binary built from this branch to a scratch folder, in the manner of T2.3's real check: a scratch home, temp, config and state folder, so nothing touched the real ones, and a short path for the temp folder so the hosts' sockets fit. Two throwaway git repositories, each with one commit, a `.gitignore` with `.afk/` and `.claude/`, a two-task plan (T0.1, and T0.2 depending on it), an `afk.toml` naming the plan and an empty ledger made with `afk ledger init`. Each project had its own config and state folder, so the two halves of the check could not see each other's usage reading. The config set `tick = "1s"` and `[governor] probe_interval = "1m"` and left every limit at its default.
+
+No agent ran. A shell script named `claude` stood first on the `PATH` of the daemon and its hosts and answered three ways. For the usage probe it printed the committed fixture (`internal/provider/testdata/usage/captured.jsonl`) with the percentages, the reset times and the extra-usage flag taken from small control files. For `auth status` it printed `{"loggedIn": true}`, or `{"loggedIn": false}` with exit 1, by a control file. Otherwise it was the stand-in agent: it notes how it was started, appends each line typed into its terminal to a file, and prints a dot every two seconds so its host never takes it for stuck. It sets no trap and starts no child, so one SIGTERM ends it. It also wrote a line to a file for every probe and every login check, which is how the run counted them.
+
+Unlike T2.3's check, nothing was staged by hand to start with and no project was paused: the daemon created each session itself. Everything was driven by `afk daemon --once`, a few seconds apart, with the files read between passes. Between scenarios the scratch `usage.json` and `governor.json` were removed where the transcript says so, because the daemon rightly reuses a reading for a minute.
+
+**1. The session window at 80%, nothing running.**
+
+- Three passes, at 20:55:32, :35 and :38, each said "nothing new is started, because of the usage limits (T0.1): usage is close to the limit". No worktree, no host, no ledger entry, no inbox item.
+- `afk daemon status` gave the number: "Usage: nothing new is started. The current session is 80% used, at or past the limit of 75% for starting new work".
+- `usage.json` held `governor.action` `no_launch`. The three passes cost one login check and one usage probe; the second and third reused the reading.
+
+**2. At 10% (host pid 1487806).**
+
+- The pass at 20:55:46 created the worktree and branch `t0-1` and started a real host. Its child (1487821) is the stand-in, started as `claude --permission-mode bypassPermissions "/afk:go --session t0-1 --autonomous"`, and the host's own command line carries `--probe-unattached`. The ledger entry was `running`, attempt 1.
+- The status file was then edited by hand to what a working agent leaves: a conversation id and phase `executing`. Three more passes said "running T0.1, phase executing".
+
+**3. At 95%, resetting 45 seconds later, with that session running.**
+
+- The pass at 20:56:05 said "usage reached the pause line; pausing the session for T0.1 (t0-1)". The ledger entry gained `usage_pause_at` 20:56:05 and `usage_wake_at` 20:57:50, which is the reset time plus one minute. The status stayed `running`.
+- The host's log shows the request arrive, the child end on the signal and the host stop, all inside two milliseconds. A second later no process was left, and `host.json` and the socket were gone.
+- Thirteen passes from 20:56:05 to 20:57:48 said "paused for usage until Mon 12 Oct 20:57 UTC". None started anything and none raised an item. None of them probed either: the probe log's last line stayed at 20:56:05, which is the rule that a paused session with its wake time ahead is not asked about.
+- The decision log has one `usage_pause` line.
+
+**4. Back at 10%, with the reset time (20:56:50) in the past.**
+
+- The control file was set to 10% at 20:56:30, well before the wake time. The passes up to 20:57:48 still waited, so the clock and not the lower number decided when to look.
+- The pass at 20:57:51, one second after the wake time, made one new probe, read 10% and started one new host (1488658). Its child (1488670) is `claude --permission-mode bypassPermissions --resume 22222222-…`, the resume command with the staged conversation id.
+- The ledger entry lost both usage fields and gained `restart_at` 20:57:51 and `continue_pending` true. It has no `restarts` key: the resume did not count as a restart.
+- Six passes waited. The pass at 20:58:22, 31 seconds after the resume, typed the session's resume command. The stand-in's file holds `/afk:go --session t0-1` once, and `continue_pending` was gone. Five more passes typed nothing.
+- The decision log has one `usage_resume` line and one `continue` line. The inbox stayed empty through all four scenarios.
+
+**5. Extra usage switched on (second project, nothing running, usage at 10%).**
+
+- Four passes from 20:59:20 to 20:59:29 said "extra usage is switched on for this account; nothing new starts until it is switched off". Nothing was created. One blocking `failure` item appeared on the first pass, "Extra usage is switched on, so afk starts nothing", and the three later passes added no second one. `usage.json` held `governor.action` `refuse`.
+- Extra usage was switched off, with the session window put at 80% so that the same pass would not also start the task (scenario 6 needs nothing running). The pass at 20:59:29 answered the item as `fixed` and wrote an `overage_off` line. It then held the launch for the 80%, as in scenario 1.
+
+**6. Logged out (same project, usage at 10%, extra usage off).**
+
+- The stand-in's `auth status` printed `{"loggedIn": false}` and exited 1. Nine passes from 20:59:44 to 21:00:41 said "the agent is logged out on this machine; nothing new starts until you log it in here". Nothing was created. One blocking item, "The agent is logged out on this machine", appeared on the first pass and stayed the only one.
+- While logged out the daemon made no usage probe at all (`probe_tried_at` stayed empty), and it checked the login once, not on every pass.
+- The control file was set back to logged in at 20:59:51. Six passes after that still waited, because the check was not due. The pass at 21:00:51, 67 seconds after the last check, checked again, answered the item as `fixed`, made its first usage probe, read 10% and started T0.1 (host pid 1490101), all in one pass.
+
+**7. A rate-limit marker in the running session's folder.** The session of scenario 4, running, with the last reading at 10%.
+
+- `.afk/t0-1/.rate-limited` was written at 20:58:49 with the line the plugin's `StopFailure` hook writes, `{"at":"2026-10-12T20:58:49Z"}`. A pass just before it said "running".
+- The pass at 20:58:49 said "the session hit a usage limit; pausing the session for T0.1 (t0-1)". The ledger gained `usage_pause_at` 20:58:49 and `usage_wake_at` 2026-10-15T20:56:25Z. The host (1488658) and its child were gone a moment later.
+- Four more passes said "paused for usage until Thu 15 Oct 20:56 UTC", with no relaunch and no item. The decision log gained a second `usage_pause` line. The marker file was left in place.
+- The wake time is three days away because of how it is chosen. See the first point under "Seen, and left as it is".
+
+**One more, not asked for: extra usage switched on with a session running.** The session scenario 6 had just started.
+
+- The pass at 21:01:06 stopped it ("extra usage is switched on for this account; pausing the session"), with `usage_pause_at` set and no wake time, and raised the extra-usage item again. Three passes waited: "it starts again when a new usage reading allows it".
+- With extra usage off, the pass at 21:01:13 answered the item and started the session again. Its status file had no conversation id yet, so it came back as a new conversation, `claude --permission-mode bypassPermissions "/afk:go --session t0-1"`.
+
+**Clean-up.** One host was still running at the end (the last one above). It was stopped with SIGTERM and took its child with it. The scratch folders and the symlink were removed. `pgrep -af` for the scratch path printed nothing. The real `afkd` unit had the same `MainPID` (1240815) and `ActiveEnterTimestamp` before and after, and `~/bin/afk` was not touched.
+
+**Bugs.** None found. No Go file was changed.
+
+**Seen, and left as it is.**
+
+- **A session stopped by its marker can wait far longer than the limit it hit.** The wake time is the reset of the fullest window in the last reading, and that reading may be up to `probe_interval` old. Here the reading was 58 seconds old and said session 10%, week 20%, so the fullest window was the week and the wake time was the weekly reset, three days on. The control file had already been moved to 60% for the session window, but no new probe was due. A session paused with its wake time ahead is not asked about again, so nothing shortens the wait. On a real account the window that was hit will usually be the fullest one, but not when the reading is a few minutes old and a burst of work filled the session window since. Taking a new reading on the pass that sees a new marker would close this. It is as the work plan has it (A7), so it is recorded here and in the task's issues, not changed. Changed after the check: the wake time is now one minute after the earliest reset still ahead, whichever window is fullest, which would have been the session window's reset here; this was verified by unit tests only, not by a second real run.
+- **A wake time is shown to the minute.** "Paused until Mon 12 Oct 20:57 UTC" for a wake time of 20:57:50. The session started again at 20:57:51.
+- **Leaving a wait writes two lines.** The pass that launches or resumes after a governor wait writes its own line (`launch`, `usage_resume`) and a `governor` line whose answer is that same word.
+- **The two standing items read as if a task waited on them.** `afk inbox show` says "blocking: yes (the task is waiting for this)" for an item that names no task. Nothing parks on them.
+- **With no reading, `afk daemon status` has no `Usage:` line.** That was the case while logged out in scenario 6. The project's own lines said why nothing started.
+- **A new session started after a pause carries no `--autonomous` on its command line.** The session's `autonomous` marker file carries the mode, as it does for a dashboard restart (`internal/session/autonomous.go`).
+- **The host logs a broken pipe when it is asked to end.** The daemon sends the request and disconnects, so the host's reply has nowhere to go. The session still ends cleanly.
+- **`host.json` and the agent's first output appear a moment after the launching pass returns.** A read in the same second finds neither.
+
+**Not checked.**
+
+- A real agent. Everything here was a shell script, which dies on the first signal and reads a line whenever the Enter arrives.
+- A real usage limit, and what a real session does and prints when it meets one.
+- A session running the Workflow tool at the moment it is stopped.
+- macOS. Nothing here ran on it.
+- A session that will not stop: the terminate signal after a minute and the "could not be stopped" item after three. The stand-in ends at once.
+- The resume after a marker pause. The wake time was three days away.
+- A hold: no reading, a stale reading, or a probe that fails.
+- The weekly windows reaching a limit. Only the session window was moved.
+- Logged out with a session running, a parked task under the governor, and a pause that starts while a continue prompt is still owed.
+- A daemon killed between saving the pause and stopping the host. Unit tests cover it.
+- Two projects sharing one reading. Each project here had its own config and state folder.
+- `afk daemon` left running as a loop. Every pass here was `afk daemon --once`.
+- Push notifications. The scratch projects had no ntfy address.
+
+### Decided while building
+
+- **A reading counts as "after the pause" only by the whole second.** The pause is saved to the second, so a reading taken in that same second does not resume the session. One more probe is the cost.
+- **A fresh marker while extra usage is on gets no wake time.** Extra usage is ended by the owner, not by a clock.
+- **A logged-out agent holds back an un-park even at the 75% line.** The exception there is about usage only.
+- **A governor word the loop does not know holds a launch,** but does not pause a running session or resume a paused one.
+- **The extra-usage item is answered only on a reading the governor could judge.** A hold means there is no usable reading, so it does not show that extra usage is off.
+- **A project with an open extra-usage or login item is asked about on every pass,** even during a known wait, so the item is answered when its cause goes.
+- **An un-park back to shipping clears the pause.** An un-park back to running keeps it, and the session is started again instead of typed into.
+- **"This provider cannot report usage" is remembered while the daemon runs.** It is a fact about the provider. A restart asks once more.
+- **When `governor.json` cannot be written, no probe is made** and the daemon holds. Without the saved attempt a failing probe would run on every pass.
+- **A file that cannot be used is named in the daemon's log, once.** `afk daemon status` shows only a fixed sentence for a hold, so the log is where the file name is.
+- **A forced stop checks what the process is first.** It signals only a process whose command line has `_host` and the session's name. A process id left behind by a crashed host and reused by something else is never signalled. This works on Linux only; elsewhere a session that ignores the polite stop is reported after three minutes.
+- **The wake time after a rate-limit marker is the earliest reset still ahead (A35).** The work plan said the fullest window. The real check showed that can be the week when only the session limit was hit, a wait of days. Waking early costs one probe.
+- **`afk usage --help` still names the default five minutes.** The help is printed before any config is read.
+
+### Not verified, owner check
+
+- **A real agent paused and resumed by the daemon.** The spike did it by hand with signals and the resume option. The daemon's own path (host asked to end, new host, resume command typed) has only run against a stand-in script. First shown by the supervised run of T4.2.
+- **A session in the middle of a Workflow run when it is paused.** Whether the resumed conductor picks the run up cleanly from the plan's ticks.
+- **A real usage limit.** What the CLI prints, whether the hook writes its marker, and whether the daemon's pause at 90% keeps a session from ever reaching one.
+- **A logged-out machine.** The logged-out output was written by hand from the master plan's description, because logging the VM out is not a machine's call.
+- **The running `afkd`.** It keeps the old code until this branch is merged and installed. After that, check `afk daemon status` shows a `Usage:` line.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. `make check` was run once afterwards and was green. Minor notes: the wake-time change above differs from the work plan's wording and is recorded as A35, and the quality check ran the changed packages' tests and not the whole of `make check`.
+
+### Ideas left out
+
+- Count rounds of marker pauses. If the limit that was hit belongs to a longer window and the next reading still says there is room, the session starts, stops at the limit and is paused again, once per window reset, and nothing counts it.
+- Take a new reading on the pass that first sees a marker, without waiting for `probe_interval`.
+- Hold back a CI hand-back while usage is paused or extra usage is on.
+- Log a hold or a launch stop that begins while a task is running.
+- Have `afk inbox show` not say "the task is waiting for this" for an item that names no task.
+- One decision-log line, not two, on the pass that leaves a governor wait.

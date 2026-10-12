@@ -18,6 +18,7 @@ import (
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
+	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -44,6 +45,8 @@ type daemonRig struct {
 	stateHome string
 	launches  []daemon.LaunchRequest
 	providers []string
+	// governors is the [governor] table each newDeps call was handed.
+	governors []daemonconfig.Governor
 	alive     bool
 	ctx       context.Context
 	// common maps a folder to the git common dir the fake git reports.
@@ -135,8 +138,9 @@ func (r *daemonRig) env() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: func(int) bool { return r.alive },
-		newDeps: func(p provider.Provider, providerName string, log func(string, ...any)) daemon.Deps {
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, log func(string, ...any)) daemon.Deps {
 			r.providers = append(r.providers, providerName)
+			r.governors = append(r.governors, gov)
 			return daemon.Deps{
 				Now: func() time.Time { return daemonTestNow },
 				LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
@@ -243,6 +247,44 @@ func TestRunDaemon(t *testing.T) {
 			setup:  func(r *daemonRig) { r.writeConfig("[daemon]\ntick = \"banana\"\n") },
 			code:   1,
 			errOut: []string{"config.toml", "tick", "banana"},
+		},
+		{
+			// The plan's failure check: a limit that could never work stops
+			// the daemon before it looks at any project.
+			name: "a governor limit that is out of range",
+			args: []string{"--once"},
+			setup: func(r *daemonRig) {
+				r.writeConfig("[governor]\npause_at = 3\n[[project]]\npath = \"" + r.project() + "\"\n")
+			},
+			code:   1,
+			errOut: []string{"config.toml", "governor.pause_at"},
+			check: func(t *testing.T, r *daemonRig) {
+				if len(r.governors) != 0 {
+					t.Error("the loop's deps were built for a config that does not load")
+				}
+			},
+		},
+		{
+			// Load-bearing: the limits the owner wrote are the ones the real
+			// loop is built with, and the keys left out carry the defaults.
+			name: "the governor table reaches the loop",
+			args: []string{"--once"},
+			setup: func(r *daemonRig) {
+				root := r.project()
+				if err := daemonstate.Pause(root, daemonTestNow); err != nil {
+					r.t.Fatal(err)
+				}
+				r.writeConfig("[governor]\npause_at = 80\nlaunch_below = 50\nprobe_interval = \"2m\"\non_unknown_usage = \"hold\"\n[[project]]\nname = \"p0\"\npath = \"" + root + "\"\n")
+			},
+			code: 0,
+			out:  []string{"p0: waiting"},
+			check: func(t *testing.T, r *daemonRig) {
+				want := daemonconfig.Governor{PauseAt: 80, LaunchBelow: 50, StaleAfter: 30 * time.Minute,
+					ProbeInterval: 2 * time.Minute, OnUnknownUsage: governor.UnknownHold}
+				if len(r.governors) != 1 || r.governors[0] != want {
+					t.Errorf("newDeps got %+v, want one call with %+v", r.governors, want)
+				}
+			},
 		},
 		{
 			name:   "unknown word",
@@ -713,6 +755,34 @@ path = %q
 		}
 	})
 
+	// The line comes from usage.json alone: a file with a stored decision
+	// gives it, and one written before decisions were stored gives none.
+	t.Run("the usage line is read from usage.json", func(t *testing.T) {
+		r := newDaemonRig(t)
+		env := r.env()
+		status := func() string {
+			var so, se bytes.Buffer
+			if code := runDaemon([]string{"status"}, &so, &se, env); code != 0 {
+				t.Fatalf("status exit %d: %s", code, se.String())
+			}
+			return so.String()
+		}
+		f := usagestate.File{At: daemonTestNow, Provider: "scripted", Source: usagestate.SourceProbe}
+		if err := usagestate.Write(env.state, f); err != nil {
+			t.Fatal(err)
+		}
+		if got := status(); strings.Contains(got, "Usage:") {
+			t.Errorf("a usage line with no stored decision:\n%s", got)
+		}
+		f.Governor = &usagestate.Governor{Action: "hold", Reason: "The last usage reading is 31 minutes old, which is past the 30 minutes limit, so afk is holding new work.", At: daemonTestNow}
+		if err := usagestate.Write(env.state, f); err != nil {
+			t.Fatal(err)
+		}
+		if got := status(); !strings.Contains(got, "Usage: not known, so nothing new is started. The last usage reading is 31 minutes old") {
+			t.Errorf("no usage line for a stored hold:\n%s", got)
+		}
+	})
+
 	t.Run("a config that cannot be read", func(t *testing.T) {
 		r := newDaemonRig(t)
 		r.writeConfig("[daemon]\ntick = \"banana\"\n")
@@ -750,6 +820,29 @@ func TestRenderDaemonStatus(t *testing.T) {
 			name: "nothing configured, never started",
 			in:   daemonStatus{ConfigPath: "/cfg/afk/config.toml", Now: daemonTestNow, Loc: time.UTC},
 			want: []string{"has not been started on this machine yet", "No projects are configured", "/cfg/afk/config.toml", "[[project]]"},
+		},
+		{
+			// The usage line is the machine's, so it sits above every
+			// project, and a session paused for usage gets no Running line.
+			name: "paused for usage",
+			in: func() daemonStatus {
+				wake := time.Date(2026, 10, 12, 17, 1, 0, 0, time.UTC)
+				in := base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+					State: daemonstate.State{At: "2026-10-10T07:15:00Z", Kind: string(daemon.ActUsagePaused), Task: "T1.1", Session: "t1-1",
+						Reason: "t1-1 is paused for usage until Mon 12 Oct 17:01 UTC"}})
+				in.Usage = &usagestate.Governor{Action: "pause", Reason: "The current session is 91% used, at or past the 90% pause limit, so afk is pausing until it resets.",
+					WakeAt: &wake, At: time.Date(2026, 10, 12, 12, 30, 0, 0, time.UTC)}
+				return in
+			}(),
+			want: []string{"started Fri 9 Oct 10:00).\nUsage: paused until Mon 12 Oct 17:01. The current session is 91% used",
+				"(as of Mon 12 Oct 12:30)\n\ndemo (/p/demo)", "a session is paused because of the usage limits", "Since:"},
+			not: []string{"Running:", "Updated:"},
+		},
+		{
+			name: "no stored decision, no usage line",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				State: daemonstate.State{At: "2026-10-10T07:15:00Z", Kind: string(daemon.ActIdle)}}),
+			not: []string{"Usage:"},
 		},
 		{
 			name: "left by a stopped daemon",
@@ -990,6 +1083,14 @@ func (p *preflightProvider) UnattendedPreflight(d provider.UnattendedDeps) (bool
 	return p.modeOK, p.modeSteps
 }
 
+func (p *preflightProvider) Login(context.Context, provider.LoginDeps) (provider.LoginStatus, error) {
+	return provider.LoginStatus{}, provider.ErrLoginUnsupported
+}
+
+// Name is asked when the real deps are built: the usage source keeps the
+// provider's name to tell its own readings from another provider's.
+func (p *preflightProvider) Name() string { return "scripted" }
+
 func (p *preflightProvider) Preflight(dir string, _ func(string, string, ...string) (string, error)) (bool, string) {
 	p.gotDir = dir
 	return p.pluginOK, p.pluginSteps
@@ -1181,7 +1282,14 @@ func TestDaemonProjects(t *testing.T) {
 // Building the deps runs nothing: no git, no agent CLI, no network.
 func TestRealDaemonDeps(t *testing.T) {
 	var log bytes.Buffer
-	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), func() time.Time { return daemonTestNow }, &log,
+	stateHome := t.TempDir()
+	st := usagestate.Deps{Getenv: func(k string) string {
+		if k == "XDG_STATE_HOME" {
+			return stateHome
+		}
+		return ""
+	}}
+	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), st, daemonconfig.Governor{}, func() time.Time { return daemonTestNow }, &log,
 		daemonLogger(&log, func() time.Time { return daemonTestNow }))
 	for name, isNil := range map[string]bool{
 		"Now": d.Now == nil, "LoadBuild": d.LoadBuild == nil, "Sessions": d.Sessions == nil,
@@ -1189,6 +1297,9 @@ func TestRealDaemonDeps(t *testing.T) {
 		"Notify": d.Notify == nil, "NotifyIdle": d.NotifyIdle == nil, "Log": d.Log == nil,
 		"Ship": d.Ship == nil, "SendPrompt": d.SendPrompt == nil, "Clean": d.Clean == nil,
 		"NotifyUrgent": d.NotifyUrgent == nil, "Restart": d.Restart == nil, "Relaunch": d.Relaunch == nil,
+		// Without Usage every usage rule is off, and without StopSession a
+		// session at its limit is left running: both would be silent.
+		"Usage": d.Usage == nil, "Login": d.Login == nil, "StopSession": d.StopSession == nil,
 	} {
 		if isNil {
 			t.Errorf("realDaemonDeps leaves %s nil", name)
@@ -2024,6 +2135,10 @@ func TestDaemonTaskRunning(t *testing.T) {
 		string(daemon.ActLaunch): true, string(daemon.ActCreate): true,
 		string(daemon.ActWait): true, string(daemon.ActUnpark): true,
 		string(daemon.ActRestart): true, string(daemon.ActRelaunch): true, string(daemon.ActContinue): true,
+		// The only usage kind that is true: the paused session is being
+		// started again. The other five name a session whose agent is stopped
+		// or held back, and are false by not being here.
+		string(daemon.ActUsageResume): true,
 	}
 	for _, kind := range daemon.Kinds() {
 		t.Run(kind, func(t *testing.T) {
@@ -2032,6 +2147,21 @@ func TestDaemonTaskRunning(t *testing.T) {
 			}
 			if daemonTaskRunning(daemonstate.State{Kind: kind, Task: "T1.1"}) {
 				t.Error("with no session: got true, want false")
+			}
+		})
+	}
+}
+
+// TestDaemonStateChurns pins which states show "Updated" instead of "Since".
+// Load-bearing: only a ship step churns. A usage-paused session must show
+// "Since", because how long it has been paused is what the owner wants to
+// read, and its state file is rewritten only when something changes.
+func TestDaemonStateChurns(t *testing.T) {
+	for _, kind := range daemon.Kinds() {
+		t.Run(kind, func(t *testing.T) {
+			want := kind == string(daemon.ActShipStep)
+			if got := daemonStateChurns(daemonstate.State{Kind: kind, Task: "T1.1", Session: "t1-1"}); got != want {
+				t.Errorf("got %v, want %v", got, want)
 			}
 		})
 	}

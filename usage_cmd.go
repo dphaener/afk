@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
@@ -29,6 +30,10 @@ type usageDeps struct {
 	Now    func() time.Time
 	State  usagestate.Deps
 	Local  *time.Location
+	// LoadConfig reads the machine config for the [governor] table. Nil means
+	// the default limits, which is what a test gets unless it sets one. It
+	// returns the file's path so a failure can name it.
+	LoadConfig func() (cfg daemonconfig.Config, path string, err error)
 }
 
 // cmdUsage implements `afk usage`. The real dependencies are built here and
@@ -40,6 +45,11 @@ func cmdUsage(args []string) {
 		Now:    time.Now,
 		State:  usagestate.DefaultDeps(),
 		Local:  time.Local,
+		LoadConfig: func() (daemonconfig.Config, string, error) {
+			cd := daemonconfig.DefaultDeps()
+			cfg, err := daemonconfig.Load(cd)
+			return cfg, daemonconfig.Path(cd), err
+		},
 	}
 	os.Exit(runUsage(args, os.Stdout, os.Stderr, deps))
 }
@@ -111,15 +121,20 @@ func runUsage(args []string, stdout, stderr io.Writer, d usageDeps) int {
 		return 2
 	}
 
+	gov := usageGovernorConfig(stderr, d)
+	th := gov.Thresholds()
+
 	now := d.Now()
 	stored, haveStored := usagestate.Read(d.State)
 	if haveStored && stored.Provider != p.Name() {
 		haveStored = false
 	}
 	if haveStored && !*refresh {
-		if age := now.Sub(stored.At); age >= 0 && age < governor.DefaultProbeInterval {
+		if age := now.Sub(stored.At); age >= 0 && age < gov.ProbeInterval {
+			// Nothing is written here, so the decision stored with the
+			// reading stays as its writer left it.
 			snap := stored.Snapshot()
-			printUsageReport(stdout, d, &snap, now, true)
+			printUsageReport(stdout, d, &snap, now, true, th)
 			return 0
 		}
 	}
@@ -129,7 +144,7 @@ func runUsage(args []string, stdout, stderr io.Writer, d usageDeps) int {
 	snap, err := p.Usage(ctx, provider.UsageDeps{Run: d.Run, Now: d.Now})
 	switch {
 	case errors.Is(err, provider.ErrUsageUnsupported):
-		dec := governor.Decide(governor.Input{Unsupported: true, Now: now, Thresholds: governor.DefaultThresholds()})
+		dec := governor.Decide(governor.Input{Unsupported: true, Now: now, Thresholds: th})
 		fmt.Fprintf(stdout, "Usage is unknown for %s: this provider cannot report how much of its usage is spent.\n", p.Name())
 		writeGovernorLine(stdout, d, dec)
 		return 0
@@ -141,22 +156,57 @@ func runUsage(args []string, stdout, stderr io.Writer, d usageDeps) int {
 			s := stored.Snapshot()
 			fallback = &s
 		}
-		printUsageReport(stdout, d, fallback, now, true)
+		printUsageReport(stdout, d, fallback, now, true, th)
 		return 1
 	}
 
+	// The decision is stored with the reading it was made from, so the daemon
+	// and `afk daemon status` see the same verdict this command prints.
+	file := usagestate.FromSnapshot(p.Name(), snap)
+	// It is stamped with the time after the probe, so the decision is never
+	// dated before the reading it was made from.
+	file.Governor = usageDecisionRecord(governor.Decide(governor.Input{Snapshot: &snap, Now: now, Thresholds: th}), d.Now())
 	code := 0
-	if werr := usagestate.Write(d.State, usagestate.FromSnapshot(p.Name(), snap)); werr != nil {
+	if werr := usagestate.Write(d.State, file); werr != nil {
 		fmt.Fprintf(stderr, "afk usage: the reading could not be saved: %v\nCheck that afk's state folder can be written to.\n", werr)
 		code = 1
 	}
-	printUsageReport(stdout, d, &snap, now, false)
+	printUsageReport(stdout, d, &snap, now, false, th)
 	return code
+}
+
+// usageGovernorConfig gives the usage limits `afk usage` judges by: the
+// machine config's [governor] table, the same one the daemon reads, so the
+// two never disagree about what a reading means.
+//
+// A config that does not load is not a reason to refuse: the command is how
+// the owner looks at usage, often while fixing that very file. It says so in
+// one line and goes on with the defaults. A missing file is not a failure at
+// all (daemonconfig.Load answers the defaults for it).
+func usageGovernorConfig(stderr io.Writer, d usageDeps) daemonconfig.Governor {
+	th := governor.DefaultThresholds()
+	def := daemonconfig.Governor{PauseAt: th.PauseAt, LaunchBelow: th.LaunchBelow, StaleAfter: th.StaleAfter,
+		ProbeInterval: governor.DefaultProbeInterval, OnUnknownUsage: th.OnUnknownUsage}
+	if d.LoadConfig == nil {
+		return def
+	}
+	cfg, path, err := d.LoadConfig()
+	if err != nil {
+		// The loader's own errors start with the file's path; the path is
+		// added only for one that does not, so it is never said twice.
+		msg := err.Error()
+		if path != "" && !strings.Contains(msg, path) {
+			msg = path + ": " + msg
+		}
+		fmt.Fprintf(stderr, "afk usage: the machine config could not be used, so the default limits are used: %s\n", msg)
+		return def
+	}
+	return cfg.Governor
 }
 
 // printUsageReport writes the report. A nil snapshot prints no
 // windows but still prints the governor line (it reads "hold").
-func printUsageReport(w io.Writer, d usageDeps, snap *provider.UsageSnapshot, now time.Time, reused bool) {
+func printUsageReport(w io.Writer, d usageDeps, snap *provider.UsageSnapshot, now time.Time, reused bool, th governor.Thresholds) {
 	if snap == nil {
 		fmt.Fprintln(w, "No usage reading is available.")
 	} else {
@@ -170,7 +220,7 @@ func printUsageReport(w io.Writer, d usageDeps, snap *provider.UsageSnapshot, no
 		}
 		fmt.Fprintf(w, "  %-22s  %s\n", "Extra usage", extra)
 	}
-	dec := governor.Decide(governor.Input{Snapshot: snap, SessionRunning: false, Now: now, Thresholds: governor.DefaultThresholds()})
+	dec := governor.Decide(governor.Input{Snapshot: snap, SessionRunning: false, Now: now, Thresholds: th})
 	writeGovernorLine(w, d, dec)
 }
 

@@ -36,6 +36,8 @@ earlier forge behaviour in these areas:
 - the autonomous policy, the stop-before-shipping rule and the conductor and ship prompts;
 - the planner's `CONTEXT.md` and `docs/decisions.md` handling;
 - the `StopFailure` rate-limit marker hook (the port has no hooks directory).
+  The daemon (T2.4) reads that marker to pause a session for usage, so a session run by the port is
+  never paused by the marker; the daemon's usage readings still apply to it.
 - the T0.3 QA parity changes (plugin version 5.0.0): no `Case` field or failure-scenario rule in the
   plan format, no exploratory QA in the hands-on check, and no guard on the critic's findings in
   `workflows/review.js`.
