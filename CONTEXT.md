@@ -111,3 +111,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Tunnel**: the owner's private route from a phone or laptop to the web page on the VM (a VPN or a reverse proxy); the page itself stays on loopback.
 - **Restore drill**: restoring a database backup somewhere safe to prove the backup works, done once before deploys run unattended.
 - **Set-up branch**: `afk-setup`, the local branch in a project that holds its `afk.toml`, ignore lines and CI change until the owner pushes and merges it.
+- **Supervised run**: the first task afk runs in a project with the owner watching in the dashboard from launch to a healthy deploy, before the daemon is left to run by itself.
+- **Retrospective**: the write-up after a supervised run of what needed a human, the cause of each, and the task's token use.

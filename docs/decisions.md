@@ -1507,3 +1507,99 @@ The first pass was rejected on two points, and one fix cycle cleared both.
 The second pass approved with minor notes only: `README.md` and `CONTEXT.md` were edited outside the tasks' file lists, and some of the plan's checks can no longer be re-run as written because nebari moved on (`afk next` prints T4.4, `afk-setup` has an upstream).
 
 Still open when this was committed, all on the owner's side: nebari pull request 14 is not merged, nebari's main is red on `task_swipe_spec.rb:266`, and nebari is paused in the daemon.
+
+## T4.2
+
+T4.2 is afk's first real job: one nebari task run from start to a healthy deploy with the owner watching, a write-up of what needed a human, and then the daemon left to carry on by itself. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The owner starts the run, not the session (A1).** When the session began, nebari's pull request 14 was still open, nebari's `main` was red in CI on one system spec, and the project was paused in the daemon. The session merges nothing in nebari, changes nothing there and does not release the pause: a merge to nebari deploys to production, and the task says the owner is watching. This one would have been put to the owner if anyone had been there to ask.
+- **The session waits before doing any work (A2).** It raises one inbox item that stops the task, listing what the owner does, and every step of the work comes after the answer. Nothing useful can be written about a run that has not happened.
+- **The supervised task is whichever one the daemon starts (A3).** Today that is T4.4. The work does not name it, because the owner may reorder or reseed before the run.
+- **Runbook faults are fixed here; code faults are filed (A4).** If the run shows a runbook step was wrong or missing, the runbook is corrected in this change. If it shows afk's code needs to change, that goes to the inbox as a notice and into the write-up. Such a change cannot be sized before the run, and each one deserves its own reviewed change.
+- **The run is read from its files (A5).** The session was not attached while the task ran. It reads nebari's ledger, decision log, inbox and token ledger, GitHub's record of the pull request, and the owner's answer for what was done by hand.
+- **"Leave the daemon running" is checked, not done (A6).** At the end the session looks at whether `afkd` is active and nebari is released, and writes down what it sees. It never resumes, pauses or restarts anything.
+- **Tests and prerequisites (A7, A8).** No new automated tests: the change is documents. The prerequisites are all the owner's and are the inbox item of A2.
+- **The session ran `afk resume nebari` once, after the owner's go-ahead (A9).** The owner answered the inbox item with "Everything is ready to go, let's do it." before any task had run, with pull request 14 merged and nebari still paused. The session read that as the go-ahead and typed the one command, which replaces the "never resumes" part of A1 and A6 for that command only. It changed nothing else in nebari or the daemon, said so in inbox item `jjmkb5`, and `afk pause nebari` undoes it. This one would also have been put to the owner if anyone had been there to ask.
+
+### The supervised run
+
+The task was **T4.4** (calendar feed, Today and the garden journal), run by the daemon in session `t4-4` on branch `t4-4`. Times are UTC, from nebari's ledger and decision log.
+
+- **Start.** The owner had paused nebari at 00:52:34. The release (`afk resume nebari`) is logged at 01:27:58 and T4.4 launched a second later, at 01:27:59. The session ran that command itself after the owner's go-ahead (assumption A9), so the log's `chosen_by: owner` names the owner's authority, not who typed it.
+- **Build.** The daemon recorded 14 token ledger lines and handed the task to shipping at 04:43:29, 3 hours 15 minutes after the launch.
+- **Ship states.** The decision log shows them in order: `committed` (04:43:34), `pushed` (04:43:39), `pr_open` (04:43:44), `ci_green` (05:05:29), `merged` (05:05:52), `deploy_healthy` (05:07:14), then `shipped`, which cleaned up the session and marked T4.4 done at 05:07:19.
+- **Pull request.** Number 15, "feat(today): Add Today, garden journal, calendar and feed", created 04:43:46, merged 05:05:56. All eight checks passed; the slowest test shard took 12 minutes 48 seconds.
+- **Merge commit.** `fabbb96f9ea64f2fc6736259ef92d0437d5f9cd8` (`fabbb96`), the head of nebari's `main`.
+- **Deploy.** The daemon's own check logged `deploy_healthy`, and `https://nebari.haener.cloud/up` answered 200 when this session looked.
+- **How long.** 3 hours 39 minutes from launch to done: 3 hours 15 minutes of agent work, 22 minutes from pull request to green CI, and under 2 minutes from green CI to a healthy deploy. One attempt, no retries.
+- **After.** Five seconds after T4.4 was done the daemon launched T5.1 in session `t5-1` without anyone asking. That is the unattended part working.
+
+### What needed a human
+
+The owner's answer to the blocking item was "Everything is ready to go, let's do it." It was given before any task had run, so it does not list anything done by hand during or after the run. What follows comes from the files and is only as complete as they are.
+
+- **Before the run: merge nebari's pull request 14, fix the red `task_swipe_spec.rb:266`, and pause and release the project.** afk merges only on green CI and a merge to nebari deploys to production, so the session was not allowed to do these. Cause: by design, the owner's gate on the first production deploy, not a fault. Nebari's `main` now carries the spec fixes and the CI change that were in the way (`7b418e8`, `ded7091`, `35b81f1`), but the files do not say who made them.
+- **Starting the run: `afk resume nebari`.** The daemon does not start a paused project, and the pause was the owner's. The session typed the command after the owner's go-ahead and left a non-blocking inbox item (`jjmkb5`) saying so. Cause: by design, the pause is the owner's switch.
+- **During the run: nothing visible.** The decision log has no step the owner took. T4.4 left no blocking inbox item in nebari's inbox and none of its ship states was repeated or held, so the daemon never waited for a person. Whether the owner typed into the agent's terminal is not in any file: the owner's answer says nothing about it, so **this session cannot say** whether terminal input was needed. The files show no sign that it was.
+- **After the run: one unanswered, non-blocking question.** The session left `kxcvdt` in nebari's inbox, about how the calendar feed is exposed (opt-in, token in the query string). It stopped nothing and the owner has not answered. Cause: it is a product choice that only the owner can make.
+- **Not a human step: the daemon restarted itself at 01:21:09** because afk's program file had changed on disk. The log shows it did so by policy, before the run began.
+- **A small fault in afk's reporting.** The plan assumed `afk inbox --all` exists to show answered items in another project. It does not (`flag provided but not defined: -all`), so this account was assembled from `afk inbox` and the files in `.afk/inbox/`. This is a gap in the tool, not something the owner had to do.
+
+### Tokens
+
+`afk tokens --project ~/code/nebari T4.4` printed a breakdown (exit 0), so the daemon did record the session. The saved copy is `.afk/t4-2/evidence/tokens.txt`.
+
+| Phase | Calls | Weighted | Share |
+|---|---|---|---|
+| plan | 111 | 4,264,852 | 24.4% |
+| execute | 522 | 11,758,802 | 67.2% |
+| review | 46 | 1,367,794 | 7.8% |
+| ship | 6 | 115,116 | 0.7% |
+| **Total** | **685** | **17,506,564** | 100% |
+
+By role, the largest were the execute `task` role (three model rows: 6,319,909 + 3,048,638 + 402,108), the plan `planner` (1,888,636), the plan `crucible` (1,818,093), the execute `verifier` (1,353,624) and the review `qa` role (1,039,707).
+
+The weighted total is **17,506,564**, against the baseline of about 16M weighted per task in `docs/PLAN.md` §4.7. That is about 1.5M, or 9%, over. One task is one data point, so this is not evidence that the baseline is wrong, only that a large task such as T4.4 (Today, the garden journal, a calendar and a feed) can run past it. Execute is two thirds of the cost.
+
+For comparison, `afk tokens --project ~/code/nebari T0.1`, a task seeded by hand, prints "has nothing for T0.1" and exits 1. No figure is given for any task without ledger lines.
+
+### Fixed or filed
+
+One bullet for each bullet of "What needed a human". No cause was a runbook fault, so `docs/runbook-vm.md` is unchanged.
+
+- **Merge pull request 14, fix the red spec, pause and release the project.** Kind: only the owner can do it. It is the owner's gate on the first production deploy, so there is nothing to fix and nothing to file. The owner's.
+- **`afk resume nebari`.** Kind: only the owner can do it. The pause is the owner's switch, and the runbook already says to run it (section 8, line 778). The owner's. The session's own use of it is recorded in inbox item `jjmkb5`.
+- **During the run: nothing visible.** Nothing to fix or file. Whether terminal input was needed is not in any file, so no cause can be named.
+- **The unanswered calendar-feed question.** Kind: only the owner can do it, because it is a product choice. It is already in nebari's inbox as `kxcvdt`. The owner's.
+- **The daemon's self-restart at 01:21:09.** Not a human step, so nothing to fix or file.
+- **`afk inbox --all` does not exist.** Kind: afk's code would have to change. Filed as inbox notice `mmt6u7` in this project's inbox.
+
+### Checked, and not checked
+
+Checked, in files and on the live system when this was written:
+
+- Nebari's ledger entry for T4.4: `done`, pull request 15, one attempt, `merged_sha` `fabbb96f9ea64f2fc6736259ef92d0437d5f9cd8`, started 01:27:59 and finished 05:07:19.
+- The whole decision log (14 lines), for every ship state and its time.
+- GitHub's record of pull request 15 (state `MERGED`, merge commit the same `fabbb96...`) and its eight passing checks.
+- `git log` on nebari's `main`, with `fabbb96` at the head.
+- `https://nebari.haener.cloud/up` answering 200 now.
+- The token breakdown, as printed by `afk tokens`.
+- `afk daemon status`: the daemon is running and nebari is on T5.1, in phase planning. This is a status of the moment, not a record of the run.
+
+Not checked, resting on the owner's word or on nothing:
+
+- Whether the owner typed into the agent's terminal or did anything by hand during the run. The owner's answer was given before the run and says nothing about it.
+- Who made the spec and CI fixes on nebari's `main`, and whether the other owner steps in runbook section 6 (backups and restore drill, Coolify auto-deploy, the phone check) were done. The run's files do not cover them.
+- That the deployed feature works for a person. The deploy check is the `/up` health answer, which says the app is up, not that the calendar feed or the Today view behave.
+- The session was not attached during the run, so nothing is known about the run that is not in the files above.
+
+### Left running
+
+Read from `.afk/t4-2/evidence/w2-t1-daemon.txt` at the end of this task.
+
+- `systemctl --user is-active afkd` prints `active`: the daemon is running.
+- Nebari is released. `afk daemon status` shows no `Paused:` or `Stopped:` line for it.
+- Nebari's build is running a task: T5.1, in session `t5-1`, in phase planning (22:07 on 12 October, local time). Nebari has 24 tasks done, 1 running and 1 superseded. Nothing is waiting on the owner for it; the only open nebari inbox item is the non-blocking `kxcvdt`.
+- The daemon also shows this project (afk) running T4.2 in session `t4-2`, which is this work.
