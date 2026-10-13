@@ -55,6 +55,8 @@ earlier forge behaviour in these areas:
   work for any agent.
 - the design hand-off (plugin version 5.6.0): the port has no design phase. `afk plan next-followup` is
   part of the binary and works for any agent.
+- open questions (plugin version 5.6.1): the port has no copy of the format document's text saying the
+  build daemon holds a task while an open row names it. The daemon is part of the binary and works for any agent.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

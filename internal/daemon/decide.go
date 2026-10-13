@@ -21,6 +21,7 @@ package daemon
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -240,6 +241,14 @@ type Observation struct {
 	// un-parked: with no view, a finished session would be read as one that
 	// is still working.
 	ParkedErr error
+	// Questions is every row of the plan's Open questions table, open and
+	// answered, as masterplan.Questions read it on this tick. QuestionsErr is
+	// set when the plan could not be read for them, and Questions means
+	// nothing then. Both are optional as the usage fields are: an executor
+	// with no way to read the plan leaves them empty, no task is ever held
+	// for a question, and Decide answers as it did before the hold existed.
+	Questions    []masterplan.Question
+	QuestionsErr error
 }
 
 // ActionKind names the one thing the executor does on a tick.
@@ -322,6 +331,15 @@ const (
 	// ActUsageResume: a session stopped for usage may go on. Start a new
 	// host for it, resuming the same conversation.
 	ActUsageResume ActionKind = "usage_resume"
+	// ActQuestionHold: the next task is named by open rows of the plan's Open
+	// questions table. Start nothing for it: raise one inbox item for each
+	// row that has none and park the task on those items. Items holds the ids
+	// of the items that already exist. No session.
+	ActQuestionHold ActionKind = "question_hold"
+	// ActQuestionAnswered: every item a held task waited on is answered.
+	// Write the answers into the plan's rows and set the task back to
+	// pending, or tell the owner when an answer cannot be written.
+	ActQuestionAnswered ActionKind = "question_answered"
 )
 
 // KindLineStopped is the state kind of a tick held back by the stop marker.
@@ -393,8 +411,11 @@ type Action struct {
 //     task whose items are all answered is un-parked, back to shipping when
 //     it was shipping or its session has finished and to running otherwise;
 //     a pending task is launched; no task is idle.
+//     A task named by an open row of the plan's Open questions table is
+//     held before any of that, owner tasks included (see decideNext).
 //  6. Nothing active and the project is paused: rule 5's answer stands only
-//     when it is about an owner task; anything else waits.
+//     when it is about an owner task or an open question; anything else
+//     waits.
 //  7. Rule 5 chose to launch a task or to un-park one, and the agent is
 //     logged out or usage does not allow it: wait instead (see heldBack).
 //
@@ -419,6 +440,13 @@ type Action struct {
 // means the last deploy is broken and the owner has to look before the build
 // moves at all, so it holds back everything, those two included. That is why
 // rule 4 is checked before nexttask is asked and rule 6 after.
+//
+// The two open-question kinds follow the owner kinds in all of this, for the
+// same reasons. Asking the owner a question and writing their answer into the
+// plan start no agent, so pause lets both through and neither is held back for
+// usage or a logged-out agent; a paused project is in fact the best time to
+// get its questions answered. A stopped line holds them back with everything
+// else.
 func Decide(o Observation) Action {
 	if o.BuildErr != nil {
 		return Action{Kind: ActStop, Reason: o.BuildErr.Error()}
@@ -474,7 +502,8 @@ func Decide(o Observation) Action {
 		return Action{Kind: ActWait, LineStopped: true, Reason: stoppedReason(o)}
 	}
 	a := decideNext(o)
-	if o.Paused && a.Kind != ActOwner && a.Kind != ActOwnerDone {
+	if o.Paused && a.Kind != ActOwner && a.Kind != ActOwnerDone &&
+		a.Kind != ActQuestionHold && a.Kind != ActQuestionAnswered {
 		return Action{Kind: ActWait, Reason: "paused; no new task will start until `afk resume`"}
 	}
 	if h, ok := heldBack(o, a); ok {
@@ -1095,6 +1124,31 @@ const alreadyReported = "already reported; waiting for the owner to resume the s
 //
 // An unreadable status file is not "done": the phase of a stale view is
 // whatever was parsed last, or nothing.
+//
+// Open questions (PLAN T5.6) are checked first, for whichever task nexttask
+// named, in three steps:
+//
+//   - The task is parked by the hold itself (isQuestionHold) and nexttask
+//     chose it, so every item it waited on is answered: ActQuestionAnswered.
+//     This comes before the owner branch and before the un-park, and it has
+//     to. A held task has no session and was never started. Read as an
+//     owner's parked task it would be marked done with nothing done; read as
+//     an agent's it would be sent to running, and the next pass would create
+//     a session for a task whose row may still be open.
+//   - The task is not parked and the plan's questions could not be read:
+//     wait. Starting it would be starting it blind, and the hold is the one
+//     rule here that exists to stop exactly that.
+//   - The task is not parked and open rows name it: ActQuestionHold. An
+//     owner's task is held the same way, ahead of ActOwner, because the
+//     owner should get the question before they are handed the task that
+//     needs its answer.
+//
+// A row holds its task for as long as it is open in the plan, whatever the
+// inbox says. An answered item only stops a second item being raised; the
+// agent reads the answer from the plan, so the task must not start until the
+// answer is there. A task that is parked for any other reason is not looked
+// at for questions: its session is already running, and stopping work that is
+// under way is not what the hold is for.
 func decideNext(o Observation) Action {
 	open := make(map[string]bool, len(o.Items))
 	for _, it := range o.Items {
@@ -1111,6 +1165,26 @@ func decideNext(o Observation) Action {
 	if d.Task != "" {
 		e, ok := o.Ledger.Get(d.Task)
 		isParked := ok && e.Status == ledger.Parked
+		switch {
+		case isParked && isQuestionHold(e, o.Items):
+			return Action{Kind: ActQuestionAnswered, Task: d.Task, Reason: fmt.Sprintf(
+				"every question %s was waiting on is answered; putting the answers in the plan", d.Task)}
+		case !isParked && o.QuestionsErr != nil:
+			return Action{Kind: ActWait, Task: d.Task, Reason: fmt.Sprintf(
+				"the plan's open questions could not be read (%v); %s is not started until they can be", o.QuestionsErr, d.Task)}
+		case !isParked:
+			if rows := holdingRows(o.Questions, d.Task); len(rows) > 0 {
+				// Items names the items that are already there, each once,
+				// so the state shows what the owner has been asked so far.
+				var have []string
+				for _, q := range rows {
+					if it, ok := questionItem(o.Items, q); ok && !slices.Contains(have, it.ID) {
+						have = append(have, it.ID)
+					}
+				}
+				return Action{Kind: ActQuestionHold, Task: d.Task, Items: have, Reason: holdReason(d.Task, len(rows))}
+			}
+		}
 		if d.Owner {
 			if isParked {
 				return Action{Kind: ActOwnerDone, Task: d.Task,

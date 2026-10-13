@@ -35,6 +35,11 @@ import (
 //     while it had work would stay open for ever.
 //
 // A project with nothing to do and no such item is never asked about at all.
+// Neither is a tick that hands a task to the owner, or that holds one for an
+// open question of the plan or writes the answer to one (ActOwner,
+// ActOwnerDone, ActQuestionHold, ActQuestionAnswered): none of them starts an
+// agent, so a reading could not change what the tick does. They are left out
+// by not being in the list below, and TestTickQuestionHold counts the calls.
 //
 // One running task is left out: a session paused with a wake time still
 // ahead, whose host is gone. Nothing a reading says before that time can

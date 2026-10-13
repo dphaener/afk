@@ -25,6 +25,8 @@ import (
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/notify"
+	"github.com/dphaener/afk/internal/planlint"
+	"github.com/dphaener/afk/internal/planpatch"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
@@ -1243,6 +1245,25 @@ func TestRenderDaemonStatus(t *testing.T) {
 			not:  []string{"Running:", "owner_task"},
 		},
 		{
+			// Like the owner's task: no session, so no "Running:" line, and
+			// the kind is said in words.
+			name: "task held for an open question",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				State:  daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: string(daemon.ActQuestionHold), Task: "T1.1", Reason: "waiting on the owner: T1.1 needs 1 open question answered first; see inbox a1b2"},
+				Counts: map[ledger.Status]int{ledger.Parked: 1}}),
+			want: []string{"Doing:   a task is waiting for you to answer an open question from the plan", "Task:    T1.1\n",
+				"Why:     waiting on the owner: T1.1 needs 1 open question answered first; see inbox a1b2", "Since:   Sun 11 Oct 09:00"},
+			not: []string{"Running:", "question_hold"},
+		},
+		{
+			name: "open question answered",
+			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
+				State:  daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: string(daemon.ActQuestionAnswered), Task: "T1.1", Reason: "the open questions T1.1 waited on are answered in the plan; it starts when its turn comes"},
+				Counts: map[ledger.Status]int{ledger.Pending: 1}}),
+			want: []string{"Doing:   an open question was answered, so the task it held can start", "Task:    T1.1\n"},
+			not:  []string{"Running:", "question_answered"},
+		},
+		{
 			name: "no ledger",
 			in: base(daemonProjectStatus{Name: "demo", Root: "/p/demo", HasState: true,
 				State: daemonstate.State{At: "2026-10-11T09:00:00Z", Kind: string(daemon.ActNoLedger), Reason: "no task ledger; see inbox item a1b2"}}),
@@ -1598,6 +1619,7 @@ func TestRealDaemonDeps(t *testing.T) {
 		"NotifyUrgent": d.NotifyUrgent == nil, "Restart": d.Restart == nil, "Relaunch": d.Relaunch == nil,
 		// Without Usage every usage rule is off, and without StopSession a
 		// session at its limit is left running: both would be silent.
+		"ReadPlan": d.ReadPlan == nil, "PatchPlan": d.PatchPlan == nil,
 		"Usage": d.Usage == nil, "Login": d.Login == nil, "StopSession": d.StopSession == nil,
 	} {
 		if isNil {
@@ -2488,5 +2510,266 @@ func TestDaemonSettings(t *testing.T) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+// nebariPlan reads the nebari fixture. nebariT94Question is the text of the first open row of it
+// whose "Needed by" names T9.4.
+func nebariPlan(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("internal", "masterplan", "testdata", "nebari-plan.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func nebariT94Question(t *testing.T, plan []byte) string {
+	t.Helper()
+	for _, q := range masterplan.Questions(plan) {
+		if q.Open && len(q.NeededBy) > 0 && q.NeededBy[0] == "T9.4" {
+			return q.Text
+		}
+	}
+	t.Fatal("the fixture has no open row naming T9.4")
+	return ""
+}
+
+// answerEdit is the Edit the loop hands PatchPlan, built the way the loop
+// builds it (daemon.go patchAnswer): masterplan.AnswerRow, and ErrRowAnswered
+// when the row is not open exactly once.
+func answerEdit(question, answer string) func([]byte) ([]byte, []byte, error) {
+	return func(plan []byte) ([]byte, []byte, error) {
+		old, new, ok := masterplan.AnswerRow(plan, question, "2026-10-13", answer)
+		if !ok {
+			return nil, nil, daemon.ErrRowAnswered
+		}
+		return old, new, nil
+	}
+}
+
+// prGit is patchGit's counterpart for pull-request mode: a repository on
+// main with an origin, no branch planpatch.PRBranch yet and no open pull request. A
+// "git worktree add" copies the plan into the new folder, since the fake
+// makes no checkout, so the change is made there and not in the main
+// checkout.
+type prGit struct {
+	root, rel string
+	calls     []string
+}
+
+func (g *prGit) run(dir, name string, args ...string) (string, error) {
+	line := strings.Join(append([]string{name}, args...), " ")
+	g.calls = append(g.calls, line)
+	exit := func(code int) (string, error) {
+		return "", &ship.CmdError{Cmd: line, Code: code, Err: fmt.Errorf("exit status %d", code)}
+	}
+	switch {
+	case strings.HasPrefix(line, "git rev-parse --is-inside-work-tree"):
+		return "true\n", nil
+	case strings.HasPrefix(line, "git status --porcelain"):
+		return "", nil
+	case line == "git remote get-url origin":
+		return "git@example.test:me/app.git\n", nil
+	case line == "git branch --show-current":
+		return "main\n", nil
+	case strings.HasPrefix(line, "git rev-parse --verify"):
+		return exit(1)
+	case strings.HasPrefix(line, "git worktree add"):
+		wt := args[len(args)-2]
+		data, err := os.ReadFile(filepath.Join(g.root, g.rel))
+		if err != nil {
+			return exit(1)
+		}
+		if err := os.MkdirAll(filepath.Join(wt, filepath.Dir(g.rel)), 0o755); err != nil {
+			return exit(1)
+		}
+		if err := os.WriteFile(filepath.Join(wt, g.rel), data, 0o644); err != nil {
+			return exit(1)
+		}
+		return "", nil
+	case strings.HasPrefix(line, "git add"), strings.HasPrefix(line, "git commit"),
+		strings.HasPrefix(line, "git push"), strings.HasPrefix(line, "git worktree remove"):
+		return "", nil
+	case strings.HasPrefix(line, "gh pr list"):
+		return "[]\n", nil
+	case strings.HasPrefix(line, "gh pr create"):
+		return "https://example.test/me/app/pull/7\n", nil
+	}
+	return exit(1)
+}
+
+// TestPatchPlan drives the loop's PatchPlan hook against a temp project that
+// holds the nebari plan, with git and gh scripted.
+//
+// Load-bearing rows:
+//   - "answers the row": the answer is in the plan file, reads as answered
+//     with the pipe escaped, and the commit names the plan alone.
+//   - "already answered": errors.Is(err, daemon.ErrRowAnswered) must hold
+//     through planpatch.Run, or the loop would take a refusal for a failure.
+//   - "via_pr": the pull request address comes back and the main checkout's
+//     plan is byte for byte as it was.
+//   - "config does not load": an error and no git command at all, so a
+//     project that asked for pull requests never gets a commit on its base.
+func TestPatchPlan(t *testing.T) {
+	const planRel = "docs/PLAN.md"
+	base := nebariPlan(t)
+	question := nebariT94Question(t, base)
+	old, new, ok := masterplan.AnswerRow(base, question, "2026-10-12", "British")
+	if !ok {
+		t.Fatal("the fixture row cannot be answered")
+	}
+	answered := bytes.Replace(base, old, new, 1)
+
+	tests := []struct {
+		name      string
+		toml      string
+		plan      []byte
+		answer    string
+		viaPR     bool
+		wantErr   func(error) bool
+		wantPR    string
+		wantRow   string // text the plan must hold afterwards, "" for none
+		unchanged bool
+		wantGit   []string // prefixes of git commands that change something
+	}{
+		{
+			name:    "answers the row",
+			toml:    "plan = \"docs/PLAN.md\"\n",
+			plan:    base,
+			answer:  "Use Frankfurt | eu-central",
+			wantRow: "**Answered 2026-10-13:** Use Frankfurt \\| eu-central",
+			wantGit: []string{"git add -- docs/PLAN.md", "git commit -m docs(plan): Answer an open question for T9.4 -- docs/PLAN.md"},
+		},
+		{
+			name:    "already answered",
+			toml:    "plan = \"docs/PLAN.md\"\n",
+			plan:    answered,
+			answer:  "later",
+			wantErr: func(err error) bool { return errors.Is(err, daemon.ErrRowAnswered) },
+			// The plan holds the earlier answer and the patch must not touch it.
+			unchanged: true,
+		},
+		{
+			name:      "via_pr",
+			toml:      "plan = \"docs/PLAN.md\"\n[planning]\nvia_pr = true\n",
+			plan:      base,
+			answer:    "British",
+			viaPR:     true,
+			wantPR:    "https://example.test/me/app/pull/7",
+			unchanged: true,
+			wantGit:   []string{"git add -- docs/PLAN.md", "git commit -m docs(plan): Answer an open question for T9.4 -- docs/PLAN.md", "git push -u origin " + planpatch.PRBranch},
+		},
+		{
+			name:      "config does not load",
+			toml:      "plan = [\n",
+			plan:      base,
+			answer:    "British",
+			wantErr:   func(err error) bool { return err != nil && !errors.Is(err, daemon.ErrRowAnswered) },
+			unchanged: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writePlanFile(t, root, planRel, string(tt.plan))
+			writePlanFile(t, root, "afk.toml", tt.toml)
+			before := append([]byte(nil), tt.plan...)
+
+			var run ship.RunFunc
+			var calls func() []string
+			if tt.viaPR {
+				g := &prGit{root: root, rel: planRel}
+				run, calls = g.run, func() []string { return g.calls }
+			} else {
+				g := &patchGit{repo: true}
+				run = g.run
+				calls = func() []string {
+					var out []string
+					for _, c := range g.calls {
+						out = append(out, strings.Join(c, " "))
+					}
+					return out
+				}
+			}
+			tempDir := func() (string, error) { return t.TempDir(), nil }
+			hook := daemonPatchPlan(projectconfig.Load, run, tempDir)
+
+			res, err := hook(daemon.Project{Name: "app", Root: root}, daemon.PlanPatchRequest{
+				PlanPath: filepath.Join(root, planRel),
+				Edit:     answerEdit(question, tt.answer),
+				Message:  "docs(plan): Answer an open question for T9.4",
+			})
+			switch {
+			case tt.wantErr != nil:
+				if err == nil || !tt.wantErr(err) {
+					t.Fatalf("error = %v, not the one wanted", err)
+				}
+			case err != nil:
+				t.Fatalf("PatchPlan: %v", err)
+			}
+			if res.PR != tt.wantPR {
+				t.Errorf("PR = %q, want %q", res.PR, tt.wantPR)
+			}
+			if tt.viaPR && len(res.Notes) == 0 {
+				t.Error("a pull request came back with no note for the owner")
+			}
+			got, rerr := os.ReadFile(filepath.Join(root, planRel))
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			if tt.unchanged && !bytes.Equal(got, before) {
+				t.Error("the main checkout's plan was changed")
+			}
+			if tt.wantRow != "" {
+				if !strings.Contains(string(got), tt.wantRow) {
+					t.Errorf("the plan lacks %q", tt.wantRow)
+				}
+				if open := masterplan.Questions(got); len(open) == 0 {
+					t.Fatal("no rows read back")
+				}
+				for _, q := range masterplan.Questions(got) {
+					if q.Text == question && q.Open {
+						t.Error("the row still reads as open")
+					}
+				}
+			}
+			var writes []string
+			for _, c := range calls() {
+				for _, w := range []string{"git add", "git commit", "git push"} {
+					if strings.HasPrefix(c, w) {
+						writes = append(writes, c)
+					}
+				}
+			}
+			if !reflect.DeepEqual(writes, tt.wantGit) {
+				t.Errorf("git writes:\n  got  %q\n  want %q", writes, tt.wantGit)
+			}
+		})
+	}
+}
+
+// TestPatchPlanNebariRowPassesTheGuard builds the edit the loop builds for
+// the first open row naming T9.4 in the nebari fixture and shows
+// planpatch.Apply accepts it, and that the checker finds no error the plan
+// did not already have. Load-bearing: Apply's lint step is what stands
+// between an owner's free-text answer and a plan that no longer parses.
+func TestPatchPlanNebariRowPassesTheGuard(t *testing.T) {
+	plan := nebariPlan(t)
+	question := nebariT94Question(t, plan)
+	old, new, err := answerEdit(question, "British, from the browser | then the setting")(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := planpatch.Apply(planpatch.Request{Plan: plan, Old: old, New: new})
+	if err != nil {
+		t.Fatalf("Apply refused the answer: %v", err)
+	}
+	before, after := planlint.Lint(plan).Summary, planlint.Lint(res.Plan).Summary
+	if after.Errors > before.Errors {
+		t.Errorf("errors went from %d to %d", before.Errors, after.Errors)
+	}
+	if after.OpenQuestions != before.OpenQuestions-1 {
+		t.Errorf("open questions went from %d to %d, want one fewer", before.OpenQuestions, after.OpenQuestions)
 	}
 }

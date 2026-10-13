@@ -195,6 +195,7 @@ func Kinds() []string {
 		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
 		string(ActUsageWait), string(ActLoginWait), string(ActUsagePause),
 		string(ActUsagePaused), string(ActUsageStuck), string(ActUsageResume),
+		string(ActQuestionHold), string(ActQuestionAnswered),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
 }
@@ -283,8 +284,14 @@ type RelaunchRequest struct {
 // Deps is every call the loop makes outside the project's plain files. Now,
 // LoadBuild, Sessions, Preflight, Launch and RecordTokens must be set; Notify,
 // NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt,
-// Restart, Relaunch, Clean, Usage, Login, StopSession and RateLimited may be
-// nil.
+// Restart, Relaunch, Clean, Usage, Login, StopSession, RateLimited, ReadPlan
+// and PatchPlan may be nil.
+//
+// ReadPlan is optional in the same way the usage fields below are. With no
+// ReadPlan the loop never reads the plan's Open questions table: no task is
+// held for a question, no question item is raised or closed, and the loop
+// behaves exactly as it did before it had the hold. That is the promise every
+// caller and test written before the hold relies on.
 //
 // The four usage fields are optional as a set and one at a time. With no
 // Usage the loop behaves exactly as it did before it had a usage governor:
@@ -387,6 +394,20 @@ type Deps struct {
 	// own hook wrote when a turn ended on a usage limit, and false when there
 	// is no readable marker. Nil means state.ReadRateLimited.
 	RateLimited func(worktree, session string) (time.Time, bool)
+	// ReadPlan reads the master plan's text at the path LoadBuild returned,
+	// for its Open questions table. It is a second read of a file LoadBuild
+	// has already read, and a field of its own, so that LoadBuild keeps its
+	// shape. Nil means the table is never read (see above).
+	ReadPlan func(path string) ([]byte, error)
+	// PatchPlan makes one guarded change to the master plan: the owner's
+	// answer written into a row. It lives behind a hook because the change is
+	// a commit, and may be a push or a pull request, and this package never
+	// runs git. An error that is ErrRowAnswered (by errors.Is) means the row
+	// was not open in the text the change was made to, and is not a failure.
+	// Nil means this daemon cannot change the plan: a held task whose
+	// question is answered then parks on an item that gives the owner the
+	// text to write in by hand.
+	PatchPlan func(p Project, req PlanPatchRequest) (PlanPatchResult, error)
 }
 
 // rateLimited is Deps.RateLimited with its default.
@@ -443,6 +464,9 @@ type pass struct {
 	obs   Observation
 	// planPath is the master plan's path as LoadBuild gave it.
 	planPath string
+	// planRead means the plan's Open questions table was read on this tick,
+	// so Observation.Questions can be trusted to say a row is gone.
+	planRead bool
 	// row is the discovered session the SessionView was built from, kept
 	// because shipping and failing need things the view does not carry: the
 	// agent's own session id (for the token ledger), the verdict, and the
@@ -654,6 +678,26 @@ func (t *pass) run(s Settings) daemonstate.State {
 			}
 		}
 	}
+	// The plan's open questions, when this daemon can read them. Read on
+	// every tick, running task or not: it is one small file read, and it is
+	// what lets an item be closed as soon as its row is answered by hand.
+	if o.BuildErr == nil && t.d.ReadPlan != nil {
+		o.Questions, o.QuestionsErr = t.readQuestions()
+		t.planRead = o.QuestionsErr == nil
+	}
+	// Before Decide, so that a task parked on an item closed here is seen as
+	// answered on this same tick. Only on a read that worked: a plan that
+	// cannot be read has not lost its rows.
+	if t.planRead && o.InboxErr == nil {
+		t.obs = o
+		if t.clearQuestions() {
+			if items, _, err := t.store.List(); err != nil {
+				o.InboxErr = err
+			} else {
+				o.Items = items
+			}
+		}
+	}
 	t.obs = o
 
 	// Decide runs once without usage, and a second time with it only when
@@ -698,6 +742,10 @@ func (t *pass) run(s Settings) daemonstate.State {
 		return t.ownerTask(a)
 	case ActOwnerDone:
 		return t.ownerDone(a)
+	case ActQuestionHold:
+		return t.questionHold(a)
+	case ActQuestionAnswered:
+		return t.questionAnswered(a)
 	case ActLaunch:
 		return t.launch(a)
 	case ActCreate:
@@ -2192,4 +2240,259 @@ func (t *pass) ownerDone(a Action) daemonstate.State {
 		fmt.Sprintf("The owner answered the item for their task %s. What now?", a.Task),
 		fmt.Sprintf("mark %s done; the answer is the owner saying it is finished", a.Task), rulePlan)
 	return stateOf(a)
+}
+
+// readQuestions reads the plan's Open questions table through Deps.ReadPlan.
+// With no ReadPlan it returns nothing and no error: a daemon that cannot read
+// the plan knows of no open row.
+func (t *pass) readQuestions() ([]masterplan.Question, error) {
+	if t.d.ReadPlan == nil {
+		return nil, nil
+	}
+	data, err := t.d.ReadPlan(t.planPath)
+	if err != nil {
+		return nil, err
+	}
+	return masterplan.Questions(data), nil
+}
+
+// clearQuestions answers every open question item whose row is no longer open
+// in the plan, the way clearStops answers StopTitle: the owner put the answer
+// in the plan by hand (or took the row out) and should not have to come back
+// to the inbox to say so. It reports whether any item was answered, so the
+// caller can read the inbox again before deciding.
+func (t *pass) clearQuestions() bool {
+	var closed []string
+	for _, it := range staleQuestionItems(t.obs.Items, t.obs.Questions) {
+		if _, err := t.store.Answer(it.ID, answeredInPlan, inbox.ViaCLI); err != nil {
+			// Answered by the owner in the meantime is the same outcome;
+			// anything else is tried again on the next tick.
+			if !errors.Is(err, inbox.ErrAlreadyAnswered) {
+				t.d.logf("%s: inbox item %s could not be answered: %v", t.p.Name, it.ID, err)
+			}
+			continue
+		}
+		closed = append(closed, it.ID)
+	}
+	if len(closed) == 0 {
+		return false
+	}
+	t.record("question_closed", "", "",
+		"An open question that was asked in the inbox is no longer open in the plan. What now?",
+		fmt.Sprintf("answered inbox %s as %q; nobody needs to answer it there", strings.Join(closed, ", "), answeredInPlan), rulePlan)
+	return true
+}
+
+// questionHold holds a task for the open questions it needs: one blocking
+// item for each row that has none, then the ledger entry goes from pending to
+// parked on the rows' items. No session is created and the entry never says
+// running, exactly as for an owner's task (see ownerTask), which is the
+// pattern this copies.
+//
+// The items are written before the ledger, because the entry needs their ids,
+// and each is looked for first. If the tick dies between the two, the next
+// one decides ActQuestionHold again (the task is still pending), finds the
+// items by their first line and only finishes the ledger; the owner is asked
+// once.
+//
+// The task is parked on the item of every holding row, answered ones too. An
+// answered item whose row is still open is an answer that has not reached the
+// plan; parked on it, the task is picked up by questionAnswered on the next
+// pass, which writes it.
+func (t *pass) questionHold(a Action) daemonstate.State {
+	rows := holdingRows(t.obs.Questions, a.Task)
+	var ids, added []string
+	for _, q := range rows {
+		it, have := questionItem(t.obs.Items, q)
+		if !have {
+			var err error
+			it, err = t.add(inbox.NewItem{Task: a.Task, Kind: "question", Blocking: true,
+				Title: fitTitle(QuestionTitlePrefix + q.Text), Body: questionBody(q, a.Task, t.relPlan())})
+			if err != nil {
+				return daemonstate.State{Kind: string(ActWait), Task: a.Task,
+					Reason: fmt.Sprintf("%s, and the inbox item saying so could not be written (%v); trying again on the next pass", a.Reason, err)}
+			}
+			// Seen by the rows after this one: two rows with the same text
+			// are one question and get one item.
+			t.obs.Items = append(t.obs.Items, it)
+			added = append(added, it.ID)
+		}
+		if !slices.Contains(ids, it.ID) {
+			ids = append(ids, it.ID)
+		}
+	}
+	if len(ids) == 0 {
+		// Decide held the task for rows this function no longer finds. That
+		// cannot happen within one tick; waiting is the answer that starts
+		// nothing.
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Reason: a.Reason}
+	}
+	if err := t.change(a.Task, ledger.Pending, func(e *ledger.Entry) {
+		e.Status = ledger.Parked
+		e.ParkedOn = ids
+		e.FinishedAt = ""
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	chosen := fmt.Sprintf("no; park %s on inbox %s until the plan has the answers", a.Task, strings.Join(ids, ", "))
+	if len(added) > 0 {
+		chosen = fmt.Sprintf("no; ask the owner with inbox %s and park %s on inbox %s until the plan has the answers",
+			strings.Join(added, ", "), a.Task, strings.Join(ids, ", "))
+	}
+	t.record("question_hold", a.Task, "",
+		fmt.Sprintf("The plan lists %d open question(s) that %s needs. Should it be started?", len(rows), a.Task), chosen, rulePlan)
+	st := stateOf(a)
+	st.Reason = fmt.Sprintf("%s; see inbox %s", a.Reason, strings.Join(ids, ", "))
+	return st
+}
+
+// questionAnswered is what happens when every item a held task waited on is
+// answered: the answers are written into the plan's rows through PatchPlan,
+// and the task goes back to pending. It never goes to running. The launch is
+// the next pass's business, and it runs the hold rule first, so a row that is
+// still open (a new one, or one nobody has answered) parks the task again
+// before anything is started.
+//
+// The plan is read three times in such a tick, and each read has its job. The
+// one before Decide chose this action. The one at the top here is what makes
+// the patch happen once: a daemon killed after the patch and before the
+// ledger write comes back to a parked task and an answered item, and finds on
+// this read that the row is not open any more, so it writes nothing and only
+// finishes the ledger. The one after the patches is the only evidence taken
+// that an answer is in the plan the agent will read; PatchPlan's own word is
+// not, because in pull-request mode it succeeds and the main checkout is
+// unchanged.
+//
+// When an answer is still not there, the task parks on one follow-up item
+// that says what to do. Answering that item brings the task back here, which
+// tries again; an owner who answers without doing anything is told again,
+// which is right, as it is for a missing ledger.
+func (t *pass) questionAnswered(a Action) daemonstate.State {
+	wait := func(err error) daemonstate.State {
+		t.d.logf("%s: the plan could not be read for the open questions of %s: %v", t.p.Name, a.Task, err)
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task,
+			Reason: fmt.Sprintf("the plan's open questions could not be read (%v); trying again on the next pass", err)}
+	}
+	questions, err := t.readQuestions()
+	if err != nil {
+		return wait(err)
+	}
+
+	title := fitTitle(QuestionFollowUpTitlePrefix + a.Task)
+	tried := map[string]followUpRow{}
+	if rows := answeredRows(questions, t.obs.Items, a.Task); len(rows) > 0 {
+		// A follow-up that is open and not what the task is parked on was
+		// raised by a tick that died before its ledger write. Finish that
+		// write; the patch it follows is not tried a second time.
+		if it, ok := openTitledFor(t.obs.Items, title, a.Task); ok {
+			return t.parkOnFollowUp(a, it, false)
+		}
+		for _, r := range rows {
+			if _, done := tried[r.Q.Text]; done {
+				// The same question on two rows. One patch cannot answer
+				// both, and a second would only fail the same way.
+				continue
+			}
+			tried[r.Q.Text] = t.patchAnswer(a.Task, r)
+		}
+		if questions, err = t.readQuestions(); err != nil {
+			return wait(err)
+		}
+	}
+
+	choice := afterPatch(questions, t.obs.Items, a.Task)
+	if choice.Release {
+		if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
+			e.Status = ledger.Pending
+			e.ParkedOn = nil
+		}); err != nil {
+			return t.ledgerTrouble(a, err)
+		}
+		t.record("question_answered", a.Task, "",
+			fmt.Sprintf("The open questions %s waited on are answered in the plan. What now?", a.Task),
+			fmt.Sprintf("set %s back to pending, so it starts when its turn comes", a.Task), rulePlan)
+		st := stateOf(a)
+		st.Reason = fmt.Sprintf("the open questions %s waited on are answered in the plan; it starts when its turn comes", a.Task)
+		return st
+	}
+
+	rows := make([]followUpRow, 0, len(choice.Left))
+	for _, r := range choice.Left {
+		row, ok := tried[r.Q.Text]
+		if !ok {
+			row = followUpRow{Text: r.Q.Text, Date: t.answerDate(r.Item), Answer: r.Item.Answer}
+		}
+		// The line is the row's own, as the plan reads now; rows that share
+		// a question each get their place named.
+		row.Line = r.Q.Line
+		rows = append(rows, row)
+	}
+	it, err := t.add(inbox.NewItem{Task: a.Task, Kind: "external_action", Blocking: true, Title: title,
+		Body: followUpBody(a.Task, t.relPlan(), t.p.Root, rows, t.d.PatchPlan != nil)})
+	if err != nil {
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task,
+			Reason: fmt.Sprintf("the answer for %s is not in the plan yet, and the inbox item saying so could not be written (%v); trying again on the next pass", a.Task, err)}
+	}
+	return t.parkOnFollowUp(a, it, true)
+}
+
+// answerDate is the date written beside an answer: the UTC date the owner
+// answered on, or today when the item's time cannot be read.
+func (t *pass) answerDate(it inbox.Item) string {
+	at, ok := parseTime(it.AnsweredAt)
+	if !ok {
+		at = t.now
+	}
+	return at.UTC().Format("2006-01-02")
+}
+
+// patchAnswer asks PatchPlan to write one answer into its row, and returns
+// what the follow-up item would say about the attempt if the row turns out to
+// be open afterwards. ErrRowAnswered is not a failure: the row was not open
+// in the text the patch was made to, which is the outcome wanted.
+func (t *pass) patchAnswer(task string, r heldRow) followUpRow {
+	date := t.answerDate(r.Item)
+	row := followUpRow{Line: r.Q.Line, Text: r.Q.Text, Date: date, Answer: r.Item.Answer}
+	if t.d.PatchPlan == nil {
+		return row
+	}
+	question, answer := r.Q.Text, r.Item.Answer
+	res, err := t.d.PatchPlan(t.p, PlanPatchRequest{
+		PlanPath: t.planPath,
+		Edit: func(plan []byte) ([]byte, []byte, error) {
+			old, new, ok := masterplan.AnswerRow(plan, question, date, answer)
+			if !ok {
+				return nil, nil, ErrRowAnswered
+			}
+			return old, new, nil
+		},
+		Message: fmt.Sprintf("docs(plan): Answer an open question for %s", task),
+	})
+	switch {
+	case errors.Is(err, ErrRowAnswered):
+	case err != nil:
+		t.d.logf("%s: the answer to %q could not be written into the plan for %s: %v", t.p.Name, question, task, err)
+		row.Err = err
+	default:
+		row.PR, row.Notes = res.PR, res.Notes
+	}
+	return row
+}
+
+// parkOnFollowUp points a held task at its follow-up item. The entry stays
+// parked; only what it waits on changes. raised says whether this tick added
+// the item, which is the only case that is a new decision to log.
+func (t *pass) parkOnFollowUp(a Action, it inbox.Item, raised bool) daemonstate.State {
+	if err := t.change(a.Task, ledger.Parked, func(e *ledger.Entry) {
+		e.ParkedOn = []string{it.ID}
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	if raised {
+		t.record("question_follow_up", a.Task, "",
+			fmt.Sprintf("The owner answered the open questions %s waited on. Is the answer in the plan?", a.Task),
+			fmt.Sprintf("no; tell the owner what to do with inbox %s and keep %s parked until it is answered", it.ID, a.Task), rulePlan)
+	}
+	return daemonstate.State{Kind: string(ActQuestionHold), Task: a.Task,
+		Reason: fmt.Sprintf("waiting on the owner: the answer %s needs is not in the plan yet; see inbox item %s", a.Task, it.ID)}
 }
