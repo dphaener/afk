@@ -772,6 +772,11 @@ M0 Foundation ──▶ M1 Primitives ──▶ M2 Daemon ──▶ M3 Surfaces 
  T0.4 flaky test  T1.5 start-up
  T0.5 host tests
  T0.6 dash focus
+
+──▶ M5 Master planning (added 2026-10-13, after M4)
+ T5.1 format and lint     T5.4 extend, amend, reconcile    T5.7 approve and go
+ T5.2 owner profile       T5.5 design hand-off             T5.8 prove it
+ T5.3 planning session    T5.6 open-question gates
 ```
 
 T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent once T2.1 is in.
@@ -1251,16 +1256,295 @@ with nobody at the keyboard.
   owner.
 - Amended 2026-10-12 (T4.2 done): later tasks may assume the following. (1) Nebari's T4.4 was the supervised task: pull request 15, merge commit `fabbb96`, deploy healthy, one attempt, 3 hours 39 minutes, with no blocking inbox item. Whether the owner typed into the agent's terminal is not recorded anywhere. (2) It cost 17,506,564 weighted tokens against the §4.7 baseline of about 16M, two thirds of it in execute; one task does not move the baseline. (3) Nebari is released and the daemon went on to T5.1 by itself. The session ran `afk resume nebari` once after the owner's go-ahead. (4) `afk inbox` has no way to list another project's answered items (no `--all` flag); filed as inbox notice `mmt6u7`, not fixed. (5) No runbook step was found wrong, so `docs/runbook-vm.md` is unchanged. See `## T4.2` in `docs/decisions.md`.
 
+### M5 — Master planning (`afk plan`)
+
+**Outcome:** an owner goes from an idea to an approved plan that the daemon is building, without
+writing `docs/PLAN.md` by hand, and changes a plan mid-build without patching it by hand.
+
+**Every T5 task reads this whole introduction first.** It is M5's shared contract, in addition to
+§1–§7.
+
+**Where M5 comes from**
+
+Two hand-run planning sessions are the source: the one that wrote nebari's plan (2026-09-24, transcript
+read in full on 2026-10-13) and the one that wrote this plan. What they showed:
+
+- **The first draft is fast and cheap.** Nebari's took under 12 minutes: a one-minute survey, one batch
+  of four questions, one 890-line write, no sub-agents. Keep it that way.
+- **Product questions with a recommendation work.** Of eight, the owner overrode two and reworded one,
+  each in a single answer.
+- **Guessed setup facts caused almost all the rework.** The session chose the project's name itself,
+  assumed a deploy tool because a sibling project used it, and treated a house preference (a component
+  library) as a strict rule. Storage was decided three times and two machine addresses were patched
+  twice.
+- **Multiple choice fails for open-ended setup topics.** The owner rejected a four-question deploy batch
+  and settled it in five free-text turns.
+- **Nothing checked the draft.** It reported 27 tasks and had written 31, and shipped two spending caps
+  that contradicted each other.
+- **Most of the session came after the first draft:** two reconciliation passes against a design system
+  made in a separate design tool (from a prompt the session wrote), open questions resolved just before
+  their task, and runbooks for steps only the owner could do.
+- **Every change after the first write was a guarded patch** (the old text had to be present), never a
+  rewrite. This plan was amended the same way seven times in three days while it was being built.
+
+**Rules for every part of M5**
+
+1. **Facts are read or asked, never guessed.** A setup fact (name, hosting, accounts, addresses, stack)
+   comes from the owner profile or from the owner. It is never inferred from a sibling project.
+2. **Two kinds of question.** A *product* choice is asked with options and one recommendation, worded
+   so that "yes" accepts the recommendation. A *setup* fact missing from the profile is asked as a plain
+   question with no options.
+3. **Questions go in rounds.** A round holds every question whose prerequisites are settled; a question
+   that depends on an open one waits for a later round.
+4. **One session, one write.** The first draft is written in one pass by the main session. The only
+   sub-agents are fact look-ups and one critic.
+5. **After the first write, only guarded patches.** Every later change goes through `afk plan patch`
+   (T5.4), which requires the old text to occur exactly once and runs the checker afterwards.
+6. **Code counts and checks.** Any number in a summary comes from `afk plan lint --summary`. The model
+   never reports a count it could have computed.
+7. **State lives on disk** under `.afk/plan/`, so a session can be left and resumed, and so a later web
+   interface can answer the same records the terminal does. Gates between phases are predicates over
+   those files, as the conductor's are.
+8. **Existing ids never change.** A task id, once written, is never renumbered or reused. A task that is
+   `running` or `shipping` in the ledger is never edited except to append an "Amended" line.
+9. **No secrets** in the profile, the plan, the brief or any file under `.afk/plan/`.
+
+**The plan session's files (`.afk/plan/`, gitignored)**
+
+| File | Holds |
+|---|---|
+| `state.json` | `{mode: new\|extend\|amend\|reconcile, phase, updated_at}` |
+| `brief.md` | The owner's request, word for word. Never edited after it is saved. |
+| `survey.md` | What was read before asking anything, and the profile entries that apply. |
+| `questions.jsonl` | One line per question: `{id, round, kind: product\|setup, question, options, recommended, answer, answered_at}` |
+| `slices.md` | The proposed task breakdown the owner confirms before the draft is written. |
+| `critic.md` | The critic's findings on the draft and what was done about each. |
+
+Phases, in order: `brief` → `survey` → `model` → `rounds` → `slices` → `draft` → `check` → `design`
+(only when the project has an interface) → `review` → `approved`.
+
+**The master-plan format**
+
+T5.1 writes this down in full. In short, a master plan has: a "how to use" header; **Context** with the
+original request quoted; a **Decisions** table, in which every row that came from the owner profile
+says so; the shared contract sections the project needs (architecture, domain model, standards);
+**Milestones** made of tasks; **Deferred**; **Open questions** as a table with a "Needed by" column of
+task ids; and a **Definition of done**. A task entry has `Depends on`, `Goal`, `Scope` and
+`Acceptance`, and may have `Background`, `Must not`, `Not in scope` and `Note`.
+
+**The slicing rule.** A task is a thin, complete path through every layer the change touches (schema,
+logic, interface, tests) that can be shown working by itself, and is small enough for one fresh agent
+session. Groundwork that makes a later task easy comes first, as its own task. A mechanical change that
+touches everything at once (a rename) is the exception: add the new form beside the old, move callers
+over in batches, then remove the old.
+
+Both this plan and nebari's must pass the checker with no errors, unchanged.
+
+**Decisions already made for M5**
+
+| Topic | Decision |
+|---|---|
+| Where questions are asked | The terminal, in an attended session on the machine that runs the daemon. Not the inbox. A web interface may answer the same records later (rule 7). |
+| What v1 covers | New project, extend (a new milestone), amend (one task) and reconcile (bring the plan in line with a new document). |
+| Approval | Required before the daemon builds anything. The plan is readable on the web page; approving is a terminal command. |
+| Names | `afk plan` is the master plan. The per-task skill `/afk:plan` is renamed `/afk:work-plan`. The new skill is `/afk:master-plan`. |
+| Owner profile | Machine-wide, `profile.toml` beside `config.toml`. Each entry is a **rule** or a **default**, and may apply to one kind of project. It includes the preferred stack. |
+| Design | A phase of the session for projects with an interface. afk writes a brief, the owner runs it in any design tool and saves the result, afk reconciles. The plan wins on behaviour; the design system wins on looks. |
+| Borrowed method | Domain modelling, questions in rounds and the slicing rule are adapted from Matt Pocock's skills (`github.com/mattpocock/skills`, MIT). afk ships its own text and credits the source in `docs/provenance.md`; it never requires that plugin. |
+| Where plan changes are committed | Straight to the base branch of the main checkout, then pushed, as this plan's amendments were. `[plan] via_pr = true` in `afk.toml` sends them through a pull request for projects where a push to the base branch deploys. |
+
+#### T5.1 — The plan format and `afk plan lint`
+- **Depends on:** T2.2
+- **Goal:** one written format for a master plan, and a checker in code that says whether a file
+  follows it.
+- **Scope:** `plugins/afk/skills/master-plan/plan-format.md`, the full format with the slicing rule and
+  a short worked example. `internal/planlint`: a pure function from plan text to findings
+  `{level: error|warning, line, task, rule, message}`, built on `internal/masterplan`. Command `afk
+  plan lint [--project DIR] [--json] [--summary] [FILE]`: exit 0 with no errors, 1 with errors, 2 for
+  bad usage. `--summary` prints the counts of milestones, tasks, owner tasks, open questions and
+  findings.
+  - **Errors** (the daemon would refuse or misread the plan): a duplicate task id; a dependency naming
+    an unknown task; a cycle; a task with no `Depends on` line; a heading that looks like a task but
+    whose id does not parse; an open-question row whose "Needed by" names an unknown task.
+  - **Warnings:** a `Depends on` line with text but no task id (today afk silently reads it as "none");
+    a task with no `Goal`, `Scope` or `Acceptance`; a missing required section; an open-question row
+    whose "Needed by" names no task.
+  - The daemon logs the checker's errors with the `failure` item it already raises for a bad plan.
+- **Must not:** change what `internal/masterplan` accepts, or how the daemon picks a task.
+- **Acceptance:** table tests with one row per rule, each with a passing and a failing plan. This plan
+  and the nebari fixture produce zero errors; their warnings are listed in `docs/decisions.md`. `afk
+  plan lint --summary` on this plan prints the same task count as `afk tasks`.
+
+#### T5.2 — The owner profile
+- **Depends on:** T2.2
+- **Goal:** the owner states how they build and host things once, and every plan session reads it.
+- **Scope:** `profile.toml` in afk's config folder. Shape: `rule_files = [paths]` (existing house-rule
+  documents to read, not copy), and entries `[[entry]]` with `topic`, `value`, `strength = "rule" |
+  "default"`, optional `kind` (for example `web-app`, `cli`, `library`; absent means every kind) and
+  optional `reason`. A value of `"no preference"` is allowed and means "recommend one and say why".
+  Suggested topics, in the template: project location, language and framework, database, auth, tests,
+  interface components, CI, hosting and deploy, storage, email, domain names, notifications, the design
+  tool, and the accounts the owner already has. `internal/profile`: loader and a pure
+  `Select(profile, kind)` that returns the entries that apply, a `kind`-specific entry beating a general
+  one on the same topic. Commands: `afk profile` (print what applies, `--kind` to filter), `afk profile
+  init` (write a commented template; refuses to overwrite), `afk profile set <topic> <value>
+  [--kind K] [--rule|--default] [--reason TEXT]`, `afk profile check`.
+- **Must not:** store a secret. `afk profile check` and `set` refuse a value that looks like a key or
+  token and say to keep it out of the profile.
+- **Acceptance:** table tests for `Select` (general only, kind only, both, unknown kind, a rule and a
+  default on one topic), for `set` on a missing file, a new topic and an existing one, and for the
+  secret check. `afk profile` with no file says how to create one and exits 0.
+
+#### T5.3 — The planning session
+- **Depends on:** T5.1, T5.2
+- **Goal:** `afk plan` in a project folder runs the session that turns the owner's idea into a checked
+  first draft of `docs/PLAN.md`.
+- **Scope:**
+  - **Command.** `afk plan [--project DIR]` starts, or reattaches to, an attended session (never
+    unattended) running `/afk:master-plan` in the project's main checkout, with the mode `new` when the
+    project has no plan. A folder that is not a git repository is initialised. `afk plan status` prints
+    the phase and what it is waiting for, from a pure function over `.afk/plan/`.
+  - **Rename** `/afk:plan` to `/afk:work-plan` everywhere (skill, README, tests, prompts).
+  - **The skill**, phase by phase, each ending by writing its file:
+    1. `brief`: save the owner's words unchanged.
+    2. `survey`: read the profile (`afk profile --kind …`), its rule files and what is in the folder.
+       List the profile entries that apply. Read nothing from sibling projects unless the owner names
+       one.
+    3. `model`: domain modelling with the owner. Challenge a vague or overloaded term when it is used,
+       try each relationship against an invented edge case, and write each settled term into
+       `CONTEXT.md` at once. The glossary holds meanings only, never implementation.
+    4. `rounds`: rules 2 and 3. Round one always asks who the project is for, whether it has an
+       interface, and shows the profile entries being applied so the owner can override one. A setup
+       fact the owner supplies is offered back with `afk profile set`.
+    5. `slices`: show the task breakdown as a numbered list (title, blocked by, what it delivers) and
+       ask whether the size and the blocking edges are right. Repeat until confirmed.
+    6. `draft`: one write of `docs/PLAN.md` in the format of T5.1, plus `afk.toml`. Every generated
+       plan has: an owner task for anything only the owner can set up (accounts, secrets, machines); an
+       early task that gives the repository a CI workflow, because afk never merges a pull request with
+       no checks; open questions keyed to the task that needs them; and the project's own agent
+       instructions written from the profile.
+    7. `check`: `afk plan lint` must report zero errors. Then one critic sub-agent reads only the draft
+       and the brief and reports contradictions between sections, tasks that trace to nothing in the
+       brief, parts of the brief no task covers, and slices that break the slicing rule. Each finding is
+       fixed by a guarded patch or answered in `critic.md`.
+    8. `review`: print the summary from `afk plan lint --summary` and the open questions, and stop for
+       the owner (T5.7 adds approval).
+  - Credit the adapted method in `docs/provenance.md`.
+- **Not in scope:** the design phase (T5.5); plans that already exist (T5.4); approval (T5.7). Until
+  T5.4 is merged the skill patches with exact-match replacement by hand.
+- **Acceptance:** table tests for the phase function (each phase reached only when the previous
+  phase's file exists and is complete; a resumed session lands on the right phase). Plugin tests: the
+  skill stays within the size cap, every file it includes exists, and no prompt still says `/afk:plan`.
+  `afk plan --dry-run` prints what it would start. The real session is proven in T5.8, not here.
+
+#### T5.4 — Extend, amend and reconcile
+- **Depends on:** T5.3
+- **Goal:** change a plan that already exists, by the same guarded patches used by hand so far.
+- **Scope:**
+  - **`afk plan patch [--project DIR] --old FILE --new FILE [--message TEXT]`**, in `internal/planpatch`:
+    the old text must occur exactly once; the write is atomic; the checker runs afterwards and the
+    patch is undone if it adds an error; rule 8 is enforced against the ledger. It commits and pushes
+    per the M5 decision on where plan changes go. Every mode below, and the planning session, use it.
+  - **`afk plan` on a project that has a plan** asks which mode, or takes `afk plan extend`, `afk plan
+    amend "<what>"` or `afk plan reconcile <file>`.
+  - **extend:** a new milestone. A short session: brief, a survey of the plan, `docs/decisions.md` and
+    the ledger, rounds, slices, then the milestone appended by patch.
+  - **amend:** one task added, split or superseded. It writes the entry in the plan's own format,
+    picks the id (the next number in the milestone, or a letter suffix such as `T2.2a` when it must
+    run between two existing tasks), sets its dependencies and adds it to any task that must now wait
+    for it. A split marks the old task `superseded` in the ledger with `--replaced-by`. `--yes` skips
+    the confirmation so a later surface can call it.
+  - **reconcile:** read the named document against the plan and list: conflicts, things the document
+    adds that the plan should absorb, and things in the plan the document contradicts. Real choices go
+    to the owner as a round; the rest are patched. When the document is the design system, apply the
+    precedence rule and write a follow-up prompt for whatever the design must change.
+- **Acceptance:** table tests for `planpatch` (no match, two matches, one match, a patch that adds a
+  lint error is undone, a patch touching a running task's entry is refused, appending an "Amended" line
+  to one is allowed) and for id choice (next number, letter suffix, a suffix already taken). Each mode
+  has a fixture plan and an expected patched plan for a scripted set of answers.
+
+#### T5.5 — The design hand-off
+- **Depends on:** T5.4
+- **Goal:** a project with an interface gets a design system made in the owner's design tool, without
+  the planning session pretending to design in a terminal.
+- **Scope:** the `design` phase of `/afk:master-plan`, entered only when round one said the project has
+  an interface.
+  - **The brief.** Write `docs/design-brief.md`, a prompt for a design tool: what the product is and who
+    it is for, the screens the plan implies, the domain terms from `CONTEXT.md`, the constraints from
+    the profile (stack, component approach, accessibility level) and exactly what to hand back: one
+    `docs/design-system.md` with tokens, components and screens.
+  - **The owner task.** Add `Design system (owner)` to the plan's first milestone. Its entry says to
+    take the brief to the design tool named in the profile and save the result at
+    `docs/design-system.md`. Every task that builds interface depends on it; tasks that do not can run
+    while the owner designs.
+  - **Coming back.** When the owner confirms that task in the inbox, the daemon's item says to run `afk
+    plan reconcile docs/design-system.md` (T5.4). Follow-up prompts are saved as
+    `docs/design-followup-<n>.md`.
+  - The generated plan's header states the precedence rule.
+- **Not in scope:** generating a design, calling a design tool, prototypes.
+- **Acceptance:** a fixture session with an interface ends with the brief, the owner task and the
+  dependencies in place and zero lint errors; one without an interface has none of them. A reconcile
+  fixture with a design system that conflicts with the plan produces the expected patch and a follow-up
+  prompt.
+
+#### T5.6 — Open questions hold their tasks
+- **Depends on:** T5.1
+- **Goal:** an open question is put to the owner before the task that needs it starts, so nobody has
+  to remember it.
+- **Scope:** `internal/masterplan` reads the Open questions table: a row is open unless its question
+  cell contains `**Answered`. A new rule in the pure `Decide`: when the next ready task is named in the
+  "Needed by" of an open row, the daemon launches nothing for it, raises one blocking `question` item
+  per row (once; the row is recognised again on later passes) and parks the task. When the item is
+  answered, the daemon patches the row to `**Answered <date>:** <the answer>` (through `afk plan patch`
+  once T5.4 is merged; until then with the same exact-match rule in code) and the task is ready again.
+  A row whose "Needed by" names no task never holds anything.
+- **Background:** this plan and nebari's both have such tables, so rows naming tasks not yet built will
+  start to hold them. That is the intent.
+- **Acceptance:** table tests for `Decide`: an open row holds its task and raises one item; an answered
+  row does not; two rows on one task raise two items and the task waits for both; a row naming no task
+  holds nothing; answering patches the row once and only once across a daemon restart.
+
+#### T5.7 — Approve and go
+- **Depends on:** T5.3, T5.6
+- **Goal:** the "go" moment: one command turns a reviewed plan into a build the daemon is running.
+- **Scope:** `afk plan approve [--project DIR]`. It refuses unless the session is at `review` and the
+  checker reports zero errors. Then, each step safe to repeat: write `afk.toml` if missing; commit the
+  plan; `afk ledger init`; add the project to the machine config (new command `afk project add|remove|
+  list` if none exists); set the phase to `approved`. The daemon must pick up a project added while it
+  runs, without a restart. The web page gains a read-only plan view per project: the plan rendered, the
+  checker's summary and the open questions, linked from the "plan ready for review" notification.
+- **Must not:** start a build for a plan with errors; approve from the web page.
+- **Acceptance:** table tests: approve at the wrong phase refuses; with lint errors refuses; run twice
+  does nothing the second time; a crash between any two steps is finished by running it again. An
+  integration test with the fake provider: approve a fixture project and see the daemon launch its
+  first ready task with no restart. The plan view renders this plan.
+
+#### T5.8 — Prove it (owner + agent)
+- **Depends on:** T5.4, T5.5, T5.7
+- **Goal:** two real plans made with `afk plan`, and an honest account of how they compare with the
+  hand-run sessions.
+- **Scope:** the owner runs both in a terminal; the session for this task waits for them, then reads
+  the files and writes up.
+  1. **Extend:** plan afk's next milestone with `afk plan extend`, from the candidates in §9.
+  2. **New:** plan a small throwaway project from a one-paragraph idea, approve it, and let the daemon
+     merge its first task.
+  The write-up, in `docs/decisions.md`: human turns, questions asked, recommendations overridden,
+  setup facts that had to be asked, every piece of rework and its cause, checker and critic findings,
+  and the session's tokens. Compare with nebari's session: 35 human turns, 12 questions, and rework on
+  the name, the deploy tool, storage (three times), the component library and two addresses. Faults in
+  the prompts are fixed here; faults in code are filed in the inbox.
+- **Acceptance:** both plans pass the checker with zero errors; the throwaway project has one task
+  merged by the daemon; the write-up names every place the owner had to correct the session.
+
 ---
 
 ## 9. Deferred / later
 
-- **`afk plan`: the master-planning process as a product feature.** Codify the session that produced
-  nebari's plan: survey house rules and sibling projects → a handful of decisive questions with
-  recommendations → one document with a shared contract (context, decisions table, architecture,
-  domain model, core engine, standards), dependency-linked tasks sized for one cycle, deferred list,
-  open questions keyed to the task that needs them, definition of done → reconciliation with a design
-  system. Source transcript: `~/.claude/projects/-Users-darinhaener-code/43501d06-….jsonl`.
+- **`afk plan`** moved to M5 (2026-10-13).
+- **Answering plan questions on the web page** instead of the terminal; M5 keeps them as records on
+  disk so this needs no change to the planner.
+- **Prototypes during planning** (a throwaway page or state model to answer a design question), after
+  Matt Pocock's prototype skill.
 - **Promote decisions to code**, using the decision log: the conductor's phase state machine (its gates
   are already disk predicates), checkbox bookkeeping, verdict rendering, the fix-loop counter. Then
   policy rules learned from repeated identical answers.
