@@ -1249,6 +1249,7 @@ with nobody at the keyboard.
   `docs/decisions.md`, including that task's `afk tokens` breakdown against the nebari baseline of
   about 16M weighted per task (§4.7); the daemon then runs unattended until the plan is done or it is waiting on the
   owner.
+- Amended 2026-10-12 (T4.2 done): later tasks may assume the following. (1) Nebari's T4.4 was the supervised task: pull request 15, merge commit `fabbb96`, deploy healthy, one attempt, 3 hours 39 minutes, with no blocking inbox item. Whether the owner typed into the agent's terminal is not recorded anywhere. (2) It cost 17,506,564 weighted tokens against the §4.7 baseline of about 16M, two thirds of it in execute; one task does not move the baseline. (3) Nebari is released and the daemon went on to T5.1 by itself. The session ran `afk resume nebari` once after the owner's go-ahead. (4) `afk inbox` has no way to list another project's answered items (no `--all` flag); filed as inbox notice `mmt6u7`, not fixed. (5) No runbook step was found wrong, so `docs/runbook-vm.md` is unchanged. See `## T4.2` in `docs/decisions.md`.
 
 ---
 
