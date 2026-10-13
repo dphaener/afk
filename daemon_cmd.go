@@ -585,7 +585,7 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		Now: now,
 		LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
 			bs, err := loadBuildState(root)
-			return bs.Tasks, bs.PlanPath, bs.Ledger, err
+			return bs.Tasks, bs.PlanPath, bs.Ledger, daemonLoadPlanError(root, err, os.ReadFile)
 		},
 		Sessions: func(root string) ([]discover.SessionState, error) {
 			return discover.Discover(root, discover.DefaultDeps())

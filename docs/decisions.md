@@ -1603,3 +1603,114 @@ Read from `.afk/t4-2/evidence/w2-t1-daemon.txt` at the end of this task.
 - Nebari is released. `afk daemon status` shows no `Paused:` or `Stopped:` line for it.
 - Nebari's build is running a task: T5.1, in session `t5-1`, in phase planning (22:07 on 12 October, local time). Nebari has 24 tasks done, 1 running and 1 superseded. Nothing is waiting on the owner for it; the only open nebari inbox item is the non-blocking `kxcvdt`.
 - The daemon also shows this project (afk) running T4.2 in session `t4-2`, which is this work.
+
+## T5.1
+
+The plan format and `afk plan lint`. Decisions the master plan left open, made while planning the task (2026-10-13).
+
+- **One scan for the daemon and the checker.** The master-plan parser stops at the first problem, and the checker has to report all of them. Rather than give the checker its own copy of the parser's rules, the parser's line scan is exposed as `masterplan.Scan`, which collects every problem, and `Parse` is rebuilt on it. What the parser accepts and the errors it returns do not change. Why: a second scanner could call a plan fine that the daemon then refuses.
+- **What "a heading that looks like a task" means.** Any heading, of any level, outside a code fence, that starts with `T` or `t` and a digit but is not a valid `#### T<m>.<n>[letter] — Title` heading. The parser already refuses the four-hash ones. The others, such as `### T1.2 — x`, are an error too, because the daemon would silently never run them.
+- **Open questions.** The table is the first one with a "Needed by" column under the "Open questions" section. A row is open unless its question cell contains `**Answered`, which is the rule T5.6 states. Only open rows are checked. Any task id in the "Needed by" cell counts, so "after T2.4" names T2.4. The summary counts open rows.
+- **Missing Goal, Scope or Acceptance** is one warning per task that names every missing field, not one per field. Plans written before the format lack a Goal on most tasks.
+- **Required sections** are Context, Decisions, Milestones, Deferred, Open questions and Definition of done, matched on the section title with any leading number dropped, plus a bold "How to use" paragraph before the first section. That is how both existing plans are written.
+- **A plan with no task** is an error (`no-tasks`). The master plan's list leaves it out, but the daemon refuses such a plan.
+- **Cycles.** The checker reports the first cycle it finds, as the parser does. Fix it and the next run shows the next one.
+- **`FILE` and `--project` together are refused** (exit 2). With a file, that file is checked. With neither, the checker finds the plan the way `afk tasks` does.
+- **Output.** One line per finding and a totals line by default; `--summary` prints the six counts instead; `--json` prints one object with `file`, `findings` and `summary`. No afk command had `--json` before, so this is the shape later commands should copy.
+- **The daemon's item.** The checker's errors are added to the text of the item the daemon already raises for a plan it cannot read, at the place where the daemon loads the plan. `afk tasks` and `afk next` still print one problem. At most 20 errors are listed, because the text is also sent as a notification, and the text is the same on every pass so the daemon does not raise the item twice.
+- **Plugin version 5.3.0**, because the format document is a new plugin file. The OpenCode port gets a line in its lag note, not a copy.
+- **The document and the checker are held together by tests**: the document's worked example must produce no findings, and every rule id must appear in the document.
+
+### Warnings on this plan (docs/PLAN.md)
+
+Checked on 2026-10-13 with `afk plan lint --summary docs/PLAN.md`: Milestones 6, Tasks 29, Owner tasks 1, Open questions 9, Errors 0, Warnings 14. The checker reports zero errors. The 14 warnings, grouped by rule:
+
+`missing-task-field` (13): Most tasks were written before the format existed and have no Goal line (T0.0 has no Scope line). The plan is the owner's record and is left as it was written.
+
+```
+docs/PLAN.md:790: warning: T0.0: T0.0 has no Scope line. Add "- **Scope:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1018: warning: T1.1: T1.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1031: warning: T1.2: T1.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1043: warning: T1.3: T1.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1056: warning: T1.4: T1.4 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1093: warning: T2.1: T2.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1114: warning: T2.2: T2.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1180: warning: T2.3: T2.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1191: warning: T2.4: T2.4 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1208: warning: T3.1: T3.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1220: warning: T3.2: T3.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1235: warning: T4.1: T4.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+docs/PLAN.md:1249: warning: T4.2: T4.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+```
+
+`open-question-no-task` (1): The "before release" question is needed by the release as a whole, not by one task, so it names no task id.
+
+```
+docs/PLAN.md:1589: warning: This open question's "Needed by" names no task, so no task waits for the answer. Name the tasks that need it, or mark the question answered. [open-question-no-task]
+```
+
+### Warnings on the nebari fixture
+
+Checked on 2026-10-13 with `afk plan lint --summary internal/masterplan/testdata/nebari-plan.md`: Milestones 10, Tasks 40, Owner tasks 0, Open questions 7, Errors 0, Warnings 39. The checker reports zero errors. The 39 warnings, grouped by rule:
+
+`missing-task-field` (33): The fixture is a frozen copy of nebari's real plan, written before the format existed; its tasks have no Goal line (some lack Scope, one lacks all three), and the fixture is not edited.
+
+```
+internal/masterplan/testdata/nebari-plan.md:552: warning: T0.3: T0.3 has no Scope line. Add "- **Scope:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:667: warning: T1.1: T1.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:682: warning: T1.2: T1.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:693: warning: T1.3: T1.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:713: warning: T1.4: T1.4 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:739: warning: T2.1: T2.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:764: warning: T2.2: T2.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:805: warning: T2.3: T2.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:841: warning: T2.4: T2.4 has no Scope line. Add "- **Scope:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:922: warning: T2.5: T2.5 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:946: warning: T2.6: T2.6 has no Scope line. Add "- **Scope:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1015: warning: T3.1: T3.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1045: warning: T3.2: T3.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1078: warning: T3.3: T3.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1114: warning: T3.3a: T3.3a has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1160: warning: T3.4: T3.4 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1280: warning: T4.1: T4.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1316: warning: T4.2: T4.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1349: warning: T4.2a: T4.2a has no Goal, Scope or Acceptance line. Add "- **Goal:**", "- **Scope:**" and "- **Acceptance:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1378: warning: T4.2b: T4.2b has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1435: warning: T4.3: T4.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1450: warning: T4.4: T4.4 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1482: warning: T5.1: T5.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1503: warning: T5.2: T5.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1520: warning: T5.3: T5.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1533: warning: T6.1: T6.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1548: warning: T7.1: T7.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1559: warning: T7.2: T7.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1569: warning: T7.3: T7.3 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1583: warning: T8.1: T8.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1592: warning: T8.2: T8.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1605: warning: T9.1: T9.1 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+internal/masterplan/testdata/nebari-plan.md:1614: warning: T9.2: T9.2 has no Goal line. Add "- **Goal:**" under its heading, so the agent that runs the task knows what to build and when it is done. [missing-task-field]
+```
+
+`depends-no-task-id` (5): These Depends on lines say things like "nothing new" or "M3–M8 as available"; the daemon reads them as no dependencies, which is what they mean, and the fixture is not edited.
+
+```
+internal/masterplan/testdata/nebari-plan.md:1605: warning: T9.1: T9.1's Depends on line says "M3–M8 as available", which names no task id, so afk reads it as no dependencies. List the task ids, or write — for none. [depends-no-task-id]
+internal/masterplan/testdata/nebari-plan.md:1624: warning: T9.3: T9.3's Depends on line says "nothing new; it can run at any point (added 2026-09-30 at the owner's request)", which names no task id, so afk reads it as no dependencies. List the task ids, or write — for none. [depends-no-task-id]
+internal/masterplan/testdata/nebari-plan.md:1643: warning: T9.4: T9.4's Depends on line says "nothing new; it can run at any point (added 2026-09-30 at the owner's request)", which names no task id, so afk reads it as no dependencies. List the task ids, or write — for none. [depends-no-task-id]
+internal/masterplan/testdata/nebari-plan.md:1667: warning: T9.5: T9.5's Depends on line says "nothing new; it can run at any point (added 2026-10-06 at the owner's request)", which names no task id, so afk reads it as no dependencies. List the task ids, or write — for none. [depends-no-task-id]
+internal/masterplan/testdata/nebari-plan.md:1690: warning: T9.6: T9.6's Depends on line says "nothing new; it can run at any point (added 2026-10-06 at the owner's request)", which names no task id, so afk reads it as no dependencies. List the task ids, or write — for none. [depends-no-task-id]
+```
+
+`open-question-no-task` (1): One open question names no task in its Needed by cell; it is part of the frozen fixture.
+
+```
+internal/masterplan/testdata/nebari-plan.md:1736: warning: This open question's "Needed by" names no task, so no task waits for the answer. Name the tasks that need it, or mark the question answered. [open-question-no-task]
+```
+
+### Things a later task should know
+
+- `masterplan.Scan` exists and returns the whole-file outline (tasks, headings, fence map and every problem); `Parse` is built on it and returns the first problem as before.
+- The rule ids are a contract with the format document (`plugins/afk/skills/master-plan/plan-format.md`); two tests hold them together (the worked example must produce no findings, and every rule id must appear in the document).
+- `--json` prints one object: `file`, `findings` (a list of `level`, `line`, `task`, `rule`, `message`; `task` is `""` and `line` is `0` when unset; the list is `[]` for a clean plan) and `summary` (the six counts).
+- An open question row is open unless its question cell contains `**Answered`. An answer written on its own row below the question leaves the question row open, which is true of several rows in `docs/PLAN.md`; T5.6 must allow for it.
+- The daemon's bad-plan item lists at most 20 errors, then a line saying how many more.

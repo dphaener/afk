@@ -418,6 +418,37 @@ Without `--target`, it lists the agent CLIs it finds on `PATH` and asks which on
 
 **Exit codes:** 0 when every selected target installed (or nothing was selected), 1 when any target failed or the prompt was cancelled, 2 on a flag error or a missing `--target` without a terminal.
 
+### `afk plan lint` — Check a master plan
+
+Check a master plan the way the daemon reads it, and list everything wrong with it, not only the first problem. Run it before you leave a plan for the daemon to build.
+
+```bash
+afk plan lint [--project DIR] [--json] [--summary] [FILE]
+```
+
+- `FILE` — The plan to check. `FILE` and `--project` cannot be combined. With neither, it checks the plan `afk tasks` reads (`plan` in `afk.toml`, `docs/PLAN.md` by default).
+- `--project DIR` — The project whose plan to check. Defaults to the current directory.
+- `--summary` — Print only the six counts (milestones, tasks, owner tasks, open questions, errors, warnings).
+- `--json` — Print one JSON object with `file`, `findings` (each with `level`, `line`, `task`, `rule` and `message`) and `summary`.
+
+An error is something the daemon would refuse or misread: no tasks, a task heading written wrongly, two tasks with the same id, a task with no `Depends on` line, a dependency on a task that is not in the plan, tasks that depend on each other in a loop, and an open question that waits on a task that is not in the plan. A warning is something a reader would miss: a `Depends on` line with no task id in it, a task with no Goal, Scope or Acceptance line, a missing required section, and an open question that names no task. Warnings never fail the command. See `plugins/afk/skills/master-plan/plan-format.md` for the full format and every rule.
+
+When the daemon cannot read a project's plan, the inbox item it raises lists every error `afk plan lint` found (at most 20, then a line saying how many more).
+
+A real run, on this project's plan:
+
+```
+$ afk plan lint --summary docs/PLAN.md
+Milestones: 6
+Tasks: 29
+Owner tasks: 1
+Open questions: 9
+Errors: 0
+Warnings: 14
+```
+
+**Exit codes:** 0 when the plan has no errors (warnings are allowed), 1 when it has at least one error or the file could not be read, 2 when the command was written wrongly (for example `FILE` together with `--project`).
+
 ### `afk plan check` — Tick a task in a plan
 
 Record the outcome of one task in a session's plan. The agent plugin runs this itself after each task, so a plan's checkboxes are ticked by a command rather than by a helper agent. You can also run it by hand to correct a plan.
@@ -443,6 +474,8 @@ Show every task in the project's master plan, with its status and what it is sti
 ```bash
 afk tasks [--project DIR]
 ```
+
+To check a plan for mistakes before the daemon reads it, run `afk plan lint`.
 
 A master plan is a markdown file where each task is a heading that starts with its id, followed by a `- **Depends on:**` line:
 

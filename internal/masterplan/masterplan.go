@@ -82,43 +82,135 @@ func ParseFile(path string) ([]Task, error) {
 	return Parse(data)
 }
 
-// Parse reads a master plan. Code fences are handled first and exactly as
-// internal/state does for work plans (a fence line toggles, fenced lines are
-// skipped, an unclosed fence hides the rest of the file), so a heading shown
-// as an example inside a fence is never a task.
-func Parse(data []byte) ([]Task, error) {
-	var tasks []Task
+// Heading is one markdown heading of level 1 to 4 that sits outside a code
+// fence.
+type Heading struct {
+	// Level is the number of leading hashes, 1 to 4.
+	Level int
+	// Text is the heading text after the hashes, trimmed.
+	Text string
+	// Line is the 1-based line of the heading.
+	Line int
+}
+
+// Problem is one thing Scan found that makes Parse refuse the plan.
+type Problem struct {
+	// Line is the 1-based line the problem is reported at: the heading
+	// itself for a malformed or duplicate heading, and the task's heading
+	// for a task with no Depends on line.
+	Line int
+	// Task is the task id when one is known (a duplicate, a task with no
+	// Depends on line), and empty for a malformed heading, whose id is
+	// exactly the part that could not be trusted.
+	Task string
+	// Err is the wrapped error Parse returns for this problem, so
+	// errors.Is against the sentinels and the printed message are the same
+	// whichever of the two a caller used.
+	Err error
+}
+
+// Outline is everything Scan reads from a master plan in one pass.
+type Outline struct {
+	// Tasks holds every task heading that parsed, in plan order. Only the
+	// first use of an id is kept. A task with no Depends on line is kept
+	// too, with no dependencies, and has a Problem.
+	Tasks []Task
+	// Problems holds what Parse would refuse, in the order Parse would meet
+	// them, which is also line order. It never holds ErrNoTasks: an empty
+	// plan is a fact about the whole file with no line to point at, so
+	// callers read it from len(Tasks) == 0.
+	Problems []Problem
+	// Headings holds every level 1 to 4 heading outside a fence, task
+	// headings and malformed ones included. Level 5 and 6 headings are
+	// left out because the scan does not treat them as headings at all: a
+	// "##### Sub" line does not end a task's section.
+	Headings []Heading
+	// Fenced has one entry per line (index is line number minus one), true
+	// for a line that opens or closes a code fence and for every line
+	// inside one. Lines are the text split on "\n", so a file that ends
+	// with a newline has a last, empty entry.
+	Fenced []bool
+}
+
+// Scan reads a master plan from top to bottom and reports everything it
+// finds, without stopping at a problem.
+//
+// It exists because the checker in internal/planlint has two needs Parse
+// cannot meet. It must report every problem in a plan, where Parse stops at
+// the first. And it must read a plan exactly as the daemon does: a second
+// scanner inside the checker could drift and call a plan fine that the
+// daemon then refuses, or the other way round. So there is one scan, and
+// Parse is built on it.
+//
+// Code fences are handled first and exactly as internal/state does for work
+// plans (a fence line toggles, fenced lines are skipped, an unclosed fence
+// hides the rest of the file), so a heading shown as an example inside a
+// fence is never a task.
+//
+// After a problem the scan carries on in the way that invents the least:
+//   - a malformed "#### T<digit>" heading opens no task, so the Depends on
+//     line under it is not read;
+//   - a duplicate id is not added to Tasks and opens no task, so the first
+//     copy keeps its own dependencies and the second copy's are not read;
+//   - a task whose section ends with no Depends on line stays in Tasks with
+//     no dependencies, so later problems that mention it can still name it.
+//
+// Up to the first problem the scan does exactly what Parse always did, which
+// is why Parse can return Problems[0] and stay unchanged for its callers.
+func Scan(data []byte) Outline {
+	var o Outline
 	seen := map[string]int{}
 	cur := -1 // index of the task whose Depends on line is still wanted
 	haveDeps := false
 	inFence := false
 
-	for i, raw := range strings.Split(string(data), "\n") {
+	// endSection closes the open task, if any. It runs at every heading and
+	// at the end of the file, the two places a task's section can end.
+	endSection := func() {
+		if cur >= 0 && !haveDeps {
+			t := o.Tasks[cur]
+			o.Problems = append(o.Problems, Problem{Line: t.Line, Task: t.ID, Err: noDeps(t)})
+		}
+		cur, haveDeps = -1, false
+	}
+
+	lines := strings.Split(string(data), "\n")
+	o.Fenced = make([]bool, len(lines))
+	for i, raw := range lines {
 		lineNo := i + 1
 		line := strings.TrimRight(raw, " \t\r")
 
 		if lead := strings.TrimLeft(line, " \t"); strings.HasPrefix(lead, "```") || strings.HasPrefix(lead, "~~~") {
 			inFence = !inFence
+			o.Fenced[i] = true
 			continue
 		}
 		if inFence {
+			o.Fenced[i] = true
 			continue
 		}
 
 		if anyHeadingRE.MatchString(line) {
-			if cur >= 0 && !haveDeps {
-				return nil, noDeps(tasks[cur])
-			}
-			cur, haveDeps = -1, false
+			endSection()
+			text := strings.TrimLeft(line, "#")
+			o.Headings = append(o.Headings, Heading{Level: len(line) - len(text), Text: strings.TrimSpace(text), Line: lineNo})
 			if m := taskHeadingRE.FindStringSubmatch(line); m != nil {
 				if first, dup := seen[m[1]]; dup {
-					return nil, fmt.Errorf("line %d: task %s already defined on line %d: %w", lineNo, m[1], first, ErrDuplicateTask)
+					o.Problems = append(o.Problems, Problem{
+						Line: lineNo,
+						Task: m[1],
+						Err:  fmt.Errorf("line %d: task %s already defined on line %d: %w", lineNo, m[1], first, ErrDuplicateTask),
+					})
+					continue
 				}
 				seen[m[1]] = lineNo
-				tasks = append(tasks, Task{ID: m[1], Title: strings.TrimSpace(m[2]), Line: lineNo})
-				cur = len(tasks) - 1
+				o.Tasks = append(o.Tasks, Task{ID: m[1], Title: strings.TrimSpace(m[2]), Line: lineNo})
+				cur = len(o.Tasks) - 1
 			} else if badHeadingRE.MatchString(line) {
-				return nil, fmt.Errorf("line %d: %q is not \"#### T<m>.<n> — <title>\": %w", lineNo, line, ErrBadHeading)
+				o.Problems = append(o.Problems, Problem{
+					Line: lineNo,
+					Err:  fmt.Errorf("line %d: %q is not \"#### T<m>.<n> — <title>\": %w", lineNo, line, ErrBadHeading),
+				})
 			}
 			continue
 		}
@@ -126,17 +218,30 @@ func Parse(data []byte) ([]Task, error) {
 		if cur >= 0 && !haveDeps {
 			if m := dependsRE.FindStringSubmatch(line); m != nil {
 				haveDeps = true
-				tasks[cur].DependsOn, tasks[cur].Note = readDepends(m[1], tasks[:cur])
+				o.Tasks[cur].DependsOn, o.Tasks[cur].Note = readDepends(m[1], o.Tasks[:cur])
 			}
 		}
 	}
-	if cur >= 0 && !haveDeps {
-		return nil, noDeps(tasks[cur])
+	endSection()
+	return o
+}
+
+// Parse reads a master plan into its tasks, or returns the first problem.
+//
+// It returns only the first problem, although Scan finds them all, because
+// that is what its callers are built around: the daemon refuses a plan at
+// its first problem, and afk tasks and afk next print that one message. A
+// plan with any problem yields no tasks, so nothing can be started from a
+// plan that was only half understood. Use Scan to list every problem.
+func Parse(data []byte) ([]Task, error) {
+	o := Scan(data)
+	if len(o.Problems) > 0 {
+		return nil, o.Problems[0].Err
 	}
-	if len(tasks) == 0 {
+	if len(o.Tasks) == 0 {
 		return nil, ErrNoTasks
 	}
-	return tasks, nil
+	return o.Tasks, nil
 }
 
 func noDeps(t Task) error {
