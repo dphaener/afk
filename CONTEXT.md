@@ -121,3 +121,11 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Milestone**: a group of master-plan tasks under one `### M<n> — Title` heading, with one outcome.
 - **Open question**: a row of a master plan's Open questions table that has not been answered yet; its "Needed by" cell names the tasks that need the answer.
 - **Slicing rule**: how a master plan is cut into tasks: each task is a thin, complete path through every layer the change touches that can be shown working by itself.
+- **Owner profile**: `profile.toml` in afk's config folder, beside the machine config; where the owner states once how they build and host things, for every planning session to read.
+- **Profile entry**: one `[[entry]]` of the owner profile: a topic, a value, a strength, and optionally the kind of project it applies to and a reason.
+- **Topic**: what a profile entry is about, such as the database or hosting; topics compare with case and spacing ignored.
+- **Strength**: whether a profile entry is a `rule`, which a plan must follow, or a `default`, which a plan uses unless the project says otherwise.
+- **Kind (project)**: the sort of project a profile entry applies to, such as `web-app`, `cli` or `library`; an entry with no kind applies to every project.
+- **Rule file**: an existing house-rule document the owner profile points at, to be read by a planning session and never copied into the profile.
+- **No preference**: a profile value that means the owner has no fixed choice on a topic, so the planning session should recommend one and say why.
+- **Secret check**: the test `afk profile set` and `afk profile check` apply to refuse a value that looks like a key or token.

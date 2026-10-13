@@ -1714,3 +1714,38 @@ internal/masterplan/testdata/nebari-plan.md:1736: warning: This open question's 
 - `--json` prints one object: `file`, `findings` (a list of `level`, `line`, `task`, `rule`, `message`; `task` is `""` and `line` is `0` when unset; the list is `[]` for a clean plan) and `summary` (the six counts).
 - An open question row is open unless its question cell contains `**Answered`. An answer written on its own row below the question leaves the question row open, which is true of several rows in `docs/PLAN.md`; T5.6 must allow for it.
 - The daemon's bad-plan item lists at most 20 errors, then a line saying how many more.
+
+## T5.2
+
+The owner profile: `profile.toml`, `internal/profile` and `afk profile`. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **`set` edits the file as text (A1).** It replaces one `[[entry]]` block, or adds one at the end, and leaves every other line alone. The TOML library can write a file, but only by dropping every comment and every key it does not know, and the template `afk profile init` writes is mostly comments. After the edit afk reads the result back and checks that it is the old profile with that one entry changed. If it is not, nothing is written and the message says to change the entry by hand.
+- **Where the file is (A2).** The same folder as `config.toml`: `$XDG_CONFIG_HOME/afk` when that is an absolute path, otherwise `~/.config/afk`. The profile package has its own copy of that rule so it depends on nothing else in afk, and a test compares the two folders so they cannot drift apart.
+- **Topics and kinds (A3).** Two topics are the same when they differ only in upper and lower case or in spacing; the file keeps them as the owner wrote them. A kind is any word of lower-case letters, digits and hyphens. There is no fixed list of kinds, because the master plan names `web-app`, `cli` and `library` only as examples.
+- **Which entry applies (A4).** For a kind of project, the entries for that kind and the entries with no kind are considered, and one is chosen per topic. An entry for the kind beats a general one, even when the general one is a rule and the specific one a default: the owner wrote the specific one on purpose. Between two entries of the same scope a rule beats a default, and between two equals the later one in the file wins. Two entries with the same topic and kind are reported by `afk profile check` as an error.
+- **`afk profile` with no `--kind` (A5)** prints every entry, with its kind. With `--kind` it prints only what applies to that kind, and says so when nothing in the profile is specific to it.
+- **Strength (A6).** A new entry set with neither `--rule` nor `--default` is a default. Setting an existing entry keeps its strength and its reason unless the command gives new ones. An entry in the file with no `strength` line reads as a default; any word other than `rule` or `default` is an error.
+- **What looks like a key or token (A7).** The well-known prefixes of access keys and tokens, the first line of a private key, a signed web token, `Bearer` followed by a long word, an address with a password in it, `password = …` and the like, 32 or more hex digits, and any word of 32 or more characters that mixes upper case, lower case and digits. It is a net for mistakes, not a guarantee. There is no way to switch it off: if an ordinary value trips it, reword the value. The message never repeats what was typed. The check covers the topic, the value, the reason, the kind and the rule-file paths.
+- **A profile with errors is not printed (A8).** `afk profile` lists the problems and exits 1, so a planning session never plans from a broken profile or reads a secret out of one.
+- **Rule files (A9)** are edited by hand; no command writes them. Each path must be absolute or start with `~/`. `afk profile check` warns when one does not exist. This task never reads what is in them; that is the planning session's job (T5.3).
+- **Writing (A10).** A new profile is readable only by its owner (mode 0600) and an existing one keeps its mode. The write goes to a temporary file in the same folder and is renamed into place. A profile that is a symbolic link, for example into a dotfiles repository, stays a link: the file it points at is written.
+- **The template (A11)** has every example commented out, so a new template is an empty, valid profile and nothing in it is mistaken for the owner's choice. `afk profile set` with no file writes a short header and the entry, not the whole template.
+- **Exit codes (A12).** 0 when the command did what was asked, which includes "there is no profile yet"; 1 when the file is wrong, a value looks like a secret, `init` found a file already there, or the write failed; 2 when the command was written wrongly. Warnings alone exit 0.
+- **No `--json` (A13).** The master plan does not ask for it, and the planning session can read the plain lines. The text form is kept stable for that reason.
+- **Tests (A14)** are written with the code, as table tests. **Nothing had to be in place first (A15).**
+
+### As built
+
+- **Comments inside the entry being changed go with it.** `afk profile set` rewrites one entry from its `[[entry]]` line to its last key, so a comment between those lines is dropped. Every other line of the file, comments included, is kept. The README says so.
+- **The secret check runs twice.** The command checks the topic, the value and the reason first, so its message can name which one it was. The package's edit function checks again, so no other caller can write a secret.
+- **An entry with a key afk does not know cannot be changed by `set`.** The edit would lose that key, so afk refuses and says to change the entry by hand.
+- **A line break is refused in every field**, not only the value.
+- **`afk profile check` prints each problem once**, as `<file>: error|warning: <message> [<rule>]`. The message already says which entry, and leaves the topic out when the topic itself looks like a secret.
+- **Known wart, not fixed here.** The three-line header `set` writes into a profile it creates mentions `afk profile init`, which refuses once that file exists. The wording should point at the README's list of topics. It is in the inbox as a notice.
+
+### Scope ideas
+
+Not built, recorded for later:
+
+- `afk profile --json` and `afk profile check --json`, in the shape `afk plan lint --json` set, so the planning session and a later web page can read the profile without parsing text.
+- A command to add or remove a `rule_files` path, so the profile never has to be opened in an editor.

@@ -418,6 +418,8 @@ token. With a token every route, `/api/` included, answers 401 without it. The t
 `<public_url>/p/<project>/inbox/<id>` only when the page is on and `public_url` is set, and never the
 token.
 
+Amended 2026-10-13 (T5.2): `profile.toml` is the owner profile. It sits in the same folder as `config.toml` (absolute `XDG_CONFIG_HOME` or `~/.config`, the same rule). It reads `rule_files` (a list; each item an absolute path or one starting with `~/`) and `[[entry]]` tables with `topic`, `value`, `strength` (`rule` or `default`; absent reads as `default`), an optional `kind` (lower-case letters, digits and hyphens) and an optional `reason`. Topics compare with case and runs of white space ignored, and are stored as written. There is one entry per topic and kind, and a kind-specific entry beats a general one on the same topic. An unknown key is a warning. No secrets: a value that looks like a key or token is an error and is never printed. `afk profile set` is the only command that edits the file, one `[[entry]]` at a time as text so comments survive, and `afk profile init` creates it once from a commented template.
+
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
 One line per task per phase per role, written when a task ends: `{at, task, session, phase:
@@ -1395,6 +1397,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
 - **Acceptance:** table tests for `Select` (general only, kind only, both, unknown kind, a rule and a
   default on one topic), for `set` on a missing file, a new topic and an existing one, and for the
   secret check. `afk profile` with no file says how to create one and exits 0.
+- Amended 2026-10-13 (T5.2 done): the profile is read with `afk profile --kind K`, one line per entry on stdout as `<strength>  <topic>: <value> [<kind>] — <reason>` (kind and reason only when set), and there is no `--json`; a profile with an error prints no entries and exits 1, so T5.3's survey must stop on a non-zero exit and never plan from part of a profile; `afk profile set` keeps an entry's strength and reason unless told otherwise, refuses anything that looks like a key or token (no override) and cannot replace an entry that holds a key afk does not know; `rule_files` are listed and checked for existence but never read here, so reading them is T5.3's; the file's contract is in §4.6 and the decisions in `docs/decisions.md` under `## T5.2`.
 
 #### T5.3 — The planning session
 - **Depends on:** T5.1, T5.2
