@@ -72,6 +72,10 @@ type daemonRig struct {
 	listens   []string
 	listeners []*pipeListener
 	listenErr error
+	// launched, when a test sets it, is sent every launch as well, so a test
+	// that runs the daemon on a goroutine of its own can wait for a launch
+	// without reading launches while the loop may be writing it.
+	launched chan daemon.LaunchRequest
 }
 
 // daemonTestBinary is the program file the rig reports unless a test says
@@ -164,6 +168,9 @@ func (r *daemonRig) env() daemonEnv {
 				Preflight: func(daemon.Project) (bool, string) { return true, "" },
 				Launch: func(req daemon.LaunchRequest) error {
 					r.launches = append(r.launches, req)
+					if r.launched != nil {
+						r.launched <- req
+					}
 					return nil
 				},
 				RecordTokens: func(daemon.Project, string, string, string) (int, error) { return 0, nil },
@@ -193,9 +200,18 @@ func (r *daemonRig) env() daemonEnv {
 // TestRunDaemon runs the command body against temp folders and a fake loop.
 //
 // Load-bearing rows:
-//   - "no projects" and "status, no projects" differ only in the exit code:
-//     the daemon cannot work with nothing to build (1), while status is a
-//     read-only report and an empty one is not a failure (0).
+//   - "once, no projects" is exit 0 with a line that says there is nothing to
+//     look at: an empty list is how every machine starts, not a mistake.
+//   - "no projects: the daemon starts and waits" is the other half of that. It
+//     must go on looking (three passes are counted) and must not exit, or a
+//     service manager would restart it in a loop until the first plan is
+//     approved. It says so once, not once per pass.
+//   - "the config becomes unreadable while the daemon runs" must keep building
+//     the project it had: the launch in it happens on a pass whose read of the
+//     config failed. The problem is logged once although two passes hit it.
+//   - "a setting other than the project list is not picked up" pins that the
+//     reload is the list and nothing else: the tick written mid-run is an hour,
+//     and the passes after it still come a second apart.
 //   - "paused project starts nothing" is the manual check's safety property:
 //     it is what makes `afk daemon --once` safe to try on a real project.
 //   - "already running" must not launch: two loops over one ledger would each
@@ -243,10 +259,137 @@ func TestRunDaemon(t *testing.T) {
 		check       func(t *testing.T, r *daemonRig)
 	}{
 		{
-			name:   "no projects",
+			name:   "once, no projects",
 			args:   []string{"--once"},
-			code:   1,
-			errOut: []string{"no projects are configured", "[[project]]", "path", "config.toml"},
+			code:   0,
+			out:    []string{"No projects yet, so there is nothing to look at", "afk project add", "afk plan approve"},
+			errNot: []string{"afk daemon started", "without a restart"},
+			check: func(t *testing.T, r *daemonRig) {
+				if r.binaryReads != 0 {
+					t.Errorf("--once read the program file %d times, want never", r.binaryReads)
+				}
+			},
+		},
+		{
+			name: "no projects: the daemon starts and waits",
+			setup: func(r *daemonRig) {
+				r.writeConfig("[daemon]\ntick = \"1s\"\n")
+				// Asked to stop at the fourth look at the program file, which
+				// is the top of the third pass: two whole passes over nothing
+				// have then run. The limit only keeps a daemon that stopped
+				// looking from hanging the suite.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				r.t.Cleanup(cancel)
+				r.ctx = ctx
+				r.binary = func(read int) (daemon.Binary, error) {
+					if read >= 4 {
+						cancel()
+					}
+					return daemonTestBinary, nil
+				}
+			},
+			code: 0,
+			errOut: []string{"afk daemon started (pid 4242): 0 project(s), looking every 1s",
+				"No projects yet. Add one with afk project add, or approve a plan with afk plan approve; this daemon picks it up without a restart.",
+				"read again on every look", "[governor]", "[web]", "provider", "restart afk daemon after changing any of them", stoppedLine},
+			errNot: []string{"no projects are configured"},
+			check: func(t *testing.T, r *daemonRig) {
+				if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
+					t.Fatal("the run ended on the test's time limit: a daemon with no projects stopped looking")
+				}
+				if r.binaryReads != 4 {
+					t.Errorf("the program file was read %d times, want 4 (the start and three passes)", r.binaryReads)
+				}
+				if n := strings.Count(r.stderr, "No projects yet"); n != 1 {
+					t.Errorf("the log says there are no projects %d times, want once", n)
+				}
+			},
+		},
+		{
+			name: "the config becomes unreadable while the daemon runs",
+			setup: func(r *daemonRig) {
+				root := r.project()
+				if err := daemonstate.Pause(root, daemonTestNow); err != nil {
+					r.t.Fatal(err)
+				}
+				r.writeConfig("[daemon]\ntick = \"1s\"\n[[project]]\nname = \"demo\"\npath = \"" + root + "\"\n")
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				r.t.Cleanup(cancel)
+				r.ctx = ctx
+				// Each look at the program file comes straight after that
+				// pass's read of the config, and before the pass looks at any
+				// project.
+				r.binary = func(read int) (daemon.Binary, error) {
+					switch read {
+					case 2:
+						// First pass: the config was read. Break it now; this
+						// pass still finds the project paused.
+						r.writeConfig("[[project]\npath = half a line")
+					case 3:
+						// Second pass: its read of the config has just failed.
+						// Resume the project, so the only way a task starts is
+						// this pass looking at a project it could not re-read.
+						if _, err := daemonstate.Resume(root); err != nil {
+							r.t.Error(err)
+						}
+					case 4:
+						// Third pass: a second failed read, then stop.
+						cancel()
+					}
+					return daemonTestBinary, nil
+				}
+			},
+			code:     0,
+			errOut:   []string{"afk: the project list could not be read, so the projects already running carry on:", "config.toml", stoppedLine},
+			errNot:   []string{"no longer running", "No projects yet"},
+			launches: 1,
+			check: func(t *testing.T, r *daemonRig) {
+				if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
+					t.Fatal("the run ended on the test's time limit")
+				}
+				if got := r.launches[0]; got.Task != "T1.1" || got.Project.Root != r.roots[0] || got.Project.Name != "demo" {
+					t.Errorf("launch = %+v, want T1.1 for demo at %s", got, r.roots[0])
+				}
+				if n := strings.Count(r.stderr, "the project list could not be read"); n != 1 {
+					t.Errorf("the config problem is logged %d times, want once (two passes hit it)", n)
+				}
+			},
+		},
+		{
+			name: "a setting other than the project list is not picked up",
+			setup: func(r *daemonRig) {
+				root := r.project()
+				if err := daemonstate.Pause(root, daemonTestNow); err != nil {
+					r.t.Fatal(err)
+				}
+				project := "[[project]]\nname = \"demo\"\npath = \"" + root + "\"\n"
+				r.writeConfig("[daemon]\ntick = \"1s\"\n" + project)
+				// Far below the hour the new tick asks for, far above the two
+				// seconds two passes need.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				r.t.Cleanup(cancel)
+				r.ctx = ctx
+				r.binary = func(read int) (daemon.Binary, error) {
+					switch read {
+					case 2:
+						r.writeConfig("provider = \"no-such-agent\"\n[daemon]\ntick = \"1h\"\n" + project)
+					case 4:
+						cancel()
+					}
+					return daemonTestBinary, nil
+				}
+			},
+			code:   0,
+			errOut: []string{"looking every 1s", stoppedLine},
+			errNot: []string{"could not be read", "no-such-agent", "no longer running"},
+			check: func(t *testing.T, r *daemonRig) {
+				if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
+					t.Fatal("the run ended on the test's time limit: the daemon took the new tick of an hour from a config it re-read")
+				}
+				if len(r.providers) != 1 {
+					t.Errorf("the loop's deps were built %d times, want once", len(r.providers))
+				}
+			},
 		},
 		{
 			name: "status, no projects",
@@ -654,6 +797,9 @@ const daemonTestWebToken = "tok-3f9a1c7e5b2d4a68"
 //   - "no token", "--once" and "status" must never ask for a port. With no
 //     token there is nothing a request could prove, and the other two are
 //     over before anyone could open a page.
+//   - "a project added while the daemon runs gets a page" is the reload seen
+//     from the page: 404 before the project is in config.toml, 200 for the
+//     project and for its plan on the pass after, from the same daemon.
 //   - "stopping for a new version closes the page": that way out returns
 //     without the stop signal, so a shutdown tied to the signal would leave
 //     the port held against the daemon that is started next.
@@ -816,6 +962,43 @@ func TestRunDaemonWeb(t *testing.T) {
 				}
 				if _, ok := daemonstate.ReadState(r.roots[0]); ok {
 					t.Error("the loop looked at the project under a config that was refused")
+				}
+			},
+		},
+		{
+			// The page as a phone sees it, over the daemon's own listener: a
+			// project written into config.toml while the daemon runs has a
+			// page one pass later. Nothing here restarts anything.
+			name: "a project added while the daemon runs gets a page",
+			setup: func(r *daemonRig) {
+				r.writeConfig(fmt.Sprintf("[daemon]\ntick = \"1s\"\n%s", withToken))
+				cancel := running(r)
+				r.binary = func(read int) (daemon.Binary, error) {
+					switch read {
+					case 2:
+						// First pass, the list read as empty.
+						if code := r.listeners[0].get(r.t, "/api/p/demo", daemonTestWebToken); code != http.StatusNotFound {
+							r.t.Errorf("the page answered %d for a project nobody has added, want 404", code)
+						}
+						oneProject(r, withToken)
+					case 3:
+						// Second pass: the list was read again just now.
+						for _, path := range []string{"/api/p/demo", "/api/p/demo/plan"} {
+							if code := r.listeners[0].get(r.t, path, daemonTestWebToken); code != http.StatusOK {
+								r.t.Errorf("GET %s answered %d after the project was added, want 200", path, code)
+							}
+						}
+						cancel()
+					}
+					return daemonTestBinary, nil
+				}
+			},
+			code:    0,
+			errOut:  []string{"0 project(s)", "No projects yet", "afk: now running demo", "afk daemon stopped"},
+			listens: []string{bind},
+			check: func(t *testing.T, r *daemonRig) {
+				if r.binaryReads != 3 {
+					t.Fatalf("the program file was read %d times, want 3: the second pass never came", r.binaryReads)
 				}
 			},
 		},

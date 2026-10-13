@@ -219,13 +219,14 @@ func TestRunPlanCheckUsesCwdWithoutProject(t *testing.T) {
 // TestPlanUsageNamesTheCommand keeps the usage text and the dispatcher in
 // step: the help must show every form routePlanArgs accepts (the planning
 // session with its flags, the three commands that change a plan, status,
-// advance, patch, insert, depend, next-id, lint and check), and for check both
+// advance, approve, patch, insert, depend, next-id, lint and check), and for check both
 // states and all three exit codes.
 func TestPlanUsageNamesTheCommand(t *testing.T) {
 	var b bytes.Buffer
 	printPlanUsage(&b)
 	for _, want := range []string{
-		planSessionUsageLine, planStatusUsageLine, planAdvanceUsageLine, "--dry-run", "--provider NAME", "needs a terminal",
+		planSessionUsageLine, planStatusUsageLine, planAdvanceUsageLine, "--dry-run",
+		planApproveUsageLine, "approve is your \"go\"", "creates the task ledger", "Running it\nagain is safe", "--provider NAME", "needs a terminal",
 		planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine, "--yes", ".afk/plan/archive/",
 		planPatchUsageLine, planInsertUsageLine, planDependUsageLine, planNextIDUsageLine,
 		"--new-milestone", "--message TEXT", "Nothing was changed.", "afk-plan-changes",

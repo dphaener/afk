@@ -1,15 +1,20 @@
 package web
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
+	"github.com/dphaener/afk/internal/planlint"
 )
 
 const idScript = "kmn345"
@@ -275,5 +280,228 @@ func TestPageTemplatesHaveNoScript(t *testing.T) {
 		if strings.Contains(strings.ToLower(string(b)), "<script") {
 			t.Errorf("%s holds a script tag", e.Name())
 		}
+	}
+}
+
+// hostilePlan holds markup in every place the plan page shows plan text: the
+// rendered plan, an open question (drawn by the template, not the renderer)
+// and a checker finding's message (which quotes the heading).
+const hostilePlan = `# Plan <script>alert(1)</script>
+
+<a href="javascript:alert(2)" onclick="alert(3)">tap</a>
+
+#### T1.1 — First <img src=x onerror=alert(4)>
+- **Depends on:** T9.9
+
+#### T1.1 — Again
+
+## Open questions
+
+| Question | Needed by |
+|---|---|
+| <script>alert(5)</script> or <b>this</b>? | T1.1 |
+`
+
+// TestPlanPage requests the plan view as a page.
+//
+// Load-bearing rows: "review-only project" (the waiting line is there, word
+// for word, with the command to run), "configured project is not waiting"
+// (the line must go once the plan is approved, or the owner approves twice),
+// "plan that cannot be read" (the problem is shown and no plan or count
+// beside it), "plan with errors" (the checker's errors are on the page, since
+// approve will refuse them), and "hostile plan" (plan text reaches the page
+// three ways, and none may be markup).
+func TestPlanPage(t *testing.T) {
+	const waiting = "Waiting for approval. To approve it, run afk plan approve in the project folder."
+	tests := []struct {
+		name    string
+		setup   func(*rig)
+		path    string
+		status  int
+		want    []string
+		notWant []string
+	}{
+		{name: "configured project", path: "/p/app/plan", status: 200,
+			want: []string{"Plan: app", "docs/PLAN.md", "1 milestone,", "2 tasks", "(1 for you to do yourself)", "1 open question.", "0 errors and 0 warnings",
+				"Which colour?", "Needed by: T1.2", `<h4 id="T1.1">T1.1 — First</h4>`, "<strong>Goal:</strong> g", "<th>Topic</th>", `href="/p/app"`},
+			notWant: []string{"Waiting for approval", "Which font?</li>", "Errors to fix"}},
+		{name: "configured project is not waiting", path: "/p/app/plan", status: 200,
+			setup:   func(rg *rig) { rg.reviews = append(rg.reviews, Project{Name: "app-2", Root: rg.root}) },
+			notWant: []string{"Waiting for approval"}},
+		{name: "review-only project", path: "/p/draft/plan", status: 200,
+			want:    []string{"Plan: draft", waiting, `<h1 id="draft-plan">Draft plan</h1>`, "A plan nobody has approved yet.", "Errors to fix", `<a href="/">Back to the overview</a>`},
+			notWant: []string{`href="/p/draft"`}},
+		{name: "project name with a space", path: "/p/my%20app/plan", status: 200,
+			want: []string{"Plan: my app", `href="/p/my%20app"`, "Problem: The plan could not be read"}},
+		{name: "plan that cannot be read", path: "/p/app/plan", status: 200,
+			setup:   func(rg *rig) { rg.planErr = errors.New("permission denied") },
+			want:    []string{"Problem: The plan could not be read: permission denied."},
+			notWant: []string{"milestone", "Open questions", `class="plan"`}},
+		{name: "plan with errors", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) {
+				rg.plans[rg.root] = strings.Replace(testPlan, "- **Depends on:** T1.1\n", "- **Depends on:** T7.7\n", 1)
+			},
+			want: []string{"Errors to fix before this plan can be built", "T7.7", "1 error and", `class="warn"`}},
+		{name: "plan with no open question", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) { rg.plans[rg.root] = strings.Replace(testPlan, "| Which colour? | T1.2 |\n", "", 1) },
+			want:  []string{"No question in the plan is open.", "0 open questions."}},
+		{name: "hostile plan", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) { rg.plans[rg.root] = hostilePlan },
+			want: []string{"&lt;script&gt;alert(1)&lt;/script&gt;", "&lt;script&gt;alert(5)&lt;/script&gt; or &lt;b&gt;this&lt;/b&gt;?",
+				"&lt;img src=x onerror=alert(4)&gt;", "onclick=&#34;alert(3)&#34;"},
+			notWant: []string{"<script", "<img", "<b>", `onclick="`, `href="javascript:`}},
+		{name: "unknown project", path: "/p/nothing-here/plan", status: 404,
+			want: []string{"Something went wrong (404)", "waiting for approval"}},
+		{name: "overview lists the plans waiting", path: "/", status: 200,
+			want: []string{"Plans waiting for approval", `<a href="/p/draft/plan">draft</a>`}},
+		{name: "overview with no plan waiting has no list", path: "/", status: 200,
+			setup:   func(rg *rig) { rg.reviews = nil },
+			notWant: []string{"Plans waiting for approval"}},
+		{name: "overview leaves out a review that is a configured project", path: "/", status: 200,
+			setup:   func(rg *rig) { rg.reviews = []Project{{Name: "app-2", Root: rg.root}} },
+			notWant: []string{"Plans waiting for approval", "app-2"}},
+		{name: "overview leaves out a review with a configured project's name", path: "/", status: 200,
+			setup:   func(rg *rig) { rg.reviews = []Project{{Name: "app", Root: rg.draft}} },
+			notWant: []string{"Plans waiting for approval"}},
+		{name: "overview escapes a review name in its link", path: "/", status: 200,
+			setup: func(rg *rig) { rg.reviews = []Project{{Name: `a b/<i>"c`, Root: rg.draft}} },
+			want:  []string{`href="/p/a%20b%2F%3Ci%3E%22c/plan"`, "a b/&lt;i&gt;&#34;c"}, notWant: []string{"<i>"}},
+		{name: "project page links to its plan", path: "/p/app", status: 200,
+			want: []string{`<a href="/p/app/plan">Read the plan</a>`}},
+		{name: "project page link is escaped", path: "/p/my%20app", status: 200,
+			want: []string{`<a href="/p/my%20app/plan">Read the plan</a>`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tc.setup != nil {
+				tc.setup(rg)
+			}
+			rec := rg.pageDo("GET", tc.path, "")
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d\n%s", rec.Code, tc.status, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+				t.Errorf("Content-Type = %q, want text/html", ct)
+			}
+			body := rec.Body.String()
+			for _, w := range tc.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("page does not contain %q\n%s", w, body)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(strings.ToLower(body), strings.ToLower(w)) {
+					t.Errorf("page contains %q, which it should not\n%s", w, body)
+				}
+			}
+			if strings.Contains(body, testToken) {
+				t.Errorf("the page contains the token")
+			}
+			if !strings.Contains(body, `name="viewport"`) || strings.Contains(strings.ToLower(body), "<script") {
+				t.Errorf("page must have the viewport tag and no script tag")
+			}
+		})
+	}
+}
+
+// TestPlanPageCannotApprove is load-bearing: approving a plan from the web
+// page is forbidden. Approve commits and pushes in the owner's project and
+// starts a build that spends their usage, and that takes someone at the
+// project's own terminal, not whoever holds a phone with the cookie. So the
+// plan page, for a plan that is waiting and for one that is not, has nothing
+// that sends anything: no form, no button, no input. The template is checked
+// as well as the drawn page, so a form inside a branch no fixture reaches is
+// caught too, and the only links on the drawn page are plain GETs to pages
+// that exist.
+func TestPlanPageCannotApprove(t *testing.T) {
+	src, err := pageFiles.ReadFile("templates/plan.html")
+	must(t, err)
+	acting := []string{"<form", "<button", "<input", "<textarea", "<select", "method=", "action=", "formaction"}
+	for _, w := range acting {
+		if strings.Contains(strings.ToLower(string(src)), w) {
+			t.Errorf("templates/plan.html holds %q", w)
+		}
+	}
+
+	linkRE := regexp.MustCompile(`<a href="([^"]*)"`)
+	for _, path := range []string{"/p/draft/plan", "/p/app/plan"} {
+		rg := newRig(t, Config{})
+		// A plan that mentions approving and holds a link, to make sure the
+		// only way either reaches the page is as text and as a plain link.
+		rg.plans[rg.draft] = draftPlan + "\nRun afk plan approve. See https://example.com/docs.\n"
+		body := rg.pageDo("GET", path, "").Body.String()
+		for _, w := range acting {
+			if strings.Contains(strings.ToLower(body), w) {
+				t.Errorf("%s: the page holds %q", path, w)
+			}
+		}
+		for _, m := range linkRE.FindAllStringSubmatch(body, -1) {
+			href := m[1]
+			if strings.HasPrefix(href, "https://example.com/") {
+				continue
+			}
+			if !strings.HasPrefix(href, "/") || strings.Contains(href, "approve") {
+				t.Errorf("%s: unexpected link %q", path, href)
+				continue
+			}
+			if rec := rg.pageDo("GET", href, ""); rec.Code != 200 {
+				t.Errorf("%s: the link %q answers %d", path, href, rec.Code)
+			}
+		}
+	}
+
+	// No route about a plan takes anything but GET.
+	for _, rt := range routes {
+		if strings.Contains(rt.path, "plan") && rt.method != http.MethodGet {
+			t.Errorf("the route %s %s can change something about a plan", rt.method, rt.path)
+		}
+	}
+}
+
+// TestPlanPageRendersThisRepositorysPlan is the task's acceptance against
+// the real file: the plan view of this repository's docs/PLAN.md, drawn by
+// the real handler, with the summary the checker gives for it and its open
+// questions. The counts are compared with planlint's own, never with numbers
+// typed here, because the plan grows with every task.
+func TestPlanPageRendersThisRepositorysPlan(t *testing.T) {
+	data, err := os.ReadFile("../../docs/PLAN.md")
+	must(t, err)
+	rg := newRig(t, Config{})
+	rg.plans[rg.root] = string(data)
+
+	want := planlint.Lint(data).Summary
+	m := decode(t, rg.do(http.MethodGet, "/api/p/app/plan", "", ""))
+	sum := m["summary"].(map[string]any)
+	if sum["tasks"] != float64(want.Tasks) || sum["milestones"] != float64(want.Milestones) || sum["owner_tasks"] != float64(want.OwnerTasks) ||
+		sum["open_questions"] != float64(want.OpenQuestions) || sum["errors"] != float64(want.Errors) || sum["warnings"] != float64(want.Warnings) {
+		t.Errorf("summary = %s, want %+v", dump(sum), want)
+	}
+	if want.Tasks == 0 || want.OpenQuestions == 0 {
+		t.Fatalf("this repository's plan reads as having no tasks or no open questions (%+v); the test proves nothing", want)
+	}
+	if got := len(m["questions"].([]any)); got != want.OpenQuestions {
+		t.Errorf("questions listed = %d, want the summary's %d", got, want.OpenQuestions)
+	}
+
+	rec := rg.pageDo("GET", "/p/app/plan", "")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, w := range []string{
+		`<h4 id="T5.7">T5.7 — Approve and go</h4>`,
+		"<table",
+		fmt.Sprintf("%d tasks", want.Tasks),
+		fmt.Sprintf("%d open questions.", want.OpenQuestions),
+		"Licence for the open-source release.",
+		"Needed by: T2.4",
+	} {
+		if !strings.Contains(body, w) {
+			t.Errorf("the page does not contain %q", w)
+		}
+	}
+	if strings.Contains(strings.ToLower(body), "<script") || strings.Contains(body, "<form") {
+		t.Errorf("the page of the real plan holds a script tag or a form")
 	}
 }

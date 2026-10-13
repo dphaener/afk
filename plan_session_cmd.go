@@ -81,6 +81,9 @@ type planDeps struct {
 	// ask prints a question and returns the line the owner typed, without its
 	// line break. It is only called when both stdin and stdout are a terminal.
 	ask func(prompt string) (string, error)
+	// review is what the "plan ready for review" notification uses; the zero
+	// value sends nothing.
+	review planReviewDeps
 }
 
 func realPlanDeps() planDeps {
@@ -106,6 +109,7 @@ func realPlanDeps() planDeps {
 		attach:     attachPlanSession,
 		lintErrors: func(plan []byte) int { return planlint.Lint(plan).Summary.Errors },
 		now:        time.Now,
+		review:     realPlanReviewDeps(),
 		ask: func(prompt string) (string, error) {
 			fmt.Fprint(os.Stdout, prompt)
 			line, err := stdin.ReadString('\n')
@@ -193,6 +197,9 @@ const (
 	planRouteLint
 	planRouteStatus
 	planRouteAdvance
+	// planRouteApprove is `afk plan approve`: the owner's "go" for a reviewed
+	// plan. It is in plan_approve_cmd.go.
+	planRouteApprove
 	// planRouteMode is `afk plan extend`, `amend` or `reconcile`: a planning
 	// session that changes a plan that exists. The word is the mode.
 	planRouteMode
@@ -230,6 +237,8 @@ func routePlanArgs(args []string) planRoute {
 		return planRouteStatus
 	case "advance":
 		return planRouteAdvance
+	case "approve":
+		return planRouteApprove
 	case plansession.ModeExtend, plansession.ModeAmend, plansession.ModeReconcile:
 		return planRouteMode
 	case "patch":
@@ -1277,5 +1286,10 @@ func runPlanAdvance(args []string, stdout, stderr io.Writer, deps planDeps) int 
 	}
 	fmt.Fprintf(stdout, "Phase: %s → %s\n", old, next)
 	fmt.Fprintf(stdout, "Waiting for: %s\n", plansession.Decide(files).Waiting)
+	// Only a new plan reaching review asks for the owner's read. The three
+	// modes that change a plan have their own commands and no notification.
+	if files.State.Mode == plansession.ModeNew && next == plansession.PhaseReview {
+		notifyPlanReady(project.Root, deps.review, deps.now(), stderr)
+	}
 	return 0
 }

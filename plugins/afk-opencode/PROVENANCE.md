@@ -59,6 +59,10 @@ earlier forge behaviour in these areas:
   part of the binary and works for any agent.
 - open questions (plugin version 5.7.1): the port has no copy of the format document's text saying the
   build daemon holds a task while an open row names it. The daemon is part of the binary and works for any agent.
+- the review phase of the master-plan skill (plugin version 5.7.2, T5.7): the port has no master-plan
+  skill, so the change to what the session tells the owner at `review` (read the plan, on the web page
+  when they have it, then run `afk plan approve`) is not ported. `afk plan approve` and the plan view
+  are part of the binary and work for any agent.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,7 +53,10 @@ Usage:
   afk daemon status    Say what the daemon is doing in each project, and why.
 
 Projects are listed in config.toml in afk's config folder (normally
-~/.config/afk/config.toml), one [[project]] with a path each.
+~/.config/afk/config.toml), one [[project]] with a path each. "afk project
+add" and "afk plan approve" write that list, and a running daemon reads it
+again on every look, so a new project needs no restart. Every other setting
+in config.toml is read once, when the daemon starts.
 
 Stopping the daemon (ctrl-c, or a stop from the service manager) leaves every
 session running; the next start picks them up again. "afk pause" stops new
@@ -62,8 +67,8 @@ daemon stops by itself between two looks (exit 0), so a service manager set to
 restart it always starts the new version. Run by hand, start it again.
 
 Exit codes: 0 done or stopped (status: the report was printed), 1 the config
-could not be used, no project is configured, or a daemon is already running,
-2 the command was written wrongly.
+could not be used or a daemon is already running, 2 the command was written
+wrongly.
 `)
 }
 
@@ -211,10 +216,6 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		return 1
 	}
 	cfgPath := daemonconfig.Path(env.config)
-	if len(cfg.Projects) == 0 {
-		fmt.Fprintf(stderr, "afk daemon: no projects are configured, so there is nothing to build.\n%s", addProjectHelp(cfgPath))
-		return 1
-	}
 	prov, err := provider.Lookup(cfg.Provider)
 	if err != nil {
 		fmt.Fprintf(stderr, "afk daemon: %s sets provider = %q, which afk does not know. Use one of: %s.\n",
@@ -254,6 +255,13 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	settings := daemonSettings(cfg)
 
 	if *once {
+		// An empty list is not a mistake any more: a daemon is meant to be
+		// started before its first project is approved. A single pass over
+		// nothing has nothing to report, so it says so and is done.
+		if len(projects) == 0 {
+			fmt.Fprintln(stdout, noProjectsOnceText)
+			return 0
+		}
 		for i, st := range daemon.Once(projects, settings, deps) {
 			fmt.Fprintln(stdout, daemonOnceLine(projects[i].Name, st))
 		}
@@ -283,6 +291,14 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		deps.Binary = env.binary
 	}
 
+	// From here on the project list is the one thing read again from
+	// config.toml. list is what the loop last read; the web page is handed
+	// copies of it, so the page and the loop always mean the same folder by a
+	// name and the page never reads the loop's own slice.
+	list := &projectList{}
+	list.set(projects)
+	deps.Projects = daemonReloadProjects(env, list, dropped, logf)
+
 	ctx, stop := env.signalContext()
 	defer stop()
 
@@ -300,7 +316,7 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	// Neither log line may hold the token, and the address is the configured
 	// bind, which has none.
 	if cfg.Web.Enabled() {
-		h, err := web.New(web.Config{Token: cfg.Web.Token, PublicURL: cfg.Web.PublicURL}, daemonWebDeps(projects, env.state, env.now))
+		h, err := web.New(web.Config{Token: cfg.Web.Token, PublicURL: cfg.Web.PublicURL}, daemonWebDeps(list.get, stateDir, env.state, env.now))
 		if err != nil {
 			fmt.Fprintf(stderr, "afk daemon: could not set up the web page: %v. Check the [web] table in %s.\n", err, cfgPath)
 			return 1
@@ -316,7 +332,10 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		logf("web page: off (set [web] token in %s to turn it on)", cfgPath)
 	}
 
-	logf("afk daemon started (pid %d): %d project(s), looking every %s", env.pid, len(projects), cfg.Tick)
+	logf("afk daemon started (pid %d): %d project(s), looking every %s. The project list in %s is read again on every look. The tick and everything else under [daemon], [governor], [web] and provider were read once: restart afk daemon after changing any of them.", env.pid, len(projects), cfg.Tick, cfgPath)
+	if len(projects) == 0 {
+		logf("%s", noProjectsText)
+	}
 	// Both ways out are exit 0. Being asked to stop is not a failure, and
 	// neither is stopping for a new version: the daemon chose to, between two
 	// passes. The service manager starts it again because the unit says
@@ -347,9 +366,94 @@ func webPublicURL(w daemonconfig.Web) string {
 // when the daemon cannot read its own program file.
 const binaryUnknownText = "afk cannot see its own program file, so it will not restart by itself when a new version is installed. Restart it by hand after an install."
 
-// addProjectHelp says where the machine config goes and what to put in it.
+// noProjectsText is the one line a daemon logs when it starts with nothing to
+// build. It is not an error and the daemon does not exit for it: the usual
+// first run is a daemon started by a service manager before any plan has been
+// approved, and an exit there would be a restart loop until the first
+// approval.
+const noProjectsText = "No projects yet. Add one with afk project add, or approve a plan with afk plan approve; this daemon picks it up without a restart."
+
+// noProjectsOnceText is the same for `afk daemon --once`, which is over after
+// one look and so cannot promise to pick anything up.
+const noProjectsOnceText = "No projects yet, so there is nothing to look at. Add one with afk project add, or approve a plan with afk plan approve."
+
+// addProjectHelp says how a project gets into the machine config: the command
+// first, and the lines it writes for anyone who would rather edit the file.
 func addProjectHelp(cfgPath string) string {
-	return fmt.Sprintf("Add a [[project]] with a path to %s:\n\n  [[project]]\n  path = \"/full/path/to/your/project\"\n", cfgPath)
+	return fmt.Sprintf("Add one with afk project add (run it in the project's folder, or give it the folder), or write a [[project]] with a path into %s yourself:\n\n  [[project]]\n  path = \"/full/path/to/your/project\"\n", cfgPath)
+}
+
+// projectList is the project list the loop last read from config.toml, kept
+// where the web page can ask for it.
+//
+// It is the one value the loop and the page share in memory, and it is shared
+// only as copies: set copies what it is given and get hands out a new slice,
+// so neither side can change what the other holds. The lock is held for the
+// copy and nothing else. It is never held while the config is read or while a
+// pass runs, so a page request cannot wait on the loop and the loop cannot
+// wait on a slow reader of the page.
+//
+// The page is given this list instead of reading config.toml itself for two
+// reasons. A file caught half-saved would empty the page while the loop was
+// still building every project in it. And turning a configured path into its
+// main checkout asks git (daemonProjects), which a page request must not wait
+// on.
+type projectList struct {
+	mu   sync.Mutex
+	list []daemon.Project
+}
+
+func (l *projectList) set(ps []daemon.Project) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.list = slices.Clone(ps)
+}
+
+func (l *projectList) get() []daemon.Project {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.list)
+}
+
+// daemonReloadProjects returns the loop's Deps.Projects: it reads config.toml
+// again and answers with its projects, each pointed at its main checkout as at
+// start-up. The loop calls it at the top of every pass, which is what lets a
+// project added by `afk project add` or `afk plan approve` start building with
+// no restart.
+//
+// Only the project list is taken from the file. The tick, the rest of
+// [daemon], [governor], [web] and provider are in the same file and are read
+// here too, but they are thrown away: the ticker, the usage source, the open
+// port and the agent CLI were all built from the values at start-up, and
+// changing them under a running loop would need each of those rebuilt
+// mid-build. Those settings need a restart, and the start-up log line says so.
+//
+// A file that cannot be read or does not load is returned as the error. The
+// loop then keeps the list it had and logs the problem once (daemon.Run), and
+// list is left alone, so the page keeps showing those projects too.
+//
+// startDropped are the duplicate entries already reported at start-up. A
+// duplicate is reported again only when the set of them changes; without that
+// the same line would be logged on every pass for as long as the config holds
+// it. The returned function is called from the loop's goroutine only, which is
+// why the remembered text needs no lock.
+func daemonReloadProjects(env daemonEnv, list *projectList, startDropped []string, logf func(format string, args ...any)) func() ([]daemon.Project, error) {
+	reported := strings.Join(startDropped, "\n")
+	return func() ([]daemon.Project, error) {
+		cfg, err := daemonconfig.Load(env.config)
+		if err != nil {
+			return nil, err
+		}
+		projects, dropped := daemonProjects(cfg.Projects, env.gitCommonDir)
+		if now := strings.Join(dropped, "\n"); now != reported {
+			for _, d := range dropped {
+				logf("%s", d)
+			}
+			reported = now
+		}
+		list.set(projects)
+		return projects, nil
+	}
 }
 
 // daemonLogger returns the daemon's log: one timestamped line per call on w.

@@ -742,16 +742,64 @@ func Advance(f Files) (string, error) {
 			return PhaseDesign, nil
 		}
 		return PhaseReview, nil
-	case PhaseReview, PhaseApproved:
+	case PhaseReview:
 		// Leaving review is approval, and approval is an owner's act with its
 		// own command. Advance is run by the agent, so it must not grant it.
-		return "", errors.New("The plan is waiting for your approval, which comes with `afk plan approve`. That command is not built yet, so the session stops here.")
+		return "", errors.New("The plan is waiting for your approval. Read it, then run `afk plan approve` to start building it.")
+	case PhaseApproved:
+		return "", errors.New("The plan is approved, so there is no later phase to move to.")
 	}
 	// Every other phase goes on to the one after it. That includes `design`,
 	// which goes on to `review` whether it had a gate or not: a session
 	// recorded there with no interface (the answer was changed, or the state
 	// file was edited) has nothing to do and must not be stuck.
 	return Phases[phaseIndex(Phases, st.Recorded)+1], nil
+}
+
+// ApproveVerdict is what `afk plan approve` may do for a set of loaded files.
+type ApproveVerdict string
+
+const (
+	// ApproveGo means the plan is a reviewed draft and may be approved.
+	ApproveGo ApproveVerdict = "go"
+	// ApproveAlready means the session is already approved: nothing to do.
+	ApproveAlready ApproveVerdict = "already"
+)
+
+// Approve says whether the plan may be approved. It is pure; the command
+// does the work and writes `approved` with WriteState, last.
+//
+// `already` comes first among the verdicts so that running the command twice
+// is harmless. Checker errors are tested before the phase Decide reports,
+// because Decide pulls a session recorded at `review` back to `check` while
+// the plan has errors, and the useful advice then is to run `afk plan lint`,
+// not to finish the check phase. Change sessions are told apart with
+// changesPlan (the question Finished asks): their changes went into the plan
+// as they were made, so there is never a draft to approve.
+func Approve(f Files) (ApproveVerdict, error) {
+	st := Decide(f)
+	if f.StateProblem != "" {
+		return "", errors.New(f.StateProblem)
+	}
+	if !st.Session {
+		return "", errors.New("There is no planning session here, so there is nothing to approve. Run `afk plan` to start one.")
+	}
+	if f.State.Phase == PhaseApproved {
+		return ApproveAlready, nil
+	}
+	if changesPlan(f.State.Mode) {
+		return "", fmt.Errorf("This planning session changes a plan that already exists (the %s mode), and its changes are in the plan already, so there is nothing to approve.", f.State.Mode)
+	}
+	if st.Phase == "" {
+		return "", errors.New(st.Problems[0])
+	}
+	if st.Recorded == PhaseReview && f.PlanErrors > 0 {
+		return "", fmt.Errorf("The plan cannot be approved yet. %s Run `afk plan lint` to see them, fix them, then run `afk plan approve` again.", planErrorsSentence(f.PlanErrors))
+	}
+	if st.Phase != PhaseReview {
+		return "", fmt.Errorf("The plan is not ready to approve: the session is at the %s phase, not review. %s", st.Phase, st.Waiting)
+	}
+	return ApproveGo, nil
 }
 
 // missing says what a phase still lacks before it can be left, as one plain
@@ -970,7 +1018,7 @@ func waitingWhenComplete(phase string, f Files) string {
 		}
 		return "The design brief is written and the plan has your design task; `afk plan advance` moves the session on to your review."
 	case PhaseReview:
-		return "The draft is ready for you to read; approving it with `afk plan approve` is not built yet."
+		return "The draft is ready for you to read. When you are happy with it, run `afk plan approve` to start building it."
 	case PhaseApproved:
 		return "The plan is approved, and the planning session has nothing left to do."
 	}

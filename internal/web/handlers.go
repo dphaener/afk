@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"mime"
 	"net/http"
 	"strings"
@@ -11,13 +12,71 @@ import (
 
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
+	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
 // OverviewView is the front page: every project, and the usage reading.
 type OverviewView struct {
 	Projects []ProjectSummary `json:"projects"`
-	Usage    UsageView        `json:"usage"`
+	// Reviews are the plans waiting for approval that are not configured
+	// projects. Each has a plan view and nothing else.
+	Reviews []ReviewView `json:"reviews"`
+	Usage   UsageView    `json:"usage"`
+}
+
+// ReviewView is one plan waiting for approval. Name is what its plan view's
+// address uses.
+type ReviewView struct {
+	Name string `json:"name"`
+}
+
+// PlanQuestion is one open row of the plan's open-questions table.
+type PlanQuestion struct {
+	Text string `json:"text"`
+	// NeededBy is the task ids the row names, never null.
+	NeededBy []string `json:"needed_by"`
+	Line     int      `json:"line"`
+}
+
+// PlanView is a project's master plan, read-only: the checker's counts and
+// findings, the open questions, and the text. The JSON carries the plan as
+// written; only the page renders it.
+type PlanView struct {
+	Project string `json:"project"`
+	// Path is where the plan is, as ReadPlan reported it.
+	Path string `json:"path"`
+	// WaitingForApproval is true for a plan on the review list whose project
+	// is not a configured one yet.
+	WaitingForApproval bool             `json:"waiting_for_approval"`
+	Summary            planlint.Summary `json:"summary"`
+	// Findings is everything the checker found, errors and warnings.
+	Findings  []planlint.Finding `json:"findings"`
+	Questions []PlanQuestion     `json:"questions"`
+	Plan      string             `json:"plan"`
+	// Problem is why the plan could not be read, and empty otherwise. The
+	// counts and lists are then empty and mean nothing.
+	Problem string `json:"problem"`
+}
+
+// Errors is the checker's errors without its warnings. The page shows only
+// these: an error stops afk reading the plan correctly, a warning does not,
+// and a plan of any size has a screenful of warnings.
+func (v PlanView) Errors() []planlint.Finding {
+	var out []planlint.Finding
+	for _, f := range v.Findings {
+		if f.Level == planlint.LevelError {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// Rendered is the plan as HTML, for the page. It is a method and not a field
+// so the JSON API, which gives the text as written, never pays for it.
+func (v PlanView) Rendered() template.HTML {
+	return renderPlan(v.Plan)
 }
 
 // UsageView is usage.json as stored, plus whether there was a file at all.
@@ -67,15 +126,120 @@ type ItemView struct {
 
 // findProject returns the project named in the address. An unknown name is
 // answered here, so a handler only has to return when ok is false.
+//
+// It looks only at configured projects. A plan waiting for approval has no
+// build, so the project page, the inbox and above all the pause and resume
+// buttons must not answer for it: findPlanProject is the one way in for
+// those, and only the plan view uses it.
 func (s *server) findProject(w http.ResponseWriter, r *http.Request) (Project, bool) {
+	if p, ok := named(s.projects(), r.PathValue("project")); ok {
+		return p, true
+	}
+	s.fail(w, r, http.StatusNotFound, "There is no project with that name in afk's config.toml. Check the address, or go back to the overview.")
+	return Project{}, false
+}
+
+// findPlanProject returns the project whose plan the address asks for:
+// a configured project first, then a plan waiting for approval. waiting is
+// true for the second kind. An unknown name is answered here.
+func (s *server) findPlanProject(w http.ResponseWriter, r *http.Request) (p Project, waiting, ok bool) {
 	name := r.PathValue("project")
-	for _, p := range s.d.Projects {
+	configured := s.projects()
+	if p, ok := named(configured, name); ok {
+		return p, false, true
+	}
+	if p, ok := named(s.reviews(configured), name); ok {
+		return p, true, true
+	}
+	s.fail(w, r, http.StatusNotFound, "There is no project with that name in afk's config.toml, and no plan with that name is waiting for approval. Check the address, or go back to the overview.")
+	return Project{}, false, false
+}
+
+func named(ps []Project, name string) (Project, bool) {
+	for _, p := range ps {
 		if p.Name == name {
 			return p, true
 		}
 	}
-	s.fail(w, r, http.StatusNotFound, "There is no project with that name in afk's config.toml. Check the address, or go back to the overview.")
 	return Project{}, false
+}
+
+// projects asks for the configured projects, now. See Deps.Projects for why
+// it is asked every time.
+func (s *server) projects() []Project {
+	if s.d.Projects == nil {
+		return nil
+	}
+	return s.d.Projects()
+}
+
+// reviews asks for the plans waiting for approval, now, and leaves out any
+// that a configured project already covers: one with the same folder (it was
+// approved a moment ago and the list has not caught up) or the same name
+// (the address /p/{name}/plan means the configured project, so a link to the
+// other plan under that name would open the wrong one).
+func (s *server) reviews(configured []Project) []Project {
+	if s.d.Reviews == nil {
+		return nil
+	}
+	var out []Project
+	for _, rv := range s.d.Reviews() {
+		taken := false
+		for _, p := range configured {
+			if p.Name == rv.Name || p.Root == rv.Root {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			out = append(out, rv)
+		}
+	}
+	return out
+}
+
+// planView reads the plan and runs the checker over it, now. Nothing is kept
+// between requests: the planning session rewrites the plan while the owner
+// reads it, and the counts must be the counts of the text shown.
+func (s *server) planView(p Project, waiting bool) PlanView {
+	v := PlanView{Project: p.Name, WaitingForApproval: waiting, Findings: []planlint.Finding{}, Questions: []PlanQuestion{}}
+	if s.d.ReadPlan == nil {
+		v.Problem = "This afk daemon was started without a way to read plans. This is a fault in afk; please report it."
+		return v
+	}
+	path, data, err := s.d.ReadPlan(p.Root)
+	v.Path = path
+	if err != nil {
+		v.Problem = fmt.Sprintf("The plan could not be read: %v. Check that the file exists and that the project's afk.toml names it.", err)
+		return v
+	}
+	rep := planlint.Lint(data)
+	v.Summary = rep.Summary
+	if rep.Findings != nil {
+		v.Findings = rep.Findings
+	}
+	// The same reader the checker and the daemon use, so "open" means here
+	// what it means to them.
+	for _, q := range masterplan.Questions(data) {
+		if !q.Open {
+			continue
+		}
+		needed := q.NeededBy
+		if needed == nil {
+			needed = []string{}
+		}
+		v.Questions = append(v.Questions, PlanQuestion{Text: q.Text, NeededBy: needed, Line: q.Line})
+	}
+	v.Plan = string(data)
+	return v
+}
+
+func (s *server) plan(w http.ResponseWriter, r *http.Request) {
+	p, waiting, ok := s.findPlanProject(w, r)
+	if !ok {
+		return
+	}
+	s.respond(w, r, http.StatusOK, "plan", s.planView(p, waiting))
 }
 
 func (s *server) store(p Project) inbox.Store {
@@ -143,9 +307,13 @@ func (s *server) usageView() UsageView {
 }
 
 func (s *server) overview(w http.ResponseWriter, r *http.Request) {
-	v := OverviewView{Projects: make([]ProjectSummary, 0, len(s.d.Projects)), Usage: s.usageView()}
-	for _, p := range s.d.Projects {
+	configured := s.projects()
+	v := OverviewView{Projects: make([]ProjectSummary, 0, len(configured)), Reviews: []ReviewView{}, Usage: s.usageView()}
+	for _, p := range configured {
 		v.Projects = append(v.Projects, s.projectView(p).ProjectSummary)
+	}
+	for _, rv := range s.reviews(configured) {
+		v.Reviews = append(v.Reviews, ReviewView{Name: rv.Name})
 	}
 	s.respond(w, r, http.StatusOK, "overview", v)
 }

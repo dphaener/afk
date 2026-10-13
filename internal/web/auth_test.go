@@ -253,8 +253,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 8 {
-		t.Fatalf("the route table has %d routes; the plan lists 8", len(routes))
+	if len(routes) != 9 {
+		t.Fatalf("the route table has %d routes; the plan lists 9", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)

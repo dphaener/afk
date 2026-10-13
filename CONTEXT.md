@@ -167,3 +167,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Question hold**: the daemon parking the next ready task, with nothing started for it, because an open question names it in "Needed by".
 - **Question item**: the blocking inbox item, titled `Open question: …`, that the daemon raises once for each open question holding a task; the owner's answer is written into the plan.
 - **Follow-up item**: the blocking inbox item, titled `Put the answer in the plan: …`, raised when an answer could not reach the plan in the main checkout, for example because plan changes go through a pull request.
+- **Approve**: the owner's terminal command (`afk plan approve`) that turns a reviewed plan into a build: it commits the planning documents, creates the ledger, adds the project to the machine config and sets the plan phase to `approved`.
+- **Planning documents**: the files a planning session writes and the approve commits: the master plan, `afk.toml`, `.gitignore`, `CONTEXT.md`, the design brief and the agent instruction files.
+- **Project list**: the `[[project]]` entries of the machine config, which are the projects the daemon builds; edited with `afk project` and read again by the daemon on every pass.
+- **Review list**: `plan-reviews.json` in afk's state folder, naming the projects whose plan is waiting for approval, so the web page can show a plan before its project is in the project list.
+- **Plan view**: the read-only web page for one project that shows its master plan rendered, the checker's summary and the open questions.

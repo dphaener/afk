@@ -122,7 +122,7 @@ func TestDecide(t *testing.T) {
 		{"reached check without an interface", complete(PhaseCheck), true, PhaseCheck, "on to your review", ""},
 		{"reached design", withInterface(PhaseDesign), true, PhaseDesign, "design brief is written and the plan has your design task", ""},
 		{"reached design without an interface", complete(PhaseDesign), true, PhaseDesign, "project has no interface", ""},
-		{"reached review", complete(PhaseReview), true, PhaseReview, "afk plan approve", ""},
+		{"reached review", complete(PhaseReview), true, PhaseReview, "run `afk plan approve`", ""},
 		{"reached approved", complete(PhaseApproved), true, PhaseApproved, "plan is approved", ""},
 
 		// One row per way an earlier file holds the phase back.
@@ -154,8 +154,8 @@ func TestDecide(t *testing.T) {
 		{"held back at design: the header rule is gone", withDesign(PhaseReview, func(f *Files) { f.DesignRule = false }), true, PhaseDesign, "plan wins on behaviour", ""},
 		{"held back at design: the design task is gone", withDesign(PhaseApproved, func(f *Files) { f.DesignTask = "" }), true, PhaseDesign, `no task titled "Design system (owner)"`, ""},
 		{"held back at design: nothing waits for the design task", withDesign(PhaseReview, func(f *Files) { f.DesignDependents = 0 }), true, PhaseDesign, "No task waits for the design task T1.4", ""},
-		{"review without an interface is not held back by design", complete(PhaseReview), true, PhaseReview, "afk plan approve", ""},
-		{"review with an interface and the design done", withInterface(PhaseReview), true, PhaseReview, "afk plan approve", ""},
+		{"review without an interface is not held back by design", complete(PhaseReview), true, PhaseReview, "run `afk plan approve`", ""},
+		{"review with an interface and the design done", withInterface(PhaseReview), true, PhaseReview, "run `afk plan approve`", ""},
 		{"plan errors hold check before design", withDesign(PhaseReview, func(f *Files) { f.PlanErrors = 2; f.DesignBrief = false }), true, PhaseCheck, "2 errors", ""},
 		{"the design gate does not hold an earlier phase", withDesign(PhaseCheck, func(f *Files) {
 			f.DesignBrief, f.DesignRule, f.DesignTask, f.DesignTaskFirst, f.DesignDependents = false, false, "", false, 0
@@ -294,9 +294,9 @@ func TestAdvance(t *testing.T) {
 		{"design, plan has errors is refused at check", withDesign(PhaseDesign, func(f *Files) { f.PlanErrors = 1 }), "", "earlier check phase is not finished. The plan has 1 error that"},
 		{"design without an interface goes to review", complete(PhaseDesign), PhaseReview, ""},
 		{"review refuses", complete(PhaseReview), "", "afk plan approve"},
-		{"approved refuses", complete(PhaseApproved), "", "afk plan approve"},
+		{"approved refuses", complete(PhaseApproved), "", "plan is approved"},
 		{"review refuses with an interface", withInterface(PhaseReview), "", "afk plan approve"},
-		{"approved refuses with an interface", withInterface(PhaseApproved), "", "afk plan approve"},
+		{"approved refuses with an interface", withInterface(PhaseApproved), "", "plan is approved"},
 		{"review with the design brief gone names the file", withDesign(PhaseReview, func(f *Files) { f.DesignBrief = false }), "", "earlier design phase is not finished. The design brief has not been written yet: docs/design-brief.md"},
 
 		{"an earlier file missing refuses", with(PhaseDraft, func(f *Files) { f.Slices = false }), "", "earlier slices phase is not finished"},
@@ -1625,4 +1625,63 @@ func TestArchive(t *testing.T) {
 			t.Errorf("Archive() error = %q, want it to name %s", err, Dir(project))
 		}
 	})
+}
+
+// TestApprove is the approve decision, one row per branch.
+//
+// Load-bearing rows:
+//   - "wrong phase" and "review pulled back by a deleted file": a session
+//     recorded at `review` whose brief was deleted is really at `brief`, and
+//     approving it would build from a plan nobody can account for. The
+//     error must name the phase it is really at.
+//   - "lint errors": Decide reports `check` for these, so only an explicit
+//     test tells the owner to run `afk plan lint`.
+//   - the three change sessions: their review is the end of the path, and
+//     approving would look like it worked while there is nothing to approve.
+//   - "already approved": makes a second run of the command harmless, and
+//     it is the one row where a recorded phase beyond review is not an error.
+func TestApprove(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   Files
+		want    ApproveVerdict
+		wantErr string
+	}{
+		{"go: new session at review", complete(PhaseReview), ApproveGo, ""},
+		{"go: new session at review with an interface", withInterface(PhaseReview), ApproveGo, ""},
+		{"already approved", complete(PhaseApproved), ApproveAlready, ""},
+		{"no session", Files{}, "", "nothing to approve. Run `afk plan` to start one"},
+		{"damaged state", Files{StateProblem: "/p/.afk/plan/state.json is damaged"}, "", "state.json is damaged"},
+		{"wrong phase", complete(PhaseDraft), "", "at the draft phase, not review. The master plan is written; `afk plan advance`"},
+		{"wrong phase: brief", complete(PhaseBrief), "", "at the brief phase, not review"},
+		{"lint errors", with(PhaseReview, func(f *Files) { f.PlanErrors = 2 }), "", "2 errors that `afk plan lint` reports, and each must be fixed. Run `afk plan lint`"},
+		{"review pulled back by a deleted file", with(PhaseReview, func(f *Files) { f.Brief = false }), "", "at the brief phase, not review. Your request has not been saved yet"},
+		{"extend session", completeIn(ModeExtend, PhaseReview), "", "extend mode"},
+		{"amend session", completeIn(ModeAmend, PhaseReview), "", "amend mode"},
+		{"reconcile session", completeIn(ModeReconcile, PhaseReview), "", "reconcile mode"},
+		{"unknown recorded phase", complete("polish"), "", `the phase "polish"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Approve(tt.files)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Approve() error = %v, want %q", err, tt.want)
+				}
+				if got != tt.want {
+					t.Errorf("Approve() = %q, want %q", got, tt.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Approve() = %q, want an error containing %q", got, tt.wantErr)
+			}
+			if got == ApproveGo {
+				t.Errorf("Approve() = go alongside an error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Approve() error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
 }

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemon"
@@ -14,6 +16,7 @@ import (
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
 )
@@ -32,16 +35,32 @@ import (
 // rule, and a handler that crashed or hung could take the loop with it. Files
 // are already the one way every afk process talks to another.
 
-// daemonWebDeps builds what the page reaches outside for. projects are the
-// loop's own (each already pointed at its main checkout, duplicates dropped),
-// so the page and the loop always agree on which folder a name means.
-func daemonWebDeps(projects []daemon.Project, st usagestate.Deps, now func() time.Time) web.Deps {
-	ps := make([]web.Project, 0, len(projects))
-	for _, p := range projects {
-		ps = append(ps, web.Project{Name: p.Name, Root: p.Root})
+// daemonWebDeps builds what the page reaches outside for.
+//
+// projects answers with the loop's own list as it is now (each project already
+// pointed at its main checkout, duplicates dropped), so the page and the loop
+// always agree on which folder a name means, and a project added while the
+// daemon runs shows on the page from the pass that first reads it. It must
+// hand back a slice the page may keep (runDaemon passes projectList.get, which
+// copies) and must not wait on the loop.
+//
+// stateDir is afk's state folder on this machine, where the list of plans
+// waiting for approval is kept.
+func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagestate.Deps, now func() time.Time) web.Deps {
+	configured := func() []web.Project {
+		got := projects()
+		ps := make([]web.Project, 0, len(got))
+		for _, p := range got {
+			ps = append(ps, web.Project{Name: p.Name, Root: p.Root})
+		}
+		return ps
 	}
 	return web.Deps{
-		Projects: ps,
+		Projects: configured,
+		Reviews: func() []web.Project {
+			return webReviews(daemonstate.ReadReviews(stateDir), configured())
+		},
+		ReadPlan: webReadPlan,
 		LoadBuild: func(root string) ([]masterplan.Task, ledger.Ledger, error) {
 			bs, err := loadBuildState(root)
 			return bs.Tasks, bs.Ledger, err
@@ -69,6 +88,51 @@ func daemonWebDeps(projects []daemon.Project, st usagestate.Deps, now func() tim
 		},
 		Now: now,
 	}
+}
+
+// webReviews turns the plans waiting for approval into the page's projects,
+// leaving out every one whose folder is a configured project. Pure.
+//
+// Such an entry is not waiting for anything: `afk plan approve` adds the
+// project to the machine config before it takes the entry off the list, so
+// between those two steps (or for good, when the second one failed) the same
+// project is in both. Listed twice, the owner would be asked to approve a plan
+// that is already being built.
+//
+// The page drops these too (internal/web's reviews). It is done here as well
+// so that what this function hands over is right by itself, whatever a later
+// change to the page does with it.
+func webReviews(reviews []daemonstate.Review, configured []web.Project) []web.Project {
+	out := make([]web.Project, 0, len(reviews))
+	for _, rv := range reviews {
+		root := filepath.Clean(rv.Root)
+		if slices.ContainsFunc(configured, func(p web.Project) bool { return filepath.Clean(p.Root) == root }) {
+			continue
+		}
+		out = append(out, web.Project{Name: rv.Name, Root: root})
+	}
+	return out
+}
+
+// webReadPlan reads the master plan of the project at root, from wherever the
+// project's afk.toml says it is. The path is returned even when the read
+// fails, so the page can say which file it looked for.
+//
+// A project with no afk.toml yet is the usual case for a plan waiting for
+// approval (approve is what writes the file), and projectconfig.Load answers
+// for it with the default path, docs/PLAN.md, which is where a planning
+// session writes its draft.
+func webReadPlan(root string) (string, []byte, error) {
+	cfg, err := projectconfig.Load(root)
+	if err != nil {
+		return "", nil, err
+	}
+	path := cfg.PlanPath(root)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return path, nil, err
+	}
+	return path, data, nil
 }
 
 // webSessionViews copies what the page needs out of discovery's rows. Pure.

@@ -58,11 +58,81 @@ type rig struct {
 	paused    []string
 	resumed   []string
 	sessions  []SessionView
+	// projects and reviews are what the two list functions return. A test
+	// changes them after the handler is built, which is the point: the
+	// handler must ask again on every request.
+	projects []Project
+	reviews  []Project
+	// draft is the folder of "draft", a plan waiting for approval that is
+	// not a configured project.
+	draft string
+	// plans holds each root's plan text; a root with no entry has no plan
+	// file. planErr makes every read fail. planReads counts the reads.
+	plans     map[string]string
+	planErr   error
+	planReads int
 }
+
+// testPlan is a small master plan the checker has nothing to say about, with
+// one open question and one answered one.
+const testPlan = `# Plan
+
+**How to use this document.** Read Context first.
+
+## Context
+
+The owner asked: "build it".
+
+## Decisions
+
+| Topic | Decision |
+|---|---|
+| Language | Go |
+
+## 8. Milestones
+
+### M1 — One
+
+**Outcome:** it starts.
+
+#### T1.1 — First
+- **Depends on:** —
+- **Goal:** g
+- **Scope:** s
+- **Acceptance:** a
+
+#### T1.2 — Second (owner)
+- **Depends on:** T1.1
+- **Goal:** g
+- **Scope:** s
+- **Acceptance:** a
+
+## Deferred
+
+- Nothing.
+
+## Open questions
+
+| Question | Needed by |
+|---|---|
+| Which colour? | T1.2 |
+| Which font? **Answered 2026-10-12: serif.** | T1.1 |
+
+## Definition of done
+
+- Tests pass.
+`
+
+// draftPlan is the plan of the review-only project. Its text is unlike
+// testPlan's so a test can tell which plan it was given.
+const draftPlan = "# Draft plan\n\nA plan nobody has approved yet.\n"
 
 func newRig(t *testing.T, cfg Config) *rig {
 	t.Helper()
-	rg := &rig{t: t, root: t.TempDir(), other: t.TempDir()}
+	rg := &rig{t: t, root: t.TempDir(), other: t.TempDir(), draft: t.TempDir()}
+	rg.projects = []Project{{Name: "app", Root: rg.root}, {Name: "my app", Root: rg.other}}
+	rg.reviews = []Project{{Name: "draft", Root: rg.draft}}
+	rg.plans = map[string]string{rg.root: testPlan, rg.draft: draftPlan}
 	rg.tasks = planTasks("T1.1", "T1.2", "T1.3")
 	rg.ledger = ledger.Ledger{Tasks: []ledger.Entry{
 		{ID: "T1.1", Status: ledger.Done, FinishedAt: "2026-10-12T10:00:00Z", PR: 3, MergedSHA: "cafe01"},
@@ -84,7 +154,20 @@ func newRig(t *testing.T, cfg Config) *rig {
 		cfg.Token = testToken
 	}
 	h, err := New(cfg, Deps{
-		Projects: []Project{{Name: "app", Root: rg.root}, {Name: "my app", Root: rg.other}},
+		Projects: func() []Project { return rg.projects },
+		Reviews:  func() []Project { return rg.reviews },
+		ReadPlan: func(root string) (string, []byte, error) {
+			rg.planReads++
+			path := filepath.Join(root, "docs", "PLAN.md")
+			if rg.planErr != nil {
+				return path, nil, rg.planErr
+			}
+			text, ok := rg.plans[root]
+			if !ok {
+				return path, nil, os.ErrNotExist
+			}
+			return path, []byte(text), nil
+		},
 		LoadBuild: func(root string) ([]masterplan.Task, ledger.Ledger, error) {
 			if root != rg.root {
 				return nil, ledger.Ledger{}, nil
@@ -755,5 +838,299 @@ func TestNoCacheBetweenRequests(t *testing.T) {
 	}
 	if u := decode(t, rg.do(http.MethodGet, "/api/usage", "", "")); u["known"] != false {
 		t.Errorf("usage = %s", dump(u))
+	}
+}
+
+// TestAPIPlan asks for the plan view's JSON.
+//
+// Load-bearing rows: "review-only project" (a plan nobody has approved is
+// readable, and says it is waiting), "review-only project has no project
+// page" and "review-only project cannot be paused" (the review list opens
+// the plan view and nothing else: a folder that is not a configured project
+// must not get a build page or a button that writes into it), "a review
+// entry for a configured project" (the configured one wins and is not
+// waiting, so the page stops saying "waiting" the moment approve has added
+// the project, whether or not the review list has caught up), "a review
+// entry with a configured project's name" (the address means the configured
+// project, never the other folder), and "plan that cannot be read" (200 with
+// the problem, as a damaged ledger is, so the owner sees what to fix).
+func TestAPIPlan(t *testing.T) {
+	planKeys := []string{"project", "path", "waiting_for_approval", "summary", "findings", "questions", "plan", "problem"}
+
+	tests := []struct {
+		name   string
+		setup  func(*rig)
+		method string
+		path   string
+		status int
+		check  func(*testing.T, *rig, map[string]any)
+	}{
+		{
+			name: "configured project", path: "/api/p/app/plan", status: http.StatusOK,
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				wantKeys(t, m, planKeys...)
+				if m["project"] != "app" || m["waiting_for_approval"] != false || m["problem"] != "" {
+					t.Errorf("view = %s", dump(m))
+				}
+				if m["path"] != filepath.Join(rg.root, "docs", "PLAN.md") {
+					t.Errorf("path = %v", m["path"])
+				}
+				if m["plan"] != testPlan {
+					t.Errorf("plan is not the text as written:\n%v", m["plan"])
+				}
+				sum := m["summary"].(map[string]any)
+				wantKeys(t, sum, "milestones", "tasks", "owner_tasks", "open_questions", "errors", "warnings")
+				if sum["milestones"] != 1.0 || sum["tasks"] != 2.0 || sum["owner_tasks"] != 1.0 || sum["open_questions"] != 1.0 || sum["errors"] != 0.0 || sum["warnings"] != 0.0 {
+					t.Errorf("summary = %s", dump(sum))
+				}
+				if fs := m["findings"].([]any); len(fs) != 0 {
+					t.Errorf("findings = %s, want none", dump(fs))
+				}
+				qs := m["questions"].([]any)
+				if len(qs) != 1 {
+					t.Fatalf("questions = %s, want the one open row", dump(qs))
+				}
+				q := qs[0].(map[string]any)
+				wantKeys(t, q, "text", "needed_by", "line")
+				if q["text"] != "Which colour?" || dump(q["needed_by"]) != dump([]string{"T1.2"}) || q["line"] != 41.0 {
+					t.Errorf("question = %s", dump(q))
+				}
+			},
+		},
+		{
+			name: "review-only project", path: "/api/p/draft/plan", status: http.StatusOK,
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				wantKeys(t, m, planKeys...)
+				if m["project"] != "draft" || m["waiting_for_approval"] != true || m["plan"] != draftPlan {
+					t.Errorf("view = %s", dump(m))
+				}
+				// A draft the checker objects to is still shown, with what
+				// it found: that is what the owner is reviewing.
+				if m["summary"].(map[string]any)["errors"] == 0.0 || len(m["findings"].([]any)) == 0 {
+					t.Errorf("the draft's findings are missing: %s", dump(m))
+				}
+				f := m["findings"].([]any)[0].(map[string]any)
+				wantKeys(t, f, "level", "line", "task", "rule", "message")
+				if qs, ok := m["questions"].([]any); !ok || len(qs) != 0 {
+					t.Errorf("questions = %s, want an empty list and not null", dump(m["questions"]))
+				}
+			},
+		},
+		{name: "review-only project has no project page", path: "/api/p/draft", status: http.StatusNotFound},
+		{name: "review-only project has no inbox", path: "/api/p/draft/inbox", status: http.StatusNotFound},
+		{
+			name: "review-only project cannot be paused", method: http.MethodPost, path: "/api/p/draft/pause", status: http.StatusNotFound,
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				if len(rg.paused) != 0 || daemonstate.Paused(rg.draft) {
+					t.Errorf("a pause reached a project that is only on the review list")
+				}
+			},
+		},
+		{
+			name: "unknown project", path: "/api/p/nothing-here/plan", status: http.StatusNotFound,
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				if msg, _ := m["error"].(string); !strings.Contains(msg, "waiting for approval") {
+					t.Errorf("error = %q, want it to say neither list has the name", msg)
+				}
+				if rg.planReads != 0 {
+					t.Errorf("a plan was read for a name that is on neither list")
+				}
+			},
+		},
+		{
+			name: "project name with a space", path: "/api/p/my%20app/plan", status: http.StatusOK,
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				// "my app" has no plan file: a known project, so 200 and
+				// the problem.
+				if m["project"] != "my app" || !strings.Contains(m["problem"].(string), "could not be read") {
+					t.Errorf("view = %s", dump(m))
+				}
+			},
+		},
+		{
+			name: "plan that cannot be read", path: "/api/p/app/plan", status: http.StatusOK,
+			setup: func(rg *rig) { rg.planErr = errors.New("afk.toml is damaged at line 3") },
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				wantKeys(t, m, planKeys...)
+				problem := m["problem"].(string)
+				if !strings.Contains(problem, "afk.toml is damaged at line 3") || !strings.Contains(problem, "Check that") {
+					t.Errorf("problem = %q, want the reason and what to do", problem)
+				}
+				if m["plan"] != "" || len(m["findings"].([]any)) != 0 || len(m["questions"].([]any)) != 0 {
+					t.Errorf("an unreadable plan should carry no text and empty lists: %s", dump(m))
+				}
+			},
+		},
+		{
+			name: "a review entry for a configured project", path: "/api/p/app/plan", status: http.StatusOK,
+			setup: func(rg *rig) { rg.reviews = append(rg.reviews, Project{Name: "app-2", Root: rg.root}) },
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				if m["waiting_for_approval"] != false {
+					t.Errorf("a configured project reads as waiting for approval")
+				}
+				if rec := rg.do(http.MethodGet, "/api/p/app-2/plan", "", ""); rec.Code != http.StatusNotFound {
+					t.Errorf("the same folder answers under its review name too: %d", rec.Code)
+				}
+			},
+		},
+		{
+			name: "a review entry with a configured project's name", path: "/api/p/app/plan", status: http.StatusOK,
+			setup: func(rg *rig) { rg.reviews = []Project{{Name: "app", Root: rg.draft}} },
+			check: func(t *testing.T, rg *rig, m map[string]any) {
+				if m["plan"] != testPlan || m["waiting_for_approval"] != false {
+					t.Errorf("the address gave the review entry's plan, not the configured project's: %s", dump(m))
+				}
+			},
+		},
+		{
+			name: "no review list at all", path: "/api/p/draft/plan", status: http.StatusNotFound,
+			setup: func(rg *rig) { rg.reviews = nil },
+		},
+		{name: "a plan cannot be posted to", method: http.MethodPost, path: "/api/p/app/plan", status: http.StatusNotFound},
+		{name: "there is no approve address", method: http.MethodPost, path: "/api/p/draft/plan/approve", status: http.StatusNotFound},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tc.setup != nil {
+				tc.setup(rg)
+			}
+			method := tc.method
+			if method == "" {
+				method = http.MethodGet
+			}
+			rec := rg.do(method, tc.path, "", "")
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d\n%s", rec.Code, tc.status, rec.Body.String())
+			}
+			m := decode(t, rec)
+			if tc.status != http.StatusOK {
+				if _, ok := m["error"]; !ok {
+					t.Errorf("body = %s, want {\"error\": ...}", rec.Body.String())
+				}
+			}
+			if strings.Contains(rec.Body.String(), testToken) {
+				t.Errorf("the answer contains the token")
+			}
+			if tc.check != nil {
+				tc.check(t, rg, m)
+			}
+		})
+	}
+}
+
+// TestPlanRouteNeedsTheToken says for the plan view what the walk of the
+// route table (TestAuthEveryRouteNeedsTheToken) proves for every route. It
+// is repeated by name because a plan waiting for approval is the one thing
+// the page shows about a project the machine config does not list, and
+// because nobody may read a plan, approved or not, without the token.
+func TestPlanRouteNeedsTheToken(t *testing.T) {
+	for _, target := range []string{"/api/p/app/plan", "/api/p/draft/plan", "/p/app/plan", "/p/draft/plan", "/api/p/nothing-here/plan"} {
+		for _, bad := range []struct {
+			name string
+			req  authReq
+		}{
+			{"no token", authReq{target: target}},
+			{"wrong bearer", authReq{target: target, bearer: otherToken}},
+			{"wrong cookie", authReq{target: target, cookie: goodCookie(otherToken)}},
+		} {
+			t.Run(target+" "+bad.name, func(t *testing.T) {
+				rg := newRig(t, Config{})
+				rec := bad.req.send(rg.h)
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("status = %d, want 401\n%s", rec.Code, rec.Body.String())
+				}
+				if rg.planReads != 0 {
+					t.Errorf("the plan was read for a request without the token")
+				}
+				body := rec.Body.String()
+				if strings.Contains(body, "Draft plan") || strings.Contains(body, "Which colour?") {
+					t.Errorf("a refused request was shown plan text:\n%s", body)
+				}
+				noSecrets(t, rec)
+			})
+		}
+	}
+}
+
+// TestPlanNoCacheBetweenRequests is load-bearing: the planning session
+// rewrites the plan while the owner reads it, and the two lists change when
+// a plan is approved. The same handler must show each change on the next
+// request, so nothing here may be remembered: not the text, not the checker's
+// counts, not the open questions and not who is on which list.
+func TestPlanNoCacheBetweenRequests(t *testing.T) {
+	rg := newRig(t, Config{})
+	first := decode(t, rg.do(http.MethodGet, "/api/p/app/plan", "", ""))
+	if first["summary"].(map[string]any)["open_questions"] != 1.0 || first["summary"].(map[string]any)["errors"] != 0.0 {
+		t.Fatalf("before = %s", dump(first["summary"]))
+	}
+
+	// The question is answered and a task heading is duplicated.
+	changed := strings.Replace(testPlan, "| Which colour? | T1.2 |", "| Which colour? **Answered 2026-10-13: blue.** | T1.2 |", 1)
+	changed = strings.Replace(changed, "#### T1.2 — Second (owner)", "#### T1.1 — Second (owner)", 1)
+	rg.plans[rg.root] = changed
+
+	second := decode(t, rg.do(http.MethodGet, "/api/p/app/plan", "", ""))
+	sum := second["summary"].(map[string]any)
+	if second["plan"] != changed || sum["open_questions"] != 0.0 || sum["errors"] == 0.0 || len(second["questions"].([]any)) != 0 {
+		t.Errorf("after the plan changed = %s", dump(second))
+	}
+	if rg.planReads != 2 {
+		t.Errorf("the plan was read %d times for two requests", rg.planReads)
+	}
+
+	// The draft is approved: it leaves the review list and becomes a
+	// configured project, with the handler still the one built at the start.
+	if ov := decode(t, rg.do(http.MethodGet, "/api/", "", "")); dump(ov["reviews"]) != dump([]map[string]string{{"name": "draft"}}) || len(ov["projects"].([]any)) != 2 {
+		t.Fatalf("overview before = %s", dump(ov))
+	}
+	if rec := rg.do(http.MethodGet, "/api/p/draft", "", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("draft has a project page before it is configured: %d", rec.Code)
+	}
+	rg.projects = append(rg.projects, Project{Name: "draft", Root: rg.draft})
+	rg.reviews = nil
+
+	ov := decode(t, rg.do(http.MethodGet, "/api/", "", ""))
+	if rv, ok := ov["reviews"].([]any); !ok || len(rv) != 0 || len(ov["projects"].([]any)) != 3 {
+		t.Errorf("overview after = %s", dump(ov))
+	}
+	if rec := rg.do(http.MethodGet, "/api/p/draft", "", ""); rec.Code != http.StatusOK {
+		t.Errorf("a project added after the handler was built has no page: %d", rec.Code)
+	}
+	if m := decode(t, rg.do(http.MethodGet, "/api/p/draft/plan", "", "")); m["waiting_for_approval"] != false {
+		t.Errorf("the approved plan still reads as waiting: %s", dump(m))
+	}
+
+	// And a project taken out of the list is gone on the next request.
+	rg.projects = rg.projects[:1]
+	if rec := rg.do(http.MethodGet, "/api/p/draft/plan", "", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("a removed project still has a plan view: %d", rec.Code)
+	}
+}
+
+// TestPlanWithoutAReader: a handler built with no ReadPlan still answers,
+// and says what is wrong instead of failing or showing an empty plan as if
+// it were the real one.
+func TestPlanWithoutAReader(t *testing.T) {
+	root := t.TempDir()
+	h, err := New(Config{Token: testToken}, Deps{
+		Projects:  func() []Project { return []Project{{Name: "app", Root: root}} },
+		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil },
+		Sessions:  func(string) []SessionView { return nil },
+		Usage:     func() (usagestate.File, bool) { return usagestate.File{}, false },
+		Pause:     func(string) error { return nil },
+		Resume:    func(string) error { return nil },
+	})
+	must(t, err)
+	rec := authReq{target: "/api/p/app/plan", bearer: testToken}.send(h)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d\n%s", rec.Code, rec.Body.String())
+	}
+	if m := decode(t, rec); !strings.Contains(m["problem"].(string), "without a way to read plans") || m["plan"] != "" {
+		t.Errorf("view = %s", dump(m))
+	}
+	// With no review list either, the overview has an empty one, not null.
+	if rv, ok := decode(t, authReq{target: "/api/", bearer: testToken}.send(h))["reviews"].([]any); !ok || len(rv) != 0 {
+		t.Errorf("reviews is not an empty list")
 	}
 }

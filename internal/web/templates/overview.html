@@ -17,6 +17,15 @@
   {{if .OpenBlocking}}<p class="warn">{{.OpenBlocking}} open question{{if ne .OpenBlocking 1}}s{{end}} blocking work. <a href="/p/{{pe .Name}}#inbox">Answer</a></p>{{else}}<p class="muted">Nothing is blocked on you.</p>{{end}}
 </div>
 {{end}}
+{{if .Reviews}}
+<h2>Plans waiting for approval</h2>
+<ul>
+{{range .Reviews}}
+  <li class="card"><a href="/p/{{pe .Name}}/plan">{{.Name}}</a><br>
+  <span class="muted">Read it, then run afk plan approve in the project folder.</span></li>
+{{end}}
+</ul>
+{{end}}
 <h2>Usage</h2>
 <p>
 {{if .Usage.Known}}
