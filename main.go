@@ -176,6 +176,8 @@ Subcommands:
                  notification carries a Focus button that switches to the session's pane
   plugin install Install the afk plugin into Claude Code, Codex, and/or OpenCode;
                  asks which of the ones found on PATH unless --target is given
+  plan lint      Check a master plan for what the daemon would refuse or misread:
+                 afk plan lint [--project DIR] [--json] [--summary] [FILE]
   plan check     Mark one task of a session's plan done or failed:
                  afk plan check <session> <task-id> done|failed [--reason TEXT]
   tasks          List the master plan's tasks with their status

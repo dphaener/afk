@@ -45,6 +45,8 @@ earlier forge behaviour in these areas:
   does not call it.
 - the agent definitions (plugin version 5.2.0): the port has no agent definitions and spawns every
   agent with the default tools, so its agents start with the full tool set and cost more to start.
+- the master-plan format document (plugin version 5.3.0): the port has no copy of
+  `skills/master-plan/plan-format.md`. `afk plan lint` itself is part of the binary and works for any agent.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

@@ -2,6 +2,7 @@ package masterplan
 
 import (
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -317,6 +318,281 @@ func TestTaskOwner(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := (Task{Title: tt.title}).Owner(); got != tt.want {
 				t.Errorf("Owner() for %q = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestScan covers what Scan adds over Parse: it carries on after a problem
+// and it reports the headings and the fenced lines. Load-bearing rows:
+// "three problems together" (Scan must not stop at the first, and the
+// order must be the order Parse would meet them), "duplicate keeps the
+// first copy's dependencies" (if the second copy's Depends on line were
+// read, the checker would judge dependencies the daemon never sees),
+// "bad heading opens no task" (the Depends on line under it must not be
+// given to the task before it), and "unclosed fence" (everything after it
+// is hidden, as it is for the daemon).
+func TestScan(t *testing.T) {
+	type wantTask struct {
+		id   string
+		deps []string
+	}
+	type wantHeading struct {
+		level int
+		text  string
+		line  int
+	}
+	type wantProblem struct {
+		line int
+		task string
+		err  error
+	}
+	tests := []struct {
+		name         string
+		plan         string
+		wantTasks    []wantTask
+		wantProblems []wantProblem
+		wantHeadings []wantHeading // nil means the row does not check headings
+		wantFenced   []bool        // nil means the row does not check fences
+		sameAsParse  bool          // Tasks must equal what Parse returns
+	}{
+		{
+			name:        "clean plan",
+			plan:        one("T1.1, T1.2"),
+			wantTasks:   []wantTask{{"T1.1", nil}, {"T1.2", []string{"T1.1"}}, {"T1.3", []string{"T1.1", "T1.2"}}},
+			sameAsParse: true,
+		},
+		{
+			name: "three problems together",
+			plan: "#### T1.1 — A\n- **Depends on:** —\n\n" + // line 1
+				"#### T1.2 Missing dash\n- **Depends on:** —\n\n" + // line 4
+				"#### T1.1 — Again\n- **Depends on:** —\n\n" + // line 7
+				"#### T1.3 — C\n\nText.\n\n" + // line 10
+				"#### T1.4 — D\n- **Depends on:** T1.3\n", // line 14
+			wantTasks: []wantTask{{"T1.1", nil}, {"T1.3", nil}, {"T1.4", []string{"T1.3"}}},
+			wantProblems: []wantProblem{
+				{line: 4, task: "", err: ErrBadHeading},
+				{line: 7, task: "T1.1", err: ErrDuplicateTask},
+				{line: 10, task: "T1.3", err: ErrNoDependsLine},
+			},
+		},
+		{
+			name: "duplicate keeps the first copy's dependencies",
+			plan: "#### T1.1 — A\n- **Depends on:** —\n\n#### T1.2 — B\n- **Depends on:** T1.1\n\n" +
+				"#### T1.2 — B again\n- **Depends on:** T9.9\n",
+			wantTasks:    []wantTask{{"T1.1", nil}, {"T1.2", []string{"T1.1"}}},
+			wantProblems: []wantProblem{{line: 7, task: "T1.2", err: ErrDuplicateTask}},
+		},
+		{
+			name:         "duplicate with no depends line is one problem",
+			plan:         "#### T1.1 — A\n- **Depends on:** —\n\n#### T1.1 — Again\n\nText.\n",
+			wantTasks:    []wantTask{{"T1.1", nil}},
+			wantProblems: []wantProblem{{line: 4, task: "T1.1", err: ErrDuplicateTask}},
+		},
+		{
+			name:      "bad heading opens no task",
+			plan:      "#### T1.1 — A\n#### T1 — Bad id\n- **Depends on:** T9.9\n",
+			wantTasks: []wantTask{{"T1.1", nil}},
+			wantProblems: []wantProblem{
+				{line: 1, task: "T1.1", err: ErrNoDependsLine},
+				{line: 2, task: "", err: ErrBadHeading},
+			},
+		},
+		{
+			name:         "missing depends line at end of file",
+			plan:         "#### T1.1 — A\n- **Depends on:** —\n\n#### T1.2 — B\n",
+			wantTasks:    []wantTask{{"T1.1", nil}, {"T1.2", nil}},
+			wantProblems: []wantProblem{{line: 4, task: "T1.2", err: ErrNoDependsLine}},
+		},
+		{
+			name:         "no tasks is not a problem",
+			plan:         "# Title\n\nJust prose.\n",
+			wantHeadings: []wantHeading{{1, "Title", 1}},
+			wantFenced:   []bool{false, false, false, false},
+		},
+		{
+			name:         "empty input is one unfenced line",
+			plan:         "",
+			wantHeadings: []wantHeading{},
+			wantFenced:   []bool{false},
+		},
+		{
+			name:         "fenced example is not a task",
+			plan:         "#### T1.1 — A\n- **Depends on:** —\n\n```markdown\n#### T9.9 — Example\n- **Depends on:** T1.1\n```\nAfter.\n",
+			wantTasks:    []wantTask{{"T1.1", nil}},
+			wantHeadings: []wantHeading{{4, "T1.1 — A", 1}},
+			wantFenced:   []bool{false, false, false, true, true, true, true, false, false},
+			sameAsParse:  true,
+		},
+		{
+			name:        "tilde fence, indented",
+			plan:        "#### T1.1 — A\n  ~~~\n- **Depends on:** T9.9\n  ~~~\n- **Depends on:** —\n",
+			wantTasks:   []wantTask{{"T1.1", nil}},
+			wantFenced:  []bool{false, true, true, true, false, false},
+			sameAsParse: true,
+		},
+		{
+			name:      "headings of levels 1 to 4, not 5",
+			plan:      "# Plan\n\n## 8. Milestones\n### M1 — First\n#### T1.1 — A\n##### Sub heading\n- **Depends on:** —\n###### Six\n#NoSpace\n####\n",
+			wantTasks: []wantTask{{"T1.1", nil}},
+			wantHeadings: []wantHeading{
+				{1, "Plan", 1},
+				{2, "8. Milestones", 3},
+				{3, "M1 — First", 4},
+				{4, "T1.1 — A", 5},
+			},
+			sameAsParse: true,
+		},
+		{
+			name:      "problem headings are still listed",
+			plan:      "#### T1.1 — A\n- **Depends on:** —\n#### T1.1 — Again\n#### T2 — Bad\n",
+			wantTasks: []wantTask{{"T1.1", nil}},
+			wantProblems: []wantProblem{
+				{line: 3, task: "T1.1", err: ErrDuplicateTask},
+				{line: 4, task: "", err: ErrBadHeading},
+			},
+			wantHeadings: []wantHeading{{4, "T1.1 — A", 1}, {4, "T1.1 — Again", 3}, {4, "T2 — Bad", 4}},
+		},
+		{
+			name:         "unclosed fence",
+			plan:         "#### T1.1 — A\n- **Depends on:** —\n```\n#### T1.2 — B\n## Hidden\n",
+			wantTasks:    []wantTask{{"T1.1", nil}},
+			wantHeadings: []wantHeading{{4, "T1.1 — A", 1}},
+			wantFenced:   []bool{false, false, true, true, true, true},
+			sameAsParse:  true,
+		},
+		{
+			name:         "CRLF line endings",
+			plan:         "## Section\r\n#### T1.1 — A\r\n- **Depends on:** —\r\n",
+			wantTasks:    []wantTask{{"T1.1", nil}},
+			wantHeadings: []wantHeading{{2, "Section", 1}, {4, "T1.1 — A", 2}},
+			wantFenced:   []bool{false, false, false, false},
+			sameAsParse:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Scan([]byte(tt.plan))
+
+			if len(got.Tasks) != len(tt.wantTasks) {
+				t.Fatalf("got %d tasks %+v, want %d", len(got.Tasks), got.Tasks, len(tt.wantTasks))
+			}
+			for i, w := range tt.wantTasks {
+				g := got.Tasks[i]
+				if g.ID != w.id {
+					t.Errorf("task %d is %s, want %s", i, g.ID, w.id)
+				}
+				if len(g.DependsOn) != len(w.deps) || (len(w.deps) > 0 && !reflect.DeepEqual(g.DependsOn, w.deps)) {
+					t.Errorf("%s DependsOn = %v, want %v", g.ID, g.DependsOn, w.deps)
+				}
+			}
+
+			if len(got.Problems) != len(tt.wantProblems) {
+				t.Fatalf("got %d problems %+v, want %d", len(got.Problems), got.Problems, len(tt.wantProblems))
+			}
+			for i, w := range tt.wantProblems {
+				g := got.Problems[i]
+				if g.Line != w.line || g.Task != w.task {
+					t.Errorf("problem %d is line %d task %q, want line %d task %q", i, g.Line, g.Task, w.line, w.task)
+				}
+				if !errors.Is(g.Err, w.err) {
+					t.Errorf("problem %d err = %v, want %v", i, g.Err, w.err)
+				}
+			}
+
+			if tt.wantHeadings != nil {
+				var gotH []wantHeading
+				for _, h := range got.Headings {
+					gotH = append(gotH, wantHeading{h.Level, h.Text, h.Line})
+				}
+				if len(gotH) != len(tt.wantHeadings) || (len(gotH) > 0 && !reflect.DeepEqual(gotH, tt.wantHeadings)) {
+					t.Errorf("Headings = %+v, want %+v", gotH, tt.wantHeadings)
+				}
+			}
+			if tt.wantFenced != nil && !reflect.DeepEqual(got.Fenced, tt.wantFenced) {
+				t.Errorf("Fenced = %v, want %v", got.Fenced, tt.wantFenced)
+			}
+			if n := len(strings.Split(tt.plan, "\n")); len(got.Fenced) != n {
+				t.Errorf("Fenced has %d entries, want one per line (%d)", len(got.Fenced), n)
+			}
+
+			if tt.sameAsParse {
+				parsed, err := Parse([]byte(tt.plan))
+				if err != nil {
+					t.Fatalf("Parse: %v", err)
+				}
+				if !reflect.DeepEqual(got.Tasks, parsed) {
+					t.Errorf("Tasks = %+v, Parse gave %+v", got.Tasks, parsed)
+				}
+			}
+		})
+	}
+}
+
+// TestParseMatchesScan pins the promise that the daemon (Parse) and the
+// checker (Scan) cannot disagree about a plan: Parse's error is the first
+// Problem's, message and all, and a plan with no Problem gives the same
+// tasks from both. The inputs are the error rows of TestParse, copied
+// because that table is local to its test, plus the two real plans.
+// Load-bearing rows: "depends line after the next level-3 heading" (the
+// problem is found at a later line than the one it is reported at) and
+// the two files (the plans the daemon actually reads).
+func TestParseMatchesScan(t *testing.T) {
+	file := func(path string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	tests := []struct {
+		name string
+		plan string
+	}{
+		{"no tasks", "# Title\n\nJust prose.\n"},
+		{"empty input", ""},
+		{"bad heading, no dash", "#### T1.1 Missing dash\n- **Depends on:** —\n"},
+		{"bad heading, no title", "#### T1.1 —\n- **Depends on:** —\n"},
+		{"bad heading, bad id", "#### T1 — A\n- **Depends on:** —\n"},
+		{"duplicate id", "#### T1.1 — A\n- **Depends on:** —\n\n#### T1.1 — B\n- **Depends on:** —\n"},
+		{"missing depends line", "#### T1.1 — A\n\nText.\n\n#### T1.2 — B\n- **Depends on:** —\n"},
+		{"missing depends line at end", "#### T1.1 — A\n- **Depends on:** —\n\n#### T1.2 — B\n"},
+		{"depends line after the next level-3 heading", "#### T1.1 — A\n### Wave\n- **Depends on:** —\n"},
+		{"missing depends line then bad heading", "#### T1.1 — A\n#### T1 — Bad\n"},
+		{"clean", one("all prior")},
+		{"nebari plan", file("testdata/nebari-plan.md")},
+		{"own plan", file("../../docs/PLAN.md")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tasks, err := Parse([]byte(tt.plan))
+			o := Scan([]byte(tt.plan))
+			switch {
+			case len(o.Problems) > 0:
+				first := o.Problems[0].Err
+				if err == nil || err.Error() != first.Error() {
+					t.Fatalf("Parse err = %v, first Problem = %v", err, first)
+				}
+				if tasks != nil {
+					t.Errorf("Parse returned tasks with an error: %+v", tasks)
+				}
+				for _, sentinel := range []error{ErrBadHeading, ErrDuplicateTask, ErrNoDependsLine} {
+					if errors.Is(err, sentinel) != errors.Is(first, sentinel) {
+						t.Errorf("Parse and Scan disagree on %v", sentinel)
+					}
+				}
+			case len(o.Tasks) == 0:
+				if !errors.Is(err, ErrNoTasks) {
+					t.Fatalf("Parse err = %v, want %v", err, ErrNoTasks)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("Parse err = %v, Scan found no problem", err)
+				}
+				if !reflect.DeepEqual(tasks, o.Tasks) {
+					t.Errorf("Parse tasks differ from Scan's")
+				}
 			}
 		})
 	}

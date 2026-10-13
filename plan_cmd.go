@@ -29,6 +29,10 @@ func cmdPlan(args []string) {
 		cwd, _ := os.Getwd()
 		home, _ := os.UserHomeDir()
 		os.Exit(runPlanCheck(args[1:], os.Stdout, os.Stderr, cwd, home, time.Now))
+	case "lint":
+		cwd, _ := os.Getwd()
+		home, _ := os.UserHomeDir()
+		os.Exit(runPlanLint(args[1:], os.Stdout, os.Stderr, cwd, home, resolveGitCommonDirIn))
 	default:
 		fmt.Fprintf(os.Stderr, "afk plan: unknown subcommand %q\n", args[0])
 		printPlanUsage(os.Stderr)
@@ -37,10 +41,17 @@ func cmdPlan(args []string) {
 }
 
 func printPlanUsage(w io.Writer) {
-	fmt.Fprint(w, `afk plan — record a task's outcome in a session's plan
+	fmt.Fprint(w, `afk plan — check a master plan, or record a task's outcome in a session's plan
 
 Usage:
+  afk plan lint [--project DIR] [--json] [--summary] [FILE]
   afk plan check [--project DIR] [--reason TEXT] <session> <task-id> done|failed
+
+lint reads the master plan (FILE, or the plan named in afk.toml) and lists what
+is wrong with it. Errors are what the daemon would refuse or misread, such as
+an unknown dependency; warnings are what a reader would miss. --summary prints
+only the counts and --json prints everything as JSON. Exit codes: 0 no errors,
+1 an error or an unreadable plan, 2 the command was written wrongly.
 
 Ticks one task's checkbox in .afk/plans/<session>.md.
   done     marks the task complete:  - [x] (W1.T2) title

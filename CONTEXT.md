@@ -113,3 +113,11 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Set-up branch**: `afk-setup`, the local branch in a project that holds its `afk.toml`, ignore lines and CI change until the owner pushes and merges it.
 - **Supervised run**: the first task afk runs in a project with the owner watching in the dashboard from launch to a healthy deploy, before the daemon is left to run by itself.
 - **Retrospective**: the write-up after a supervised run of what needed a human, the cause of each, and the task's token use.
+- **Plan format**: the written rules for a master plan (`plugins/afk/skills/master-plan/plan-format.md`): its sections, how a milestone and a task are written, and what the daemon reads.
+- **Checker**: `afk plan lint`, which reads a master plan the way the daemon does and lists everything wrong with it, not only the first problem.
+- **Finding**: one thing the checker reports about a master plan: a level, a line, the task it is about, the rule it broke and a message.
+- **Error (checker)**: a finding the daemon would refuse the plan for, or would misread; `afk plan lint` exits 1 when there is one.
+- **Warning (checker)**: a finding the daemon can live with but a reader would miss, such as a task with no Goal.
+- **Milestone**: a group of master-plan tasks under one `### M<n> — Title` heading, with one outcome.
+- **Open question**: a row of a master plan's Open questions table that has not been answered yet; its "Needed by" cell names the tasks that need the answer.
+- **Slicing rule**: how a master plan is cut into tasks: each task is a thin, complete path through every layer the change touches that can be shown working by itself.

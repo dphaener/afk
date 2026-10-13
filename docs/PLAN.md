@@ -1374,6 +1374,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
 - **Acceptance:** table tests with one row per rule, each with a passing and a failing plan. This plan
   and the nebari fixture produce zero errors; their warnings are listed in `docs/decisions.md`. `afk
   plan lint --summary` on this plan prints the same task count as `afk tasks`.
+- Amended 2026-10-13 (T5.1 done): the checker is `planlint.Lint`, built on a new `masterplan.Scan` that returns every problem, the headings and the fenced lines (`Parse` is unchanged in what it accepts); its eleven rule ids are listed in the format document and are a contract with it; `--json` prints `{file, findings, summary}`; `FILE` and `--project` cannot be combined; an open-question row is open unless its question cell contains `**Answered`, so an answer written as its own row below leaves the question open (several rows in §10 are like that, which T5.6 must allow for); the daemon's bad-plan item lists at most 20 checker errors.
 
 #### T5.2 — The owner profile
 - **Depends on:** T2.2
