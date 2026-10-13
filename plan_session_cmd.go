@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dphaener/afk/internal/host"
+	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectconfig"
@@ -200,6 +202,9 @@ const (
 	planRouteInsert
 	planRouteDepend
 	planRouteNextID
+	// planRouteNextFollowup reads docs/ and prints where the next design
+	// follow-up prompt goes. It is also in plan_patch_cmd.go.
+	planRouteNextFollowup
 	planRouteUnknown
 )
 
@@ -235,6 +240,8 @@ func routePlanArgs(args []string) planRoute {
 		return planRouteDepend
 	case "next-id":
 		return planRouteNextID
+	case "next-followup":
+		return planRouteNextFollowup
 	}
 	if strings.HasPrefix(args[0], "-") {
 		return planRouteSession
@@ -438,11 +445,14 @@ func resolvePlanProject(cmd, flagValue string, stderr io.Writer, deps planDeps) 
 // returns it with the master plan's path. The path comes from afk.toml exactly
 // as `afk tasks` finds it (loadBuildState), default docs/PLAN.md.
 //
-// The checker's error count is filled in here because plansession.Load leaves
-// it alone (that package does not know the plan format). A plan that exists
-// but cannot be read a second time is counted as it was loaded: no errors
-// known, and the gate that needs the count is the check phase's, which will be
-// asked again.
+// The checker's error count and the four facts about the design task are
+// filled in here because plansession.Load leaves them alone (that package does
+// not know the plan format). All five come from one read of the plan, so the
+// design gate never judges the task in one version of the file and the errors
+// in another. A plan that exists but cannot be read a second time is counted
+// as it was loaded: no errors known and no design task seen. The gates that
+// need them are asked again on the next command, and the worst a failed read
+// does is refuse one advance.
 func loadPlanSession(root string, deps planDeps) (plansession.Files, string, error) {
 	cfg, err := projectconfig.Load(root)
 	if err != nil {
@@ -453,9 +463,101 @@ func loadPlanSession(root string, deps planDeps) (plansession.Files, string, err
 	if f.PlanExists {
 		if data, err := os.ReadFile(planPath); err == nil {
 			f.PlanErrors = deps.lintErrors(data)
+			f.DesignRule, f.DesignTask, f.DesignTaskFirst, f.DesignDependents = designFacts(data)
 		}
 	}
 	return f, planPath, nil
+}
+
+// designRulePhrases are the three texts the plan's header must hold for it to
+// state which document wins on what. They are the words the design gate's
+// refusal names (internal/plansession, missingDesign) and the words the
+// planning session is told to write, so the three places must keep the same
+// spelling.
+var designRulePhrases = []string{masterplan.DesignSystemFile, "wins on behaviour", "wins on looks"}
+
+// designFacts reads from a plan's text the four things the design gate of a
+// planning session asks about. Pure.
+//
+//   - rule: the text before the first "## " heading (the title and the "How to
+//     use this document" paragraph) holds all of designRulePhrases. Case is
+//     ignored and any run of white space counts as one space, because the
+//     paragraph is prose and a line break inside "wins on behaviour" does not
+//     change what it says. Only the header counts: the same words in a task's
+//     entry would be a note about one task, not the rule for the whole plan.
+//   - task: the id of the first task masterplan's Task.DesignSystem
+//     recognises, "" when there is none. That method is also how the daemon
+//     picks the task whose inbox item gets the reconcile step, so the gate
+//     cannot pass on a task the daemon would treat as an ordinary one.
+//   - first: that task is in the same milestone as the first task in the
+//     file. A plan's first milestone is not always M1 (this repository's own
+//     plan starts at M0), so the number is taken from the plan, not assumed.
+//   - dependents: how many tasks name that id in their Depends on line.
+//
+// A plan masterplan.Parse would refuse gives four zero values, the header
+// rule included. The checker reports such a plan as an error and the gate
+// asks about errors first, so the zeros are never what the owner is told; and
+// facts read from half a plan could name a design task that the daemon,
+// which refuses the plan whole, would never see.
+func designFacts(plan []byte) (rule bool, task string, first bool, dependents int) {
+	outline := masterplan.Scan(plan)
+	// The two conditions under which masterplan.Parse returns an error.
+	if len(outline.Problems) > 0 || len(outline.Tasks) == 0 {
+		return false, "", false, 0
+	}
+
+	// Headings come from the scan, so a "## " line inside a code fence does
+	// not end the header.
+	lines := strings.Split(string(plan), "\n")
+	for _, h := range outline.Headings {
+		if h.Level == 2 {
+			lines = lines[:h.Line-1]
+			break
+		}
+	}
+	header := strings.ToLower(strings.Join(strings.Fields(strings.Join(lines, "\n")), " "))
+	rule = true
+	for _, phrase := range designRulePhrases {
+		if !strings.Contains(header, strings.ToLower(phrase)) {
+			rule = false
+		}
+	}
+
+	for _, t := range outline.Tasks {
+		if t.DesignSystem() {
+			task = t.ID
+			break
+		}
+	}
+	if task == "" {
+		return rule, "", false, 0
+	}
+	firstMilestone, okFirst := taskMilestone(outline.Tasks[0].ID)
+	milestone, ok := taskMilestone(task)
+	first = ok && okFirst && milestone == firstMilestone
+	for _, t := range outline.Tasks {
+		for _, dep := range t.DependsOn {
+			if dep == task {
+				dependents++
+				break
+			}
+		}
+	}
+	return rule, task, first, dependents
+}
+
+// taskMilestone is the milestone number in a task id: 1 for T1.4, 12 for
+// T12.3a. A task has no milestone field (masterplan.Task holds the id, the
+// title and the dependencies), so the id is the only place to read it from.
+// ok is false for a text that is not a task id, or whose number is too long
+// to read.
+func taskMilestone(id string) (n int, ok bool) {
+	if !masterplan.ValidID(id) {
+		return 0, false
+	}
+	number, _, _ := strings.Cut(strings.TrimPrefix(id, "T"), ".")
+	n, err := strconv.Atoi(number)
+	return n, err == nil
 }
 
 // parsePlanFlags parses a planning command's flags and refuses any word left

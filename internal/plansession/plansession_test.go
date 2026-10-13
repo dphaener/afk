@@ -12,6 +12,11 @@ import (
 // complete is a session in which every phase's file exists and is complete,
 // recorded at the given phase. Each row then breaks exactly one thing, so a
 // row's name is the whole difference between it and a passing session.
+//
+// Its project has no interface (the second question is the interface question,
+// answered `no: a command line`), so the design phase asks nothing of it and
+// every row built on it means what it meant before that phase had a gate. The
+// sessions with an interface are built with withInterface.
 func complete(recorded string) Files {
 	return Files{
 		HasState: true,
@@ -24,10 +29,44 @@ func complete(recorded string) Files {
 		QuestionsPresent: true,
 		Questions: []Question{
 			{ID: "q1", Round: 1, Kind: KindSetup, Question: "Who is it for?", Answer: "Me", AnsweredAt: "2026-10-13T00:00:00Z"},
-			{ID: "q2", Round: 1, Kind: KindProduct, Question: "Web or CLI?", Options: []string{"web", "cli"}, Recommended: "web", Answer: "web"},
+			{ID: InterfaceQuestionID, Round: 1, Kind: KindSetup, Question: "Does the project have an interface?", Answer: "no: a command line"},
 		},
 		PlanExists: true,
 	}
+}
+
+// withInterface is complete for a project with an interface: the interface
+// question is answered yes, the design brief is written and the plan holds
+// everything the design gate asks for.
+func withInterface(recorded string) Files {
+	f := complete(recorded)
+	f.Questions[1].Answer = "yes: a web page"
+	f.DesignBrief = true
+	f.DesignRule = true
+	f.DesignTask = "T1.4"
+	f.DesignTaskFirst = true
+	f.DesignDependents = 4
+	return f
+}
+
+// withDesign returns a complete session with an interface changed by one edit.
+func withDesign(recorded string, edit func(*Files)) Files {
+	f := withInterface(recorded)
+	edit(&f)
+	return f
+}
+
+// answered returns a complete session whose interface question has the given
+// answer. A blank answer is not used with it: that is an open question, which
+// the rounds gate reports first.
+func answered(recorded, answer string) Files {
+	return with(recorded, func(f *Files) { f.Questions[1].Answer = answer })
+}
+
+// noInterfaceQuestion returns a complete session whose second question is an
+// ordinary one, so no question has the interface id.
+func noInterfaceQuestion(recorded string) Files {
+	return with(recorded, func(f *Files) { f.Questions[1].ID = "q2" })
 }
 
 // with returns a complete session changed by one edit.
@@ -50,8 +89,18 @@ func with(recorded string, edit func(*Files)) Files {
 // state.json as "no session" would let `afk plan` seed a new state over it
 // and lose how far the owner had got.
 //
-// `model`, `design` and `review` have no "held back" row because they have no
-// file: nothing on disk can pull the phase back to them.
+// `model` and `review` have no "held back" row because they have no file:
+// nothing on disk can pull the phase back to them.
+//
+// The `design` rows are load-bearing as a set. "held back at design: the
+// design brief is gone" is the row that fails if `design` is still treated as
+// a phase with no gate: the session would sit at `review` with a plan whose
+// design task points at a brief that does not exist. "review without an
+// interface is not held back by design" is its opposite and fails if the gate
+// is asked of every new session: a command-line project would then be stuck
+// at `design` for ever, waiting for a brief nobody will write. The two
+// "held back at rounds: ... interface" rows are what makes the answer exist
+// by the time `check` needs it.
 func TestDecide(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -69,7 +118,10 @@ func TestDecide(t *testing.T) {
 		{"reached slices", complete(PhaseSlices), true, PhaseSlices, "task breakdown is saved", ""},
 		{"reached draft", complete(PhaseDraft), true, PhaseDraft, "master plan is written", ""},
 		{"reached check", complete(PhaseCheck), true, PhaseCheck, "passes the checker", ""},
-		{"reached design", complete(PhaseDesign), true, PhaseDesign, "design phase is not built yet", ""},
+		{"reached check with an interface", withInterface(PhaseCheck), true, PhaseCheck, "on to the design hand-off", ""},
+		{"reached check without an interface", complete(PhaseCheck), true, PhaseCheck, "on to your review", ""},
+		{"reached design", withInterface(PhaseDesign), true, PhaseDesign, "design brief is written and the plan has your design task", ""},
+		{"reached design without an interface", complete(PhaseDesign), true, PhaseDesign, "project has no interface", ""},
 		{"reached review", complete(PhaseReview), true, PhaseReview, "afk plan approve", ""},
 		{"reached approved", complete(PhaseApproved), true, PhaseApproved, "plan is approved", ""},
 
@@ -86,6 +138,28 @@ func TestDecide(t *testing.T) {
 		{"held back at check: plan has errors", with(PhaseReview, func(f *Files) { f.PlanErrors = 3 }), true, PhaseCheck, "3 errors", ""},
 		{"held back at check: one plan error", with(PhaseReview, func(f *Files) { f.PlanErrors = 1 }), true, PhaseCheck, "1 error that", ""},
 		{"held back at check: critic.md missing", with(PhaseReview, func(f *Files) { f.Critic = false }), true, PhaseCheck, "critic.md is missing or empty", ""},
+
+		// The interface answer is part of the rounds gate of a new session.
+		{"held back at rounds: no interface question", noInterfaceQuestion(PhaseReview), true, PhaseRounds, "questions.jsonl needs a question with the id r1-interface saying whether the project has an interface.", ""},
+		{"held back at rounds: the interface answer is neither yes nor no", answered(PhaseReview, "a web page"), true, PhaseRounds, "Rewrite the answer as `yes: <kind>` or `no: <kind>`", ""},
+		{"held back at rounds: the interface answer is none", answered(PhaseReview, "none"), true, PhaseRounds, `must start with yes or no, and it is "none"`, ""},
+		{"an open interface question is an open question first", answered(PhaseReview, " "), true, PhaseRounds, "1 question of 2 has no answer yet", ""},
+		{"a question problem comes before the interface answer", with(PhaseReview, func(f *Files) {
+			f.Questions[1].ID = "q2"
+			f.QuestionProblems = []string{"line 3: the question has no id."}
+		}), true, PhaseRounds, "has 1 problem that must be fixed", "line 3"},
+
+		// The design gate, for a project with an interface only.
+		{"held back at design: the design brief is gone", withDesign(PhaseReview, func(f *Files) { f.DesignBrief = false }), true, PhaseDesign, "docs/design-brief.md is missing or empty", ""},
+		{"held back at design: the header rule is gone", withDesign(PhaseReview, func(f *Files) { f.DesignRule = false }), true, PhaseDesign, "plan wins on behaviour", ""},
+		{"held back at design: the design task is gone", withDesign(PhaseApproved, func(f *Files) { f.DesignTask = "" }), true, PhaseDesign, `no task titled "Design system (owner)"`, ""},
+		{"held back at design: nothing waits for the design task", withDesign(PhaseReview, func(f *Files) { f.DesignDependents = 0 }), true, PhaseDesign, "No task waits for the design task T1.4", ""},
+		{"review without an interface is not held back by design", complete(PhaseReview), true, PhaseReview, "afk plan approve", ""},
+		{"review with an interface and the design done", withInterface(PhaseReview), true, PhaseReview, "afk plan approve", ""},
+		{"plan errors hold check before design", withDesign(PhaseReview, func(f *Files) { f.PlanErrors = 2; f.DesignBrief = false }), true, PhaseCheck, "2 errors", ""},
+		{"the design gate does not hold an earlier phase", withDesign(PhaseCheck, func(f *Files) {
+			f.DesignBrief, f.DesignRule, f.DesignTask, f.DesignTaskFirst, f.DesignDependents = false, false, "", false, 0
+		}), true, PhaseCheck, "on to the design hand-off", ""},
 
 		// The earliest unmet gate wins, not the latest.
 		{"two files missing lands on the earlier", with(PhaseReview, func(f *Files) { f.Slices = false; f.Survey = false }), true, PhaseSurvey, "survey.md", ""},
@@ -140,20 +214,42 @@ func TestDecideNeverPastRecorded(t *testing.T) {
 				t.Errorf("Decide with every file complete, recorded %q: Phase = %q", phase, got.Phase)
 			}
 		})
+		// The same with an interface, where `design` has a gate of its own.
+		t.Run(phase+" with an interface", func(t *testing.T) {
+			got := Decide(withInterface(phase))
+			if got.Phase != phase {
+				t.Errorf("Decide with every file complete, recorded %q: Phase = %q", phase, got.Phase)
+			}
+			if got.Waiting == "" {
+				t.Errorf("Decide recorded %q: Waiting is empty, want a sentence", phase)
+			}
+		})
 	}
 }
 
 // TestAdvance covers every move and every refusal.
 //
-// Three rows are load-bearing. "check skips design" is the stand-in for a
-// phase that is not built: without it a session would be recorded at `design`
-// with nothing to do there. "review refuses" and "approved refuses" keep
-// approval out of the agent's hands, since the agent is what runs advance.
-// And "an earlier file missing refuses" is the one place the two checks
-// differ: the recorded phase's own gate is met there, so a rule that looked
-// only at that gate would move the record further from the real work.
+// The load-bearing rows:
 //
-// `model` and `design` have no "gate not met" row because they have no gate.
+//   - "check goes to design with an interface" and "check goes to review
+//     without one" are the whole of the entry rule. If check always went to
+//     review, no session would ever get a design brief; if it always went to
+//     design, a command-line project would be recorded at a phase with
+//     nothing to do there.
+//   - The "design, ..." refusals, one per sentence of the gate. Each breaks
+//     one thing in a session where the rest is done, so each fails alone if
+//     its check is dropped. Their order is held by TestMissingDesign.
+//   - "design without an interface goes to review" keeps a session from being
+//     stuck: with no interface the phase asks nothing, even with no brief.
+//   - "review refuses" and "approved refuses" keep approval out of the
+//     agent's hands, since the agent is what runs advance. The same rows with
+//     an interface hold that building `design` did not open a way past them.
+//   - "an earlier file missing refuses" is the one place the two checks
+//     differ: the recorded phase's own gate is met there, so a rule that
+//     looked only at that gate would move the record further from the real
+//     work.
+//
+// `model` has no "gate not met" row because it has no gate.
 func TestAdvance(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -174,16 +270,34 @@ func TestAdvance(t *testing.T) {
 		{"rounds, no questions", with(PhaseRounds, func(f *Files) { f.Questions = nil }), "", "questions.jsonl is empty"},
 		{"rounds, a question open", with(PhaseRounds, func(f *Files) { f.Questions[0].Answer = "" }), "", "1 question of 2 has no answer yet"},
 		{"rounds, a question problem", with(PhaseRounds, func(f *Files) { f.QuestionProblems = []string{"line 2: the question has no id."} }), "", "1 problem"},
+		{"rounds, no interface question", noInterfaceQuestion(PhaseRounds), "", "The rounds phase is not finished. .afk/plan/questions.jsonl needs a question with the id r1-interface saying whether the project has an interface."},
+		{"rounds, the interface answer is neither yes nor no", answered(PhaseRounds, "maybe later"), "", "Rewrite the answer as `yes: <kind>` or `no: <kind>`"},
+		{"rounds, the interface answer is yes", withInterface(PhaseRounds), PhaseSlices, ""},
+		{"rounds, the interface answer is a bare no", answered(PhaseRounds, "No"), PhaseSlices, ""},
 		{"slices, gate met", complete(PhaseSlices), PhaseDraft, ""},
 		{"slices, gate not met", with(PhaseSlices, func(f *Files) { f.Slices = false }), "", "slices.md is missing or empty"},
 		{"draft, gate met", complete(PhaseDraft), PhaseCheck, ""},
 		{"draft, gate not met", with(PhaseDraft, func(f *Files) { f.PlanExists = false }), "", "master plan has not been written"},
-		{"check skips design", complete(PhaseCheck), PhaseReview, ""},
+		{"check goes to design with an interface", withInterface(PhaseCheck), PhaseDesign, ""},
+		{"check goes to review without one", complete(PhaseCheck), PhaseReview, ""},
+		{"check goes to design before any design work is done", withDesign(PhaseCheck, func(f *Files) {
+			f.DesignBrief, f.DesignRule, f.DesignTask, f.DesignTaskFirst, f.DesignDependents = false, false, "", false, 0
+		}), PhaseDesign, ""},
 		{"check, plan has errors", with(PhaseCheck, func(f *Files) { f.PlanErrors = 2 }), "", "2 errors"},
 		{"check, no critic", with(PhaseCheck, func(f *Files) { f.Critic = false }), "", "critic.md is missing or empty"},
-		{"design, no gate", complete(PhaseDesign), PhaseReview, ""},
+		{"design, gate met", withInterface(PhaseDesign), PhaseReview, ""},
+		{"design, no brief", withDesign(PhaseDesign, func(f *Files) { f.DesignBrief = false }), "", "The design phase is not finished. The design brief has not been written yet: docs/design-brief.md is missing or empty."},
+		{"design, no header rule", withDesign(PhaseDesign, func(f *Files) { f.DesignRule = false }), "", "the plan wins on behaviour and docs/design-system.md wins on looks"},
+		{"design, no design task", withDesign(PhaseDesign, func(f *Files) { f.DesignTask, f.DesignTaskFirst, f.DesignDependents = "", false, 0 }), "", `The plan has no task titled "Design system (owner)" yet.`},
+		{"design, the design task is not in the first milestone", withDesign(PhaseDesign, func(f *Files) { f.DesignTask, f.DesignTaskFirst = "T2.3", false }), "", `The task T2.3, "Design system (owner)", is not in the plan's first milestone`},
+		{"design, no task waits for the design task", withDesign(PhaseDesign, func(f *Files) { f.DesignDependents = 0 }), "", `No task waits for the design task T1.4 yet`},
+		{"design, plan has errors is refused at check", withDesign(PhaseDesign, func(f *Files) { f.PlanErrors = 1 }), "", "earlier check phase is not finished. The plan has 1 error that"},
+		{"design without an interface goes to review", complete(PhaseDesign), PhaseReview, ""},
 		{"review refuses", complete(PhaseReview), "", "afk plan approve"},
 		{"approved refuses", complete(PhaseApproved), "", "afk plan approve"},
+		{"review refuses with an interface", withInterface(PhaseReview), "", "afk plan approve"},
+		{"approved refuses with an interface", withInterface(PhaseApproved), "", "afk plan approve"},
+		{"review with the design brief gone names the file", withDesign(PhaseReview, func(f *Files) { f.DesignBrief = false }), "", "earlier design phase is not finished. The design brief has not been written yet: docs/design-brief.md"},
 
 		{"an earlier file missing refuses", with(PhaseDraft, func(f *Files) { f.Slices = false }), "", "earlier slices phase is not finished"},
 		{"review with an earlier file missing names the file", with(PhaseReview, func(f *Files) { f.Brief = false }), "", "brief.md is missing or empty"},
@@ -211,6 +325,176 @@ func TestAdvance(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("Advance() error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestInterface is how code reads the interface answer, one row per branch.
+//
+// The load-bearing rows are the ones a looser reading would get wrong.
+// "none" and "nope" start with the letters of `no` and are not the word, and
+// "yesterday" the same for `yes`: a prefix test passes all three, and "not
+// sure yet" with them, which would settle a question the owner left open.
+// "no question has the id" is what holds the id fixed: a question about the
+// interface under any other id is not found, so the rounds gate asks for it.
+// Every unknown row also checks that has is false, because Advance and the
+// design gate read has alone.
+func TestInterface(t *testing.T) {
+	q := func(id, answer string) Question {
+		return Question{ID: id, Round: 1, Kind: KindSetup, Question: "Does the project have an interface?", Answer: answer}
+	}
+	other := q("q1", "yes")
+	tests := []struct {
+		name      string
+		questions []Question
+		wantHas   bool
+		wantKnown bool
+	}{
+		{"yes with a kind", []Question{q(InterfaceQuestionID, "yes: a web page")}, true, true},
+		{"no with a kind", []Question{q(InterfaceQuestionID, "no: a command line")}, false, true},
+		{"a bare yes", []Question{q(InterfaceQuestionID, "yes")}, true, true},
+		{"a bare no", []Question{q(InterfaceQuestionID, "no")}, false, true},
+		{"any case: Yes: web", []Question{q(InterfaceQuestionID, "Yes: web")}, true, true},
+		{"any case: NO", []Question{q(InterfaceQuestionID, "NO")}, false, true},
+		{"spaces around the answer", []Question{q(InterfaceQuestionID, "  yes, a phone app\n")}, true, true},
+		{"no before a space", []Question{q(InterfaceQuestionID, "no interface at all")}, false, true},
+		{"the question is found among others", []Question{other, q(InterfaceQuestionID, "no: an API only")}, false, true},
+		{"the first of two with the id is read", []Question{q(InterfaceQuestionID, "no"), q(InterfaceQuestionID, "yes")}, false, true},
+
+		{"none is not no", []Question{q(InterfaceQuestionID, "none")}, false, false},
+		{"nope is not no", []Question{q(InterfaceQuestionID, "nope")}, false, false},
+		{"not sure is not no", []Question{q(InterfaceQuestionID, "not sure yet")}, false, false},
+		{"yesterday is not yes", []Question{q(InterfaceQuestionID, "yesterday we said a web page")}, false, false},
+		{"a kind with no yes or no", []Question{q(InterfaceQuestionID, "a web page")}, false, false},
+		{"yes later in the answer", []Question{q(InterfaceQuestionID, "web: yes")}, false, false},
+		{"an empty answer", []Question{q(InterfaceQuestionID, "")}, false, false},
+		{"a blank answer", []Question{q(InterfaceQuestionID, " \t")}, false, false},
+		{"no question has the id", []Question{other}, false, false},
+		{"the id in another case is another id", []Question{q("R1-Interface", "yes")}, false, false},
+		{"no questions", nil, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			has, known := Interface(tt.questions)
+			if has != tt.wantHas || known != tt.wantKnown {
+				t.Errorf("Interface() = %v, %v; want %v, %v", has, known, tt.wantHas, tt.wantKnown)
+			}
+		})
+	}
+	if InterfaceQuestionID != "r1-interface" {
+		t.Errorf("InterfaceQuestionID = %q; the skill's text names r1-interface", InterfaceQuestionID)
+	}
+}
+
+// TestMissingDesign is the design gate asked directly, one row per sentence,
+// in the gate's own order.
+//
+// It asks missing and not Decide because of the first sentence. Through
+// Decide a plan with errors is always held at `check`, which comes earlier,
+// so no row there can show that the design gate asks about errors itself.
+// It must: the three facts about the design task are read from the plan, and
+// a plan that does not parse reports no design task at all.
+//
+// The order is the load-bearing part. Each row starts from a session with
+// nothing of the design done and plan errors as well, then mends one more
+// thing than the row before; the sentence must be the one for the first
+// thing still broken. A gate that checked in another order would name a
+// later step while an earlier one is undone, and the agent would do them out
+// of order (add dependencies on a task that is not there yet).
+//
+// The last four rows are who is not asked. "extend" and "an unknown mode"
+// fail differently: a change session never has the phase, and a mode afk
+// does not know is treated as new everywhere (see changesPlan), so it is
+// asked.
+func TestMissingDesign(t *testing.T) {
+	// undone is a session with an interface, everything else in place and
+	// nothing of the design phase done, with plan errors on top. mend(n)
+	// puts right the first n things, in the gate's order.
+	mend := func(n int) Files {
+		f := withInterface(PhaseDesign)
+		f.PlanErrors = 2
+		f.DesignBrief, f.DesignRule, f.DesignTask, f.DesignTaskFirst, f.DesignDependents = false, false, "", false, 0
+		steps := []func(){
+			func() { f.PlanErrors = 0 },
+			func() { f.DesignBrief = true },
+			func() { f.DesignRule = true },
+			func() { f.DesignTask = "T2.3" },
+			func() { f.DesignTaskFirst = true },
+			func() { f.DesignDependents = 1 },
+		}
+		for _, step := range steps[:n] {
+			step()
+		}
+		return f
+	}
+	undoneIn := func(mode string) Files {
+		f := mend(1)
+		f.State.Mode = mode
+		return f
+	}
+	tests := []struct {
+		name  string
+		files Files
+		want  string // the whole sentence; "" for a gate that is met
+	}{
+		{"first the plan's errors", mend(0), "The plan has 2 errors that `afk plan lint` reports, and each must be fixed."},
+		{"then the brief", mend(1), "The design brief has not been written yet: docs/design-brief.md is missing or empty."},
+		{"then the header rule", mend(2), "The plan's header does not say yet which document wins on what: it must say that the plan wins on behaviour and docs/design-system.md wins on looks."},
+		{"then the design task", mend(3), `The plan has no task titled "Design system (owner)" yet.`},
+		{"then the first milestone", mend(4), `The task T2.3, "Design system (owner)", is not in the plan's first milestone, and it must be so that it can be done before anything with an interface is built.`},
+		{"then a task that waits for it", mend(5), `No task waits for the design task T2.3 yet: every task that builds part of the interface must name it in its "Depends on" line.`},
+		{"all done", mend(6), ""},
+		{"one plan error", with(PhaseDesign, func(f *Files) { *f = mend(0); f.PlanErrors = 1 }), "The plan has 1 error that `afk plan lint` reports, and each must be fixed."},
+
+		{"no interface: nothing is asked", with(PhaseDesign, func(f *Files) { *f = mend(0); f.Questions[1].Answer = "no: a command line" }), ""},
+		{"an answer nobody can read: nothing is asked here", with(PhaseDesign, func(f *Files) { *f = mend(0); f.Questions[1].Answer = "none" }), ""},
+		{"extend: nothing is asked", undoneIn(ModeExtend), ""},
+		{"an unknown mode is asked as a new session is", undoneIn("rewrite"), "The design brief has not been written yet: docs/design-brief.md is missing or empty."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := missing(PhaseDesign, tt.files); got != tt.want {
+				t.Errorf("missing(design) = %q\nwant            %q", got, tt.want)
+			}
+		})
+	}
+	// The same sentence, word for word, as the check gate gives.
+	if a, b := missing(PhaseCheck, mend(0)), missing(PhaseDesign, mend(0)); a != b {
+		t.Errorf("the plan-errors sentence differs between check and design:\n%q\n%q", a, b)
+	}
+}
+
+// TestAdvanceWalksNewPath advances a new session from `brief` until Advance
+// refuses, once with an interface and once without.
+//
+// It is the one test that shows the two paths whole: with an interface every
+// phase of Phases up to `review` is passed through, and without one `design`
+// is the only phase left out. Both stop at `review`, so neither path gives
+// the agent a way to approve the plan.
+func TestAdvanceWalksNewPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		files Files
+		want  []string
+	}{
+		{"with an interface", withInterface(PhaseBrief), []string{PhaseBrief, PhaseSurvey, PhaseModel, PhaseRounds, PhaseSlices, PhaseDraft, PhaseCheck, PhaseDesign, PhaseReview}},
+		{"without an interface", complete(PhaseBrief), []string{PhaseBrief, PhaseSurvey, PhaseModel, PhaseRounds, PhaseSlices, PhaseDraft, PhaseCheck, PhaseReview}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := tt.files
+			walked := []string{f.State.Phase}
+			for range Phases {
+				next, err := Advance(f)
+				if err != nil {
+					break
+				}
+				f.State.Phase = next
+				walked = append(walked, next)
+			}
+			if !reflect.DeepEqual(walked, tt.want) {
+				t.Errorf("walked %v, want %v", walked, tt.want)
 			}
 		})
 	}
@@ -491,7 +775,7 @@ func TestLoad(t *testing.T) {
 				".afk/plan/state.json":      state,
 				".afk/plan/brief.md":        "Build me a thing.\n",
 				".afk/plan/survey.md":       "Read the folder.\n",
-				".afk/plan/questions.jsonl": `{"id":"q1","round":1,"kind":"setup","question":"Who is it for?","answer":"Me"}` + "\n",
+				".afk/plan/questions.jsonl": `{"id":"r1-interface","round":1,"kind":"setup","question":"Is there an interface?","answer":"no: a command line"}` + "\n",
 				".afk/plan/slices.md":       "1. First\n",
 				".afk/plan/critic.md":       "No findings.\n",
 				"docs/PLAN.md":              "# Plan\n",
@@ -502,7 +786,7 @@ func TestLoad(t *testing.T) {
 					HasState: true, State: State{ModeNew, PhaseCheck, "2026-10-13T00:00:00Z"},
 					Brief: true, Survey: true, Slices: true, Critic: true,
 					QuestionsPresent: true,
-					Questions:        []Question{{ID: "q1", Round: 1, Kind: KindSetup, Question: "Who is it for?", Answer: "Me"}},
+					Questions:        []Question{{ID: InterfaceQuestionID, Round: 1, Kind: KindSetup, Question: "Is there an interface?", Answer: "no: a command line"}},
 					PlanExists:       true,
 				}
 				if !reflect.DeepEqual(f, want) {
@@ -513,6 +797,60 @@ func TestLoad(t *testing.T) {
 				}
 				if next, err := Advance(f); err != nil || next != PhaseReview {
 					t.Errorf("Advance(Load()) = %q, %v; want review", next, err)
+				}
+			},
+		},
+		{
+			// The interface answer is read from the real file, and the brief
+			// from docs/ in the project, not from .afk/plan/.
+			name: "an interface and a design brief",
+			files: map[string]string{
+				".afk/plan/state.json":      state,
+				".afk/plan/brief.md":        "Build me a thing.\n",
+				".afk/plan/survey.md":       "Read the folder.\n",
+				".afk/plan/questions.jsonl": `{"id":"r1-interface","round":1,"kind":"setup","question":"Is there an interface?","answer":"yes: a web page"}` + "\n",
+				".afk/plan/slices.md":       "1. First\n",
+				".afk/plan/critic.md":       "No findings.\n",
+				"docs/PLAN.md":              "# Plan\n",
+				"docs/design-brief.md":      "Design a recipe page.\n",
+			},
+			planPath: "docs/PLAN.md",
+			check: func(t *testing.T, _ string, f Files) {
+				if !f.DesignBrief {
+					t.Error("DesignBrief is false with docs/design-brief.md written")
+				}
+				if has, known := Interface(f.Questions); !has || !known {
+					t.Errorf("Interface(Load().Questions) = %v, %v; want true, true", has, known)
+				}
+				if next, err := Advance(f); err != nil || next != PhaseDesign {
+					t.Errorf("Advance(Load()) = %q, %v; want design", next, err)
+				}
+				// At design the brief is there, and the next thing asked for is
+				// a fact about the plan, which only the caller can fill.
+				f.State.Phase = PhaseDesign
+				if _, err := Advance(f); err == nil || !strings.Contains(err.Error(), "wins on behaviour") {
+					t.Errorf("Advance(Load()) at design = %v; want a refusal about the header rule", err)
+				}
+			},
+		},
+		{
+			name: "a design brief in .afk/plan is not the design brief",
+			files: map[string]string{
+				".afk/plan/state.json":      state,
+				".afk/plan/design-brief.md": "Design a recipe page.\n",
+			},
+			check: func(t *testing.T, _ string, f Files) {
+				if f.DesignBrief {
+					t.Error("DesignBrief is true with no docs/design-brief.md")
+				}
+			},
+		},
+		{
+			name:  "a blank design brief does not count",
+			files: map[string]string{".afk/plan/state.json": state, "docs/design-brief.md": " \n"},
+			check: func(t *testing.T, _ string, f Files) {
+				if f.DesignBrief {
+					t.Error("DesignBrief is true for a blank docs/design-brief.md")
 				}
 			},
 		},
@@ -619,6 +957,9 @@ func TestLoad(t *testing.T) {
 			if f.PlanErrors != 0 {
 				t.Errorf("Load() set PlanErrors = %d; the caller fills it", f.PlanErrors)
 			}
+			if f.DesignRule || f.DesignTask != "" || f.DesignTaskFirst || f.DesignDependents != 0 {
+				t.Errorf("Load() set a fact about the plan (rule %v, task %q, first %v, dependents %d); the caller fills them", f.DesignRule, f.DesignTask, f.DesignTaskFirst, f.DesignDependents)
+			}
 			tt.check(t, project, f)
 		})
 	}
@@ -641,6 +982,11 @@ func TestDir(t *testing.T) {
 	}
 	if got, want := StatePath("/p"), filepath.Join("/p", ".afk", "plan", "state.json"); got != want {
 		t.Errorf("StatePath() = %q, want %q", got, want)
+	}
+	// The design brief's path is named in the skill's text and in the plan's
+	// design task as well.
+	if DesignBriefFile != "docs/design-brief.md" {
+		t.Errorf("DesignBriefFile = %q, want docs/design-brief.md", DesignBriefFile)
 	}
 }
 
@@ -714,7 +1060,13 @@ func TestPhasesFor(t *testing.T) {
 // The "off the path" rows are a state.json edited by hand. They must come
 // back as a problem with no phase, and must not panic: the recorded phase is
 // used as a position on the path, and it has none.
+//
+// The "does not need the interface question" rows hold that the design
+// hand-off left these modes alone: they have no round one, so a rounds gate
+// that asked every session for the interface answer would stop each of them
+// at `rounds` for a question their prompts never ask.
 func TestDecideChangeModes(t *testing.T) {
+	plainQuestions := func(f *Files) { f.Questions[1].ID = "q2" }
 	tests := []struct {
 		name        string
 		files       Files
@@ -771,6 +1123,14 @@ func TestDecideChangeModes(t *testing.T) {
 			f.QuestionsPresent, f.Questions, f.Slices, f.Critic = false, nil, false, false
 		}), PhaseReview, "session is finished", ""},
 		{"a change session does not wait for the plan file", withIn(ModeAmend, PhaseReview, func(f *Files) { f.PlanExists = false }), PhaseReview, "session is finished", ""},
+
+		// The interface answer and the design gate belong to a new session.
+		{"extend does not need the interface question", withIn(ModeExtend, PhaseReview, plainQuestions), PhaseReview, "session is finished", ""},
+		{"reconcile does not need the interface question", withIn(ModeReconcile, PhaseReview, plainQuestions), PhaseReview, "session is finished", ""},
+		{"extend with an unreadable interface answer is not held", withIn(ModeExtend, PhaseReview, func(f *Files) { f.Questions[1].Answer = "none" }), PhaseReview, "session is finished", ""},
+		{"extend with an interface and no design work is not held", withIn(ModeExtend, PhaseReview, func(f *Files) { f.Questions[1].Answer = "yes: a web page" }), PhaseReview, "session is finished", ""},
+		{"amend with an interface and no design work is not held", withIn(ModeAmend, PhaseReview, func(f *Files) { f.Questions[1].Answer = "yes: a web page" }), PhaseReview, "session is finished", ""},
+		{"extend at check with an interface goes on to the summary", withIn(ModeExtend, PhaseCheck, func(f *Files) { f.Questions[1].Answer = "yes: a web page" }), PhaseCheck, "on to the summary of what changed", ""},
 
 		// A recorded phase the mode never reaches: a problem, and no phase.
 		{"off the path: amend recorded at slices", completeIn(ModeAmend, PhaseSlices), "", "not one a session in the amend mode goes through", `has the phase "slices", which a session in the amend mode never reaches. Its phases are: brief, survey, draft, check, review.`},
@@ -848,8 +1208,14 @@ func TestDecideChangeModesNeverPastRecorded(t *testing.T) {
 //     `approved`, which the mode's path does not have.
 //   - "check with no critic.md" for amend and reconcile against the same row
 //     for extend: the critic is extend's alone.
+//   - The "with an interface" rows and "recorded at design". The design phase
+//     is a new session's: a change session whose project has an interface
+//     still goes from `check` to `review`, and one recorded at `design` by
+//     hand is refused, not walked on from.
 func TestAdvanceChangeModes(t *testing.T) {
 	noQuestions := func(f *Files) { f.QuestionsPresent = false; f.Questions = nil }
+	plainQuestions := func(f *Files) { f.Questions[1].ID = "q2" }
+	hasInterface := func(f *Files) { f.Questions[1].Answer = "yes: a web page" }
 	tests := []struct {
 		name    string
 		files   Files
@@ -909,6 +1275,14 @@ func TestAdvanceChangeModes(t *testing.T) {
 		{"reconcile: check, plan has errors", withIn(ModeReconcile, PhaseCheck, func(f *Files) { f.PlanErrors = 3 }), "", "3 errors"},
 		{"reconcile: check with no critic.md", withIn(ModeReconcile, PhaseCheck, func(f *Files) { f.Critic = false }), PhaseReview, ""},
 		{"reconcile: review refuses", completeIn(ModeReconcile, PhaseReview), "", "session is finished and the changes are in the plan"},
+
+		// The interface answer and the design phase belong to a new session.
+		{"extend: rounds without the interface question", withIn(ModeExtend, PhaseRounds, plainQuestions), PhaseSlices, ""},
+		{"reconcile: rounds without the interface question", withIn(ModeReconcile, PhaseRounds, plainQuestions), PhaseDraft, ""},
+		{"extend: check with an interface still goes to review", withIn(ModeExtend, PhaseCheck, hasInterface), PhaseReview, ""},
+		{"amend: check with an interface still goes to review", withIn(ModeAmend, PhaseCheck, hasInterface), PhaseReview, ""},
+		{"reconcile: check with an interface still goes to review", withIn(ModeReconcile, PhaseCheck, hasInterface), PhaseReview, ""},
+		{"extend: recorded at design, off the path", withIn(ModeExtend, PhaseDesign, hasInterface), "", `the phase "design", which a session in the extend mode never reaches`},
 
 		// An earlier phase of the mode's own path still holds the record.
 		{"extend: an earlier file missing refuses", withIn(ModeExtend, PhaseCheck, func(f *Files) { f.Changes = false }), "", "earlier draft phase is not finished"},

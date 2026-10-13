@@ -1,6 +1,6 @@
 # The Late Phases: slices, draft, check, review
 
-Each phase ends by writing its file and running `afk plan advance`. The `design` phase is skipped for now: `afk plan advance` goes from `check` to `review`, and nothing in this session mentions a design step to the owner.
+Each phase ends by writing its file and running `afk plan advance`. The `design` phase, which comes between `check` and `review` for a project with an interface, has its own prompt after this one. Whether the project has an interface is the recorded answer to the question with the id `r1-interface`: it starts with `yes` or with `no`, and three of the phases below read it.
 
 ## Phase `slices` — the task breakdown
 
@@ -20,6 +20,8 @@ Cut the work from the brief, the glossary and the answers, grouped into mileston
 
 Each line has three parts: the title, what it is blocked by (the numbers of earlier tasks, or "nothing") and what it delivers in one clause. Mark a task only the owner can do with `(owner)`.
 
+**When the interface answer is yes**, do not put a design task in the list. Say under it, in one or two plain sentences, that one more task of theirs will be added after the plan is checked: making the design system in their design tool, from a brief this session writes, and that the tasks that build the interface will wait for it.
+
 Then ask, in the message, two plain questions: is each task the right size, and are the blocking edges right? Repeat, showing the whole list again with the changes, until the owner says it is right. Do not write the file until they have.
 
 Write `.afk/plan/slices.md`: the confirmed list, as shown, under its milestone headings. Then run `afk plan advance`.
@@ -34,7 +36,8 @@ Every plan has, whatever the project:
 
 - **Context** that quotes the brief word for word.
 - **A Decisions table** with one row per settled choice, and **every row that came from the owner profile says so** ("From the owner profile" in the row, with the entry's strength). A row the owner overrode says what the profile said and what was decided instead.
-- **An owner task for anything only the owner can set up**: an account, a secret, a domain name, a machine. Its title carries `(owner)`, its Scope says exactly what to do and where the result goes, and the tasks that need it depend on it. An agent never does these and never waits on them silently.
+- **An owner task for anything only the owner can set up**: an account, a secret, a domain name, a machine. Its title carries `(owner)`, its Scope says exactly what to do and where the result goes, and the tasks that need it depend on it. An agent never does these and never waits on them silently. The one owner task not written here is the design task: the `design` phase adds it, with its dependencies, after the critic has read the plan.
+- **When the interface answer is yes, the rule on which document wins**, in the "How to use this document" paragraph, from this first write: "Where this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design system wins on looks." Keep the file's path and the words "wins on behaviour" and "wins on looks" as they are; the gate of the `design` phase looks for them. When the answer is no, the plan does not have the sentence and never mentions a design system.
 - **An early task that gives the repository a CI workflow** that runs the project's tests on every pull request. afk never merges a pull request with no checks, so without this task nothing after it can ship. It is usually `T1.1` or `T1.2`, and every task that opens a pull request depends on it.
 - **Open questions keyed to the task that needs them.** Anything the owner could not settle, or chose to settle later, is a row in the Open questions table with the ids of the tasks that need the answer in "Needed by". Not a guess written into a task.
 - **A Definition of done** that names the project's own test command and the check the CI task adds.
@@ -69,7 +72,7 @@ The prompt holds those two paths and nothing else about this session: not the an
 
 Ask the owner only when a finding needs a choice they have not made (two of their answers contradict each other; a part of the brief they may have dropped on purpose). That is a question in the message, and its answer goes into `questions.jsonl` as a new line in the next round number, so the record stays whole.
 
-Write `.afk/plan/critic.md`: every finding the critic reported, in its words, and under each what was done, fixed (with what changed) or answered (with why). A finding left out of this file was not dealt with. Then run `afk plan advance`.
+Write `.afk/plan/critic.md`: every finding the critic reported, in its words, and under each what was done, fixed (with what changed) or answered (with why). A finding left out of this file was not dealt with. Then run `afk plan advance`. It prints the phase it moved to: `design` when the interface answer is yes, in which case do the design prompt next, and `review` when it is no.
 
 ## Phase `review` — hand the draft to the owner
 
@@ -80,6 +83,7 @@ Print, in this order:
 1. The output of `afk plan lint --summary`, as it is. Its lines are the only counts you give: milestones, tasks, owner tasks, open questions, errors, warnings.
 2. The open questions, each with the tasks that need it, read from the plan's Open questions table.
 3. Where the plan is (its path), and that `CONTEXT.md`, `AGENTS.md`, `afk.toml` and `.gitignore` were written beside it.
-4. That the draft is ready for them to read, and that approving it, which is what lets the build loop start on it, is not built yet, so the session stops here. Running `afk plan` again comes back to this point.
+4. When the `design` phase ran: where the design brief is (`docs/design-brief.md`), and the id of the task titled `Design system (owner)`, read from the plan, with one line saying it is theirs and that the tasks that build the interface wait for it.
+5. That the draft is ready for them to read. Approving it, which is what lets the build loop start on it, is not built yet; the session stops here. Running `afk plan` again comes back to this point.
 
 Then stop. Do not start a new round, do not edit the plan, and do not run `afk plan advance` again: it refuses from this phase, and says so.

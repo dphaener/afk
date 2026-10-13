@@ -192,6 +192,7 @@ Subcommands:
                  afk plan insert (--after ID | --milestone N | --new-milestone) --entry FILE
                  afk plan depend TASK ON
                  afk plan next-id (--milestone N | --after ID)
+                 afk plan next-followup [--project DIR]
   plan lint      Check a master plan for what the daemon would refuse or misread:
                  afk plan lint [--project DIR] [--json] [--summary] [FILE]
   plan check     Mark one task of a session's plan done or failed:

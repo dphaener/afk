@@ -153,3 +153,9 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Changes list**: `.afk/plan/changes.md`, where a change session lists each patch it made; a change session cannot leave its draft phase without it.
 - **Plan-changes branch**: `afk-plan-changes`, the branch a guarded patch is committed to when the project sends plan changes through a pull request.
 - **Follow-up prompt**: a file `docs/design-followup-<n>.md` written by a reconcile, saying what the design must change to fit the plan.
+- **Design phase**: the phase of a new planning session, between `check` and `review`, that hands the look of the project to the owner's design tool; only a project whose interface answer is yes has it.
+- **Interface answer**: the answer to the round-one question with the id `r1-interface`, which starts with `yes` when the project has screens a person looks at and `no` when it does not (a command line, an API only, none).
+- **Design brief**: `docs/design-brief.md`, the prompt the planning session writes for the owner to take to a design tool; it says what the product is, which screens the plan implies and what to hand back.
+- **Design system**: `docs/design-system.md`, the one document the design tool hands back, holding tokens, components and screens.
+- **Design task**: the owner task titled `Design system (owner)` in a plan's first milestone; every task that builds interface waits for it.
+- **Precedence rule**: where the plan and the design system disagree, the plan wins on behaviour and the design system wins on looks.

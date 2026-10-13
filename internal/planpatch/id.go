@@ -88,3 +88,34 @@ func Between(ids []string, after string) (string, error) {
 	}
 	return "", fmt.Errorf("every letter after %s is taken, up to %sz. Use the next number in the milestone instead: afk plan next-id --milestone %s", after, base, m[1])
 }
+
+// followupRE is a design follow-up prompt's base name: the digits are the
+// whole number, and nothing may come before or after, so a backup copy
+// (design-followup-2.md.bak) or a name in another case is not a prompt.
+var followupRE = regexp.MustCompile(`^design-followup-(\d+)\.md$`)
+
+// NextFollowup returns the path for the next design follow-up prompt:
+// docs/design-followup-<n>.md, where n is one more than the highest number
+// among names, or 1 when none is a follow-up prompt.
+//
+// It is the highest number plus one and never a free number lower down,
+// for the reason NextInMilestone gives: a prompt that was deleted was still
+// handed to a design tool and may be named in a decision or a commit, so its
+// number is not given to a different prompt.
+//
+// names are the base names of what is in docs/. The caller lists the folder
+// because this function reads no file.
+func NextFollowup(names []string) string {
+	highest := 0
+	for _, name := range names {
+		m := followupRE.FindStringSubmatch(name)
+		if m == nil {
+			continue
+		}
+		// A number too long to read is passed over, as in NextInMilestone.
+		if n, err := strconv.Atoi(m[1]); err == nil && n > highest {
+			highest = n
+		}
+	}
+	return fmt.Sprintf("docs/design-followup-%d.md", highest+1)
+}

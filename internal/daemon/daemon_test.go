@@ -1919,6 +1919,67 @@ func TestTickNoLedgerAnsweredWithoutALedger(t *testing.T) {
 	}
 }
 
+// TestTickOwnerBody: the design task's item sends the owner to the reconcile
+// before the answer; every other owner task keeps its old body byte for byte.
+//
+// Load-bearing rows: "an ordinary owner task" compares with the old text
+// verbatim, so a design hand-off cannot leak into other owner tasks; "the
+// design task" checks the reconcile text comes before the answer command,
+// because answering is what releases the interface tasks. Both stay one
+// blocking external_action item and park the task.
+func TestTickOwnerBody(t *testing.T) {
+	const oldBody = "T0.0 — %s\n\n" +
+		"The plan marks this task as yours to do, not an agent's, so afk has not started anything for it. " +
+		"Tasks that depend on it wait until it is done.\n\n" +
+		"What to do next:\n" +
+		"1. Do the task. Its steps are under T0.0 in %s.\n" +
+		"2. When it is finished, answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). " +
+		"Answering it is what marks T0.0 as done, so answer only when the work really is finished."
+
+	cases := []struct {
+		name   string
+		title  string
+		design bool
+	}{
+		{name: "the design task", title: "Design system (owner; not an agent task)", design: true},
+		{name: "an ordinary owner task", title: "Create the hosting account (owner)"},
+		{name: "a look-alike owner task", title: "Design system for the admin pages (owner)"},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			r := newRig(t, masterplan.Task{ID: "T0.0", Title: tt.title}, task("T1.1", "T0.0"))
+			r.tick()
+			items := r.items()
+			if len(items) != 1 {
+				t.Fatalf("items = %d, want 1", len(items))
+			}
+			it := items[0]
+			if it.Kind != "external_action" || !it.Blocking || !it.Open() {
+				t.Errorf("owner item = %+v", it)
+			}
+			r.wantStatus("T0.0", ledger.Parked)
+			t.Logf("owner item %s:\n%s", it.ID, it.Body)
+			if !tt.design {
+				if strings.Contains(it.Body, "reconcile") {
+					t.Errorf("an ordinary owner task is sent to a reconcile:\n%s", it.Body)
+				}
+				if want := fmt.Sprintf(oldBody, tt.title, "docs/PLAN.md"); it.Body != want {
+					t.Errorf("body changed:\n%q\nwant\n%q", it.Body, want)
+				}
+				return
+			}
+			wantContains(t, "the design item's body", it.Body,
+				"docs/design-brief.md", "docs/design-system.md", "commit it", "only sees committed files",
+				"afk plan reconcile docs/design-system.md", "afk inbox answer", "after the reconcile")
+			rec := strings.Index(it.Body, "afk plan reconcile docs/design-system.md")
+			ans := strings.Index(it.Body, "afk inbox answer")
+			if rec < 0 || ans < 0 || rec > ans {
+				t.Errorf("reconcile at %d, answer at %d; want the reconcile first", rec, ans)
+			}
+		})
+	}
+}
+
 // TestTickOwnerTask: a task that is the owner's raises one blocking item and
 // starts no agent, however many ticks pass; the owner's answer marks it done,
 // and only then does the task that depends on it launch.

@@ -2107,9 +2107,11 @@ func ownerTitle(id, title string) string {
 // done again on the very next tick without asking.
 func (t *pass) ownerTask(a Action) daemonstate.State {
 	title := ""
+	design := false
 	for _, tk := range t.obs.Tasks {
 		if tk.ID == a.Task {
 			title = tk.Title
+			design = tk.DesignSystem()
 			break
 		}
 	}
@@ -2118,7 +2120,7 @@ func (t *pass) ownerTask(a Action) daemonstate.State {
 	if !have {
 		var err error
 		it, err = t.add(inbox.NewItem{Task: a.Task, Kind: "external_action", Blocking: true,
-			Title: itemTitle, Body: ownerBody(a.Task, title, t.relPlan())})
+			Title: itemTitle, Body: ownerBody(a.Task, title, t.relPlan(), design)})
 		if err != nil {
 			return daemonstate.State{Kind: string(ActWait), Task: a.Task,
 				Reason: fmt.Sprintf("%s, and the inbox item saying so could not be written (%v); trying again on the next pass", a.Reason, err)}
@@ -2142,15 +2144,36 @@ func (t *pass) ownerTask(a Action) daemonstate.State {
 // ownerBody tells the owner the task is theirs and that their answer is what
 // finishes it. It carries the task's whole title, because the item's own
 // title may have been cut to fit.
-func ownerBody(task, title, plan string) string {
-	return fmt.Sprintf("%s — %s\n\n"+
+//
+// The design task (design true) gets three steps instead of one: hand the
+// brief to the design tool and commit what comes back, run the reconcile, and
+// only then answer. The reconcile comes before the answer because the answer
+// is what lets the interface tasks start, and they should start against a
+// plan already brought in line with the design. The daemon only says so; it
+// never reads the design file or runs the reconcile, which is an interactive
+// session the owner sees through. The file is committed because an agent
+// builds in its own copy of the repository and sees only committed files.
+// Every other owner task keeps the one-step body exactly.
+func ownerBody(task, title, plan string, design bool) string {
+	head := fmt.Sprintf("%s — %s\n\n"+
 		"The plan marks this task as yours to do, not an agent's, so afk has not started anything for it. "+
 		"Tasks that depend on it wait until it is done.\n\n"+
-		"What to do next:\n"+
+		"What to do next:\n", task, strings.TrimSpace(title))
+	if design {
+		return head + fmt.Sprintf(
+			"1. Take the design brief (`docs/design-brief.md`) to your design tool, save what it hands back at `%s` in the project's main checkout, and commit it, "+
+				"because an agent builds in its own copy of the repository and only sees committed files. The task's steps are under %s in %s.\n"+
+				"2. Run `afk plan reconcile %s` in the project folder and see that session through. "+
+				"It brings the plan in line with the design, and writes a follow-up prompt for anything the design must change.\n"+
+				"3. Then answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
+				"Answering is what lets the tasks that build the interface start, so do it after the reconcile.",
+			masterplan.DesignSystemFile, task, plan, masterplan.DesignSystemFile)
+	}
+	return head + fmt.Sprintf(
 		"1. Do the task. Its steps are under %s in %s.\n"+
-		"2. When it is finished, answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
-		"Answering it is what marks %s as done, so answer only when the work really is finished.",
-		task, strings.TrimSpace(title), task, plan, task)
+			"2. When it is finished, answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
+			"Answering it is what marks %s as done, so answer only when the work really is finished.",
+		task, plan, task)
 }
 
 // ownerDone marks an owner task done once every item it was parked on is

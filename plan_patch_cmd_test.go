@@ -572,6 +572,147 @@ func TestRunPlanNextID(t *testing.T) {
 	})
 }
 
+// TestRunPlanNextFollowup is `afk plan next-followup` against a temp project.
+// Every row leaves the project as it was, down to the list of entries: the
+// command only reads, and the session writes the prompt itself.
+//
+// Load-bearing rows:
+//   - "no docs folder" and "no plan, an empty docs folder": the answer is the
+//     first prompt, exit 0. Unlike next-id the command needs no master plan.
+//   - "prompts 1 and 3": prints prompt 4, the whole of stdout, because the
+//     planning session takes stdout as the path. A gap is never filled.
+//   - "names that are not prompts": a backup copy or another case is not
+//     counted.
+//   - "a stray word" and "an unknown flag": exit 2 with the usage line.
+//   - "docs is a file" and "a project folder that is not there": exit 1 and
+//     nothing on stdout, so a script cannot take an error for a path.
+//   - "typed from a linked worktree": the main checkout's docs/ is the one
+//     counted, where the session writes.
+func TestRunPlanNextFollowup(t *testing.T) {
+	const prompt = "# Design follow-up\n"
+	tests := []struct {
+		name string
+		// files are written into the project folder, by path.
+		files map[string]string
+		// folders are made in the project folder.
+		folders []string
+		// args come after --project and the project folder.
+		args []string
+		// missing names a project folder that does not exist.
+		missing bool
+		// worktree types the command in a second folder whose repository's
+		// main checkout is the project folder.
+		worktree bool
+		want     int
+		exactOut string
+		wantErr  []string
+	}{
+		{name: "no docs folder", want: 0, exactOut: "docs/design-followup-1.md\n"},
+		{name: "no plan, an empty docs folder", folders: []string{"docs"}, want: 0, exactOut: "docs/design-followup-1.md\n"},
+		{name: "a plan and no prompt", files: map[string]string{"docs/PLAN.md": "# Plan\n", "docs/design-system.md": "tokens\n"},
+			want: 0, exactOut: "docs/design-followup-1.md\n"},
+		{name: "prompts 1 and 3",
+			files: map[string]string{"docs/design-followup-1.md": prompt, "docs/design-followup-3.md": prompt},
+			want:  0, exactOut: "docs/design-followup-4.md\n"},
+		{name: "prompt 10", files: map[string]string{"docs/design-followup-10.md": prompt, "docs/design-followup-9.md": prompt},
+			want: 0, exactOut: "docs/design-followup-11.md\n"},
+		{name: "names that are not prompts",
+			files: map[string]string{
+				"docs/design-followup-2.md":     prompt,
+				"docs/design-followup-7.md.bak": prompt,
+				"docs/Design-Followup-8.md":     prompt,
+				"docs/design-followup-x.md":     prompt,
+				"design-followup-9.md":          prompt, // not in docs/
+			},
+			want: 0, exactOut: "docs/design-followup-3.md\n"},
+		{name: "a folder named like a prompt takes its number", folders: []string{"docs/design-followup-5.md"},
+			want: 0, exactOut: "docs/design-followup-6.md\n"},
+		{name: "typed from a linked worktree", worktree: true,
+			files: map[string]string{"docs/design-followup-1.md": prompt},
+			want:  0, exactOut: "docs/design-followup-2.md\n"},
+		{name: "a stray word", args: []string{"extra"}, want: 2,
+			wantErr: []string{`afk plan next-followup: unexpected word "extra"`, "Usage: " + planNextFollowupUsageLine}},
+		{name: "a stray word after a prompt exists", files: map[string]string{"docs/design-followup-1.md": prompt},
+			args: []string{"docs/design-system.md"}, want: 2,
+			wantErr: []string{"Usage: " + planNextFollowupUsageLine}},
+		{name: "an unknown flag", args: []string{"--milestone", "1"}, want: 2,
+			wantErr: []string{"Usage: " + planNextFollowupUsageLine}},
+		{name: "docs is a file", files: map[string]string{"docs": "not a folder\n"}, want: 1,
+			wantErr: []string{"afk plan next-followup: cannot list ", "Check that it is a folder"}},
+		{name: "a project folder that is not there", missing: true, want: 1,
+			wantErr: []string{"afk plan next-followup: ", "is not a folder that can be read", "--project"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := t.TempDir()
+			for _, folder := range tt.folders {
+				if err := os.MkdirAll(filepath.Join(project, filepath.FromSlash(folder)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, content := range tt.files {
+				writePlanFile(t, project, name, content)
+			}
+			before := folderFiles(t, project)
+
+			deps := planPatchDeps{
+				cwd:          t.TempDir(),
+				gitCommonDir: func(string) string { return "" },
+				run: func(string, string, ...string) (string, error) {
+					return "", fmt.Errorf("next-followup must not run a command")
+				},
+				tempDir: func() (string, error) { return "", fmt.Errorf("no test here makes a worktree") },
+			}
+			args := append([]string{"--project", project}, tt.args...)
+			switch {
+			case tt.missing:
+				args = []string{"--project", filepath.Join(project, "no-such-folder")}
+			case tt.worktree:
+				// No --project: the folder typed in is a worktree, and git
+				// names the main checkout's .git as the common folder.
+				args = tt.args
+				deps.gitCommonDir = func(string) string { return filepath.Join(project, ".git") }
+			}
+			var so, se bytes.Buffer
+			code := runPlanNextFollowup(args, &so, &se, deps)
+			if code != tt.want {
+				t.Fatalf("exit %d, want %d\nstdout:\n%s\nstderr:\n%s", code, tt.want, so.String(), se.String())
+			}
+			if so.String() != tt.exactOut {
+				t.Errorf("stdout = %q, want %q", so.String(), tt.exactOut)
+			}
+			for _, w := range tt.wantErr {
+				if !strings.Contains(se.String(), w) {
+					t.Errorf("stderr lacks %q:\n%s", w, se.String())
+				}
+			}
+			if tt.want == 0 && se.Len() > 0 {
+				t.Errorf("a command that worked printed on stderr:\n%s", se.String())
+			}
+			if after := folderFiles(t, project); !reflect.DeepEqual(before, after) {
+				t.Errorf("the project was changed by a command that only reads:\nbefore %v\nafter  %v", before, after)
+			}
+		})
+	}
+}
+
+// TestPlanUsageNamesNextFollowup keeps `afk plan --help` in step with the
+// command: its usage line, what it prints and its exit codes are there.
+func TestPlanUsageNamesNextFollowup(t *testing.T) {
+	var b bytes.Buffer
+	printPlanUsage(&b)
+	for _, want := range []string{
+		"  " + planNextFollowupUsageLine + "\n",
+		"next-followup prints where the next design follow-up prompt goes",
+		"docs/design-followup-<n>.md",
+		"1 the docs folder could not be read",
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("plan usage missing %q:\n%s", want, b.String())
+		}
+	}
+}
+
 // TestPlanLeftUntouched is every way a failed change can have left something
 // behind. Only the first row may say "Nothing was changed."; each other row
 // is one sign that something was done, and a wrong yes there would send the
@@ -612,6 +753,7 @@ func TestPlanPatchHelpFlag(t *testing.T) {
 		{"insert", func(a []string, so, se *bytes.Buffer, d planPatchDeps) int { return runPlanInsert(a, so, se, d) }, planInsertUsageLine},
 		{"depend", func(a []string, so, se *bytes.Buffer, d planPatchDeps) int { return runPlanDepend(a, so, se, d) }, planDependUsageLine},
 		{"next-id", func(a []string, so, se *bytes.Buffer, d planPatchDeps) int { return runPlanNextID(a, so, se, d) }, planNextIDUsageLine},
+		{"next-followup", func(a []string, so, se *bytes.Buffer, d planPatchDeps) int { return runPlanNextFollowup(a, so, se, d) }, planNextFollowupUsageLine},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -103,3 +103,31 @@ func checkID(t *testing.T, got string, err error, want, wantErr string) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// TestNextFollowup is the numbering of design follow-up prompts. The
+// load-bearing rows are "a gap in the numbers" (the answer is the highest
+// plus one, so a deleted prompt's number is never reused) and "names that
+// are not follow-up prompts", which would otherwise push the number up or
+// make a backup file count.
+func TestNextFollowup(t *testing.T) {
+	tests := []struct {
+		name  string
+		names []string
+		want  string
+	}{
+		{name: "no names", names: nil, want: "docs/design-followup-1.md"},
+		{name: "other files only", names: []string{"design-brief.md", "design-system.md"}, want: "docs/design-followup-1.md"},
+		{name: "one prompt", names: []string{"design-followup-1.md"}, want: "docs/design-followup-2.md"},
+		{name: "a gap in the numbers", names: []string{"design-followup-1.md", "design-followup-3.md"}, want: "docs/design-followup-4.md"},
+		{name: "two digits", names: []string{"design-followup-10.md", "design-followup-9.md"}, want: "docs/design-followup-11.md"},
+		{name: "names that are not follow-up prompts", names: []string{"design-followup-x.md", "design-followup-2.md.bak", "Design-Followup-3.md", "design-followup-.md", "old-design-followup-7.md"}, want: "docs/design-followup-1.md"},
+		{name: "a real prompt among other names", names: []string{"design-followup-2.md.bak", "design-followup-2.md"}, want: "docs/design-followup-3.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NextFollowup(tt.names); got != tt.want {
+				t.Errorf("NextFollowup(%v) = %q, want %q", tt.names, got, tt.want)
+			}
+		})
+	}
+}

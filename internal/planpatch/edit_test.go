@@ -563,6 +563,12 @@ const (
 - **Scope:** A list page that adds up the ingredient lines of the week's recipes.
 - **Acceptance:** Two recipes that both need leeks give one leek line on the list.
 `
+	designEntry = `#### {id} — Design system (owner)
+- **Depends on:** —
+- **Goal:** The owner has a design system for the pages, made in the design tool.
+- **Scope:** Take ` + "`docs/design-brief.md`" + ` to the design tool named in the profile, make the design system there, and save the result at ` + "`docs/design-system.md`" + `.
+- **Acceptance:** ` + "`docs/design-system.md`" + ` is committed and holds the colours, type, components and screens.
+`
 	privateEntry = `#### {id} — Mark a recipe as private
 - **Depends on:** T1.1
 - **Goal:** The owner keeps a recipe out of anything that is shared.
@@ -600,6 +606,8 @@ var modes = []struct {
 	wantTasks int
 	held      map[string]string
 	ops       []op
+	// base is the fixture the script starts from; empty means base-plan.md.
+	base string
 }{
 	{
 		// A new milestone of two tasks, numbered by code.
@@ -675,6 +683,42 @@ var modes = []struct {
 			},
 		},
 	},
+	{
+		// What the design phase does to a plan for a project with pages: the
+		// precedence sentence in the header, the owner's design task at the
+		// end of milestone 1, and every task that builds a page made to wait
+		// for it. T1.1 is storage and does not.
+		name: "design", golden: "design.golden.md", wantTasks: 6,
+		ops: []op{
+			{
+				do:  "patch",
+				old: "Each task says what it waits for, what to build and how to tell it is done.\n",
+				new: "Each task says what it waits for, what to build and how to tell it is done.\nWhere this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design system wins on looks.\n",
+			},
+			{do: "next-id", milestone: 1, wantID: "T1.4"},
+			{do: "insert", milestone: 1, text: designEntry},
+			{do: "depend", task: "T1.2", on: "{id}", touched: []string{"T1.2"}},
+			{do: "depend", task: "T1.3", on: "{id}", touched: []string{"T1.3"}},
+			{do: "depend", task: "T2.1", on: "{id}", touched: []string{"T2.1"}},
+			{do: "depend", task: "T2.2", on: "{id}", touched: []string{"T2.2"}},
+		},
+	},
+	{
+		// The owner's design system shows the shared recipe behind a
+		// sign-in, which the plan forbids. Looks go to the design: T1.2's
+		// Scope names the RecipeCard. The behaviour is not patched; the
+		// conflict goes to the owner in testdata/design-followup-1.md.
+		name: "reconcile-design", golden: "reconcile-design.golden.md", wantTasks: 6,
+		base: "design.golden.md",
+		ops: []op{
+			{
+				do:      "patch",
+				old:     "- **Scope:** The home page, sorted by name, with a link to each recipe.",
+				new:     "- **Scope:** The home page, sorted by name, with a link to each recipe, each drawn as the `RecipeCard` of `docs/design-system.md`.",
+				touched: []string{"T1.2"},
+			},
+		},
+	},
 }
 
 // TestModes runs one scripted session per mode on testdata/base-plan.md and
@@ -694,7 +738,11 @@ func TestModes(t *testing.T) {
 
 	for _, tt := range modes {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ran, err := runScript(t, basePlan, tt.ops, tt.held)
+			start := tt.base
+			if start == "" {
+				start = "base-plan.md"
+			}
+			got, ran, err := runScript(t, readFixture(t, start), tt.ops, tt.held)
 			if err != nil {
 				t.Fatalf("step %d (%s) failed: %v", ran, tt.ops[ran].do, err)
 			}
@@ -805,4 +853,100 @@ func firstDifference(got, want []byte) string {
 		}
 	}
 	return "no difference"
+}
+
+// TestDesignFixtures holds the claims the two design goldens make. The
+// load-bearing checks are the dependency ones (the four page tasks wait for
+// the design task and storage does not, so a wrong edge cannot pass as a
+// plan that merely lints clean), the header phrases (the precedence rule
+// the plan-session gate looks for), and that base-plan.md, the end state
+// for a project with no interface, has none of it. The reconcile golden
+// must leave T2.2's acceptance sentence as it was: the conflict about the
+// sign-in is for the owner, not something a patch settles.
+func TestDesignFixtures(t *testing.T) {
+	const title = "Design system (owner)"
+	phrases := []string{"docs/design-system.md", "wins on behaviour", "wins on looks"}
+	header := func(plan []byte) string {
+		s := string(plan)
+		if i := strings.Index(s, "\n## "); i >= 0 {
+			return s[:i]
+		}
+		return s
+	}
+
+	t.Run("design golden", func(t *testing.T) {
+		plan := readFixture(t, "design.golden.md")
+		if r := planlint.Lint(plan); r.Summary.Errors != 0 {
+			t.Fatalf("%d checker errors: %+v", r.Summary.Errors, r.Findings)
+		}
+		var id string
+		n := 0
+		deps := map[string][]string{}
+		for _, task := range masterplan.Scan(plan).Tasks {
+			deps[task.ID] = task.DependsOn
+			if task.Title == title {
+				n++
+				id = task.ID
+				if !strings.HasPrefix(task.ID, "T1.") {
+					t.Errorf("%s is not in milestone 1", task.ID)
+				}
+			}
+		}
+		if n != 1 {
+			t.Fatalf("%d tasks titled %q, want 1", n, title)
+		}
+		waits := func(task string) bool {
+			for _, d := range deps[task] {
+				if d == id {
+					return true
+				}
+			}
+			return false
+		}
+		for _, page := range []string{"T1.2", "T1.3", "T2.1", "T2.2"} {
+			if !waits(page) {
+				t.Errorf("%s does not wait for %s (DependsOn %v)", page, id, deps[page])
+			}
+		}
+		if waits("T1.1") {
+			t.Errorf("T1.1 (storage) waits for %s, want it free", id)
+		}
+		h := header(plan)
+		for _, p := range phrases {
+			if !strings.Contains(h, p) {
+				t.Errorf("the text before the first \"## \" lacks %q", p)
+			}
+		}
+	})
+
+	t.Run("base plan has none of it", func(t *testing.T) {
+		plan := readFixture(t, "base-plan.md")
+		for _, task := range masterplan.Scan(plan).Tasks {
+			if task.Title == title {
+				t.Errorf("base-plan.md has the task %s", task.ID)
+			}
+		}
+		h := header(plan)
+		for _, p := range phrases {
+			if strings.Contains(h, p) {
+				t.Errorf("base-plan.md header holds %q", p)
+			}
+		}
+	})
+
+	t.Run("reconcile-design golden", func(t *testing.T) {
+		plan := readFixture(t, "reconcile-design.golden.md")
+		if !strings.Contains(string(plan), strings.TrimSuffix(t22Acceptance, "\n\n#### T2.2a")) {
+			t.Errorf("T2.2's acceptance sentence is not as it was in the base plan")
+		}
+		if !strings.Contains(string(plan), "RecipeCard") {
+			t.Errorf("the plan does not name RecipeCard")
+		}
+		if want := "docs/design-followup-1.md"; NextFollowup(nil) != want {
+			t.Errorf("NextFollowup(nil) = %q, want %q", NextFollowup(nil), want)
+		}
+		if _, err := os.Stat(filepath.Join("testdata", "design-followup-1.md")); err != nil {
+			t.Errorf("the follow-up fixture is missing: %v", err)
+		}
+	})
 }
