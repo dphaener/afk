@@ -38,6 +38,8 @@ earlier forge behaviour in these areas:
 - the `StopFailure` rate-limit marker hook (the port has no hooks directory).
   The daemon (T2.4) reads that marker to pause a session for usage, so a session run by the port is
   never paused by the marker; the daemon's usage readings still apply to it.
+  The failed-turn marker (`.turn-failed`, T2.5) is not ported either, so a session run by the port is
+  woken only by the stall wake.
 - the T0.3 QA parity changes (plugin version 5.0.0): no `Case` field or failure-scenario rule in the
   plan format, no exploratory QA in the hands-on check, and no guard on the critic's findings in
   `workflows/review.js`.
@@ -55,7 +57,7 @@ earlier forge behaviour in these areas:
   work for any agent.
 - the design hand-off (plugin version 5.6.0): the port has no design phase. `afk plan next-followup` is
   part of the binary and works for any agent.
-- open questions (plugin version 5.6.1): the port has no copy of the format document's text saying the
+- open questions (plugin version 5.7.1): the port has no copy of the format document's text saying the
   build daemon holds a task while an open row names it. The daemon is part of the binary and works for any agent.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions

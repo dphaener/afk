@@ -2456,6 +2456,9 @@ func TestDaemonTaskRunning(t *testing.T) {
 		string(daemon.ActLaunch): true, string(daemon.ActCreate): true,
 		string(daemon.ActWait): true, string(daemon.ActUnpark): true,
 		string(daemon.ActRestart): true, string(daemon.ActRelaunch): true, string(daemon.ActContinue): true,
+		// A woken session is at work again. The wake's give-up is parked,
+		// like the recovery one, and is false by not being here.
+		string(daemon.ActWake): true,
 		// The only usage kind that is true: the paused session is being
 		// started again. The other five name a session whose agent is stopped
 		// or held back, and are false by not being here.
@@ -2490,7 +2493,9 @@ func TestDaemonStateChurns(t *testing.T) {
 
 // TestDaemonSettings checks that the machine config's recovery keys reach the
 // loop. Load-bearing: the max_restarts = 0 row, because zero is a real setting
-// (never restart) and must not be replaced by a default on the way.
+// (never restart) and must not be replaced by a default on the way; and the
+// two max_wakes rows for the same reason, with "wakes reach the loop" also
+// showing that the key is not mixed up with max_restarts beside it.
 func TestDaemonSettings(t *testing.T) {
 	tests := []struct {
 		name string
@@ -2503,6 +2508,12 @@ func TestDaemonSettings(t *testing.T) {
 		{"zero restarts stays zero",
 			daemonconfig.Config{StallAfter: time.Minute, MaxRestarts: 0, RestartBackoff: time.Minute},
 			daemon.Settings{StallAfter: time.Minute, MaxRestarts: 0, RestartBackoff: time.Minute}},
+		{"wakes reach the loop",
+			daemonconfig.Config{StallAfter: time.Minute, MaxRestarts: 3, RestartBackoff: time.Minute, MaxWakes: 2},
+			daemon.Settings{StallAfter: time.Minute, MaxRestarts: 3, RestartBackoff: time.Minute, MaxWakes: 2}},
+		{"zero wakes stays zero",
+			daemonconfig.Config{StallAfter: time.Minute, MaxRestarts: 3, RestartBackoff: time.Minute, MaxWakes: 0},
+			daemon.Settings{StallAfter: time.Minute, MaxRestarts: 3, RestartBackoff: time.Minute, MaxWakes: 0}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

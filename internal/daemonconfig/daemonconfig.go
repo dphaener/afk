@@ -61,6 +61,12 @@ const (
 	// The first recovery has no wait. A restart stops a working agent, so a
 	// cause that keeps coming back must not be answered in a tight loop.
 	DefaultRestartBackoff = time.Minute
+	// DefaultMaxWakes is how many times the daemon types a session's resume
+	// command into it for one task before it parks the task with a plain
+	// item (docs/PLAN.md T2.5). Three rides out a provider blip that clears
+	// within a few minutes, and is few enough that a session which keeps
+	// failing reaches a person quickly.
+	DefaultMaxWakes = 3
 
 	fileName = "config.toml"
 	// minTick keeps a typo such as "5ms" from turning the loop into a
@@ -170,7 +176,11 @@ type Config struct {
 	// RestartBackoff is the wait before the second recovery; it doubles for
 	// each recovery after that. Always above zero.
 	RestartBackoff time.Duration
-	Projects       []Project
+	// MaxWakes is the number of times the daemon wakes a session for one
+	// task. Zero is valid and means no session is ever woken: a stall parks
+	// the task at once.
+	MaxWakes int
+	Projects []Project
 	// Governor is always filled: absent keys carry the governor defaults.
 	Governor Governor
 	// Web is always filled: an absent table carries the default bind and no
@@ -187,6 +197,9 @@ type rawFile struct {
 		// told apart from max_restarts = 0 (never restart).
 		MaxRestarts    *int   `toml:"max_restarts"`
 		RestartBackoff string `toml:"restart_backoff"`
+		// MaxWakes is a pointer for the same reason as MaxRestarts: an absent
+		// key must not read as max_wakes = 0 (never wake).
+		MaxWakes *int `toml:"max_wakes"`
 	} `toml:"daemon"`
 	Governor struct {
 		// Numbers are pointers so an absent key (use the default) can be told
@@ -226,7 +239,7 @@ func Path(d Deps) string {
 func Load(d Deps) (Config, error) {
 	cfg := Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
 		MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
-		Governor: defaultGovernor(), Web: Web{Bind: DefaultWebBind}}
+		MaxWakes: DefaultMaxWakes, Governor: defaultGovernor(), Web: Web{Bind: DefaultWebBind}}
 	path := Path(d)
 	if path == "" {
 		return cfg, errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")
@@ -268,6 +281,12 @@ func Load(d Deps) (Config, error) {
 	}
 	if cfg.RestartBackoff <= 0 {
 		return Config{}, fmt.Errorf("%s: daemon.restart_backoff is %s, which is not a wait above zero; write it like \"1m\"", path, cfg.RestartBackoff)
+	}
+	if raw.Daemon.MaxWakes != nil {
+		cfg.MaxWakes = *raw.Daemon.MaxWakes
+	}
+	if cfg.MaxWakes < 0 {
+		return Config{}, fmt.Errorf("%s: daemon.max_wakes is %d, which is negative; write 0 or more (0 means never wake a session)", path, cfg.MaxWakes)
 	}
 
 	if cfg.Governor, err = loadGovernor(path, raw); err != nil {

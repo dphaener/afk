@@ -1876,6 +1876,184 @@ Not built, recorded for later:
 - `afk plan approve` (T5.7) should commit `docs/design-brief.md` with the plan, or the brief stays an uncommitted file.
 - The checker could warn when a plan with a design task has a task that names a screen and does not wait for the design task.
 
+## T2.5
+
+Waking a session after a failed turn: the failed-turn marker, the daemon's wake rule and the wake before a stall is reported. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **How the lost connection is staged (A1).** Only the test agent's traffic goes through a small local proxy, and the proxy is what gets cut. Why: cutting the machine's network would also cut every other session running on it and the daemon's own calls.
+- **Which failures write the marker (A2).** `server_error`, `overloaded` and `unknown`, plus whatever the staged lost connection is reported as. A turn that ran out of output, an expired login, a billing fault, a bad request and a missing model write nothing, because typing the resume command again cannot fix them. A failed turn that leaves no marker is still caught by the wake before a stall.
+- **How the hook tells them apart (A3).** The hook is registered for the rate limit and the reasons above, and the script reads the reason itself. A rate limit writes only `.rate-limited`, a reason worth trying again writes only `.turn-failed`, and anything else, or an input with no reason, writes nothing. One failure never writes both files.
+- **How a wake survives a crash (A4).** The daemon saves `wakes`, `wake_at` and `continue_pending` in one write and then types through the continue step T2.3 built. If it dies after the save, the next pass finds the flag and types the line once. A send that fails leaves the flag set and is tried again without counting a second wake. A crash between typing and clearing the flag can type the line twice, as after a restart; the conductor acts from its recorded phase, so that is harmless.
+- **Timing (A5).** The first wake comes 30 seconds after the marker. A later one needs `restart_backoff`, doubled each time (one minute, then two), to have passed since the last wake, and 30 seconds since the marker. The 30 seconds are not a setting.
+- **The wake before a stall item (A6).** A waiting session has been woken for its current wait when `wake_at` is later than the last write of its `status.json`. The wake counts as activity, so the stall item comes `stall_after` after it when nothing changed. No new field records it.
+- **At the limit (A7).** A marker with no wakes left parks the task on one blocking item, "Session kept failing: …", and an answer gives a fresh set. A waiting session with no wakes left gets the stall item as before.
+- **`max_wakes = 0` (A8)** means never wake: a marker parks the task at once with words that say afk is set not to wake sessions, and a waiting session gets the stall item at once. It mirrors `max_restarts = 0`.
+- **A session whose `status.json` cannot be read (A9)** is not woken.
+- **A marker left from before an un-park (A10)** does not wake the session: the marker must also be newer than the answer that un-parked the task, because the un-park already types the resume command.
+- **A rate limit is never woken (A11).** A session with a fresh `.rate-limited` marker is not typed to by the stall wake either; the stall item is raised as before.
+- **Plugin version (A12)** goes from 5.6.0 to 5.7.0, because the hook's registration changes.
+- **The OpenCode port (A13)** gets no hook, since it has no hooks folder. Its copy of the schema gets the same section, and its lag note says a session it runs is woken only by the wake before a stall.
+- **The real check (A14)** uses a scratch daemon and a stand-in agent for each behaviour, then one real agent whose connection is cut. What could not be staged is left as an owner check.
+- **No `make install` from the session (A15).** This repo's `after_merge` installs the new binary after the merge. Installing unmerged code would make the running daemon restart on it.
+
+Decided while building, and left for later:
+
+- **A failed turn beside a rate limit.** The marker rule also leaves a session alone when its failed-turn marker is no later than a rate-limit marker of the same run, so a rate limit is never woken by either rule, even on a daemon with no usage source. A failed turn later than the rate-limit marker is still woken.
+- **What the wake before a stall covers.** The staged run showed `awaiting_input` is set by an idle prompt only in phase `planning`. Outside planning, a failed turn is caught by the marker alone, and one whose reason writes no marker would sit idle. The README says no more than that. Idea left out: a rule for a session idle at its prompt with no marker.
+- **Idea left out:** skip both wake rules whenever usage says pause or refuse. Today the usage rule always acts first on the shipped daemon, so it cannot happen.
+- **The schema document is at its size cap.** The new block fitted only by trimming existing prose; no rule changed. The next addition will need the cap raised or the document split.
+- **For the owner to check:** after the merge and a new plugin install, the next real lost connection should leave `.afk/<session>/.turn-failed`, a `wake` line in the decision log about 30 seconds later, and no inbox item. A woken conductor carrying real task work on has not been seen yet.
+
+### What the agent CLI reports
+
+Part 1 of the task, done 2026-10-13 with version 2.1.296 of the agent CLI. In short: **the `StopFailure` hook does fire for a lost connection, and the reason it gives is `server_error`.** The evidence is in `.afk/t2-5/evidence/` (`w1-t1-docs.txt`, `w1-t1-capture.txt`, `w1-t1-no-connection.txt`, `w1-t1-payloads.jsonl`).
+
+**What the documentation says** (the hooks reference at `https://code.claude.com/docs/en/hooks.md` and the errors reference beside it):
+
+- `StopFailure` runs instead of `Stop` when an API error ends a turn. Its output and exit code are ignored, apart from a `terminalSequence` field.
+- The reasons, in the `error` field: `rate_limit`, `overloaded`, `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `billing_error`, `invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`, `cloud_credential_error`, `unknown`. This is the list the work plan started from, with nothing added or missing.
+- The input fields: `error`, an optional `error_details` and an optional `last_assistant_message` (the error text shown on screen), plus the common ones. The common ones are more than the work plan listed: `session_id`, `prompt_id`, `transcript_path`, `cwd`, `scratchpad_dir`, `permission_mode`, `effort` and `hook_event_name`.
+- The matcher is compared whole, and `|` is its only separator, as long as it holds only letters, digits, `_` and `|`. A hyphen, a space or a comma turns it into a regular expression.
+- The hooks page does not say which reason a lost connection gets. The errors page says what the CLI does about one, but not the reason either: it tries a failed request again up to 10 times, except that a connection lost after part of the answer was finished is not tried again, because that could run the same tool call twice. The turn then ends with "Connection lost mid-response. The response above may be incomplete." and the owner is told to reply `continue`.
+
+**What was staged.** One real agent, started by hand in a tmux session of its own, with only its own traffic sent through a small local proxy. Cutting the proxy closed its open connections and refused new ones. `status.json` was seeded with all nine fields and the agent's session id, so the installed plugin's hooks treated it as a session. Four runs:
+
+| Run | What was cut | What the screen showed | Time from the cut to the hook | `error` |
+|---|---|---|---|---|
+| 1 | The proxy, while the first paragraph of text was still arriving | The text was thrown away, then "Connection refused … Retrying in 8s · attempt 5/9" up to 9/9, then "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)" | 2 minutes 20 seconds | `server_error` |
+| 2 | The proxy, after one paragraph was finished and while a tool call was arriving | "API Error: Connection lost mid-response. The response above may be incomplete." This is the message from the T5.6 session. | None: the same second, with no retry | `server_error` |
+| 3 | Nothing to cut: the proxy address had nothing listening from the start | "Connection refused … attempt 10/10", then the same "Connection refused" error | 3 minutes after the prompt | `server_error` |
+| 4 | As run 3, with `CLAUDE_CODE_MAX_RETRIES=1` and `status.json` at `planning` | The same error | Under a second | `server_error` |
+
+Run 4 used the one-retry setting to save time, not because the CLI retried for more than five minutes. It never did: the longest was three minutes.
+
+**The captured input**, word for word, for run 2 (the lost connection mid-response):
+
+```json
+{"session_id":"b5f3ac8c-bcd1-419a-9814-1b08d83a716a","transcript_path":"/home/dphaener/.claude/projects/-home-dphaener-code-afk-t25-spike/b5f3ac8c-bcd1-419a-9814-1b08d83a716a.jsonl","cwd":"/home/dphaener/code/afk-t25-spike","scratchpad_dir":"/tmp/claude-1000/-home-dphaener-code-afk-t25-spike/b5f3ac8c-bcd1-419a-9814-1b08d83a716a/scratchpad","prompt_id":"f662253b-0aa6-4e51-b3f1-dfad3d7e0038","effort":{"level":"medium"},"hook_event_name":"StopFailure","error":"server_error","last_assistant_message":"API Error: Connection lost mid-response. The response above may be incomplete."}
+```
+
+Runs 1, 3 and 4 gave the same fields with `"last_assistant_message":"API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)"`. No run carried `error_details` or `permission_mode`. No `Stop` hook ran in any of them. A `Notification` of type `idle_prompt` ("Claude is waiting for your input") came exactly 60 seconds after each failure.
+
+**What `status.json` showed.** Nothing changed at the failure. With the phase at `executing`, `awaiting_input` stayed `false` before the cut, after the failure and after the idle notification, and `updated_at` stayed at the time the prompt was sent. With the phase at `planning` (run 4), `awaiting_input` was still `false` one second after the failure and became `true` 61 seconds after it, when the idle notification arrived. That is the rule the notification hook already has: an idle prompt counts as waiting only while planning. The installed plugin's own hook log has no `StopFailure` line for any run, and no marker file appeared, because its hook is registered for `rate_limit` only. This matches the T5.6 session: nothing on disk for the failure, then a session shown as waiting, then the stall item ten minutes later.
+
+**The reasons worth trying again** are `server_error`, `overloaded` and `unknown`. The lost connection is `server_error`, which was already on the list, so nothing is added and the hook's matcher is `rate_limit|overloaded|server_error|unknown` as planned.
+
+**What later parts of the task should take from this:**
+
+- **The marker is the only signal outside the planning phase.** A session that is executing, reviewing or fixing never shows `awaiting_input` after a failed turn, so the stall rule never sees it and the wake before a stall item (part 4) cannot cover it. Part 4 is a second net only for a session that is still planning, or one whose `awaiting_input` was already set. A session whose plugin is older than this change, and so writes no marker, is woken only while planning.
+- **The CLI has already retried before the hook runs**, unless the connection was lost mid-response. When the network is down for a long time each wake costs the CLI's own retries (two to three minutes) and then a new marker, so three wakes with their waits of 30 seconds, one minute and two minutes take about twelve minutes before the task is parked.
+- **A mid-response loss is reported at once**, so the 30 seconds before the first wake are the only wait the network gets to come back. The CLI then retries the woken turn by itself if the network is still down.
+- **`last_assistant_message` holds the plain error text.** The marker keeps the reason only, as planned, so the item raised at the limit can name the reason and the time but not this text.
+
+**How the staging differed from the work plan.** A new git repository, both at `/tmp/afk-t25-spike` and under the already trusted `~/code`, stopped at the CLI's "do you trust this folder?" dialog. That dialog is the owner's to answer, so it was not answered and both sessions were ended. A plain folder with no git repository, `~/code/afk-t25-spike`, started with no dialog, and all four runs used it. The hooks find a session from the folder and the session id, not from git, so this changes nothing in the result. The folder was removed afterwards, the tmux sessions were ended by name and the proxy by its pid. The CLI keeps its own record of the folder under `~/.claude/projects/-home-dphaener-code-afk-t25-spike`, which was left alone.
+
+### The real check
+
+One real run, on 2026-10-13 (UTC), on this machine. Tools: go 1.25.14, git, jq 1.8.1, version 2.1.296 of the agent CLI, on Linux 7.0. The full transcripts are in `.afk/t2-5/evidence/`: `w3-t2-wake.txt` (the set-up and scenario 1), `w3-t2-limit.txt` (2), `w3-t2-ratelimit-crash.txt` (4, then 3), `w3-t2-stall-real.txt` (5, the real agent and the clean-up). The scripts used are beside them (`w3-t2-shim-claude.txt`, `w3-t2-lib.sh.txt`, `w3-t2-partb-driver.sh.txt`, `w3-t2-proxy.log`).
+
+**The binary.** Built from this branch (HEAD `bd8acac` plus the uncommitted change) with `go build -o /tmp/afk-t25-check .`, sha256 `1d4ae798…b8a202`. `grep -c -a 'Session kept failing'` on it gives 1, so it holds the change. `~/bin/afk` was not touched.
+
+**What was run.** In the manner of the T2.3 and T2.4 real checks: a throwaway folder, `/tmp/afk-t25-qa`, with a scratch home, temp, config and state folder set only on the afk commands, so nothing touched the real ones. A throwaway git repository with one commit, a two-task plan, an `afk.toml` naming the plan and an empty ledger made with `afk ledger init`. The config set `tick = "1s"` and left `max_wakes` (3) and `restart_backoff` (1 minute) at their defaults. Unlike the earlier checks, the daemon ran as a loop (`afk daemon`, not `--once`), so every time below is the loop's own.
+
+Part A used no agent. A shell script named `claude` stood first on the daemon's `PATH`. It answered the usage probe with the committed fixture at 10%, said "logged in" to the login check, and otherwise was the stand-in agent: it appends each line typed into its terminal to a file and prints a dot every two seconds. The daemon created the session for T0.1 itself at 18:46:49 (host pid 3290308). The status file was then edited by hand to what a working agent leaves: a conversation id and phase `executing`. A "failed turn" in Part A is the worktree's own `plugins/afk/hooks/on-stop-failure.sh` run with the input the CLI gives it, the one captured in "What the agent CLI reports" above with this session's id and folder.
+
+**Part A: the stand-in agent.**
+
+**1. A failed turn wakes the session.**
+
+- At 18:47:09 the hook was given a `server_error` input and wrote `.turn-failed` with `{"at":"2026-10-13T18:47:09Z","reason":"server_error"}`. The daemon's state a second later: "the agent's turn failed in the session for T0.1 (t0-1); waiting a moment before typing its resume command".
+- At 18:47:29, twenty seconds in, nothing had been typed and the ledger entry had no `wakes`.
+- At 18:47:39, thirty seconds after the marker, the stand-in's file gained `/afk:go --session t0-1`, once. The ledger entry gained `wakes` 1 and `wake_at` 18:47:39. The decision log gained one `wake` line: "type `/afk:go --session t0-1` into it (wake 1 of 3); nothing is restarted".
+- The host and the stand-in were the same processes before and after. The host's log shows the daemon attach, type and leave within half a second.
+
+**2. The turn keeps failing, up to the limit.** The stand-in never removes the marker, so each new failure is the hook run again, which rewrites the marker with a new time.
+
+- Second failure at 18:47:56. At 18:48:28 the daemon was still waiting: "waiting before waking it again (1 time so far)". The second line was typed at 18:48:39, one minute after the first. `wakes` 2.
+- Third failure at 18:48:40. At 18:49:21 it was still waiting, with the 30 seconds served and the two minutes not. The third line was typed at 18:50:39, two minutes after the second. `wakes` 3.
+- So the typed lines came at 18:47:39, 18:48:39 and 18:50:39: gaps of one minute and two minutes, as the backoff says.
+- Fourth failure at 18:50:49. On the next pass the task was `parked` on one blocking `failure` item, "Session kept failing: T0.1 (t0-1)". Its body says afk woke the session 3 times, gives the time and the recorded reason (`server_error`), and says to look with `afk attach t0-1` and then answer the item. The decision log gained one `wake_give_up` line. `afk daemon status` said "waiting on owner: T0.1 parked; answer inbox d9znux".
+- A fifth failure at 18:50:53, with the task parked: forty seconds later nothing more had been typed and there was still one item.
+- The item was answered at 18:51:39 with `afk inbox answer d9znux done`. One second later the task was `running` again, the ledger entry had lost `wakes` and `wake_at`, and `/afk:go --session t0-1` had been typed once (the un-park's own line). The decision log gained one `unpark` line.
+- The marker of 18:50:53 was still on disk and older than the answer. Forty-five seconds later it had woken nothing and `wakes` was still absent.
+
+**3. A rate limit is not woken.** Run last, because it ends the session. The task was first put back to plain running (the stall item of scenario 5 answered, the old marker removed by hand).
+
+- At 18:55:29 the hook was given a `rate_limit` input. It wrote `.rate-limited` with `{"at":"2026-10-13T18:55:29Z"}` and no `.turn-failed`.
+- On the same pass the daemon's usage rule took it: "the session hit a usage limit; pausing the session for T0.1 (t0-1)". The host and the stand-in were stopped, and the ledger entry gained `usage_pause_at` and `usage_wake_at` (the session window's reset in the stand-in's reading, about four hours on). It gained no `wakes`.
+- Forty-five seconds later the stand-in's file still held seven lines, the last being the un-park's of 18:55:24. Nothing was typed for the rate limit and no item was raised.
+
+**4. A daemon that died after saving a wake.** The gap between the save and the typing is a few milliseconds, too short to hit with a signal, so the saved state was written by hand.
+
+- A new failure at 18:52:46, and the daemon killed in the same second, before it acted. The host and the stand-in lived on.
+- The ledger entry was edited to what the wake's one save leaves: `wakes` 1, `wake_at` 18:52:48 and `continue_pending` true.
+- The daemon was started again at 18:52:48. Its first pass typed `/afk:go --session t0-1` once (18:52:48) and cleared `continue_pending`. `wakes` stayed 1. The decision log gained one `continue` line: "The session for T0.1 (t0-1) is still owed its resume command; typing it".
+- Forty-five seconds later there was no second line and `wakes` was still 1: the marker of 18:52:46 is older than the saved wake, so it was not counted again.
+
+**5. A waiting session is woken once before the stall item.** With `stall_after = "40s"` in the scratch config.
+
+- At 18:53:46 the status file was edited to `awaiting_input` true. Thirty seconds later nothing had happened.
+- At 18:54:26, forty seconds after that edit, the daemon typed `/afk:go --session t0-1` once. `wakes` went from 1 to 2 and the decision log gained a `wake` line: "has been waiting at the terminal; typing its resume command before telling you".
+- At 18:55:01 there was still no item. At 18:55:06, forty seconds after the wake and with the status file unchanged, the task was parked on one blocking item, "Session waiting at the terminal: T0.1 (t0-1)". Its body says "afk typed its resume command (`/afk:go --session t0-1`) to set it going again, and it was still waiting afterwards, so someone has to look."
+- Nothing more was typed between the wake and the item.
+
+**Part B: one real agent, its connection cut.**
+
+**How it was staged.** A second throwaway repository, `p2`, with a one-task plan. The scratch daemon launched the session itself, as in Part A. This time the script named `claude` started the real agent CLI, with these differences from a session the real daemon starts:
+
+- **The agent ran in a plain folder, not in the session's worktree.** W1.T1 found that a new git repository stops at the CLI's "do you trust this folder?" dialog, which is the owner's to answer, and that a plain folder under the trusted `~/code` does not. So the agent's folder was `~/code/afk-t25-real`, holding only a link named `.afk` to the worktree's `.afk`. The hooks find a session from the folder and the session id, so they wrote where the daemon reads. The host, its terminal and the daemon's view of the session were the worktree's, unchanged. The direct staging, with the agent in the worktree, was not tried a third time.
+- **Only the agent's traffic went through a local proxy** (`HTTPS_PROXY`, W1.T1's proxy script). The machine's network was not touched.
+- **The worktree's hooks were registered for it** in the scratch project's own settings file (`p2/.claude/settings.json`, passed with `--settings`): the five entries of `plugins/afk/hooks/hooks.json` with the scripts' full paths, the `StopFailure` one with its new matcher. The installed plugin (5.6.0, old hooks) was left as it is, so its hooks ran too.
+- **Nothing of the daemon's environment was passed on**, so no `CLAUDE*` variable reached the agent. An `afk` first on the agent's `PATH` pointed at the scratch binary and folders.
+- **The first prompt was a test prompt**, not `/afk:go`: one short paragraph, then a `Write` tool call with a long essay, in one response. The status file was staged before the agent started (the conversation id, phase `executing`).
+
+**What was seen.**
+
+- 18:59:00: the agent started. 18:59:02: the prompt was taken (two `UserPromptSubmit` lines in the hook log, one for each set of hooks).
+- 18:59:09: the paragraph was on screen and the tool call was arriving. The proxy was cut. In the same second the screen showed "API Error: Connection lost mid-response. The response above may be incomplete.", the message from the T5.6 session. The hook log has one `StopFailure` line with `error` `server_error`, and `.turn-failed` held `{"at":"2026-10-13T18:59:09Z","reason":"server_error"}`. **So the marker appeared, written by the registered hook from the CLI's own input.**
+- 18:59:11: the proxy was brought back. Nothing else was touched; the terminal used for watching was closed.
+- 18:59:10 to 18:59:38: the daemon said "the agent's turn failed in the session for T0.1 (t0-1); waiting a moment before typing its resume command".
+- 18:59:39, thirty seconds after the marker: **the daemon typed `/afk:go --session t0-1`.** The ledger entry gained `wakes` 1 and `wake_at` 18:59:39, and the decision log one `wake` line (wake 1 of 3).
+- 18:59:39: **the agent started a new turn.** The hook log has `UserPromptSubmit` with the prompt `/afk:go --session t0-1`; that hook removed `.turn-failed` and moved the status file's `updated_at` to 18:59:39. The screen showed the typed line as a prompt of its own and then "I am The Conductor. Starting session t0-1: learning my session id and checking for existing session state.", with one shell command run by 18:59:49.
+- 18:59:55: the session was ended, sixteen seconds into the new turn. The daemon was stopped first so that it could not start the session again, then the host, which took the agent with it.
+- No inbox item was raised at any point.
+
+**Clean-up.** The scratch daemons were stopped by pid (three were started in all: one restarted for scenario 4, one for Part B). The Part A host had already been stopped by the daemon's usage pause; the Part B host was stopped by pid. The proxy was stopped by pid, and the one tmux session, on a tmux server of its own, by name. `/tmp/afk-t25-qa` and `~/code/afk-t25-real` were removed. A last `pgrep`, run from a script file, found nothing of the run, and the check's tmux server was gone. The real `afkd` unit had the same `MainPID` (3085591) and `ActiveEnterTimestamp` before and after. Left on purpose: the scratch binary `/tmp/afk-t25-check`, which is outside `PATH`, and the CLI's own record of the one real conversation under `~/.claude/projects/-home-dphaener-code-afk-t25-real`, which is the owner's.
+
+**Bugs.** None in behaviour. No Go file, test or hook was changed. One wording fault, left for a later change:
+
+- **The give-up sentence reads oddly.** The decision log's question for `wake_give_up` is "The agent's turn failed again in the session for T0.1 (t0-1) after 3 times; giving up on it." It means "after being woken 3 times". The inbox item's own text is fine ("afk woke it 3 times by typing its resume command").
+
+**Seen, and left as it is.**
+
+- **A failure straight after the last wake parks at once.** With no wakes left there is no wait: the fourth failure came ten seconds after the third wake, and the item was raised on the next pass. A real agent takes longer to fail again, but a session that fails at once is handed over at once.
+- **The second failure's first wait sentence does not say "again".** Until thirty seconds have passed since the new marker the reason is "waiting a moment before typing its resume command"; after that it is "waiting before waking it again (1 time so far)".
+- **The wake before a stall item uses the same count.** In scenario 5 it was "wake 2 of 3", because scenario 4 had left `wakes` at 1.
+- **An un-park types the resume command with no line of its own in the decision log.** The `unpark` line is the only record. This is as it was before this task.
+- **A rate limit ends in a usage pause, not in a wait at the prompt.** With a usage source the daemon stops the session, so "never typed to" in scenario 3 is partly because there was nothing left to type into. The wake rule's own part was that no `.turn-failed` was written and no wake was counted.
+- **With both sets of hooks registered, each prompt is handled twice.** That is the staging, not the change: once the new plugin is installed there is one set.
+
+**Not checked.**
+
+- A real agent in a real session worktree. The agent in Part B ran in a plain folder linked to the worktree's `.afk`.
+- The installed plugin. It is still 5.6.0, whose `StopFailure` hook does not run for `server_error`. The hooks used here were the worktree's, registered through a settings file.
+- Whether the woken conductor carries the task's work on. The real session was ended sixteen seconds into its new turn, and it had no work plan to carry on with.
+- A long outage: the CLI's own two to three minutes of retries, a new marker after each wake, and the task parked after about twelve minutes. The proxy was back within two seconds here.
+- The wake before a stall item against a real agent, and what a typed `/afk:go --session X` does to a real agent that is asking a real question in a dialog.
+- A real kill between the wake's save and its typing. The saved state was written by hand.
+- A wake whose line cannot be typed (the send fails), and `max_wakes = 0`. Unit tests cover both.
+- The `overloaded` and `unknown` reasons from a real CLI. Only `server_error` was staged.
+- A real rate limit, and a rate limit where the daemon has no usage source and so cannot pause the session.
+- A failed turn while the session is running the Workflow tool.
+- The OpenCode port, macOS, and push notifications. The scratch projects had no ntfy address.
+
+### Not verified, owner check
+
+- **The next real lost connection, after this branch is merged and the plugin is installed again.** In the session's folder, `.afk/<session>/.turn-failed` should appear at the moment the screen shows "API Error: Connection lost mid-response". About thirty seconds later `.afk/log/decisions.jsonl` in the project should gain a `wake` line, `afk tasks` should show the task still running, and the session should carry on by itself with no inbox item. If "Session waiting at the terminal" appears instead with no wake line before it, the marker was not written: check that `afk plugin install` has been run since the merge and that the session was started after it.
+- **A session that keeps failing for real.** Three typed lines over about twelve minutes, then one item, "Session kept failing: …". Answering it should set the session going again.
+- **A woken session picking its work up.** The real session here was ended as soon as the conductor's new turn began.
+- **The running `afkd`.** It keeps the old code until this branch is merged and installed.
+
 ## T5.6
 
 Open questions hold their tasks. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
@@ -1891,7 +2069,7 @@ Open questions hold their tasks. Decisions the master plan left open, made while
 - **A row answered by hand (A9).** If the owner, or a planning session, answers the row in the plan while its item is still open, the daemon closes the item itself with "answered in the plan", as it closes its own items for a missing ledger. Otherwise the task would stay parked on an item nobody needs.
 - **Pause, stopped line and usage (A10).** The hold behaves as an owner task does: the question is still asked while the project is paused, a stopped line holds it back, and it never causes a usage reading.
 - **The daemon package does not run git (A11).** The patch goes through a second hook that the `afk daemon` command connects to `planpatch.Run`, with the project's `via_pr` and base branch.
-- **Plugin version 5.6.1 (A12)**, because the format document's text on open questions changes. The OpenCode port gets a line in its lag note.
+- **Plugin version 5.7.1 (A12)**, planned as 5.6.1 and raised when T2.5 took 5.7.0 on `main` first, because the format document's text on open questions changes. The OpenCode port gets a line in its lag note.
 - **Tests (A13)** are written with the code, as table tests. **Nothing had to be in place first (A14).**
 
 ### As built

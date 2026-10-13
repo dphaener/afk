@@ -216,16 +216,19 @@ test_matched_stop_removes_rate_limit_marker() {
   local wt payload code out
   wt=$(worktree_with_two_sessions rate-limit-marker)
   printf '{"at":"2026-01-01T00:00:00Z"}\n' > "$wt/.afk/demo/.rate-limited"
+  printf '{"at":"2026-01-01T00:00:00Z","reason":"server_error"}\n' > "$wt/.afk/demo/.turn-failed"
 
   payload=$(stop_payload "sid-9" "$wt" "[]")
   out=$(run_stop "$payload"); code=$?
   check_exit "unmatched Stop exits 0 with a marker present" 0 "$code" "$out"
   check_cond "unmatched Stop leaves the rate-limit marker" test -f "$wt/.afk/demo/.rate-limited"
+  check_cond "unmatched Stop leaves the failed-turn marker" test -f "$wt/.afk/demo/.turn-failed"
 
   payload=$(stop_payload "sid-1" "$wt" "[]")
   out=$(run_stop "$payload"); code=$?
   check_exit "matched Stop exits 0 with a marker present" 0 "$code" "$out"
   check_cond "matched Stop removes the rate-limit marker" test ! -e "$wt/.afk/demo/.rate-limited"
+  check_cond "matched Stop removes the failed-turn marker" test ! -e "$wt/.afk/demo/.turn-failed"
 }
 
 test_matched_session_one_task

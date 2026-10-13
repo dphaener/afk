@@ -402,10 +402,9 @@ body `{message} ({worktree})`.
 
 **Rationale (grounded in the W1.T1 trigger table and the W6.T1 e2e):**
 
-- **`permission_prompt` is the hook's job, every phase**: a permission prompt
-  pauses the very tool call the conductor is trying to make, so the conductor
-  cannot self-report it — and it is a genuine block regardless of any
-  background work. Immediate toast, always.
+- **`permission_prompt` is the hook's job, every phase**: it pauses the tool
+  call the conductor is trying to make, so the conductor cannot self-report
+  it. Immediate toast, always.
 - **`idle_prompt` in `planning` is the hook's job only when nothing is
   running in the background**: the planner spawns research and Crucible
   agents during the interview, so idle-in-planning is genuine only when that
@@ -417,15 +416,10 @@ body `{message} ({worktree})`.
   toasted (one toast per question would be noisy; the walk-away user is
   still covered by `idle_prompt`).
 - **`idle_prompt` in `executing`/`reviewing`/`fixing` is dropped entirely**:
-  the conductor parks at the prompt while background work runs (delegated task
-  subagents, the background Phase-C reviewer) — "idle at the prompt" to Claude
-  Code, but the session self-resumes on subagent completion. Toasting and
-  setting `awaiting_input` on these produced the false-positive "awaiting
-  input" class observed live in the W6.T1 e2e (toasts fired and the dashboard
-  indicator flipped while the session was actively working). Every genuine
-  non-planning block is a deliberate conductor stop (S2–S4), which the
-  conductor toasts itself — so dropping non-planning `idle_prompt` loses no
-  real signal.
+  the conductor parks at the prompt while background work runs and
+  self-resumes on subagent completion. Toasting on it gave false "awaiting
+  input" alerts in the W6.T1 e2e. Every genuine non-planning block is a
+  deliberate stop (S2–S4), which the conductor toasts itself.
 - **Deliberate stops (S2/S3/S4) belong to the conductor**: it is the only
   party that knows it has stopped *on purpose* to wait for the user, and
   (unlike a permission prompt) it is running when it stops, so it can invoke
@@ -441,27 +435,32 @@ Planning-phase `idle_prompt` (§5 S1b, §9) must tell "user walked away" from
 `background_tasks` array, kept in a sidecar, not a `status.json` field.
 
 - **Path**: `.afk/{plan_name}/.background-tasks`, beside `status.json`.
-- **Content**: the `Stop` payload's `background_tasks` array, written as
-  compact JSON — `jq -c '.background_tasks // []'`; a payload missing the
-  field writes `[]`.
+- **Content**: the `Stop` payload's `background_tasks` as compact JSON
+  (`jq -c '.background_tasks // []'`; missing → `[]`).
 - **Writer**: the `Stop` hook (`on-stop.sh`), on every §7-matched `Stop`
-  event. Atomic: write `.background-tasks.tmp.$$` in the same directory,
-  then `mv -f`. No match → no write. Never touches `status.json`.
+  event. Atomic: temp file in the same directory, then `mv -f`. No match →
+  no write. Never touches `status.json`.
 - **Clearer**: the `UserPromptSubmit` hook (`on-user-prompt-submit.sh`) does
   `rm -f` on the sidecar with its C1 clear; the next `Stop` rewrites it.
 - **Reader**: the `Notification` hook, read only in the `idle_prompt` +
   `planning` branch (§5 S1b, §9). Pending = sidecar parses as a JSON array
   with `length > 0`: no write, toast or `.awaiting-permission` sentinel.
   Missing or unparseable → not pending → S1b's existing behavior.
-- **Not a `status.json` field**: single writer, swept by `afk clean`, never
-  read by `afk`. Other handling is unchanged.
+- **Not in `status.json`**: single writer, swept by `afk clean`, never read by `afk`.
 
 ### Rate-limit marker (`.rate-limited`)
 
 - **Path/content**: `.afk/{plan_name}/.rate-limited`, one line `{"at":"<RFC 3339 UTC>"}`.
-- **Writer**: `StopFailure` hook (`on-stop-failure.sh`, matcher `rate_limit`), via temp file and `mv -f`, on a §7 match. Never touches `status.json`.
+- **Writer**: `StopFailure` hook (`on-stop-failure.sh`, `error` `rate_limit`), via temp file and `mv -f`, on a §7 match. Never touches `status.json`.
 - **Clearer**: `UserPromptSubmit` and a matched `Stop` do `rm -f`.
 - **Reader**: the daemon, which takes the reset time from its last usage snapshot, not the marker.
+
+### Failed-turn marker (`.turn-failed`)
+
+- **Path/content**: `.afk/{plan_name}/.turn-failed`, one line `{"at":"<RFC 3339 UTC>","reason":"<error word>"}`.
+- **Writer**: `StopFailure` hook (`on-stop-failure.sh`), for reasons worth retrying, never `rate_limit`. Via temp file and `mv -f`, on a §7 match. Never touches `status.json`.
+- **Clearer**: `UserPromptSubmit` and a matched `Stop` do `rm -f`.
+- **Reader**: the daemon, which types the resume command.
 
 ### Opt-in hook event log (`AFK_HOOK_LOG`)
 
@@ -475,5 +474,5 @@ A `hook_log` helper in `lib.sh`, opt-in via `AFK_HOOK_LOG`:
   **before** `find_target` runs, so unmatched events are logged too.
 - **Opt-in, deliberately**: the line is the raw payload, which can contain
   prompt text (e.g. `UserPromptSubmit`). Never enabled by default.
-- All failures are silent: unset → nothing written; a write failure (bad
-  path, permissions) is swallowed, never surfaced, never fails the session.
+- All failures are silent: a write error (bad path, permissions) is swallowed
+  and never fails the session.
