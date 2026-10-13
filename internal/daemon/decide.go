@@ -58,6 +58,11 @@ const (
 	// for: the item is blocking and names the task, so the task parks on it
 	// on the next tick, before the usage rule is reached again.
 	PauseFailedTitlePrefix = "Session could not be stopped for usage: "
+	// WakeTitlePrefix starts the title of the item raised when an agent's
+	// turn kept failing and the loop has used up its wakes (PLAN T2.5). Like
+	// RecoveryTitlePrefix it is never searched for: the item is blocking and
+	// names the task, so the task parks on it.
+	WakeTitlePrefix = "Session kept failing: "
 )
 
 // SessionName is the session (and branch, and worktree folder) a task attempt
@@ -109,6 +114,16 @@ type SessionView struct {
 	// counts only when it is later than the attempt's start and its last
 	// restart (see decideUsage).
 	RateLimitedAt time.Time
+	// TurnFailedAt is the time in the session's failed-turn marker, written
+	// by the agent's own hook when a turn ended on an error worth trying
+	// again (a lost connection, a server fault); the zero time when there is
+	// no marker. The session's next prompt removes the file, but a tick can
+	// still see one that a wake has already answered, so, as with the
+	// rate-limit marker, its time is what counts (see decideWake).
+	// TurnFailedReason is the error word the hook recorded, and may be empty.
+	// It is shown to the owner and decides nothing.
+	TurnFailedAt     time.Time
+	TurnFailedReason string
 }
 
 // UsageView is the usage governor's verdict as the loop sees it: plain values
@@ -178,6 +193,14 @@ type Observation struct {
 	// before the loop acts on it. A restart stops the agent, so a verdict
 	// that the next byte of output would have cleared must not cause one.
 	WedgeConfirm time.Duration
+	// MaxWakes is how many times one attempt's session may be woken (its
+	// resume command typed because a turn failed, or because it sat waiting)
+	// before the owner is told. Zero is a real setting: never wake.
+	MaxWakes int
+	// WakeAfter is how long after a failed turn the session is woken. The
+	// wait is for the fault to pass: a connection that dropped a second ago
+	// is likely still down, and a line typed into it fails the same way.
+	WakeAfter time.Duration
 	// CanRestart, CanRelaunch and CanPrompt say whether the executor has
 	// the means to restart a session's agent, to start a session's host
 	// again, and to type a line into a session. Each is optional there, so
@@ -322,6 +345,13 @@ const (
 	// ActUsageResume: a session stopped for usage may go on. Start a new
 	// host for it, resuming the same conversation.
 	ActUsageResume ActionKind = "usage_resume"
+	// ActWake: an agent's turn ended on an error, or the session has sat
+	// waiting at its prompt for too long, and its host is alive and
+	// answering. Type the session's resume command. Nothing is restarted.
+	ActWake ActionKind = "wake"
+	// ActWakeGiveUp: an agent's turn failed again with every wake used. Tell
+	// the owner and park the task.
+	ActWakeGiveUp ActionKind = "wake_give_up"
 )
 
 // KindLineStopped is the state kind of a tick held back by the stop marker.
@@ -386,7 +416,13 @@ type Action struct {
 //  2. The active entry is the first in ledger order that is running or
 //     shipping. Shipping: take the ship one step (ActShipStep), whatever the
 //     pause flag and the stop marker say.
-//  3. Running: see decideRunning.
+//  3. Running: see decideRunning. Besides watching the session, that is
+//     where a session is recovered (its host gone or its agent hung), paused
+//     for usage, and woken: its resume command typed when the agent's turn
+//     failed or when it has sat waiting at its prompt (PLAN T2.5). A wake
+//     never restarts anything, and is never chosen for a parked, paused or
+//     shipping task: the first two return earlier inside decideRunning, and
+//     a shipping task was answered by rule 2.
 //  4. Nothing active and the line is stopped: wait, whatever would be next.
 //  5. Otherwise ask nexttask.Next (see decideNext). An owner task is raised
 //     as an inbox item, or marked done once that item is answered; a parked
@@ -609,8 +645,14 @@ func stoppedReason(o Observation) string {
 //	   host is reported to the owner; where it cannot restart, a wedge is
 //	   left alone.
 //	g. The session was recovered ContinueAfter ago and is up and answering:
-//	   tell it to carry on.
-//	h. The session is asking something, past StallAfter: report a stall.
+//	   tell it to carry on. A wake whose line could not be typed is owed the
+//	   same line and is served here too.
+//	w. The agent's last turn failed (see decideWake; lettered out of order
+//	   for the reason u is): type the resume command after WakeAfter, wait
+//	   out the backoff before a later one, and give up once MaxWakes is used.
+//	h. The session is asking something, past StallAfter: type the resume
+//	   command once (see stallWake), and report a stall when that has been
+//	   done for this wait or may not be done.
 //	i. Otherwise wait.
 //
 // The order carries meaning. A finished session (c, d) is acted on before
@@ -640,6 +682,18 @@ func stoppedReason(o Observation) string {
 // Recovery (f) comes before the continue prompt (g) because a line typed
 // into an agent that is not answering goes nowhere, and would be recorded as
 // delivered.
+// The wake (w) comes after all of those, and its place is what keeps it from
+// typing where it must not. A parked session (e) is waiting for the owner; a
+// session paused for usage or stopped by its rate-limit marker (u) has
+// nothing to gain from a line and would only spend; a gone or wedged host (f)
+// needs a relaunch or a restart, not a line; and a line already owed (g) is
+// typed there, so that one failed send is never counted as two wakes. A
+// shipping task never reaches this function at all. It comes before the stall
+// report (h) because a failed turn leaves the session waiting at its prompt,
+// which is exactly what a stall looks like, and the owner should hear of it
+// only when waking has not worked. It is not in the unreadable-status branch
+// (b): with no status there is no telling a session that failed from one that
+// is working, and a line typed into a working agent interrupts its turn.
 func decideRunning(o Observation, e ledger.Entry) Action {
 	act := func(kind ActionKind, reason string) Action {
 		return Action{Kind: kind, Task: e.ID, Session: e.Session, Reason: reason}
@@ -674,8 +728,11 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 	// its own. Both lean towards telling the owner once over staying
 	// silent or telling them again and again. An unreadable restart time is
 	// the zero time as well, which reads as "no recovery to wait for".
+	// An unreadable wake time is the zero time too: "never woken", so its
+	// backoff reads as served and MaxWakes is what still bounds the entry.
 	startedAt, _ := parseTime(e.StartedAt)
 	restartAt, _ := parseTime(e.RestartAt)
+	wakeAt, _ := parseTime(e.WakeAt)
 
 	continueDue := func() (Action, bool) {
 		// At ContinueAfter, not over it: the wait is a margin for the agent
@@ -683,6 +740,13 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 		if !e.ContinuePending || !o.CanPrompt || !s.HostRunning || !s.WedgedSince.IsZero() ||
 			o.Now.Sub(restartAt) < o.ContinueAfter {
 			return Action{}, false
+		}
+		// The line is owed by a wake when the wake is the later of the two:
+		// a wake sets the same flag a recovery does, and its line is typed
+		// here when the first try at typing it failed.
+		if wakeAt.After(restartAt) {
+			return act(ActContinue, fmt.Sprintf(
+				"the session for %s (%s) is still owed its resume command; typing it", e.ID, e.Session)), true
 		}
 		return act(ActContinue, fmt.Sprintf(
 			"the session for %s (%s) was started again; telling it to carry on", e.ID, e.Session)), true
@@ -728,11 +792,14 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 		return a
 	}
 
-	ref := lastActivity(o, e, s, startedAt, restartAt)
+	ref := lastActivity(o, e, s, startedAt, restartAt, wakeAt)
 	if a, ok := decideRecovery(o, e, s, ref); ok {
 		return a
 	}
 	if a, ok := continueDue(); ok {
+		return a
+	}
+	if a, ok := decideWake(o, e, s); ok {
 		return a
 	}
 
@@ -741,6 +808,13 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 	if s.AwaitingInput && o.Now.Sub(ref) > o.StallAfter {
 		if reported(o.Items, e.ID, StallTitlePrefix, startedAt) {
 			return act(ActWait, alreadyReported)
+		}
+		// A failed turn that left no marker looks exactly like this, so the
+		// session is sent its resume command once before anyone is paged.
+		if woken, whyNot := stallWake(o, e, s); !woken && whyNot == "" {
+			return act(ActWake, fmt.Sprintf(
+				"the session for %s (%s) has been waiting at the terminal; typing its resume command before telling you",
+				e.ID, e.Session))
 		}
 		return act(ActStall, fmt.Sprintf("the session for %s (%s) is asking something at the terminal", e.ID, e.Session))
 	}
@@ -933,23 +1007,182 @@ func wakeText(t time.Time) string {
 
 // lastActivity is the last moment anything is known to have happened to this
 // attempt: the session wrote its status, the attempt began, the loop last
-// recovered the session, or the owner answered one of its items. An answer
+// recovered or woke the session, or the owner answered one of its items. An answer
 // counts because it is the owner acting on the session; without it a task
 // would stall again on the very tick its answer un-parked it. A recovery
 // counts for the same reason on the other side: a host that was only just
 // started again must get its grace again, or a tick that came before the new
-// host was seen running would relaunch it a second time.
-func lastActivity(o Observation, e ledger.Entry, s *SessionView, startedAt, restartAt time.Time) time.Time {
-	ref := latest(latest(s.UpdatedAt, startedAt), restartAt)
+// host was seen running would relaunch it a second time. A wake counts so
+// that the session gets a whole StallAfter to act on the line it was typed:
+// the stall report then comes StallAfter after the wake, and not on the tick
+// that follows it.
+func lastActivity(o Observation, e ledger.Entry, s *SessionView, startedAt, restartAt, wakeAt time.Time) time.Time {
+	ref := latest(latest(latest(s.UpdatedAt, startedAt), restartAt), wakeAt)
+	return latest(ref, lastAnswer(o, e))
+}
+
+// lastAnswer is when the owner last answered an item about the entry's task
+// or session; the zero time when they never have.
+func lastAnswer(o Observation, e ledger.Entry) time.Time {
+	var at time.Time
 	for _, it := range o.Items {
 		if !concerns(it, e) {
 			continue
 		}
-		if at, ok := parseTime(it.AnsweredAt); ok {
-			ref = latest(ref, at)
+		if t, ok := parseTime(it.AnsweredAt); ok {
+			at = latest(at, t)
 		}
 	}
-	return ref
+	return at
+}
+
+// rateLimitFresh reports whether the session's rate-limit marker is about
+// its current run: later than the attempt's start and its last restart. It
+// is the same test decideUsage applies to the marker, written out a second
+// time here for the two wake rules. The wake rules must read the marker as
+// the rule that owns it does: read more loosely, a session would be typed to
+// at its limit; more strictly, an old marker would switch the wake off for
+// the rest of the attempt.
+func rateLimitFresh(e ledger.Entry, s *SessionView) bool {
+	startedAt, _ := parseTime(e.StartedAt)
+	restartAt, _ := parseTime(e.RestartAt)
+	return !s.RateLimitedAt.IsZero() && s.RateLimitedAt.After(startedAt) && s.RateLimitedAt.After(restartAt)
+}
+
+// decideWake is rule w: what to do about a session whose agent's last turn
+// ended on an error worth trying again (PLAN T2.5). The second result is
+// false when the rule does not apply, and the caller carries on with the
+// stall rule.
+//
+// The remedy is to type the session's resume command. Nothing is restarted:
+// the host is alive and its agent is answering, it has only stopped working,
+// and the conductor acts from the phase it recorded, so the line is safe to
+// type again.
+//
+// The rule applies only when all of these hold, and each is there for a
+// reason:
+//
+//   - The executor can type (CanPrompt). Decide never chooses an action
+//     nothing can carry out; the stall rule still tells the owner.
+//   - The host is running and has no wedge verdict. A wedge that is not yet
+//     confirmed, or that this loop cannot restart, falls through recovery to
+//     here, and a line typed into an agent that is not answering goes nowhere
+//     and would use up a wake.
+//   - No continue prompt is pending. The same line is already owed, and the
+//     continue step types it; counting a wake as well would spend two wakes
+//     on one failure.
+//   - The marker is later than the attempt's start, its last restart and its
+//     last wake. Each of those already answered whatever came before it: a
+//     new session, a restarted agent and a woken one have all been given the
+//     resume command since. Times are whole seconds and "later" is strict, so
+//     a marker in the same second as a wake is not woken again; a session
+//     that fails again writes a new one.
+//   - The marker is later than the owner's last answer to an item about the
+//     task. An un-park types the resume command itself, and a marker left
+//     over from before the park would otherwise spend a wake of the fresh set
+//     on a failure the owner has just dealt with.
+//   - No rate-limit marker of this run is as late as it. A rate limit is not
+//     a failed turn: typing cannot lift it, and decideUsage is the rule that
+//     owns it. Where that rule could not act (no usage source, no means to
+//     stop), nothing is typed and the agent's own wait at the limit stands.
+//
+// Then, in this order: the cap, the first wait, the backoff, the wake. The
+// cap comes first, as in decideRecovery, so that a session out of wakes is
+// handed to the owner at once and not after one more wait. WakeAfter is
+// measured from the marker and is "at or over": it is a wait the loop chose,
+// served in full when reached. The backoff is measured from the last wake
+// and reuses the recovery schedule (backoffFor over RestartBackoff): none
+// before the first wake, the base before the second, doubling after. A later
+// wake must have served both waits.
+func decideWake(o Observation, e ledger.Entry, s *SessionView) (Action, bool) {
+	act := func(kind ActionKind, reason string) (Action, bool) {
+		return Action{Kind: kind, Task: e.ID, Session: e.Session, Reason: reason}, true
+	}
+	if !o.CanPrompt || !s.HostRunning || !s.WedgedSince.IsZero() || e.ContinuePending {
+		return Action{}, false
+	}
+	startedAt, _ := parseTime(e.StartedAt)
+	restartAt, _ := parseTime(e.RestartAt)
+	wakeAt, _ := parseTime(e.WakeAt)
+	failedAt := s.TurnFailedAt
+	if failedAt.IsZero() || !failedAt.After(startedAt) || !failedAt.After(restartAt) ||
+		!failedAt.After(wakeAt) || !failedAt.After(lastAnswer(o, e)) {
+		return Action{}, false
+	}
+	if rateLimitFresh(e, s) && !failedAt.After(s.RateLimitedAt) {
+		return Action{}, false
+	}
+
+	who := fmt.Sprintf("the session for %s (%s)", e.ID, e.Session)
+	if e.Wakes >= o.MaxWakes {
+		if o.MaxWakes <= 0 {
+			return act(ActWakeGiveUp, fmt.Sprintf(
+				"the agent's turn failed in %s, and afk is set not to wake sessions", who))
+		}
+		return act(ActWakeGiveUp, fmt.Sprintf(
+			"the agent's turn failed again in %s after %s; giving up on it", who, wakeCount(e.Wakes)))
+	}
+	if o.Now.Sub(failedAt) < o.WakeAfter {
+		return act(ActWait, fmt.Sprintf(
+			"the agent's turn failed in %s; waiting a moment before typing its resume command", who))
+	}
+	if e.Wakes >= 1 && o.Now.Sub(wakeAt) < backoffFor(e.Wakes, o.RestartBackoff) {
+		return act(ActWait, fmt.Sprintf(
+			"the agent's turn failed again in %s; waiting before waking it again (%s so far)", who, wakeCount(e.Wakes)))
+	}
+	return act(ActWake, fmt.Sprintf("the agent's turn failed in %s; typing its resume command", who))
+}
+
+// stallWake answers the two questions the stall rule asks about a session
+// that has waited past StallAfter: has it already been sent its resume
+// command for this wait, and if not, why may it not be sent now. The session
+// is to be woken exactly when both answers are empty: woken false and whyNot
+// "". The executor asks the same function when it writes the stall item, so
+// what the owner is told about the wake cannot differ from what was decided.
+//
+// A pending continue prompt is checked first, and it means not woken: the
+// line of a wake (or a recovery) is still owed, so nothing has reached the
+// session, whatever wake_at says. Nothing more is typed either: the continue
+// step owns that line.
+//
+// Woken is "wake_at is later than the session's last status write". No field
+// records a stall wake as such, and none is needed: a wake of either kind,
+// for a marker or for a stall, typed the resume command, and a session that
+// has written nothing since is the session that line did not move. A session
+// that did write its status after a wake and then sat waiting again is on a
+// new wait, and is woken for it, while it has wakes left.
+//
+// The reasons for not waking, in order: nothing can type; MaxWakes is zero,
+// the setting for never waking; the wakes are used up; the session hit a
+// usage limit in this run, which a typed line cannot lift (a rate limit is
+// never treated as a failed turn). Each is a clause that follows "afk did
+// not wake it by typing its resume command:" in the stall item.
+func stallWake(o Observation, e ledger.Entry, s *SessionView) (woken bool, whyNot string) {
+	if e.ContinuePending {
+		return false, "an earlier try at typing it has not got through"
+	}
+	if wakeAt, ok := parseTime(e.WakeAt); ok && wakeAt.After(s.UpdatedAt) {
+		return true, ""
+	}
+	switch {
+	case !o.CanPrompt:
+		return false, "this afk has no means to type into a session"
+	case o.MaxWakes <= 0:
+		return false, "afk is set not to wake sessions (`max_wakes = 0` in afk's config.toml)"
+	case e.Wakes >= o.MaxWakes:
+		return false, fmt.Sprintf("afk has already woken this session %s, which is the limit", wakeCount(e.Wakes))
+	case rateLimitFresh(e, s):
+		return false, "the session hit a usage limit, which typing cannot lift"
+	}
+	return false, ""
+}
+
+// wakeCount is "1 time" or "N times", for a sentence shown to the owner.
+func wakeCount(n int) string {
+	if n == 1 {
+		return "1 time"
+	}
+	return fmt.Sprintf("%d times", n)
 }
 
 // decideRecovery is rule f: what to do about a session that has stopped. The

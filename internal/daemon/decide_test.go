@@ -39,6 +39,12 @@ const (
 	// governed). They are the shipped defaults as well.
 	pauseRetry        = time.Minute
 	rateLimitFallback = time.Hour
+
+	// The wake limits of the rows that switch waking on (see waking). The
+	// shipped defaults again: three wakes, the first 30 seconds after the
+	// failed turn.
+	maxWakes  = 3
+	wakeAfter = 30 * time.Second
 )
 
 // ago is the RFC 3339 text of a time d before now, the form the ledger and
@@ -190,6 +196,50 @@ func usagePaused(id string, before time.Duration, wake string) ledger.Entry {
 // time d before now.
 func rateLimited(d time.Duration) func(*SessionView) {
 	return func(v *SessionView) { v.RateLimitedAt = now.Add(-d) }
+}
+
+// withWakes adds the wake limits to another Observation change, for the rows
+// that need waking beside a governor.
+func withWakes(base func(*Observation)) func(*Observation) {
+	return func(o *Observation) {
+		base(o)
+		o.MaxWakes, o.WakeAfter = maxWakes, wakeAfter
+	}
+}
+
+// waking is an Observation change for a daemon that can wake a session: every
+// means of recovery (a wake types through the same sender, and the rows must
+// show that recovery, though wired, is not what acts) and the wake limits
+// above. Rows change the fields they test. A row without it has max_wakes 0,
+// which is how every row written before the wake still runs: nothing is typed
+// and a stall is reported at once.
+func waking(change func(*Observation)) func(*Observation) {
+	return recovering(func(o *Observation) {
+		o.MaxWakes, o.WakeAfter = maxWakes, wakeAfter
+		if change != nil {
+			change(o)
+		}
+	})
+}
+
+// turnFailed is a view change: the session's failed-turn marker carries a
+// time d before now and the given reason.
+func turnFailed(d time.Duration, reason string) func(*SessionView) {
+	return func(v *SessionView) { v.TurnFailedAt, v.TurnFailedReason = now.Add(-d), reason }
+}
+
+// woken is a running entry that has been woken wakes times, the last of them
+// before ago. Its restart fields are untouched, as a wake leaves them.
+func woken(id string, wakes int, before time.Duration) ledger.Entry {
+	e := running(id)
+	e.Wakes, e.WakeAt = wakes, ago(before)
+	return e
+}
+
+// waiting is a view change: the session has been asking something at its
+// prompt since d before now, which is when it last wrote its status.
+func waiting(d time.Duration) func(*SessionView) {
+	return func(v *SessionView) { v.AwaitingInput, v.UpdatedAt = true, now.Add(-d) }
 }
 
 // stopped is a view change: the host is not running, as after a pause. The
@@ -367,6 +417,50 @@ func createdAgo(it inbox.Item, before time.Duration) inbox.Item {
 //   - "usage paused before its wake waits with usage unconsulted": the
 //     executor does not consult during a known wait, so the "paused until"
 //     answer must not need a reading.
+//   - "a failed turn 29 seconds old waits" against "a failed turn 30 seconds
+//     old is woken": the fault that failed the turn is rarely gone the second
+//     it is reported, and a line typed at once uses up a wake on it.
+//   - "a failed-turn marker older than the last wake does nothing" and its
+//     same-second twin: the marker can outlive the wake that answered it by a
+//     tick or more. Without the rows every tick would type the line again and
+//     the three wakes would be gone in fifteen seconds.
+//   - "max wakes reached gives up" against "one wake below the cap is woken":
+//     the cap is the only thing between a session whose turns always fail and
+//     a loop that types at it for ever without telling the owner. This is the
+//     row the task's mutation check turns red (">=" made ">").
+//   - "max wakes 0 gives up on the first failed turn" and "a stall with max
+//     wakes 0 is reported at once": zero is a real setting, never wake.
+//   - "a rate-limited session past the stall limit is paused, not woken", "a
+//     rate-limited session with usage unconsulted is reported, not woken" and
+//     "a failed-turn marker no later than a rate-limit marker does nothing":
+//     a rate limit is not a failed turn. Typing cannot lift it, and with no
+//     usage source the stall item is the only honest answer.
+//   - "usage paused with a failed-turn marker is not woken" (both rows), "an
+//     open blocking item parks before a failed turn is woken", "a parked task
+//     with a failed-turn marker is left alone" and "a shipping task with a
+//     failed-turn marker takes a ship step": the three sessions the wake must
+//     never type into.
+//   - "a failed turn with a wedged host is restarted, not woken" and its
+//     gone-host twin, and "a failed turn with a wedge that cannot be restarted
+//     is not woken": a line typed into an agent that is not answering goes
+//     nowhere and would use up a wake.
+//   - "a failed turn with a continue pending is told to continue, not woken"
+//     and "a wake whose line is still owed is typed by the continue step": one
+//     failure costs one wake however many tries the line takes, and a daemon
+//     killed between saving a wake and typing it still types it, once.
+//   - "a failed-turn marker older than the un-parking answer does nothing":
+//     the un-park typed the resume command itself, and the marker left from
+//     before the park would spend a wake of the fresh set at once.
+//   - "stale status with a failed-turn marker is not woken": with no status
+//     there is no telling a failed session from a working one.
+//   - "a session waiting past the stall limit is woken once", "a session
+//     woken for this wait is not woken twice", "the stall is reported
+//     stall_after after the wake" and its exactly-at twin: a failed turn that
+//     left no marker looks like a stall, so it gets one typed line and one
+//     whole stall_after to act on it, and only then is the owner paged.
+//   - "a stall with no wakes left is reported at once" and "a stall without
+//     the means to type is reported at once": the stall rule must not be
+//     weakened for a daemon that cannot, or may not, wake.
 func TestDecide(t *testing.T) {
 	// T1.2 builds on T1.1; T1.3 stands alone, so it is the task that can run
 	// while T1.1 is parked or failed.
@@ -2591,6 +2685,493 @@ func TestDecide(t *testing.T) {
 			session: view(both(stale, stopped)),
 			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
 		},
+
+		// Rule 3w: the agent's turn failed, and the wake before a stall.
+		{
+			name:      "a failed turn 30 seconds old is woken",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(turnFailed(wakeAfter, "server_error")),
+			want:      Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"turn failed", "resume command"},
+		},
+		{
+			name:      "a failed turn 29 seconds old waits",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(turnFailed(wakeAfter-time.Second, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"turn failed", "waiting a moment"},
+		},
+		{
+			name:    "a failed turn with no reason recorded is woken all the same",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			session: view(turnFailed(time.Minute, "")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a failed turn of a session that is also waiting is woken, not reported",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(waiting(time.Hour-time.Minute), turnFailed(time.Minute, "unknown"))),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a failed-turn marker older than the attempt does nothing",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(turnFailed(2*time.Hour, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a failed-turn marker in the second the attempt began does nothing",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(turnFailed(time.Hour, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a failed-turn marker older than the last restart does nothing",
+			obs:       waking(nil),
+			ledger:    led(recovered("T1.1", 1, 5*time.Minute, false)),
+			session:   view(turnFailed(6*time.Minute, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "a failed turn after the last restart is woken",
+			obs:     waking(nil),
+			ledger:  led(recovered("T1.1", 1, 5*time.Minute, false)),
+			session: view(turnFailed(4*time.Minute, "server_error")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a failed-turn marker older than the last wake does nothing",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 1, 5*time.Minute)),
+			session:   view(turnFailed(6*time.Minute, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a failed-turn marker in the second of the last wake does nothing",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 1, 5*time.Minute)),
+			session:   view(turnFailed(5*time.Minute, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a second failed turn inside the backoff waits",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 1, restartBackoff-time.Second)),
+			session:   view(turnFailed(40*time.Second, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting before waking it again", "1 time so far"},
+		},
+		{
+			name:    "a second failed turn exactly at the backoff is woken",
+			obs:     waking(nil),
+			ledger:  led(woken("T1.1", 1, restartBackoff)),
+			session: view(turnFailed(40*time.Second, "server_error")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a third failed turn inside the doubled backoff waits",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 2, 2*restartBackoff-time.Second)),
+			session:   view(turnFailed(time.Minute, "overloaded")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting before waking it again", "2 times so far"},
+		},
+		{
+			name:    "a third failed turn exactly at the doubled backoff is woken",
+			obs:     waking(nil),
+			ledger:  led(woken("T1.1", 2, 2*restartBackoff)),
+			session: view(turnFailed(time.Minute, "overloaded")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a second failed turn past the backoff still waits its 30 seconds",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 1, 5*time.Minute)),
+			session:   view(turnFailed(10*time.Second, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting a moment"},
+		},
+		{
+			name: "a failed turn with an unreadable wake time is woken",
+			obs:  waking(nil),
+			ledger: led(func() ledger.Entry {
+				e := woken("T1.1", 1, time.Second)
+				e.WakeAt = "not a time"
+				return e
+			}()),
+			session: view(turnFailed(time.Minute, "server_error")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// The marker is a second old: the cap is checked before either
+			// wait, so the owner hears at once.
+			name:      "max wakes reached gives up",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", maxWakes, 10*time.Minute)),
+			session:   view(turnFailed(time.Second, "server_error")),
+			want:      Action{Kind: ActWakeGiveUp, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"failed again", "3 times", "giving up"},
+		},
+		{
+			name:    "one wake below the cap is woken",
+			obs:     waking(nil),
+			ledger:  led(woken("T1.1", maxWakes-1, 10*time.Minute)),
+			session: view(turnFailed(time.Minute, "server_error")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "max wakes 0 gives up on the first failed turn",
+			obs:       waking(func(o *Observation) { o.MaxWakes = 0 }),
+			ledger:    led(running("T1.1")),
+			session:   view(turnFailed(time.Second, "server_error")),
+			want:      Action{Kind: ActWakeGiveUp, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"set not to wake sessions"},
+		},
+		{
+			name:      "a failed turn at the cap with max wakes 1 says how many",
+			obs:       waking(func(o *Observation) { o.MaxWakes = 1 }),
+			ledger:    led(woken("T1.1", 1, 10*time.Minute)),
+			session:   view(turnFailed(time.Minute, "server_error")),
+			want:      Action{Kind: ActWakeGiveUp, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"1 time;"},
+		},
+		{
+			name:      "a failed turn without the means to type does nothing",
+			obs:       waking(func(o *Observation) { o.CanPrompt = false }),
+			ledger:    led(running("T1.1")),
+			session:   view(turnFailed(time.Minute, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a failed turn with no recovery wired and no wakes set does nothing",
+			ledger:    led(running("T1.1")),
+			session:   view(turnFailed(time.Minute, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		// A rate limit is not a failed turn.
+		{
+			name:    "a rate-limited session past the stall limit is paused, not woken",
+			obs:     withWakes(governed(governor.ActionRun, nil)),
+			ledger:  led(running("T1.1")),
+			session: view(both(waiting(stallAfter+time.Minute), rateLimited(stallAfter+time.Minute))),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(rateLimitFallback)},
+		},
+		{
+			name:    "a rate-limited session with usage unconsulted is reported, not woken",
+			obs:     withWakes(unconsulted(governor.ActionRun)),
+			ledger:  led(running("T1.1")),
+			session: view(both(waiting(stallAfter+time.Minute), rateLimited(stallAfter+time.Minute))),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a session with a rate-limit marker older than the attempt is still woken from a stall",
+			obs:     withWakes(unconsulted(governor.ActionRun)),
+			ledger:  led(running("T1.1")),
+			session: view(both(waiting(stallAfter+time.Minute), rateLimited(2*time.Hour))),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a failed-turn marker no later than a rate-limit marker does nothing",
+			obs:       withWakes(unconsulted(governor.ActionRun)),
+			ledger:    led(running("T1.1")),
+			session:   view(both(turnFailed(2*time.Minute, "server_error"), rateLimited(2*time.Minute))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "a failed turn with a fresh rate-limit marker is paused when usage is consulted",
+			obs:     withWakes(governed(governor.ActionRun, nil)),
+			ledger:  led(running("T1.1")),
+			session: view(both(turnFailed(time.Minute, "server_error"), rateLimited(2*time.Minute))),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1", WakeAt: now.Add(rateLimitFallback)},
+		},
+		{
+			name:    "a failed turn later than a rate-limit marker is woken with usage unconsulted",
+			obs:     withWakes(unconsulted(governor.ActionRun)),
+			ledger:  led(running("T1.1")),
+			session: view(both(turnFailed(time.Minute, "server_error"), rateLimited(2*time.Minute))),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		// The sessions a wake must never type into.
+		{
+			name:    "usage paused with a failed-turn marker is not woken",
+			obs:     withWakes(governed(governor.ActionPause, nil)),
+			ledger:  led(usagePaused("T1.1", 30*time.Minute, "")),
+			session: view(both(stopped, turnFailed(time.Minute, "server_error"))),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "usage paused with the host still up and a failed-turn marker is not woken",
+			obs:     withWakes(governed(governor.ActionPause, nil)),
+			ledger:  led(usagePaused("T1.1", pauseRetry-time.Second, "")),
+			session: view(both(waiting(time.Hour-time.Minute), turnFailed(40*time.Second, "server_error"))),
+			want:    Action{Kind: ActUsagePaused, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a failed turn at the usage pause line is paused, not woken",
+			obs:     withWakes(governed(governor.ActionPause, nil)),
+			ledger:  led(running("T1.1")),
+			session: view(turnFailed(time.Minute, "server_error")),
+			want:    Action{Kind: ActUsagePause, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "an open blocking item parks before a failed turn is woken",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(turnFailed(time.Minute, "server_error")),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			name:    "an open blocking item parks before a waiting session is woken",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			session: view(waiting(stallAfter + time.Minute)),
+			want:    Action{Kind: ActPark, Task: "T1.1", Session: "t1-1", Items: []string{"q1"}},
+		},
+		{
+			name:      "a parked task with a failed-turn marker is left alone",
+			obs:       waking(nil),
+			tasks:     chain,
+			ledger:    led(parked("T1.1", "q1")),
+			items:     []inbox.Item{blocking(item("q1", "T1.1", "t1-1"))},
+			parked:    map[string]*SessionView{"T1.1": view(both(waiting(time.Hour-time.Minute), turnFailed(time.Minute, "server_error")))},
+			want:      Action{Kind: ActIdle, Items: []string{"q1"}},
+			reasonHas: []string{"waiting on owner"},
+		},
+		{
+			name:    "a shipping task with a failed-turn marker takes a ship step",
+			obs:     waking(nil),
+			ledger:  led(ledger.Entry{ID: "T1.1", Status: ledger.Shipping, Session: "t1-1", StartedAt: ago(time.Hour)}),
+			session: view(both(waiting(time.Hour-time.Minute), turnFailed(time.Minute, "server_error"))),
+			want:    Action{Kind: ActShipStep, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "phase done with a failed-turn marker ships and is not woken",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(turnFailed(time.Minute, "server_error"), func(v *SessionView) { v.Phase = state.PhaseDone })),
+			want:    Action{Kind: ActShip, Task: "T1.1", Session: "t1-1"},
+		},
+		// A host that is gone or not answering is recovered, never woken.
+		{
+			name:    "a failed turn with a wedged host is restarted, not woken",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(wedged(wedgeConfirm), turnFailed(time.Minute, "server_error"))),
+			want:    Action{Kind: ActRestart, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a failed turn with a wedge not yet confirmed waits",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(both(wedged(wedgeConfirm-time.Second), turnFailed(time.Minute, "server_error"))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting to be sure"},
+		},
+		{
+			name:      "a failed turn with a wedge that cannot be restarted is not woken",
+			obs:       waking(func(o *Observation) { o.CanRestart = false }),
+			ledger:    led(running("T1.1")),
+			session:   view(both(wedged(5*time.Minute), turnFailed(time.Minute, "server_error"))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "a failed turn with the host gone is relaunched, not woken",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			session: view(both(gone, turnFailed(time.Minute, "server_error"))),
+			want:    Action{Kind: ActRelaunch, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a failed turn with the host down inside its grace is not woken",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(both(stopped, turnFailed(time.Minute, "server_error"))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		// One failure, one wake: a line already owed is typed by the
+		// continue step and never counted again.
+		{
+			name:      "a failed turn with a continue pending is told to continue, not woken",
+			obs:       waking(nil),
+			ledger:    led(recovered("T1.1", 1, continueAfter, true)),
+			session:   view(turnFailed(10*time.Second, "server_error")),
+			want:      Action{Kind: ActContinue, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"started again"},
+		},
+		{
+			name:      "a failed turn with a continue pending before its time is not woken",
+			obs:       waking(nil),
+			ledger:    led(recovered("T1.1", 1, continueAfter-time.Second, true)),
+			session:   view(turnFailed(time.Second, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name: "a wake whose line is still owed is typed by the continue step",
+			obs:  waking(nil),
+			ledger: led(func() ledger.Entry {
+				e := woken("T1.1", 1, 5*time.Second)
+				e.ContinuePending = true
+				return e
+			}()),
+			session:   view(turnFailed(40*time.Second, "server_error")),
+			want:      Action{Kind: ActContinue, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"still owed its resume command"},
+		},
+		{
+			name: "a wake whose line is still owed is not counted again by a newer marker",
+			obs:  waking(nil),
+			ledger: led(func() ledger.Entry {
+				e := woken("T1.1", 1, 5*time.Minute)
+				e.ContinuePending = true
+				return e
+			}()),
+			session: view(turnFailed(time.Minute, "server_error")),
+			want:    Action{Kind: ActContinue, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "stale status with a failed-turn marker is not woken",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(both(stale, turnFailed(time.Minute, "server_error"))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"status file cannot be read"},
+		},
+		{
+			name:      "a failed-turn marker older than the un-parking answer does nothing",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			items:     []inbox.Item{answered(titled(item("w1", "T1.1", "t1-1"), WakeTitlePrefix), time.Minute)},
+			session:   view(turnFailed(2*time.Minute, "server_error")),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "a failed turn after the un-parking answer is woken",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{answered(titled(item("w1", "T1.1", "t1-1"), WakeTitlePrefix), 2*time.Minute)},
+			session: view(turnFailed(time.Minute, "server_error")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "an answer to another task's item does not hide a failed turn",
+			obs:     waking(nil),
+			ledger:  led(running("T1.1")),
+			items:   []inbox.Item{answered(blocking(item("q9", "T1.3", "t1-3")), time.Second)},
+			session: view(turnFailed(time.Minute, "server_error")),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		// The wake before a stall is reported.
+		{
+			name:      "a session waiting past the stall limit is woken once",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(waiting(stallAfter + time.Second)),
+			want:      Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting at the terminal", "before telling you"},
+		},
+		{
+			name:      "a session waiting exactly at the stall limit is not woken yet",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(waiting(stallAfter)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a session woken for this wait is not woken twice",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 1, 5*time.Minute)),
+			session:   view(waiting(stallAfter + 5*time.Minute)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "exactly stall_after after the wake waits",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 1, stallAfter)),
+			session:   view(waiting(2 * stallAfter)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:    "the stall is reported stall_after after the wake",
+			obs:     waking(nil),
+			ledger:  led(woken("T1.1", 1, stallAfter+time.Second)),
+			session: view(waiting(2 * stallAfter)),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a session that wrote its status after a wake and waits again is woken again",
+			obs:     waking(nil),
+			ledger:  led(woken("T1.1", 1, 30*time.Minute)),
+			session: view(waiting(stallAfter + time.Second)),
+			want:    Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a stall with no wakes left is reported at once",
+			obs:     waking(nil),
+			ledger:  led(woken("T1.1", maxWakes, 30*time.Minute)),
+			session: view(waiting(stallAfter + time.Second)),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a stall with max wakes 0 is reported at once",
+			obs:     waking(func(o *Observation) { o.MaxWakes = 0 }),
+			ledger:  led(running("T1.1")),
+			session: view(waiting(stallAfter + time.Second)),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a stall without the means to type is reported at once",
+			obs:     waking(func(o *Observation) { o.CanPrompt = false }),
+			ledger:  led(running("T1.1")),
+			session: view(waiting(stallAfter + time.Second)),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "a stall with a line still owed is reported, not woken again",
+			obs:     waking(func(o *Observation) { o.CanRestart = false }),
+			ledger:  led(recovered("T1.1", 1, 30*time.Minute, true)),
+			session: view(both(waiting(stallAfter+time.Second), wedged(5*time.Minute))),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "a stall already reported is not woken",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			items:     []inbox.Item{answered(titled(item("s1", "T1.1", "t1-1"), StallTitlePrefix), 20*time.Minute)},
+			session:   view(waiting(stallAfter + 5*time.Minute)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"already reported"},
+		},
+		{
+			name:      "stale status past the stall limit is not woken",
+			obs:       waking(nil),
+			ledger:    led(running("T1.1")),
+			session:   view(both(waiting(stallAfter+time.Second), stale)),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"status file cannot be read"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -2682,6 +3263,8 @@ func TestDecideDoesNotChangeItsInput(t *testing.T) {
 // are searched for: beginning with either, a "could not be stopped" item
 // would be read as a stall or host-gone report and silence one the owner is
 // owed in the same attempt.
+//
+// The wake prefix ("Session kept failing") is held to it against all four.
 func TestTitlePrefixesAreDistinct(t *testing.T) {
 	if StallTitlePrefix == "" || HostGoneTitlePrefix == "" {
 		t.Fatal("a title prefix is empty; every item would match it")
@@ -2695,6 +3278,17 @@ func TestTitlePrefixesAreDistinct(t *testing.T) {
 	for _, other := range []string{StallTitlePrefix, HostGoneTitlePrefix, RecoveryTitlePrefix} {
 		if strings.HasPrefix(PauseFailedTitlePrefix, other) || strings.HasPrefix(other, PauseFailedTitlePrefix) {
 			t.Errorf("prefixes overlap: %q and %q", PauseFailedTitlePrefix, other)
+		}
+	}
+	// The same for the wake's give-up item: beginning with the stall prefix
+	// it would count as this attempt's stall report, and a session that then
+	// sat waiting would never be reported.
+	if WakeTitlePrefix == "" {
+		t.Fatal("the wake title prefix is empty; every item would match it")
+	}
+	for _, other := range []string{StallTitlePrefix, HostGoneTitlePrefix, RecoveryTitlePrefix, PauseFailedTitlePrefix} {
+		if strings.HasPrefix(WakeTitlePrefix, other) || strings.HasPrefix(other, WakeTitlePrefix) {
+			t.Errorf("prefixes overlap: %q and %q", WakeTitlePrefix, other)
 		}
 	}
 }

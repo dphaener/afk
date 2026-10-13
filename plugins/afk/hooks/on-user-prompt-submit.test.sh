@@ -338,15 +338,19 @@ status9="$wt9/.afk/demo/status.json"
 marker9="$wt9/.afk/demo/.rate-limited"
 write_status "$status9" "sid-1" false
 printf '{"at":"2026-01-01T00:00:00Z"}\n' > "$marker9"
+failed9="$wt9/.afk/demo/.turn-failed"
+printf '{"at":"2026-01-01T00:00:00Z","reason":"server_error"}\n' > "$failed9"
 
 out=$(ups_payload "sid-999" "$wt9" "hi" | "$UPS_SCRIPT" 2>&1); code=$?
 check_exit "case9: unmatched prompt exits 0" 0 "$code"
 check_true "case9: marker untouched on an unmatched session" "$([ -f "$marker9" ] && echo true || echo false)"
+check_true "case9: failed-turn marker untouched on an unmatched session" "$([ -f "$failed9" ] && echo true || echo false)"
 
 out=$(ups_payload "sid-1" "$wt9" "hi" | "$UPS_SCRIPT" 2>&1); code=$?
 check_exit "case9: matched prompt exits 0" 0 "$code"
 check_eq "case9: no output" "" "$out"
 check_true "case9: marker removed after a matched UserPromptSubmit" "$([ ! -e "$marker9" ] && echo true || echo false)"
+check_true "case9: failed-turn marker removed after a matched UserPromptSubmit" "$([ ! -e "$failed9" ] && echo true || echo false)"
 
 rm -rf "$ROOT"
 echo

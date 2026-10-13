@@ -125,6 +125,17 @@ type Entry struct {
 	// the continue prompt are all timed from it. A value that does not parse
 	// is read as the zero time, the same as the other times in an entry.
 	RestartAt string `json:"restart_at,omitempty"`
+	// Wakes counts the times the daemon typed the resume command to wake the
+	// session in the current attempt. It is saved before each wake is typed,
+	// so a daemon killed in between does not type a second one on restart. A
+	// wake is not a restart: it never touches Restarts or RestartAt, and it
+	// goes back to zero wherever Restarts does (PLAN §5.6). Set leaves it alone.
+	Wakes int `json:"wakes,omitempty"`
+	// WakeAt is when the last wake was saved, RFC 3339 UTC. The backoff before
+	// the next wake and the comparison with the failed turn's marker are both
+	// timed from it. Like RestartAt it is not checked on load: a value that
+	// does not parse is read as the zero time.
+	WakeAt string `json:"wake_at,omitempty"`
 	// ContinuePending means the agent was resumed after a recovery and has
 	// not yet been sent the line that tells it to carry on. It is cleared
 	// once that line is typed, so a daemon restart does not type it twice.
@@ -256,6 +267,9 @@ func (l Ledger) validate() error {
 		}
 		if e.Restarts < 0 {
 			return fmt.Errorf("task %q has a negative restarts", e.ID)
+		}
+		if e.Wakes < 0 {
+			return fmt.Errorf("task %q has a negative wakes", e.ID)
 		}
 	}
 	return nil

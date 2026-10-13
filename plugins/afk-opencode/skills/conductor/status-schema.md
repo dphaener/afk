@@ -386,3 +386,15 @@ see** — permission asks in any phase and questions shown during planning.
   (unlike a permission ask) it is running when it stops, so it writes the
   flag itself. That is why a question shown outside planning needs no
   handler write.
+
+---
+
+## 10. Failed-turn marker (`.turn-failed`)
+
+The port has no hooks, so a session run by the port never writes this marker. The writer is the
+`StopFailure` hook in `plugins/afk` (see PROVENANCE.md, lag note).
+
+- **Path/content**: `.afk/{plan_name}/.turn-failed`, one line `{"at":"<RFC 3339 UTC>","reason":"<the CLI's error word>"}`.
+- **Writer**: `StopFailure` hook (`on-stop-failure.sh`), for the reasons worth retrying; never for `rate_limit`, which writes only `.rate-limited`. Via temp file and `mv -f`, on a §7 match. Never touches `status.json`.
+- **Clearer**: `UserPromptSubmit` and a matched `Stop` do `rm -f`.
+- **Reader**: the daemon, which types the session's resume command.

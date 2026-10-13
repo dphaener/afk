@@ -194,6 +194,10 @@ Added by T0.2, also per session and gitignored:
   work plan names; the hands-on QA check writes its own under `evidence/qa/`.
 - `.afk/{session}/.rate-limited` — one line `{"at":"<RFC 3339 UTC>"}`, written by the `StopFailure`
   hook on a rate limit and removed by the next prompt or normal stop. It never touches `status.json`.
+- `.afk/{session}/.turn-failed` — one line `{"at":"<RFC 3339 UTC>","reason":"<the CLI's error word>"}`,
+  written by the `StopFailure` hook for a failed turn worth retrying (never a rate limit), and removed
+  by the next prompt or normal stop. The daemon reads it to type the resume command. It never touches
+  `status.json`.
 
 ### 4.2 Ledger — `.afk/build/ledger.json` (new; daemon is the only writer)
 
@@ -250,6 +254,11 @@ when none is known. Both are cleared when the task starts a new attempt or gets 
 session is started again after the pause, and when the task leaves `running` for `done`, `failed` or
 `shipping`. An un-park back to `running` keeps them and a pause that parks keeps them, so the session
 is started again, not typed into.
+
+Amended 2026-10-13 (T2.5): an entry also carries `wakes` and `wake_at`, each omitted when zero or empty.
+`wakes` counts the times the daemon typed the resume command to wake the session, and is saved before
+each one; a negative value is refused on load. `wake_at` is when the last wake was saved (RFC 3339 UTC).
+Both are cleared where `restarts` is cleared. A wake is not counted as a restart.
 
 ### 4.2a Daemon files (new)
 
@@ -410,6 +419,12 @@ and at most 100), `launch_below` (default 75; above 0 and at most `pause_at`), `
 and `on_unknown_usage` (default `"run"`; `"run"` or `"hold"`). Anything else is an error naming the file
 and the key, and `afk daemon` and `afk usage` both read the table. The weekly launch line is
 `pause_at` minus 5.
+
+Amended 2026-10-13 (T2.5): `[daemon]` also reads `max_wakes` (default 3; a whole number of times per task
+that afk types the session's resume command into a session whose agent's turn failed, or that has sat
+waiting at the terminal; at least 0, where 0 means never wake a session; a negative value is an error
+naming `daemon.max_wakes`). It is machine config only, like `max_restarts`: an absent key reads as the
+default, and a written 0 reads as 0.
 
 Amended 2026-10-12 (T3.1): `config.toml` also reads a `[web]` table: `bind` (default `"127.0.0.1:4253"`;
 `host:port` with a port from 1 to 65535), `token` (default empty, which turns the page off and opens no
@@ -579,6 +594,15 @@ blocking item, `This project has no task list yet`, until `afk ledger init` crea
    and has used its `max_restarts`, the task parks on a "Session could not be recovered: …" item
    instead (§5.6). A stall item, like both, now parks the task, so answering it un-parks the task.
 
+   Amended 2026-10-13 (T2.5): a session that is asking something at the terminal for longer than
+   `stall_after` is first sent its resume command, once. The wait is measured from the latest of the
+   session's last status write, its start, its last restart and its last wake. The command is typed only
+   when afk can type into a session, `max_wakes` is above 0, the session's wakes are not used up, no usage
+   limit is what it hit, and no earlier line is still owed (`continue_pending`). If the session is still
+   waiting `stall_after` after that wake, the item above is raised. When the wake is not sent, the item is
+   raised at `stall_after` as before, and its text says why. The wake shares its count with a failed turn
+   (§5.6).
+
 ### 5.4 Ship (state machine in code)
 
 ```
@@ -682,6 +706,18 @@ Amended 2026-10-12 (T2.3): how recovery was built.
   and counts a refused or failed attempt. At the limit the task parks on an item titled "Session could
   not be recovered: …"; answering it gives a fresh set.
 - Parked and shipping tasks are not recovered; a pause does not stop the recovery of a running one.
+
+Amended 2026-10-13 (T2.5): a failed turn is answered by a wake, which types the resume command and
+restarts nothing. The rule (`decideWake`) runs after recovery and before the stall rule. It types the
+command only when all of these hold: the host is running with no wedge verdict, the executor can type,
+no continue prompt is pending, the `.turn-failed` marker is later than the attempt's start, its last
+restart, its last wake and the owner's last answer to an item about the task, and the marker is not
+behind a rate-limit marker of the same run. Then the marker must be at least 30 seconds old (`WakeAfter`,
+not a setting), and the last wake at least the backoff old: `restart_backoff` for the second wake, doubled
+for each one after. The count is `wakes` and the time is `wake_at` in the ledger entry (§4.2). A wake is
+not a restart, so it does not touch `restarts`. At `max_wakes` (default 3; 0 means never wake) the task
+parks on a blocking `failure` item titled "Session kept failing: <task> (<session>)". Answering that item
+clears the wakes (the un-park does it, as for recoveries) and types the resume command.
 
 ### 5.7 A lean task cycle
 
@@ -802,6 +838,17 @@ and parks the task), and after the reset starts a new host with the agent's resu
 session's resume command 30 seconds later. The other ways tried (Escape, Ctrl+C, freezing the process)
 and the evidence are in `docs/decisions.md` under `## T2.4`. The `StopFailure` marker is read by the
 daemon, which pauses the session when it is newer than the session's start and last restart.
+
+Amended 2026-10-13 (T2.5): the `StopFailure` hook (`plugins/afk/hooks/on-stop-failure.sh`) writes one of
+two markers, picked by the payload's `error`. `rate_limit` writes `.rate-limited`, the marker above. The
+retryable reasons `overloaded`, `server_error` and `unknown` write `.turn-failed` as `{at, reason}`. The
+other reasons write nothing: logins, billing, bad requests and a missing model cannot be fixed by trying
+again. The hooks.json matcher is the same list, and the script checks `error` as well, so a wider matcher
+cannot write a marker the list does not allow. A rate limit is never a failed turn: it writes only
+`.rate-limited`, and the wake rule (§5.6) stands back from a rate-limit marker of the same run. A lost
+connection reports `server_error` (captured 2026-10-13). The stall rule (§5.3) sees a failed turn only
+when the session shows as waiting, which an agent in `executing` does not, so the marker is what catches
+a failed turn.
 
 ### 6.5 Login expiry
 
@@ -1335,6 +1382,7 @@ with nobody at the keyboard.
   not writes nothing, the next prompt and a normal stop remove it. `make check` passes. On the VM
   with a built binary: a session whose connection is cut mid-response carries on with nobody
   touching it, and the evidence is in `docs/decisions.md`.
+- Amended 2026-10-13 (T2.5 done): later tasks may assume the following. (1) The `StopFailure` hook is registered for `rate_limit|overloaded|server_error|unknown` and reads the input's `error`: a rate limit writes only `.afk/{session}/.rate-limited`, the other three write only `.afk/{session}/.turn-failed` (`{"at","reason"}`, read by `state.ReadTurnFailed`), and anything else writes nothing. A lost connection is reported as `server_error`, after two to three minutes of the agent CLI's own retries. (2) `Decide` has two new actions, `wake` and `wake_give_up` (both are `daemon.json` kinds and decision-log kinds), reached only for a running task with a live, un-wedged host, no usage pause, no park and no continue pending; the daemon reads the marker through the optional `daemon.Deps.TurnFailed`. (3) The ledger entry carries `wakes` and `wake_at`, saved with `continue_pending` before the line is typed and cleared wherever `restarts` is; `[daemon] max_wakes` (default 3, 0 means never) is in `config.toml`, the first wake comes 30 seconds after the marker and later ones after `restart_backoff` doubled, and at the limit the task parks on a blocking item titled "Session kept failing: …". (4) A session shown as waiting past `stall_after` is typed to once before the stall item, which then comes `stall_after` later; `awaiting_input` is set by an idle prompt only in phase `planning`, so outside planning a failed turn is caught by the marker alone. (5) T3.1 and T3.2 should give the two new kinds their own words. (6) Plugin version is 5.7.0; the OpenCode port has no hook and its sessions are woken only by the stall wake. (7) Not yet seen: a woken conductor carrying real task work on, and a long real outage using up the wakes. See `## T2.5` in `docs/decisions.md`.
 
 ### M3 — Surfaces
 

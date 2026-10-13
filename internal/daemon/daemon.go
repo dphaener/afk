@@ -81,6 +81,15 @@ type Settings struct {
 	// marker waits when no usage window gives a reset time. Zero or less
 	// means DefaultRateLimitFallback.
 	RateLimitFallback time.Duration
+	// MaxWakes is how many times one attempt's session may be woken (its
+	// resume command typed after a failed turn or a long wait at its prompt)
+	// before the owner is told (PLAN T2.5). Like MaxRestarts it is used as
+	// given: zero is a real setting that means never wake, and the caller
+	// passes the machine config's value, which carries the default.
+	MaxWakes int
+	// WakeAfter is how long after an agent's turn failed its session is
+	// woken. Zero or less means DefaultWakeAfter.
+	WakeAfter time.Duration
 	// Binary is the identity of afk's program file recorded when the daemon
 	// started. The zero value means unknown, and Run then never stops for a
 	// new binary.
@@ -101,6 +110,14 @@ const (
 	// host.SendInput makes around its Enter are: nothing on disk says
 	// "the prompt is ready", so a slow start can still lose the line.
 	DefaultContinueAfter = 30 * time.Second
+
+	// DefaultWakeAfter is the wait between an agent's turn failing and its
+	// session's resume command being typed. A turn fails on a lost
+	// connection or a fault at the far end, and neither is gone the second
+	// it is reported; a line typed at once would mostly fail the same way
+	// and use up a wake. It is not a setting (PLAN T2.5): the waits that
+	// grow, between one wake and the next, come from restart_backoff.
+	DefaultWakeAfter = 30 * time.Second
 
 	// DefaultWedgeConfirm is how long a wedge verdict must have stood. It is
 	// one of the host's re-probe intervals (wedgeProbeInterval in
@@ -195,6 +212,7 @@ func Kinds() []string {
 		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
 		string(ActUsageWait), string(ActLoginWait), string(ActUsagePause),
 		string(ActUsagePaused), string(ActUsageStuck), string(ActUsageResume),
+		string(ActWake), string(ActWakeGiveUp),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
 }
@@ -283,8 +301,8 @@ type RelaunchRequest struct {
 // Deps is every call the loop makes outside the project's plain files. Now,
 // LoadBuild, Sessions, Preflight, Launch and RecordTokens must be set; Notify,
 // NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt,
-// Restart, Relaunch, Clean, Usage, Login, StopSession and RateLimited may be
-// nil.
+// Restart, Relaunch, Clean, Usage, Login, StopSession, RateLimited and
+// TurnFailed may be nil.
 //
 // The four usage fields are optional as a set and one at a time. With no
 // Usage the loop behaves exactly as it did before it had a usage governor:
@@ -387,6 +405,19 @@ type Deps struct {
 	// own hook wrote when a turn ended on a usage limit, and false when there
 	// is no readable marker. Nil means state.ReadRateLimited.
 	RateLimited func(worktree, session string) (time.Time, bool)
+	// TurnFailed reads the session's failed-turn marker: the time and the
+	// reason the agent's own hook wrote when a turn ended on an error worth
+	// trying again, and false when there is no readable marker. Nil means
+	// state.ReadTurnFailed.
+	TurnFailed func(worktree, session string) (state.TurnFailed, bool)
+}
+
+// turnFailed is Deps.TurnFailed with its default.
+func (d Deps) turnFailed(worktree, sess string) (state.TurnFailed, bool) {
+	if d.TurnFailed != nil {
+		return d.TurnFailed(worktree, sess)
+	}
+	return state.ReadTurnFailed(worktree, sess)
 }
 
 // rateLimited is Deps.RateLimited with its default.
@@ -563,7 +594,8 @@ func (t *pass) run(s Settings) daemonstate.State {
 		WedgeConfirm:   s.WedgeConfirm,
 		// Decide is told what this executor can carry out, so it never
 		// answers with an action whose function is nil. That is the only
-		// guard: restart, relaunch and continueSession call theirs unchecked.
+		// guard: restart, relaunch, continueSession and wake call theirs
+		// unchecked.
 		CanRestart:  t.d.Restart != nil,
 		CanRelaunch: t.d.Relaunch != nil,
 		CanPrompt:   t.d.SendPrompt != nil,
@@ -573,6 +605,8 @@ func (t *pass) run(s Settings) daemonstate.State {
 
 		PauseRetry:        s.PauseRetry,
 		RateLimitFallback: s.RateLimitFallback,
+		MaxWakes:          s.MaxWakes,
+		WakeAfter:         s.WakeAfter,
 	}
 	o.StopReason, o.Stopped = t.d.stopped(root)
 	if o.StallAfter <= 0 {
@@ -592,6 +626,9 @@ func (t *pass) run(s Settings) daemonstate.State {
 	}
 	if o.RateLimitFallback <= 0 {
 		o.RateLimitFallback = DefaultRateLimitFallback
+	}
+	if o.WakeAfter <= 0 {
+		o.WakeAfter = DefaultWakeAfter
 	}
 
 	tasks, planPath, l, err := t.d.LoadBuild(root)
@@ -641,6 +678,11 @@ func (t *pass) run(s Settings) daemonstate.State {
 				if o.Session != nil && e.Status == ledger.Running {
 					if at, ok := t.d.rateLimited(t.row.WorktreePath, e.Session); ok {
 						o.Session.RateLimitedAt = at
+					}
+					// The failed-turn marker is read the same way and under
+					// the same condition: it is about an agent at work.
+					if m, ok := t.d.turnFailed(t.row.WorktreePath, e.Session); ok {
+						o.Session.TurnFailedAt, o.Session.TurnFailedReason = m.At, m.Reason
 					}
 				}
 			default:
@@ -718,6 +760,10 @@ func (t *pass) run(s Settings) daemonstate.State {
 		return t.continueSession(a)
 	case ActGiveUp:
 		return t.giveUp(a)
+	case ActWake:
+		return t.wake(a)
+	case ActWakeGiveUp:
+		return t.wakeGiveUp(a)
 	case ActUsagePause:
 		return t.usagePause(a)
 	case ActUsageStuck:
@@ -1636,7 +1682,11 @@ func (t *pass) report(a Action) daemonstate.State {
 	kind := "stall"
 	if a.Kind == ActStall {
 		n.Title = StallTitlePrefix + fmt.Sprintf("%s (%s)", a.Task, a.Session)
-		n.Body = stallBody(a.Task, a.Session)
+		// Asked of the same observation Decide chose from, so the item says
+		// what was decided: woken already, or why it was not.
+		e, _ := t.obs.Ledger.Get(a.Task)
+		woken, whyNot := stallWake(t.obs, e, t.obs.Session)
+		n.Body = stallBody(a.Task, a.Session, woken, whyNot)
 	} else {
 		kind = "host_gone"
 		n.Title = HostGoneTitlePrefix + fmt.Sprintf("%s (%s)", a.Task, a.Session)
@@ -1665,21 +1715,37 @@ func (t *pass) report(a Action) daemonstate.State {
 // something. `afk attach` is the right tool here because the host is alive:
 // attach connects to a running host and never starts one.
 //
-// "Cannot yet wake a session" is still true of this case after PLAN §5.6: the
-// loop restarts an agent that has stopped answering, but an agent that is
-// answering and waiting for a person is not broken, and no restart would
-// supply what it is asking for.
+// Its second sentence says what afk did about the wait before raising the
+// item, because that changes what the owner should expect to find. woken
+// means the resume command was typed and the session wrote nothing after it,
+// so the agent is most likely asking a real question, or sitting in a dialog
+// that swallowed the line. Otherwise nothing was typed and whyNot is the
+// reason, in stallWake's words; typing the command by hand may then be all
+// that is needed. An empty whyNot with woken false does not come from Decide
+// (it wakes the session in that case and raises no item) and gets the plain
+// sentence, so that a caller in a state this function did not foresee still
+// tells the owner something true.
 //
 // The body cannot name its own item's id, which the store picks when the
 // item is written, so it says where the id is shown.
-func stallBody(task, sess string) string {
+func stallBody(task, sess string, woken bool, whyNot string) string {
+	var did string
+	switch {
+	case woken:
+		did = fmt.Sprintf("afk typed its resume command (`%s`) to set it going again, and it was still waiting afterwards, "+
+			"so someone has to look.", resumeCommand(sess))
+	case whyNot != "":
+		did = fmt.Sprintf("afk did not wake it by typing its resume command: %s. So someone has to look.", whyNot)
+	default:
+		did = "afk did not wake it by typing its resume command, so someone has to look."
+	}
 	return fmt.Sprintf("The session for %s is asking something at the terminal, and has been for longer than afk waits. "+
-		"afk cannot yet wake a session by itself, so someone has to look.\n\n"+
+		"%s\n\n"+
 		"What to do next:\n"+
 		"1. Run `afk attach %s` and answer what it is asking. If the agent is idle instead, type `%s` there.\n"+
 		"2. Then answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
 		"afk goes back to watching %s once it is answered.",
-		task, sess, resumeCommand(sess), task)
+		task, did, sess, resumeCommand(sess), task)
 }
 
 // hostGoneBody tells the owner what to do about a session whose host has
@@ -1709,15 +1775,22 @@ func hostGoneBody(task, sess string) string {
 // hasRecovery reports whether an entry holds anything clearRecovery would
 // clear.
 func hasRecovery(e ledger.Entry) bool {
-	return e.Restarts != 0 || e.RestartAt != "" || e.ContinuePending
+	return e.Restarts != 0 || e.RestartAt != "" || e.ContinuePending || e.Wakes != 0 || e.WakeAt != ""
 }
 
 // clearRecovery puts an entry's recovery fields back to zero. It is called
 // wherever the entry starts a new attempt, gets a new session, is un-parked,
 // or leaves `running`: the count, the time and the pending prompt are about
 // one session's current run of trouble and mean nothing after any of those.
+//
+// The two wake fields go with them, though a wake is not a restart and the
+// two counts never touch each other. They share the clear points because
+// they share the reason: a wake count at its limit left in an un-parked
+// entry would hand the task straight back to the owner on the next failed
+// turn, and an old wake time would be read as "already woken for this wait".
 func clearRecovery(e *ledger.Entry) {
 	e.Restarts, e.RestartAt, e.ContinuePending = 0, "", false
+	e.Wakes, e.WakeAt = 0, ""
 }
 
 // restartedAt saves the moment a recovery finished as the entry's restart
@@ -1853,33 +1926,183 @@ func (t *pass) relaunch(a Action) daemonstate.State {
 	return st
 }
 
-// continueSession types the session's resume command into a session that was
-// recovered and has had time to start. See resume for why it is that command
-// and not a sentence: the same reasoning holds, and a restarted conductor
-// acts from the phase and files it recorded.
+// typeResume types the session's resume command into it and then clears the
+// entry's pending flag. It is the one place the loop types that line into a
+// running task's session, shared by the continue step and the wake so that
+// the order below cannot differ between them.
 //
 // The line is typed first and the pending flag cleared after. A send that
-// fails leaves the flag set and records nothing, so the next tick tries
-// again: the host may be busy with a person who has just attached. The other
-// order would lose the prompt for good on one failed send, and a recovered
-// agent that is never told to carry on sits at an empty prompt until a person
-// notices. The cost of this order is a daemon killed between the two, which
-// types the line a second time; the command is safe to repeat.
-func (t *pass) continueSession(a Action) daemonstate.State {
+// fails leaves the flag set, so the next tick tries again: the host may be
+// busy with a person who has just attached. The other order would lose the
+// prompt for good on one failed send, and an agent that is never told to
+// carry on sits at an empty prompt until a person notices. The cost of this
+// order is a daemon killed between the two, which types the line a second
+// time; the command is safe to repeat.
+//
+// sent false means nothing was typed and err is why. sent true with an error
+// means the line went out and the ledger could not be changed afterwards.
+func (t *pass) typeResume(a Action) (sent bool, err error) {
 	if err := t.d.SendPrompt(t.row.WorktreePath, a.Session, resumeCommand(a.Session)); err != nil {
-		t.d.logf("%s: the session %s for %s was started again, but could not be told to carry on: %v; trying again on the next pass",
+		return false, err
+	}
+	return true, t.change(a.Task, ledger.Running, func(e *ledger.Entry) { e.ContinuePending = false })
+}
+
+// continueSession types the session's resume command into a session that was
+// recovered and has had time to start, or that a wake could not reach on its
+// first try. See resume for why it is that command and not a sentence: the
+// same reasoning holds, and a restarted conductor acts from the phase and
+// files it recorded.
+//
+// A send that fails records nothing: a failed send is not a thing that
+// happened, and typeResume has left the flag set for the next tick.
+func (t *pass) continueSession(a Action) daemonstate.State {
+	sent, err := t.typeResume(a)
+	if !sent {
+		t.d.logf("%s: the session %s for %s is owed its resume command, but it could not be typed: %v; trying again on the next pass",
 			t.p.Name, a.Session, a.Task, err)
 		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,
-			Reason: fmt.Sprintf("the session for %s (%s) was started again but could not be told to carry on yet (%v); trying again on the next pass",
+			Reason: fmt.Sprintf("the session for %s (%s) could not be told to carry on yet (%v); trying again on the next pass",
 				a.Task, a.Session, err)}
 	}
-	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) { e.ContinuePending = false }); err != nil {
+	if err != nil {
 		return t.ledgerTrouble(a, err)
 	}
 	t.record("continue", a.Task, a.Session,
 		fmt.Sprintf("%s. What now?", upperFirst(a.Reason)),
 		fmt.Sprintf("typed `%s` into it", resumeCommand(a.Session)), ruleRecovery)
 	return stateOf(a)
+}
+
+// wake types the session's resume command into a session whose agent's turn
+// failed, or that has sat waiting at its prompt (PLAN T2.5). Nothing is
+// restarted: the host and its agent are alive.
+//
+// The ledger is written before anything is typed, in one write: the count,
+// the time and the pending flag. The count first for the reason given on
+// restart: it lives only in the ledger, and a daemon that died after typing
+// and before saving would come back to the same marker, find the count
+// unchanged and wake the same session without limit. The pending flag in the
+// same write is what makes the wake survive that death the other way round: a
+// daemon killed after the save and before the line was typed comes back to an
+// entry that says a line is owed, and the continue step types it once. The
+// marker cannot ask for a second wake meanwhile, because it is now older than
+// wake_at, and Decide never wakes an entry with a line pending.
+//
+// A send that fails is the same case reached without a crash. The flag stays
+// set, the continue step types the line on a later tick, and the count is not
+// raised again: one failure, one wake, however many tries the line takes.
+//
+// restarts and restart_at are left alone. A wake is not a recovery, and using
+// them would let failed turns use up the restarts a hung agent needs, and
+// would reset the grace and the backoff recovery times from restart_at.
+//
+// The decision is logged when it is taken, before the send, so the log holds
+// every wake that was counted. When the line then goes out in this same tick
+// no second line is logged for it; when it does not, the continue step's own
+// line records the tick it did.
+func (t *pass) wake(a Action) daemonstate.State {
+	var n int
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
+		e.Wakes++
+		e.WakeAt = stamp(t.now)
+		e.ContinuePending = true
+		n = e.Wakes
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("wake", a.Task, a.Session,
+		fmt.Sprintf("%s. What now?", upperFirst(a.Reason)),
+		fmt.Sprintf("type `%s` into it (wake %d of %d); nothing is restarted", resumeCommand(a.Session), n, t.obs.MaxWakes),
+		ruleRecovery)
+
+	sent, err := t.typeResume(a)
+	if !sent {
+		t.d.logf("%s: the session %s for %s was to be woken, but its resume command could not be typed: %v; trying again on the next pass",
+			t.p.Name, a.Session, a.Task, err)
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,
+			Reason: fmt.Sprintf("the session for %s (%s) was to be woken, but its resume command could not be typed yet (%v); trying again on the next pass",
+				a.Task, a.Session, err)}
+	}
+	if err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	return stateOf(a)
+}
+
+// wakeGiveUp raises the item for a session whose agent's turn failed with
+// every wake used, and parks the task on it. It follows giveUp: the item
+// first, because the ledger entry needs its id, and a tick that dies between
+// the two is finished by Decide's rule e, which parks on the open item and
+// raises no second one.
+//
+// The wake count is left in the parked entry, where `afk ledger` shows it,
+// and is cleared by the un-park, which also types the resume command. The
+// marker that led here is older than the owner's answer by then, so Decide
+// does not count it against the fresh set.
+func (t *pass) wakeGiveUp(a Action) daemonstate.State {
+	e, _ := t.obs.Ledger.Get(a.Task)
+	it, err := t.add(inbox.NewItem{
+		Task: a.Task, Session: a.Session, Kind: "failure", Blocking: true,
+		Title: fitTitle(WakeTitlePrefix + fmt.Sprintf("%s (%s)", a.Task, a.Session)),
+		Body:  wakeBody(a.Task, a.Session, e.Wakes, t.obs.Session.TurnFailedReason, t.obs.Session.TurnFailedAt),
+	})
+	if err != nil {
+		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,
+			Reason: fmt.Sprintf("%s, and the inbox item saying so could not be written (%v); trying again on the next pass", a.Reason, err)}
+	}
+	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
+		e.Status = ledger.Parked
+		e.ParkedOn = []string{it.ID}
+	}); err != nil {
+		return t.ledgerTrouble(a, err)
+	}
+	t.record("wake_give_up", a.Task, a.Session,
+		fmt.Sprintf("%s. What now?", upperFirst(a.Reason)),
+		fmt.Sprintf("tell the owner and park %s on inbox %s", a.Task, it.ID), ruleRecovery)
+	st := stateOf(a)
+	st.Reason = fmt.Sprintf("%s; see inbox item %s", a.Reason, it.ID)
+	return st
+}
+
+// wakeBody tells the owner what to do about a session afk has stopped waking.
+// It sends them to `afk attach`, and not to the dashboard as recoveryBody
+// does, because this session's host is running: Decide gives up on waking
+// only for a host that is alive and answering.
+//
+// With no wakes made the first sentence is a different one, for the reason
+// given at recoveryBody: that happens only when the machine is set never to
+// wake (max_wakes = 0), and "woke it 0 times" would read as a fault in afk.
+//
+// The reason is shown as the hook recorded it, in quotes, because it is the
+// agent CLI's own word for the error and not a sentence of afk's. A marker
+// with no reason is still a failed turn, and says so.
+func wakeBody(task, sess string, wakes int, reason string, at time.Time) string {
+	var first string
+	switch {
+	case wakes <= 0:
+		first = fmt.Sprintf("The agent's turn failed in the session for %s, and afk is set not to wake sessions "+
+			"(`max_wakes = 0` in afk's config.toml).", task)
+	case wakes == 1:
+		first = fmt.Sprintf("The agent's turn kept failing in the session for %s. afk woke it once by typing its resume command "+
+			"and the turn failed again, so afk has stopped trying.", task)
+	default:
+		first = fmt.Sprintf("The agent's turn kept failing in the session for %s. afk woke it %d times by typing its resume command "+
+			"and the turn failed again, so afk has stopped trying.", task, wakes)
+	}
+	why := "no reason was recorded"
+	if r := strings.TrimSpace(reason); r != "" {
+		why = fmt.Sprintf("the reason recorded was %q", r)
+	}
+	return first + fmt.Sprintf(" The last failure was at %s, and %s. The session is still open.\n\n"+
+		"What to do next:\n"+
+		"1. Run `afk attach %s` to look at what the agent last said. A fault at the agent's service usually passes by itself; "+
+		"a message about your login or your account is one you have to fix first.\n"+
+		"2. Then answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
+		"afk types `%s` into the session and carries on with %s, with a fresh set of wakes.\n\n"+
+		"Or, if the session is beyond saving: run `afk clean %s`, then `afk ledger set %s pending`, "+
+		"and afk starts the task again in a new session.",
+		wakeText(at), why, sess, resumeCommand(sess), task, sess, task)
 }
 
 // giveUp raises the item for a session that stopped or hung with every

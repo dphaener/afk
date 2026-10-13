@@ -880,7 +880,7 @@ afk daemon status     # say what it is doing in each project, and why
 
 - If the plan, the ledger or `afk.toml` cannot be used, it stops for that project and says what to fix. It carries on by itself once the file is fixed.
 - If a task is running, it watches that task's session. A finished session moves the task on (see "Shipping" below). A session that ended as failed marks the task `failed` and adds a `failure` item to your inbox. An open blocking inbox item for the task parks it (see "What parks a task").
-- If the session has been asking a question at the terminal for longer than `stall_after`, it adds an inbox item saying so, once, and parks the task.
+- If the session has been asking a question at the terminal for longer than `stall_after`, afk first types the session's resume command into it, once, in case the session is only sitting at an empty prompt, when it can and the session's wakes are not used up. If the session is still waiting `stall_after` later, it adds an inbox item saying so, once, and parks the task. The item says whether afk typed the command, or why it did not.
 - If the session has stopped answering, it is restarted. If its host process is gone (a reboot, a crash), the session is started again. Each resumes the same conversation, and afterwards afk types the session's resume command so it carries on. See "Recovering a session".
 - If nothing is running and the project is not paused, it picks the next ready task (the same answer as `afk next`), checks that this machine can start the agent unattended, and starts a session for it. The session and the branch are both named after the task: `T4.3` becomes `t4-3`.
 - If nothing can start, it says why (waiting on you, blocked by a failed task, or all done) and sends one push notification for that, not one per pass.
@@ -892,11 +892,19 @@ Stopping the daemon (ctrl-c, or `systemctl --user stop afkd`) never stops a sess
 **Recovering a session.** A session can stop answering without ending: the agent hangs, or the machine reboots and takes the session's host with it. For a session the daemon started, the session's host checks by itself, whether or not anyone is attached: after about 35 seconds of silence it asks the agent to repaint, and if that goes unanswered it records that the session is stuck. afk acts only once that has lasted a minute, so an agent that is merely slow is left alone. A session whose host has gone is started again after the host has been gone for a minute.
 
 - afk makes at most `max_restarts` recoveries per task (default 3). The first happens at once and each later one after a wait that starts at `restart_backoff` and doubles. With the defaults that is at once, after one minute, after two minutes, and then the task parks.
+- afk also types the session's resume command again, at most `max_wakes` times per task (default 3), when the agent's turn fails. This does not restart anything, and it does not count against `max_restarts`. See "When a turn fails" below.
 - At the limit the task parks with an inbox item titled "Session could not be recovered: <task> (<session>)". Answering it gives the task a fresh set of recoveries, and afk types the session's resume command into it as it does for any answered item.
 - A recovered session resumes its own conversation. About 30 seconds after the new agent started, afk types the session's resume command (`/afk:go --session <name>`), and the session carries on from its files. A session whose status file could not be read, or that had not yet recorded its conversation, comes back as a fresh conversation that picks its work up from its files.
 - A pause does not stop the recovery of a task that is running. Sessions that are parked or shipping are not recovered.
 - `afk attach` and the dashboard always work. If afk restarts a session while you are attached, your pane says the session was taken: attach again, and expect afk to type the resume command into it about half a minute later.
 - Recovery needs the session to have been started by the daemon. A session you started by hand is not checked while nobody is attached, as before.
+
+**When a turn fails.** Sometimes the agent's turn ends on an error that trying again may fix, such as a lost connection or a fault at the agent's service. The plugin's hook then writes `.afk/<session>/.turn-failed`, and the daemon takes it from there. A rate limit is not one of these: it is handled by the usage pause.
+
+- If the session's host is still running and its agent is answering, afk types the session's resume command about 30 seconds after the marker was written. Nothing is restarted, and the session carries on from its files.
+- A second wake waits at least one minute after the first, and a third at least two minutes after the second. The wait doubles from `restart_backoff`, the same as for recoveries.
+- afk wakes a session at most `max_wakes` times per task (default 3; `0` means it never wakes one). A session that still fails after that parks its task with an inbox item titled "Session kept failing: <task> (<session>)". The item says what the error was, and what to do: a fault at the agent's service usually passes by itself, while a message about your login or account has to be fixed first.
+- Answering that item gives the task a fresh set of wakes, and afk types the session's resume command into it, as for any answered item. If the session is beyond saving, `afk clean <session>` and then `afk ledger set <task> pending` start the task again in a new session.
 
 **Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. The owner profile, `profile.toml`, lives in the same folder (see `afk profile`). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build and `afk daemon` exits 1. Keys it does not know are ignored.
 
@@ -909,6 +917,7 @@ tick = "5s"                    # how often to look at each project (1s or more)
 stall_after = "10m"            # how long a session may ask a question at the terminal
 max_restarts = 3               # recoveries per task before it parks (0 means never restart)
 restart_backoff = "1m"         # wait before the second recovery; each later one doubles it
+max_wakes = 3                  # times a session is typed into after a failed turn, per task (0 means never wake one)
 
 [governor]
 pause_at = 90                  # percent of a usage window at which running work is stopped (above 5, at most 100)
@@ -977,6 +986,8 @@ Someone attached to a session when it is paused sees it taken over and then ende
 
 **The rate-limit marker.** When the agent stops at a usage limit, the plugin writes `.afk/<session>/.rate-limited`. The daemon reads it on a pass with a running task. A marker newer than the session's start and last restart pauses the session, with no wait for the reading to reach `pause_at`. The wake time is the governor's own when it has one, otherwise one minute after the next reset of any usage window (the soonest one still ahead), otherwise one hour. The wake time is only when afk looks again: if the limit that was hit has not reset by then, the new reading keeps the session paused.
 
+**The failed-turn marker.** When the agent's turn ends on an error worth trying again, the plugin writes `.afk/<session>/.turn-failed` with the error's name in it. The daemon reads it and types the session's resume command, a limited number of times, as described under "Recovering a session". The marker is removed when the session takes its next prompt or finishes a turn. A rate limit never writes this marker.
+
 **The login check.** The daemon checks that the agent is still logged in, about once an hour, and every `probe_interval` while it is logged out, so that logging in again is noticed soon. A check that cannot run keeps the last answer: not knowing is not the same as logged out. The check cannot warn you ahead of time, because the agent's status output has no expiry date; you learn of it when the login has ended. Logged out has two effects:
 
 - Nothing new starts, and a paused session stays paused. A session already running is left alone.
@@ -995,7 +1006,7 @@ afk inbox                          # find the item
 afk inbox answer <id> <text>       # answer it
 ```
 
-On its next pass the daemon sees every item answered and marks the task `running` again. A stall report, a "Session stopped running" report and a "Session could not be recovered" item park the task in the same way: the task is `parked` on the item, and answering it puts the task back to `running` and types the session's resume command into the session. A "Session waiting at the terminal" item means the agent is asking a person something, so attach and answer it first (`afk attach <session>`). A task whose status file cannot be read is parked on an open blocking item too, where it used to wait.
+On its next pass the daemon sees every item answered and marks the task `running` again. A stall report, a "Session stopped running" report, a "Session could not be recovered" item and a "Session kept failing" item park the task in the same way: the task is `parked` on the item, and answering it puts the task back to `running` and types the session's resume command into the session. A "Session waiting at the terminal" item means the agent is asking a person something, so attach and answer it first (`afk attach <session>`). By then afk has usually typed the resume command into the session once already, and the item says whether it did and what it saw. A task whose status file cannot be read is parked on an open blocking item too, where it used to wait.
 
 **Shipping.** When a session finishes its task, the daemon takes the work the rest of the way. The task stays `shipping` and the daemon does these in order, saving where it got to after each step, so a restart or a crash never pushes, opens or merges twice:
 

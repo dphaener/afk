@@ -46,7 +46,7 @@
     ],
     "StopFailure": [
       {
-        "matcher": "rate_limit",
+        "matcher": "rate_limit|overloaded|server_error|unknown",
         "hooks": [
           {
             "type": "command",

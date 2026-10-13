@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Hermetic tests for on-stop-failure.sh (the rate-limit marker writer,
-# status-schema.md section 10). Each case gets its own "$ROOT/<case>/wt" so a
+# Hermetic tests for on-stop-failure.sh (the rate-limit and failed-turn marker
+# writer, status-schema.md section 10). Each case gets its own "$ROOT/<case>/wt" so a
 # marker left by an earlier case cannot satisfy a later "absent" assertion.
 #
 # Load-bearing rows: matched (marker written with a parseable `at`, beside the
-# right session only), the no-write rows (unmatched, terminal phase, bad JSON,
+# right session only), the per-reason rows (a listed reason writes only
+# .turn-failed, rate_limit only .rate-limited, a login/billing/request fault or
+# a missing `error` nothing), the no-write rows (unmatched, terminal phase, bad JSON,
 # missing jq - each exits 0 and writes nothing), status.json byte-identical,
 # and the final sweep for leftover temp files.
 set -u
@@ -69,11 +71,16 @@ worktree_with_two_sessions() {
   printf '%s' "$d"
 }
 
-# Only cwd and session_id are fields the hook may rely on; the rest mimics a
-# real StopFailure payload and must not matter.
+# Only cwd, session_id and error are fields the hook may rely on; the rest
+# mimics a real StopFailure payload (error_details and last_assistant_message
+# as the hooks reference shows them) and must not matter. $3 is the reason; an
+# empty one leaves the `error` key out entirely.
 failure_payload() {
-  jq -nc --arg sid "$1" --arg cwd "$2" \
-    '{session_id:$sid, cwd:$cwd, hook_event_name:"StopFailure", reason:"rate_limit"}'
+  jq -nc --arg sid "$1" --arg cwd "$2" --arg err "${3-rate_limit}" \
+    '{session_id:$sid, cwd:$cwd, hook_event_name:"StopFailure",
+      error_details:"429 Too Many Requests",
+      last_assistant_message:"API Error: Rate limit reached"}
+     + (if $err == "" then {} else {error:$err} end)'
 }
 
 hash_of() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
@@ -101,6 +108,58 @@ test_matched_session() {
   check_eq "status.json is byte-identical after the hook runs" "$before" "$after"
 }
 
+# Each reason the hook is allowed to retry on writes .turn-failed with that
+# reason and a valid time, and never .rate-limited.
+test_retryable_reasons() {
+  local reason wt code out marker at
+  for reason in server_error overloaded unknown; do
+    wt=$(worktree_with_two_sessions "retry-$reason")
+    out=$(run_hook "$(failure_payload "sid-1" "$wt" "$reason")"); code=$?
+    check_exit "$reason exits 0" 0 "$code" "$out"
+    marker="$wt/.afk/demo/.turn-failed"
+    check_cond "$reason writes .turn-failed" test -f "$marker"
+    check_eq "$reason marker is one line" "1" "$(grep -c '' "$marker" 2>/dev/null)"
+    at=$(jq -r '.at' "$marker" 2>/dev/null)
+    check_cond "$reason marker 'at' is an RFC 3339 UTC timestamp" \
+      bash -c '[[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]' _ "$at"
+    check_eq "$reason marker holds the reason" "$reason" "$(jq -r '.reason' "$marker" 2>/dev/null)"
+    check_eq "$reason marker has only at and reason" '["at","reason"]' "$(jq -c 'keys' "$marker" 2>/dev/null)"
+    check_cond "$reason writes no .rate-limited" test ! -e "$wt/.afk/demo/.rate-limited"
+    check_cond "$reason leaves the other session alone" test ! -e "$wt/.afk/other/.turn-failed"
+  done
+}
+
+test_rate_limit_only_rate_marker() {
+  local wt code out
+  wt=$(worktree_with_two_sessions rate-only)
+  out=$(run_hook "$(failure_payload "sid-1" "$wt" rate_limit)"); code=$?
+  check_exit "rate_limit exits 0" 0 "$code" "$out"
+  check_cond "rate_limit writes .rate-limited" test -f "$wt/.afk/demo/.rate-limited"
+  check_cond "rate_limit writes no .turn-failed" test ! -e "$wt/.afk/demo/.turn-failed"
+}
+
+test_other_reasons_write_nothing() {
+  local reason wt code out
+  for reason in authentication_failed billing_error max_output_tokens invalid_request model_not_found ""; do
+    wt=$(worktree_with_two_sessions "none-${reason:-missing}")
+    out=$(run_hook "$(failure_payload "sid-1" "$wt" "$reason")"); code=$?
+    check_exit "reason '${reason:-<missing>}' exits 0" 0 "$code" "$out"
+    check_cond "reason '${reason:-<missing>}' writes no .turn-failed" test ! -e "$wt/.afk/demo/.turn-failed"
+    check_cond "reason '${reason:-<missing>}' writes no .rate-limited" test ! -e "$wt/.afk/demo/.rate-limited"
+  done
+}
+
+test_repeat_overwrites_turn_failed() {
+  local wt code out
+  wt=$(worktree_with_two_sessions repeat-failed)
+  printf '{"at":"2020-01-01T00:00:00Z","reason":"unknown"}\n' > "$wt/.afk/demo/.turn-failed"
+  out=$(run_hook "$(failure_payload "sid-1" "$wt" server_error)"); code=$?
+  check_exit "repeat failed turn exits 0" 0 "$code" "$out"
+  check_cond "repeat replaces the old timestamp" \
+    test "$(jq -r '.at' "$wt/.afk/demo/.turn-failed" 2>/dev/null)" != "2020-01-01T00:00:00Z"
+  check_eq "repeat replaces the old reason" "server_error" "$(jq -r '.reason' "$wt/.afk/demo/.turn-failed" 2>/dev/null)"
+}
+
 test_repeat_overwrites() {
   local wt payload code out
   wt=$(worktree_with_two_sessions repeat)
@@ -115,21 +174,22 @@ test_repeat_overwrites() {
 test_unmatched_session_id() {
   local wt payload code out
   wt=$(worktree_with_two_sessions unmatched)
-  payload=$(failure_payload "sid-9" "$wt")
+  payload=$(failure_payload "sid-9" "$wt" server_error)
   out=$(run_hook "$payload"); code=$?
   check_exit "unmatched session_id exits 0" 0 "$code" "$out"
   check_cond "no marker under demo when unmatched" test ! -e "$wt/.afk/demo/.rate-limited"
   check_cond "no marker under other when unmatched" test ! -e "$wt/.afk/other/.rate-limited"
+  check_cond "no failed-turn marker when unmatched" test ! -e "$wt/.afk/demo/.turn-failed" -a ! -e "$wt/.afk/other/.turn-failed"
 }
 
 test_terminal_phase() {
   local wt payload code out phase
   for phase in done failed; do
     wt=$(worktree_with_two_sessions "terminal-$phase" "$phase")
-    payload=$(failure_payload "sid-1" "$wt")
+    payload=$(failure_payload "sid-1" "$wt" server_error)
     out=$(run_hook "$payload"); code=$?
     check_exit "phase $phase exits 0" 0 "$code" "$out"
-    check_cond "phase $phase writes no marker" test ! -e "$wt/.afk/demo/.rate-limited"
+    check_cond "phase $phase writes no marker" test ! -e "$wt/.afk/demo/.turn-failed"
   done
 }
 
@@ -157,13 +217,13 @@ test_empty_stdin_and_missing_cwd() {
 test_missing_jq() {
   local wt payload code out empty
   wt=$(worktree_with_two_sessions no-jq)
-  payload=$(failure_payload "sid-1" "$wt")
+  payload=$(failure_payload "sid-1" "$wt" server_error)
   empty="$ROOT/empty-path"
   mkdir -p "$empty"
   ln -sf "$(command -v dirname)" "$empty/dirname"
   out=$(printf '%s' "$payload" | PATH="$empty" "$(command -v bash)" "$SCRIPT" 2>&1); code=$?
   check_exit "missing jq exits 0" 0 "$code" "$out"
-  check_cond "missing jq writes no marker" test ! -e "$wt/.afk/demo/.rate-limited"
+  check_cond "missing jq writes no marker" test ! -e "$wt/.afk/demo/.turn-failed"
 }
 
 test_hook_log() {
@@ -179,7 +239,11 @@ test_hook_log() {
 }
 
 test_matched_session
+test_retryable_reasons
+test_rate_limit_only_rate_marker
+test_other_reasons_write_nothing
 test_repeat_overwrites
+test_repeat_overwrites_turn_failed
 test_unmatched_session_id
 test_terminal_phase
 test_invalid_json_stdin
@@ -189,8 +253,8 @@ test_hook_log
 
 # The marker is written to .rate-limited.tmp.$$ then renamed, so a surviving
 # temp file means the rename never happened or an error path forgot cleanup.
-leftovers=$(find "$ROOT" -name '.rate-limited.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
-check_eq "no .rate-limited.tmp.* leftover anywhere under ROOT" "0" "$leftovers"
+leftovers=$(find "$ROOT" \( -name '.rate-limited.tmp.*' -o -name '.turn-failed.tmp.*' \) 2>/dev/null | wc -l | tr -d ' ')
+check_eq "no marker .tmp.* leftover anywhere under ROOT" "0" "$leftovers"
 
 rm -rf "$ROOT"
 echo
