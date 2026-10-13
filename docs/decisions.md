@@ -2092,3 +2092,45 @@ Where the code does something the section above does not say (2026-10-13).
 
 - Try the whole path once against a real project that has `[planning] via_pr = true`: answer a question and confirm the pull request opens, that merging and pulling it lets the task start after you answer the `Put the answer in the plan: …` item. The tests use a scripted runner, not GitHub.
 - Read an `Open question: …` item on a screen and judge whether its wording is clear enough.
+
+## T5.7
+
+Approve and go. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **How a plan can be read on the web page before it is approved (A1).** The page only knows the projects in the machine config, and a project gets there when it is approved. So a small list, `plan-reviews.json` in afk's state folder, names the projects whose plan is waiting. It is written when a new planning session reaches `review` and the entry is dropped by the approve. The page shows the plan view for configured projects and for listed ones. Adding the project to the machine config early was the other way, and it would have needed a new daemon rule to stop the build starting.
+- **Who sends "plan ready for review" (A2).** `afk plan advance`, when it moves a new session to `review`, because that is the one place the phase is entered. It is best effort: a notification that cannot be sent never undoes the advance. Change sessions send nothing.
+- **How the daemon sees a new project (A3).** It reads the project list from `config.toml` again at the top of every pass. If the file cannot be read it keeps the list it had and says so once. Every other setting is still read once, at the start.
+- **A daemon with no projects (A4)** starts and waits, and says how to add one. It used to exit with an error, which on a new machine would mean the first approve finds no daemon to pick the project up.
+- **How the plan is rendered (A5).** afk has its own small renderer for the part of markdown a plan uses, and it escapes every piece of text. No markdown library is added.
+- **What the approve commits (A6).** The plan, `afk.toml`, `.gitignore`, `CONTEXT.md`, the design brief and the agent instruction files: only those that exist and have changed, and nothing else in the folder. Task sessions work in copies made from committed files, so the instructions and the ignore lines have to be committed for them to apply.
+- **Whether it pushes (A7).** Yes, to `origin` when the project has one; a push that fails is a note with the command to run, not a failure. With `[planning] via_pr` it does not push, because a push to the base branch deploys in such a project, and the commit goes out with the first task's pull request.
+- **Approving twice, and change sessions (A8).** A plan that is already approved says so and nothing changes. An extend, amend or reconcile session is refused: its changes are already in the plan.
+- **The order of the steps (A9):** `afk.toml`, the commit, the ledger, the machine config, the phase, then the review-list entry. The ledger exists before the daemon can see the project, and the phase is written last, so a run that stops half way leaves the session at `review` and running it again finishes it.
+- **The project command (A10)** is `afk project add [--name NAME] [DIR]`, `remove <name or DIR>` and `list`. `add` creates `config.toml` when there is none. `remove` changes nothing in the project and stops no session.
+- **Tests (A11)** are written with the code, as table tests. **Nothing had to be in place first (A12).**
+
+### As built
+
+Where the code does something the section above does not say (2026-10-13).
+
+- **The daemon knows a project by its folder, not its name.** A project renamed in `config.toml` is the same project and nothing is logged. After a config that could not be read is mended, the daemon says once that the list can be read again.
+- **The web page shows the daemon's last good list.** It does not read `config.toml` itself, so a file caught half-saved never empties the page while the daemon still builds.
+- **Before any step, the approve also refuses** when the folder is not a git repository, the plan is outside the project folder, the machine config cannot be read, or the daemon would refuse the plan. Each refusal ends with "Nothing was changed."
+- **The push only follows a commit made in the same run.** A second run that finds nothing to commit does not push; a push that failed printed the command to run by hand.
+- **A review-only plan has a plan view and nothing else:** no project page, no inbox, no pause or resume. An entry is hidden when a configured project has the same folder or the same name.
+- **The plan view shows the checker's errors and only counts the warnings.** Open questions are shown as plain text. Numbered lists are drawn too; markdown links, italics and images are not.
+- **The review list is written even with no ntfy address;** only the notification needs one. A name in the list is the folder name, with `-2`, `-3` when two folders share it, and it stays the same when a plan goes up for review again.
+- **`afk project remove`** takes the name, the path as listed, or a folder that resolves to the project. A word that matches two projects is refused.
+- **The agent instruction files** are a list in `internal/provider`, not a new method on the provider interface.
+- **Plugin version 5.7.2**, because the planning skill's review step now ends with `afk plan approve`. The OpenCode port gets a line in its lag note.
+
+### Scope ideas
+
+- An approve that stops between writing the phase and dropping the review-list entry leaves the entry behind, and a second run does nothing. It is hidden while the project is configured, and would show as waiting again after `afk project remove`. Letting the already-approved path drop the entry would close it.
+- The daemon's reload asks git for each project's main checkout on every pass. With a few projects and a 5 second tick that is small; caching it by path would remove it.
+
+### For the owner to check
+
+- Approve a real plan while `afk daemon` runs and see the first task start with no restart. The test does this with a stand-in for the agent launch.
+- Open a plan view on a phone and judge whether the rendered plan reads well, and whether the "Plan ready for review" notification's link opens it.
+- `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.

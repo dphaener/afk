@@ -9,6 +9,7 @@
 <span class="muted">{{.Phase}}{{if .WaitingOn}} (waiting for {{range $i, $w := .WaitingOn}}{{if $i}}, {{end}}{{$w}}{{end}}){{end}}</span></p>
 {{else}}<p class="muted">No task is running right now.</p>{{end}}
 <p>{{.Done}} of {{.Total}} tasks done.<br><span class="muted">Last ship: {{.LastShip.Text}}</span></p>
+<p><a href="/p/{{pe .Name}}/plan">Read the plan</a></p>
 {{with .State}}<p class="muted">Daemon: {{.Kind}}{{if .Reason}} - {{.Reason}}{{end}}{{if .At}} ({{when .At}}){{end}}</p>{{end}}
 
 <form method="post" action="/p/{{pe .Name}}/{{if or .Paused .Stopped}}resume{{else}}pause{{end}}">

@@ -26,6 +26,8 @@ func cmdPlan(args []string) {
 		os.Exit(runPlanStatus(args[1:], os.Stdout, os.Stderr, realPlanDeps()))
 	case planRouteAdvance:
 		os.Exit(runPlanAdvance(args[1:], os.Stdout, os.Stderr, realPlanDeps()))
+	case planRouteApprove:
+		os.Exit(runPlanApprove(args[1:], os.Stdout, os.Stderr, realApproveDeps()))
 	case planRouteMode:
 		// The word is the mode: extend, amend or reconcile.
 		os.Exit(runPlanMode(args[0], args[1:], os.Stdout, os.Stderr, realPlanDeps()))
@@ -62,6 +64,7 @@ func printPlanUsage(w io.Writer) {
 record a task's outcome in a session's plan
 
 Usage:
+  %s
   %s
   %s
   %s
@@ -113,6 +116,20 @@ advance moves the session on to the next phase when the current phase's work
 is saved, and says what is missing when it is not. The planning session runs
 it itself; you rarely need to. Exit codes: 0 moved, 1 refused, 2 the command
 was written wrongly.
+
+approve is your "go" for a plan you have read. It works only when the planning
+session of a new plan is at the review phase and afk plan lint reports no
+error; otherwise it says why and changes nothing. It then writes afk.toml when
+the project has none, commits the plan and the project's documents (the plan,
+afk.toml, .gitignore, CONTEXT.md, the design brief and the agent instruction
+files; never anything else), creates the task ledger, adds the project to the
+projects afk daemon builds, and marks the session approved. The commit is
+pushed when the repository has an origin; with via_pr = true under [planning]
+in afk.toml it is not pushed and goes out with the first task's pull request.
+A running afk daemon starts the first task within a few seconds. Running it
+again is safe: a step already done is not repeated, and a run that stopped
+half way is finished by running it again. Exit codes: 0 approved (or already
+approved), 1 refused or a step failed, 2 the command was written wrongly.
 
 patch, insert and depend change the master plan (the plan named in afk.toml,
 docs/PLAN.md by default) by one guarded patch each. The planning session uses
@@ -167,7 +184,7 @@ nothing the second time. A task already marked failed keeps its first reason.
 Exit codes: 0 done (or nothing to do), 1 the plan or the task was not found,
 2 the command was written wrongly.
 `, planSessionUsageLine, planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine,
-		planStatusUsageLine, planAdvanceUsageLine,
+		planStatusUsageLine, planAdvanceUsageLine, planApproveUsageLine,
 		planPatchUsageLine, planInsertUsageLine, planDependUsageLine, planNextIDUsageLine,
 		planNextFollowupUsageLine,
 		strings.Join(provider.Names(), ", "))

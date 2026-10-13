@@ -20,6 +20,7 @@ var subcommands = map[string]func([]string){
 	"next":    cmdNext,
 	"ledger":  cmdLedger,
 	"profile": cmdProfile,
+	"project": cmdProject,
 	"usage":   cmdUsage,
 	"inbox":   cmdInbox,
 	"tokens":  cmdTokens,
@@ -205,6 +206,9 @@ Subcommands:
                  stop asking: 'profile init' writes a template, 'profile check' lists
                  what is wrong, and 'profile set' adds or changes one entry:
                  afk profile set <topic> <value> [--kind KIND] [--rule|--default] [--reason TEXT]
+  project        Choose the projects the daemon builds: 'project list', and
+                 'project add' or 'project remove' with a name or folder:
+                 afk project add [--name NAME] [DIR]
   usage          Show how much of the agent's usage windows is spent, when they
                  reset, and what the usage governor would do:
                  afk usage [--provider NAME] [--refresh]

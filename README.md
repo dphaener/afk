@@ -462,11 +462,36 @@ The nine phases, in order:
 6. `draft` — the plan is written.
 7. `check` — `afk plan lint` reports no errors and a critic has reviewed the draft.
 8. `design` — only for a project with an interface (you answer the question `r1-interface` with `yes`; with `no` the session goes from `check` straight to `review`). It leaves behind `docs/design-brief.md`, which tells you what to ask a design tool for, and a plan task called `Design system (owner)` in the first milestone, with the tasks that build the interface waiting for it. The daemon then puts that task in your inbox; follow its steps, which end in `afk plan reconcile docs/design-system.md`.
-9. `review` — you read the draft. Approving it is not built yet.
+9. `review` — you read the draft. When it is a new plan, the session ends here with the checker's summary, and you approve it with `afk plan approve` (below).
+10. `approved` — written by `afk plan approve` and by nothing else, last of all its steps. A session at this phase has a project the daemon is building.
+
+When a new plan reaches `review`, afk also notes it on a list of plans waiting for approval (so the web page can show it, see "The web page") and, when the project has an `ntfy_url`, sends a "Plan ready for review" notification. That message gives the counts from `afk plan lint --summary`, tells you to read the plan and run `afk plan approve`, and links to the plan's page when the web page is on. The list entry is written even without an `ntfy_url`; a failure to write it or to send is a one-line note and never stops the phase.
+
+**`afk plan approve`** is your "go". Run it in the project, or give `--project DIR`.
+
+```bash
+afk plan approve [--project DIR]
+```
+
+It refuses, and changes nothing, when there is no planning session; when the session is a change session (`extend`, `amend`, `reconcile`: its changes are already in the plan); when the session is not at `review`; when the checker reports errors in the plan (run `afk plan lint`); when the daemon could not build from the project as it is; when the folder is not a git repository; when the plan is outside the project folder; or when afk's `config.toml` cannot be read. Each refusal says why and ends with "Nothing was changed."
+
+Otherwise it does five things, in this order, and prints a line for each one that changed something:
+
+1. Writes `afk.toml` with one line, `plan = "<where the plan is>"`, if the project has none. An existing `afk.toml` is never overwritten.
+2. Commits the plan and the project's documents: the plan, `afk.toml`, `.gitignore`, `CONTEXT.md`, `docs/design-brief.md`, and the agent instruction files (`AGENTS.md`, `CLAUDE.md`), whichever exist. Nothing else in the checkout is staged, and git hooks run. The commit message is `docs(plan): Approve the master plan`.
+3. Creates the task ledger (`.afk/build/ledger.json`), with no task done.
+4. Adds the project to the projects the daemon builds, as `afk project add` does.
+5. Marks the planning session `approved`, and takes the plan off the list of plans waiting for approval.
+
+Run it again whenever you like. Each step is done only if it is not done already, so a second run after a full one changes nothing ("The plan is already approved"), and a run that stopped half way (git refused the commit, the disk was full) is finished by running it again. When a step fails, the message names it, says what was done in this run and what is left, and the plan stays at `review` until the last step is done.
+
+When it pushes: after a commit it pushes the current branch to `origin` (never forced). It does not push when the repository has no `origin` or is on no branch, and a failed push is a note with the command to run by hand, never a failure of the approval. With `[planning] via_pr = true` in `afk.toml` it does not push at all, since a push to the base branch can be a deploy: the commit goes out with the first task's pull request.
+
+A running `afk daemon` picks the project up within a few seconds, and starts its first ready task without a restart. The closing lines say whether a daemon appears to be running or tell you to start one with `afk daemon`.
 
 **Where the files are.** The session's state is in `.afk/plan/` in the project's main checkout: `state.json`, `brief.md`, `survey.md`, `questions.jsonl`, `slices.md` and `critic.md`, and in a change session also `changes.md` (the changes made, one line each; its content is the gate for leaving `draft`) and, for `amend --yes`, an empty file named `yes`. `archive/` holds the files of earlier, finished sessions (see `docs/PLAN.md` section 4.8). The agent itself runs as a session named `master-plan`, with its own folder `.afk/master-plan/`, so it shows in the dashboard under that name. Cleaning that session does not delete the planning state.
 
-**Exit codes.** `afk plan` and the three change commands: 0 you left the session (or the dry run printed), 1 the session could not be started here (no terminal, no plan to change, a session already open, an agent that cannot plan, or a project with a plan and no mode chosen), 2 the command was written wrongly, 10 the session was opened somewhere else, 11 the session ended, 12 it is not running. `afk plan status`: 0 printed, 1 one of the session's files is damaged, 2 bad usage. `afk plan advance`: 0 moved, 1 refused, 2 bad usage.
+**Exit codes.** `afk plan` and the three change commands: 0 you left the session (or the dry run printed), 1 the session could not be started here (no terminal, no plan to change, a session already open, an agent that cannot plan, or a project with a plan and no mode chosen), 2 the command was written wrongly, 10 the session was opened somewhere else, 11 the session ended, 12 it is not running. `afk plan status`: 0 printed, 1 one of the session's files is damaged, 2 bad usage. `afk plan advance`: 0 moved, 1 refused, 2 bad usage. `afk plan approve`: 0 approved, or already approved; 1 refused, or a step failed; 2 bad usage.
 
 ### `afk plan lint` — Check a master plan
 
@@ -906,7 +931,7 @@ Stopping the daemon (ctrl-c, or `systemctl --user stop afkd`) never stops a sess
 - afk wakes a session at most `max_wakes` times per task (default 3; `0` means it never wakes one). A session that still fails after that parks its task with an inbox item titled "Session kept failing: <task> (<session>)". The item says what the error was, and what to do: a fault at the agent's service usually passes by itself, while a message about your login or account has to be fixed first.
 - Answering that item gives the task a fresh set of wakes, and afk types the session's resume command into it, as for any answered item. If the session is beyond saving, `afk clean <session>` and then `afk ledger set <task> pending` start the task again in a new session.
 
-**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. The owner profile, `profile.toml`, lives in the same folder (see `afk profile`). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build and `afk daemon` exits 1. Keys it does not know are ignored.
+**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. The owner profile, `profile.toml`, lives in the same folder (see `afk profile`). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build, says so once, and waits: it starts with no projects and picks up one added by `afk project add` or `afk plan approve`. `afk daemon --once` with no project prints that and exits 0. Keys it does not know are ignored.
 
 ```toml
 # ~/.config/afk/config.toml
@@ -956,6 +981,7 @@ path = "/srv/another-app"
 - `/` — every project: the task being worked on and its phase, how many tasks are done, the last ship, whether it is paused or stopped, how many questions block work, and the usage reading.
 - `/p/<project>` — the same for one project, the daemon's state, a Pause or Resume button, and the project's inbox.
 - `/p/<project>/inbox/<id>` — one inbox item. If it is open, the form takes your answer (a choice, your own text, or both; typed text wins). The answer is stored with the channel `web` (the item then reads "Given ... through web"), and the daemon un-parks the task on its next pass, exactly as after `afk inbox answer`. A second answer to the same item is refused and the first is kept.
+- `/p/<project>/plan` — the project's master plan, drawn as a page: the checker's summary (the counts from `afk plan lint --summary`), the open questions, and the plan's own text with each task heading linkable (`#T5.7`). It is read-only: there is no button to approve, because a plan is approved with `afk plan approve` in the project folder. A plan waiting for approval is shown here even though its project is not in `config.toml` yet, and the overview `/` lists it under "Plans waiting for approval". If the plan cannot be read, the page says which file and why.
 - `/usage` — each usage window, when it resets, and what the governor decided.
 
 **Pause and resume.** The buttons do what [`afk pause` and `afk resume`](#afk-pause-and-afk-resume--hold-and-release-the-daemon) do, including clearing a stopped line, and write to the decision log in the same way.
@@ -1070,7 +1096,25 @@ A paused project gets a `Paused:` line first. `Doing:` becomes `Last:` when no d
 
 To run the daemon as a service on Linux, see [`contrib/README.md`](contrib/README.md). To get a project ready on an always-on machine (its prerequisites, `afk.toml`, the ledger, the web page over a tunnel), see [`docs/runbook-vm.md`](docs/runbook-vm.md).
 
-**Exit codes:** `afk daemon` returns 0 when it was stopped, when it stopped itself because it found a new version of afk on disk, or when `--once` finished, 1 when `config.toml` could not be used, no project is configured, or a daemon is already running, and 2 when the command was written wrongly. `afk daemon status` returns 0 when the report was printed, 1 when `config.toml` itself cannot be read, and 2 when the command was written wrongly.
+**Exit codes:** `afk daemon` returns 0 when it was stopped, when it stopped itself because it found a new version of afk on disk, or when `--once` finished, 1 when `config.toml` could not be used or a daemon is already running, and 2 when the command was written wrongly. `afk daemon status` returns 0 when the report was printed, 1 when `config.toml` itself cannot be read, and 2 when the command was written wrongly.
+
+### `afk project` — Choose the projects the daemon builds
+
+```bash
+afk project list
+afk project add [--name NAME] [DIR]
+afk project remove <name or DIR>
+```
+
+The daemon builds the projects listed as `[[project]]` in `config.toml` (see "Machine config" above). `afk project` edits that list for you, so you do not have to open the file. Every other line of the file, comments included, is kept, and afk reads the result again before it saves; if it cannot be sure only one project changed, it writes nothing.
+
+- `afk project list` — One line per project, `<name>  <path>`. With none listed, it says so and how to add one.
+- `afk project add` — Lists a project. `DIR` is the current folder unless you give one, and from inside a session's worktree it lists the main checkout. The folder must be a git repository. `--name` sets the name it is known by; the default is the folder name. It creates `config.toml` (and its folder) if there is none. A folder that is already listed is not an error: it says so and changes nothing.
+- `afk project remove` — Takes a project out of the list by name or folder. The project's own files and any session that is running are left alone.
+
+A running `afk daemon` reads the project list again on every look (every tick), so it picks changes up within a few seconds and does not need a restart. The project list is the only setting it re-reads: the tick and everything under `[daemon]`, `[governor]`, `[web]` and `provider` are read once at the start, so restart `afk daemon` after changing any of them. If `config.toml` becomes unreadable while the daemon runs, it keeps the projects it had and logs the problem once. The web page shows a new project one look later than the daemon does.
+
+**Exit codes:** 0 when done or there was nothing to do, 1 when the folder is not a repository, the name is taken, the project is not listed, or the config could not be read or written, 2 when the command was written wrongly.
 
 ### `afk pause` and `afk resume` — Hold and release the daemon
 

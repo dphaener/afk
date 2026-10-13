@@ -1994,6 +1994,254 @@ func TestRunNewBinary(t *testing.T) {
 	}
 }
 
+// TestRunProjects: Run asks Deps.Projects for its list at the top of every
+// pass. Each row runs four whole passes; wantA and wantB are the passes on
+// which each project was ticked, and wantLogs is every line Run itself logged
+// (the ones that start "afk: "), with each root written as <a> or <b>.
+//
+// The load-bearing rows:
+//   - "a project appears on the second pass": b is ticked on pass two itself,
+//     with Run never returning, which is the whole point of the hook.
+//   - "the list cannot be read": both projects are still ticked on every
+//     pass, and four failures make one log line. Emptying the list here would
+//     stop a running build over a config file caught half-saved.
+//   - "the list is read, then cannot be": the list kept is the last one read,
+//     not the one Run was started with.
+//   - "an empty list": nothing is ticked and Run goes on asking; it must not
+//     return, since a daemon started before its first project is approved has
+//     to still be there when the project is.
+//   - "no hook": the starting list is ticked on every pass and nothing is
+//     logged, as before the hook existed.
+//
+// Passes are counted by Deps.Binary, which Run reads once at the top of each
+// pass and which never stops a run whose start identity is unknown. Its fifth
+// read cancels the context, so the fifth pass ticks nothing and Run returns:
+// the test waits on nothing but the loop, at a one-millisecond tick.
+func TestRunProjects(t *testing.T) {
+	const passes = 4
+	bad, worse := errors.New("config.toml: line 3 is not finished"), errors.New("config.toml: no such file")
+	always := func(list string) func(int) (string, error) {
+		return func(int) (string, error) { return list, nil }
+	}
+	cases := []struct {
+		name string
+		// start is the list Run is given: "a", "b", "ab" or "".
+		start string
+		// hook answers the call-th ask (from 1) with a list or an error. Nil
+		// leaves Deps.Projects unset.
+		hook         func(call int) (string, error)
+		wantA, wantB []int
+		wantLogs     []string
+	}{
+		{"no hook", "a", nil, []int{1, 2, 3, 4}, nil, nil},
+		{"no hook and no projects", "", nil, nil, nil, nil},
+		{"the same list every pass", "ab", always("ab"), []int{1, 2, 3, 4}, []int{1, 2, 3, 4}, nil},
+		{"a project appears on the second pass", "a", func(call int) (string, error) {
+			if call >= 2 {
+				return "ab", nil
+			}
+			return "a", nil
+		}, []int{1, 2, 3, 4}, []int{2, 3, 4}, []string{"afk: now running b (<b>)"}},
+		{"the first ask already differs from the start", "a", always("b"), nil, []int{1, 2, 3, 4},
+			[]string{"afk: now running b (<b>)", "afk: no longer running a"}},
+		{"a project is dropped on the third pass", "ab", func(call int) (string, error) {
+			if call >= 3 {
+				return "a", nil
+			}
+			return "ab", nil
+		}, []int{1, 2, 3, 4}, []int{1, 2}, []string{"afk: no longer running b"}},
+		{"the list cannot be read", "ab", func(int) (string, error) { return "", bad },
+			[]int{1, 2, 3, 4}, []int{1, 2, 3, 4},
+			[]string{"afk: the project list could not be read, so the projects already running carry on: " + bad.Error()}},
+		{"the list is read, then cannot be", "a", func(call int) (string, error) {
+			if call >= 2 {
+				return "", bad
+			}
+			return "ab", nil
+		}, []int{1, 2, 3, 4}, []int{1, 2, 3, 4}, []string{
+			"afk: now running b (<b>)",
+			"afk: the project list could not be read, so the projects already running carry on: " + bad.Error(),
+		}},
+		{"two different failures", "a", func(call int) (string, error) {
+			if call >= 3 {
+				return "", worse
+			}
+			return "", bad
+		}, []int{1, 2, 3, 4}, nil, []string{
+			"afk: the project list could not be read, so the projects already running carry on: " + bad.Error(),
+			"afk: the project list could not be read, so the projects already running carry on: " + worse.Error(),
+		}},
+		{"mended, then broken the same way", "a", func(call int) (string, error) {
+			if call == 2 {
+				return "a", nil
+			}
+			return "", bad
+		}, []int{1, 2, 3, 4}, nil, []string{
+			"afk: the project list could not be read, so the projects already running carry on: " + bad.Error(),
+			"afk: the project list can be read again.",
+			"afk: the project list could not be read, so the projects already running carry on: " + bad.Error(),
+		}},
+		{"an empty list", "", always(""), nil, nil, nil},
+		{"an empty list, then a project", "", func(call int) (string, error) {
+			if call >= 3 {
+				return "a", nil
+			}
+			return "", nil
+		}, []int{3, 4}, nil, []string{"afk: now running a (<a>)"}},
+		{"every project goes away", "ab", func(call int) (string, error) {
+			if call >= 2 {
+				return "", nil
+			}
+			return "ab", nil
+		}, []int{1}, []int{1}, []string{"afk: no longer running a", "afk: no longer running b"}},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			a := newRig(t, task("T1.1"))
+			b := newRig(t, task("T1.1"))
+			list := func(names string) []Project {
+				var out []Project
+				for _, n := range names {
+					switch n {
+					case 'a':
+						out = append(out, Project{Name: "a", Root: a.root})
+					case 'b':
+						out = append(out, Project{Name: "b", Root: b.root})
+					}
+				}
+				return out
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			d := a.deps()
+			pass := 0
+			d.Binary = func() (Binary, error) {
+				if pass++; pass > passes {
+					cancel()
+				}
+				return Binary{}, nil
+			}
+			ticked := map[string][]int{}
+			load := d.LoadBuild
+			d.LoadBuild = func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
+				if got := ticked[root]; len(got) == 0 || got[len(got)-1] != pass {
+					ticked[root] = append(got, pass)
+				}
+				return load(root)
+			}
+			asks := 0
+			if tt.hook != nil {
+				d.Projects = func() ([]Project, error) {
+					asks++
+					names, err := tt.hook(asks)
+					if err != nil {
+						return nil, err
+					}
+					return list(names), nil
+				}
+			}
+
+			if err := Run(ctx, list(tt.start), a.settings(), time.Millisecond, d); err != nil {
+				t.Fatalf("Run = %v, want nil", err)
+			}
+
+			if pass != passes+1 {
+				t.Errorf("Run made %d passes, want it still going on pass %d", pass, passes+1)
+			}
+			if tt.hook != nil && asks != passes+1 {
+				t.Errorf("the list was asked for %d times, want once a pass (%d)", asks, passes+1)
+			}
+			if got := ticked[a.root]; !slices.Equal(got, tt.wantA) {
+				t.Errorf("a was ticked on passes %v, want %v", got, tt.wantA)
+			}
+			if got := ticked[b.root]; !slices.Equal(got, tt.wantB) {
+				t.Errorf("b was ticked on passes %v, want %v", got, tt.wantB)
+			}
+			var logs []string
+			for _, line := range a.logs {
+				if strings.HasPrefix(line, "afk: ") {
+					line = strings.ReplaceAll(line, a.root, "<a>")
+					logs = append(logs, strings.ReplaceAll(line, b.root, "<b>"))
+				}
+			}
+			if !slices.Equal(logs, tt.wantLogs) {
+				t.Errorf("Run logged\n  %s\nwant\n  %s", strings.Join(logs, "\n  "), strings.Join(tt.wantLogs, "\n  "))
+			}
+		})
+	}
+}
+
+// TestRunProjectsBeforeNewBinary: the list is read before the check for a new
+// program file, so the restart is recorded for a project that joined on the
+// very pass the daemon stops, and not for one that left on it. Read the other
+// way round, a project added just before an upgrade would have no line in its
+// decision log saying why the daemon went away.
+func TestRunProjectsBeforeNewBinary(t *testing.T) {
+	a := newRig(t, task("T1.1"))
+	b := newRig(t, task("T1.1"))
+	old := Binary{Path: "/bin/afk", Size: 10, ModTime: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
+	d := a.deps()
+	d.Binary = func() (Binary, error) { return Binary{Path: old.Path, Size: 11, ModTime: old.ModTime}, nil }
+	d.Projects = func() ([]Project, error) { return []Project{{Name: "b", Root: b.root}}, nil }
+	s := a.settings()
+	s.Binary = old
+
+	err := Run(context.Background(), []Project{{Name: "a", Root: a.root}}, s, time.Millisecond, d)
+
+	if !errors.Is(err, ErrNewBinary) {
+		t.Fatalf("Run = %v, want ErrNewBinary", err)
+	}
+	if got := b.count(KindDaemonRestart); got != 1 {
+		t.Errorf("the project that joined has %d daemon_restart lines, want 1", got)
+	}
+	if got := a.count(KindDaemonRestart); got != 0 {
+		t.Errorf("the project that left has %d daemon_restart lines, want 0", got)
+	}
+}
+
+// TestRunProjectsKeepsItsOwnList: Run holds the list between passes, so it
+// must not be changed by a caller that reuses the slice it handed over. Here
+// the hook fails from the second ask on and, as it does, overwrites the slice
+// it returned the first time; the project that was read is still the one
+// ticked.
+func TestRunProjectsKeepsItsOwnList(t *testing.T) {
+	a := newRig(t, task("T1.1"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := a.deps()
+	pass := 0
+	d.Binary = func() (Binary, error) {
+		if pass++; pass > 3 {
+			cancel()
+		}
+		return Binary{}, nil
+	}
+	ticks := 0
+	load := d.LoadBuild
+	d.LoadBuild = func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
+		if root == a.root {
+			ticks++
+		}
+		return load(root)
+	}
+	shared := []Project{{Name: "a", Root: a.root}}
+	asks := 0
+	d.Projects = func() ([]Project, error) {
+		if asks++; asks == 1 {
+			return shared, nil
+		}
+		shared[0] = Project{Name: "gone", Root: filepath.Join(a.root, "nope")}
+		return nil, errors.New("unreadable")
+	}
+
+	if err := Run(ctx, nil, a.settings(), time.Millisecond, d); err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+	if ticks < 3 {
+		t.Errorf("a was ticked %d times over three passes, want at least 3 (logs: %v)", ticks, a.logs)
+	}
+}
+
 // TestTickNoLedger: a project with no ledger file launches nothing and tells
 // the owner once, over many ticks and a restart; once `afk ledger init` has
 // run, the loop answers its own item and starts the first task that is ready.

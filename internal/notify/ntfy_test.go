@@ -356,3 +356,36 @@ func TestNtfySendClick(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanLink pins the plan view's address, which the "plan ready for
+// review" notification taps through to. Load-bearing rows: the empty public
+// address and the empty project (no link, so no Click header pointing at a
+// guessed host), the escaped name (a review entry's name is a folder name and
+// may hold a space or a slash-like character; it must stay one path segment
+// or the page answers 404), and the token row: the address is built from the
+// public address and the name alone, so nothing secret can be in it.
+func TestPlanLink(t *testing.T) {
+	tests := []struct {
+		name, publicURL, project, want string
+	}{
+		{"plain", "https://afk.example", "myapp", "https://afk.example/p/myapp/plan"},
+		{"trailing slash trimmed", "https://afk.example/", "myapp", "https://afk.example/p/myapp/plan"},
+		{"project with a space is escaped", "https://afk.example", "my app", "https://afk.example/p/my%20app/plan"},
+		{"project with a slash stays one segment", "https://afk.example", "a/b", "https://afk.example/p/a%2Fb/plan"},
+		{"a review name with a number suffix", "https://afk.example", "app-2", "https://afk.example/p/app-2/plan"},
+		{"empty public address gives no link", "", "myapp", ""},
+		{"lone slash gives no link", "/", "myapp", ""},
+		{"empty project gives no link", "https://afk.example", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := PlanLink(tt.publicURL, tt.project)
+			if got != tt.want {
+				t.Errorf("PlanLink(%q, %q) = %q, want %q", tt.publicURL, tt.project, got, tt.want)
+			}
+			if strings.Contains(got, "token") || strings.Contains(got, "?") {
+				t.Errorf("PlanLink = %q; a link must carry no token and no query", got)
+			}
+		})
+	}
+}

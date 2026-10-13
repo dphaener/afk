@@ -162,6 +162,18 @@ func ProjectLink(publicURL, project string) string {
 	return base + "/p/" + url.PathEscape(project)
 }
 
+// PlanLink is the web address of one project's plan view, for the "plan
+// ready for review" notification. The rules are ItemLink's: empty with no
+// public address or no project name, the name escaped as one path segment,
+// and never a token.
+func PlanLink(publicURL, project string) string {
+	link := ProjectLink(publicURL, project)
+	if link == "" {
+		return ""
+	}
+	return link + "/plan"
+}
+
 // trimBase drops one trailing slash so the link builders never produce a
 // double slash.
 func trimBase(publicURL string) string {

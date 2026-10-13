@@ -84,6 +84,6 @@ Print, in this order:
 2. The open questions, each with the tasks that need it, read from the plan's Open questions table.
 3. Where the plan is (its path), and that `CONTEXT.md`, `AGENTS.md`, `afk.toml` and `.gitignore` were written beside it.
 4. When the `design` phase ran: where the design brief is (`docs/design-brief.md`), and the id of the task titled `Design system (owner)`, read from the plan, with one line saying it is theirs and that the tasks that build the interface wait for it.
-5. That the draft is ready for them to read. Approving it, which is what lets the build loop start on it, is not built yet; the session stops here. Running `afk plan` again comes back to this point.
+5. That the draft is ready for them to read: they read the plan (on the daemon's web page, at `/p/<project>/plan`, when they have it on; otherwise the file itself), and when they are happy they run `afk plan approve` in the project folder, which is what lets the build loop start on it. Tell them that; the session stops here. Never run `afk plan approve` yourself: approving is the owner's decision. Running `afk plan` again comes back to this point.
 
 Then stop. Do not start a new round, do not edit the plan, and do not run `afk plan advance` again: it refuses from this phase, and says so.

@@ -431,6 +431,16 @@ type Deps struct {
 	// trying again, and false when there is no readable marker. Nil means
 	// state.ReadTurnFailed.
 	TurnFailed func(worktree, session string) (state.TurnFailed, bool)
+	// Projects gives the list of projects to run, as it is now. Run asks it at
+	// the top of every pass, so a project added to the machine config while
+	// the daemon runs is picked up with no restart. An error means the list
+	// could not be read this time (a config file caught half-saved, or one
+	// with a mistake in it): Run then goes on with the last list it had. Nil
+	// means the list Run was started with never changes. It is a hook, and
+	// this package never reads the config file itself, for the same reason
+	// LoadBuild is one: where the list comes from is the caller's business.
+	// Once and Tick never ask it.
+	Projects func() ([]Project, error)
 }
 
 // turnFailed is Deps.TurnFailed with its default.
@@ -542,22 +552,52 @@ func Once(projects []Project, s Settings, d Deps) []daemonstate.State {
 // A project that cannot be run does not stop the others: Tick turns every
 // failure into a state, an inbox item or a log line and returns.
 //
-// When Deps.Binary is set, each pass starts by asking whether afk's program
-// file has changed since Settings.Binary was recorded. If so, Run logs one
+// projects is the list Run starts with. When Deps.Projects is set, each pass
+// starts by asking it for the list as it is now, and that list replaces the
+// one Run had, so a project added while the daemon runs is ticked on the very
+// pass that first sees it. When the hook fails, Run keeps the last list it
+// read and logs the failure. That direction is deliberate: the list comes
+// from a file the owner edits by hand, and a file caught half-saved, or saved
+// with a mistake in it, must not make a running daemon forget every project
+// it was building. The same failure is logged once and not once per pass,
+// since a pass is seconds long and a broken file can stay broken for hours.
+// An empty list is not a failure: the pass does nothing and Run waits for the
+// next tick, which is how a daemon started before its first project was
+// approved comes to run it.
+//
+// A project that leaves the list is no longer ticked, and that is all.
+// Nothing is done to its sessions: each runs under its own host and outlives
+// the daemon by design, and its ledger is still on disk for the day the
+// project is added back.
+//
+// When Deps.Binary is set, each pass then asks whether afk's program file has
+// changed since Settings.Binary was recorded. If so, Run logs one
 // daemon_restart decision per project and returns ErrNewBinary so the service
-// manager starts the new program. The check is only at the top of a pass,
+// manager starts the new program. The list is read before this check so that
+// the restart is recorded for the projects that are running now, not for the
+// ones that were running a pass ago. The check is only at the top of a pass,
 // never between two projects, so a ship step is never cut in half and every
 // project is either ticked by the old program for the whole pass or not at
 // all. An unknown start identity or an unreadable file carries on (see
-// NewBinary). Nothing is kept between passes but Settings.Binary. Once and
-// Tick never check.
+// NewBinary).
+//
+// Three things are kept between passes: Settings.Binary, the project list,
+// and the text of the last failure to read that list (only so it is not
+// logged again). None of them is about a build: everything a tick decides
+// from is still read from the project's files, so the package's rule that a
+// new daemon reaches the decision the dead one would have still holds. Once
+// and Tick never check for a new binary and never ask for the list.
 func Run(ctx context.Context, projects []Project, s Settings, tick time.Duration, d Deps) error {
 	if tick <= 0 {
 		tick = defaultTick
 	}
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+	listErr := ""
 	for {
+		if d.Projects != nil {
+			projects, listErr = reload(projects, listErr, d)
+		}
 		if d.Binary != nil {
 			got, err := d.Binary()
 			if NewBinary(s.Binary, got, err) {
@@ -584,6 +624,48 @@ func Run(ctx context.Context, projects []Project, s Settings, tick time.Duration
 		case <-ticker.C:
 		}
 	}
+}
+
+// reload asks Deps.Projects for the list and returns the list to run and the
+// failure text to remember. have and lastErr are what Run had from the pass
+// before.
+//
+// On a failure the list is returned as it was, and the failure is logged only
+// when its text differs from lastErr. A success clears the remembered text,
+// so a file that is mended and later broken the same way is reported again:
+// that is a second mistake, and the owner has not been told about it. The
+// mended file gets a line of its own because a list that reads the same as
+// before would otherwise leave no sign that the fix was seen.
+//
+// The list is copied, because Run holds it between passes and the caller is
+// free to reuse the slice it returned.
+//
+// A project is known by its Root, since that is where its files are. One that
+// is only renamed is the same project and is not reported as going or coming.
+func reload(have []Project, lastErr string, d Deps) ([]Project, string) {
+	got, err := d.Projects()
+	if err != nil {
+		if msg := err.Error(); msg != lastErr {
+			d.logf("afk: the project list could not be read, so the projects already running carry on: %s", msg)
+			lastErr = msg
+		}
+		return have, lastErr
+	}
+	if lastErr != "" {
+		d.logf("afk: the project list can be read again.")
+	}
+	got = slices.Clone(got)
+	for _, p := range got {
+		if !slices.ContainsFunc(have, func(h Project) bool { return h.Root == p.Root }) {
+			d.logf("afk: now running %s (%s)", p.Name, p.Root)
+		}
+	}
+	for _, h := range have {
+		if !slices.ContainsFunc(got, func(p Project) bool { return p.Root == h.Root }) {
+			d.logf("afk: no longer running %s", h.Name)
+		}
+	}
+	return got, ""
 }
 
 // isCheckout reports whether root is a folder holding a .git entry. Lstat,

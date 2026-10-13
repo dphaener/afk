@@ -310,6 +310,16 @@ start, because cleaning the session removes its folder). Its existence makes eve
 session's host, a relaunch from the dashboard included, run the provider's planning skill instead of
 the conductor or a bare agent. Only its existence is read.
 
+Amended 2026-10-13 (T5.7): `plan-reviews.json` is a file in afk's state folder (beside `usage.json`),
+the plans waiting for the owner's approval. Writers: `afk plan advance` adds an entry when a `new`
+session reaches `review` (through `internal/daemonstate`, by atomic rename), and `afk plan approve`
+removes it. Readers: the daemon's web page, which serves the plan view for an entry whose project is
+not in `config.toml` yet. Shape: `{"reviews":[{"name","root","at"}]}`, the list always present and every
+key always written. `root` is the project's main checkout, cleaned, and the key an entry is matched by;
+`name` is the folder name the page serves the plan under (`/p/<name>/plan`), with `-2`, `-3` added when
+two roots share a name, and it does not change when the plan is put up again; `at` is when it was last
+put up, RFC 3339 UTC. A missing or damaged file reads as an empty list.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -386,6 +396,12 @@ Amended 2026-10-11 (T2.1): the overlay is in. `internal/projectconfig` lays `afk
 
 Machine config `~/.config/afk/config.toml`: projects the daemon runs, governor thresholds (§6.3), web
 bind address and token, provider choice.
+
+Amended 2026-10-13 (T5.7): the `[[project]]` list is edited by `afk project add` and `afk project remove`
+and by `afk plan approve`, and the running daemon reads it again on every pass. It is the only setting
+that is: the tick, `[daemon]`, `[governor]`, `[web]` and `provider` are read once at the start and need
+a restart. A daemon starts with no projects and waits; a config that cannot be read mid-run leaves the
+list it had.
 
 Amended 2026-10-11 (T2.1): T2.1 reads these keys from `config.toml` (in `$XDG_CONFIG_HOME/afk` when
 that is an absolute path, otherwise `~/.config/afk`): `provider` (the agent's name; empty means the
@@ -526,6 +542,16 @@ precedence rule (the plan wins on behaviour, `docs/design-system.md` wins on loo
 `Design system (owner)` is in the first milestone, and at least one task waits for it. The brief is in
 `docs/`, not `.afk/plan/`, because it is a project document the owner takes to a design tool. This
 supersedes the `design` row above.
+
+Amended 2026-10-13 (T5.7): the `review` row above now has no gate and `afk plan approve` is its only way
+on. A `new` session at `review` that `plansession.Approve` accepts (no checker errors, not a change
+session) is moved to the tenth phase, `approved`, and only by approve: `afk plan advance` still refuses
+to leave `review`. `approved` is written last, after the other steps, so on disk it means a project the
+daemon is building. Approve commits only the project's documents, by path: the plan, `afk.toml`,
+`.gitignore`, `CONTEXT.md`, `docs/design-brief.md` and the agent instruction files `AGENTS.md` and
+`CLAUDE.md` (whichever exist), with the subject `docs(plan): Approve the master plan`. It then pushes
+the current branch to `origin` unless `[planning] via_pr` is set, there is no origin or the checkout is
+on no branch.
 
 ---
 
@@ -1722,6 +1748,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
   does nothing the second time; a crash between any two steps is finished by running it again. An
   integration test with the fake provider: approve a fixture project and see the daemon launch its
   first ready task with no restart. The plan view renders this plan.
+- Amended 2026-10-13 (T5.7 done): `afk plan approve` works on a `new` session at `review` only, writes `approved` last and does nothing on a second run; it commits the plan, `afk.toml`, `.gitignore`, `CONTEXT.md`, the design brief and the agent instruction files (named by `provider.InstructionFiles`) and nothing else, and pushes to `origin` unless `[planning] via_pr` is set, so in T5.8's throwaway project the owner needs a git identity and, for the daemon to ship, a remote; the project list is edited with `afk project add|remove|list` and re-read by the daemon on every pass (the only setting that is; the rest still need a restart), and `afk daemon` now starts with no projects; a plan waiting for approval is listed in `plan-reviews.json` in afk's state folder (§4.2a), written by `afk plan advance` on reaching `review`, which also sends the "Plan ready for review" notification; the plan view is `/p/<project>/plan`, read-only, drawn by afk's own renderer (no markdown library); a real approve against a running daemon and a real notification were not run here and are T5.8's; the decisions are in `docs/decisions.md` under `## T5.7`.
 
 #### T5.8 — Prove it (owner + agent)
 - **Depends on:** T5.4, T5.5, T5.7

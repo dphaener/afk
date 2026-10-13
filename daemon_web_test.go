@@ -3,18 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
@@ -156,6 +159,9 @@ type webRig struct {
 	*daemonRig
 	root    string
 	handler http.Handler
+	// list is the project list the page asks, as runDaemon's is: a test
+	// changes it with list.set to stand in for a pass that read a new config.
+	list *projectList
 }
 
 // newWebRig makes the rig. One dependency is replaced after daemonWebDeps
@@ -173,13 +179,24 @@ func newWebRig(t *testing.T) *webRig {
 		t.Fatal(err)
 	}
 	projects, _ := daemonProjects(cfg.Projects, env.gitCommonDir)
-	deps := daemonWebDeps(projects, env.state, env.now)
+	list := &projectList{}
+	list.set(projects)
+	deps := daemonWebDeps(list.get, r.stateDir(), env.state, env.now)
 	deps.Sessions = func(string) []web.SessionView { return nil }
 	h, err := web.New(web.Config{Token: cfg.Web.Token, PublicURL: cfg.Web.PublicURL}, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &webRig{daemonRig: r, root: root, handler: h}
+	return &webRig{daemonRig: r, root: root, handler: h, list: list}
+}
+
+// get sends a GET to the handler with the token.
+func (w *webRig) get(path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+daemonTestWebToken)
+	rec := httptest.NewRecorder()
+	w.handler.ServeHTTP(rec, req)
+	return rec
 }
 
 // post sends a form POST to the handler. token, when set, is the bearer
@@ -543,5 +560,289 @@ func TestWebPublicURL(t *testing.T) {
 				t.Errorf("webPublicURL = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// webTestOverview and webTestPlan are the keys of the page's JSON these tests
+// read; the full shapes are internal/web's to test.
+type webTestOverview struct {
+	Projects []struct {
+		Name string `json:"name"`
+	} `json:"projects"`
+	Reviews []struct {
+		Name string `json:"name"`
+	} `json:"reviews"`
+}
+
+type webTestPlan struct {
+	Path               string `json:"path"`
+	WaitingForApproval bool   `json:"waiting_for_approval"`
+	Plan               string `json:"plan"`
+	Problem            string `json:"problem"`
+}
+
+// TestDaemonWebPlans asks the page, wired as runDaemon wires it, for plans and
+// for the list of them. The machine has one configured project (demo) and
+// three plans on the review list: one for a folder nobody configured (the
+// plan waiting for approval), one for demo's own folder (what is left when
+// approve added the project and had not yet taken the entry off), and one for
+// a folder with no plan file.
+//
+// Load-bearing rows:
+//   - "a plan waiting for approval" is the reason the review list exists: the
+//     page serves a plan for a folder config.toml does not name, read from the
+//     default path because the folder has no afk.toml yet.
+//   - "a configured project, plan named by afk.toml" pins that the plan is
+//     found through the project's own config and not assumed to be
+//     docs/PLAN.md.
+//   - "the overview lists a configured project once" is the double listing:
+//     demo is on the review list too and must show as a project only.
+//   - "a project added after the page started" changes the list the way a
+//     pass of the loop does and asks again with the same handler. A page built
+//     over a list copied at start-up answers 404 here.
+func TestDaemonWebPlans(t *testing.T) {
+	w := newWebRig(t)
+	// demo keeps its plan somewhere of its own.
+	const movedPlan = "#### T9.1 — Moved\n\n- **Depends on:** none\n"
+	writeBuildFile(t, w.root, "afk.toml", "plan = \"notes/BUILD.md\"\n")
+	writeBuildFile(t, w.root, "notes/BUILD.md", movedPlan)
+
+	base := t.TempDir()
+	waiting := filepath.Join(base, "recipes")
+	writeBuildFile(t, waiting, "docs/PLAN.md", daemonTestPlan)
+	empty := filepath.Join(base, "empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	later := filepath.Join(base, "later")
+	writeBuildFile(t, later, "docs/PLAN.md", daemonTestPlan)
+	at := daemonTestNow.Format(time.RFC3339)
+	for _, root := range []string{waiting, w.root, empty} {
+		if err := daemonstate.AddReview(w.stateDir(), daemonstate.Review{Root: root, At: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	demoReview := filepath.Base(w.root)
+
+	plan := func(t *testing.T, path string, wantCode int) webTestPlan {
+		t.Helper()
+		rec := w.get(path)
+		if rec.Code != wantCode {
+			t.Fatalf("GET %s got %d, want %d: %s", path, rec.Code, wantCode, rec.Body.String())
+		}
+		var v webTestPlan
+		if wantCode == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+				t.Fatalf("GET %s: %v in %s", path, err, rec.Body.String())
+			}
+		}
+		return v
+	}
+	names := func(t *testing.T) (projects, reviews []string) {
+		t.Helper()
+		rec := w.get("/api/")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/ got %d: %s", rec.Code, rec.Body.String())
+		}
+		var v webTestOverview
+		if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range v.Projects {
+			projects = append(projects, p.Name)
+		}
+		for _, r := range v.Reviews {
+			reviews = append(reviews, r.Name)
+		}
+		return projects, reviews
+	}
+
+	t.Run("a plan waiting for approval", func(t *testing.T) {
+		v := plan(t, "/api/p/recipes/plan", http.StatusOK)
+		if !v.WaitingForApproval || v.Problem != "" || v.Plan != daemonTestPlan {
+			t.Errorf("plan view = %+v, want the waiting plan with no problem", v)
+		}
+		if want := filepath.Join(waiting, "docs", "PLAN.md"); v.Path != want {
+			t.Errorf("path = %q, want %q", v.Path, want)
+		}
+		if rec := w.get("/p/recipes/plan"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "T1.1") {
+			t.Errorf("the page for the waiting plan got %d and does not show the plan", rec.Code)
+		}
+	})
+	t.Run("a configured project, plan named by afk.toml", func(t *testing.T) {
+		v := plan(t, "/api/p/demo/plan", http.StatusOK)
+		if v.WaitingForApproval || v.Problem != "" || v.Plan != movedPlan {
+			t.Errorf("plan view = %+v, want demo's own plan, not waiting, with no problem", v)
+		}
+		if want := filepath.Join(w.root, "notes", "BUILD.md"); v.Path != want {
+			t.Errorf("path = %q, want %q", v.Path, want)
+		}
+	})
+	t.Run("a waiting plan whose file is missing says which file", func(t *testing.T) {
+		v := plan(t, "/api/p/empty/plan", http.StatusOK)
+		want := filepath.Join(empty, "docs", "PLAN.md")
+		if v.Path != want || !strings.Contains(v.Problem, want) || v.Plan != "" {
+			t.Errorf("plan view = %+v, want a problem naming %s", v, want)
+		}
+	})
+	t.Run("the overview lists a configured project once", func(t *testing.T) {
+		projects, reviews := names(t)
+		if !reflect.DeepEqual(projects, []string{"demo"}) || !reflect.DeepEqual(reviews, []string{"empty", "recipes"}) {
+			t.Errorf("projects = %q, reviews = %q, want demo and then empty, recipes", projects, reviews)
+		}
+		// The entry is there under the folder's name; it is the configured
+		// project's root that keeps it off the page.
+		if demoReview != "demo" {
+			plan(t, "/api/p/"+demoReview+"/plan", http.StatusNotFound)
+		}
+	})
+	t.Run("a name nobody has", func(t *testing.T) {
+		plan(t, "/api/p/later/plan", http.StatusNotFound)
+	})
+	t.Run("a project added after the page started", func(t *testing.T) {
+		w.list.set([]daemon.Project{{Name: "demo", Root: w.root}, {Name: "later", Root: later}, {Name: "recipes", Root: waiting}})
+		if v := plan(t, "/api/p/later/plan", http.StatusOK); v.WaitingForApproval || v.Plan != daemonTestPlan {
+			t.Errorf("plan view = %+v, want the new project's plan, not waiting", v)
+		}
+		// recipes was approved: it is a project now and no longer waiting.
+		if v := plan(t, "/api/p/recipes/plan", http.StatusOK); v.WaitingForApproval {
+			t.Error("recipes is a configured project and still shown as waiting for approval")
+		}
+		projects, reviews := names(t)
+		if !reflect.DeepEqual(projects, []string{"demo", "later", "recipes"}) || !reflect.DeepEqual(reviews, []string{"empty"}) {
+			t.Errorf("projects = %q, reviews = %q, want demo, later, recipes and then empty", projects, reviews)
+		}
+	})
+	t.Run("a project taken out again", func(t *testing.T) {
+		w.list.set(nil)
+		plan(t, "/api/p/demo/plan", http.StatusNotFound)
+		projects, _ := names(t)
+		if len(projects) != 0 {
+			t.Errorf("projects = %q, want none", projects)
+		}
+	})
+}
+
+// TestWebReviews covers which plans waiting for approval the page is handed.
+//
+// Load-bearing: "the same folder written another way". Approve and the review
+// list both clean the path they store, but the machine config keeps a path as
+// the owner typed it, so the two are compared cleaned; compared as written,
+// an approved project would stay listed as waiting.
+func TestWebReviews(t *testing.T) {
+	tests := []struct {
+		name       string
+		reviews    []daemonstate.Review
+		configured []web.Project
+		want       []web.Project
+	}{
+		{name: "nothing waiting", want: []web.Project{}},
+		{
+			name:    "one waiting, nothing configured",
+			reviews: []daemonstate.Review{{Name: "app", Root: "/work/app"}},
+			want:    []web.Project{{Name: "app", Root: "/work/app"}},
+		},
+		{
+			name:       "a configured project's entry is left out",
+			reviews:    []daemonstate.Review{{Name: "app", Root: "/work/app"}, {Name: "blog", Root: "/work/blog"}},
+			configured: []web.Project{{Name: "mine", Root: "/work/app"}},
+			want:       []web.Project{{Name: "blog", Root: "/work/blog"}},
+		},
+		{
+			name:       "the same folder written another way",
+			reviews:    []daemonstate.Review{{Name: "app", Root: "/work/app"}},
+			configured: []web.Project{{Name: "app", Root: "/work/x/../app/"}},
+			want:       []web.Project{},
+		},
+		{
+			name:       "the same name in another folder is this function's to keep",
+			reviews:    []daemonstate.Review{{Name: "app", Root: "/other/app"}},
+			configured: []web.Project{{Name: "app", Root: "/work/app"}},
+			want:       []web.Project{{Name: "app", Root: "/other/app"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := webReviews(tt.reviews, tt.configured); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("webReviews = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestWebReadPlan covers where the page looks for a project's plan.
+//
+// Load-bearing: "afk.toml is damaged". The plan path cannot be known then, so
+// the answer is the error and no path; reading docs/PLAN.md anyway would show
+// a plan that may not be the one the project builds from.
+func TestWebReadPlan(t *testing.T) {
+	tests := []struct {
+		name     string
+		files    map[string]string
+		wantPath string // under the project folder; "" for none
+		wantData string
+		wantErr  string
+	}{
+		{
+			name:     "no afk.toml: the default path",
+			files:    map[string]string{"docs/PLAN.md": "the plan\n"},
+			wantPath: "docs/PLAN.md",
+			wantData: "the plan\n",
+		},
+		{
+			name:     "afk.toml names the plan",
+			files:    map[string]string{"afk.toml": "plan = \"PLAN.md\"\n", "PLAN.md": "mine\n", "docs/PLAN.md": "not this one\n"},
+			wantPath: "PLAN.md",
+			wantData: "mine\n",
+		},
+		{
+			name:     "the plan is not there",
+			files:    map[string]string{"afk.toml": "plan = \"PLAN.md\"\n"},
+			wantPath: "PLAN.md",
+			wantErr:  "PLAN.md",
+		},
+		{
+			name:    "afk.toml is damaged",
+			files:   map[string]string{"afk.toml": "plan = [not a path\n", "docs/PLAN.md": "the plan\n"},
+			wantErr: "afk.toml",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for rel, content := range tt.files {
+				writeBuildFile(t, root, rel, content)
+			}
+			path, data, err := webReadPlan(root)
+			wantPath := ""
+			if tt.wantPath != "" {
+				wantPath = filepath.Join(root, filepath.FromSlash(tt.wantPath))
+			}
+			if path != wantPath || string(data) != tt.wantData {
+				t.Errorf("webReadPlan = %q, %q; want %q, %q", path, data, wantPath, tt.wantData)
+			}
+			if (err != nil) != (tt.wantErr != "") || (err != nil && !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Errorf("error = %v, want one naming %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestProjectList pins that the list is shared as copies only: what the loop
+// sets and what the page gets are never the same slice, so neither can change
+// the other's.
+func TestProjectList(t *testing.T) {
+	l := &projectList{}
+	if got := l.get(); len(got) != 0 {
+		t.Fatalf("a new list holds %v", got)
+	}
+	given := []daemon.Project{{Name: "a", Root: "/a"}, {Name: "b", Root: "/b"}}
+	l.set(given)
+	given[0].Name = "changed by the loop"
+	got := l.get()
+	got[1].Name = "changed by the page"
+	want := []daemon.Project{{Name: "a", Root: "/a"}, {Name: "b", Root: "/b"}}
+	if again := l.get(); !reflect.DeepEqual(again, want) {
+		t.Errorf("the list is %v after both sides changed their copies, want %v", again, want)
 	}
 }

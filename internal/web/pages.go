@@ -18,15 +18,20 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "item", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "item", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
 // would let the last one parsed win.
 //
 // Nothing here marks a value as already safe (html/template has types for
-// raw HTML, scripts and styles, and none is used): everything from a
-// project's files, an inbox item included, goes through its escaping.
+// raw HTML, scripts and styles): everything from a project's files, an inbox
+// item included, goes through its escaping. There is one exception in the
+// package and it is not here: the rendered master plan on the plan view
+// (PlanView.Rendered) is template.HTML, because a plan drawn as headings,
+// lists and tables has to carry tags. renderPlan in markdown.go builds it
+// and escapes every piece of the plan's text itself before joining it to a
+// tag; its doc comment has the argument. Do not add a second exception.
 func parsePages() (map[string]*template.Template, error) {
 	funcs := template.FuncMap{
 		"when": whenUTC,

@@ -83,7 +83,20 @@ type SessionView struct {
 // project folder with the plain file readers of internal/inbox and
 // internal/daemonstate, and a test points them at a temp folder.
 type Deps struct {
-	Projects []Project
+	// Projects lists the configured projects. It is a function, called on
+	// every request, because the list can change while the daemon runs (a
+	// project is added by `afk project add` or by approving a plan) and a
+	// list copied at start-up would never show it. Nil means none.
+	Projects func() []Project
+	// Reviews lists the plans waiting for approval whose project is not a
+	// configured one yet. Only the plan view is served for them: there is no
+	// build to show, pause or answer for. Nil means none.
+	Reviews func() []Project
+	// ReadPlan reads the master plan of the project at root and says where
+	// it is. An error is shown on the plan view as the page's problem; it
+	// does not fail the request. Nil means this page cannot show plans, and
+	// the plan view says so.
+	ReadPlan func(root string) (path string, data []byte, err error)
 	// LoadBuild reads a project's master plan and ledger. An error is shown
 	// as the project's problem; it does not fail the request.
 	LoadBuild func(root string) ([]masterplan.Task, ledger.Ledger, error)
@@ -142,6 +155,9 @@ var routes = []route{
 	{http.MethodGet, "/{$}", (*server).overview},
 	{http.MethodGet, "/usage", (*server).usage},
 	{http.MethodGet, "/p/{project}", (*server).project},
+	// The plan view is GET only, and that is deliberate: a plan is approved
+	// with `afk plan approve` in the project folder and never from here.
+	{http.MethodGet, "/p/{project}/plan", (*server).plan},
 	{http.MethodGet, "/p/{project}/inbox", (*server).inboxList},
 	{http.MethodGet, "/p/{project}/inbox/{id}", (*server).item},
 	{http.MethodPost, "/p/{project}/inbox/{id}/answer", (*server).answer},
@@ -225,7 +241,8 @@ func isAPI(path string) bool {
 }
 
 // respond is the one place a handler's answer is written. name says which
-// view this is ("overview", "usage", "project", "inbox", "item", "error").
+// view this is ("overview", "usage", "project", "plan", "inbox", "item",
+// "error").
 // A path under /api gets the view as JSON. Any other path gets the page
 // named by name, except that a successful POST redirects (see redirectAfter)
 // so that reloading the page they land on does not send the form again.
