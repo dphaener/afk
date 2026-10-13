@@ -758,7 +758,7 @@ path = "/srv/another-app"
 curl -H "Authorization: Bearer <your token>" http://127.0.0.1:4253/api/p/my-app
 ```
 
-Every address needs the token, including ones that do not exist. A POST whose `Origin` header names another site is refused with 403, and a body over 64 KB with 413.
+Every address needs the token, including ones that do not exist. A POST whose `Origin` header names another site, or no site at all (`null`), is refused with 403, and a body over 64 KB with 413. The page sends `Referrer-Policy: same-origin`, so your browser tells the page that its own forms are its own, and passes the page's address to no other site. It is not `no-referrer` on purpose: under that policy a browser sends `Origin: null` on every POST, the page's own forms included, and every button on the page would answer 403.
 
 **Links in notifications.** When `public_url` is set (and the token is, so the page is on), an inbox notification carries a link to the item at `<public_url>/p/<project>/inbox/<id>`. The link never holds the token; the cookie covers that. Set `public_url` to the address you use from your phone, without a trailing slash. Its scheme also decides whether the cookie is marked Secure: only an `https://` address does that, so a page used over plain HTTP still works.
 
@@ -856,7 +856,7 @@ When `usage.json` holds a decision, a line under the daemon's own lines says wha
 
 A paused project gets a `Paused:` line first. `Doing:` becomes `Last:` when no daemon is running, because then the file is only a record of how things were left. `Problem:` replaces `Tasks:` when the ledger cannot be read, and with nothing configured it prints how to add a project.
 
-To run the daemon as a service on Linux, see [`contrib/README.md`](contrib/README.md).
+To run the daemon as a service on Linux, see [`contrib/README.md`](contrib/README.md). To get a project ready on an always-on machine (its prerequisites, `afk.toml`, the ledger, the web page over a tunnel), see [`docs/runbook-vm.md`](docs/runbook-vm.md).
 
 **Exit codes:** `afk daemon` returns 0 when it was stopped, when it stopped itself because it found a new version of afk on disk, or when `--once` finished, 1 when `config.toml` could not be used, no project is configured, or a daemon is already running, and 2 when the command was written wrongly. `afk daemon status` returns 0 when the report was printed, 1 when `config.toml` itself cannot be read, and 2 when the command was written wrongly.
 
@@ -903,7 +903,7 @@ after_merge_timeout = "10m"
 | `deploy_timeout` | `"15m"` | How long after the merge the deploy may take to turn healthy, as a length of time above zero such as `"15m"` or `"1h30m"`. Past it, the line stops. |
 | `after_merge` | `""` (none) | A shell command the daemon runs once after a merge, before the deploy check. It runs through `sh -c` in the project's main checkout, and its output goes to `.afk/build/after-merge.log`. A non-zero exit, a command that cannot be started, or running past `after_merge_timeout` stops the line (see "The stopped line"). **It runs unattended, with the daemon's permissions and its `PATH`**, so only put a command here that you would run yourself, and make sure every program it calls is on the daemon's `PATH`. |
 | `after_merge_timeout` | `"10m"` | How long the command may run, as a length of time above zero such as `"10m"` or `"1h"`. Past it the command is stopped and the line stops. |
-| `required_env_pattern` | `""` (no check) | A regular expression. If the branch adds a line that matches, the task parks before the merge with an item naming the variable (the first capture group of the match, or the whole match if there is no group). For example `\$\{([A-Z_]+):\?\}` catches a new required `${VAR:?}`. |
+| `required_env_pattern` | `""` (no check) | A regular expression. If the branch adds a line that matches, the task parks before the merge with an item naming the variable (the first capture group of the match, or the whole match if there is no group). For example `\$\{([A-Z][A-Z0-9_]*):\?\}` catches a new required `${VAR:?}`. The pattern is tried on every added line of every file, so a project whose documents mention `${VAR:?}` may want a pattern anchored to the line's shape (the runbook has one). |
 
 A pull request that has no CI checks is never merged (see "Shipping" in the daemon section). The timings that are not here (five minutes for checks to appear, an hour for a fix after a hand-back, two minutes of quiet before a push) are fixed.
 

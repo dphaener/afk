@@ -1426,3 +1426,84 @@ All three checks passed with no blocker or major finding, so no critic ran. Mino
 - Make `?` work while the right side has the keyboard, as `:` does.
 - A word such as "blocks" beside an inbox row that is holding a task up, in place of the bare `!`.
 - A friendlier word than "unknown" for a running task whose session has not reported a phase.
+
+## T4.1
+
+T4.1 gets the VM and nebari ready for afk's first real job. It writes `docs/runbook-vm.md` and then follows it on the VM. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The session follows its own runbook (A1).** It installs nebari's system packages with `sudo`, clones nebari to `~/code/nebari` and runs the steps of `bin/ci`. The acceptance says "on the VM", the master plan makes the VM the sandbox, and a runbook nobody has followed is a guess. This one would have been put to the owner if anyone had been there to ask.
+- **Nebari's changes stay on a local branch (A2).** `afk.toml`, two `.gitignore` lines and the CI change are committed on `afk-setup` in `~/code/nebari` and not pushed. A session that was not asked to ship does not push, least of all to a second repository. The owner pushes the branch and merges it.
+- **Nebari is not added to the daemon yet (A3).** The `[[project]]` lines are the runbook's last step. Adding them now would start nebari tasks unattended, before the supervised first run of T4.2.
+- **The web page is the owner's to turn on (A4).** The runbook says how to set `[web]` and reach the page through a tunnel. The session does not edit the running daemon's config or restart it: the tunnel needs the owner's account, and nothing in the work needs the restart.
+- **The owner's part is one inbox item that stops the task (A5).** Backups and a restore drill, Coolify's auto-deploy, the nebari pull request, the capped key and the page over the tunnel cannot be done by a machine. After the work is done the session raises one item listing them and waits; the review and the commit follow the answer. That also keeps T4.2 from starting first.
+- **The required-variable pattern (A6).** `^\s*[A-Z][A-Z0-9_]*:\s*\$\{([A-Z][A-Z0-9_]*):\?\}\s*$`. The pattern is tried on every added line of every file. Nebari's documents mention `${VAR:?}` in prose, so the pattern is tied to the shape of a line in the compose file. It allows digits, which the README's old example did not (`S3_ENDPOINT`).
+- **A deploy of this commit (A7).** Not solved. The health address is `https://nebari.haener.cloud/up`, and nothing in nebari shows which commit is running, so the check means "healthy" and no more. The runbook says so.
+- **The capped key stays out of the agent's environment (A8).** It goes in nebari's own local settings on the VM. A key in the daemon's unit or a shell profile would reach the agent CLI and could move it from the subscription to paid calls.
+- **Seeding the ledger (A9).** Everything through T4.2b was marked done, and T4.2 superseded by T4.2a and T4.2b. T4.2b's code is merged; only the owner's phone check is open. T4.3 was merged to nebari's main while this task ran, so the owner had it marked done too (`afk ledger set T4.3 done`), and the runbook now seeds through T4.3.
+- **Nebari's T9.1 is left as it is (A10).** Its dependency line names milestones, not tasks, so afk reads it as having none. How to read "as available" is the owner's call, so it is raised as a notice.
+- **Tests and prerequisites (A11, A12).** No new automated tests: the change is documents, and the runbook is checked by following it. Nothing had to be in place first.
+
+### Decided while building
+
+- **The capped key lives outside the project.** It goes in `~/.config/nebari/live.env` (mode 600) and is loaded for one command in a subshell. Nebari reads only the plain `ANTHROPIC_API_KEY` variable, a file inside the project would be missing from each session's worktree, and a subshell keeps the key out of the agent's and the daemon's environment.
+- **PostgreSQL 17 comes from the PostgreSQL project's repository.** Ubuntu 26.04 carries only 18, and production and CI run 17. Chrome is Google's `.deb`, because `chromium-browser` is a snap wrapper there. The runbook names `libvips42t64`, because `libvips` has no install candidate.
+- **The runbook pauses the project before adding it to the daemon.** `afk pause ~/code/nebari`, then the `[[project]]` lines, a restart, then `afk resume nebari`. Otherwise the restart would start the next task at once.
+- **`bin/ci` was not run as one command.** Its steps add up to about 38 minutes, over a session's four-minute limit, so each step was run on its own and the system specs in groups of about 65 examples. The per-step record is the evidence.
+- **The failing spec is recorded, not fixed.** `spec/system/task_swipe_spec.rb:266` fails for a reason inside nebari, and it fails the same way in nebari's own CI. Nothing in nebari was changed for it.
+- **The CI install step was left alone.** On 26.04 `libvips` resolves to `libvips42t64` and `libheif-plugin-libde265` exists, so only a comment was added to the workflow change.
+- **Sections 6(c) and 9 of the runbook were corrected** once the red spec was known, because they told the owner to expect all four CI jobs to pass.
+
+### Checked, and not checked
+
+- **Checked on the VM, with evidence in `.afk/t4-1/evidence/`:**
+  - Packages: PostgreSQL 17 (cluster online), `libvips42t64`, Chrome 155, `pg_lsclusters`, in `w2-t1-prereqs-and-ci.txt`. Chrome starting without `CI` set is in `w2-t1-chrome-without-ci.txt`.
+  - Each `bin/ci` step: setup, rubocop, bundler-audit, importmap audit, brakeman, tailwind and the specs, in `w2-t1-prereqs-and-ci.txt`. Every step exits 0 except the specs: 7209 examples, 1 failure (`spec/system/task_swipe_spec.rb:266`), 2 pending.
+  - The branch and the pattern: `afk-setup` in `~/code/nebari`, one commit, no upstream, and the pattern matching 15 compose lines and no prose line, in `w3-t1-nebari-ready.txt`. The bad-pattern case is in `w1-t1-bad-pattern.txt`.
+  - The ledger and `afk next`: 23 done and T4.2 superseded, `afk next` printing `T4.3  Weather alerts`, in `w3-t1-nebari-ready.txt`; after T4.3 was marked done, `afk next` printing `T4.4  Dashboard & calendar`, in `w3-t1-nebari-ready-after-t4-3.txt`; a second `ledger init` exiting 1 with the file unchanged, in `w3-t1-ledger-init-twice.txt`.
+  - `afk usage` printing a reading and `Governor: run.`, in `w3-t1-usage.txt`.
+  - The config example loading, in `w1-t1-toml-loads.txt`, and the README pattern and link, in `w1-t2-readme.txt`.
+- **Not checked, the owner's:**
+  - The `afk-setup` pull request on a hosted `ubuntu-26.04` runner.
+  - Coolify's auto-deploy.
+  - Backups and the restore drill.
+  - The web page through a tunnel and from a phone.
+  - The capped key (`ai:smoke` with a real key).
+- **Not green: nebari's own checks.** The one failing spec above also fails in nebari's CI on main (run 38169606371), where two more system examples failed that passed on the VM. afk merges only on green CI, so the `afk-setup` pull request and every nebari task stop at the pull request until that is dealt with. This is item six of the owner's inbox item.
+
+### Things a later task should know
+
+- **Nebari is at `~/code/nebari`.** When the work-plan tasks finished it had the unpushed branch `afk-setup` and the machine's `config.toml` was untouched. What changed after that is under "After the owner's steps" below.
+- **`afk-setup` must be merged to nebari's main before T4.2.** afk reads `afk.toml` from the main checkout and cuts branches from local `main`, so without it the daemon has nothing to read.
+- **Seeding commands**: `afk ledger init --project ~/code/nebari --done-through T4.3` (24 tasks), then mark T4.2 superseded by T4.2a and T4.2b (runbook section 5). A second `ledger init` is refused, so the ledger is seeded once.
+- **A hosted-runner pull request will probably be red** until `task_swipe_spec.rb:266` is fixed or set aside in nebari. The touch scroll gesture does nothing in Chrome 155; the same gesture as a mouse scrolls.
+- **`afk tasks` prints notes for T9.1, T9.3, T9.4, T9.5 and T9.6**, whose dependency lines name no task ids. They are treated as having no dependencies, so they can be picked early.
+- **Health only.** The `/up` check cannot tell this commit from the old container; a revision endpoint in nebari would close that.
+- **Timings on the VM**: setup 73 s, the specs outside `spec/system` about 5 minutes, `spec/system` about 31 minutes, the whole `bin/ci` about 38 minutes. A task's QA step should budget for that.
+- **Apt reported `afkd.service` running an outdated binary.** It was not restarted.
+
+### After the owner's steps
+
+The owner answered the blocking inbox item with "Ok everything is done" (2026-10-12, from the web page). That answer is the evidence for the owner's half of the acceptance: backups and the restore drill, Coolify's auto-deploy, the capped key, the phone checks. The session could see only the following.
+
+- **`afk-setup` is pushed and is pull request 14 on nebari, still open** when this was written. Nebari's `main` has no `afk.toml` until it merges, and the local checkout is on `afk-setup`. It was rebased onto nebari's `5530f51` before the push.
+- **Nebari is in the daemon's config and is paused.** The owner added it and set `[web]` (`bind`, `token`, `public_url`). The session ran `afk pause ~/code/nebari` before the daemon came back up, so no task starts until `afk resume nebari`. Do not resume before pull request 14 is merged and the checkout is on `main`.
+- **T4.3 is marked done** in nebari's ledger at the owner's request; it was merged to nebari's main while this task ran. `afk next` prints `T4.4  Dashboard & calendar`.
+- **The swipe spec still fails on the VM** after nebari's `5530f51`, which added a wait: the page never scrolls, so the wait ends with `not scrolled yet`. It fails the same way on the hosted runner: nebari's CI run 38327506098 for `5530f51` ended with 7562 examples and that one failure. The other two system examples that had failed there now pass.
+- **Two faults found while the owner worked, both fixed at the owner's report:**
+  - *The page answered 502.* `config.toml` had nebari's `path` line under the first `[[project]]` header, so the file had two `path` keys and the daemon would not start. Nebari got its own `[[project]]` header. The runbook's troubleshooting table has a row for it.
+  - *Every form on the page answered 403.* The page sent `Referrer-Policy: no-referrer`, and under that policy a browser sends `Origin: null` on every POST, the page's own forms included; the cross-site check refuses `null`. The header is now `same-origin` (`internal/web/auth.go`): the page's own forms post with their real origin, and no referrer leaves the site, so the token in an address is still not passed on. T3.1's checks used `curl`, which sends no `Origin`, so they could not see it. The owner's answer above went through the page after the fix.
+- **`make install` was run from this branch and `afkd` restarted twice**, so the owner could use the page. The plan had said the session would touch neither the config nor the daemon; the owner asked for both.
+- **`gs` on the VM was Ghostscript, and `make check` failed in `internal/spice`.** The review found it on 2026-10-12: `TestGitSpiceTrackContract` ran `/usr/bin/gs --no-prompt repo init --trunk main` and got `Unknown switch --no-prompt`. The runbook's libvips step had brought it in: `libvips42t64` depends on ImageMagick's library, which recommends the `ghostscript` package, whose program is `/usr/bin/gs`; afk looks for `git-spice` first and `gs` second, and the VM had no `git-spice`. Fixed on the machine, not in Go (the plan allows no Go change for this, and the test is right to fail when `gs` is not git-spice): the official git-spice 0.31.2 release, checksum checked, is installed as `~/bin/git-spice`. Both the shell's PATH and the daemon's drop-in PATH list `~/bin` before `/usr/bin`, so afk and the daemon find it first whatever `gs` is; `go test -count=1 ./internal/spice/` and the whole `make check` pass (`.afk/t4-1/evidence/fix1-git-spice-install.txt`, `fix1-spice-test.txt`, `fix1-make-check.txt`). Before that fix, and not by this session, the `ghostscript` package had been removed from the VM and git-spice added through mise under the name `gs`; neither is needed with `~/bin/git-spice` in place, and neither was undone. The runbook has the install in section 2 (step 6), a Known limits entry and a troubleshooting row, and README's web page section now says why the page sends `Referrer-Policy: same-origin`.
+
+### The review
+
+The first pass was rejected on two points, and one fix cycle cleared both.
+
+- **The 403 fix was outside the work plan**, which had said documents only. Because the owner reported the fault in this session, the fix became its own task in the work plan (W5.T1), and stays in this change so a later install from main does not bring the fault back. An inbox notice says so.
+- **`make check` failed on the VM** because `gs` was Ghostscript. git-spice 0.31.2 is now at `~/bin/git-spice`, which afk looks for before `gs`, and the runbook has the step, a known limit and a troubleshooting row. `make check` then passed in full.
+
+The second pass approved with minor notes only: `README.md` and `CONTEXT.md` were edited outside the tasks' file lists, and some of the plan's checks can no longer be re-run as written because nebari moved on (`afk next` prints T4.4, `afk-setup` has an upstream).
+
+Still open when this was committed, all on the owner's side: nebari pull request 14 is not merged, nebari's main is red on `task_swipe_spec.rb:266`, and nebari is paused in the daemon.
