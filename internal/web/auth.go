@@ -189,8 +189,14 @@ func withoutToken(u *url.URL) string {
 //
 //   - no-store: the pages show live state and an answer form; a cached copy
 //     shown later would be wrong, and a shared cache must never hold one.
-//   - no-referrer: an address here may still carry ?token= for one request,
-//     and must not be passed to any site a link leads to.
+//   - same-origin referrer: an address here may still carry ?token= for one
+//     request, and must not be passed to any site a link leads to, so no
+//     referrer leaves this site. It is not "no-referrer", although that reads
+//     as the safer choice: the Fetch standard ("append a request `Origin`
+//     header") has a browser send `Origin: null` on every POST made under
+//     no-referrer, this page's own forms included, and sameOrigin then
+//     refuses each button press as coming from another site. Under
+//     same-origin a form on this page posts with its real origin.
 //   - nosniff and DENY: the content is what the type says, and the page is
 //     never to be shown inside another site's frame, where a button could be
 //     pressed by trickery.
@@ -198,7 +204,7 @@ func withoutToken(u *url.URL) string {
 //     this site, and nothing else: no script, image, font or outside address.
 func setSecurityHeaders(h http.Header) {
 	h.Set("Cache-Control", "no-store")
-	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Referrer-Policy", "same-origin")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")

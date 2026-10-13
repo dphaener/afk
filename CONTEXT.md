@@ -105,3 +105,9 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Usage segment**: the part of the dashboard's header that shows the governor's last decision and the tightest usage window.
 - **Tightest window**: the usage window with the highest percentage used, the one that will hold the build back first.
 - **Build snapshot**: everything the dashboard shows about a build, read from the main checkout's files in one go on each refresh.
+- **Runbook**: `docs/runbook-vm.md`, the step-by-step for getting a project ready on the always-on machine, with each step marked as the machine's or the owner's.
+- **Project prerequisites**: what a project's own checks need installed on the machine (for nebari: Ruby, PostgreSQL, libvips, a headless Chrome), as opposed to what afk needs.
+- **Capped API key**: a separate provider key with a low spend limit, used only for a project's live smoke checks and fixtures, kept in the project's local settings and never in the agent's environment.
+- **Tunnel**: the owner's private route from a phone or laptop to the web page on the VM (a VPN or a reverse proxy); the page itself stays on loopback.
+- **Restore drill**: restoring a database backup somewhere safe to prove the backup works, done once before deploys run unattended.
+- **Set-up branch**: `afk-setup`, the local branch in a project that holds its `afk.toml`, ignore lines and CI change until the owner pushes and merges it.
