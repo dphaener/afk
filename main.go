@@ -9,23 +9,24 @@ import (
 // name can never be routable-but-undispatchable. `_host` is deliberately here
 // but absent from printUsage: it is the internal session-host entry point.
 var subcommands = map[string]func([]string){
-	"new":    cmdNew,
-	"dash":   cmdDash,
-	"clean":  cmdClean,
-	"attach": cmdAttach,
-	"notify": cmdNotify,
-	"plugin": cmdPlugin,
-	"plan":   cmdPlan,
-	"tasks":  cmdTasks,
-	"next":   cmdNext,
-	"ledger": cmdLedger,
-	"usage":  cmdUsage,
-	"inbox":  cmdInbox,
-	"tokens": cmdTokens,
-	"daemon": cmdDaemon,
-	"pause":  cmdPause,
-	"resume": cmdResume,
-	"_host":  cmdHost,
+	"new":     cmdNew,
+	"dash":    cmdDash,
+	"clean":   cmdClean,
+	"attach":  cmdAttach,
+	"notify":  cmdNotify,
+	"plugin":  cmdPlugin,
+	"plan":    cmdPlan,
+	"tasks":   cmdTasks,
+	"next":    cmdNext,
+	"ledger":  cmdLedger,
+	"profile": cmdProfile,
+	"usage":   cmdUsage,
+	"inbox":   cmdInbox,
+	"tokens":  cmdTokens,
+	"daemon":  cmdDaemon,
+	"pause":   cmdPause,
+	"resume":  cmdResume,
+	"_host":   cmdHost,
 }
 
 type routeKind int
@@ -184,6 +185,10 @@ Subcommands:
   next           Show the task that would run next, or why none
   ledger set     Record a task's status by hand:
                  afk ledger set <task-id> <status> [--replaced-by IDS]
+  profile        Keep a profile of how you like to build and host things, so plans
+                 stop asking: 'profile init' writes a template, 'profile check' lists
+                 what is wrong, and 'profile set' adds or changes one entry:
+                 afk profile set <topic> <value> [--kind KIND] [--rule|--default] [--reason TEXT]
   usage          Show how much of the agent's usage windows is spent, when they
                  reset, and what the usage governor would do:
                  afk usage [--provider NAME] [--refresh]

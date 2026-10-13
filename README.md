@@ -467,6 +467,67 @@ Running the same command twice changes nothing the second time, and a task alrea
 
 **Exit codes:** 0 when the task was marked (or there was nothing to do), 1 when the plan or the task was not found or the file could not be written, 2 when the command was written wrongly (for example `failed` with no `--reason`).
 
+### `afk profile` — How you build and host things
+
+The owner profile says, once, how you build and host things: the database you use, the deploy tool you run, where new projects go. Planning sessions will read it, so they ask you less and never guess a setup fact. Until they do, `afk profile` shows what it says.
+
+The file is `profile.toml`, in the same folder as `config.toml`: `$XDG_CONFIG_HOME/afk/profile.toml` when `XDG_CONFIG_HOME` is an absolute path, otherwise `~/.config/afk/profile.toml`. You can edit it by hand. The commands below are the other way in.
+
+```bash
+afk profile [--kind KIND]
+afk profile init
+afk profile set <topic> <value> [--kind KIND] [--rule|--default] [--reason TEXT]
+afk profile check
+```
+
+- `afk profile` — Lists what the profile says, one entry per line. `--kind` shows what applies to one kind of project, such as `web-app` or `cli`. With no file yet, it says where the file would be and that `afk profile init` writes a template, and it exits 0. If the file has a problem, it prints the problems instead of the entries and exits 1.
+- `afk profile init` — Writes a commented template. Every example in it is commented out, so a new file says nothing until you uncomment one. It never overwrites a file: if one is there, it says so and leaves it alone.
+- `afk profile set <topic> <value>` — Adds the entry for that topic, or changes it, and creates the file if there is none. `--kind` makes the entry apply to one kind of project, `--rule` makes it a rule, `--default` makes it a default, and `--reason` says why. A new entry is a default unless you pass `--rule`. A changed entry keeps its strength and reason unless you pass new ones. Every other line of the file, comments included, is kept. Comments on the lines of the entry being changed go with that entry. Before it saves, afk reads the file again and checks that only that entry changed; if it cannot be sure, it writes nothing.
+- `afk profile check` — Lists every problem in the file, one per line as `file: error` or `file: warning`, then the message and a rule name, then a count. Errors exit 1; warnings alone exit 0. A `rule_files` path that does not exist is a warning.
+
+An example file, with placeholder values:
+
+```toml
+# ~/.config/afk/profile.toml
+rule_files = ["~/notes/house-rules.md"]
+
+[[entry]]
+topic = "database"
+value = "PostgreSQL"
+strength = "rule"
+reason = "it is what I run"
+
+[[entry]]
+topic = "domain"
+value = "example.com"
+strength = "default"
+kind = "web-app"
+```
+
+- `rule_files` — Documents that hold your house rules, each an absolute path or a path starting with `~/`. The profile commands list them and do not open them.
+- `topic` — What the entry is about, such as `database`. Topics match ignoring capital letters and extra spaces, so `Database` and `database` are the same topic. There is one entry per topic and kind; a second one is an error.
+- `value` — The answer, such as `PostgreSQL`. `"no preference"` means you have none: the planner should recommend one and say why.
+- `strength` — `rule` must be followed. `default` is used unless the project says otherwise. A missing strength counts as `default`; any other word is an error.
+- `kind` — Optional. Lower-case letters, digits and hyphens, such as `web-app` or `cli`. The entry then applies only to that kind of project. When you ask for a kind, an entry for that kind beats a general entry on the same topic, whatever their strengths.
+- `reason` — Optional. Why you prefer the value.
+
+Keys and tokens are refused. `set` refuses a value that looks like one, says which field it was and why, and saves nothing. `check` reports such an entry without printing the text. afk reads secrets from the environment, never from this file, so a key written here would sit in plain text in your config folder.
+
+A walkthrough on a new machine (the paths are the defaults):
+
+```
+$ afk profile set database PostgreSQL --rule --reason "house rule"
+Set database as a rule in /home/you/.config/afk/profile.toml
+$ afk profile set database SQLite --kind cli
+Set database [cli] as a default in /home/you/.config/afk/profile.toml
+$ afk profile --kind web-app
+Profile: /home/you/.config/afk/profile.toml
+No entry is specific to web-app, so the general entries apply.
+rule  database: PostgreSQL — house rule
+```
+
+**Exit codes:** 0 when the command is done, including when there is no file yet, 1 when the profile has a problem or could not be read or written, 2 when the command was written wrongly.
+
 ### `afk tasks` — List the master plan's tasks
 
 Show every task in the project's master plan, with its status and what it is still waiting for.
@@ -732,7 +793,7 @@ Stopping the daemon (ctrl-c, or `systemctl --user stop afkd`) never stops a sess
 - `afk attach` and the dashboard always work. If afk restarts a session while you are attached, your pane says the session was taken: attach again, and expect afk to type the resume command into it about half a minute later.
 - Recovery needs the session to have been started by the daemon. A session you started by hand is not checked while nobody is attached, as before.
 
-**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. A missing file is not an error, but with no `[[project]]` the daemon has nothing to build and `afk daemon` exits 1. Keys it does not know are ignored.
+**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. The owner profile, `profile.toml`, lives in the same folder (see `afk profile`). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build and `afk daemon` exits 1. Keys it does not know are ignored.
 
 ```toml
 # ~/.config/afk/config.toml
@@ -1113,6 +1174,7 @@ The binary is organized into packages:
 - **internal/daemonconfig** — Reads `config.toml`, the daemon's machine config (projects, tick, stall limit)
 - **internal/daemonstate** — The pause flag, each project's `daemon.json` and the one-daemon-per-machine lock
 - **internal/decisionlog** — The append-only record of every decision, `.afk/log/decisions.jsonl`
+- **internal/profile** — The owner profile, `profile.toml` beside `config.toml`: loads and checks it, picks the entries for one kind of project, and edits one entry as text so comments survive
 - **internal/pluginstall** — `afk plugin install`: writes the embedded plugins and drives each agent CLI's install
 - **plugins/afk** — The Claude Code and Codex plugin (skills, hooks, Workflow scripts). `plugins/afk/skills/conductor/status-schema.md` is the binding status.json contract.
 - **plugins/afk-opencode** — The OpenCode V2 port of the same plugin; see its `PROVENANCE.md` for the porting glossary
