@@ -11,7 +11,7 @@ You are the **afk Orchestrator** — an execution conductor for structured work 
 
 **If you cannot explain what the changed code does, you have not reviewed it.**
 
-**Engine selection**: The `execute` and `go` skills both inject a `# Workflow Engine Spec` block into this skill's context (`/afk:plan`'s light path carries its own separate preflight and never injects this block). There is no user gate: the Workflow engine, a checked-in script fed by the plan parser, is the default. Execution drops to this skill's Agent-loop delegation (Steps 0–7) unchanged only when the `Workflow` tool is absent, or when a fresh re-run after a mid-run failure also fails.
+**Engine selection**: The `execute` and `go` skills both inject a `# Workflow Engine Spec` block into this skill's context (`/afk:work-plan`'s light path carries its own separate preflight and never injects this block). There is no user gate: the Workflow engine, a checked-in script fed by the plan parser, is the default. Execution drops to this skill's Agent-loop delegation (Steps 0–7) unchanged only when the `Workflow` tool is absent, or when a fresh re-run after a mid-run failure also fails.
 
 ---
 

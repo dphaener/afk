@@ -44,6 +44,13 @@ type Provider interface {
 	// a bare one-off session with no conductor; autonomous selects the
 	// conductor's no-questions mode.
 	LaunchArgv(name string, scratch, autonomous bool) []string
+	// PlanArgv is the child argv of an attended planning session: the agent
+	// running the master-plan skill with its owner at the terminal. It takes
+	// no session name because a project has one planning session and the skill
+	// finds its own state in the project folder. A provider whose plugin has
+	// no such skill returns a nil argv and ErrNoPlanSession, so a caller can
+	// refuse before anything is started and never falls back to a bare agent.
+	PlanArgv() ([]string, error)
 	// ResumeArgv is the child argv that resumes an existing agent session
 	// by its id, used when the host restarts a wedged child.
 	ResumeArgv(sessionID string) []string
@@ -105,6 +112,14 @@ func Lookup(name string) (Provider, error) {
 	return nil, fmt.Errorf("unknown provider %q (valid: %s)", name, strings.Join(Names(), ", "))
 }
 
+// ErrNoPlanSession is returned by PlanArgv for a provider that cannot run a
+// planning session. The master-plan skill ships only in plugins/afk, the
+// default provider's plugin; the OpenCode port does not carry it (see the lag
+// note in plugins/afk-opencode/PROVENANCE.md). The text is shown to the owner
+// as it is, so it says what to do and names no provider: the caller adds which
+// one was asked for.
+var ErrNoPlanSession = errors.New("planning sessions are not available with this agent yet; run `afk plan` with the default agent instead")
+
 // CodexInteractiveConflictMsg is the exact usage error for the codex provider
 // with neither autonomous nor scratch. Codex's structured question tool exists
 // only in Plan mode, so the interactive planning conductor cannot run there;
@@ -142,6 +157,16 @@ func (claude) LaunchArgv(name string, scratch, autonomous bool) []string {
 		cmd += " --autonomous"
 	}
 	return []string{"claude", cmd}
+}
+
+// planPrompt is the slash command that starts the master-plan skill. It is the
+// only place the text appears in Go: everything else asks PlanArgv.
+const planPrompt = "/afk:master-plan"
+
+// PlanArgv carries no session name and no --autonomous: a planning session is
+// attended by definition, and the skill reads .afk/plan/ in the project.
+func (claude) PlanArgv() ([]string, error) {
+	return []string{"claude", planPrompt}, nil
 }
 
 func (claude) ResumeArgv(sessionID string) []string {
@@ -184,6 +209,12 @@ func (codex) LaunchArgv(name string, scratch, _ bool) []string {
 	// to ask questions, which Codex cannot do outside Plan mode.
 	return []string{"codex", codexConductorPrompt + " --session " + name + " --autonomous"}
 }
+
+// PlanArgv refuses for two reasons that each suffice: the planning session
+// asks its owner questions, which Codex can do only in Plan mode (see
+// CodexInteractiveConflictMsg), and no `$skill` mention for the master-plan
+// skill has been tried against the CLI.
+func (codex) PlanArgv() ([]string, error) { return nil, ErrNoPlanSession }
 
 func (codex) ResumeArgv(sessionID string) []string {
 	return []string{"codex", "resume", sessionID}
@@ -240,6 +271,9 @@ func (opencode) LaunchArgv(name string, scratch, autonomous bool) []string {
 	}
 	return []string{"opencode", "--standalone", "--prompt", prompt}
 }
+
+// PlanArgv refuses because the OpenCode port has no master-plan skill to run.
+func (opencode) PlanArgv() ([]string, error) { return nil, ErrNoPlanSession }
 
 func (opencode) ResumeArgv(sessionID string) []string {
 	// --standalone for the same ownership reason as LaunchArgv.

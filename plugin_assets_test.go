@@ -3,7 +3,11 @@ package main
 import (
 	"encoding/json"
 	"io/fs"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/dphaener/afk/internal/pluginstall"
 )
@@ -59,5 +63,163 @@ func TestPluginAssets(t *testing.T) {
 	xv := read("plugins/afk/.codex-plugin/plugin.json")["version"]
 	if cv != xv {
 		t.Errorf("claude plugin version %v != codex plugin version %v", cv, xv)
+	}
+}
+
+// TestPluginSkillFiles protects the rename of the plan skill. Load-bearing:
+// the absent rows. A leftover plan/SKILL.md would keep answering the old
+// command name next to the new one, and nothing else notices a folder that
+// should have gone.
+func TestPluginSkillFiles(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		exists bool
+	}{
+		{"master-plan skill", "plugins/afk/skills/master-plan/SKILL.md", true},
+		{"work-plan skill", "plugins/afk/skills/work-plan/SKILL.md", true},
+		{"work-plan skill in the OpenCode port", "plugins/afk-opencode/skills/work-plan/SKILL.md", true},
+		{"old plan skill is gone", "plugins/afk/skills/plan/SKILL.md", false},
+		{"old plan skill is gone from the OpenCode port", "plugins/afk-opencode/skills/plan/SKILL.md", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := fs.Stat(pluginAssets, tt.path)
+			if got := err == nil; got != tt.exists {
+				t.Errorf("%s: exists = %v, want %v (err %v)", tt.path, got, tt.exists, err)
+			}
+		})
+	}
+}
+
+// oldPlanCommand finds the retired command name with one optional character
+// after it. Go's regexp has no look-ahead, so oldPlanMatches checks that
+// character in code.
+var oldPlanCommand = regexp.MustCompile(`/afk[:-]plan([^\n]?)`)
+
+// oldPlanMatches reports whether line uses /afk:plan or /afk-plan as a whole
+// command name, that is, not followed by a lower-case letter, a digit or a
+// hyphen.
+func oldPlanMatches(line string) bool {
+	for _, m := range oldPlanCommand.FindAllStringSubmatch(line, -1) {
+		if m[1] == "" {
+			return true
+		}
+		c := m[1][0]
+		if !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '-' {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPluginOldPlanMatcher protects the matcher the next test relies on. Load-bearing:
+// the no-match rows. /afk:planner is a real skill and afk-plan-{name} is a
+// session title; a matcher that flagged them would force edits to correct text.
+func TestPluginOldPlanMatcher(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"bare colon form", "run /afk:plan", true},
+		{"followed by a full stop", "run /afk:plan.", true},
+		{"hyphen form then space", "run /afk-plan now", true},
+		{"end of line", "/afk-plan", true},
+		{"planner", "/afk:planner", false},
+		{"work-plan colon", "/afk:work-plan", false},
+		{"work-plan hyphen", "/afk-work-plan", false},
+		{"session title has no slash", "afk-plan-foo", false},
+		{"followed by a digit", "/afk:plan2", false},
+		{"followed by a hyphen", "/afk:plan-x", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := oldPlanMatches(tt.line); got != tt.want {
+				t.Errorf("oldPlanMatches(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPluginsUseNewPlanName protects the rename of /afk:plan to
+// /afk:work-plan. A prompt that still names the old command sends the agent
+// to a skill that no longer exists, and nothing fails at run time. Every text
+// file under plugins/ is checked, plus the README read from disk.
+func TestPluginsUseNewPlanName(t *testing.T) {
+	check := func(name string, b []byte) {
+		if !utf8.Valid(b) || strings.IndexByte(string(b), 0) >= 0 {
+			return
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if oldPlanMatches(line) {
+				t.Errorf("%s:%d still uses the old command name: %s", name, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	err := fs.WalkDir(pluginAssets, "plugins", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, err := fs.ReadFile(pluginAssets, p)
+		if err != nil {
+			return err
+		}
+		check(p, b)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk plugins: %v", err)
+	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	check("README.md", readme)
+}
+
+// catInclude matches the include lines the Claude Code skill loader expands.
+var catInclude = regexp.MustCompile("^!`cat \"\\$\\{CLAUDE_PLUGIN_ROOT\\}/([^\"]+)\"`\\s*$")
+
+// TestPluginMasterPlanIncludes protects the master-plan skill's injected prompts.
+// Load-bearing: a path that does not exist injects an error into the prompt
+// at run time, and a file over the cap trips scripts/check-cat-sizes.sh only
+// in make plugin-test; this pins both in go test. The cap counts characters
+// (utf8.RuneCount), the same as wc -m in that script.
+func TestPluginMasterPlanIncludes(t *testing.T) {
+	const sizeCap = 28000
+	b, err := fs.ReadFile(pluginAssets, "plugins/afk/skills/master-plan/SKILL.md")
+	if err != nil {
+		t.Fatalf("read master-plan SKILL.md: %v", err)
+	}
+	var paths []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if m := catInclude.FindStringSubmatch(line); m != nil {
+			paths = append(paths, m[1])
+		}
+	}
+	if len(paths) == 0 {
+		t.Fatal("master-plan SKILL.md has no include lines")
+	}
+	hasFormat := false
+	for _, p := range paths {
+		if p == "skills/master-plan/plan-format.md" {
+			hasFormat = true
+		}
+		t.Run(p, func(t *testing.T) {
+			body, err := fs.ReadFile(pluginAssets, "plugins/afk/"+p)
+			if err != nil {
+				t.Fatalf("included file missing from the embedded plugin: %v", err)
+			}
+			if n := utf8.RuneCount(body); n > sizeCap {
+				t.Errorf("%s is %d characters, over the %d cap", p, n, sizeCap)
+			}
+		})
+	}
+	if !hasFormat {
+		t.Error("master-plan SKILL.md does not include skills/master-plan/plan-format.md")
 	}
 }

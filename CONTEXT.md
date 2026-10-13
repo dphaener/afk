@@ -129,3 +129,14 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Rule file**: an existing house-rule document the owner profile points at, to be read by a planning session and never copied into the profile.
 - **No preference**: a profile value that means the owner has no fixed choice on a topic, so the planning session should recommend one and say why.
 - **Secret check**: the test `afk profile set` and `afk profile check` apply to refuse a value that looks like a key or token.
+- **Planning session**: the attended agent session `afk plan` starts in a project's main checkout to turn the owner's idea into a checked first draft of the master plan; its host is the session named `master-plan`.
+- **Plan phase**: how far a planning session has got: `brief`, `survey`, `model`, `rounds`, `slices`, `draft`, `check`, `design`, `review` or `approved`.
+- **Brief**: the owner's request for a project, saved word for word in `.afk/plan/brief.md` and never edited afterwards.
+- **Survey**: what a planning session read before asking anything (the owner profile, its rule files, the folder), with the profile entries that apply.
+- **Product question**: a planning question about what to build, asked with options and one recommendation so that "yes" accepts it.
+- **Setup fact**: something about how the project is named, hosted or built (accounts, addresses, stack) that comes from the owner profile or the owner and is never guessed.
+- **Round**: one batch of planning questions, holding every question whose prerequisites are settled.
+- **Slices**: the proposed task breakdown the owner confirms before the master plan is drafted, saved in `.afk/plan/slices.md`.
+- **Gate (plan phase)**: what must be on disk before a planning session may leave a phase; `afk plan advance` checks it.
+- **Planning marker**: the empty file `.afk/master-plan/planning`, which makes every start of that session's host run the planning skill.
+- **Reserved name**: a session name afk keeps for itself (`plan`, `master-plan`), which `afk new` refuses.

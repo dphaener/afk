@@ -37,7 +37,7 @@ afk runs in one of two modes. Both avoid stops that exist only to ask permission
 
 **Default mode: decide and escalate.** afk decides every question it can answer itself, from your repo, the ticket, or a sensible default, and records the decision with its reason in the plan's `## Assumptions` section (`- [A1] {decision} → {answer} — {reason}`). It asks you only when a decision meets the **escalation rule**: an irreversible or destructive action, security or data-loss exposure, scope that conflicts with your request, or a genuine fork in your intent that nothing in the repo or ticket settles. A fully specified request produces zero questions.
 
-**Autonomous mode: no questions at all.** Pass `--autonomous` (`/afk:plan`, `/afk:execute`, `/afk:go`) or create the marker file `.afk/{name}/autonomous`. The `/afk:go` conductor writes the marker when it sees the flag, so a resumed or restarted session keeps the mode; delete the file by hand to return to default mode. Decisions that would have escalated are decided too, preferring the reversible, least-exposure option, and are tagged `(assumed, would have escalated)` so you can review them in the plan. Every other point that could ask is non-interactive: a missing session UUID continues degraded, a sub-agent's `NEEDS_INPUT` is answered by the conductor and logged under `## Relayed answers` in `decisions.md`, a missing plan argument stops with an error, and the Crucible runs without a question.
+**Autonomous mode: no questions at all.** Pass `--autonomous` (`/afk:work-plan`, `/afk:execute`, `/afk:go`) or create the marker file `.afk/{name}/autonomous`. The `/afk:go` conductor writes the marker when it sees the flag, so a resumed or restarted session keeps the mode; delete the file by hand to return to default mode. Decisions that would have escalated are decided too, preferring the reversible, least-exposure option, and are tagged `(assumed, would have escalated)` so you can review them in the plan. Every other point that could ask is non-interactive: a missing session UUID continues degraded, a sub-agent's `NEEDS_INPUT` is answered by the conductor and logged under `## Relayed answers` in `decisions.md`, a missing plan argument stops with an error, and the Crucible runs without a question.
 
 **Stops that no longer exist (both modes):**
 
@@ -65,7 +65,9 @@ afk ships six agent definitions in `agents/`: `afk:task` (executes and fixes tas
 
 ## The Three Phases
 
-### Phase 1: Plan (`/afk:plan`)
+Besides the three phases below, the plugin has `/afk:master-plan`, the skill that takes an idea to a first draft of a project's master plan. You do not start it by hand: `afk plan` starts it in an attended session (see the afk README).
+
+### Phase 1: Plan (`/afk:work-plan`)
 
 Every request gets a **routing verdict**, announced up front: afk classifies the work, then states whether it's taking the **LIGHT** or **FULL** path. A skip phrase like "just write the plan" always elects FULL. FULL proceeds straight into the grill loop with no extra prompt. A LIGHT verdict **executes in-session without a confirmation**: afk announces the verdict and its caveats, tells you the light path is running, and you can interrupt to ask for the full pipeline instead.
 
@@ -120,7 +122,7 @@ Plan and Execute can share a session, or run in separate ones — either works, 
 
 ```bash
 # Plan
-/afk:plan TURT-1234
+/afk:work-plan TURT-1234
 
 # Create a feature branch before executing
 git checkout -b feat/turt-1234-add-billing-webhook

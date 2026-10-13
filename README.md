@@ -21,7 +21,7 @@ This creates a binary `afk` in the current directory.
 
 ### Install the agent plugin
 
-The afk workflow itself (`/afk:go`, `/afk:plan`, `/afk:execute`, `/afk:review`, the conductor, and its hooks) is an agent plugin that ships in this repo under `plugins/` and is embedded in the binary. Install it with the command below, which asks which of your agent CLIs to install into:
+The afk workflow itself (`/afk:go`, `/afk:work-plan`, `/afk:master-plan`, `/afk:execute`, `/afk:review`, the conductor, and its hooks) is an agent plugin that ships in this repo under `plugins/` and is embedded in the binary. Install it with the command below, which asks which of your agent CLIs to install into:
 
 ```bash
 afk plugin install
@@ -58,7 +58,7 @@ Create an isolated afk session with a dedicated branch and worktree.
 afk new [options] <name>
 ```
 
-The `<name>` is validated as strict kebab-case (`^[a-z0-9][a-z0-9-]*$`) and becomes the branch name, worktree directory, and plan slug.
+The `<name>` is validated as strict kebab-case (`^[a-z0-9][a-z0-9-]*$`) and becomes the branch name, worktree directory, and plan slug. `plan` and `master-plan` cannot be used as names, because `afk plan` keeps its planning state and its session under them.
 
 **Options:**
 
@@ -418,6 +418,44 @@ Without `--target`, it lists the agent CLIs it finds on `PATH` and asks which on
 
 **Exit codes:** 0 when every selected target installed (or nothing was selected), 1 when any target failed or the prompt was cancelled, 2 on a flag error or a missing `--target` without a terminal.
 
+### `afk plan` — Plan a project with your agent
+
+Start an attended agent session that takes your idea to a first draft of the master plan. The session runs the `/afk:master-plan` skill: it asks what you want to build, asks its questions in rounds, proposes how to cut the work into tasks, writes `docs/PLAN.md` and checks it with `afk plan lint`.
+
+```bash
+afk plan [--project DIR] [--provider NAME] [--dry-run]
+afk plan status [--project DIR]
+afk plan advance [--project DIR]
+```
+
+- **It needs a terminal.** The session asks you questions, so with no terminal on stdin and stdout `afk plan` starts nothing and exits 1.
+- **An empty folder is turned into a git repository.** A folder that is not a git repository yet gets `git init` and nothing else. The session writes the `.gitignore` itself, in the draft phase.
+- **It refuses a project that already has a plan.** If `docs/PLAN.md` (or the plan named in `afk.toml`) exists and there is no planning session in progress, `afk plan` exits 1 and says changing a plan is not built yet. A planning session in progress is always resumed.
+- `--project DIR` — The project to plan. Defaults to the current directory. From inside a session's worktree it reaches the project's main checkout, where `.afk/plan/` lives.
+- `--provider NAME` — The agent to run: `claude`, `codex` or `opencode`. Planning sessions work with the default agent only for now; any other prints that and exits 1. An unknown name exits 2.
+- `--dry-run` — Print what would happen (the project, whether it would run `git init`, whether the session would start, resume or be reattached, and the command it runs) and change nothing.
+
+**Leaving and coming back.** Leave with ctrl-\. The session keeps running in the background and what it has saved is kept in `.afk/plan/`. Run `afk plan` again to come back: it reattaches to a running session, or starts a fresh agent on the saved state if the session has stopped. Opening it from the dashboard does the same.
+
+**`afk plan status`** prints the session's mode, its phase, what it is waiting for, and one `Problem:` line for each damaged file. It only reads. With no planning session it says so and tells you to run `afk plan`.
+
+**`afk plan advance`** moves the session to the next phase once the current phase's work is saved, and says what is missing when it is not. It is the command the planning session itself runs when a phase is done; you rarely need it. The agent never writes the phase by hand, so it cannot skip a step.
+
+The eight phases, in order:
+
+1. `brief` — your request is saved word for word.
+2. `survey` — the session reads the folder and your profile.
+3. `model` — you settle what the project's terms mean.
+4. `rounds` — questions in rounds, each with options and a recommendation where it is your choice.
+5. `slices` — you confirm how the work is cut into tasks.
+6. `draft` — the plan is written.
+7. `check` — `afk plan lint` reports no errors and a critic has reviewed the draft.
+8. `review` — you read the draft. Approving it is not built yet.
+
+**Where the files are.** The session's state is in `.afk/plan/` in the project's main checkout: `state.json`, `brief.md`, `survey.md`, `questions.jsonl`, `slices.md` and `critic.md` (see `docs/PLAN.md` section 4.8). The agent itself runs as a session named `master-plan`, with its own folder `.afk/master-plan/`, so it shows in the dashboard under that name. Cleaning that session does not delete the planning state.
+
+**Exit codes.** `afk plan`: 0 you left the session (or the dry run printed), 1 the session could not be started here (no terminal, a plan already exists, an agent that cannot plan), 2 the command was written wrongly, 10 the session was opened somewhere else, 11 the session ended, 12 it is not running. `afk plan status`: 0 printed, 1 one of the session's files is damaged, 2 bad usage. `afk plan advance`: 0 moved, 1 refused, 2 bad usage.
+
 ### `afk plan lint` — Check a master plan
 
 Check a master plan the way the daemon reads it, and list everything wrong with it, not only the first problem. Run it before you leave a plan for the daemon to build.
@@ -469,7 +507,7 @@ Running the same command twice changes nothing the second time, and a task alrea
 
 ### `afk profile` — How you build and host things
 
-The owner profile says, once, how you build and host things: the database you use, the deploy tool you run, where new projects go. Planning sessions will read it, so they ask you less and never guess a setup fact. Until they do, `afk profile` shows what it says.
+The owner profile says, once, how you build and host things: the database you use, the deploy tool you run, where new projects go. The planning session that `afk plan` starts reads it, so it asks you less and never guesses a setup fact. `afk profile` shows what it says.
 
 The file is `profile.toml`, in the same folder as `config.toml`: `$XDG_CONFIG_HOME/afk/profile.toml` when `XDG_CONFIG_HOME` is an absolute path, otherwise `~/.config/afk/profile.toml`. You can edit it by hand. The commands below are the other way in.
 

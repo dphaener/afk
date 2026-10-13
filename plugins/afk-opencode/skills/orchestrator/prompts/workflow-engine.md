@@ -1,6 +1,6 @@
 # Workflow Engine Spec
 
-This block is the execution-engine spec for `/afk-execute` and `/afk-go`. It is injected by the `execute` and `go` skills, never by `/afk-plan` (the light path carries its own entry contract in the planner's light-path block). It extends the afk Orchestrator (orchestrator/SKILL.md) with a second execution engine: the **`afk_workflow` tool** running one checked-in script, `workflows/execute.js`. Everything in orchestrator/SKILL.md still applies unless this block says otherwise for the Workflow engine. This block specifies how to run the plan through the static script, what to do when that is not possible, and the completion step that applies to both engines.
+This block is the execution-engine spec for `/afk-execute` and `/afk-go`. It is injected by the `execute` and `go` skills, never by `/afk-work-plan` (the light path carries its own entry contract in the planner's light-path block). It extends the afk Orchestrator (orchestrator/SKILL.md) with a second execution engine: the **`afk_workflow` tool** running one checked-in script, `workflows/execute.js`. Everything in orchestrator/SKILL.md still applies unless this block says otherwise for the Workflow engine. This block specifies how to run the plan through the static script, what to do when that is not possible, and the completion step that applies to both engines.
 
 ---
 

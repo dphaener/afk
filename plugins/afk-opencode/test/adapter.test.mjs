@@ -254,7 +254,7 @@ test('extractJson / validate', () => {
 })
 
 test('commands: assemble inlines every cat line and substitutes arguments', () => {
-  for (const name of ['go', 'plan', 'execute', 'review']) {
+  for (const name of ['go', 'work-plan', 'execute', 'review']) {
     const out = assemble(ROOT, name, '--autonomous TURT-1')
     assert.doesNotMatch(out, /!`|CLAUDE_PLUGIN_ROOT/)
     assert.ok(out.includes('$ARGUMENTS for this invocation: `--autonomous TURT-1`'))

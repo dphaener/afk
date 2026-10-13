@@ -27,6 +27,10 @@ type fakeProvider struct {
 func (f *fakeProvider) Name() string                           { return f.name }
 func (f *fakeProvider) LaunchArgv(string, bool, bool) []string { return nil }
 func (f *fakeProvider) ResumeArgv(string) []string             { return nil }
+
+// PlanArgv is here only to satisfy provider.Provider; the usage command never
+// starts a planning session.
+func (f *fakeProvider) PlanArgv() ([]string, error) { return nil, provider.ErrNoPlanSession }
 func (f *fakeProvider) Preflight(string, func(string, string, ...string) (string, error)) (bool, string) {
 	return true, ""
 }

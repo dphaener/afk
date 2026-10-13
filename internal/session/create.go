@@ -14,6 +14,7 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -365,6 +366,17 @@ type HostSpawn struct {
 	// value, never free text from a user: it comes from status.json's
 	// session_id. It is used as given and is never empty on that path.
 	ResumeID string
+	// MasterPlan makes the child the provider's planning command: the attended
+	// session `afk plan` starts, in which the owner answers questions. Scratch
+	// and Autonomous are ignored with it, since that command takes neither.
+	// SpawnHost also turns it on when the .afk/<name>/planning marker exists,
+	// for the same reason it fills Provider and Unattended: the dashboard's
+	// relaunch names only the session, and a planning session relaunched
+	// without it would start a conductor for a session that has no plan.
+	// Together with Unattended or ResumeID it is an error, never a launch: a
+	// planning session with nobody at the terminal waits for ever on its first
+	// question.
+	MasterPlan bool
 }
 
 // HostProcess describes a host started by SpawnHost. PID is captured before
@@ -430,11 +442,12 @@ func hostArgs(spec HostSpawn, socket string) []string {
 // It cannot fail, and launchArgv can, so this is launchArgv with the error
 // dropped. That is safe only because every path that reaches here has already
 // called launchArgv and stopped on its error: Build for a new session (and so
-// for --dry-run), resolveSpawnUnattended for SpawnHost. An error return would
-// ripple into the pure display helper childCommandLine and into hostArgs for
-// no benefit. Keep that true when adding a caller: for an unattended spawn
-// the dropped error would mean a child started in the mode that asks
-// questions.
+// for --dry-run), resolveSpawnPlanning and resolveSpawnUnattended for
+// SpawnHost. An error return would ripple into the pure display helper
+// childCommandLine and into hostArgs for no benefit. Keep that true when
+// adding a caller: for an unattended spawn the dropped error would mean a
+// child started in the mode that asks questions, and for a planning spawn it
+// would mean an empty argv, so a host with no command to run.
 func childArgv(spec HostSpawn) []string {
 	argv, _ := launchArgv(spec)
 	return argv
@@ -452,10 +465,26 @@ func childArgv(spec HostSpawn) []string {
 // it is the plain one only so display code has something to print. Callers
 // that start a process must not use it. This package never names the option
 // or the provider that has it: the whole translation is p.Unattended.
+//
+// A planning spawn (MasterPlan) is p.PlanArgv and nothing else. Its two errors
+// both come with a nil argv, because there is no plain command to fall back
+// on: the provider has no planning session, or the spec also asks for an
+// unattended or resumed child. The second is checked first, since it is wrong
+// under every provider.
 func launchArgv(spec HostSpawn) ([]string, error) {
 	p, err := provider.Lookup(spec.Provider)
 	if err != nil {
 		p, _ = provider.Lookup(provider.Default)
+	}
+	if spec.MasterPlan {
+		if spec.Unattended || spec.ResumeID != "" {
+			return nil, fmt.Errorf("session %q: %w", spec.Name, ErrPlanningUnattended)
+		}
+		argv, err := p.PlanArgv()
+		if err != nil {
+			return nil, fmt.Errorf("session %q cannot be a planning session with provider %q: %w", spec.Name, p.Name(), err)
+		}
+		return argv, nil
 	}
 	var argv []string
 	if spec.ResumeID != "" {
@@ -472,6 +501,13 @@ func launchArgv(spec HostSpawn) ([]string, error) {
 	}
 	return unattended, nil
 }
+
+// ErrPlanningUnattended is the refusal for a planning spawn that also asks for
+// the unattended mode or for a resumed conversation, which is how the daemon
+// brings a session back with nobody watching. A planning session exists to
+// ask its owner questions, so started that way it would sit at its first
+// question inside a detached host, looking alive.
+var ErrPlanningUnattended = errors.New("a planning session is never unattended: it asks its owner questions, so afk only starts it from `afk plan` at a terminal")
 
 // hostProviderNote names the --provider flag hostArgs passes to the host, so
 // the dry-run launch line shows the provider the host will record and restart
@@ -506,6 +542,31 @@ func resolveSpawnProvider(spec HostSpawn) (HostSpawn, error) {
 	return spec, nil
 }
 
+// resolveSpawnPlanning settles whether a host spawn is a planning session: on
+// when the caller set MasterPlan or when the session's planning marker exists.
+// It sits beside resolveSpawnProvider and resolveSpawnUnattended because it is
+// the same problem: the dashboard's relaunch of a stopped host passes only
+// Name and Worktree, so the marker is the only carrier. It must run after
+// resolveSpawnProvider, which settles the provider being asked, and before
+// resolveSpawnUnattended, whose own launchArgv call then refuses a session
+// carrying both markers.
+//
+// The provider's refusal is returned here, before anything is forked. Left to
+// hostArgs it would be dropped (see childArgv) and the host would be started
+// with no child command at all.
+func resolveSpawnPlanning(spec HostSpawn) (HostSpawn, error) {
+	if !spec.MasterPlan {
+		spec.MasterPlan = IsPlanning(spec.Worktree, spec.Name)
+	}
+	if !spec.MasterPlan {
+		return spec, nil
+	}
+	if _, err := launchArgv(spec); err != nil {
+		return spec, err
+	}
+	return spec, nil
+}
+
 // resolveSpawnUnattended settles whether a host spawn runs the child in the
 // provider's unattended mode: on when the caller set it or when the session's
 // unattended marker exists. It sits beside resolveSpawnProvider because it is
@@ -531,10 +592,26 @@ func resolveSpawnUnattended(spec HostSpawn) (HostSpawn, error) {
 	return spec, nil
 }
 
+// ChildCommandLine is the command a host spawned from spec would run, as one
+// printable line. `afk plan --dry-run` prints it, so what the dry run shows is
+// built by the same code as what a real start runs and cannot drift from it.
+// It does not read the session's markers (SpawnHost does that), so the caller
+// passes the spec it would hand to SpawnHost. It is "" when the spec has no
+// command, which for a planning spec means the provider refused: ask the
+// provider's PlanArgv first and show its error instead.
+func ChildCommandLine(spec HostSpawn) string {
+	return childCommandLine(spec)
+}
+
 // childCommandLine renders childArgv for display, quoting every argument
 // after the program name so the slash command reads as the single word it is.
+// An empty argv renders as "": only a refused planning spec has one, and
+// indexing it would turn a refusal into a panic.
 func childCommandLine(spec HostSpawn) string {
 	argv := childArgv(spec)
+	if len(argv) == 0 {
+		return ""
+	}
 	parts := []string{argv[0]}
 	for _, a := range argv[1:] {
 		parts = append(parts, strconv.Quote(a))
@@ -584,6 +661,10 @@ func SpawnHost(spec HostSpawn, in Deps) (HostProcess, error) {
 		return HostProcess{}, fmt.Errorf("spawning session host %q: worktree is required", spec.Name)
 	}
 	spec, err := resolveSpawnProvider(spec)
+	if err != nil {
+		return HostProcess{}, fmt.Errorf("spawning session host: %w", err)
+	}
+	spec, err = resolveSpawnPlanning(spec)
 	if err != nil {
 		return HostProcess{}, fmt.Errorf("spawning session host: %w", err)
 	}
@@ -780,6 +861,13 @@ func Create(cfg Config, d Deps) error {
 func Build(cfg Config, in Deps) (*Plan, error) {
 	if err := ValidateName(cfg.Name); err != nil {
 		return nil, err
+	}
+	// Refused here, before any detection, for ordinary and one-off sessions
+	// alike. It is not part of ValidateName because `afk plan check` uses that
+	// for plan names, where these two are fine. See ReservedName for what each
+	// name would break.
+	if ReservedName(cfg.Name) {
+		return nil, fmt.Errorf("the name %q is kept for `afk plan`, which keeps the project's planning session and its files under that name. Pick another name for this session", cfg.Name)
 	}
 	d := in.withDefaults()
 	repo := cfg.RepoDir
