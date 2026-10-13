@@ -61,7 +61,8 @@ func TestPath(t *testing.T) {
 // forward compatibility with keys later tasks add. The max_restarts = 0 row
 // is load-bearing: zero is a real setting (never restart), so a reader that
 // treated an absent key and a zero the same way would silently grant three
-// restarts to someone who asked for none.
+// restarts to someone who asked for none. The max_wakes rows do the same job
+// for wakes: max_wakes = 0 must read as 0 and not fall back to the default.
 func TestLoad(t *testing.T) {
 	defGov := Governor{PauseAt: 90, LaunchBelow: 75, StaleAfter: 30 * time.Minute,
 		ProbeInterval: 5 * time.Minute, OnUnknownUsage: "run"}
@@ -74,7 +75,7 @@ func TestLoad(t *testing.T) {
 	}{
 		{name: "missing file gives defaults", missing: true,
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}},
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes}},
 		{name: "full file", toml: `
 provider = "some-provider"
 [daemon]
@@ -86,27 +87,34 @@ path = "~/code/a"
 path = "/srv/b"
 name = "bee"
 `, want: Config{Provider: "some-provider", Tick: 2 * time.Second, StallAfter: 30 * time.Minute,
-			MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
+			MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes,
 			Projects: []Project{{"a", "/home/u/code/a"}, {"bee", "/srv/b"}}}},
 		{name: "defaults when daemon table absent", toml: "[[project]]\npath = \"/srv/b\"\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes,
 				Projects: []Project{{"b", "/srv/b"}}}},
 		{name: "restart keys absent gives defaults", toml: "[daemon]\ntick = \"5s\"\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}},
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes}},
 		{name: "restart keys both set", toml: "[daemon]\nmax_restarts = 5\nrestart_backoff = \"30s\"\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: 5, RestartBackoff: 30 * time.Second}},
+				MaxRestarts: 5, RestartBackoff: 30 * time.Second, MaxWakes: DefaultMaxWakes}},
 		{name: "max_restarts zero means never restart", toml: "[daemon]\nmax_restarts = 0\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: 0, RestartBackoff: DefaultRestartBackoff}},
+				MaxRestarts: 0, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes}},
 		{name: "max_restarts negative", toml: "[daemon]\nmax_restarts = -1\n", errHas: []string{"config.toml", "daemon.max_restarts"}},
+		{name: "max_wakes set", toml: "[daemon]\nmax_wakes = 5\n",
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: 5}},
+		{name: "max_wakes zero means never wake", toml: "[daemon]\nmax_wakes = 0\n",
+			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: 0}},
+		{name: "max_wakes negative", toml: "[daemon]\nmax_wakes = -1\n", errHas: []string{"config.toml", "daemon.max_wakes"}},
 		{name: "restart_backoff not a duration", toml: "[daemon]\nrestart_backoff = \"soon\"\n", errHas: []string{"config.toml", "daemon.restart_backoff", "soon"}},
 		{name: "restart_backoff zero", toml: "[daemon]\nrestart_backoff = \"0s\"\n", errHas: []string{"config.toml", "daemon.restart_backoff", "above zero"}},
 		{name: "unknown keys ignored", toml: "[governor]\nx = 1\n[web]\nport = 3\nfuture = true\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff}},
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes}},
 		{name: "bad tick duration", toml: "[daemon]\ntick = \"soon\"\n", errHas: []string{"config.toml", "daemon.tick", "soon"}},
 		{name: "bad stall_after duration", toml: "[daemon]\nstall_after = \"10\"\n", errHas: []string{"config.toml", "daemon.stall_after"}},
 		{name: "tick under one second", toml: "[daemon]\ntick = \"500ms\"\n", errHas: []string{"config.toml", "daemon.tick", "1s"}},
@@ -115,20 +123,20 @@ name = "bee"
 		{name: "duplicate name", toml: "[[project]]\npath = \"/x/a\"\n[[project]]\npath = \"/y/a\"\n", errHas: []string{"config.toml", "project[1].name", "\"a\""}},
 		{name: "governor defaults when table absent", toml: "[daemon]\ntick = \"5s\"\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, Governor: defGov}},
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes, Governor: defGov}},
 		{name: "governor every key set", toml: "[governor]\npause_at = 80\nlaunch_below = 60.5\nstale_after = \"20m\"\nprobe_interval = \"2m\"\non_unknown_usage = \"hold\"\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes,
 				Governor: Governor{PauseAt: 80, LaunchBelow: 60.5, StaleAfter: 20 * time.Minute,
 					ProbeInterval: 2 * time.Minute, OnUnknownUsage: "hold"}}},
 		{name: "governor pause_at 100 allowed", toml: "[governor]\npause_at = 100\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes,
 				Governor: Governor{PauseAt: 100, LaunchBelow: 75, StaleAfter: 30 * time.Minute,
 					ProbeInterval: 5 * time.Minute, OnUnknownUsage: "run"}}},
 		{name: "governor launch_below equals pause_at", toml: "[governor]\nlaunch_below = 90\n",
 			want: Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
-				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
+				MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff, MaxWakes: DefaultMaxWakes,
 				Governor: Governor{PauseAt: 90, LaunchBelow: 90, StaleAfter: 30 * time.Minute,
 					ProbeInterval: 5 * time.Minute, OnUnknownUsage: "run"}}},
 		{name: "governor pause_at 3", toml: "[governor]\npause_at = 3\n", errHas: []string{"config.toml", "governor.pause_at"}},

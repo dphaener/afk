@@ -131,6 +131,18 @@ type rig struct {
 	// markerFn, when set, is Deps.RateLimited. Unset, the loop reads the
 	// real marker file from the session's folder, which rateLimit writes.
 	markerFn func(worktree, sess string) (time.Time, bool)
+
+	// maxWakes is `max_wakes`. It is zero unless a test sets it, which is the
+	// setting for never waking, so every test written before the loop could
+	// wake a session runs as it did. promptSaw is the ledger entry as the
+	// file held it during each call to the fake SendPrompt, and onPrompt,
+	// when set, runs after a line was typed: it is the agent taking the
+	// prompt. turnFailedFn, when set, is Deps.TurnFailed; unset, the loop
+	// reads the real marker file, which turnFail writes.
+	maxWakes     int
+	promptSaw    []ledger.Entry
+	onPrompt     func()
+	turnFailedFn func(worktree, sess string) (state.TurnFailed, bool)
 }
 
 // recoveryTakes is how far a fake restart or relaunch that works moves the
@@ -423,6 +435,18 @@ func (r *rig) deps() Deps {
 	if r.promptOn {
 		d.SendPrompt = func(worktree, sess, text string) error {
 			r.prompts = append(r.prompts, typed{worktree, sess, text})
+			// Not onDisk, which fails the test when no entry names the
+			// session: this fake is also called by tests that do not care.
+			if l, err := ledger.Load(r.root); err == nil {
+				for _, e := range l.Tasks {
+					if e.Session == sess {
+						r.promptSaw = append(r.promptSaw, e)
+					}
+				}
+			}
+			if r.promptErr == nil && r.onPrompt != nil {
+				r.onPrompt()
+			}
 			return r.promptErr
 		}
 	}
@@ -442,6 +466,7 @@ func (r *rig) deps() Deps {
 		d.StopSession = r.fakeStop
 	}
 	d.RateLimited = r.markerFn
+	d.TurnFailed = r.turnFailedFn
 	return d
 }
 
@@ -619,7 +644,8 @@ func (r *rig) sessions(root string) ([]discover.SessionState, error) {
 
 func (r *rig) settings() Settings {
 	s := Settings{StallAfter: stallAfter, HostGrace: hostGrace,
-		MaxRestarts: maxRestarts, RestartBackoff: restartBackoff, WedgeConfirm: r.wedgeConfirm}
+		MaxRestarts: maxRestarts, RestartBackoff: restartBackoff, WedgeConfirm: r.wedgeConfirm,
+		MaxWakes: r.maxWakes}
 	if r.noRestarts {
 		s.MaxRestarts = 0
 	}
@@ -1109,6 +1135,11 @@ func TestTickParkAndUnpark(t *testing.T) {
 // TestTickStallRaisesOneItem: a session asking at the terminal for longer
 // than the limit raises exactly one item and parks, however many ticks pass,
 // and an answered item is not followed by a second one.
+//
+// This daemon has no means to type into a session, so the stall rule is the
+// one it had before the loop could wake: the item is raised on the first tick
+// over the limit, with no wake before it, and its body says nothing was typed
+// and why. TestTickStallWake is the daemon that can type.
 func TestTickStallRaisesOneItem(t *testing.T) {
 	r := newRig(t, task("T1.1"))
 	r.tick()
@@ -1133,9 +1164,13 @@ func TestTickStallRaisesOneItem(t *testing.T) {
 		t.Errorf("stall item = %+v", it)
 	}
 	wantContains(t, "the stall body", it.Body,
-		"afk attach t1-1", "/afk:go --session t1-1", "afk inbox answer", "cannot yet wake a session by itself")
-	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) {
-		t.Errorf("parked on %v, want [%s]", e.ParkedOn, it.ID)
+		"afk attach t1-1", "/afk:go --session t1-1", "afk inbox answer",
+		"afk did not wake it by typing its resume command", "this afk has no means to type into a session")
+	if strings.Contains(it.Body, "cannot yet wake") || strings.Contains(it.Body, "afk typed its resume command") {
+		t.Errorf("the stall body says afk cannot wake a session at all, or that it typed a line it did not:\n%s", it.Body)
+	}
+	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) || e.Wakes != 0 || e.WakeAt != "" {
+		t.Errorf("parked on %v with wakes %d and wake_at %q, want [%s] and no wake", e.ParkedOn, e.Wakes, e.WakeAt, it.ID)
 	}
 	if st.Kind != string(ActStall) || !strings.Contains(st.Reason, it.ID) {
 		t.Errorf("state = %+v", st)
@@ -1221,7 +1256,7 @@ func TestTickHostGoneRaisesOneItem(t *testing.T) {
 	if strings.Contains(it.Body, "afk attach") {
 		t.Errorf("the host-gone body sends the owner to `afk attach`, which cannot start a stopped host:\n%s", it.Body)
 	}
-	if strings.Contains(stallBody("T1.1", "t1-1"), "afk dash") {
+	if strings.Contains(stallBody("T1.1", "t1-1", false, ""), "afk dash") || strings.Contains(stallBody("T1.1", "t1-1", true, ""), "afk dash") {
 		t.Error("the stall body names `afk dash`; the two bodies must name their own commands")
 	}
 	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) {
@@ -2244,6 +2279,7 @@ func TestKinds(t *testing.T) {
 		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
 		string(ActUsageWait), string(ActLoginWait), string(ActUsagePause),
 		string(ActUsagePaused), string(ActUsageStuck), string(ActUsageResume),
+		string(ActWake), string(ActWakeGiveUp),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
 	got := Kinds()
@@ -3637,8 +3673,9 @@ func TestTickRecoverySavesBeforeTheCall(t *testing.T) {
 }
 
 // TestTickRecoveryFieldsAreCleared: restarts, restart_at and continue_pending
-// go back to zero wherever the entry gets a new session or leaves `running`.
-// Each row starts from an entry that holds all three.
+// go back to zero wherever the entry gets a new session or leaves `running`,
+// and so do wakes and wake_at, which share every clear point with them.
+// Each row starts from an entry that holds all five.
 //
 // Load-bearing rows: "created again" is the one where a leftover
 // continue_pending would do harm at once, typed into a new session on top of
@@ -3689,6 +3726,7 @@ func TestTickRecoveryFieldsAreCleared(t *testing.T) {
 			r.running()
 			e := r.entry("T1.1")
 			e.Restarts, e.RestartAt, e.ContinuePending = 2, stamp(r.clock.Add(-time.Hour)), true
+			e.Wakes, e.WakeAt = 2, stamp(r.clock.Add(-time.Hour))
 			tc.arrange(r, &e)
 			r.setEntry(e)
 
@@ -3697,6 +3735,9 @@ func TestTickRecoveryFieldsAreCleared(t *testing.T) {
 			got := r.wantStatus("T1.1", tc.wantStatus)
 			if got.Restarts != 0 || got.RestartAt != "" || got.ContinuePending {
 				t.Errorf("entry still holds recovery fields: %+v", got)
+			}
+			if got.Wakes != 0 || got.WakeAt != "" {
+				t.Errorf("entry still holds wake fields: wakes %d, wake_at %q", got.Wakes, got.WakeAt)
 			}
 			if got.Session != tc.wantSession || len(r.launches) != tc.wantLaunches {
 				t.Errorf("session %s, launches %d; want %s and %d", got.Session, len(r.launches), tc.wantSession, tc.wantLaunches)
@@ -3798,6 +3839,516 @@ func TestViewOfWedgedSince(t *testing.T) {
 			}
 			if !v.WedgedSince.Equal(tc.wedged) || v.WedgedSince.IsZero() != tc.wedged.IsZero() {
 				t.Errorf("WedgedSince = %v, want %v", v.WedgedSince, tc.wedged)
+			}
+		})
+	}
+}
+
+// The wake tests (PLAN T2.5) run the loop with a fake SendPrompt and a real
+// failed-turn marker file in the session's folder, written the way the
+// agent's hook writes it. Like the wedge and the host, the marker is a file,
+// so every one of them also holds across rig.restart.
+
+// turnFail writes the session's failed-turn marker with the rig's clock as
+// its time. An empty reason writes a marker with none.
+func (r *rig) turnFail(name, reason string) {
+	r.t.Helper()
+	line := fmt.Sprintf("{\"at\":%q,\"reason\":%q}\n", stamp(*r.clock), reason)
+	if reason == "" {
+		line = fmt.Sprintf("{\"at\":%q}\n", stamp(*r.clock))
+	}
+	if err := os.WriteFile(filepath.Join(r.sessionDir(name), ".turn-failed"), []byte(line), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// wantWakes checks the wake fields of T1.1's entry, and that the wake left
+// the restart fields alone: a wake is never counted as a restart.
+func (r *rig) wantWakes(wakes int, pending bool) ledger.Entry {
+	r.t.Helper()
+	e := r.entry("T1.1")
+	if e.Wakes != wakes || e.ContinuePending != pending {
+		r.t.Fatalf("wakes %d, continue_pending %v; want %d and %v (entry %+v, logs %v)",
+			e.Wakes, e.ContinuePending, wakes, pending, e, r.logs)
+	}
+	if e.Restarts != 0 || e.RestartAt != "" {
+		r.t.Fatalf("restarts %d, restart_at %q; want a wake to leave both alone", e.Restarts, e.RestartAt)
+	}
+	return e
+}
+
+// TestTickWakeAfterAFailedTurn is the whole of a wake that works: 30 seconds
+// after the marker, the session's resume command typed once, and nothing
+// restarted.
+//
+// Load-bearing: the tick a second short of the 30 seconds types nothing; the
+// entry the fake saw on disk while it was typing already held wakes 1,
+// wake_at and continue_pending, which is the save-before-send order that
+// bounds the wakes of a daemon that keeps dying; and the twenty ticks after
+// it, with the marker still in place, type nothing more. That last part is
+// what fails if the marker is not compared with wake_at: nothing here removes
+// the file, as nothing would for a session whose hook did not run.
+func TestTickWakeAfterAFailedTurn(t *testing.T) {
+	r := newRig(t, task("T1.1"))
+	r.promptOn, r.restartOn, r.relaunchOn, r.maxWakes = true, true, true, maxWakes
+	r.running()
+	wt := filepath.Join(r.root, "wt", "t1-1")
+
+	r.turnFail("t1-1", "server_error")
+	r.advance(DefaultWakeAfter - time.Second)
+	st := r.tick()
+	if st.Kind != string(ActWait) || !strings.Contains(st.Reason, "turn failed") || len(r.prompts) != 0 {
+		t.Fatalf("a second before the wake: state %+v, prompts %+v; want a wait and nothing typed", st, r.prompts)
+	}
+	r.wantWakes(0, false)
+
+	r.advance(time.Second)
+	at := stamp(*r.clock)
+	st = r.tick()
+	if st.Kind != string(ActWake) || st.Task != "T1.1" || st.Session != "t1-1" {
+		t.Errorf("state = %+v, want a wake of T1.1", st)
+	}
+	if want := []typed{{worktree: wt, session: "t1-1", text: "/afk:go --session t1-1"}}; !slices.Equal(r.prompts, want) {
+		t.Fatalf("prompts = %+v, want %+v", r.prompts, want)
+	}
+	if len(r.promptSaw) != 1 {
+		t.Fatalf("the fake saw %d entries, want 1", len(r.promptSaw))
+	}
+	if saw := r.promptSaw[0]; saw.Wakes != 1 || saw.WakeAt != at || !saw.ContinuePending {
+		t.Errorf("on disk during the send: wakes %d, wake_at %q, continue_pending %v; want 1, %s and true: the wake is saved before the line is typed",
+			saw.Wakes, saw.WakeAt, saw.ContinuePending, at)
+	}
+	if e := r.wantWakes(1, false); e.WakeAt != at {
+		t.Errorf("wake_at = %q, want %s", e.WakeAt, at)
+	}
+
+	r.ticks(20, 5*time.Second)
+	if len(r.prompts) != 1 {
+		t.Errorf("prompts after twenty more ticks with the marker still there = %d, want 1", len(r.prompts))
+	}
+	r.wantWakes(1, false)
+	r.wantStatus("T1.1", ledger.Running)
+	if n := len(r.items()); n != 0 {
+		t.Errorf("items = %d, want 0: a wake that works tells the owner nothing", n)
+	}
+	if len(r.restarts)+len(r.relaunches) != 0 {
+		t.Errorf("restarts %+v, relaunches %+v; want none: the host was alive and answering", r.restarts, r.relaunches)
+	}
+	r.wantDecisions("launch", "wake")
+}
+
+// TestTickWakeSavesBeforeTheSend is the wake's crash guard, in the shape of
+// TestTickRecoverySavesBeforeTheCall. The send fails after the ledger was
+// written, which is what the disk looks like when a daemon dies between the
+// two.
+//
+// Load-bearing: after the failed send the entry holds wakes 1 with
+// continue_pending still set; whoever comes next (the same daemon on a later
+// tick, or a new one on the same disk) types the line exactly once and the
+// count stays 1. Counting each try would use up the three wakes on a single
+// failure while a person was attached, and clearing the flag on a failed send
+// would lose the line for good. The row with three failed sends is the one
+// that turns red if a retry is counted.
+func TestTickWakeSavesBeforeTheSend(t *testing.T) {
+	died := errors.New("the daemon was killed here")
+	cases := []struct {
+		name string
+		// next gives the rig that makes the later ticks.
+		next func(first *rig) *rig
+		// failed is how many more sends fail before one works.
+		failed int
+	}{
+		{name: "a second daemon on the same disk types the line once", next: func(first *rig) *rig {
+			second := first.restart()
+			second.promptOn, second.maxWakes = true, maxWakes
+			return second
+		}},
+		{name: "a failed send is typed on a later tick without a second count", next: func(first *rig) *rig {
+			first.prompts, first.promptSaw = nil, nil
+			return first
+		}},
+		{name: "three more failed sends still count one wake", failed: 3, next: func(first *rig) *rig {
+			first.prompts, first.promptSaw = nil, nil
+			return first
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newRig(t, task("T1.1"))
+			first.promptOn, first.maxWakes = true, maxWakes
+			first.promptErr = died
+			first.running()
+			first.turnFail("t1-1", "server_error")
+			first.advance(DefaultWakeAfter)
+			st := first.tick()
+			if st.Kind != string(ActWait) || !strings.Contains(st.Reason, "could not be typed yet") {
+				t.Errorf("state after the failed send = %+v, want a wait that says the line was not typed", st)
+			}
+			if len(first.promptSaw) != 1 || first.promptSaw[0].Wakes != 1 || !first.promptSaw[0].ContinuePending {
+				t.Fatalf("on disk during the send = %+v, want wakes 1 and continue_pending: the ledger is saved before the line is typed", first.promptSaw)
+			}
+			saved := first.wantWakes(1, true)
+
+			next := tc.next(first)
+			for range tc.failed {
+				next.promptErr = died
+				next.advance(5 * time.Second)
+				next.tick()
+				next.wantWakes(1, true)
+			}
+			next.promptErr = nil
+			next.prompts = nil
+			next.advance(5 * time.Second)
+			st = next.tick()
+			if st.Kind != string(ActContinue) {
+				t.Errorf("state on the next tick = %+v, want the owed line typed by the continue step", st)
+			}
+			if len(next.prompts) != 1 || next.prompts[0].text != "/afk:go --session t1-1" {
+				t.Fatalf("prompts = %+v, want the resume command once", next.prompts)
+			}
+			if e := next.wantWakes(1, false); e.WakeAt != saved.WakeAt {
+				t.Errorf("wake_at moved from %s to %s; a retry of the line is not a new wake", saved.WakeAt, e.WakeAt)
+			}
+
+			next.ticks(20, 5*time.Second)
+			if len(next.prompts) != 1 {
+				t.Errorf("prompts after twenty more ticks = %d, want 1", len(next.prompts))
+			}
+			next.wantWakes(1, false)
+			next.wantStatus("T1.1", ledger.Running)
+			if n := len(next.items()); n != 0 {
+				t.Errorf("items = %d, want 0", n)
+			}
+			next.wantDecisions("launch", "wake", "continue")
+		})
+	}
+}
+
+// TestTickWakeGivesUpAtTheCap takes a session whose turns keep failing all
+// the way: three wakes with the backoff between them, then one item and a
+// park, then the owner's answer and a fresh set.
+//
+// Load-bearing: the tick one second short of each backoff types nothing,
+// though the marker's own 30 seconds have long passed; the fourth failed turn
+// parks on the tick that sees it, with no fourth line; twenty ticks after the
+// park add no item and no line; the answer un-parks with wakes back to zero
+// and types the resume command; and the marker left from before the park,
+// which nothing removed, does not wake the session again. Without that last
+// check the fresh set would lose a wake to a failure the owner had just dealt
+// with. The final wake shows the set really is fresh.
+func TestTickWakeGivesUpAtTheCap(t *testing.T) {
+	r := newRig(t, task("T1.1"))
+	r.promptOn, r.maxWakes = true, maxWakes
+	r.running()
+
+	r.turnFail("t1-1", "server_error")
+	r.advance(DefaultWakeAfter)
+	r.tick()
+	r.wantWakes(1, false)
+
+	// Each wake "works", and the next turn fails five seconds later.
+	const gap = 5 * time.Second
+	for i, wait := range []time.Duration{restartBackoff, 2 * restartBackoff} {
+		r.advance(gap)
+		r.turnFail("t1-1", "server_error")
+		r.advance(wait - gap - time.Second)
+		st := r.tick()
+		if len(r.prompts) != i+1 || st.Kind != string(ActWait) || !strings.Contains(st.Reason, "waiting before waking it again") {
+			t.Fatalf("a second short of the backoff %v: prompts %d, state %+v", wait, len(r.prompts), st)
+		}
+		r.advance(time.Second)
+		if st := r.tick(); st.Kind != string(ActWake) {
+			t.Fatalf("at the backoff %v: state %+v, want a wake", wait, st)
+		}
+		r.wantWakes(i+2, false)
+	}
+
+	r.advance(gap)
+	r.turnFail("t1-1", "overloaded")
+	failedAt := *r.clock
+	st := r.tick()
+	items := r.items()
+	if len(items) != 1 {
+		t.Fatalf("items at the cap = %d, want 1 (state %+v, logs %v)", len(items), st, r.logs)
+	}
+	it := items[0]
+	if it.Title != WakeTitlePrefix+"T1.1 (t1-1)" || it.Kind != "failure" || !it.Blocking || it.Task != "T1.1" || it.Session != "t1-1" {
+		t.Errorf("give-up item = %+v", it)
+	}
+	wantContains(t, "the give-up body", it.Body,
+		"turn kept failing", "woke it 3 times", `the reason recorded was "overloaded"`, wakeText(failedAt),
+		"The session is still open", "afk attach t1-1", "afk inbox answer", "/afk:go --session t1-1", "fresh set of wakes",
+		"afk clean t1-1", "afk ledger set T1.1 pending")
+	if strings.Contains(it.Body, "afk dash") {
+		t.Errorf("the give-up body sends the owner to the dashboard, but this session's host is running:\n%s", it.Body)
+	}
+	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) || e.Wakes != maxWakes {
+		t.Errorf("parked on %v with wakes %d, want [%s] and %d", e.ParkedOn, e.Wakes, it.ID, maxWakes)
+	}
+	if st.Kind != string(ActWakeGiveUp) || !strings.Contains(st.Reason, it.ID) {
+		t.Errorf("state = %+v", st)
+	}
+	if len(r.notified) != 1 || r.notified[0].ID != it.ID {
+		t.Errorf("notified = %+v, want the one item", r.notified)
+	}
+	if len(r.prompts) != maxWakes {
+		t.Fatalf("prompts at the cap = %d, want %d", len(r.prompts), maxWakes)
+	}
+
+	r.ticks(20, time.Minute)
+	if len(r.items()) != 1 || len(r.prompts) != maxWakes {
+		t.Fatalf("twenty ticks after the cap: items %d, prompts %d; want 1 and %d: a parked session is never typed to",
+			len(r.items()), len(r.prompts), maxWakes)
+	}
+	r.wantStatus("T1.1", ledger.Parked)
+
+	r.answer(it.ID)
+	r.advance(5 * time.Second)
+	if st := r.tick(); st.Kind != string(ActUnpark) {
+		t.Errorf("state on answer = %+v", st)
+	}
+	r.wantStatus("T1.1", ledger.Running)
+	if e := r.wantWakes(0, false); e.WakeAt != "" {
+		t.Errorf("un-parked entry still holds wake_at %s", e.WakeAt)
+	}
+	if len(r.prompts) != maxWakes+1 || r.prompts[maxWakes].text != "/afk:go --session t1-1" {
+		t.Fatalf("prompts after the answer = %+v, want the un-park to type the resume command", r.prompts)
+	}
+
+	// The old marker is still in the folder and is older than the answer.
+	r.ticks(20, 5*time.Second)
+	if len(r.prompts) != maxWakes+1 {
+		t.Errorf("prompts with the old marker still there = %d, want %d", len(r.prompts), maxWakes+1)
+	}
+	r.wantWakes(0, false)
+
+	r.turnFail("t1-1", "server_error")
+	r.advance(DefaultWakeAfter)
+	if st := r.tick(); st.Kind != string(ActWake) {
+		t.Errorf("state on a new failed turn = %+v, want a wake from the fresh set", st)
+	}
+	r.wantWakes(1, false)
+	if n := len(r.items()); n != 1 {
+		t.Errorf("items = %d, want still 1", n)
+	}
+	r.wantDecisions("launch", "wake", "wake", "wake", "wake_give_up", "unpark", "wake")
+}
+
+// TestTickWakeOffParksAtOnce: with max_wakes = 0 nothing is ever typed, and
+// the first failed turn parks the task. The body is the load-bearing part,
+// as it is for max_restarts = 0: "woke it 0 times" would read as afk failing
+// and not as the setting it is. The marker here comes through Deps.TurnFailed
+// and carries no reason, so the row also pins that an injected reader is the
+// one used and that a marker with no reason says so in plain words.
+func TestTickWakeOffParksAtOnce(t *testing.T) {
+	r := newRig(t, task("T1.1"))
+	r.promptOn = true
+	r.running()
+	failedAt := *r.clock
+	r.turnFailedFn = func(worktree, sess string) (state.TurnFailed, bool) {
+		if worktree != filepath.Join(r.root, "wt", "t1-1") || sess != "t1-1" {
+			t.Errorf("TurnFailed asked about %s in %s", sess, worktree)
+		}
+		return state.TurnFailed{At: failedAt}, true
+	}
+	r.advance(time.Second)
+	st := r.tick()
+
+	items := r.items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1 (state %+v, logs %v)", len(items), st, r.logs)
+	}
+	it := items[0]
+	if it.Title != WakeTitlePrefix+"T1.1 (t1-1)" || !it.Blocking {
+		t.Errorf("item = %+v", it)
+	}
+	wantContains(t, "the body", it.Body, "afk is set not to wake sessions", "max_wakes = 0", "no reason was recorded", "afk attach t1-1")
+	if strings.Contains(it.Body, "0 times") || strings.Contains(it.Body, "kept failing") {
+		t.Errorf("the body reads as afk having tried:\n%s", it.Body)
+	}
+	if st.Kind != string(ActWakeGiveUp) || len(r.prompts) != 0 {
+		t.Errorf("state %+v, prompts %+v; want a give-up and nothing typed", st, r.prompts)
+	}
+	if e := r.wantStatus("T1.1", ledger.Parked); e.Wakes != 0 || e.WakeAt != "" {
+		t.Errorf("entry = %+v, want no wake counted", e)
+	}
+	r.wantDecisions("launch", "wake_give_up")
+}
+
+// TestTickStallWake: a session that has sat at its prompt past stall_after is
+// sent its resume command once before anyone is told, which is what covers a
+// failed turn that left no marker.
+//
+// Load-bearing rows: "still waiting" pins that the item is raised only
+// stall_after after the wake and not on the tick after it, that no second
+// line is typed for the same wait, and that the body says the line was typed
+// (the owner should expect a real question, not an idle agent). "the wake
+// moved it" is the point of the whole rule: no item at all. "no wakes left"
+// and "a rate limit" keep the stall rule whole where a wake may not be made:
+// the item is raised on the first tick over the limit, with a body that says
+// nothing was typed.
+func TestTickStallWake(t *testing.T) {
+	cases := []struct {
+		name string
+		// arrange runs once the session is waiting, before the limit.
+		arrange func(r *rig)
+		// wantWake is whether the first tick over the limit types the line.
+		wantWake bool
+		// wantItemAfter is how long after that tick the stall item is
+		// raised; zero is on that tick, and negative is never.
+		wantItemAfter time.Duration
+		wantBody      []string
+	}{
+		{name: "still waiting", wantWake: true, wantItemAfter: stallAfter + time.Second,
+			wantBody: []string{"afk typed its resume command (`/afk:go --session t1-1`)", "still waiting afterwards"}},
+		{name: "the wake moved it", wantWake: true, wantItemAfter: -1, arrange: func(r *rig) {
+			r.onPrompt = func() { r.setAwaiting("t1-1", false) }
+		}},
+		{name: "no wakes left", wantItemAfter: 0, arrange: func(r *rig) {
+			e := r.entry("T1.1")
+			e.Wakes, e.WakeAt = maxWakes, stamp(r.clock.Add(-time.Hour))
+			r.setEntry(e)
+		}, wantBody: []string{"afk did not wake it by typing its resume command", "already woken this session 3 times"}},
+		{name: "a rate limit", wantItemAfter: 0, arrange: func(r *rig) {
+			r.rateLimit("t1-1", *r.clock)
+		}, wantBody: []string{"afk did not wake it by typing its resume command", "hit a usage limit"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, task("T1.1"))
+			r.promptOn, r.maxWakes = true, maxWakes
+			r.running()
+			r.setAwaiting("t1-1", true)
+			if tc.arrange != nil {
+				tc.arrange(r)
+			}
+
+			r.advance(stallAfter)
+			r.tick()
+			if len(r.prompts)+len(r.items()) != 0 {
+				t.Fatalf("at the limit: prompts %+v, items %d; want neither yet", r.prompts, len(r.items()))
+			}
+			r.advance(time.Second)
+			st := r.tick()
+			if tc.wantWake {
+				if st.Kind != string(ActWake) || len(r.prompts) != 1 || r.prompts[0].text != "/afk:go --session t1-1" {
+					t.Fatalf("over the limit: state %+v, prompts %+v; want the resume command typed", st, r.prompts)
+				}
+				if e := r.entry("T1.1"); e.Wakes != 1 || e.WakeAt != stamp(*r.clock) || e.ContinuePending {
+					t.Errorf("entry after the wake = %+v, want wakes 1 and nothing pending", e)
+				}
+				if n := len(r.items()); n != 0 {
+					t.Fatalf("items on the wake's own tick = %d, want 0", n)
+				}
+			} else if len(r.prompts) != 0 {
+				t.Fatalf("prompts = %+v, want nothing typed", r.prompts)
+			}
+
+			if tc.wantItemAfter > 0 {
+				r.advance(tc.wantItemAfter - time.Second)
+				r.tick()
+				if n := len(r.items()); n != 0 {
+					t.Fatalf("items exactly stall_after after the wake = %d, want 0", n)
+				}
+				r.advance(time.Second)
+				st = r.tick()
+			}
+			if tc.wantItemAfter < 0 {
+				r.ticks(40, time.Minute)
+				if len(r.items()) != 0 || len(r.prompts) != 1 {
+					t.Errorf("after forty more minutes: items %d, prompts %d; want 0 and 1", len(r.items()), len(r.prompts))
+				}
+				r.wantStatus("T1.1", ledger.Running)
+				r.wantDecisions("launch", "wake")
+				return
+			}
+
+			items := r.items()
+			if len(items) != 1 {
+				t.Fatalf("items = %d, want 1 (state %+v, logs %v)", len(items), st, r.logs)
+			}
+			it := items[0]
+			if it.Title != StallTitlePrefix+"T1.1 (t1-1)" || !it.Blocking || st.Kind != string(ActStall) {
+				t.Errorf("item %+v, state %+v; want the stall item", it, st)
+			}
+			wantContains(t, "the stall body", it.Body, tc.wantBody...)
+			wantContains(t, "the stall body", it.Body, "afk attach t1-1", "afk inbox answer")
+			if strings.Contains(it.Body, "cannot yet wake") {
+				t.Errorf("the stall body still says afk cannot wake a session:\n%s", it.Body)
+			}
+			r.wantStatus("T1.1", ledger.Parked)
+			wantPrompts := 0
+			if tc.wantWake {
+				wantPrompts = 1
+			}
+			r.ticks(20, time.Minute)
+			if len(r.items()) != 1 || len(r.prompts) != wantPrompts {
+				t.Errorf("twenty ticks later: items %d, prompts %d; want 1 and %d", len(r.items()), len(r.prompts), wantPrompts)
+			}
+			if tc.wantWake {
+				r.wantDecisions("launch", "wake", "stall")
+			} else {
+				r.wantDecisions("launch", "stall")
+			}
+		})
+	}
+}
+
+// TestTickWakeLeavesTheseSessionsAlone runs the executor over the sessions a
+// wake must never type into, each with a failed-turn marker long past its 30
+// seconds and a daemon that has every means to type.
+//
+// Load-bearing: nothing is typed in any row and no wake is counted. The
+// shipping row is the one only the executor can show: the marker is not even
+// read for a session whose agent has finished. The wedged row pins the order
+// seen from here: the agent is restarted, and the restart is what is counted.
+func TestTickWakeLeavesTheseSessionsAlone(t *testing.T) {
+	cases := []struct {
+		name    string
+		arrange func(r *rig)
+		want    ledger.Status
+		// wantRestarts is how many restarts were asked for.
+		wantRestarts int
+	}{
+		{name: "parked on an open item", want: ledger.Parked, arrange: func(r *rig) {
+			if _, err := r.store().Add(inbox.NewItem{Task: "T1.1", Session: "t1-1", Kind: "question", Blocking: true, Title: "Which database?"}); err != nil {
+				r.t.Fatal(err)
+			}
+		}},
+		{name: "shipping", want: ledger.Shipping, arrange: func(r *rig) {
+			r.setPhase("t1-1", state.PhaseDone)
+			e := r.entry("T1.1")
+			e.Status = ledger.Shipping
+			r.setEntry(e)
+		}},
+		{name: "wedged", want: ledger.Running, wantRestarts: 1, arrange: func(r *rig) {
+			r.wedge("t1-1")
+		}},
+		{name: "status cannot be read", want: ledger.Running, arrange: func(r *rig) {
+			if err := os.WriteFile(filepath.Join(r.sessionDir("t1-1"), "status.json"), []byte("{"), 0o644); err != nil {
+				r.t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, task("T1.1"))
+			r.promptOn, r.restartOn, r.maxWakes = true, true, maxWakes
+			r.running()
+			r.turnFail("t1-1", "server_error")
+			tc.arrange(r)
+			r.advance(DefaultWedgeConfirm)
+			r.tick()
+			r.ticks(3, time.Second)
+			e := r.wantStatus("T1.1", tc.want)
+			if e.Wakes != 0 || e.WakeAt != "" {
+				t.Errorf("entry = %+v, want no wake counted", e)
+			}
+			if len(r.prompts) != 0 {
+				t.Errorf("prompts = %+v, want nothing typed", r.prompts)
+			}
+			if len(r.restarts) != tc.wantRestarts {
+				t.Errorf("restarts = %d, want %d", len(r.restarts), tc.wantRestarts)
 			}
 		})
 	}

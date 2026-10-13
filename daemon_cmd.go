@@ -631,11 +631,15 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 // daemonSettings turns the machine config into the loop's settings. It is a
 // function of its own so a test can see that the recovery keys reach the loop:
 // a loop left without them has max_restarts = 0 and parks on the first trouble.
+// The same holds for max_wakes: left out, the loop would never wake a session
+// and would park on the first failed turn, with an item that blames a setting
+// the owner never made.
 func daemonSettings(cfg daemonconfig.Config) daemon.Settings {
 	return daemon.Settings{
 		StallAfter:     cfg.StallAfter,
 		MaxRestarts:    cfg.MaxRestarts,
 		RestartBackoff: cfg.RestartBackoff,
+		MaxWakes:       cfg.MaxWakes,
 	}
 }
 
@@ -1102,6 +1106,10 @@ func daemonKindText(kind string) string {
 		return "a session that had to pause for usage would not stop; waiting for you"
 	case string(daemon.ActUsageResume):
 		return "starting a session that was paused for usage again"
+	case string(daemon.ActWake):
+		return "waking a session whose agent stopped working"
+	case string(daemon.ActWakeGiveUp):
+		return "a session kept failing after being woken; waiting for you"
 	}
 	return kind
 }
@@ -1116,7 +1124,10 @@ func daemonTaskRunning(st daemonstate.State) bool {
 	case string(daemon.ActLaunch), string(daemon.ActCreate), string(daemon.ActWait), string(daemon.ActUnpark),
 		string(daemon.ActRestart), string(daemon.ActRelaunch), string(daemon.ActContinue):
 		return true
-	case string(daemon.ActGiveUp):
+	case string(daemon.ActWake):
+		// The session was just sent its resume command, like ActContinue.
+		return true
+	case string(daemon.ActGiveUp), string(daemon.ActWakeGiveUp):
 		// Parked, like ActPark: the task waits for the owner, not the session.
 		return false
 	case string(daemon.ActShipStep), daemon.KindLineStopped:

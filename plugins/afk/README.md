@@ -219,7 +219,9 @@ Notifications fire when:
 - **Fix-loop cap** (2 fix cycles exhausted, default mode) → toast, session marked as awaiting input. In autonomous mode there is no toast and no awaiting-input state
 - **NEEDS_INPUT relay** (executor asks a question mid-interview, default mode) → toast, session marked as awaiting input
 
-**Rate-limit marker.** When the agent CLI stops because of a rate limit, the `StopFailure` hook (`hooks/on-stop-failure.sh`, registered for the `rate_limit` reason only) writes `.afk/{name}/.rate-limited`, one line `{"at":"<time>"}`, for the matching session. It never touches `status.json`. The next prompt you submit, or the next normal stop, removes the file. The build daemon (`afk daemon`) reads the marker and pauses that session until the usage limit resets. See `status-schema.md` section 10.
+**Rate-limit marker.** When the agent CLI stops because of a rate limit, the `StopFailure` hook (`hooks/on-stop-failure.sh`, registered for the `rate_limit` reason and the reasons worth trying again) writes `.afk/{name}/.rate-limited`, one line `{"at":"<time>"}`, for the matching session. It never touches `status.json`. The next prompt you submit, or the next normal stop, removes the file. The build daemon (`afk daemon`) reads the marker and pauses that session until the usage limit resets. See `status-schema.md` section 10.
+
+**Failed-turn marker.** When a turn ends on an error that trying again can fix (`overloaded`, `server_error`, which is also what a lost connection reports, or `unknown`), the same hook writes `.afk/{name}/.turn-failed`, one line `{"at":"<time>","reason":"<error>"}`, instead of the rate-limit marker. Other errors (a login, billing, a bad request, a missing model) write nothing, because trying again cannot fix them. The next prompt or normal stop removes it. The build daemon reads it to wake the session after a short wait. It never touches `status.json`.
 
 Background work (delegated task subagents, background Phase-C review) runs without notifications — the session self-resumes on completion. The dashboard's "awaiting input" indicator pairs with `updated_at` to show age.
 

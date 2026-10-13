@@ -660,8 +660,9 @@ func TestUpdateRoundTripEveryField(t *testing.T) {
 		ParkedOn: []string{"q1", "q2"}, StartedAt: "2026-10-11T08:00:00Z", FinishedAt: "2026-10-11T09:30:00Z",
 		MergedSHA: "0123abcd", ReplacedBy: []string{"T4.2a", "T4.2b"},
 		Ship: "pr_open", ShipAt: "2026-10-11T09:00:00Z", CIReruns: 1, CIFixCycles: 2,
-		Restarts: 2, RestartAt: "2026-10-11T09:45:00Z", ContinuePending: true,
-		UsagePauseAt: "2026-10-11T10:00:00Z", UsageWakeAt: "2026-10-11T15:00:00Z",
+		Restarts: 2, RestartAt: "2026-10-11T09:45:00Z", Wakes: 2, WakeAt: "2026-10-11T09:50:00Z",
+		ContinuePending: true,
+		UsagePauseAt:    "2026-10-11T10:00:00Z", UsageWakeAt: "2026-10-11T15:00:00Z",
 	}
 	// Guard the test itself: if a field is added to Entry and not set above,
 	// this round trip would no longer cover every field.
@@ -688,7 +689,7 @@ func TestUpdateRoundTripEveryField(t *testing.T) {
 		t.Errorf("round trip = %#v\n      want %#v", got.Tasks, want)
 	}
 	data := readFile(t, Path(project))
-	for _, key := range []string{"id", "status", "session", "branch", "pr", "attempts", "parked_on", "started_at", "finished_at", "merged_sha", "replaced_by", "ship", "ship_at", "ci_reruns", "ci_fix_cycles", "restarts", "restart_at", "continue_pending", "usage_pause_at", "usage_wake_at"} {
+	for _, key := range []string{"id", "status", "session", "branch", "pr", "attempts", "parked_on", "started_at", "finished_at", "merged_sha", "replaced_by", "ship", "ship_at", "ci_reruns", "ci_fix_cycles", "restarts", "restart_at", "wakes", "wake_at", "continue_pending", "usage_pause_at", "usage_wake_at"} {
 		if !strings.Contains(data, `"`+key+`": `) {
 			t.Errorf("file has no %q key:\n%s", key, data)
 		}
@@ -991,6 +992,8 @@ func TestRecoveryFieldsRoundTrip(t *testing.T) {
 	}{
 		{"all three set", Entry{ID: "T1.1", Status: Running, Restarts: 2, RestartAt: "2026-10-11T09:45:00Z", ContinuePending: true}},
 		{"restart_at unreadable", Entry{ID: "T1.1", Status: Running, Restarts: 1, RestartAt: "soon"}},
+		{"wakes with a wake time", Entry{ID: "T1.1", Status: Running, Session: "t1-1", Wakes: 2, WakeAt: "2026-10-11T09:50:00Z"}},
+		{"wake_at unreadable", Entry{ID: "T1.1", Status: Running, Wakes: 1, WakeAt: "soon"}},
 		{"continue pending alone", Entry{ID: "T1.1", Status: Running, ContinuePending: true}},
 		{"usage pause with a wake time", Entry{ID: "T1.1", Status: Running, Session: "t1-1", UsagePauseAt: "2026-10-11T10:00:00Z", UsageWakeAt: "2026-10-11T15:00:00Z"}},
 		{"usage pause with no wake time", Entry{ID: "T1.1", Status: Running, Session: "t1-1", UsagePauseAt: "2026-10-11T10:00:00Z"}},
@@ -1038,7 +1041,7 @@ func TestRecoveryFieldsOmittedWhenEmpty(t *testing.T) {
 				t.Fatalf("Update: %v", err)
 			}
 			data := readFile(t, Path(project))
-			for _, key := range []string{"restarts", "restart_at", "continue_pending", "usage_pause_at", "usage_wake_at"} {
+			for _, key := range []string{"restarts", "restart_at", "wakes", "wake_at", "continue_pending", "usage_pause_at", "usage_wake_at"} {
 				if strings.Contains(data, key) {
 					t.Errorf("file writes %q for an entry that never recovered:\n%s", key, data)
 				}
@@ -1060,12 +1063,16 @@ func TestRecoveryFieldsValidation(t *testing.T) {
 		{"restarts zero loads", `{"tasks":[{"id":"T1.1","status":"running","restarts":0}]}`, ""},
 		{"restart_at not a time loads", `{"tasks":[{"id":"T1.1","status":"running","restart_at":"soon"}]}`, ""},
 		{"negative restarts", `{"tasks":[{"id":"T1.1","status":"running","restarts":-1}]}`, `task "T1.1" has a negative restarts`},
+		{"wakes zero loads", `{"tasks":[{"id":"T1.1","status":"running","wakes":0}]}`, ""},
+		{"wake_at not a time loads", `{"tasks":[{"id":"T1.1","status":"running","wake_at":"soon"}]}`, ""},
+		{"negative wakes", `{"tasks":[{"id":"T1.1","status":"running","wakes":-1}]}`, `task "T1.1" has a negative wakes`},
+		{"misspelt wakes is unknown", `{"tasks":[{"id":"T1.1","status":"running","wake_count":2}]}`, `wake_count`},
 		{"misspelt continue_pending is unknown", `{"tasks":[{"id":"T1.1","status":"running","continue_pendng":true}]}`, `continue_pendng`},
 		{"restart_at under a wrong key is unknown", `{"tasks":[{"id":"T1.1","status":"running","restart_time":"2026-10-11T09:45:00Z"}]}`, `restart_time`},
 		{"usage pause fields load", `{"tasks":[{"id":"T1.1","status":"running","usage_pause_at":"2026-10-11T10:00:00Z","usage_wake_at":"2026-10-11T15:00:00Z"}]}`, ""},
 		{"usage_wake_at not a time loads", `{"tasks":[{"id":"T1.1","status":"running","usage_wake_at":"later"}]}`, ""},
 		{"misspelt usage_pause_at is unknown", `{"tasks":[{"id":"T1.1","status":"running","usage_paused_at":"2026-10-11T10:00:00Z"}]}`, `usage_paused_at`},
-		{"usage_wake_at under a wrong key is unknown", `{"tasks":[{"id":"T1.1","status":"running","wake_at":"2026-10-11T15:00:00Z"}]}`, `wake_at`},
+		{"usage_wake_at under a wrong key is unknown", `{"tasks":[{"id":"T1.1","status":"running","usage_wakeat":"2026-10-11T15:00:00Z"}]}`, `usage_wakeat`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
