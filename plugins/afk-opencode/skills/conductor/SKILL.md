@@ -133,7 +133,7 @@ jq --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 Follow the loaded planner skill in full (research, decide-and-escalate grill loop, plan generation, the Crucible when the planner rates risk HIGH), with these conductor overrides:
 
 1. **Forced slug (launched path)**: with `--session {name}`, the plan name is `{name}` — skip the planner's auto-derivation step. The plan is written to `.afk/plans/{name}.md`.
-2. **Always the FULL path**: the routing verdict always elects FULL under the conductor. If the signals say LIGHT, announce: "LIGHT candidate — but `/afk-go` runs the full plan→execute→review pipeline; for the light path, use `/afk-plan`." Never execute work in-session during planning.
+2. **Always the FULL path**: the routing verdict always elects FULL under the conductor. If the signals say LIGHT, announce: "LIGHT candidate — but `/afk-go` runs the full plan→execute→review pipeline; for the light path, use `/afk-work-plan`." Never execute work in-session during planning.
 3. **Pass the mode**: tell the planner which mode applies (default or autonomous, per 0.1). The planner decides and records assumptions itself and escalates only per its escalation rule; in autonomous mode it never asks. Do not add questions of your own.
 4. **Non-blocking handoff**: after the plan is saved, render the TLDR and delete the draft per the planner flow, but do NOT tell the user to run `/afk-execute` and do NOT wait for a reply. Verify the gate (`read` `.afk/plans/{name}.md`), status-write `phase: "executing"`, announce "Phase A complete — entering execution", and proceed to Phase B at once.
 

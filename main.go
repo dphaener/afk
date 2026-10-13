@@ -177,6 +177,11 @@ Subcommands:
                  notification carries a Focus button that switches to the session's pane
   plugin install Install the afk plugin into Claude Code, Codex, and/or OpenCode;
                  asks which of the ones found on PATH unless --target is given
+  plan           Plan a project with your agent: it asks what you want to build and
+                 writes a first draft of the master plan. Needs a terminal; run it
+                 again to come back. 'plan status' says which phase the session is
+                 in, and 'plan advance' (run by the session) moves it on:
+                 afk plan [--project DIR] [--provider NAME] [--dry-run]
   plan lint      Check a master plan for what the daemon would refuse or misread:
                  afk plan lint [--project DIR] [--json] [--summary] [FILE]
   plan check     Mark one task of a session's plan done or failed:

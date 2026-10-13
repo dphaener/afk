@@ -1,10 +1,10 @@
 ---
-name: plan
+name: work-plan
 description: "Start a planning session — interview, research, and generate a structured execution plan"
 argument-hint: "[--autonomous] [TICKET-123 or description]"
 ---
 
-# afk-plan — Planning Session
+# afk-work-plan — Planning Session
 
 ## Announcement
 

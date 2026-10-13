@@ -56,7 +56,7 @@ file, no draft file. Keep it to four parts:
 ### Preflight: engine detection and announcement
 
 Before executing, detect the engine and announce it. There is no opt-in
-question: the Workflow engine is the afk default, and invoking `/afk:plan`
+question: the Workflow engine is the afk default, and invoking `/afk:work-plan`
 is the user's direction to use it.
 
 Check whether the `Workflow` tool is present in the current session's

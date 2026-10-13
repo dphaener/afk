@@ -2320,6 +2320,138 @@ func TestHostArgsResume(t *testing.T) {
 	}
 }
 
+// planLaunch is what the default provider says a planning session's child
+// command is. The tests compare against it instead of spelling the command
+// out, because this package must not know any provider's slash command: the
+// whole translation is p.PlanArgv.
+func planLaunch(t *testing.T) []string {
+	t.Helper()
+	p, err := provider.Lookup("")
+	if err != nil {
+		t.Fatalf("provider.Lookup(\"\"): %v", err)
+	}
+	argv, err := p.PlanArgv()
+	if err != nil {
+		t.Fatalf("the default provider has no planning session: %v", err)
+	}
+	if len(argv) == 0 {
+		t.Fatal("the default provider's plan argv is empty; these tests would prove nothing")
+	}
+	return argv
+}
+
+// providerWithoutPlan finds a provider that reports ErrNoPlanSession by asking
+// each one, so no provider is named here.
+func providerWithoutPlan(t *testing.T) string {
+	t.Helper()
+	for _, name := range provider.Names() {
+		p, err := provider.Lookup(name)
+		if err != nil {
+			t.Fatalf("provider.Lookup(%q): %v", name, err)
+		}
+		if _, err := p.PlanArgv(); errors.Is(err, provider.ErrNoPlanSession) {
+			return name
+		}
+	}
+	t.Skip("every provider can run a planning session; nothing to refuse")
+	return ""
+}
+
+// TestHostArgsMasterPlan pins the child argv of a planning spawn against what
+// the provider itself returns, and proves the new field changed nothing else.
+// Load-bearing rows: "planning" is the one that makes `afk plan` start the
+// skill, and "planning ignores scratch and autonomous" keeps a conductor flag
+// or a bare agent from ever replacing it. The four "not planning" rows are the
+// regression guard: the same specs as before the field existed must give
+// exactly the provider's own launch or resume argv, and the host flags before
+// the separator must be the ones a spec with no MasterPlan field gave.
+// TestHostArgs and TestChildArgv pin those bytes literally and are untouched.
+func TestHostArgsMasterPlan(t *testing.T) {
+	plain, err := provider.Lookup("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "0f3c9a2e-conversation"
+	cases := []struct {
+		name string
+		spec HostSpawn
+		want []string
+	}{
+		{
+			name: "planning",
+			spec: HostSpawn{Name: PlanSessionName, Worktree: "/repo", MasterPlan: true},
+			want: planLaunch(t),
+		},
+		{
+			name: "planning ignores scratch and autonomous",
+			spec: HostSpawn{Name: PlanSessionName, Worktree: "/repo", MasterPlan: true, Scratch: true, Autonomous: true},
+			want: planLaunch(t),
+		},
+		{
+			name: "not planning: plain",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing"},
+			want: plain.LaunchArgv("billing", false, false),
+		},
+		{
+			name: "not planning: scratch",
+			spec: HostSpawn{Name: "s1", Worktree: "/repo", Scratch: true},
+			want: plain.LaunchArgv("s1", true, false),
+		},
+		{
+			name: "not planning: autonomous",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing", Autonomous: true},
+			want: plain.LaunchArgv("billing", false, true),
+		},
+		{
+			name: "not planning: resume",
+			spec: HostSpawn{Name: "billing", Worktree: "/wt/billing", ResumeID: id},
+			want: plain.ResumeArgv(id),
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			argv, err := launchArgv(tt.spec)
+			if err != nil {
+				t.Fatalf("launchArgv: %v", err)
+			}
+			if !reflect.DeepEqual(argv, tt.want) {
+				t.Fatalf("launchArgv = %#v\nwant %#v", argv, tt.want)
+			}
+			args := hostArgs(tt.spec, "/sock")
+			t.Logf("host argv: %q", args)
+			child := childOf(t, args)
+			if !reflect.DeepEqual(child, tt.want) {
+				t.Errorf("host argv ends with %#v\nwant %#v", child, tt.want)
+			}
+			// Everything before the child is the same for a planning and an
+			// ordinary spawn: the planning session adds no host flag, which is
+			// why host_cmd.go needed no change.
+			flags := args[:len(args)-len(child)]
+			wantFlags := []string{
+				"_host",
+				"--name", tt.spec.Name,
+				"--worktree", tt.spec.Worktree,
+				"--socket", "/sock",
+				"--log", filepath.Join(tt.spec.Worktree, ".afk", tt.spec.Name, "host.log"),
+				"--meta", filepath.Join(tt.spec.Worktree, ".afk", tt.spec.Name, "host.json"),
+				"--",
+			}
+			if !reflect.DeepEqual(flags, wantFlags) {
+				t.Errorf("host flags = %#v\nwant %#v", flags, wantFlags)
+			}
+			// The printed line is the same argv, quoted.
+			line := ChildCommandLine(tt.spec)
+			wantLine := tt.want[0]
+			for _, a := range tt.want[1:] {
+				wantLine += " " + fmt.Sprintf("%q", a)
+			}
+			if line != wantLine {
+				t.Errorf("ChildCommandLine = %q, want %q", line, wantLine)
+			}
+		})
+	}
+}
+
 // TestResolveSpawnUnattended pins how SpawnHost settles a spawn's mode.
 // Load-bearing rows: "marker, field clear" is the dashboard's relaunch of a
 // stopped host, which builds a HostSpawn with only Name and Worktree: without

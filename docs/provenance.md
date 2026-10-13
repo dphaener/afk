@@ -9,3 +9,8 @@ request #1, merged 2026-10-12) was brought over on 2026-10-12 by T0.6 of the
 master plan (`docs/PLAN.md`). The diff `9c847e1..d9c6a62` was applied with
 afk's names, plus two small fixes that forge does not have yet. Those fixes
 are listed under `## T0.6` in `docs/decisions.md`.
+
+The planning method in the `/afk:master-plan` skill (`plugins/afk/skills/master-plan/`) is adapted
+from Matt Pocock's skills (`github.com/mattpocock/skills`, MIT licence): domain modelling, questions
+asked in rounds, and the rule for slicing work into tasks. afk ships its own text for all of it and
+never requires that plugin.

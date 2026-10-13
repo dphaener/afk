@@ -1,6 +1,6 @@
 # Planner Autonomy
 
-This block defines the planner's two modes. The invoking skill (`/afk-plan`, `/afk-go`, or a caller naming the skill) states which one applies; with no statement, default mode applies.
+This block defines the planner's two modes. The invoking skill (`/afk-work-plan`, `/afk-go`, or a caller naming the skill) states which one applies; with no statement, default mode applies.
 
 ## Default mode (decide and escalate)
 

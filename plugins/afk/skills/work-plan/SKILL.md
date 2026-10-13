@@ -1,5 +1,5 @@
 ---
-name: plan
+name: work-plan
 disable-model-invocation: true
 description: "Start a planning session — interview, research, and generate a structured execution plan"
 argument-hint: "[--autonomous] [TICKET-123 or description]"
@@ -16,7 +16,7 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-# afk:plan — Planning Session
+# afk:work-plan — Planning Session
 
 ## Announcement
 

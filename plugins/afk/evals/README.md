@@ -61,7 +61,7 @@ results. Pass `--ablation none` to skip the baseline arm.
     enforcement point, not whether existing entries may be discarded), and `repo-answers-the-fact` failed
     `runner-is-a-fact` (test file location and runner listed under `## Assumptions`). The planner prompt text
     was tightened for each after that run; see `.afk/afk-autonomy/learnings.md` for the transcript causes.
-- **`/afk:plan` does not work.** The runner expands the slash command, but the skill's
+- **`/afk:work-plan` does not work.** The runner expands the slash command, but the skill's
   `!`cat`` injections need Bash, which is refused. Prompts invoke the model-invocable
   `afk:planner` skill by name instead and pass autonomous mode in the prompt text.
 - **Plan names are pinned in the prompt** so graders can read `.afk/plans/<name>.md` through

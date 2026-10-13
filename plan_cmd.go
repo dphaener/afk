@@ -6,30 +6,34 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/dphaener/afk/internal/plancheck"
+	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 )
 
-// cmdPlan implements `afk plan <subcommand>`.
+// cmdPlan implements `afk plan` and its subcommands. With no word (or only
+// flags) it is the planning session; routePlanArgs holds that rule.
 func cmdPlan(args []string) {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+	switch routePlanArgs(args) {
+	case planRouteHelp:
 		printPlanUsage(os.Stderr)
-		if len(args) == 0 {
-			os.Exit(2)
-		}
-		return
-	}
-	switch args[0] {
-	case "check":
+	case planRouteSession:
+		os.Exit(runPlanSession(args, os.Stdout, os.Stderr, realPlanDeps()))
+	case planRouteStatus:
+		os.Exit(runPlanStatus(args[1:], os.Stdout, os.Stderr, realPlanDeps()))
+	case planRouteAdvance:
+		os.Exit(runPlanAdvance(args[1:], os.Stdout, os.Stderr, realPlanDeps()))
+	case planRouteCheck:
 		// A failed Getwd or UserHomeDir is passed on as "": resolveProject
 		// only needs them when --project is absent or starts with ~, and it
 		// reports the case it cannot resolve.
 		cwd, _ := os.Getwd()
 		home, _ := os.UserHomeDir()
 		os.Exit(runPlanCheck(args[1:], os.Stdout, os.Stderr, cwd, home, time.Now))
-	case "lint":
+	case planRouteLint:
 		cwd, _ := os.Getwd()
 		home, _ := os.UserHomeDir()
 		os.Exit(runPlanLint(args[1:], os.Stdout, os.Stderr, cwd, home, resolveGitCommonDirIn))
@@ -41,11 +45,39 @@ func cmdPlan(args []string) {
 }
 
 func printPlanUsage(w io.Writer) {
-	fmt.Fprint(w, `afk plan — check a master plan, or record a task's outcome in a session's plan
+	fmt.Fprintf(w, `afk plan — plan a project with your agent, check a master plan, or record a
+task's outcome in a session's plan
 
 Usage:
+  %s
+  %s
+  %s
   afk plan lint [--project DIR] [--json] [--summary] [FILE]
   afk plan check [--project DIR] [--reason TEXT] <session> <task-id> done|failed
+
+With no word, afk plan starts a planning session in the project folder (the
+current folder, or --project DIR) and opens it in this terminal. The session
+asks what you want to build, asks its questions in rounds and writes a first
+draft of the master plan. It needs a terminal, because it asks you questions.
+A folder that is not a git repository yet is turned into one. Leave with
+ctrl-\ and run afk plan again to come back: the session keeps running, and
+what it has saved is kept in .afk/plan/. A project that already has a plan and
+no planning session is refused, because changing a plan is not built yet.
+  --provider NAME  the agent to run (%s); planning sessions
+                   work with the default agent only for now
+  --dry-run        print what would happen and change nothing
+Exit codes: 0 you left the session (or the dry run printed), 1 the session
+could not be started here, 2 the command was written wrongly, 10 the session
+was opened somewhere else, 11 the session ended, 12 it is not running.
+
+status prints the planning session's mode, its phase and what it is waiting
+for. It only reads. Exit codes: 0 printed, 1 one of the session's files is
+damaged, 2 the command was written wrongly.
+
+advance moves the session on to the next phase when the current phase's work
+is saved, and says what is missing when it is not. The planning session runs
+it itself; you rarely need to. Exit codes: 0 moved, 1 refused, 2 the command
+was written wrongly.
 
 lint reads the master plan (FILE, or the plan named in afk.toml) and lists what
 is wrong with it. Errors are what the daemon would refuse or misread, such as
@@ -63,7 +95,7 @@ nothing the second time. A task already marked failed keeps its first reason.
 
 Exit codes: 0 done (or nothing to do), 1 the plan or the task was not found,
 2 the command was written wrongly.
-`)
+`, planSessionUsageLine, planStatusUsageLine, planAdvanceUsageLine, strings.Join(provider.Names(), ", "))
 }
 
 // runPlanCheck implements `afk plan check` and returns the exit code: 0 when

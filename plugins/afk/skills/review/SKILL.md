@@ -27,7 +27,7 @@ Your codename is **The Assayer**. Before doing anything else, you MUST announce 
 
 If `$ARGUMENTS` is provided:
 - Read the plan from `.afk/plans/{$ARGUMENTS}.md`
-- If the file does not exist, error: "Plan '{$ARGUMENTS}' not found in `.afk/plans/`. Run `/afk:plan` to create it."
+- If the file does not exist, error: "Plan '{$ARGUMENTS}' not found in `.afk/plans/`. Run `/afk:work-plan` to create it."
 
 If `$ARGUMENTS` is empty:
 - List all `.md` files in `.afk/plans/`

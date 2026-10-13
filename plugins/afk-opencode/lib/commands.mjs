@@ -1,4 +1,4 @@
-// Builds the prompt for /afk-go, /afk-plan, /afk-execute, /afk-review
+// Builds the prompt for /afk-go, /afk-work-plan, /afk-execute, /afk-review
 // from skills/{name}/SKILL.md, the way Claude Code expands a skill: the
 // frontmatter is dropped, each !`cat "${CLAUDE_PLUGIN_ROOT}/…"` line becomes
 // that file's contents, and !`echo "${CLAUDE_PLUGIN_ROOT}"` becomes the
@@ -7,11 +7,11 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const COMMANDS = Object.freeze(['go', 'plan', 'execute', 'review'])
+export const COMMANDS = Object.freeze(['go', 'work-plan', 'execute', 'review'])
 
 const CAT_LINE = /^!`cat "\$\{CLAUDE_PLUGIN_ROOT\}\/([^"]+)"`[ \t]*$/gm
 const ECHO_ROOT = /!`echo "\$\{CLAUDE_PLUGIN_ROOT\}"`/g
-const COMMAND_PREFIX = /^\s*\/afk-(go|plan|execute|review)(?=\s|$)([\s\S]*)$/
+const COMMAND_PREFIX = /^\s*\/afk-(go|work-plan|execute|review)(?=\s|$)([\s\S]*)$/
 
 export function parseFrontmatter(text) {
   const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)

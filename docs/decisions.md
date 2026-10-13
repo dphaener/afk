@@ -1749,3 +1749,40 @@ Not built, recorded for later:
 
 - `afk profile --json` and `afk profile check --json`, in the shape `afk plan lint --json` set, so the planning session and a later web page can read the profile without parsing text.
 - A command to add or remove a `rule_files` path, so the profile never has to be opened in an editor.
+
+## T5.3
+
+The planning session: `afk plan`, `internal/plansession` and the `/afk:master-plan` skill. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **The session's name (A1).** The host that runs the planning agent is a session named `master-plan`, with its files in `.afk/master-plan/`. The planning state is in `.afk/plan/`, a different folder. Why: cleaning a one-off session removes its whole folder, and the planning state must survive that. `plan` and `master-plan` can no longer be used as names for ordinary sessions.
+- **Starting the skill (A2).** The agent's command line for a planning session comes from a new `PlanArgv` on the provider interface. Why: nothing outside `internal/provider` may name a provider or hold its prompt text.
+- **Relaunch (A3).** `afk plan` writes an empty file, `.afk/master-plan/planning`. Every start of that session's host reads it and runs the planning skill. Why: the dashboard restarts a stopped host knowing only the session's name, and would otherwise start a bare agent.
+- **The phase (A4).** `state.json` records the phase the session says it reached. The phase afk reports is the earliest one whose file is missing or incomplete, and never later than the recorded one. Why: `model` and `review` have no file of their own, so something has to record them, and a file that is deleted or damaged has to pull the session back to the phase that writes it.
+- **Who writes `state.json` (A5).** Only code. `afk plan` creates it and a new command, `afk plan advance`, moves it on by one phase when that phase's file is complete, and says what is missing when it is not. The skill never edits the file. Why: the master plan says gates are checks over files and that code counts and checks.
+- **A project that already has a plan (A6).** With no planning session open, `afk plan` stops and says that changing an existing plan is not built yet. A session that is under way is always resumed, including after its draft has been written. Changing an existing plan is T5.4.
+- **The terminal (A7).** `afk plan` attaches to the session directly, as `afk attach` does. With no terminal it starts nothing and exits 1, because the session asks the owner questions.
+- **A folder that is not a git repository (A8)** gets `git init` and nothing else. The draft phase writes the `.gitignore` (`.afk/` and `afk.local.toml`).
+- **Other agents (A9, A10).** Only the default agent has the planning skill. With another one, `afk plan` says planning sessions are not available with that agent yet. The OpenCode port gets the rename (`/afk-work-plan`) and a line in its lag note, not the new skill.
+- **The design phase (A11)** is skipped: the session goes from `check` to `review` until T5.5 builds it.
+- **The skill's files (A12).** One entry file, four prompt files and the format document from T5.1. Its only sub-agents are fact look-ups and one critic.
+- **The project's agent instructions (A13)** are written by the draft phase as `AGENTS.md`, with a one-line `CLAUDE.md` that points at it, so one text serves every agent.
+- **Tests (A14, A16).** The plugin tests are Go tests over the plugin files built into the binary, beside the shell size check that already runs. All tests are written with the code, as table tests.
+- **Plugin version 5.4.0 (A15)**, because a skill was renamed and one was added.
+- **Nothing had to be in place first (A17).**
+
+### As built
+
+- **The two documents the planner wrote stay in the change.** The first review pass objected that this section and the new glossary lines in `CONTEXT.md` were in no task's file list. They were kept, and the work plan now says so, because every task must update this document and the glossary when it adds a decision or a term.
+- **`afk plan advance` can leave `rounds` after round one**, as soon as every question asked so far has an answer. Whether another round is needed is the skill's call, so the skill asks the next round before it runs the command.
+- **A stale `host.json`** (the machine restarted, or the process id was reused) makes `afk plan` try to attach to a host that is gone. It exits 12 and says the session is not running; `afk clean master-plan` clears it and the planning state in `.afk/plan/` is kept.
+
+### For the owner to check
+
+- A real planning session was not run here: there is no terminal or agent in a task session. Run `afk plan` in an empty folder in a terminal, leave with ctrl-\, run `afk plan` again and see that it comes back to the same session. T5.8 does this in full.
+
+### Scope ideas
+
+Not built, recorded for later:
+
+- `afk plan` could add `.afk/` to `.git/info/exclude` right after `git init`, so the planning state cannot be committed before the draft phase writes the `.gitignore`.
+- `afk new` and the dashboard's form could check the reserved names themselves, so the refusal of `plan` and `master-plan` shows before anything else is checked.

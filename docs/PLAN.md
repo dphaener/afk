@@ -292,6 +292,11 @@ daemon through `internal/daemonstate`, by atomic rename.
 |---|---|---|
 | `governor.json` | the daemon | `{"probe_tried_at","login_checked_at","login_known","logged_in"}`, every key always present. The two times are RFC 3339 UTC or `""` for never. `probe_tried_at` is when a usage read was last attempted (stamped before the attempt, so a failing read is not tried on every pass). `login_known` says whether `logged_in` is a real answer; a check that could not run leaves the last answer. A missing or damaged file means "never tried" and "not known". |
 
+Amended 2026-10-13 (T5.3): `.afk/master-plan/planning` is an empty file written by `afk plan` (on every
+start, because cleaning the session removes its folder). Its existence makes every spawn of that
+session's host, a relaunch from the dashboard included, run the provider's planning skill instead of
+the conductor or a bare agent. Only its existence is read.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -432,6 +437,46 @@ critic). The numbers come from the provider's session transcripts, read through 
 - **Counting rule (Claude Code transcripts):** the same message id appears on several lines (streaming
   chunks, forked transcripts). Count each id once, taking the maximum of each usage field.
 - **Baseline to beat:** the nebari build averaged about 16M weighted per master-plan task.
+
+### 4.8 Plan session — .afk/plan/ (new)
+
+Amended 2026-10-13 (T5.3): the state of a planning session (`afk plan`) lives in `.afk/plan/` in the
+project's main checkout. It is gitignored. The agent itself runs as the session `master-plan`, whose
+own folder is `.afk/master-plan/`, so cleaning that session never deletes the planning state; `plan`
+and `master-plan` are refused as names for ordinary sessions. `internal/plansession` reads the folder.
+
+| File | Writer | Holds |
+|---|---|---|
+| `state.json` | `afk plan` seeds it; `afk plan advance` is its only other writer | `{mode, phase, updated_at}` |
+| `brief.md` | the planning session | The owner's request, word for word. |
+| `survey.md` | the planning session | What was read before asking, and the profile entries that apply. |
+| `questions.jsonl` | the planning session | One line per question. |
+| `slices.md` | the planning session | The task breakdown the owner confirms before the draft. |
+| `critic.md` | the planning session | The critic's findings on the draft and what was done about each. |
+
+`state.json` holds `mode` (`new`, `extend`, `amend` or `reconcile`), `phase` (the furthest phase the
+session was allowed to reach) and `updated_at` (RFC 3339, UTC). An unknown key, mode or phase is
+refused. A missing file means there is no planning session; a damaged one is an error, never read as
+"no session". The phase shown by `afk plan status` is the earliest phase whose gate is not met, never
+later than the recorded one, so a deleted file pulls the session back.
+
+A `questions.jsonl` line has the keys `id`, `round`, `kind` (`product` or `setup`), `question`,
+`options`, `recommended`, `answer` and `answered_at`. The line is written when the question is asked and
+rewritten with the answer; an empty `answer` means it is still open.
+
+The gate of each phase, as built (`afk plan advance` refuses to leave a phase until it is met):
+
+| Phase | Gate |
+|---|---|
+| `brief` | `brief.md` exists and is not empty. |
+| `survey` | `survey.md` exists and is not empty. |
+| `model` | None. Held by the recorded phase alone. |
+| `rounds` | `questions.jsonl` exists, has at least one question, has no faulty line, and every question has an answer. |
+| `slices` | `slices.md` exists and is not empty. |
+| `draft` | The master plan exists and is not blank. |
+| `check` | `afk plan lint` reports no errors on the plan, and `critic.md` exists and is not empty. |
+| `design` | Not built. `afk plan advance` goes from `check` to `review`. |
+| `review` | None. Approving the plan is not built yet. |
 
 ---
 
@@ -1440,6 +1485,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
   phase's file exists and is complete; a resumed session lands on the right phase). Plugin tests: the
   skill stays within the size cap, every file it includes exists, and no prompt still says `/afk:plan`.
   `afk plan --dry-run` prints what it would start. The real session is proven in T5.8, not here.
+- Amended 2026-10-13 (T5.3 done): the planning agent runs in a session named `master-plan` (files in `.afk/master-plan/`, with an empty `planning` marker that makes every start of its host run the skill), apart from the state in `.afk/plan/`, and `plan` and `master-plan` are refused as names for other sessions; `state.json` is seeded by `afk plan` and moved only by the new `afk plan advance`, one phase at a time and only when that phase's file is complete, so T5.7's approve should set `approved` through `internal/plansession` and T5.5 must stop `advance` skipping `design` (today `check` goes straight to `review`, and `advance` refuses to leave `review`); the reported phase is the earliest one whose file is missing or incomplete, never later than the recorded one (`plansession.Decide`), and the files' contract is §4.8; `afk plan` on a project that has a plan and no open session exits 1, which is where T5.4's mode choice goes; the agent's command line comes from `PlanArgv` on the provider interface and only the default agent has one; the OpenCode port has `/afk-work-plan` but no master-plan skill; the skill patches by exact-match edit until `afk plan patch` exists; a real start and attach was not run here and is T5.8's; the decisions are in `docs/decisions.md` under `## T5.3`.
 
 #### T5.4 — Extend, amend and reconcile
 - **Depends on:** T5.3

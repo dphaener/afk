@@ -217,12 +217,16 @@ func TestRunPlanCheckUsesCwdWithoutProject(t *testing.T) {
 }
 
 // TestPlanUsageNamesTheCommand keeps the usage text and the dispatcher in
-// step: `check` is the only subcommand cmdPlan accepts, so the help must show
-// it together with both states and all three exit codes.
+// step: the help must show every form routePlanArgs accepts (the planning
+// session with its flags, status, advance, lint and check), and for check both
+// states and all three exit codes.
 func TestPlanUsageNamesTheCommand(t *testing.T) {
 	var b bytes.Buffer
 	printPlanUsage(&b)
-	for _, want := range []string{"afk plan check", "--project", "--reason", "done|failed", "Exit codes: 0", "1 the plan", "2 the command"} {
+	for _, want := range []string{
+		planSessionUsageLine, planStatusUsageLine, planAdvanceUsageLine, "--dry-run", "--provider NAME", "needs a terminal",
+		"afk plan lint", "afk plan check", "--project", "--reason", "done|failed", "Exit codes: 0", "1 the plan", "2 the command",
+	} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("plan usage missing %q:\n%s", want, b.String())
 		}

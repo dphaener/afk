@@ -47,6 +47,9 @@ earlier forge behaviour in these areas:
   agent with the default tools, so its agents start with the full tool set and cost more to start.
 - the master-plan format document (plugin version 5.3.0): the port has no copy of
   `skills/master-plan/plan-format.md`. `afk plan lint` itself is part of the binary and works for any agent.
+- the master-plan skill: the port has no `master-plan` skill, so `afk plan` cannot start a planning
+  session with this agent. The plan command was renamed `/afk:work-plan` in plugin version 5.4.0 and the
+  port's command is `/afk-work-plan`.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.
@@ -78,7 +81,7 @@ Apply these everywhere in `skills/`. Keep every other rule, number, and section 
 
 | Claude Code | OpenCode port |
 |---|---|
-| `/forge:go`, `/forge:plan`, `/forge:execute`, `/forge:review` | `/afk-go`, `/afk-plan`, `/afk-execute`, `/afk-review` |
+| `/forge:go`, `/forge:plan`, `/forge:execute`, `/forge:review` | `/afk-go`, `/afk-work-plan`, `/afk-execute`, `/afk-review` |
 | `` !`cat ${CLAUDE_PLUGIN_ROOT}/…` `` in a command skill | Unchanged in the file; `index.ts` inlines the file when it assembles the command |
 | `` !`echo "${CLAUDE_PLUGIN_ROOT}"` `` | Unchanged in the file; `index.ts` substitutes the plugin root |
 | `${CLAUDE_PLUGIN_ROOT}` in prose | `{plugin-root}` |

@@ -112,6 +112,71 @@ func TestLaunchArgv(t *testing.T) {
 	}
 }
 
+// TestPlanArgv covers the planning session's child argv for every provider.
+// Load-bearing rows: "claude" is the one argv that starts the master-plan
+// skill, a single prompt with no session name and no --autonomous, because a
+// planning session is attended and has no conductor. The other two must give
+// ErrNoPlanSession with a nil argv, never a bare agent: a caller that ignored
+// the error would otherwise start an agent that does nothing and looks like a
+// planning session. The loop below the table holds that every provider in
+// Names() has a row, so a fourth provider cannot be added without deciding.
+func TestPlanArgv(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		want     []string
+		wantErr  error
+	}{
+		{"claude", "claude", []string{"claude", "/afk:master-plan"}, nil},
+		{"default", "", []string{"claude", "/afk:master-plan"}, nil},
+		{"codex", "codex", nil, ErrNoPlanSession},
+		{"opencode", "opencode", nil, ErrNoPlanSession},
+	}
+	covered := map[string]bool{}
+	for _, tt := range tests {
+		covered[tt.provider] = true
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := Lookup(tt.provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := p.PlanArgv()
+			if !errors.Is(err, tt.wantErr) || (tt.wantErr == nil && err != nil) {
+				t.Fatalf("PlanArgv error = %v, want %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("PlanArgv = %q, want %q", got, tt.want)
+			}
+			if tt.wantErr != nil {
+				// The owner reads this text as it is, so it must say what
+				// happened in plain words and name no provider.
+				msg := err.Error()
+				if !strings.Contains(msg, "planning sessions are not available with this agent yet") {
+					t.Errorf("error %q does not say planning sessions are not available", msg)
+				}
+				for _, n := range Names() {
+					if strings.Contains(msg, n) {
+						t.Errorf("error %q names provider %q", msg, n)
+					}
+				}
+				return
+			}
+			for _, a := range got {
+				for _, banned := range []string{"--dangerously", "danger-full-access", "--yolo", "--autonomous", "--session"} {
+					if strings.Contains(a, banned) {
+						t.Errorf("argv %q contains %q", got, banned)
+					}
+				}
+			}
+		})
+	}
+	for _, n := range Names() {
+		if !covered[n] {
+			t.Errorf("provider %q has no row in TestPlanArgv", n)
+		}
+	}
+}
+
 // TestResumeArgv: the Claude row is today's TestResumeArgv expectation
 // exactly, with the same bans (no fork, no re-launch of the conductor); the
 // Codex row is the `codex resume ID` subcommand form.
