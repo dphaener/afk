@@ -50,6 +50,9 @@ earlier forge behaviour in these areas:
 - the master-plan skill: the port has no `master-plan` skill, so `afk plan` cannot start a planning
   session with this agent. The plan command was renamed `/afk:work-plan` in plugin version 5.4.0 and the
   port's command is `/afk-work-plan`.
+- changing a plan that exists (plugin version 5.5.0): the port has no extend, amend or reconcile flow.
+  `afk plan patch`, `afk plan insert`, `afk plan depend` and `afk plan next-id` are part of the binary and
+  work for any agent.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

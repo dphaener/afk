@@ -210,8 +210,9 @@ errors and warnings.
 | `missing-section` | warning | A required section, or the "How to use" paragraph, is missing. |
 | `open-question-no-task` | warning | An open row's "Needed by" names no task. |
 
-Later work adds `afk plan patch` (guarded edits), the owner profile and the planning session itself.
-They are not part of this format and are not described here.
+A plan that exists is changed with `afk plan patch`, `afk plan insert` and `afk plan depend`, which run
+this checker on the changed text and write nothing when it adds an error. Those commands, the owner
+profile and the planning session are not part of this format and are not described here.
 
 ---
 

@@ -425,6 +425,13 @@ token.
 
 Amended 2026-10-13 (T5.2): `profile.toml` is the owner profile. It sits in the same folder as `config.toml` (absolute `XDG_CONFIG_HOME` or `~/.config`, the same rule). It reads `rule_files` (a list; each item an absolute path or one starting with `~/`) and `[[entry]]` tables with `topic`, `value`, `strength` (`rule` or `default`; absent reads as `default`), an optional `kind` (lower-case letters, digits and hyphens) and an optional `reason`. Topics compare with case and runs of white space ignored, and are stored as written. There is one entry per topic and kind, and a kind-specific entry beats a general one on the same topic. An unknown key is a warning. No secrets: a value that looks like a key or token is an error and is never printed. `afk profile set` is the only command that edits the file, one `[[entry]]` at a time as text so comments survive, and `afk profile init` creates it once from a commented template.
 
+Amended 2026-10-13 (T5.4): `afk.toml` also reads `[planning] via_pr` (a boolean, default false; a value of
+another type is an error that names the file and the key). The table is `planning` because `plan` is
+already the key for the master plan's path, and one TOML key cannot be both a string and a table. The
+M5 decision's `[plan] via_pr` means this key; a `[plan]` table is refused with a message that names
+`[planning]`. With it set, `afk plan patch` makes each change on the branch `afk-plan-changes` in a
+temporary worktree and opens a pull request, and the main checkout is not touched.
+
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
 One line per task per phase per role, written when a task ends: `{at, task, session, phase:
@@ -477,6 +484,20 @@ The gate of each phase, as built (`afk plan advance` refuses to leave a phase un
 | `check` | `afk plan lint` reports no errors on the plan, and `critic.md` exists and is not empty. |
 | `design` | Not built. `afk plan advance` goes from `check` to `review`. |
 | `review` | None. Approving the plan is not built yet. |
+
+Amended 2026-10-13 (T5.4): a session that changes a plan that exists (`afk plan extend`, `amend` or
+`reconcile`) adds two files to `.afk/plan/` and one folder. `changes.md` is written by the planning
+session: one line for each change it made to the plan, and the `draft` gate of the three change modes
+is that it exists and is not blank (a reconcile that changes nothing still writes one line). `yes` is an
+empty file written by `afk plan amend --yes`, which tells the session not to ask the owner to confirm
+the entry first. `archive/<time>/` holds the files of an earlier, finished session, moved there when
+the next change session starts. Phase paths and gates: `extend` is `brief`, `survey`, `rounds`,
+`slices`, `draft`, `check`, `review`, with the gates above except `draft`, and its `check` needs
+`critic.md`; `amend` is `brief`, `survey`, `draft`, `check`, `review`, and `check` needs only a plan
+with no lint errors; `reconcile` is `brief`, `survey`, `rounds`, `draft`, `check`, `review`, its
+`rounds` gate passes with no `questions.jsonl` at all (a faulty line or an unanswered question still
+holds it), and `check` needs no critic. A change session is finished at `review`, because its changes
+are already in the plan (in a pull request until it is merged, with `[planning] via_pr`).
 
 ---
 
@@ -1512,6 +1533,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
   lint error is undone, a patch touching a running task's entry is refused, appending an "Amended" line
   to one is allowed) and for id choice (next number, letter suffix, a suffix already taken). Each mode
   has a fixture plan and an expected patched plan for a scripted set of answers.
+- Amended 2026-10-13 (T5.4 done): the pull-request setting is `[planning] via_pr`, not `[plan] via_pr`, because `plan` is already the path key (§4.6); `planpatch.Run` is the entry point for code that patches a plan (T5.6's row patch should call it, with an `Edit` built from the text it reads), and it checks the patched text before writing, so nothing is ever undone on disk; a patch is committed only when the plan is tracked and had no uncommitted changes, so a first draft that T5.7 has not committed yet is patched in place; with `via_pr` the plan file in the main checkout changes only when the pull request merges and the base is pulled, nothing is fetched, and `afk plan lint`, `next-id` and `afk tasks` read the unmerged file; there are three helper commands the plan did not name, `afk plan insert`, `afk plan depend` and `afk plan next-id`; a change session takes a shorter phase path per mode, lists its patches in `.afk/plan/changes.md` and is finished at `review` (§4.8), so T5.5's `design` phase and T5.7's `approved` concern `new` sessions only, and `plansession.Finished` and `PhasesFor` are what to ask; a bare `afk plan` on a project with a plan now asks which change instead of exiting 1; `afk plan amend --yes` still needs a terminal; a real change session was not run here and is T5.8's; the decisions are in `docs/decisions.md` under `## T5.4`.
 
 #### T5.5 — The design hand-off
 - **Depends on:** T5.4

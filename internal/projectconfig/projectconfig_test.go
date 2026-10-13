@@ -425,3 +425,56 @@ func TestShipEnvPattern(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadPlanning covers [planning] via_pr. Load-bearing rows: absent is
+// false (most projects write plans straight to the checkout), the local file
+// beating the committed one with false (the owner's way to turn it off on one
+// machine), and the two error rows (each must name the file and the key and
+// say how to fix it, so a hobbyist who wrote [plan] or "yes" knows what to do).
+func TestLoadPlanning(t *testing.T) {
+	tests := []struct {
+		name      string
+		committed *string
+		local     *string
+		want      bool
+		errHas    []string
+	}{
+		{name: "via_pr absent is false", committed: ptr("[ship]\nbase = \"main\"\n"), want: false},
+		{name: "via_pr true in afk.toml", committed: ptr("[planning]\nvia_pr = true\n"), want: true},
+		{name: "via_pr false in local over true", committed: ptr("[planning]\nvia_pr = true\n"), local: ptr("[planning]\nvia_pr = false\n"), want: false},
+		{name: "via_pr string is an error naming the key", committed: ptr("[planning]\nvia_pr = \"yes\"\n"), errHas: []string{FileName, "[planning] via_pr", "true or false"}},
+		{name: "plan table gives the new advice", committed: ptr("[plan]\nvia_pr = true\n"), errHas: []string{FileName, "path of the master plan", "[planning] via_pr"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, content := range map[string]*string{FileName: tt.committed, LocalFileName: tt.local} {
+				if content == nil {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(root, name), []byte(*content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := Load(root)
+			if len(tt.errHas) > 0 {
+				if err == nil {
+					t.Fatalf("Load = %+v, want an error", got)
+				}
+				t.Log(err)
+				for _, h := range tt.errHas {
+					if !strings.Contains(err.Error(), h) {
+						t.Errorf("error %q lacks %q", err, h)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got.Planning.ViaPR != tt.want {
+				t.Errorf("Planning.ViaPR = %v, want %v", got.Planning.ViaPR, tt.want)
+			}
+		})
+	}
+}

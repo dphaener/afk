@@ -26,6 +26,17 @@ func cmdPlan(args []string) {
 		os.Exit(runPlanStatus(args[1:], os.Stdout, os.Stderr, realPlanDeps()))
 	case planRouteAdvance:
 		os.Exit(runPlanAdvance(args[1:], os.Stdout, os.Stderr, realPlanDeps()))
+	case planRouteMode:
+		// The word is the mode: extend, amend or reconcile.
+		os.Exit(runPlanMode(args[0], args[1:], os.Stdout, os.Stderr, realPlanDeps()))
+	case planRoutePatch:
+		os.Exit(runPlanPatch(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
+	case planRouteInsert:
+		os.Exit(runPlanInsert(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
+	case planRouteDepend:
+		os.Exit(runPlanDepend(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
+	case planRouteNextID:
+		os.Exit(runPlanNextID(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
 	case planRouteCheck:
 		// A failed Getwd or UserHomeDir is passed on as "": resolveProject
 		// only needs them when --project is absent or starts with ~, and it
@@ -45,10 +56,17 @@ func cmdPlan(args []string) {
 }
 
 func printPlanUsage(w io.Writer) {
-	fmt.Fprintf(w, `afk plan — plan a project with your agent, check a master plan, or record a
-task's outcome in a session's plan
+	fmt.Fprintf(w, `afk plan — plan a project with your agent, change or check a master plan, or
+record a task's outcome in a session's plan
 
 Usage:
+  %s
+  %s
+  %s
+  %s
+  %s
+  %s
+  %s
   %s
   %s
   %s
@@ -61,14 +79,28 @@ asks what you want to build, asks its questions in rounds and writes a first
 draft of the master plan. It needs a terminal, because it asks you questions.
 A folder that is not a git repository yet is turned into one. Leave with
 ctrl-\ and run afk plan again to come back: the session keeps running, and
-what it has saved is kept in .afk/plan/. A project that already has a plan and
-no planning session is refused, because changing a plan is not built yet.
+what it has saved is kept in .afk/plan/. On a project that already has a plan
+and no planning session open, afk plan asks which of the three changes below
+you want; without a terminal it lists the three commands and exits 1.
   --provider NAME  the agent to run (%s); planning sessions
                    work with the default agent only for now
   --dry-run        print what would happen and change nothing
 Exit codes: 0 you left the session (or the dry run printed), 1 the session
 could not be started here, 2 the command was written wrongly, 10 the session
 was opened somewhere else, 11 the session ended, 12 it is not running.
+
+extend, amend and reconcile start a planning session that changes the plan the
+project already has. They take --project, --provider and --dry-run and have the
+exit codes of afk plan. Each needs a terminal, refuses a project with no plan
+(run afk plan first), and refuses while another planning session is open (run
+afk plan to go back to it). The files of an earlier, finished session are
+moved to .afk/plan/archive/ first, so nothing is overwritten.
+  extend     adds a milestone. The session asks what it is for.
+  amend      adds, splits or replaces one task. Say what to change in quotes.
+             --yes  the session makes the change without asking you to
+                    confirm it first
+  reconcile  brings the plan in line with a document, such as a design
+             system. FILE must be a file inside the project folder.
 
 status prints the planning session's mode, its phase and what it is waiting
 for. It only reads. Exit codes: 0 printed, 1 one of the session's files is
@@ -78,6 +110,34 @@ advance moves the session on to the next phase when the current phase's work
 is saved, and says what is missing when it is not. The planning session runs
 it itself; you rarely need to. Exit codes: 0 moved, 1 refused, 2 the command
 was written wrongly.
+
+patch, insert and depend change the master plan (the plan named in afk.toml,
+docs/PLAN.md by default) by one guarded patch each. The planning session uses
+them, and you can too.
+  patch    replaces the text in the --old file with the text in the --new
+           file. The old text must be in the plan exactly once.
+  insert   adds the task in the --entry file directly after task ID
+           (--after ID) or at the end of milestone N (--milestone N), or adds
+           the whole milestone in the file after the last one
+           (--new-milestone). Give exactly one of the three.
+  depend   makes TASK wait for ON, by adding ON to its Depends on line.
+  --message TEXT  the commit subject, one line (a default is used without it)
+Nothing is written when the change would give the plan an error afk plan lint
+does not report now, when it would remove or rename a task id, or when it
+changes a task that is running or shipping by more than a line starting
+"Amended <date>:". The change is then committed, the plan file alone, and
+pushed when the repository has an origin. A plan that is not committed yet, or
+a folder that is not a git repository, is changed in place and not committed.
+With via_pr = true under [planning] in afk.toml the change is made on the
+branch afk-plan-changes and a pull request is opened; your plan file changes
+when it is merged. Exit codes: 0 changed, 1 refused or failed (the last line
+is "Nothing was changed." when that is so), 2 the command was written wrongly.
+
+next-id prints the id a new task should take, alone on one line: the next
+number in milestone N (--milestone N), or the id for a task that must run
+directly after task ID (--after ID), such as T2.2a. It only reads. Exit codes:
+0 printed, 1 there is no such milestone or task, 2 the command was written
+wrongly.
 
 lint reads the master plan (FILE, or the plan named in afk.toml) and lists what
 is wrong with it. Errors are what the daemon would refuse or misread, such as
@@ -95,7 +155,10 @@ nothing the second time. A task already marked failed keeps its first reason.
 
 Exit codes: 0 done (or nothing to do), 1 the plan or the task was not found,
 2 the command was written wrongly.
-`, planSessionUsageLine, planStatusUsageLine, planAdvanceUsageLine, strings.Join(provider.Names(), ", "))
+`, planSessionUsageLine, planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine,
+		planStatusUsageLine, planAdvanceUsageLine,
+		planPatchUsageLine, planInsertUsageLine, planDependUsageLine, planNextIDUsageLine,
+		strings.Join(provider.Names(), ", "))
 }
 
 // runPlanCheck implements `afk plan check` and returns the exit code: 0 when

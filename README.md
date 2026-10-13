@@ -424,16 +424,27 @@ Start an attended agent session that takes your idea to a first draft of the mas
 
 ```bash
 afk plan [--project DIR] [--provider NAME] [--dry-run]
+afk plan extend [--project DIR] [--provider NAME] [--dry-run]
+afk plan amend [--project DIR] [--provider NAME] [--dry-run] [--yes] "<what>"
+afk plan reconcile [--project DIR] [--provider NAME] [--dry-run] FILE
 afk plan status [--project DIR]
 afk plan advance [--project DIR]
 ```
 
 - **It needs a terminal.** The session asks you questions, so with no terminal on stdin and stdout `afk plan` starts nothing and exits 1.
 - **An empty folder is turned into a git repository.** A folder that is not a git repository yet gets `git init` and nothing else. The session writes the `.gitignore` itself, in the draft phase.
-- **It refuses a project that already has a plan.** If `docs/PLAN.md` (or the plan named in `afk.toml`) exists and there is no planning session in progress, `afk plan` exits 1 and says changing a plan is not built yet. A planning session in progress is always resumed.
+- **A project that already has a plan gets a question, not a new plan.** An open planning session is always resumed. With none open, `afk plan` on a terminal asks which change you want (type `1`, `2` or `3`, or the word `extend`, `amend` or `reconcile`), and any other answer starts nothing and exits 1. Without a terminal it lists the three commands and exits 1. A session that reached `review` is finished: when a new change starts, the finished session's files are moved to `.afk/plan/archive/<time>/` and afk says so. If the finished session's agent is still running, clean it first (`afk clean master-plan`).
 - `--project DIR` — The project to plan. Defaults to the current directory. From inside a session's worktree it reaches the project's main checkout, where `.afk/plan/` lives.
 - `--provider NAME` — The agent to run: `claude`, `codex` or `opencode`. Planning sessions work with the default agent only for now; any other prints that and exits 1. An unknown name exits 2.
 - `--dry-run` — Print what would happen (the project, whether it would run `git init`, whether the session would start, resume or be reattached, and the command it runs) and change nothing.
+
+**Changing a plan that exists.** `extend`, `amend` and `reconcile` start a planning session that changes the plan instead of writing one. They take `--project`, `--provider` and `--dry-run`, and need a terminal. Each refuses a project with no plan (run `afk plan` first) and refuses while another planning session is open (run `afk plan` to go back to it). The session changes the plan only through `afk plan patch`, `insert` and `depend` (see below), so every change is checked before it is written, and it lists each change in `.afk/plan/changes.md`.
+
+- **`afk plan extend`** adds a milestone. For when the project has grown a new part. The session asks what the milestone is for, then follows the phases `brief`, `survey`, `rounds`, `slices`, `draft`, `check`, `review`. It is the only change with a critic: `critic.md` must exist before `check` passes.
+- **`afk plan amend "<what>"`** adds, splits or replaces one task. For a small change you can put in a sentence; the sentence is saved as the brief. The phases are `brief`, `survey`, `draft`, `check`, `review`, with no questions round. The session shows you the entry and asks you to confirm it before adding it; `--yes` skips that confirmation. `--yes` does not remove the need for a terminal.
+- **`afk plan reconcile FILE`** brings the plan in line with a document, such as a design system. `FILE` must be a file inside the project folder (a relative path is looked for in the folder you typed it in, then in the project). The phases are `brief`, `survey`, `rounds`, `draft`, `check`, `review`; the questions round may have no question at all. A reconcile that finds nothing to change still writes one line to `changes.md`.
+
+A change session is finished when it reaches `review`: its changes are already in the plan. With `[planning] via_pr = true` (see `afk plan patch` below) they are in a pull request until it is merged. `afk plan status` shows the session's mode and phase.
 
 **Leaving and coming back.** Leave with ctrl-\. The session keeps running in the background and what it has saved is kept in `.afk/plan/`. Run `afk plan` again to come back: it reattaches to a running session, or starts a fresh agent on the saved state if the session has stopped. Opening it from the dashboard does the same.
 
@@ -452,9 +463,9 @@ The eight phases, in order:
 7. `check` — `afk plan lint` reports no errors and a critic has reviewed the draft.
 8. `review` — you read the draft. Approving it is not built yet.
 
-**Where the files are.** The session's state is in `.afk/plan/` in the project's main checkout: `state.json`, `brief.md`, `survey.md`, `questions.jsonl`, `slices.md` and `critic.md` (see `docs/PLAN.md` section 4.8). The agent itself runs as a session named `master-plan`, with its own folder `.afk/master-plan/`, so it shows in the dashboard under that name. Cleaning that session does not delete the planning state.
+**Where the files are.** The session's state is in `.afk/plan/` in the project's main checkout: `state.json`, `brief.md`, `survey.md`, `questions.jsonl`, `slices.md` and `critic.md`, and in a change session also `changes.md` (the changes made, one line each; its content is the gate for leaving `draft`) and, for `amend --yes`, an empty file named `yes`. `archive/` holds the files of earlier, finished sessions (see `docs/PLAN.md` section 4.8). The agent itself runs as a session named `master-plan`, with its own folder `.afk/master-plan/`, so it shows in the dashboard under that name. Cleaning that session does not delete the planning state.
 
-**Exit codes.** `afk plan`: 0 you left the session (or the dry run printed), 1 the session could not be started here (no terminal, a plan already exists, an agent that cannot plan), 2 the command was written wrongly, 10 the session was opened somewhere else, 11 the session ended, 12 it is not running. `afk plan status`: 0 printed, 1 one of the session's files is damaged, 2 bad usage. `afk plan advance`: 0 moved, 1 refused, 2 bad usage.
+**Exit codes.** `afk plan` and the three change commands: 0 you left the session (or the dry run printed), 1 the session could not be started here (no terminal, no plan to change, a session already open, an agent that cannot plan, or a project with a plan and no mode chosen), 2 the command was written wrongly, 10 the session was opened somewhere else, 11 the session ended, 12 it is not running. `afk plan status`: 0 printed, 1 one of the session's files is damaged, 2 bad usage. `afk plan advance`: 0 moved, 1 refused, 2 bad usage.
 
 ### `afk plan lint` — Check a master plan
 
@@ -486,6 +497,52 @@ Warnings: 14
 ```
 
 **Exit codes:** 0 when the plan has no errors (warnings are allowed), 1 when it has at least one error or the file could not be read, 2 when the command was written wrongly (for example `FILE` together with `--project`).
+
+### `afk plan patch` — Change a plan by a guarded patch
+
+Change the master plan one checked step at a time. The planning session uses these commands to extend, amend or reconcile a plan, and you can use them to edit a plan by hand with the same checks.
+
+```bash
+afk plan patch [--project DIR] --old FILE --new FILE [--message TEXT]
+afk plan insert [--project DIR] (--after ID | --milestone N | --new-milestone) --entry FILE [--message TEXT]
+afk plan depend [--project DIR] [--message TEXT] TASK ON
+afk plan next-id [--project DIR] (--milestone N | --after ID)
+```
+
+- `patch` replaces the text in the `--old` file with the text in the `--new` file. The old text must be in the plan exactly once; none or two places is a refusal that says so.
+- `insert` adds the task in the `--entry` file directly after task `ID` (`--after`), or at the end of milestone `N` (`--milestone`), or adds the milestone in the file after the last one (`--new-milestone`). Give exactly one of the three; two or none is exit 2. The file holds one task, or one milestone for `--new-milestone`.
+- `depend` makes `TASK` wait for `ON` by adding `ON` to its `Depends on` line. If it already waits, nothing is changed. It refuses a `Depends on` line that is prose or runs onto a second line; use `patch` on that line.
+- `next-id` prints the id a new task should take and nothing else: the next number in milestone `N`, or with `--after ID` the first free letter after that task (`T2.2a`, then `T2.2b`). A gap in the numbers is never filled and an id is never used twice. It only reads, and it refuses a milestone the plan does not have.
+- `--message TEXT` — The commit subject, one line. Without it a default such as `docs(plan): Patch the master plan` or `docs(plan): Add T1.1a` is used.
+- `--project DIR` — The project whose plan to change. Defaults to the current directory. The plan is the one named by `plan` in `afk.toml` (`docs/PLAN.md` by default). The `--old`, `--new` and `--entry` files are read relative to the folder you typed the command in.
+
+The rules, in plain words:
+
+- Nothing is written if the changed plan would have an error that `afk plan lint` does not report on the plan now. A plan that already has errors can still be patched. The refusal lists the new findings, with the line numbers the changed plan would have had.
+- A task whose status is `running` or `shipping` can only be given a line that starts `Amended <date>:` at the end of its entry (and lines indented under it). Any other change to its entry is refused. A task with any other status can be changed.
+- A task id is never removed or renamed. A patch that would make an id disappear is refused.
+- A refusal changes nothing, and its last line is `Nothing was changed.`
+
+When a change is accepted, only the plan file is committed, never anything else that is changed in the folder. It is committed when git already tracks the plan and the plan had no uncommitted changes, and the commit is pushed when the repository has an `origin`. A plan that is not committed yet (a first draft), or a folder that is not a git repository, is changed in place and not committed; a line says so. A push that fails is a note with the command to run, not a failure, because the plan on this machine is right. If `[ship] base` names a branch and the main checkout is on another one, nothing is written. The command does not fetch, so after a pull request is merged, pull the base branch before changing the plan again.
+
+```
+$ afk plan patch --old old.md --new new.md
+Patched docs/PLAN.md. Tasks changed: T2.1.
+Committed and pushed.
+```
+
+Other lines you can see: `Patched docs/PLAN.md. No task's entry was changed.`, `Added T1.1a to docs/PLAN.md.`, `T1.2 now waits for T1.1a in docs/PLAN.md.`, and `Committed, but not pushed.` followed by a line that says why.
+
+**Through a pull request.** Put this in `afk.toml` (or `afk.local.toml`):
+
+```toml
+[planning]
+via_pr = true   # default false
+```
+
+With it, a change is made in a temporary worktree on the branch `afk-plan-changes`, pushed, and a pull request is opened with the `gh` command; if one is already open for that branch it is reused, so a second change builds on the first. Your checkout is never switched to another branch and its files are not touched. The plan file in your checkout therefore changes only when the pull request is merged, and the command says so. Until then `afk plan lint`, `afk plan next-id` and `afk tasks` still read the old plan. A plan that is not committed is still changed in place. If the branch has commits of its own and no open pull request, afk stops and tells you to pull the base branch or delete the branch; it never throws commits away. The key is `[planning]` because `plan` in `afk.toml` is already the plan's path.
+
+**Exit codes:** 0 when the plan was changed (or `next-id` printed), 1 when the change was refused or failed, 2 when the command was written wrongly (for example `insert` with two places, or `depend` with a word that is not a task id).
 
 ### `afk plan check` — Tick a task in a plan
 
@@ -574,7 +631,7 @@ Show every task in the project's master plan, with its status and what it is sti
 afk tasks [--project DIR]
 ```
 
-To check a plan for mistakes before the daemon reads it, run `afk plan lint`.
+To check a plan for mistakes before the daemon reads it, run `afk plan lint`. To change a plan that exists, see `afk plan extend`, `amend` and `reconcile` (above) and `afk plan patch`.
 
 A master plan is a markdown file where each task is a heading that starts with its id, followed by a `- **Depends on:**` line:
 
@@ -595,6 +652,13 @@ The commands read the project's main checkout, so they give the same answer when
 ```toml
 # afk.toml, in the project's root folder
 plan = "docs/PLAN.md"
+```
+
+A second key, `[planning] via_pr`, sends changes to the plan out as a pull request (see `afk plan patch`):
+
+```toml
+[planning]
+via_pr = false
 ```
 
 **Where the statuses are kept.** In `.afk/build/ledger.json` under the project. If the file is missing, every task is `pending`. If it is damaged (for example, half-written by hand), the commands stop with a message naming the file instead of guessing; fix the file, or delete it to start again from every task pending.
@@ -1207,7 +1271,7 @@ The binary is organized into packages:
 - **internal/ui** — Bubble Tea dashboard (TUI, keybindings, panels)
 - **internal/governor** — The usage governor's decision: one pure function from a usage reading to `run`, `no_launch`, `pause`, `hold` or `refuse`
 - **internal/usagestate** — Reads and writes `usage.json`, the last usage reading, under afk's per-machine state directory
-- **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` and `afk.local.toml` reader (`plan` and `[notify]`), and the desktop and ntfy notification senders
+- **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` and `afk.local.toml` reader (`plan`, `[planning]`, `[ship]` and `[notify]`), and the desktop and ntfy notification senders
 - **internal/daemon** — The build loop behind `afk daemon`: one pure function (`Decide`) picks what to do on a pass, and an executor carries it out
 - **internal/daemonconfig** — Reads `config.toml`, the daemon's machine config (projects, tick, stall limit)
 - **internal/daemonstate** — The pause flag, each project's `daemon.json` and the one-daemon-per-machine lock

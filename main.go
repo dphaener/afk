@@ -182,6 +182,16 @@ Subcommands:
                  again to come back. 'plan status' says which phase the session is
                  in, and 'plan advance' (run by the session) moves it on:
                  afk plan [--project DIR] [--provider NAME] [--dry-run]
+                 On a project that has a plan, 'afk plan extend' adds a milestone,
+                 'afk plan amend "<what>"' adds, splits or replaces one task and
+                 'afk plan reconcile FILE' brings the plan in line with a document
+  plan patch     Change a master plan by a guarded patch: the old text must be in
+                 the plan exactly once, and nothing is written if the change would
+                 add a checker error or alter a task that is running:
+                 afk plan patch --old FILE --new FILE [--message TEXT]
+                 afk plan insert (--after ID | --milestone N | --new-milestone) --entry FILE
+                 afk plan depend TASK ON
+                 afk plan next-id (--milestone N | --after ID)
   plan lint      Check a master plan for what the daemon would refuse or misread:
                  afk plan lint [--project DIR] [--json] [--summary] [FILE]
   plan check     Mark one task of a session's plan done or failed:

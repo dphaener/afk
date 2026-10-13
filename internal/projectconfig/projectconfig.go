@@ -47,6 +47,17 @@ type Config struct {
 	Notify Notify
 	// Ship is the [ship] table, with defaults filled in for absent keys.
 	Ship Ship
+	// Planning is the [planning] table. The table is named planning and not
+	// plan because one TOML key cannot be both a string (the top-level plan
+	// path) and a table, and the plan key must keep its meaning.
+	Planning Planning
+}
+
+// Planning is the [planning] table.
+type Planning struct {
+	// ViaPR says a change to the master plan goes out as a pull request
+	// instead of being written straight to the checkout. Default false.
+	ViaPR bool
 }
 
 // Defaults for the [ship] table (docs/PLAN.md section 4.6). Base has none: the
@@ -157,6 +168,11 @@ type file struct {
 		AfterMerge         *string `toml:"after_merge"`
 		AfterMergeTimeout  *string `toml:"after_merge_timeout"`
 	} `toml:"ship"`
+	Planning struct {
+		// ViaPR is decoded as any so a wrong type is reported by us, with
+		// advice, rather than as a decoder message.
+		ViaPR any `toml:"via_pr"`
+	} `toml:"planning"`
 }
 
 // Load reads {root}/afk.toml, then {root}/afk.local.toml, and lays the second
@@ -194,6 +210,9 @@ func Load(root string) (Config, error) {
 			cfg.Notify.NtfyURL = *f.ntfy
 		}
 		f.ship.apply(&cfg.Ship)
+		if f.viaPR != nil {
+			cfg.Planning.ViaPR = *f.viaPR
+		}
 	}
 	return cfg, nil
 }
@@ -203,6 +222,8 @@ type checked struct {
 	plan *string
 	ntfy *string
 	ship shipKeys
+	// viaPR is [planning] via_pr; nil means absent.
+	viaPR *bool
 }
 
 // shipKeys holds one file's validated [ship] values; nil means absent.
@@ -361,6 +382,13 @@ func readFile(path string) (*checked, error) {
 		return nil, err
 	}
 	out.ship = ship
+	if raw.Planning.ViaPR != nil {
+		b, ok := raw.Planning.ViaPR.(bool)
+		if !ok {
+			return nil, fmt.Errorf("%s: [planning] via_pr must be true or false, not %T. Write via_pr = true or via_pr = false, without quotes.", filepath.Base(path), raw.Planning.ViaPR)
+		}
+		out.viaPR = &b
+	}
 	return &out, nil
 }
 
@@ -372,6 +400,9 @@ func checkPlan(path string, v any) (string, error) {
 	}
 	s, ok := v.(string)
 	if !ok {
+		if _, isTable := v.(map[string]any); isTable {
+			return "", fmt.Errorf("%s: plan must be a string such as %q, the path of the master plan, not a [plan] table. The setting that sends plan changes out as a pull request is [planning] via_pr; write it under [planning], not [plan].", path, DefaultPlan)
+		}
 		return "", fmt.Errorf("%s: plan must be a string such as %q, not %T. Change it to a quoted path.", path, DefaultPlan, v)
 	}
 	if strings.TrimSpace(s) == "" {
