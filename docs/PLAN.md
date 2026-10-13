@@ -1278,6 +1278,64 @@ with nobody at the keyboard.
 
 ---
 
+#### T2.5 — Wake a session after a failed turn
+- **Depends on:** T2.3, T2.4
+- **Goal:** when an API error ends an agent's turn (for example "API Error: Connection lost
+  mid-response"), the daemon sets the session going again by itself. The owner hears about it only
+  when waking it has not worked.
+- **Background:** on 2026-10-13 the session for T5.6 lost its connection mid-response and sat idle at
+  its prompt. Nothing recovered it: the host was alive and answered the wedge probe, so §5.6 did not
+  apply, and the `StopFailure` hook is registered for the `rate_limit` reason only, so nothing was
+  written to disk. Ten minutes later the stall rule of §5.3 raised "Session waiting at the terminal"
+  and parked the task; the owner attached and typed the resume command by hand. §6.4 already says the
+  daemon must be able to send that prompt, and T2.3 built the means (`daemon.Deps.SendPrompt`, the
+  continue step and `continue_pending`), used so far only after a restart. Typing the session's
+  resume command again is safe, because the conductor acts from its recorded phase.
+- **Scope:**
+  1. **Find out what the agent CLI reports.** Read the CLI's own documentation for the reasons its
+     `StopFailure` hook is given, and stage a lost connection against a real session on the VM (cut
+     the network mid-response) to capture the hook's input and what `status.json` shows afterwards.
+     Write both down in `docs/decisions.md` under `## T2.5`. If no hook fires for a lost connection,
+     say so there; part 4 then carries the whole fix.
+  2. **A marker for a failed turn.** The `StopFailure` hook also runs for the reasons that are worth
+     trying again (a lost connection, a server error, an overloaded service; the list comes from part
+     1) and writes `.afk/{session}/.turn-failed`, one line `{"at":"<RFC 3339 UTC>","reason":"…"}`,
+     removed by the next prompt and by a normal stop, like `.rate-limited`. It never touches
+     `status.json`. The rate-limit marker and its handling stay as they are. A reason that trying
+     again cannot fix (a login that has expired, a billing fault) writes no marker. Describe the file
+     in the status schema document and in §4.1 first, in the same change. `internal/state` reads it.
+  3. **A new rule in the pure `Decide`.** For a `running` task whose host is alive and not wedged,
+     with no usage pause and no continue already pending: a marker newer than the session's start,
+     its last restart and its last wake means type the session's resume command, through the
+     continue step T2.3 built. The first wake comes 30 seconds after the marker, each later one after
+     `restart_backoff` doubled each time, and at most `max_wakes` times per task (default 3, under
+     `[daemon]` in `config.toml`). The ledger entry gains `wakes` and `wake_at`, saved before the
+     prompt is typed and cleared where `restarts` is cleared; §4.2 is updated in the same change. A
+     wake is not counted as a restart. Each one is written to the decision log.
+  4. **Wake before reporting a stall.** When a running session has been waiting at its prompt for
+     longer than `stall_after`, the daemon types the resume command once (counted in `wakes`) and
+     raises the stall item only if the session is still waiting `stall_after` later. This covers a
+     failed turn that left no marker.
+  5. **At the limit** the task parks on a blocking item that says, in plain words, that the session
+     kept failing, the last reason and time, and what to do next. Answering it gives a fresh set, as
+     for a recovery item. Change the stall item's text, which says "afk cannot yet wake a session by
+     itself".
+  6. `README.md`: the new setting and what the daemon now does. The OpenCode port gets the same hook
+     change, or a line in the lag note of its `PROVENANCE.md`.
+- **Must not:** restart or relaunch a host that is alive and not wedged; type into a session that is
+  paused for usage, parked or shipping; treat a rate limit as a failed turn; name a provider outside
+  `internal/provider`; weaken the wedge probe or the stall rule for a session that really is asking
+  something.
+- **Acceptance:** table tests for `Decide`: a marker newer than the start and the last wake types the
+  prompt after 30 seconds; a marker older than the last wake does nothing; the backoff holds a second
+  wake; `max_wakes` reached parks with one item; a rate-limit marker still pauses and never wakes; a
+  usage-paused, parked or shipping task is never typed to; a stalled session is woken once before the
+  stall item is raised; a crash between saving `wakes` and typing the prompt neither loses the wake
+  nor types twice in a row. Hook tests: a reason worth trying again writes the marker, one that is
+  not writes nothing, the next prompt and a normal stop remove it. `make check` passes. On the VM
+  with a built binary: a session whose connection is cut mid-response carries on with nobody
+  touching it, and the evidence is in `docs/decisions.md`.
+
 ### M3 — Surfaces
 
 **Outcome:** the owner can see what afk is doing and unblock it from a terminal or a phone.
