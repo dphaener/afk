@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
@@ -96,6 +98,14 @@ func planState(phase string) string {
 	return `{"mode":"new","phase":"` + phase + `","updated_at":"2026-10-12T00:00:00Z"}`
 }
 
+// planQuestions is a questions.jsonl with every question answered: one
+// ordinary question and the interface question with the answer given. A new
+// session cannot be past the rounds phase without the second.
+func planQuestions(interfaceAnswer string) string {
+	return `{"id":"q1","round":1,"kind":"setup","question":"Which domain?","answer":"example.com"}` + "\n" +
+		`{"id":"` + plansession.InterfaceQuestionID + `","round":1,"kind":"setup","question":"Does the project have an interface?","answer":"` + interfaceAnswer + `"}` + "\n"
+}
+
 // folderEntries lists everything under dir, so a test can say "nothing was
 // written" about the whole folder and not only the files it thought of.
 func folderEntries(t *testing.T, dir string) []string {
@@ -169,6 +179,9 @@ func TestRoutePlanArgs(t *testing.T) {
 		{"depend", []string{"depend", "T1.2", "T1.1"}, planRouteDepend},
 		{"next-id", []string{"next-id", "--milestone", "2"}, planRouteNextID},
 		{"next-id written as two words", []string{"next", "id"}, planRouteUnknown},
+		{"next-followup", []string{"next-followup"}, planRouteNextFollowup},
+		{"next-followup with a project", []string{"next-followup", "--project", "X"}, planRouteNextFollowup},
+		{"next-followup written as one word", []string{"nextfollowup"}, planRouteUnknown},
 		{"patch word after a flag", []string{"--project", "patch"}, planRouteSession},
 		{"mode word after a flag", []string{"--project", "extend"}, planRouteSession},
 		{"mode word in capitals", []string{"Extend"}, planRouteUnknown},
@@ -792,8 +805,7 @@ func TestPlanStatus(t *testing.T) {
 				writePlanFile(t, dir, ".afk/plan/brief.md", "a brief\n")
 				writePlanFile(t, dir, ".afk/plan/survey.md", "a survey\n")
 				writePlanFile(t, dir, ".afk/plan/slices.md", "slices\n")
-				writePlanFile(t, dir, ".afk/plan/questions.jsonl",
-					`{"id":"q1","round":1,"kind":"setup","question":"Which domain?","answer":"example.com"}`+"\n")
+				writePlanFile(t, dir, ".afk/plan/questions.jsonl", planQuestions("no: a command line"))
 				writePlanFile(t, dir, "docs/PLAN.md", "# Plan\n")
 			},
 			lint: 3,
@@ -902,8 +914,7 @@ func TestPlanAdvance(t *testing.T) {
 				writePlanFile(t, dir, ".afk/plan/survey.md", "a survey\n")
 				writePlanFile(t, dir, ".afk/plan/slices.md", "slices\n")
 				writePlanFile(t, dir, ".afk/plan/critic.md", "critic\n")
-				writePlanFile(t, dir, ".afk/plan/questions.jsonl",
-					`{"id":"q1","round":1,"kind":"setup","question":"Which domain?","answer":"example.com"}`+"\n")
+				writePlanFile(t, dir, ".afk/plan/questions.jsonl", planQuestions("no: a command line"))
 				writePlanFile(t, dir, "docs/PLAN.md", "# Plan\n")
 			},
 			wantCode: 1,
@@ -1478,5 +1489,458 @@ func TestPlanRefusesAFinishedSessionWhosePlanIsGone(t *testing.T) {
 	}
 	if len(f.calls) != 0 || !reflect.DeepEqual(before, folderFiles(t, dir)) {
 		t.Errorf("a refused run did something: calls %v, files %v", f.calls, folderEntries(t, dir))
+	}
+}
+
+// planFixture reads one file of internal/planpatch's testdata. The design
+// fixtures are written and checked by that package's tests; reading the same
+// files here is what ties the commands to them.
+func planFixture(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("internal", "planpatch", "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// realLintDeps is the fake's deps with the real plan checker put back, so a
+// fixture session is held to what `afk plan lint` says of its plan and not to
+// a number the test chose.
+func realLintDeps(f *planFake, dir string) planDeps {
+	deps := f.deps(dir)
+	deps.lintErrors = func(plan []byte) int { return planlint.Lint(plan).Summary.Errors }
+	return deps
+}
+
+// seedPlanSession writes a new session's files up to and including the check
+// phase, with the recorded phase and the interface answer given, and the plan.
+func seedPlanSession(t *testing.T, dir, phase, interfaceAnswer, plan string) {
+	t.Helper()
+	writePlanFile(t, dir, ".afk/plan/state.json", planState(phase))
+	writePlanFile(t, dir, ".afk/plan/brief.md", "a recipe box\n")
+	writePlanFile(t, dir, ".afk/plan/survey.md", "an empty folder\n")
+	writePlanFile(t, dir, ".afk/plan/questions.jsonl", planQuestions(interfaceAnswer))
+	writePlanFile(t, dir, ".afk/plan/slices.md", "two milestones\n")
+	writePlanFile(t, dir, ".afk/plan/critic.md", "no finding left open\n")
+	writePlanFile(t, dir, "docs/PLAN.md", plan)
+}
+
+// designRuleSentence is the header line the design fixture adds to the base
+// plan, taken from the fixture so the two cannot drift.
+func designRuleSentence(t *testing.T) string {
+	t.Helper()
+	for _, line := range strings.Split(planFixture(t, "design.golden.md"), "\n") {
+		if strings.Contains(line, "wins on looks") {
+			return line + "\n"
+		}
+	}
+	t.Fatal("design.golden.md has no line with the precedence rule")
+	return ""
+}
+
+// basePlanWithRule is the base plan with the precedence sentence in its
+// header and nothing else of the design phase: no design task, no extra
+// dependency.
+func basePlanWithRule(t *testing.T) string {
+	t.Helper()
+	base := planFixture(t, "base-plan.md")
+	at := strings.Index(base, "\n## ")
+	if at < 0 {
+		t.Fatal("base-plan.md has no ## heading")
+	}
+	// The header ends with a blank line before the first section; the
+	// sentence goes on the line before that blank one.
+	return base[:at] + designRuleSentence(t) + base[at:]
+}
+
+// TestDesignFacts is the reading of a plan the design gate is built on.
+//
+// Load-bearing rows:
+//   - "the design fixture" and "the base plan": the two end states of a
+//     planning session (with an interface, and without) read as all four
+//     facts and as none.
+//   - "the rule under a later heading": only the header counts, or a task
+//     that mentions the design system would pass for the plan's rule.
+//   - "one phrase missing" (three rows): each of the three texts is needed.
+//   - "the rule across a line break and in capitals": the header is prose, so
+//     a wrapped line must not make the gate refuse a plan that states it.
+//   - "an agent's design task" and "a design task for one area": the task is
+//     found by masterplan's narrow test, so neither is taken for it.
+//   - "the task in a later milestone" and "a plan that starts at M0": first
+//     means the milestone of the file's first task, whatever its number.
+//   - "a plan that does not parse": every fact is zero, the rule included, so
+//     nothing is read from half a plan.
+func TestDesignFacts(t *testing.T) {
+	const rule = "Where this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design system wins on looks.\n"
+	task := func(id, title, deps string) string {
+		return "#### " + id + " — " + title + "\n- **Depends on:** " + deps + "\n- **Goal:** x\n\n"
+	}
+	plan := func(header string, tasks ...string) string {
+		return "# Plan\n\n**How to use this document.** Read it.\n" + header + "\n## Milestones\n\n### M1 — First\n\n" + strings.Join(tasks, "")
+	}
+	design := task("T1.2", "Design system (owner)", "—")
+
+	tests := []struct {
+		name           string
+		plan           string
+		wantRule       bool
+		wantTask       string
+		wantFirst      bool
+		wantDependents int
+	}{
+		{name: "the design fixture", plan: planFixture(t, "design.golden.md"),
+			wantRule: true, wantTask: "T1.4", wantFirst: true, wantDependents: 4},
+		{name: "the reconcile fixture", plan: planFixture(t, "reconcile-design.golden.md"),
+			wantRule: true, wantTask: "T1.4", wantFirst: true, wantDependents: 4},
+		{name: "the base plan", plan: planFixture(t, "base-plan.md")},
+		{name: "the rule and nothing else", plan: plan(rule, task("T1.1", "Store a recipe", "—")), wantRule: true},
+		{name: "the rule under a later heading",
+			plan: plan("", task("T1.1", "Store a recipe", "—")+"## Notes\n\n"+rule)},
+		{name: "one phrase missing: the file",
+			plan: plan("The plan wins on behaviour and the design system wins on looks.\n", task("T1.1", "A", "—"))},
+		{name: "one phrase missing: behaviour",
+			plan: plan("`docs/design-system.md` wins on looks.\n", task("T1.1", "A", "—"))},
+		{name: "one phrase missing: looks",
+			plan: plan("The plan wins on behaviour over `docs/design-system.md`.\n", task("T1.1", "A", "—"))},
+		{name: "the rule across a line break and in capitals",
+			plan:     plan("Against `Docs/Design-System.md` the plan WINS ON\nbehaviour, and the design system wins   on\nlooks.\n", task("T1.1", "A", "—")),
+			wantRule: true},
+		{name: "the rule inside a fenced example heading still counts as header",
+			plan:     plan("```\n## not a heading\n```\n"+rule, task("T1.1", "A", "—")),
+			wantRule: true},
+		{name: "a design task nobody waits for",
+			plan:     plan(rule, task("T1.1", "A", "—"), design),
+			wantRule: true, wantTask: "T1.2", wantFirst: true},
+		{name: "two tasks wait, one names it twice over a note",
+			plan: plan(rule, task("T1.1", "A", "—"), design,
+				task("T1.3", "A page", "T1.1, T1.2"), task("T1.4", "Another page", "T1.2 (the tokens)")),
+			wantRule: true, wantTask: "T1.2", wantFirst: true, wantDependents: 2},
+		{name: "the task without the rule",
+			plan:     plan("", task("T1.1", "A", "—"), design, task("T1.3", "A page", "T1.2")),
+			wantTask: "T1.2", wantFirst: true, wantDependents: 1},
+		{name: "an agent's design task",
+			plan:     plan(rule, task("T1.1", "Design system (owner + agent)", "—"), task("T1.2", "A page", "T1.1")),
+			wantRule: true},
+		{name: "a design task for one area",
+			plan:     plan(rule, task("T1.1", "Design system for the admin pages (owner)", "—"), task("T1.2", "A page", "T1.1")),
+			wantRule: true},
+		{name: "the task with a note in its bracket",
+			plan:     plan(rule, task("T1.1", "design system (Owner; half a day)", "—"), task("T1.2", "A page", "T1.1")),
+			wantRule: true, wantTask: "T1.1", wantFirst: true, wantDependents: 1},
+		{name: "the task in a later milestone",
+			plan: plan(rule, task("T1.1", "A", "—")) + "### M2 — Second\n\n" +
+				task("T2.1", "Design system (owner)", "—") + task("T2.2", "A page", "T2.1"),
+			wantRule: true, wantTask: "T2.1", wantDependents: 1},
+		{name: "a plan that starts at M0",
+			plan: "# Plan\n" + rule + "\n## Milestones\n\n### M0 — Set up\n\n" +
+				task("T0.1", "A", "—") + task("T0.2", "Design system (owner)", "—") + task("T0.3", "A page", "T0.2"),
+			wantRule: true, wantTask: "T0.2", wantFirst: true, wantDependents: 1},
+		{name: "two design tasks, the first is the one",
+			plan: plan(rule, design, task("T1.3", "A page", "T1.2")) + "### M2 — Second\n\n" +
+				task("T2.1", "Design system (owner)", "—") + task("T2.2", "A page", "T2.1"),
+			wantRule: true, wantTask: "T1.2", wantFirst: true, wantDependents: 1},
+		{name: "a plan that does not parse",
+			plan: plan(rule, design, task("T1.3", "A page", "T1.2")) + "#### T1.9 no dash\n"},
+		{name: "a plan with no tasks", plan: "# Plan\n" + rule},
+		{name: "an empty plan", plan: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rule, task, first, dependents := designFacts([]byte(tt.plan))
+			if rule != tt.wantRule || task != tt.wantTask || first != tt.wantFirst || dependents != tt.wantDependents {
+				t.Errorf("designFacts = (rule %v, task %q, first %v, dependents %d), want (rule %v, task %q, first %v, dependents %d)",
+					rule, task, first, dependents, tt.wantRule, tt.wantTask, tt.wantFirst, tt.wantDependents)
+			}
+		})
+	}
+}
+
+// TestPlanDesignSession is the fixture session of a project with an
+// interface: the real commands, the real checker and the design fixture of
+// internal/planpatch, in the order the planning session runs them. The test
+// writes the brief where the session would; no Go code writes it.
+//
+// Every step is load-bearing, since the steps are the phase as built:
+//   - check goes on to design, not review, because the answer starts with yes;
+//   - advance then refuses, names docs/design-brief.md and leaves state.json
+//     byte for byte as it was, so the session cannot leave the phase by asking
+//     twice;
+//   - with the brief written the fixture plan passes the whole gate (the rule,
+//     the task in the first milestone, tasks waiting for it, no checker error)
+//     and the phase becomes review;
+//   - status at review reports no problem and does not pull the session back.
+func TestPlanDesignSession(t *testing.T) {
+	dir := t.TempDir()
+	plan := planFixture(t, "design.golden.md")
+	if n := planlint.Lint([]byte(plan)).Summary.Errors; n != 0 {
+		t.Fatalf("the design fixture has %d checker errors, want 0", n)
+	}
+	seedPlanSession(t, dir, plansession.PhaseCheck, "yes: a web page", plan)
+	f := &planFake{}
+	deps := realLintDeps(f, dir)
+	advance := func() (int, string, string) {
+		var so, se bytes.Buffer
+		code := runPlanAdvance(nil, &so, &se, deps)
+		return code, so.String(), se.String()
+	}
+	recorded := func() string {
+		t.Helper()
+		st, ok, err := plansession.ReadState(dir)
+		if err != nil || !ok {
+			t.Fatalf("state: ok=%v err=%v", ok, err)
+		}
+		return st.Phase
+	}
+
+	code, out, errOut := advance()
+	if code != 0 || !strings.HasPrefix(out, "Phase: check → design\n") {
+		t.Fatalf("first advance: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+	if got := recorded(); got != plansession.PhaseDesign {
+		t.Fatalf("recorded phase = %q, want design", got)
+	}
+
+	before, _ := os.ReadFile(plansession.StatePath(dir))
+	code, out, errOut = advance()
+	if code != 1 || out != "" {
+		t.Fatalf("advance without the brief: exit %d, want 1 and nothing on stdout\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+	if !strings.Contains(errOut, plansession.DesignBriefFile) || !strings.Contains(errOut, "the phase was not changed") {
+		t.Errorf("the refusal does not name the brief:\n%s", errOut)
+	}
+	if after, _ := os.ReadFile(plansession.StatePath(dir)); !bytes.Equal(before, after) {
+		t.Errorf("state.json changed on a refused advance:\nbefore %q\nafter  %q", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(plansession.DesignBriefFile))); err == nil {
+		t.Errorf("a command wrote %s; only the session writes it", plansession.DesignBriefFile)
+	}
+
+	writePlanFile(t, dir, plansession.DesignBriefFile, "# Design brief\n\nA recipe box for one cook.\n")
+	code, out, errOut = advance()
+	if code != 0 || !strings.HasPrefix(out, "Phase: design → review\n") {
+		t.Fatalf("advance with the brief: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+	if got := recorded(); got != plansession.PhaseReview {
+		t.Fatalf("recorded phase = %q, want review", got)
+	}
+
+	var so, se bytes.Buffer
+	if code := runPlanStatus(nil, &so, &se, deps); code != 0 {
+		t.Fatalf("status at review: exit %d\nstdout: %s\nstderr: %s", code, so.String(), se.String())
+	}
+	if !strings.Contains(so.String(), "Phase: review\n") || strings.Contains(so.String(), "Problem:") {
+		t.Errorf("status at review:\n%s", so.String())
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("the commands made outside calls: %v", f.calls)
+	}
+}
+
+// TestPlanDesignGate is `afk plan advance` at the design phase against plans
+// that lack one thing each, with the real checker. Every refused row must
+// exit 1 and leave state.json byte for byte as it was.
+//
+// Load-bearing rows:
+//   - "base plan, brief written": the plan a session with an interface has
+//     before the design phase did anything. The header rule is asked for
+//     before the task, so that is what the refusal names.
+//   - "base plan with the rule, brief written": says the plan has no design
+//     task. This is the row that stops a session from writing the brief and
+//     moving on without giving the owner the task.
+//   - "nothing waits for the task": the design task alone is not enough; a
+//     task that builds interface must wait for it, or the daemon would start
+//     building pages while the owner is still designing.
+//   - "plan with a checker error": the session is held at check, the earlier
+//     phase, and told the count; the design gate is never reached with a plan
+//     the checker rejects.
+//   - "no interface, recorded at design": a session recorded at design whose
+//     answer is no has no gate there and moves on without a brief.
+func TestPlanDesignGate(t *testing.T) {
+	design := planFixture(t, "design.golden.md")
+	const brief = "# Design brief\n"
+	tests := []struct {
+		name            string
+		answer          string
+		plan            string
+		brief           string
+		wantCode        int
+		wantOut         string
+		wantErr         []string
+		wantNoBriefFile bool
+	}{
+		{name: "no brief", answer: "yes: a web page", plan: design, wantCode: 1,
+			wantErr: []string{"The design brief has not been written yet: docs/design-brief.md is missing or empty."}},
+		{name: "a blank brief", answer: "yes: a web page", plan: design, brief: " \n", wantCode: 1,
+			wantErr: []string{"docs/design-brief.md is missing or empty"}},
+		{name: "base plan, brief written", answer: "yes: a web page", plan: planFixture(t, "base-plan.md"), brief: brief, wantCode: 1,
+			wantErr: []string{"The plan's header does not say yet which document wins on what", "docs/design-system.md"}},
+		{name: "base plan with the rule, brief written", answer: "yes: a web page", plan: basePlanWithRule(t), brief: brief, wantCode: 1,
+			wantErr: []string{`The plan has no task titled "Design system (owner)" yet.`}},
+		{name: "nothing waits for the task", answer: "yes: a web page", plan: strings.ReplaceAll(design, ", T1.4", ""), brief: brief, wantCode: 1,
+			wantErr: []string{"No task waits for the design task T1.4 yet"}},
+		{name: "plan with a checker error", answer: "yes: a web page",
+			plan: strings.Replace(design, "- **Depends on:** T1.1, T1.4", "- **Depends on:** T1.1, T9.9", 1), brief: brief, wantCode: 1,
+			wantErr: []string{"the earlier check phase is not finished", "The plan has 1 error that `afk plan lint` reports"}},
+		{name: "everything there", answer: "yes: a web page", plan: design, brief: brief,
+			wantOut: "Phase: design → review\n"},
+		{name: "no interface, recorded at design", answer: "no: a command line", plan: planFixture(t, "base-plan.md"),
+			wantOut: "Phase: design → review\n", wantNoBriefFile: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			seedPlanSession(t, dir, plansession.PhaseDesign, tt.answer, tt.plan)
+			if tt.brief != "" {
+				writePlanFile(t, dir, plansession.DesignBriefFile, tt.brief)
+			}
+			before, _ := os.ReadFile(plansession.StatePath(dir))
+			f := &planFake{}
+			var so, se bytes.Buffer
+			code := runPlanAdvance(nil, &so, &se, realLintDeps(f, dir))
+			if code != tt.wantCode {
+				t.Fatalf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, tt.wantCode, so.String(), se.String())
+			}
+			if !strings.HasPrefix(so.String(), tt.wantOut) || (tt.wantOut == "" && so.Len() > 0) {
+				t.Errorf("stdout = %q, want it to start with %q", so.String(), tt.wantOut)
+			}
+			for _, want := range tt.wantErr {
+				if !strings.Contains(se.String(), want) {
+					t.Errorf("stderr missing %q:\n%s", want, se.String())
+				}
+			}
+			after, _ := os.ReadFile(plansession.StatePath(dir))
+			if tt.wantCode != 0 && !bytes.Equal(before, after) {
+				t.Errorf("state.json changed on a refused advance:\nbefore %q\nafter  %q", before, after)
+			}
+			if tt.wantNoBriefFile {
+				if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(plansession.DesignBriefFile))); err == nil {
+					t.Errorf("%s exists in a project with no interface", plansession.DesignBriefFile)
+				}
+			}
+		})
+	}
+}
+
+// TestPlanSessionWithoutAnInterface is the fixture session of a project with
+// no interface: from check the session goes straight to review, and it ends
+// with no brief, no design task and no extra dependency (the plan is the base
+// fixture, byte for byte, with zero checker errors).
+//
+// Load-bearing: the exact `check → review` line. A session sent to design
+// here would be recorded at a phase with nothing behind it.
+func TestPlanSessionWithoutAnInterface(t *testing.T) {
+	dir := t.TempDir()
+	base := planFixture(t, "base-plan.md")
+	if n := planlint.Lint([]byte(base)).Summary.Errors; n != 0 {
+		t.Fatalf("the base fixture has %d checker errors, want 0", n)
+	}
+	seedPlanSession(t, dir, plansession.PhaseCheck, "no: a command line", base)
+	f := &planFake{}
+	deps := realLintDeps(f, dir)
+
+	var so, se bytes.Buffer
+	if code := runPlanAdvance(nil, &so, &se, deps); code != 0 || !strings.HasPrefix(so.String(), "Phase: check → review\n") {
+		t.Fatalf("advance: exit %d\nstdout: %s\nstderr: %s", code, so.String(), se.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(plansession.DesignBriefFile))); err == nil {
+		t.Errorf("%s exists in a project with no interface", plansession.DesignBriefFile)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "docs", "PLAN.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != base {
+		t.Errorf("the plan was changed by advance")
+	}
+	if rule, task, _, dependents := designFacts(got); rule || task != "" || dependents != 0 {
+		t.Errorf("designFacts of the plan = (rule %v, task %q, dependents %d), want none", rule, task, dependents)
+	}
+	for _, task := range masterplan.Scan(got).Tasks {
+		if task.Owner() {
+			t.Errorf("the plan has an owner task, %s %q", task.ID, task.Title)
+		}
+	}
+
+	so.Reset()
+	se.Reset()
+	if code := runPlanStatus(nil, &so, &se, deps); code != 0 || !strings.Contains(so.String(), "Phase: review\n") {
+		t.Errorf("status: exit %d\nstdout: %s\nstderr: %s", code, so.String(), se.String())
+	}
+}
+
+// TestPlanReconcileDesignFixture is the fixture of a design system that
+// disagrees with the plan, run through the real commands: the plan the design
+// phase left, the owner's design system, one `afk plan patch` where the
+// design wins on looks, and the follow-up prompt for the point where the plan
+// wins on behaviour.
+//
+// Load-bearing:
+//   - the patched plan is byte-equal to reconcile-design.golden.md, the same
+//     file internal/planpatch's own test ends at, so the command and the
+//     package make one patch;
+//   - T2.2's acceptance is untouched: the conflict on behaviour goes to the
+//     owner in the follow-up prompt and is not settled in the plan;
+//   - next-followup prints prompt 1 before the prompt is written and 2 after,
+//     and writes nothing itself (the test writes the fixture prompt where the
+//     session would).
+func TestPlanReconcileDesignFixture(t *testing.T) {
+	project, typedIn := t.TempDir(), t.TempDir()
+	writePlanFile(t, project, "docs/PLAN.md", planFixture(t, "design.golden.md"))
+	writePlanFile(t, project, masterplan.DesignSystemFile, planFixture(t, "design-system.md"))
+	writePlanFile(t, typedIn, "old.md", "- **Scope:** The home page, sorted by name, with a link to each recipe.\n")
+	writePlanFile(t, typedIn, "new.md", "- **Scope:** The home page, sorted by name, with a link to each recipe, each drawn as the `RecipeCard` of `docs/design-system.md`.\n")
+
+	git := &patchGit{} // not a repository: the plan is changed in place
+	deps := planPatchDeps{
+		cwd:          typedIn,
+		gitCommonDir: func(string) string { return "" },
+		run:          git.run,
+		tempDir:      func() (string, error) { return "", errors.New("no test here makes a worktree") },
+	}
+	run := func(cmd func([]string, *bytes.Buffer, *bytes.Buffer, planPatchDeps) int, args ...string) string {
+		t.Helper()
+		var so, se bytes.Buffer
+		if code := cmd(append([]string{"--project", project}, args...), &so, &se, deps); code != 0 {
+			t.Fatalf("%v: exit %d\nstdout: %s\nstderr: %s", args, code, so.String(), se.String())
+		}
+		return so.String()
+	}
+	patch := func(a []string, so, se *bytes.Buffer, d planPatchDeps) int { return runPlanPatch(a, so, se, d) }
+	followup := func(a []string, so, se *bytes.Buffer, d planPatchDeps) int {
+		return runPlanNextFollowup(a, so, se, d)
+	}
+
+	if out := run(patch, "--old", "old.md", "--new", "new.md"); !strings.Contains(out, "Tasks changed: T1.2.") {
+		t.Errorf("patch said:\n%s", out)
+	}
+	got, err := os.ReadFile(filepath.Join(project, "docs", "PLAN.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := planFixture(t, "reconcile-design.golden.md"); string(got) != want {
+		t.Errorf("the patched plan is not reconcile-design.golden.md:\n%s", got)
+	}
+	if n := planlint.Lint(got).Summary.Errors; n != 0 {
+		t.Errorf("the reconciled plan has %d checker errors, want 0", n)
+	}
+	const t22 = "- **Acceptance:** The link opens the recipe in a private window, and a wrong token shows a not-found page."
+	if !strings.Contains(planFixture(t, "base-plan.md"), t22) {
+		t.Fatalf("the base fixture no longer has T2.2's acceptance as %q; fix this test's copy", t22)
+	}
+	if !strings.Contains(string(got), t22) {
+		t.Errorf("T2.2's acceptance was changed; the plan wins on behaviour")
+	}
+
+	before := folderEntries(t, project)
+	if out := run(followup); out != "docs/design-followup-1.md\n" {
+		t.Errorf("next-followup = %q, want docs/design-followup-1.md", out)
+	}
+	if after := folderEntries(t, project); !reflect.DeepEqual(before, after) {
+		t.Errorf("next-followup changed the project: before %v, after %v", before, after)
+	}
+	writePlanFile(t, project, "docs/design-followup-1.md", planFixture(t, "design-followup-1.md"))
+	if out := run(followup); out != "docs/design-followup-2.md\n" {
+		t.Errorf("next-followup after the first prompt = %q, want docs/design-followup-2.md", out)
 	}
 }

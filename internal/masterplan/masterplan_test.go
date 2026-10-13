@@ -323,6 +323,36 @@ func TestTaskOwner(t *testing.T) {
 	}
 }
 
+// TestDesignSystem: the "Design system (owner + agent)" and "Design system"
+// rows are load-bearing. Each is a task the owner must not be asked to do:
+// the first is an agent's, the second has no owner bracket at all. Reading
+// either as the design task would send the owner a reconcile step for work
+// that is not the design hand-off. The "for the admin pages" row guards the
+// other direction: a title that only starts with "Design system" is a
+// different task, so the match must be the whole title, not a prefix.
+func TestDesignSystem(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  bool
+	}{
+		{"owner bracket alone", "Design system (owner)", true},
+		{"owner with note", "Design system (owner; half a day)", true},
+		{"capitalised words and bracket", "Design System ( owner )", true},
+		{"owner plus agent", "Design system (owner + agent)", false},
+		{"no owner bracket", "Design system", false},
+		{"longer title", "Design system for the admin pages (owner)", false},
+		{"other owner task", "Create the hosting account (owner)", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (Task{Title: tt.title}).DesignSystem(); got != tt.want {
+				t.Errorf("DesignSystem() for %q = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestScan covers what Scan adds over Parse: it carries on after a problem
 // and it reports the headings and the fenced lines. Load-bearing rows:
 // "three problems together" (Scan must not stop at the first, and the

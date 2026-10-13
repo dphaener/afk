@@ -61,6 +61,38 @@ var ownerMarkerRE = regexp.MustCompile(`(?i)\(\s*owner\s*(\)|;)`)
 // them as owner tasks would leave agent work undone.
 func (t Task) Owner() bool { return ownerMarkerRE.MatchString(t.Title) }
 
+// DesignSystemFile is where the owner saves the design system the design tool
+// hands back. It is written into the plan's design task and the daemon's item
+// for that task, so both name the same file.
+const DesignSystemFile = "docs/design-system.md"
+
+// bracketRE matches one bracket group with no nested brackets, so the owner
+// bracket can be cut out of a title with the words of its note.
+var bracketRE = regexp.MustCompile(`\([^()]*\)`)
+
+// DesignSystem reports whether the task is the owner's design task: an owner
+// task whose title, with its owner bracket removed, is "Design system". The
+// title is the only identity a task has in the plan, so the plan-session gate
+// (internal/plansession via the root package) and the daemon's item both find
+// the task by this one test; defining it once here keeps them from drifting.
+//
+// The match is deliberately narrow. "Design system (owner + agent)" is an
+// agent task that builds the tokens, and "Design system for the admin pages
+// (owner)" is a different task; taking either for the design hand-off would
+// send the owner a reconcile step for work that is not the design.
+func (t Task) DesignSystem() bool {
+	if !t.Owner() {
+		return false
+	}
+	stripped := bracketRE.ReplaceAllStringFunc(t.Title, func(group string) string {
+		if ownerMarkerRE.MatchString(group) {
+			return ""
+		}
+		return group
+	})
+	return strings.EqualFold(strings.Join(strings.Fields(stripped), " "), "design system")
+}
+
 var (
 	taskHeadingRE = regexp.MustCompile(`^#### (T\d+\.\d+[a-z]?)\s+[—–-]\s+(\S.*)$`)
 	badHeadingRE  = regexp.MustCompile(`^#### T\d`)

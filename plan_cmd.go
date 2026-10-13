@@ -37,6 +37,8 @@ func cmdPlan(args []string) {
 		os.Exit(runPlanDepend(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
 	case planRouteNextID:
 		os.Exit(runPlanNextID(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
+	case planRouteNextFollowup:
+		os.Exit(runPlanNextFollowup(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
 	case planRouteCheck:
 		// A failed Getwd or UserHomeDir is passed on as "": resolveProject
 		// only needs them when --project is absent or starts with ~, and it
@@ -60,6 +62,7 @@ func printPlanUsage(w io.Writer) {
 record a task's outcome in a session's plan
 
 Usage:
+  %s
   %s
   %s
   %s
@@ -139,6 +142,14 @@ directly after task ID (--after ID), such as T2.2a. It only reads. Exit codes:
 0 printed, 1 there is no such milestone or task, 2 the command was written
 wrongly.
 
+next-followup prints where the next design follow-up prompt goes, alone on one
+line: docs/design-followup-<n>.md, with the first number no prompt in docs/
+has used yet (a number is never used twice, so a gap is not filled). A
+follow-up prompt is what you take back to your design tool when the design
+system and the plan disagree; afk plan reconcile writes it. It only reads.
+Exit codes: 0 printed, 1 the docs folder could not be read, 2 the command was
+written wrongly.
+
 lint reads the master plan (FILE, or the plan named in afk.toml) and lists what
 is wrong with it. Errors are what the daemon would refuse or misread, such as
 an unknown dependency; warnings are what a reader would miss. --summary prints
@@ -158,6 +169,7 @@ Exit codes: 0 done (or nothing to do), 1 the plan or the task was not found,
 `, planSessionUsageLine, planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine,
 		planStatusUsageLine, planAdvanceUsageLine,
 		planPatchUsageLine, planInsertUsageLine, planDependUsageLine, planNextIDUsageLine,
+		planNextFollowupUsageLine,
 		strings.Join(provider.Names(), ", "))
 }
 

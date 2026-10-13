@@ -204,13 +204,16 @@ func TestPluginMasterPlanIncludes(t *testing.T) {
 	if len(paths) == 0 {
 		t.Fatal("master-plan SKILL.md has no include lines")
 	}
-	hasFormat, hasModes := false, false
+	hasFormat, hasModes, hasDesign := false, false, false
 	for _, p := range paths {
 		if p == "skills/master-plan/plan-format.md" {
 			hasFormat = true
 		}
 		if p == "skills/master-plan/prompts/modes.md" {
 			hasModes = true
+		}
+		if p == "skills/master-plan/prompts/design.md" {
+			hasDesign = true
 		}
 		t.Run(p, func(t *testing.T) {
 			body, err := fs.ReadFile(pluginAssets, "plugins/afk/"+p)
@@ -230,6 +233,81 @@ func TestPluginMasterPlanIncludes(t *testing.T) {
 	// so it would run the new-plan phases against a plan that is being built.
 	if !hasModes {
 		t.Error("master-plan SKILL.md does not include skills/master-plan/prompts/modes.md")
+	}
+	// afk plan advance puts a session with an interface at the design phase
+	// whether or not the skill has text for it. Without this include the
+	// session is told it is at "design", has no steps for it, and cannot pass
+	// the gate (the brief, the owner's task, the dependencies).
+	if !hasDesign {
+		t.Error("master-plan SKILL.md does not include skills/master-plan/prompts/design.md, so the design prompt is not included")
+	}
+}
+
+// TestPluginMasterPlanDesignPhase holds the master-plan skill's text to the
+// names the design hand-off's code reads. The skill is searched as a whole
+// (every file under it), because the session sees the files joined.
+//
+// Load-bearing rows: each wanted string is matched by code, not by a person.
+// "r1-interface" is the question id afk plan advance looks up to choose
+// between design and review; "docs/design-brief.md" is the file the design
+// gate checks; "Design system (owner)" is the title the gate and the daemon
+// recognise the owner's task by; "afk plan next-followup" replaces counting
+// the follow-up files by hand; and "afk plan reconcile docs/design-system.md"
+// is the step the daemon's inbox item gives, which the owner must have been
+// told about. A prompt that drifts from one of them writes a session the
+// commands refuse. The two unwanted strings are the sentences the skill had
+// while the phase was skipped: one left behind tells the session never to
+// mention the design step, against the phase advance now puts it in.
+func TestPluginMasterPlanDesignPhase(t *testing.T) {
+	const skillDir = "plugins/afk/skills/master-plan"
+	var all strings.Builder
+	err := fs.WalkDir(pluginAssets, skillDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, err := fs.ReadFile(pluginAssets, p)
+		if err != nil {
+			return err
+		}
+		all.Write(b)
+		all.WriteByte('\n')
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", skillDir, err)
+	}
+	text := all.String()
+	// An empty read would pass every "absent" row below for any text.
+	if text == "" {
+		t.Fatalf("no text found under %s in the embedded plugin", skillDir)
+	}
+
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"the interface question's id", "r1-interface", true},
+		{"the design brief's path", "docs/design-brief.md", true},
+		{"the design task's title", "Design system (owner)", true},
+		{"the follow-up numbering command", "afk plan next-followup", true},
+		{"the reconcile the owner runs", "afk plan reconcile docs/design-system.md", true},
+		{"the phase is no longer skipped", "skipped for now", false},
+		{"the phase is no longer called unbuilt", "not built yet, so `afk plan advance` goes from `check`", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Contains(text, tt.text); got != tt.want {
+				if tt.want {
+					t.Errorf("the master-plan skill does not name %q", tt.text)
+				} else {
+					t.Errorf("the master-plan skill still says %q", tt.text)
+				}
+			}
+		})
 	}
 }
 

@@ -63,10 +63,12 @@ A round holds every question whose prerequisites are settled. Ask them all, prod
 **Round one always holds:**
 
 1. Who the project is for (a product question: for example only the owner, their household, a club, the public), with a recommendation drawn from the brief.
-2. Whether it has an interface, and of what kind (a product question: a web page, a command line, an API only, none), with a recommendation.
+2. Whether it has an interface, and of what kind (a product question: a web page, a command line, an API only, none), with a recommendation. This question always has the id `r1-interface`, and its recorded answer always starts with `yes` or `no`, then a colon and the kind in the owner's words: `yes: a web page`, `yes: a phone app`, `no: a command line`, `no: an API only`, `no: none`. **Yes means screens a person looks at**, which a design tool could draw; a command line, an API only or none is `no`. When the owner's answer does not make that plain, ask them which it is; do not decide for them.
 3. The profile entries being applied, shown as `afk profile` printed them, with the plain question whether any of them does not fit this project. The owner's answer is recorded as a setup question with the id `r1-profile`. An entry the owner overrides is used the way they say for this project, and the plan's Decisions table later says the profile said otherwise.
 
 Plus every setup fact `survey.md` listed as not covered, and every product question that needs nothing else settled first.
+
+The id and the form of the interface answer are fixed because code reads them: `afk plan advance` takes the first word of that answer to decide whether the session has a `design` phase after `check`. It refuses to leave `rounds` while no question has the id `r1-interface`, or while its answer starts with anything but `yes` or `no`, and says which. When it says the answer is in the wrong form and what the owner meant is plain, rewrite the line's answer in the fixed form without asking again.
 
 ### Offering a fact back to the profile
 
@@ -93,8 +95,8 @@ Every question is one line of `.afk/plan/questions.jsonl`, written **when it is 
 | `answer` | Empty until answered; then what the owner chose or wrote. |
 | `answered_at` | Empty until answered; then the time, RFC 3339 in UTC, such as `2026-10-13T14:02:00Z`. |
 
-A line that does not follow this is read as no question at all, and `afk plan status` reports it as a problem. When you answer a line, replace the whole line with Edit, matching on its `"id"`. When the owner reworded a recommendation rather than choosing it, the answer is their wording.
+A line that does not follow this is read as no question at all, and `afk plan status` reports it as a problem. When you answer a line, replace the whole line with Edit, matching on its `"id"`. When the owner reworded a recommendation rather than choosing it, the answer is their wording. The one answer with a fixed form is `r1-interface`: `yes: <kind>` or `no: <kind>`, with the kind in the owner's words.
 
 ### Leaving the phase
 
-`afk plan advance` moves on as soon as every question in the file has an answer. So it is your call when the rounds are over, not the command's: run it only when there is no question left to ask. If an answer opens a new question, that is the next round; ask it first.
+`afk plan advance` moves on as soon as every question in the file has an answer and the `r1-interface` answer starts with `yes` or `no`. So it is your call when the rounds are over, not the command's: run it only when there is no question left to ask. If an answer opens a new question, that is the next round; ask it first.

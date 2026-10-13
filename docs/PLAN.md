@@ -499,6 +499,15 @@ with no lint errors; `reconcile` is `brief`, `survey`, `rounds`, `draft`, `check
 holds it), and `check` needs no critic. A change session is finished at `review`, because its changes
 are already in the plan (in a pull request until it is merged, with `[planning] via_pr`).
 
+Amended 2026-10-13 (T5.5): the `design` phase is built. The `rounds` gate of a `new` session also needs
+a question with the id `r1-interface` whose answer starts with `yes` or `no`. `afk plan advance` goes
+from `check` to `design` on yes and to `review` on no; change sessions have no `design` phase. The
+`design` gate is: no checker errors, `docs/design-brief.md` is not blank, the plan's header states the
+precedence rule (the plan wins on behaviour, `docs/design-system.md` wins on looks), a task titled
+`Design system (owner)` is in the first milestone, and at least one task waits for it. The brief is in
+`docs/`, not `.afk/plan/`, because it is a project document the owner takes to a design tool. This
+supersedes the `design` row above.
+
 ---
 
 ## 5. The build loop
@@ -1558,6 +1567,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
   dependencies in place and zero lint errors; one without an interface has none of them. A reconcile
   fixture with a design system that conflicts with the plan produces the expected patch and a follow-up
   prompt.
+- Amended 2026-10-13 (T5.5 done): round one's interface question has the fixed id `r1-interface` and an answer that starts with `yes` or `no`, and a `new` session cannot leave `rounds` without it; `afk plan advance` goes from `check` to `design` on yes and to `review` on no, and the `design` gate is code (`plansession`, with the plan facts filled in by `designFacts`; contract in §4.8), so T5.7's approve finds a `new` session at `review` either way; the design task is recognised by its title through `masterplan.Task.DesignSystem()`, the one test the gate and the daemon share; the daemon's item for it tells the owner to save and commit `docs/design-system.md`, run the reconcile, and only then answer, and no second item is raised after the answer; there is a helper command the plan did not name, `afk plan next-followup`; `docs/design-brief.md` is not committed by anything yet, so T5.7's approve should commit it with the plan; a real design phase was not run here and is T5.8's; the decisions are in `docs/decisions.md` under `## T5.5`.
 
 #### T5.6 — Open questions hold their tasks
 - **Depends on:** T5.1

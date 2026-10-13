@@ -32,7 +32,15 @@
 // the clock. Load does the reading. That split is what lets every branch be a
 // row in a table test, and it is also why PlanErrors is filled by the caller:
 // counting the plan's errors needs the plan checker, and importing it here
-// would tie the phase decision to the plan format.
+// would tie the phase decision to the plan format. The four facts the `design`
+// gate needs about the plan (see Files) are filled by the caller for the same
+// reason.
+//
+// One file of a session lives outside `.afk/plan/`: the design brief, at
+// docs/design-brief.md (DesignBriefFile). It is written in the `design` phase,
+// which only a new plan for a project with an interface has (see Interface),
+// and it is kept with the project's documents because the owner takes it to a
+// design tool and the plan's design task names it.
 package plansession
 
 import (
@@ -46,6 +54,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // The phases of a planning session, in the order docs/PLAN.md M5 gives them.
@@ -140,6 +149,29 @@ const (
 	KindProduct = "product"
 	KindSetup   = "setup"
 )
+
+// InterfaceQuestionID is the id of the round-one question that asks whether
+// the project has an interface.
+//
+// It is fixed because the answer decides a phase, and the phase is decided by
+// code (M5 rule 6). Code cannot tell which of a session's questions is the
+// one about the interface by reading its wording, and it cannot tell from a
+// free answer what was meant. So the question has one id that every session
+// uses, and its answer starts with `yes` or `no` (see Interface). The
+// master-plan skill's text names the same id; a change here must be made
+// there too.
+const InterfaceQuestionID = "r1-interface"
+
+// DesignBriefFile is the design brief, as a slash path from the project
+// folder: the prompt the owner pastes into a design tool.
+//
+// It is fixed, and exported, because three things must agree on it without
+// reading each other: the `design` gate here, the skill's text that tells the
+// agent where to write it, and the scope of the plan's design task, which
+// tells the owner where to find it. It is in docs/ and not in `.afk/plan/`
+// because it outlives the session: Archive moves the session's files away
+// when the next one starts, and the owner may not have used the brief yet.
+const DesignBriefFile = "docs/design-brief.md"
 
 // The session's file names inside Dir.
 const (
@@ -331,6 +363,48 @@ type Question struct {
 	AnsweredAt  string   `json:"answered_at"`
 }
 
+// Interface says whether the project has an interface, read from the answer
+// to the round-one question with the id InterfaceQuestionID. It is pure.
+//
+// known is false when nothing can be said: no question has the id, or its
+// answer does not start with the word `yes` or the word `no`. has is only
+// meaningful when known is true, and is false otherwise, so a caller that
+// reads has alone never enters the design phase on an answer nobody can read.
+//
+// Only the first word counts, in any case: the letters up to the first thing
+// that is not a letter. The rest of the answer is the owner's own words for
+// the kind of interface (`yes: a web page`, `no: a command line`) and is for
+// people. The word must be whole so that `none`, `nope` and `yesterday` are
+// not read as answers: a prefix test would take `none` for `no`, which
+// happens to be right, and `not sure` for `no`, which is a guess.
+//
+// When two questions carry the id the first one is read. ParseQuestions
+// never returns such a pair (a repeated id is a fault and the second line is
+// left out), so this only settles what a Files value built by hand does.
+func Interface(questions []Question) (has, known bool) {
+	for _, q := range questions {
+		if q.ID != InterfaceQuestionID {
+			continue
+		}
+		answer := strings.ToLower(strings.TrimSpace(q.Answer))
+		word := answer
+		for i, r := range answer {
+			if !unicode.IsLetter(r) {
+				word = answer[:i]
+				break
+			}
+		}
+		switch word {
+		case "yes":
+			return true, true
+		case "no":
+			return false, true
+		}
+		return false, false
+	}
+	return false, false
+}
+
 // ParseQuestions reads questions.jsonl: one JSON object on each line that is
 // not blank. The second value lists what is wrong, one plain sentence for
 // each fault, each starting with its line number.
@@ -439,6 +513,28 @@ type Files struct {
 	// sets it: the caller runs the checker, so that this package does not
 	// depend on the plan format.
 	PlanErrors int
+
+	// DesignBrief says that the design brief (DesignBriefFile, in the project
+	// and not in Dir) exists and is not blank. Load sets it.
+	DesignBrief bool
+
+	// The four fields below are what the `design` gate needs to know about the
+	// plan. Load never sets them: like PlanErrors they are read from the plan's
+	// text, so the caller fills them and this package stays free of the plan
+	// format. They are read only for a new plan whose project has an interface
+	// (see Interface); left at zero anywhere else they hold nothing back.
+
+	// DesignRule says that the plan's header states which document wins: the
+	// plan on behaviour, the design system on looks.
+	DesignRule bool
+	// DesignTask is the id of the plan's design task, the owner task titled
+	// "Design system (owner)", or "" when the plan has none.
+	DesignTask string
+	// DesignTaskFirst says that the design task is in the plan's first
+	// milestone. It means nothing while DesignTask is empty.
+	DesignTaskFirst bool
+	// DesignDependents is how many tasks wait for the design task.
+	DesignDependents int
 }
 
 // Load reads a project's planning session into a Files value. planPath is the
@@ -466,6 +562,7 @@ func Load(project, planPath string) Files {
 	f.Slices = notBlank(filepath.Join(dir, slicesFile))
 	f.Critic = notBlank(filepath.Join(dir, criticFile))
 	f.Changes = notBlank(filepath.Join(dir, ChangesFile))
+	f.DesignBrief = notBlank(filepath.Join(project, filepath.FromSlash(DesignBriefFile)))
 
 	questionsPath := filepath.Join(dir, questionsFile)
 	data, err := os.ReadFile(questionsPath)
@@ -527,9 +624,12 @@ type Status struct {
 // not met, and otherwise the recorded one. So a phase is reached only when
 // every earlier phase's file exists and is complete, and a session that is
 // picked up again lands on the first phase with work left, whatever
-// state.json says. The recorded phase is still needed: `model`, `design` and
-// `review` have no file of their own, so only the record can say they are
-// done.
+// state.json says. The recorded phase is still needed: `model` and `review`
+// have no file of their own, so only the record can say they are done. The
+// same holds for `design` when the project has no interface: the phase is
+// then passed over and has no gate. When the project has one, `design` has a
+// gate like any other, so a session recorded at `review` whose design brief
+// was deleted is back at `design`.
 //
 // "Earlier" is a position on the mode's own path (PhasesFor), so a phase the
 // mode leaves out never holds a session back: an `amend` session is not
@@ -627,15 +727,30 @@ func Advance(f Files) (string, error) {
 
 	switch st.Recorded {
 	case PhaseCheck:
-		// The design phase belongs to a later task (T5.5) and is not built.
-		// Until it is, a session goes straight from check to review, so that
-		// no session is ever recorded at a phase with nothing behind it.
+		// The design phase is for a project with an interface. A project
+		// with none (a command line, an API) gives a design tool nothing to
+		// draw, so its session goes straight from check to review: no session
+		// is ever recorded at a phase with nothing behind it, and no agent is
+		// sent to a phase prompt that has no work for it.
+		//
+		// The answer is always known here. A new session cannot leave
+		// `rounds` without it (see missingRounds), and Decide has just put
+		// this session at `check`, so `rounds` is complete. Were it unknown
+		// all the same, review is the side to fall on: it is where the owner
+		// reads the plan and can see what is missing.
+		if has, _ := Interface(f.Questions); has {
+			return PhaseDesign, nil
+		}
 		return PhaseReview, nil
 	case PhaseReview, PhaseApproved:
 		// Leaving review is approval, and approval is an owner's act with its
 		// own command. Advance is run by the agent, so it must not grant it.
 		return "", errors.New("The plan is waiting for your approval, which comes with `afk plan approve`. That command is not built yet, so the session stops here.")
 	}
+	// Every other phase goes on to the one after it. That includes `design`,
+	// which goes on to `review` whether it had a gate or not: a session
+	// recorded there with no interface (the answer was changed, or the state
+	// file was edited) has nothing to do and must not be stuck.
 	return Phases[phaseIndex(Phases, st.Recorded)+1], nil
 }
 
@@ -643,8 +758,8 @@ func Advance(f Files) (string, error) {
 // sentence, or "" when its exit gate is met. It is the single definition of
 // every gate: Decide and Advance both read it, so they cannot disagree.
 //
-// Three gates depend on the session's mode, read from f.State.Mode: `rounds`
-// (see missingRounds), `draft` and `check`.
+// Four gates depend on the session's mode, read from f.State.Mode: `rounds`
+// (see missingRounds), `draft`, `check` and `design` (see missingDesign).
 func missing(phase string, f Files) string {
 	change := changesPlan(f.State.Mode)
 	switch phase {
@@ -679,7 +794,7 @@ func missing(phase string, f Files) string {
 		// Errors come first: the critic reviews a draft that passes the
 		// checker, so its findings are not what to look at while errors stand.
 		if f.PlanErrors > 0 {
-			return fmt.Sprintf("The plan has %s that `afk plan lint` reports, and each must be fixed.", count(f.PlanErrors, "error", "errors"))
+			return planErrorsSentence(f.PlanErrors)
 		}
 		// Of the change modes only `extend` has the critic: it adds a whole
 		// milestone, which is enough new text to be worth a second reader.
@@ -690,9 +805,62 @@ func missing(phase string, f Files) string {
 		if !f.Critic {
 			return "The critic has not reviewed the draft yet: " + shownDir + criticFile + " is missing or empty."
 		}
+	case PhaseDesign:
+		return missingDesign(f)
 	}
-	// model, design, review and approved have no file. They are held by the
-	// recorded phase alone.
+	// model, review and approved have no file. They are held by the recorded
+	// phase alone, and so is design for a project with no interface.
+	return ""
+}
+
+// planErrorsSentence is the one sentence for a plan the checker rejects. The
+// `check` and `design` gates both say it, word for word, so the owner reads
+// the same thing whichever phase found the errors.
+func planErrorsSentence(n int) string {
+	return fmt.Sprintf("The plan has %s that `afk plan lint` reports, and each must be fixed.", count(n, "error", "errors"))
+}
+
+// missingDesign is the gate of the design phase. Only a new plan for a
+// project with an interface has one: a session that changes a plan never
+// reaches the phase, and with no interface there is nothing to hand to a
+// design tool, so in both cases nothing is asked.
+//
+// The order is the order the work is done in, so the sentence always names
+// the next thing to do. Checker errors come first for the same reason as in
+// `check`, and because the three facts about the design task are read from
+// the plan: a plan that does not parse reports no design task at all, and
+// "the plan has no design task" would then send the agent to add one to a
+// plan that has it. The errors are asked about here although `check` asks
+// too, and comes earlier, so that this gate is true or false on its own and
+// does not lean on the order of the phases: the phase changes the plan (it
+// adds the task and the dependencies), and it must not be left with a plan
+// it broke.
+//
+// Which tasks build part of the interface is the session's judgement and is
+// not checked. What is checked is that the judgement was made at all: at
+// least one task waits for the design task. With none, the design task would
+// hold nothing back and every screen would be built before the design.
+func missingDesign(f Files) string {
+	if changesPlan(f.State.Mode) {
+		return ""
+	}
+	if has, _ := Interface(f.Questions); !has {
+		return ""
+	}
+	switch {
+	case f.PlanErrors > 0:
+		return planErrorsSentence(f.PlanErrors)
+	case !f.DesignBrief:
+		return "The design brief has not been written yet: " + DesignBriefFile + " is missing or empty."
+	case !f.DesignRule:
+		return "The plan's header does not say yet which document wins on what: it must say that the plan wins on behaviour and docs/design-system.md wins on looks."
+	case f.DesignTask == "":
+		return `The plan has no task titled "Design system (owner)" yet.`
+	case !f.DesignTaskFirst:
+		return fmt.Sprintf(`The task %s, "Design system (owner)", is not in the plan's first milestone, and it must be so that it can be done before anything with an interface is built.`, f.DesignTask)
+	case f.DesignDependents == 0:
+		return fmt.Sprintf(`No task waits for the design task %s yet: every task that builds part of the interface must name it in its "Depends on" line.`, f.DesignTask)
+	}
 	return ""
 }
 
@@ -705,6 +873,17 @@ func missing(phase string, f Files) string {
 // about real choices between the plan and the document, and two texts that
 // agree leave none, so there a missing or empty file passes. A question that
 // was asked must still be answered, and a faulty line still holds the gate.
+//
+// A new session must also have settled whether the project has an interface,
+// in the form code can read (see Interface), because that answer decides
+// later whether the session has a design phase. It is asked for here, and not
+// when the answer is needed at `check`, because here the owner is still being
+// asked questions: at `check` the plan is written, and one written for the
+// wrong kind of project would have to be written again. It comes last
+// because the sentences before it are about questions as such, and an
+// interface question with no answer yet is simply an open question. The
+// sessions that change a plan are not asked: they have no round one, and the
+// plan they change settled this when it was written.
 func missingRounds(f Files) string {
 	path := shownDir + questionsFile
 	needsOne := f.State.Mode != ModeReconcile
@@ -729,7 +908,26 @@ func missingRounds(f Files) string {
 		}
 		return fmt.Sprintf("%d questions of %d have no answer yet.", open, len(f.Questions))
 	}
+	if !changesPlan(f.State.Mode) {
+		return missingInterface(f.Questions, path)
+	}
 	return ""
+}
+
+// missingInterface says what the interface answer still lacks, or "" when
+// Interface can read it. The two faults get a sentence each because the fix
+// differs: one is a question to ask the owner, the other an answer to write
+// again in the fixed form without asking anything.
+func missingInterface(questions []Question, path string) string {
+	if _, known := Interface(questions); known {
+		return ""
+	}
+	for _, q := range questions {
+		if q.ID == InterfaceQuestionID {
+			return fmt.Sprintf("The answer to the question with the id %s in %s must start with yes or no, and it is %q. Rewrite the answer as `yes: <kind>` or `no: <kind>`, for example `yes: a web page` or `no: a command line`.", InterfaceQuestionID, path, strings.TrimSpace(q.Answer))
+		}
+	}
+	return fmt.Sprintf("%s needs a question with the id %s saying whether the project has an interface.", path, InterfaceQuestionID)
 }
 
 // waitingWhenComplete is the sentence for a phase whose gate is met (or that
@@ -756,9 +954,21 @@ func waitingWhenComplete(phase string, f Files) string {
 	case PhaseDraft:
 		return "The master plan is written; `afk plan advance` moves the session on to checking it."
 	case PhaseCheck:
+		// The sentence names the phase Advance will hand out, so it asks the
+		// same question Advance does.
+		if has, _ := Interface(f.Questions); has {
+			return "The plan passes the checker and the critic has reviewed it; `afk plan advance` moves the session on to the design hand-off."
+		}
 		return "The plan passes the checker and the critic has reviewed it; `afk plan advance` moves the session on to your review."
 	case PhaseDesign:
-		return "The design phase is not built yet; `afk plan advance` moves the session on to your review."
+		// With no interface the phase has no gate, so "the brief is written"
+		// would be said of a brief nobody wrote. A session only gets here
+		// that way when the answer was changed after the phase was entered,
+		// or the state file was edited.
+		if has, _ := Interface(f.Questions); !has {
+			return "The project has no interface, so there is no design to hand off; `afk plan advance` moves the session on to your review."
+		}
+		return "The design brief is written and the plan has your design task; `afk plan advance` moves the session on to your review."
 	case PhaseReview:
 		return "The draft is ready for you to read; approving it with `afk plan approve` is not built yet."
 	case PhaseApproved:

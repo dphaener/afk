@@ -24,7 +24,9 @@ import (
 // The commands that change a master plan that exists: afk plan patch (a
 // guarded patch from two files), afk plan insert (a task or a milestone put
 // in place by code), afk plan depend (one more task to wait for) and afk plan
-// next-id (which only reads, and prints the id a new task should take).
+// next-id (which only reads, and prints the id a new task should take). afk
+// plan next-followup is here too: it changes no plan, but like next-id it is
+// a number code picks so that the planning session does not have to count.
 //
 // This file holds no rule about what a patch may do. It reads the command
 // line and the files it names, hands planpatch.Run a function that builds the
@@ -37,6 +39,8 @@ const (
 	planInsertUsageLine = "afk plan insert [--project DIR] (--after ID | --milestone N | --new-milestone) --entry FILE [--message TEXT]"
 	planDependUsageLine = "afk plan depend [--project DIR] [--message TEXT] TASK ON"
 	planNextIDUsageLine = "afk plan next-id [--project DIR] (--milestone N | --after ID)"
+
+	planNextFollowupUsageLine = "afk plan next-followup [--project DIR]"
 )
 
 // planNothingChanged is the last line of a refusal that left everything as
@@ -573,5 +577,65 @@ func runPlanNextID(args []string, stdout, stderr io.Writer, deps planPatchDeps) 
 		return 1
 	}
 	fmt.Fprintln(stdout, id)
+	return 0
+}
+
+// planDocsFolder is the folder design follow-up prompts are kept in, inside
+// the project. It is fixed and does not follow the `plan` key of afk.toml:
+// the design brief, the design system and the prompts all have fixed paths
+// under docs/ (plansession.DesignBriefFile, masterplan.DesignSystemFile,
+// planpatch.NextFollowup), because the owner is told those paths in the
+// daemon's item and a design tool is handed them by name.
+const planDocsFolder = "docs"
+
+// runPlanNextFollowup implements `afk plan next-followup` and returns the exit
+// code: 0 the path was printed, 1 the project folder or its docs folder could
+// not be read, 2 the command was written wrongly. It only reads, and prints
+// the path alone on one line so the planning session can take the whole of
+// stdout as the file to write.
+//
+// It does not ask for a master plan, unlike next-id (resolvePlanTarget): the
+// number depends on the prompts in docs/ and on nothing in the plan. A docs
+// folder that is not there yet is a project with no prompt, so the answer is
+// the first one. The project folder itself is checked, though: without that a
+// mistyped --project would also look like a project with no prompt, and the
+// session would be sent to write the prompt in a folder that does not exist.
+//
+// The folder is listed in the main checkout, where the planning session runs
+// and writes, so a command typed from a linked worktree does not count a
+// stale copy of docs/.
+func runPlanNextFollowup(args []string, stdout, stderr io.Writer, deps planPatchDeps) int {
+	const cmd = "afk plan next-followup"
+	flags := flag.NewFlagSet("plan next-followup", flag.ContinueOnError)
+	proj := addProjectFlag(flags)
+	words, code := parsePlanPatchArgs(flags, args, planNextFollowupUsageLine, stderr)
+	if code >= 0 {
+		return code
+	}
+	if len(words) > 0 {
+		return planPatchUsage(stderr, cmd, planNextFollowupUsageLine, "unexpected word %q. This command takes no word.", words[0])
+	}
+	root, err := resolveBuildRoot(*proj, deps.cwd, deps.home, deps.gitCommonDir)
+	if err != nil {
+		return planPatchUsage(stderr, cmd, planNextFollowupUsageLine, "cannot tell which project to use. Pass --project with the project's folder.")
+	}
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		fmt.Fprintf(stderr, "%s: %s is not a folder that can be read. Run this in the project's folder, or pass --project with it.\n", cmd, root)
+		return 1
+	}
+
+	docs := filepath.Join(root, planDocsFolder)
+	entries, err := os.ReadDir(docs)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(stderr, "%s: cannot list %s: %v\nCheck that it is a folder and that you may read it, then run this again.\n", cmd, docs, err)
+		return 1
+	}
+	// Folders are counted with the files. A folder named like a prompt is odd,
+	// but a prompt could not be written at its path, so its number is taken.
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	fmt.Fprintln(stdout, planpatch.NextFollowup(names))
 	return 0
 }

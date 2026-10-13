@@ -1833,3 +1833,45 @@ What the finished code does that differs from, or adds to, the list above (2026-
 - `afk plan patch` could fetch the base and the change branch first, so a merged pull request does not make the next patch refuse.
 - `afk plan next-id` and `afk plan lint` could read the plan on the change branch when `via_pr` is set.
 - `afk plan` could stop a finished session's agent for the owner instead of asking them to run `afk clean master-plan`.
+
+## T5.5
+
+The design hand-off: the `design` phase of a new planning session, the design brief, the owner's design task and what the daemon tells the owner about it. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **How afk knows the project has an interface (A1).** Round one's interface question now has a fixed id, `r1-interface`, and its recorded answer starts with `yes` or `no`, followed by the kind in the owner's words. Yes means screens a person looks at (a web page, an app); a command line, an API only or none is no, because there is nothing for a design tool to draw. Why: the phase a session moves to is decided by code from the files, and code cannot read a free-text answer. A new session cannot leave `rounds` until that answer is there, so a mistake shows when the question is asked and not five phases later.
+- **Entering the phase (A2).** `afk plan advance` goes from `check` to `design` when the answer is yes and to `review` when it is no. The three change modes have no design phase, as before.
+- **The gate of the phase (A3)** is checked by code: the plan has no checker errors, `docs/design-brief.md` is written, the plan's header states the precedence rule, the plan has a task titled `Design system (owner)` in its first milestone, and at least one task waits for it. Which tasks build interface is the session's judgement; code only checks that some task waits.
+- **One definition of the design task (A4).** A task is the design task when it is an owner task and its title, without the `(owner)` part, is `Design system` (case does not matter). The gate and the daemon both use that one test.
+- **What the daemon's item says (A5).** The master plan says the item tells the owner to run `afk plan reconcile docs/design-system.md` when they confirm the task. Here the item for the design task lists the steps in this order: save the design system and commit it, run the reconcile, then answer the item. Why: answering is what lets the interface tasks start, so the plan must already name the design's components by then, and a file that is not committed is not in the worktree an agent builds in. No second item is raised after the answer.
+- **The follow-up number is counted by code (A6).** A new command, `afk plan next-followup`, prints the path the next follow-up prompt should be saved at (`docs/design-followup-<n>.md`, one above the highest number there, so a gap is never filled). Why: code counts, and the reconcile fixture needs something a test can run.
+- **The precedence rule is in the header from the first write (A7)** when the interface answer is yes; the design phase checks it and patches it in if it is missing.
+- **The owner task is added in the design phase (A8)**, with `afk plan next-id`, `afk plan insert` and `afk plan depend`, after the critic has read the draft. The checker runs again as part of the gate.
+- **The fixtures (A9)** are scripted lists of the commands and an expected plan, as T5.4's are, because an agent cannot run inside a test.
+- **Plugin version 5.6.0 (A10)**, because the skill gains a phase. The OpenCode port gets a line in its lag note.
+- **Tests (A11)** are written with the code, as table tests. **Nothing had to be in place first (A12).** **`make install` is not run by the task (A13)**: the after-merge command installs the new binary.
+
+### As built
+
+What the finished code does that differs from, or adds to, the list above (2026-10-13).
+
+- **The interface answer is read by its first whole word.** `yes: a web page` and `No, a command line` are read; `none`, `not sure` and `yesterday` are not, and `afk plan advance` then says how to rewrite the answer. A question with the id and no answer yet is reported as an open question, as any other is.
+- **A session started before this change** that is past `rounds` and has no `r1-interface` question is shown at `rounds` again until the question is added. No real session was open when this was built.
+- **A checker error during the design phase shows the phase as `check`**, because `check` comes first and has the same rule. The message is the same, and the skill says so, so the session fixes the error and does not run the critic again.
+- **The header rule is matched with case and line breaks ignored**, so a wrapped sentence still counts. The header is the text before the first `##` section.
+- **"First milestone" is the milestone of the first task in the file**, since a plan may start at M0.
+- **The design task's title may carry a note** (`Design system (owner; half a day)`); `Design system for the admin pages (owner)` is an ordinary owner task.
+- **`afk plan next-followup` needs no master plan.** A project with no `docs` folder gets `docs/design-followup-1.md`; a project folder that does not exist is exit 1. A folder in `docs/` with a follow-up's name takes its number.
+- **Two files outside the work plan's lists were changed**: `plan_cmd.go`, where the command is routed and `afk plan --help` is written, and `main.go`, for the one line in `afk --help`.
+- **The task list the owner confirms in `slices` does not show the design task.** The session says one will be added after the check, and the design phase adds it.
+- **An unclear interface answer** (a terminal screen, a chat bot) is asked again; the session does not decide it, since it decides whether the owner gets a design task.
+
+### For the owner to check
+
+- A real design phase, with a real agent, was not run here: a task session has no terminal for a planning session. T5.8 does that. The gate, the commands and the daemon's item were run from a built binary against scratch projects, and the prompts were checked against the gate's messages.
+
+### Scope ideas
+
+Not built, recorded for later:
+
+- `afk plan approve` (T5.7) should commit `docs/design-brief.md` with the plan, or the brief stays an uncommitted file.
+- The checker could warn when a plan with a design task has a task that names a screen and does not wait for the design task.

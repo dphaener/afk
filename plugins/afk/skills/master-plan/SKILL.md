@@ -31,6 +31,7 @@ This session is always attended: it asks the owner questions and waits for the a
 
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/master-plan/prompts/phases-early.md"`
 !`cat "${CLAUDE_PLUGIN_ROOT}/skills/master-plan/prompts/phases-late.md"`
+!`cat "${CLAUDE_PLUGIN_ROOT}/skills/master-plan/prompts/design.md"`
 
 ## Changing a plan that exists
 

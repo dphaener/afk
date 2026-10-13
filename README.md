@@ -442,7 +442,7 @@ afk plan advance [--project DIR]
 
 - **`afk plan extend`** adds a milestone. For when the project has grown a new part. The session asks what the milestone is for, then follows the phases `brief`, `survey`, `rounds`, `slices`, `draft`, `check`, `review`. It is the only change with a critic: `critic.md` must exist before `check` passes.
 - **`afk plan amend "<what>"`** adds, splits or replaces one task. For a small change you can put in a sentence; the sentence is saved as the brief. The phases are `brief`, `survey`, `draft`, `check`, `review`, with no questions round. The session shows you the entry and asks you to confirm it before adding it; `--yes` skips that confirmation. `--yes` does not remove the need for a terminal.
-- **`afk plan reconcile FILE`** brings the plan in line with a document, such as a design system. `FILE` must be a file inside the project folder (a relative path is looked for in the folder you typed it in, then in the project). The phases are `brief`, `survey`, `rounds`, `draft`, `check`, `review`; the questions round may have no question at all. A reconcile that finds nothing to change still writes one line to `changes.md`.
+- **`afk plan reconcile FILE`** brings the plan in line with a document, such as a design system. `FILE` must be a file inside the project folder (a relative path is looked for in the folder you typed it in, then in the project). The phases are `brief`, `survey`, `rounds`, `draft`, `check`, `review`; the questions round may have no question at all. A reconcile that finds nothing to change still writes one line to `changes.md`. When the document is a design system and it disagrees with the plan in ways that need your decision, the follow-up prompts are saved as `docs/design-followup-<n>.md`, numbered from 1.
 
 A change session is finished when it reaches `review`: its changes are already in the plan. With `[planning] via_pr = true` (see `afk plan patch` below) they are in a pull request until it is merged. `afk plan status` shows the session's mode and phase.
 
@@ -452,7 +452,7 @@ A change session is finished when it reaches `review`: its changes are already i
 
 **`afk plan advance`** moves the session to the next phase once the current phase's work is saved, and says what is missing when it is not. It is the command the planning session itself runs when a phase is done; you rarely need it. The agent never writes the phase by hand, so it cannot skip a step.
 
-The eight phases, in order:
+The nine phases, in order:
 
 1. `brief` — your request is saved word for word.
 2. `survey` — the session reads the folder and your profile.
@@ -461,7 +461,8 @@ The eight phases, in order:
 5. `slices` — you confirm how the work is cut into tasks.
 6. `draft` — the plan is written.
 7. `check` — `afk plan lint` reports no errors and a critic has reviewed the draft.
-8. `review` — you read the draft. Approving it is not built yet.
+8. `design` — only for a project with an interface (you answer the question `r1-interface` with `yes`; with `no` the session goes from `check` straight to `review`). It leaves behind `docs/design-brief.md`, which tells you what to ask a design tool for, and a plan task called `Design system (owner)` in the first milestone, with the tasks that build the interface waiting for it. The daemon then puts that task in your inbox; follow its steps, which end in `afk plan reconcile docs/design-system.md`.
+9. `review` — you read the draft. Approving it is not built yet.
 
 **Where the files are.** The session's state is in `.afk/plan/` in the project's main checkout: `state.json`, `brief.md`, `survey.md`, `questions.jsonl`, `slices.md` and `critic.md`, and in a change session also `changes.md` (the changes made, one line each; its content is the gate for leaving `draft`) and, for `amend --yes`, an empty file named `yes`. `archive/` holds the files of earlier, finished sessions (see `docs/PLAN.md` section 4.8). The agent itself runs as a session named `master-plan`, with its own folder `.afk/master-plan/`, so it shows in the dashboard under that name. Cleaning that session does not delete the planning state.
 
@@ -507,12 +508,14 @@ afk plan patch [--project DIR] --old FILE --new FILE [--message TEXT]
 afk plan insert [--project DIR] (--after ID | --milestone N | --new-milestone) --entry FILE [--message TEXT]
 afk plan depend [--project DIR] [--message TEXT] TASK ON
 afk plan next-id [--project DIR] (--milestone N | --after ID)
+afk plan next-followup [--project DIR]
 ```
 
 - `patch` replaces the text in the `--old` file with the text in the `--new` file. The old text must be in the plan exactly once; none or two places is a refusal that says so.
 - `insert` adds the task in the `--entry` file directly after task `ID` (`--after`), or at the end of milestone `N` (`--milestone`), or adds the milestone in the file after the last one (`--new-milestone`). Give exactly one of the three; two or none is exit 2. The file holds one task, or one milestone for `--new-milestone`.
 - `depend` makes `TASK` wait for `ON` by adding `ON` to its `Depends on` line. If it already waits, nothing is changed. It refuses a `Depends on` line that is prose or runs onto a second line; use `patch` on that line.
 - `next-id` prints the id a new task should take and nothing else: the next number in milestone `N`, or with `--after ID` the first free letter after that task (`T2.2a`, then `T2.2b`). A gap in the numbers is never filled and an id is never used twice. It only reads, and it refuses a milestone the plan does not have.
+- `next-followup` prints where the next design follow-up prompt goes, for example `docs/design-followup-1.md`: the path, relative to the project folder, of the first number not yet used in `docs/`. It needs no plan. Exit 0 when it printed, 1 when the project folder or its `docs` folder could not be read, 2 when the command was written wrongly.
 - `--message TEXT` — The commit subject, one line. Without it a default such as `docs(plan): Patch the master plan` or `docs(plan): Add T1.1a` is used.
 - `--project DIR` — The project whose plan to change. Defaults to the current directory. The plan is the one named by `plan` in `afk.toml` (`docs/PLAN.md` by default). The `--old`, `--new` and `--entry` files are read relative to the folder you typed the command in.
 

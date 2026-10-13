@@ -28,7 +28,11 @@ the kind the daemon refuses or silently misreads, which is why a checker exists 
 
 1. **The title**: a single `# ` heading.
 2. **A bold `**How to use this document.**` paragraph**, before the first `##` section. It tells a reader
-   (and the agent) how to read the plan, which sections bind and how changes are made.
+   (and the agent) how to read the plan, which sections bind and how changes are made. In a project
+   with an interface it also says which document wins when the plan and the design system disagree:
+   "Where this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design
+   system wins on looks." The words `docs/design-system.md`, "wins on behaviour" and "wins on looks"
+   are what the planning session's gate looks for there.
 3. **`## Context`**: what the project is and why. Quote the owner's original request word for word, so a
    later reader can tell what was asked from what was decided.
 4. **`## Decisions`**: a table of choices already made, one per row (for example `Topic | Decision`). Every
@@ -88,6 +92,13 @@ A title that carries `(owner)` or `(owner; …)` marks an **owner task**: someth
 (set up a server, create an account). No agent is started for it. Case does not matter and spaces inside
 the brackets are allowed. `(owner + agent)` is an ordinary task that an agent does with the owner's help,
 and prose such as `(owner approval)` is ordinary too.
+
+One owner task has a fixed title: `Design system (owner)`, the task in which the owner makes the design
+system in their design tool and saves it at `docs/design-system.md`. A project with an interface has it
+in its first milestone, and every task that builds part of the interface depends on it. The planning
+session's gate and the daemon both recognise the task by that title and nothing else (the title is the
+only identity a task has besides its id), so write it exactly; a note after `owner` inside the brackets
+is allowed, and any other word in the title makes it an ordinary owner task.
 
 Under the heading, the entry is a list of bullets with these exact labels.
 

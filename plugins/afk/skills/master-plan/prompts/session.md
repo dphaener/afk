@@ -35,7 +35,7 @@ Do not create any other file in `.afk/plan/`. Notes for yourself go in the conve
 
 `state.json` records the furthest phase the session has reached. You never edit it. The only way to move the session on is to run `afk plan advance`, which looks at the files and moves the phase by one when the current phase's file is complete. When it is not, the command refuses and says what is missing, in which case do the missing work and run it again. Do not argue with it, work around it or write the file yourself.
 
-The phases, in order: `brief`, `survey`, `model`, `rounds`, `slices`, `draft`, `check`, `review`. (There is a `design` phase between `check` and `review` for projects with an interface, but it is not built yet, so `afk plan advance` goes from `check` straight to `review`. Do not describe it to the owner as something this session does.) Each phase is described in the phase prompts that follow.
+The phases, in order: `brief`, `survey`, `model`, `rounds`, `slices`, `draft`, `check`, `review`. A project with an interface has one more, `design`, between `check` and `review`: `brief`, `survey`, `model`, `rounds`, `slices`, `draft`, `check`, `design`, `review`. `afk plan advance` decides which path the session takes, from the recorded answer to round one's interface question; you never choose, and a project with no interface never sees the phase. Each phase is described in the phase prompts that follow.
 
 That is the path of a session that writes a new plan (the mode `new`). The three change modes, `extend`, `amend` and `reconcile`, work on a plan that exists and take a shorter path, which the modes prompt gives phase by phase. `afk plan status` prints the mode; follow the path of the mode it prints.
 
