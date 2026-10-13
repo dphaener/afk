@@ -204,10 +204,13 @@ func TestPluginMasterPlanIncludes(t *testing.T) {
 	if len(paths) == 0 {
 		t.Fatal("master-plan SKILL.md has no include lines")
 	}
-	hasFormat := false
+	hasFormat, hasModes := false, false
 	for _, p := range paths {
 		if p == "skills/master-plan/plan-format.md" {
 			hasFormat = true
+		}
+		if p == "skills/master-plan/prompts/modes.md" {
+			hasModes = true
 		}
 		t.Run(p, func(t *testing.T) {
 			body, err := fs.ReadFile(pluginAssets, "plugins/afk/"+p)
@@ -221,5 +224,71 @@ func TestPluginMasterPlanIncludes(t *testing.T) {
 	}
 	if !hasFormat {
 		t.Error("master-plan SKILL.md does not include skills/master-plan/plan-format.md")
+	}
+	// Without this include the session still starts and still reads its mode
+	// from afk plan status, but has no text for extend, amend or reconcile,
+	// so it would run the new-plan phases against a plan that is being built.
+	if !hasModes {
+		t.Error("master-plan SKILL.md does not include skills/master-plan/prompts/modes.md")
+	}
+}
+
+// TestPluginMasterPlanPatchesByCommand holds the master-plan skill to changing
+// a plan through afk's commands and never with the agent's own file edit.
+//
+// Load-bearing rows: "exact-match Edit" is the wording of the rule the skill
+// had before afk plan patch existed, and it is searched for in every file of
+// the skill, because one leftover sentence is an instruction to write the plan
+// file directly, past the checks that keep a running task's text and the
+// checker's verdict intact. The five names in modes.md are the whole surface
+// the change modes work through: a prompt that drops one leaves the agent to
+// do that step by hand (an id it counted itself, a dependency line it
+// rewrote), and no other test reads the prompt's text.
+func TestPluginMasterPlanPatchesByCommand(t *testing.T) {
+	const skillDir = "plugins/afk/skills/master-plan"
+	files := 0
+	err := fs.WalkDir(pluginAssets, skillDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, err := fs.ReadFile(pluginAssets, p)
+		if err != nil {
+			return err
+		}
+		files++
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, "exact-match Edit") {
+				t.Errorf("%s:%d still tells the session to change the plan with an exact-match Edit: %s", p, i+1, strings.TrimSpace(line))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", skillDir, err)
+	}
+	// A walk that read nothing would pass the search above for any text.
+	if files == 0 {
+		t.Fatalf("no files found under %s in the embedded plugin", skillDir)
+	}
+
+	modes, err := fs.ReadFile(pluginAssets, skillDir+"/prompts/modes.md")
+	if err != nil {
+		t.Fatalf("read modes.md: %v", err)
+	}
+	for _, want := range []string{
+		"afk plan patch",
+		"afk plan insert",
+		"afk plan depend",
+		"afk plan next-id",
+		"changes.md",
+	} {
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(string(modes), want) {
+				t.Errorf("modes.md does not name %q", want)
+			}
+		})
 	}
 }

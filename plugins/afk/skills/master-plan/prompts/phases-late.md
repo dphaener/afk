@@ -52,7 +52,7 @@ Nothing else is written here. Then run `afk plan advance`.
 
 The file: `.afk/plan/critic.md`. The gate is that `afk plan lint` reports zero errors and `critic.md` exists.
 
-**First the checker.** Run `afk plan lint`. It prints one finding per line, errors and warnings, and exits 1 when there is an error. Every error is fixed before anything else: find the exact text at fault, change it with an Edit whose old text occurs exactly once in the plan, and run `afk plan lint` again. One error, one Edit, one run, until it prints no error. Warnings are read and fixed when they are right (a task with no Acceptance is a real gap); a warning you leave is mentioned in `critic.md` with the reason.
+**First the checker.** Run `afk plan lint`. It prints one finding per line, errors and warnings, and exits 1 when there is an error. Every error is fixed before anything else: find the exact text at fault, change it with `afk plan patch` (rule 5), and run `afk plan lint` again. One error, one patch, one run, until it prints no error. Warnings are read and fixed when they are right (a task with no Acceptance is a real gap); a warning you leave is mentioned in `critic.md` with the reason.
 
 **Then the critic.** One Agent call, once the checker is clean:
 
@@ -64,7 +64,7 @@ The prompt holds those two paths and nothing else about this session: not the an
 
 **Each finding is dealt with**, one of two ways:
 
-- **Fixed**: an exact-match Edit to the plan whose old text occurs exactly once, then `afk plan lint` again. An id never changes (rule 8); a task that must be split keeps its id and the new one gets a letter.
+- **Fixed**: an `afk plan patch` to the plan (rule 5: the old text in one file, the new text in another), then `afk plan lint` again. An id never changes (rule 8); a task that must be split keeps its id and the new one gets a letter.
 - **Answered**: when the finding is wrong, or the owner's answers settle it the other way, say why in `critic.md` and leave the plan as it is.
 
 Ask the owner only when a finding needs a choice they have not made (two of their answers contradict each other; a part of the brief they may have dropped on purpose). That is a question in the message, and its answer goes into `questions.jsonl` as a new line in the next round number, so the record stays whole.

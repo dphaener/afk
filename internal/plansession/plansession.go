@@ -2,10 +2,18 @@
 // phase the session is in.
 //
 // A planning session is the attended agent session that takes an owner's idea
-// to a checked first draft of the master plan. Its files live in `.afk/plan/`
-// in the project's main checkout and are listed in docs/PLAN.md, M5, "The plan
-// session's files": state.json, brief.md, survey.md, questions.jsonl,
-// slices.md and critic.md. This package adds no seventh file.
+// to a checked first draft of the master plan, or that changes a plan that
+// exists. Its files live in `.afk/plan/` in the project's main checkout and
+// are listed in docs/PLAN.md, M5, "The plan session's files": state.json,
+// brief.md, survey.md, questions.jsonl, slices.md and critic.md. A session
+// that changes a plan (the extend, amend and reconcile modes) adds two more:
+// changes.md, the list of changes it made, and the empty marker `yes`. The
+// files of a session that is over are kept under `.afk/plan/archive/`.
+//
+// The phases a session goes through depend on its mode (see PhasesFor). A
+// session that changes a plan has less to settle than one that writes a plan
+// from nothing, so it takes a shorter path, and it ends at `review`: its
+// changes are already in the plan by then, so there is nothing to approve.
 //
 // The state is on disk, and the phase is worked out from it, because of M5
 // rule 7: a session can be left and picked up days later by a fresh agent with
@@ -54,8 +62,10 @@ const (
 	PhaseApproved = "approved"
 )
 
-// Phases is every phase in order. The order is the meaning: "earlier" and
-// "the following phase" are positions in this slice.
+// Phases is every phase in order, and the path of a `new` session. The order
+// is the meaning: "earlier" and "the following phase" are positions in this
+// slice. The other modes walk a shorter path through the same names: see
+// PhasesFor.
 var Phases = []string{
 	PhaseBrief, PhaseSurvey, PhaseModel, PhaseRounds, PhaseSlices,
 	PhaseDraft, PhaseCheck, PhaseDesign, PhaseReview, PhaseApproved,
@@ -73,6 +83,57 @@ const (
 // Modes is every mode state.json may hold.
 var Modes = []string{ModeNew, ModeExtend, ModeAmend, ModeReconcile}
 
+// PhasesFor is the path a session in the given mode walks, in order.
+//
+// The three modes that change a plan leave out what they do not need. None
+// has `model` or `design`: the project's terms and its looks were settled
+// when the plan was first written. Only `extend` breaks work into tasks, so
+// only it has `slices`. `amend` has no `rounds` either: it changes one task,
+// and what the owner wants is already in the brief. None reaches `approved`,
+// because each change is in the plan as soon as it is made; there is no
+// draft waiting to be approved, and the session is over at `review` (see
+// Finished).
+//
+// Any other mode gets the `new` path. A mode afk does not know never comes
+// from ReadState, which rejects it; this only decides what a Files value
+// built by hand does, and the full path is the one that skips nothing.
+//
+// Each call returns a slice of its own, so a caller that changes what it got
+// cannot change the path every later decision walks.
+func PhasesFor(mode string) []string {
+	switch mode {
+	case ModeExtend:
+		return []string{PhaseBrief, PhaseSurvey, PhaseRounds, PhaseSlices, PhaseDraft, PhaseCheck, PhaseReview}
+	case ModeAmend:
+		return []string{PhaseBrief, PhaseSurvey, PhaseDraft, PhaseCheck, PhaseReview}
+	case ModeReconcile:
+		return []string{PhaseBrief, PhaseSurvey, PhaseRounds, PhaseDraft, PhaseCheck, PhaseReview}
+	}
+	return append([]string(nil), Phases...)
+}
+
+// changesPlan reports whether the mode is one of the three that change a plan
+// that exists. It is the one test every mode-dependent branch uses, so a mode
+// afk does not know is treated as `new` everywhere or nowhere.
+func changesPlan(mode string) bool {
+	return mode == ModeExtend || mode == ModeAmend || mode == ModeReconcile
+}
+
+// Finished reports whether a session has nothing left to do: it is approved,
+// or it changes a plan and has reached `review`.
+//
+// The two differ because of what `review` holds. A `new` session at `review`
+// has a draft the owner has not approved yet, and it must be picked up again,
+// not replaced. A session that changes a plan made each change through the
+// guarded patch, so at `review` the changes are in the plan already and the
+// next change may start a session of its own.
+func Finished(s State) bool {
+	if s.Phase == PhaseApproved {
+		return true
+	}
+	return s.Phase == PhaseReview && changesPlan(s.Mode)
+}
+
 // The two kinds of question (M5 rule 2). A product choice is asked with
 // options and a recommendation; a setup fact is asked plainly.
 const (
@@ -89,6 +150,24 @@ const (
 	slicesFile    = "slices.md"
 	criticFile    = "critic.md"
 )
+
+// The two files only a session that changes a plan has. They are exported
+// because the command that starts such a session names them: it writes the
+// marker, and it tells the owner where the list of changes is.
+const (
+	// ChangesFile lists every change the session made to the plan. It is the
+	// `draft` gate of the three change modes: the plan exists before such a
+	// session starts, so "the plan exists" proves nothing there.
+	ChangesFile = "changes.md"
+	// YesFile is an empty marker that says the owner already agreed to the
+	// change, so the agent does not ask again. Nothing in this package reads
+	// it; it is named here so that every file of the folder is named in one
+	// place.
+	YesFile = "yes"
+)
+
+// archiveDir is the folder inside Dir that holds the sessions that are over.
+const archiveDir = "archive"
 
 // shownDir is the folder as it is written in messages. Messages name the
 // files relative to the project because that is where the owner runs afk.
@@ -180,7 +259,10 @@ func checkState(s State) error {
 	if s.Phase == "" {
 		return fmt.Errorf("has no phase. It must be one of: %s", strings.Join(Phases, ", "))
 	}
-	if phaseIndex(s.Phase) < 0 {
+	// The phase is checked against every phase, not against the mode's path.
+	// A phase the mode never reaches is reported by Decide instead, with the
+	// mode still readable, so `afk plan status` can say which session it is.
+	if !contains(Phases, s.Phase) {
 		return fmt.Errorf("has the phase %q, which afk does not know. It must be one of: %s", s.Phase, strings.Join(Phases, ", "))
 	}
 	return nil
@@ -336,12 +418,15 @@ type Files struct {
 	State        State
 	StateProblem string
 
-	// Brief, Survey, Slices and Critic say that the file exists and is not
-	// blank. An empty file is a file somebody started, not a finished one.
+	// Brief, Survey, Slices, Critic and Changes say that the file exists and
+	// is not blank. An empty file is a file somebody started, not a finished
+	// one.
 	Brief  bool
 	Survey bool
 	Slices bool
 	Critic bool
+	// Changes is changes.md, which only a session that changes a plan writes.
+	Changes bool
 
 	// QuestionsPresent is true when questions.jsonl exists, even when empty.
 	QuestionsPresent bool
@@ -380,6 +465,7 @@ func Load(project, planPath string) Files {
 	f.Survey = notBlank(filepath.Join(dir, surveyFile))
 	f.Slices = notBlank(filepath.Join(dir, slicesFile))
 	f.Critic = notBlank(filepath.Join(dir, criticFile))
+	f.Changes = notBlank(filepath.Join(dir, ChangesFile))
 
 	questionsPath := filepath.Join(dir, questionsFile)
 	data, err := os.ReadFile(questionsPath)
@@ -445,6 +531,10 @@ type Status struct {
 // `review` have no file of their own, so only the record can say they are
 // done.
 //
+// "Earlier" is a position on the mode's own path (PhasesFor), so a phase the
+// mode leaves out never holds a session back: an `amend` session is not
+// waiting for a task breakdown it will never write.
+//
 // A damaged state.json is a session, not the absence of one. Reporting "no
 // session" would invite `afk plan` to seed a fresh state over it.
 func Decide(f Files) Status {
@@ -465,7 +555,18 @@ func Decide(f Files) Status {
 	}
 
 	st := Status{Session: true, Mode: f.State.Mode, Recorded: f.State.Phase, Problems: problems}
-	recorded := phaseIndex(f.State.Phase)
+	path := PhasesFor(f.State.Mode)
+	recorded := phaseIndex(path, f.State.Phase)
+	if recorded < 0 && contains(Phases, f.State.Phase) {
+		// A real phase that this mode never reaches: state.json was edited by
+		// hand, since Advance only ever hands out the next phase of the path.
+		// It is reported, and the phase is left empty, because any guess at
+		// where the work is would send the agent to do a step the mode has
+		// not got.
+		st.Waiting = fmt.Sprintf("The planning session's recorded phase is not one a session in the %s mode goes through, so the state file must be fixed.", f.State.Mode)
+		st.Problems = append([]string{fmt.Sprintf("%s has the phase %q, which a session in the %s mode never reaches. Its phases are: %s.", shownDir+stateFile, f.State.Phase, f.State.Mode, strings.Join(path, ", "))}, problems...)
+		return st
+	}
 	if recorded < 0 {
 		// Load cannot produce this (ReadState rejects the phase), but Files is
 		// a plain value and a caller can build one by hand.
@@ -475,7 +576,7 @@ func Decide(f Files) Status {
 	}
 
 	st.Phase = f.State.Phase
-	for _, phase := range Phases[:recorded] {
+	for _, phase := range path[:recorded] {
 		if missing(phase, f) != "" {
 			st.Phase = phase
 			break
@@ -483,7 +584,7 @@ func Decide(f Files) Status {
 	}
 	st.Waiting = missing(st.Phase, f)
 	if st.Waiting == "" {
-		st.Waiting = waitingWhenComplete(st.Phase)
+		st.Waiting = waitingWhenComplete(st.Phase, f)
 	}
 	return st
 }
@@ -512,6 +613,18 @@ func Advance(f Files) (string, error) {
 		return "", fmt.Errorf("The %s phase is not finished. %s", st.Recorded, reason)
 	}
 
+	if changesPlan(f.State.Mode) {
+		path := PhasesFor(f.State.Mode)
+		at := phaseIndex(path, st.Recorded)
+		if at == len(path)-1 {
+			// `review` is the end of the path, and unlike a new session's
+			// review there is no approval to wait for: every change went into
+			// the plan through the guarded patch as it was made.
+			return "", errors.New("This planning session is finished and the changes are in the plan, so there is no later phase to move to. To change the plan again, run `afk plan`.")
+		}
+		return path[at+1], nil
+	}
+
 	switch st.Recorded {
 	case PhaseCheck:
 		// The design phase belongs to a later task (T5.5) and is not built.
@@ -523,13 +636,17 @@ func Advance(f Files) (string, error) {
 		// own command. Advance is run by the agent, so it must not grant it.
 		return "", errors.New("The plan is waiting for your approval, which comes with `afk plan approve`. That command is not built yet, so the session stops here.")
 	}
-	return Phases[phaseIndex(st.Recorded)+1], nil
+	return Phases[phaseIndex(Phases, st.Recorded)+1], nil
 }
 
 // missing says what a phase still lacks before it can be left, as one plain
 // sentence, or "" when its exit gate is met. It is the single definition of
 // every gate: Decide and Advance both read it, so they cannot disagree.
+//
+// Three gates depend on the session's mode, read from f.State.Mode: `rounds`
+// (see missingRounds), `draft` and `check`.
 func missing(phase string, f Files) string {
+	change := changesPlan(f.State.Mode)
 	switch phase {
 	case PhaseBrief:
 		if !f.Brief {
@@ -546,6 +663,15 @@ func missing(phase string, f Files) string {
 			return "The task breakdown has not been confirmed and saved yet: " + shownDir + slicesFile + " is missing or empty."
 		}
 	case PhaseDraft:
+		if change {
+			// The plan was there before the session started, so its existence
+			// says nothing about this session's work. The list of changes is
+			// the only thing on disk that shows the plan was changed at all.
+			if !f.Changes {
+				return "The changes made to the plan have not been listed yet: " + shownDir + ChangesFile + " is missing or empty."
+			}
+			break
+		}
 		if !f.PlanExists {
 			return "The master plan has not been written yet."
 		}
@@ -554,6 +680,12 @@ func missing(phase string, f Files) string {
 		// checker, so its findings are not what to look at while errors stand.
 		if f.PlanErrors > 0 {
 			return fmt.Sprintf("The plan has %s that `afk plan lint` reports, and each must be fixed.", count(f.PlanErrors, "error", "errors"))
+		}
+		// Of the change modes only `extend` has the critic: it adds a whole
+		// milestone, which is enough new text to be worth a second reader.
+		// One task, or a plan brought in line with a document, is not.
+		if change && f.State.Mode != ModeExtend {
+			break
 		}
 		if !f.Critic {
 			return "The critic has not reviewed the draft yet: " + shownDir + criticFile + " is missing or empty."
@@ -568,15 +700,21 @@ func missing(phase string, f Files) string {
 // holds at least one question, has no faults and every question is answered.
 // Faults are reported before open questions because a faulty line is left out
 // of the questions, so the count of open ones is not yet the true count.
+//
+// A `reconcile` session does not need a question. It asks the owner only
+// about real choices between the plan and the document, and two texts that
+// agree leave none, so there a missing or empty file passes. A question that
+// was asked must still be answered, and a faulty line still holds the gate.
 func missingRounds(f Files) string {
 	path := shownDir + questionsFile
-	if !f.QuestionsPresent {
+	needsOne := f.State.Mode != ModeReconcile
+	if !f.QuestionsPresent && needsOne {
 		return "No questions have been asked yet: " + path + " is missing."
 	}
 	if n := len(f.QuestionProblems); n > 0 {
 		return fmt.Sprintf("%s has %s that must be fixed first.", path, count(n, "problem", "problems"))
 	}
-	if len(f.Questions) == 0 {
+	if len(f.Questions) == 0 && needsOne {
 		return "No questions have been asked yet: " + path + " is empty."
 	}
 	open := 0
@@ -596,7 +734,14 @@ func missingRounds(f Files) string {
 
 // waitingWhenComplete is the sentence for a phase whose gate is met (or that
 // has none): what happens there, and what moves the session on.
-func waitingWhenComplete(phase string) string {
+//
+// A session that changes a plan has its own sentences, because the ones for a
+// new session name the phase that follows and say the plan is being written.
+// On a shorter path both would be wrong.
+func waitingWhenComplete(phase string, f Files) string {
+	if changesPlan(f.State.Mode) {
+		return waitingInChangeMode(phase, f)
+	}
 	switch phase {
 	case PhaseBrief:
 		return "Your request is saved; `afk plan advance` moves the session on to the survey."
@@ -622,9 +767,132 @@ func waitingWhenComplete(phase string) string {
 	return ""
 }
 
-// phaseIndex is a phase's position in Phases, or -1 for an unknown phase.
-func phaseIndex(phase string) int {
-	for i, p := range Phases {
+// waitingInChangeMode is waitingWhenComplete for the three modes that change
+// a plan. The phase that follows is looked up on the mode's path, so the
+// sentence cannot name a phase the mode leaves out.
+func waitingInChangeMode(phase string, f Files) string {
+	mode := f.State.Mode
+	path := PhasesFor(mode)
+	at := phaseIndex(path, phase)
+	if at < 0 {
+		return ""
+	}
+	if at == len(path)-1 {
+		return "The session is finished and the changes are in the plan."
+	}
+
+	var done string
+	switch phase {
+	case PhaseBrief:
+		done = "Your request is saved"
+	case PhaseSurvey:
+		done = "The survey is written"
+	case PhaseRounds:
+		done = "Every question has an answer"
+		if len(f.Questions) == 0 {
+			// Only `reconcile` gets here with no question (see missingRounds).
+			done = "No question is waiting for an answer"
+		}
+	case PhaseSlices:
+		done = "The task breakdown is saved"
+	case PhaseDraft:
+		done = "The changes made to the plan are listed"
+	case PhaseCheck:
+		done = "The plan passes the checker"
+		if mode == ModeExtend {
+			done = "The plan passes the checker and the critic has reviewed the new milestone"
+		}
+	}
+
+	var next string
+	switch path[at+1] {
+	case PhaseSurvey:
+		next = "the survey"
+	case PhaseRounds:
+		next = "the questions"
+	case PhaseSlices:
+		next = "the task breakdown"
+	case PhaseDraft:
+		next = "changing the plan"
+	case PhaseCheck:
+		next = "checking the plan"
+	case PhaseReview:
+		next = "the summary of what changed"
+	}
+	return done + "; `afk plan advance` moves the session on to " + next + "."
+}
+
+// Archive moves the files of a planning session that is over out of the way
+// of the next one. Every entry of `.afk/plan/` except the folder `archive`
+// goes into `.afk/plan/archive/<time>/`, where the time is now in UTC, and
+// that folder is returned.
+//
+// The files are kept and not overwritten because the brief is the owner's
+// own words and is never edited after it is saved; a new session writing its
+// brief over the old one would lose the request the plan's tasks came from.
+// They are moved, and not left where they are, because the gates read these
+// files: a new session that found the old survey.md would pass a gate on
+// work it never did.
+//
+// It does nothing and returns "" when there is no `.afk/plan/` or nothing in
+// it to move, so the first session on a project leaves no empty folder.
+//
+// Two sessions archived within one second get different folders (`-2`, `-3`
+// after the time). The folder is made with Mkdir, which fails when the name
+// is taken, so the check and the creation are one step and an older archive
+// can never be merged into.
+//
+// A move that fails part of the way leaves some files in the archive and
+// some in place; the folder is returned with the error so they can be found.
+// It is not undone, because the undo could fail the same way.
+func Archive(project string, now time.Time) (string, error) {
+	dir := Dir(project)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s could not be read: %v", dir, err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.Name() == archiveDir && entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	if len(names) == 0 {
+		return "", nil
+	}
+
+	root := filepath.Join(dir, archiveDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("the folder for old planning sessions, %s, could not be made: %v", root, err)
+	}
+	stamp := now.UTC().Format("20060102T150405Z")
+	target := filepath.Join(root, stamp)
+	for n := 2; ; n++ {
+		err := os.Mkdir(target, 0o755)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", fmt.Errorf("the folder for the old planning session, %s, could not be made: %v", target, err)
+		}
+		target = filepath.Join(root, fmt.Sprintf("%s-%d", stamp, n))
+	}
+
+	for _, name := range names {
+		if err := os.Rename(filepath.Join(dir, name), filepath.Join(target, name)); err != nil {
+			return target, fmt.Errorf("the old planning session's file %s could not be moved to %s: %v. Move what is left in %s there by hand, then try again", name, target, err, dir)
+		}
+	}
+	return target, nil
+}
+
+// phaseIndex is a phase's position on a path, or -1 when it is not on it.
+func phaseIndex(path []string, phase string) int {
+	for i, p := range path {
 		if p == phase {
 			return i
 		}

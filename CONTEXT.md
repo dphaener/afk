@@ -140,3 +140,16 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Gate (plan phase)**: what must be on disk before a planning session may leave a phase; `afk plan advance` checks it.
 - **Planning marker**: the empty file `.afk/master-plan/planning`, which makes every start of that session's host run the planning skill.
 - **Reserved name**: a session name afk keeps for itself (`plan`, `master-plan`), which `afk new` refuses.
+- **Guarded patch**: a change to a master plan given as an old text and a new text; the old text must be in the plan exactly once, and nothing is written if the change would add a checker error.
+- **Entry (task)**: a task's part of a master plan, from its heading to the line before the next heading.
+- **Held task**: a task that is `running` or `shipping` in the ledger; a guarded patch may only add an Amended line to its entry.
+- **Amended line**: a dated line added to a plan section or task entry (`Amended 2026-10-13 …`) that says what changed, leaving the original text as it was.
+- **Change session**: a planning session on a project that already has a plan, in one of the modes `extend`, `amend` or `reconcile`.
+- **Extend**: the change session that adds a new milestone to a plan.
+- **Amend**: the change session that adds, splits or supersedes one task of a plan.
+- **Reconcile**: the change session that reads a named document against the plan and brings the plan in line with it.
+- **Split**: replacing one task with two or more lettered tasks; the old task stays in the plan as history and is marked superseded in the ledger.
+- **Letter suffix**: the letter on a task id such as `T2.2a`, given to a task that must run between two existing ones, so no id is ever renumbered.
+- **Changes list**: `.afk/plan/changes.md`, where a change session lists each patch it made; a change session cannot leave its draft phase without it.
+- **Plan-changes branch**: `afk-plan-changes`, the branch a guarded patch is committed to when the project sends plan changes through a pull request.
+- **Follow-up prompt**: a file `docs/design-followup-<n>.md` written by a reconcile, saying what the design must change to fit the plan.
