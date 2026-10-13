@@ -162,3 +162,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Failed turn**: an agent turn ended by an API error (a lost connection, a server error, an overloaded service), which leaves the session idle at its prompt with its host alive.
 - **Failed-turn marker**: `.afk/{session}/.turn-failed`, one line with the time and the reason, written by the `StopFailure` hook for a failure worth trying again and removed by the next prompt or a normal stop.
 - **Wake**: the daemon typing a session's resume command into it, after a failed turn or a stall, without restarting its host; counted in the ledger as `wakes`, apart from `restarts`.
+- **Needed by**: the column of a master plan's Open questions table that names the tasks which need the answer; a row that names no task there holds nothing.
+- **Answered marker**: the text `**Answered <date>:** <the answer>` inside a row's Question cell, which is what makes an open question answered.
+- **Question hold**: the daemon parking the next ready task, with nothing started for it, because an open question names it in "Needed by".
+- **Question item**: the blocking inbox item, titled `Open question: …`, that the daemon raises once for each open question holding a task; the owner's answer is written into the plan.
+- **Follow-up item**: the blocking inbox item, titled `Put the answer in the plan: …`, raised when an answer could not reach the plan in the main checkout, for example because plan changes go through a pull request.

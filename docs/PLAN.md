@@ -260,6 +260,10 @@ Amended 2026-10-13 (T2.5): an entry also carries `wakes` and `wake_at`, each omi
 each one; a negative value is refused on load. `wake_at` is when the last wake was saved (RFC 3339 UTC).
 Both are cleared where `restarts` is cleared. A wake is not counted as a restart.
 
+Amended 2026-10-13 (T5.6): a task held for an open question (§5.2) is `parked` with no session, and `parked_on`
+names the `Open question: …` items of its rows, or the `Put the answer in the plan: …` item when an answer
+could not be put into the plan. When the answers are in the plan it goes back to `pending`, not `running`.
+
 ### 4.2a Daemon files (new)
 
 Amended 2026-10-11 (T2.1): three small files the build daemon adds, each with one writer and none
@@ -548,6 +552,10 @@ Amended 2026-10-11 (T2.2): a task whose title carries `(owner)` or `(owner; …)
 matter, and spaces inside the brackets are allowed) is the owner's to do and is never launched.
 `(owner + agent)` is an ordinary task, and so is prose such as `(owner approval)`.
 
+Amended 2026-10-13 (T5.6): the daemon reads a third thing from the plan, the Open questions table (the first
+table under that heading with a "Needed by" column), through `masterplan.Questions`, the same reader
+`afk plan lint` uses. A row is open until its Question cell holds `**Answered <date>:** <answer>`.
+
 ### 5.2 Next task (pure function)
 
 Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason there is none.
@@ -563,6 +571,13 @@ Amended 2026-10-11 (T2.2): an owner task (§5.1) that is `pending` and ready is 
 but the daemon raises one blocking item (`Your task: T0.0 — …`) and parks it instead of launching;
 the owner's answer marks it `done`. A project with no ledger file launches nothing and raises one
 blocking item, `This project has no task list yet`, until `afk ledger init` creates the file.
+
+Amended 2026-10-13 (T5.6): when the task chosen is named in the "Needed by" cell of an open row of the Open
+questions table (§5.1), `Decide` returns `question_hold` and starts nothing: it raises one blocking `question`
+item per row (`Open question: …`, found again by its body's first line) and parks the task. Owner tasks are held
+the same way, before the owner rule. A held task whose items are all answered gets `question_answered`: the
+daemon writes each answer into its row through a guarded plan patch and sets the task from `parked` to
+`pending`, never `running`. A row answered by hand closes its item. A row that names no task holds nothing.
 
 ### 5.3 One task
 
@@ -1691,6 +1706,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
 - **Acceptance:** table tests for `Decide`: an open row holds its task and raises one item; an answered
   row does not; two rows on one task raise two items and the task waits for both; a row naming no task
   holds nothing; answering patches the row once and only once across a daemon restart.
+- Amended 2026-10-13 (T5.6 done): the table reader is `masterplan.Questions` (the checker uses it too) and `masterplan.AnswerRow` builds the answered row; a held task is `parked` with no session and goes back to `pending`, so T5.7's "first ready task" may be held on its first pass and its integration test should use a plan with no open row naming that task; the row holds until the plan in the main checkout reads answered, so with `[planning] via_pr` the task waits on a second item, `Put the answer in the plan: <task>`, until the pull request is merged and pulled; owner tasks are held too; a row answered by hand closes its item; the daemon reads and patches the plan through two optional hooks (`Deps.ReadPlan`, `Deps.PatchPlan`) that `afk daemon` sets, and a daemon built without them holds nothing; `afk next` and `afk tasks` do not show a hold before the daemon has parked the task; the via-PR path was tested with a scripted runner only and is T5.8's to try for real; the decisions are in `docs/decisions.md` under `## T5.6`.
 
 #### T5.7 — Approve and go
 - **Depends on:** T5.3, T5.6

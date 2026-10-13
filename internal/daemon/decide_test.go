@@ -281,6 +281,48 @@ func createdAgo(it inbox.Item, before time.Duration) inbox.Item {
 	return it
 }
 
+// openRow is an open row of the plan's Open questions table that the given
+// tasks need; answeredRow is the same row once its cell holds an answer.
+func openRow(text string, neededBy ...string) masterplan.Question {
+	return masterplan.Question{Line: 40, Text: text, Row: "| 1 | " + text + " | " + strings.Join(neededBy, ", ") + " |",
+		NeededBy: neededBy, Open: true}
+}
+
+func answeredRow(text string, neededBy ...string) masterplan.Question {
+	q := openRow(text+" **Answered 2026-10-11:** Frankfurt", neededBy...)
+	q.Open = false
+	return q
+}
+
+// asking is an Observation change for a daemon that read these rows from the
+// plan. A row without it runs as the loop did before it read the table.
+func asking(rows ...masterplan.Question) func(*Observation) {
+	return func(o *Observation) { o.Questions = rows }
+}
+
+// askedItem is the open item the hold raises for a row: kind question,
+// the hold's title prefix, and the row's text as the body's first line.
+func askedItem(id, task, text string) inbox.Item {
+	it := blocking(item(id, task, ""))
+	it.Title = QuestionTitlePrefix + text
+	it.Body = text + "\n\nThe plan lists this as an open question."
+	return it
+}
+
+// followUpItem is the open item raised when an answer is not in the plan.
+func followUpItem(id, task string) inbox.Item {
+	it := blocking(item(id, task, ""))
+	it.Kind = "external_action"
+	it.Title = QuestionFollowUpTitlePrefix + task
+	return it
+}
+
+// questionHeld is a task as the hold leaves it: parked on its items with no
+// session, no branch and no attempt, because nothing was ever started.
+func questionHeld(id string, items ...string) ledger.Entry {
+	return ledger.Entry{ID: id, Status: ledger.Parked, ParkedOn: items}
+}
+
 // TestDecide is the whole loop as a table: one row for each branch of Decide
 // and one for each side of every limit.
 //
@@ -461,6 +503,31 @@ func createdAgo(it inbox.Item, before time.Duration) inbox.Item {
 //   - "a stall with no wakes left is reported at once" and "a stall without
 //     the means to type is reported at once": the stall rule must not be
 //     weakened for a daemon that cannot, or may not, wake.
+//   - "an open row holds its task and starts nothing" against "an answered row
+//     does not hold", "a row naming no task holds nothing" and "a row naming
+//     another task holds nothing": the first is the rule (a task must not
+//     start while a question it needs is open) and is the row the task's
+//     mutation check turns red; the other three are the rule not reaching too
+//     far and stopping a build over a question nobody is waiting on.
+//   - "a held task whose items are all answered has its answers written" and
+//     its owner twin, against "an agent's parked task with a session still
+//     un-parks": a held task has no session and was never started. Read as an
+//     agent's parked task it would be sent to running and get a session while
+//     its row was still open; read as an owner's it would be marked done with
+//     nothing done. The third row is the check not swallowing ordinary parks.
+//   - "an owner task is held before it is handed over": the owner gets the
+//     question before the task that needs its answer.
+//   - "an answered item does not release a task whose row is still open": the
+//     agent reads the answer from the plan, so the item alone starts nothing.
+//   - "questions that cannot be read wait": starting a task without knowing
+//     whether a question holds it is the thing the hold exists to stop.
+//   - "pause lets a question be asked" and "pause lets an answered question be
+//     written" against the two "a stopped line holds back" rows beside them:
+//     the hold follows the owner kinds, and the two flags differ on exactly
+//     these.
+//   - "an open row holds its task whatever usage says": asking the owner
+//     starts no agent, so a usage hold must not hide the question behind
+//     itself.
 func TestDecide(t *testing.T) {
 	// T1.2 builds on T1.1; T1.3 stands alone, so it is the task that can run
 	// while T1.1 is parked or failed.
@@ -1276,6 +1343,207 @@ func TestDecide(t *testing.T) {
 			ledger:    led(entry("T0.0", ledger.Done)),
 			want:      Action{Kind: ActWait},
 			reasonHas: []string{"paused"},
+		},
+
+		// Open questions of the plan.
+		{
+			name:      "an open row holds its task and starts nothing",
+			obs:       asking(openRow("Which region?", "T1.1")),
+			want:      Action{Kind: ActQuestionHold, Task: "T1.1"},
+			reasonHas: []string{"waiting on the owner", "T1.1 needs 1 open question answered first"},
+		},
+		{
+			name: "an answered row does not hold",
+			obs:  asking(answeredRow("Which region?", "T1.1")),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name:      "two open rows on one task hold with both",
+			obs:       asking(openRow("Which region?", "T1.1"), openRow("Which bank?", "T1.1", "T1.2")),
+			want:      Action{Kind: ActQuestionHold, Task: "T1.1"},
+			reasonHas: []string{"T1.1 needs 2 open questions answered first"},
+		},
+		{
+			name:      "one open row among answered ones holds with one",
+			obs:       asking(answeredRow("Which region?", "T1.1"), openRow("Which bank?", "T1.1")),
+			want:      Action{Kind: ActQuestionHold, Task: "T1.1"},
+			reasonHas: []string{"1 open question answered"},
+		},
+		{
+			name: "a row naming no task holds nothing",
+			obs:  asking(openRow("Which region?")),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			// T1.2 is not ready, so its question is not asked yet either.
+			name: "a row naming another task holds nothing",
+			obs:  asking(openRow("Which region?", "T1.2")),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name:   "a row holds its task when that task's turn comes",
+			obs:    asking(openRow("Which region?", "T1.2")),
+			ledger: led(entry("T1.1", ledger.Done)),
+			want:   Action{Kind: ActQuestionHold, Task: "T1.2"},
+		},
+		{
+			name: "a row with an empty question holds nothing",
+			obs:  asking(openRow("", "T1.1")),
+			want: Action{Kind: ActLaunch, Task: "T1.1"},
+		},
+		{
+			name:      "an owner task is held before it is handed over",
+			tasks:     []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			obs:       asking(openRow("Which region?", "T0.0")),
+			want:      Action{Kind: ActQuestionHold, Task: "T0.0"},
+			reasonHas: []string{"T0.0 needs 1 open question"},
+		},
+		{
+			// Killed between the item and the ledger: the item is named, so
+			// the state shows it, and the executor adds no second.
+			name:  "an item that is already there is named",
+			obs:   asking(openRow("Which region?", "T1.1"), openRow("Which bank?", "T1.1")),
+			items: []inbox.Item{askedItem("q1", "T1.1", "Which region?")},
+			want:  Action{Kind: ActQuestionHold, Task: "T1.1", Items: []string{"q1"}},
+		},
+		{
+			name:  "an answered item does not release a task whose row is still open",
+			obs:   asking(openRow("Which region?", "T1.1")),
+			items: []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute)},
+			want:  Action{Kind: ActQuestionHold, Task: "T1.1", Items: []string{"q1"}},
+		},
+		{
+			name:   "a held task whose items are all answered has its answers written",
+			obs:    asking(openRow("Which region?", "T1.1")),
+			ledger: led(questionHeld("T1.1", "q1")),
+			items:  []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute)},
+			want:   Action{Kind: ActQuestionAnswered, Task: "T1.1"},
+		},
+		{
+			name:   "a held owner task whose items are answered is not marked done",
+			tasks:  []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			obs:    asking(openRow("Which region?", "T0.0")),
+			ledger: led(questionHeld("T0.0", "q1")),
+			items:  []inbox.Item{answered(askedItem("q1", "T0.0", "Which region?"), time.Minute)},
+			want:   Action{Kind: ActQuestionAnswered, Task: "T0.0"},
+		},
+		{
+			name:   "a held task whose follow-up item is answered is tried again",
+			obs:    asking(openRow("Which region?", "T1.1")),
+			ledger: led(questionHeld("T1.1", "f1")),
+			items: []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Hour),
+				answered(followUpItem("f1", "T1.1"), time.Minute)},
+			want: Action{Kind: ActQuestionAnswered, Task: "T1.1"},
+		},
+		{
+			// The row was answered by hand and the executor closed the item:
+			// no row is open, and the task is still released through the same
+			// action, never through an un-park.
+			name:   "a held task is released the same way when its row is no longer open",
+			obs:    asking(answeredRow("Which region?", "T1.1")),
+			ledger: led(questionHeld("T1.1", "q1")),
+			items:  []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute)},
+			want:   Action{Kind: ActQuestionAnswered, Task: "T1.1"},
+		},
+		{
+			name:   "a held task with one of two items still open stays parked",
+			tasks:  chain,
+			obs:    asking(openRow("Which region?", "T1.1"), openRow("Which bank?", "T1.1")),
+			ledger: led(questionHeld("T1.1", "q1", "q2")),
+			items: []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute),
+				askedItem("q2", "T1.1", "Which bank?")},
+			want:      Action{Kind: ActIdle, Items: []string{"q2"}},
+			reasonHas: []string{"waiting on owner", "T1.1", "q2"},
+		},
+		{
+			name:   "a held task lets an independent task launch",
+			obs:    asking(openRow("Which region?", "T1.1")),
+			ledger: led(questionHeld("T1.1", "q1")),
+			items:  []inbox.Item{askedItem("q1", "T1.1", "Which region?")},
+			want:   Action{Kind: ActLaunch, Task: "T1.3"},
+		},
+		{
+			// It has a session, so it is work under way that parked on a
+			// question of its own, whatever that item's title says.
+			name:   "an agent's parked task with a session still un-parks",
+			obs:    asking(openRow("Which region?", "T1.1")),
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:   "an owner's parked task with its own item is still done",
+			tasks:  []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			obs:    asking(openRow("Which region?", "T1.1")),
+			ledger: led(ownerParked("T0.0", "o1")),
+			items:  []inbox.Item{answered(blocking(item("o1", "T0.0", "")), time.Minute)},
+			want:   Action{Kind: ActOwnerDone, Task: "T0.0"},
+		},
+		{
+			name:      "questions that cannot be read wait",
+			obs:       func(o *Observation) { o.QuestionsErr = errors.New("open docs/PLAN.md: permission denied") },
+			want:      Action{Kind: ActWait, Task: "T1.1"},
+			reasonHas: []string{"open questions could not be read", "permission denied", "T1.1 is not started"},
+		},
+		{
+			name:      "questions that cannot be read hold an owner task back too",
+			tasks:     []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")},
+			obs:       func(o *Observation) { o.QuestionsErr = errors.New("permission denied") },
+			want:      Action{Kind: ActWait, Task: "T0.0"},
+			reasonHas: []string{"permission denied"},
+		},
+		{
+			// Work under way is not stopped for a plan that cannot be read.
+			name:   "questions that cannot be read do not hold an un-park",
+			obs:    func(o *Observation) { o.QuestionsErr = errors.New("permission denied") },
+			ledger: led(parked("T1.1", "q1")),
+			items:  []inbox.Item{answered(blocking(item("q1", "T1.1", "t1-1")), time.Minute)},
+			want:   Action{Kind: ActUnpark, Task: "T1.1", Session: "t1-1", Resume: ledger.Running},
+		},
+		{
+			name:   "pause lets a question be asked",
+			paused: true,
+			obs:    asking(openRow("Which region?", "T1.1")),
+			want:   Action{Kind: ActQuestionHold, Task: "T1.1"},
+		},
+		{
+			name:   "pause lets an answered question be written",
+			paused: true,
+			obs:    asking(openRow("Which region?", "T1.1")),
+			ledger: led(questionHeld("T1.1", "q1")),
+			items:  []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute)},
+			want:   Action{Kind: ActQuestionAnswered, Task: "T1.1"},
+		},
+		{
+			name:    "a stopped line holds back a question",
+			stopped: true,
+			obs:     asking(openRow("Which region?", "T1.1")),
+			want:    Action{Kind: ActWait, LineStopped: true},
+		},
+		{
+			name:    "a stopped line holds back an answered question",
+			stopped: true,
+			obs:     asking(openRow("Which region?", "T1.1")),
+			ledger:  led(questionHeld("T1.1", "q1")),
+			items:   []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute)},
+			want:    Action{Kind: ActWait, LineStopped: true},
+		},
+		{
+			name: "an open row holds its task whatever usage says",
+			obs: governed(governor.ActionHold, func(o *Observation) {
+				loggedOut(o)
+				o.Questions = []masterplan.Question{openRow("Which region?", "T1.1")}
+			}),
+			want: Action{Kind: ActQuestionHold, Task: "T1.1"},
+		},
+		{
+			name: "an answered question is written whatever usage says",
+			obs: governed(governor.ActionRefuse, func(o *Observation) {
+				o.Questions = []masterplan.Question{openRow("Which region?", "T1.1")}
+			}),
+			ledger: led(questionHeld("T1.1", "q1")),
+			items:  []inbox.Item{answered(askedItem("q1", "T1.1", "Which region?"), time.Minute)},
+			want:   Action{Kind: ActQuestionAnswered, Task: "T1.1"},
 		},
 
 		// The stopped line.
@@ -3289,6 +3557,23 @@ func TestTitlePrefixesAreDistinct(t *testing.T) {
 	for _, other := range []string{StallTitlePrefix, HostGoneTitlePrefix, RecoveryTitlePrefix, PauseFailedTitlePrefix} {
 		if strings.HasPrefix(WakeTitlePrefix, other) || strings.HasPrefix(other, WakeTitlePrefix) {
 			t.Errorf("prefixes overlap: %q and %q", WakeTitlePrefix, other)
+		}
+	}
+	// The two prefixes of the open-question hold are searched for as well:
+	// isQuestionHold tells a held task from an owner's parked task by them,
+	// so neither may begin with OwnerTitlePrefix or with any other prefix,
+	// nor with each other. An overlap with the owner prefix would have an
+	// owner's task set back to pending when the owner said it was done.
+	all := []string{StallTitlePrefix, HostGoneTitlePrefix, RecoveryTitlePrefix, PauseFailedTitlePrefix,
+		OwnerTitlePrefix, WakeTitlePrefix, QuestionTitlePrefix, QuestionFollowUpTitlePrefix}
+	for _, mine := range []string{QuestionTitlePrefix, QuestionFollowUpTitlePrefix} {
+		if mine == "" {
+			t.Fatal("an open-question title prefix is empty; every item would match it")
+		}
+		for _, other := range all {
+			if other != mine && (strings.HasPrefix(mine, other) || strings.HasPrefix(other, mine)) {
+				t.Errorf("prefixes overlap: %q and %q", mine, other)
+			}
 		}
 	}
 }

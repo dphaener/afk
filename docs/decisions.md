@@ -2053,3 +2053,42 @@ Part A used no agent. A shell script named `claude` stood first on the daemon's 
 - **A session that keeps failing for real.** Three typed lines over about twelve minutes, then one item, "Session kept failing: …". Answering it should set the session going again.
 - **A woken session picking its work up.** The real session here was ended as soon as the conductor's new turn began.
 - **The running `afkd`.** It keeps the old code until this branch is merged and installed.
+
+## T5.6
+
+Open questions hold their tasks. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **One reader for the table (A1).** The checker was the only code that read the Open questions table. That reader moves into `internal/masterplan` and the checker calls it, so the daemon and `afk plan lint` can never disagree about which rows are open. The checker's findings and counts do not change. The same package also builds the answered form of a row.
+- **How the daemon gets the rows (A2).** The daemon reads the plan file itself on each pass, through a new optional hook. Without the hook nothing is held, which is what every existing test relies on. If the plan cannot be read, a pass that would start a task waits instead.
+- **Owner tasks are held too (A3).** The master plan says "the next ready task". An owner task named by an open question gets the question first and its own "Your task" item after the answer.
+- **Matching an item to a row (A4).** A row has no id, so the item carries the question's text as the first line of its body, and that line is what is compared. The title is not used, because titles are cut to 200 characters and two long questions could then look the same. The task is not part of the match, so a question needed by two tasks is asked once. To ask a question again, change its wording.
+- **What a held task looks like (A5).** It is `parked` in the ledger with no session, waiting on the question items. When they are answered it goes back to `pending`, never to `running`, because there is no session to continue. The two new decisions are `question_hold` and `question_answered`.
+- **A row holds until the plan in the main checkout says it is answered (A6).** An answer in the inbox is not enough. The agent that runs the task reads the answer in the plan, so the task must not start before the answer is there.
+- **The answered row (A7).** The answer is added to the end of the Question cell as `**Answered <date>:** <answer>` and the question stays. The date is the day the item was answered (UTC). Line breaks in the answer become spaces and a `|` is written `\|`, so the table stays a table.
+- **When the answer cannot reach the plan (A8).** With `[planning] via_pr` the patch goes into a pull request and the plan in the main checkout does not change until it is merged and pulled. A patch can also fail (the row is in the plan twice, git refuses). In both cases the daemon raises one blocking item, `Put the answer in the plan: <task>`, that says what to do, and the task waits on it. Answering it makes the daemon try again. No new state file is needed: the inbox and the ledger are the record.
+- **A row answered by hand (A9).** If the owner, or a planning session, answers the row in the plan while its item is still open, the daemon closes the item itself with "answered in the plan", as it closes its own items for a missing ledger. Otherwise the task would stay parked on an item nobody needs.
+- **Pause, stopped line and usage (A10).** The hold behaves as an owner task does: the question is still asked while the project is paused, a stopped line holds it back, and it never causes a usage reading.
+- **The daemon package does not run git (A11).** The patch goes through a second hook that the `afk daemon` command connects to `planpatch.Run`, with the project's `via_pr` and base branch.
+- **Plugin version 5.7.1 (A12)**, planned as 5.6.1 and raised when T2.5 took 5.7.0 on `main` first, because the format document's text on open questions changes. The OpenCode port gets a line in its lag note.
+- **Tests (A13)** are written with the code, as table tests. **Nothing had to be in place first (A14).**
+
+### As built
+
+Where the code does something the section above does not say (2026-10-13).
+
+- **A row with an empty Question cell holds nothing.** The item is found again by the first line of its body, and an empty first line could never be matched.
+- **An item the daemon closed itself is not an answer.** If a row is open again after its item was closed with "answered in the plan", the owner is asked afresh; those words are never written into a row.
+- **An unreadable plan also holds back a pending owner task**, not only an agent's. A task that is already parked is not held back by a read error.
+- **A hold's follow-up item that is open but not yet in `parked_on`** (a pass died between raising it and writing the ledger) is adopted without a second patch, so a pull-request project does not get two pull requests.
+- **One patch per distinct question text in a pass.** Two rows with the same text cannot be told apart, so the second would fail the same way. The follow-up item still lists every row with its own line number.
+- **The follow-up item is built row by row.** A row whose patch returned a pull request address says to merge it and pull the base branch; any other row gives the reason and the exact text to write into its Question cell (`**Answered <date>:** <answer>`).
+- **The plan is read on every pass**, so a row answered by hand closes its item while another task runs.
+- **A task parked on the follow-up item shows as `question_hold`** in the state file, not a third kind: to the owner it is the same wait.
+- **A fourth decision-log kind, `question_closed`,** records the daemon answering an item whose row is no longer open.
+- **An answer that `AnswerRow` refuses** (for example one with an unmatched backtick that would swallow later pipes in the row) is treated as nothing to write, and the follow-up item then gives the text to write by hand.
+- **Usage:** the two new kinds are left out of the list of kinds that cause a usage reading, so a hold never causes one.
+
+### For the owner to check
+
+- Try the whole path once against a real project that has `[planning] via_pr = true`: answer a question and confirm the pull request opens, that merging and pulling it lets the task start after you answer the `Put the answer in the plan: …` item. The tests use a scripted runner, not GitHub.
+- Read an `Open question: …` item on a screen and judge whether its wording is clear enough.

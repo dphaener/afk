@@ -132,6 +132,23 @@ type rig struct {
 	// real marker file from the session's folder, which rateLimit writes.
 	markerFn func(worktree, sess string) (time.Time, bool)
 
+	// The open-question hold's fakes. Like the switches above, both are off
+	// unless a test turns them on, so every test written before the loop read
+	// the plan's Open questions table runs as it did.
+	//
+	// planOn sets Deps.ReadPlan to a read of the plan file, or to readPlanErr
+	// when that is set. patchOn sets Deps.PatchPlan to fakePatch, which
+	// applies the edit to the plan file in the temp project the way a patch
+	// straight to the base branch would. patches is every request it was
+	// handed; patchErr is what it answers instead, and patchPR makes it
+	// answer with that pull request address and leave the file alone, as a
+	// project that changes its plan through pull requests does.
+	planOn      bool
+	readPlanErr error
+	patchOn     bool
+	patches     []PlanPatchRequest
+	patchErr    error
+	patchPR     string
 	// maxWakes is `max_wakes`. It is zero unless a test sets it, which is the
 	// setting for never waking, so every test written before the loop could
 	// wake a session runs as it did. promptSaw is the ledger entry as the
@@ -466,8 +483,120 @@ func (r *rig) deps() Deps {
 		d.StopSession = r.fakeStop
 	}
 	d.RateLimited = r.markerFn
+	if r.planOn {
+		d.ReadPlan = func(path string) ([]byte, error) {
+			if r.readPlanErr != nil {
+				return nil, r.readPlanErr
+			}
+			return os.ReadFile(path)
+		}
+	}
+	if r.patchOn {
+		d.PatchPlan = r.fakePatch
+	}
 	d.TurnFailed = r.turnFailedFn
 	return d
+}
+
+// fakePatch is the fake plan patch. It runs the request's Edit on the plan
+// file as it is now and replaces the one line, refusing a line that is not
+// there exactly once, as the real guarded patch does. An Edit error comes
+// back wrapped, the way a real hook reports it, so the loop's errors.Is on
+// ErrRowAnswered is what is tested and not an == that a wrap would break.
+func (r *rig) fakePatch(_ Project, req PlanPatchRequest) (PlanPatchResult, error) {
+	r.patches = append(r.patches, req)
+	if r.patchErr != nil {
+		return PlanPatchResult{}, r.patchErr
+	}
+	if r.patchPR != "" {
+		return PlanPatchResult{PR: r.patchPR}, nil
+	}
+	plan, err := os.ReadFile(req.PlanPath)
+	if err != nil {
+		return PlanPatchResult{}, err
+	}
+	old, repl, err := req.Edit(plan)
+	if err != nil {
+		return PlanPatchResult{}, fmt.Errorf("the plan was not changed: %w", err)
+	}
+	if n := strings.Count(string(plan), string(old)); n != 1 {
+		return PlanPatchResult{}, fmt.Errorf("the text to replace is in the plan %d times, want once", n)
+	}
+	return PlanPatchResult{}, os.WriteFile(req.PlanPath, []byte(strings.Replace(string(plan), string(old), string(repl), 1)), 0o644)
+}
+
+// planText is the plan file as it is on disk.
+func (r *rig) planText() string {
+	r.t.Helper()
+	data, err := os.ReadFile(filepath.Join(r.root, "docs", "PLAN.md"))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return string(data)
+}
+
+// answerWith answers an item with the given text, as the owner would.
+func (r *rig) answerWith(id, text string) {
+	r.t.Helper()
+	if _, err := r.store().Answer(id, text, "cli"); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// restartAsking is restart for a daemon wired to read and patch the plan.
+// The calls made so far stay with the old rig; a test that counts patches
+// across a restart adds the two.
+func (r *rig) restartAsking() *rig {
+	n := r.restart()
+	n.planOn, n.patchOn = r.planOn, r.patchOn
+	n.readPlanErr, n.patchErr, n.patchPR = r.readPlanErr, r.patchErr, r.patchPR
+	return n
+}
+
+// ask is one row of a plan's Open questions table.
+type ask struct{ question, neededBy string }
+
+// planAsking is planOf with an Open questions table after the tasks.
+func planAsking(tasks []masterplan.Task, rows ...ask) string {
+	var b strings.Builder
+	b.WriteString(planOf(tasks...))
+	b.WriteString("## Open questions\n\n| # | Question | Needed by |\n|---|----------|-----------|\n")
+	for i, row := range rows {
+		fmt.Fprintf(&b, "| %d | %s | %s |\n", i+1, row.question, row.neededBy)
+	}
+	return b.String()
+}
+
+// newAskingRig is a project whose plan has the given open questions, run by a
+// daemon that reads the plan and can patch it.
+func newAskingRig(t *testing.T, tasks []masterplan.Task, rows ...ask) *rig {
+	t.Helper()
+	r := newRig(t, tasks...)
+	r.writePlan(planAsking(tasks, rows...))
+	r.planOn, r.patchOn = true, true
+	return r
+}
+
+// questionItems returns the items the hold raised to ask a row, and
+// followUps the items it raised because an answer is not in the plan.
+func questionItems(items []inbox.Item) []inbox.Item {
+	var out []inbox.Item
+	for _, it := range items {
+		if isQuestionItem(it) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func followUps(items []inbox.Item) []inbox.Item {
+	var out []inbox.Item
+	for _, it := range items {
+		if strings.HasPrefix(it.Title, QuestionFollowUpTitlePrefix) {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // clean is the fake session clean-up. Like the real one it removes the
@@ -809,6 +938,19 @@ func wantContains(t *testing.T, what, text string, parts ...string) {
 //     task, on any tick. That is the bug the rule exists for.
 //   - TestTickStoppedLine: the stop holds back new work across a restart and
 //     lets a running session finish. `afk resume` is the only way out.
+//   - TestTickQuestionHold: one item for one open row however many passes
+//     and restarts follow, no launch, no preflight and no usage reading; its
+//     "killed between the item and the ledger" row is what fails if the
+//     ledger is ever written before the item. Its second half is the other
+//     acceptance row: the answer is written into the row once, and only once
+//     across a restart.
+//   - TestTickQuestionPatchedOnceWhenKilledBeforeTheLedger: the patch is a
+//     commit, so "once" cannot rest on the ledger write that follows it. It
+//     rests on reading the plan again, and this is the test of that read.
+//   - TestTickQuestionFollowUp: an answer that is not in the main checkout's
+//     plan must never start the task, whatever the patch said about itself.
+//   - TestTickQuestionWithoutReadPlan: a daemon wired without the plan reader
+//     launches exactly as it did before the hold existed.
 func TestTickHappyPathToShipping(t *testing.T) {
 	r := newRig(t, task("T1.1"), task("T1.2", "T1.1"))
 	r.shipFn = r.greenShip
@@ -2279,6 +2421,7 @@ func TestKinds(t *testing.T) {
 		string(ActRestart), string(ActRelaunch), string(ActContinue), string(ActGiveUp),
 		string(ActUsageWait), string(ActLoginWait), string(ActUsagePause),
 		string(ActUsagePaused), string(ActUsageStuck), string(ActUsageResume),
+		string(ActQuestionHold), string(ActQuestionAnswered),
 		string(ActWake), string(ActWakeGiveUp),
 		KindStopped, KindBlocked, KindLineStopped,
 	}
@@ -4352,4 +4495,710 @@ func TestTickWakeLeavesTheseSessionsAlone(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The open-question hold (PLAN T5.6), run through the whole loop. Decide's
+// own branches are rows of TestDecide and the helpers have their tables in
+// questions_test.go; these are about what reaches the inbox, the ledger and
+// the plan file, and about what a restart finds.
+
+const regionRow = "| 1 | Which region? | T1.1 |"
+
+// TestTickQuestionHold: an open row holds the task it names. One item is
+// raised and nothing is started, however many passes and restarts follow;
+// the owner's answer is then written into the row, once, and the task starts.
+//
+// Load-bearing rows are named in the comment above TestTickHappyPathToShipping.
+func TestTickQuestionHold(t *testing.T) {
+	cases := []struct {
+		name string
+		// killed runs the first tick as a daemon that died after writing the
+		// item and before writing the ledger.
+		killed bool
+	}{
+		{name: "an open row holds its task"},
+		{name: "killed between the item and the ledger", killed: true},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			tasks := []masterplan.Task{task("T1.1"), task("T1.2", "T1.1")}
+			r := newAskingRig(t, tasks, ask{"Which region?", "T1.1"})
+			// A usage source that counts its calls: a hold must cause none.
+			r.usageOn, r.loginOn, r.login = true, true, LoginView{Known: true, LoggedIn: true}
+
+			if tt.killed {
+				q := masterplan.Questions([]byte(r.planText()))[0]
+				if _, err := r.store().Add(inbox.NewItem{Task: "T1.1", Kind: "question", Blocking: true,
+					Title: fitTitle(QuestionTitlePrefix + q.Text), Body: questionBody(q, "T1.1", "docs/PLAN.md")}); err != nil {
+					t.Fatal(err)
+				}
+				r.wantStatus("T1.1", ledger.Pending)
+			}
+
+			st := r.tick()
+			items := r.items()
+			if len(items) != 1 {
+				t.Fatalf("items after the first tick = %d, want 1 (logs: %v)", len(items), r.logs)
+			}
+			it := items[0]
+			if it.Kind != "question" || !it.Blocking || it.Task != "T1.1" || it.Session != "" || !it.Open() ||
+				it.Title != "Open question: Which region?" || firstLine(it.Body) != "Which region?" {
+				t.Errorf("question item = %+v", it)
+			}
+			if !tt.killed {
+				wantContains(t, "the question item's body", it.Body, "docs/PLAN.md, line", "has not started anything for T1.1",
+					"afk inbox answer", "writes your answer into the plan")
+				t.Logf("question item %s: %s\n%s", it.ID, it.Title, it.Body)
+				if len(r.notified) != 1 || r.notified[0].ID != it.ID {
+					t.Errorf("notified = %+v, want the stored item once", r.notified)
+				}
+			} else if len(r.notified) != 0 {
+				t.Errorf("notified = %+v, want nothing: the item was already there", r.notified)
+			}
+			e := r.wantStatus("T1.1", ledger.Parked)
+			if !slices.Equal(e.ParkedOn, []string{it.ID}) || e.Session != "" || e.Branch != "" || e.Attempts != 0 || e.StartedAt != "" {
+				t.Errorf("held entry = %+v, want parked on %s with no session, branch, attempt or start", e, it.ID)
+			}
+			if st.Kind != string(ActQuestionHold) || st.Task != "T1.1" || st.Session != "" ||
+				!strings.Contains(st.Reason, "waiting on the owner") || !strings.Contains(st.Reason, it.ID) {
+				t.Errorf("state = %+v, want question_hold, waiting on the owner, naming item %s", st, it.ID)
+			}
+			r.wantDecisions("question_hold")
+
+			// Twenty passes and a restart: still one item, and no agent.
+			r.ticks(10, time.Minute)
+			again := r.restartAsking()
+			again.usageOn = true
+			st = again.ticks(10, time.Minute)
+			if n := len(again.items()); n != 1 {
+				t.Errorf("items after twenty more passes = %d, want 1", n)
+			}
+			if n := len(r.launches) + len(again.launches) + r.preflights + again.preflights; n != 0 {
+				t.Errorf("launches and preflights for a held task = %d, want 0", n)
+			}
+			if n := r.usageCalls + again.usageCalls + r.loginCalls; n != 0 {
+				t.Errorf("usage and login were asked %d times for a held task, want 0", n)
+			}
+			if n := len(r.patches) + len(again.patches); n != 0 {
+				t.Errorf("the plan was patched %d times before any answer, want 0", n)
+			}
+			if st.Kind != string(ActIdle) || !strings.Contains(st.Reason, "waiting on owner") || !strings.Contains(st.Reason, it.ID) {
+				t.Errorf("state while the owner thinks = %+v", st)
+			}
+			again.wantStatus("T1.1", ledger.Parked)
+			again.wantDecisions("question_hold")
+			if _, err := os.Stat(filepath.Join(again.root, "wt")); !os.IsNotExist(err) {
+				t.Errorf("a session folder exists for a held task (stat err %v)", err)
+			}
+			if !strings.Contains(again.planText(), regionRow) {
+				t.Errorf("the plan row changed before any answer:\n%s", again.planText())
+			}
+
+			// The owner answers, with a pipe and a line break in the answer.
+			again.usageOn = false
+			again.answerWith(it.ID, "Use Frankfurt | eu-central\nplease")
+			again.advance(5 * time.Second)
+			st = again.tick()
+			if st.Kind != string(ActQuestionAnswered) || st.Task != "T1.1" {
+				t.Errorf("state on the answer = %+v", st)
+			}
+			wantRow := `| 1 | Which region? **Answered 2026-10-11:** Use Frankfurt \| eu-central please | T1.1 |`
+			if !strings.Contains(again.planText(), wantRow) {
+				t.Errorf("the plan does not hold the answered row %q:\n%s", wantRow, again.planText())
+			}
+			if len(again.patches) != 1 || again.patches[0].Message != "docs(plan): Answer an open question for T1.1" ||
+				again.patches[0].PlanPath != filepath.Join(again.root, "docs", "PLAN.md") {
+				t.Errorf("patches = %+v, want one for T1.1 on the plan", again.patches)
+			}
+			e = again.wantStatus("T1.1", ledger.Pending)
+			if len(e.ParkedOn) != 0 || e.Session != "" || e.Attempts != 0 {
+				t.Errorf("released entry = %+v, want pending with nothing parked and no session", e)
+			}
+			if len(again.launches) != 0 {
+				t.Errorf("launches on the pass the answer was written = %+v, want none", again.launches)
+			}
+			qs := masterplan.Questions([]byte(again.planText()))
+			if len(qs) != 1 || qs[0].Open || !slices.Equal(qs[0].NeededBy, []string{"T1.1"}) {
+				t.Errorf("the patched table reads as %+v, want one answered row needed by T1.1", qs)
+			}
+
+			// A restart, and the task starts. The row is not written twice.
+			last := again.restartAsking()
+			last.advance(5 * time.Second)
+			last.tick()
+			if len(last.launches) != 1 || last.launches[0].Task != "T1.1" {
+				t.Fatalf("launches after the answer = %+v, want T1.1 (logs: %v)", last.launches, last.logs)
+			}
+			last.wantStatus("T1.1", ledger.Running)
+			last.ticks(5, 5*time.Second)
+			if n := len(again.patches) + len(last.patches); n != 1 {
+				t.Errorf("the plan was patched %d times across the restart, want 1", n)
+			}
+			if n := strings.Count(last.planText(), "**Answered"); n != 1 {
+				t.Errorf("the plan holds %d answers, want 1:\n%s", n, last.planText())
+			}
+			if n := len(last.items()); n != 1 {
+				t.Errorf("items at the end = %d, want 1", n)
+			}
+			last.wantDecisions("question_hold", "question_answered", "launch")
+		})
+	}
+}
+
+// TestTickQuestionRowsThatHoldNothing: an answered row, a row whose "Needed
+// by" names no task and a row for a task that is not next all let the first
+// task launch at once, with nothing in the inbox.
+func TestTickQuestionRowsThatHoldNothing(t *testing.T) {
+	cases := []struct {
+		name string
+		row  ask
+	}{
+		{name: "an answered row", row: ask{"Which region? **Answered 2026-10-01:** Frankfurt", "T1.1"}},
+		{name: "a row naming no task", row: ask{"Which region?", "before launch"}},
+		{name: "a row naming a task that is not next", row: ask{"Which region?", "T1.2"}},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			r := newAskingRig(t, []masterplan.Task{task("T1.1"), task("T1.2", "T1.1")}, tt.row)
+			st := r.tick()
+			if len(r.launches) != 1 || r.launches[0].Task != "T1.1" || st.Kind != string(ActLaunch) {
+				t.Fatalf("launches = %+v, state = %+v; want T1.1 launched", r.launches, st)
+			}
+			if n := len(r.items()); n != 0 {
+				t.Errorf("items = %d, want 0", n)
+			}
+			if len(r.patches) != 0 {
+				t.Errorf("patches = %d, want 0", len(r.patches))
+			}
+		})
+	}
+}
+
+// TestTickQuestionTwoRows: two open rows on one task raise two items, and
+// the task waits for both. One answer changes nothing in the plan; the second
+// writes both rows and the task starts.
+func TestTickQuestionTwoRows(t *testing.T) {
+	tasks := []masterplan.Task{task("T1.1"), task("T1.2", "T1.1")}
+	r := newAskingRig(t, tasks, ask{"Which region?", "T1.1"}, ask{"Which bank?", "T1.1, T1.2"})
+	r.ticks(5, 5*time.Second)
+	items := questionItems(r.items())
+	if len(items) != 2 || len(r.items()) != 2 {
+		t.Fatalf("items = %+v, want two question items", r.items())
+	}
+	byText := map[string]inbox.Item{}
+	for _, it := range items {
+		byText[firstLine(it.Body)] = it
+	}
+	region, bank := byText["Which region?"], byText["Which bank?"]
+	if region.ID == "" || bank.ID == "" {
+		t.Fatalf("items = %+v, want one for each row", items)
+	}
+	e := r.wantStatus("T1.1", ledger.Parked)
+	if !slices.Equal(e.ParkedOn, []string{region.ID, bank.ID}) {
+		t.Errorf("parked on %v, want both items in plan order", e.ParkedOn)
+	}
+
+	r.answerWith(region.ID, "Frankfurt")
+	st := r.ticks(5, 5*time.Second)
+	r.wantStatus("T1.1", ledger.Parked)
+	if len(r.patches) != 0 || len(r.launches) != 0 || strings.Contains(r.planText(), "**Answered") {
+		t.Errorf("after one of two answers: patches %d, launches %d, plan:\n%s", len(r.patches), len(r.launches), r.planText())
+	}
+	if st.Kind != string(ActIdle) || !strings.Contains(st.Reason, bank.ID) {
+		t.Errorf("state after one of two answers = %+v, want waiting on %s", st, bank.ID)
+	}
+
+	r.answerWith(bank.ID, "The one in town")
+	r.advance(5 * time.Second)
+	r.tick()
+	wantContains(t, "the plan", r.planText(),
+		"| 1 | Which region? **Answered 2026-10-11:** Frankfurt | T1.1 |",
+		"| 2 | Which bank? **Answered 2026-10-11:** The one in town | T1.1, T1.2 |")
+	if len(r.patches) != 2 {
+		t.Errorf("patches = %d, want one for each row", len(r.patches))
+	}
+	r.wantStatus("T1.1", ledger.Pending)
+	if len(r.launches) != 0 {
+		t.Errorf("launches on the pass the answers were written = %+v", r.launches)
+	}
+	r.advance(5 * time.Second)
+	r.tick()
+	if len(r.launches) != 1 || r.launches[0].Task != "T1.1" {
+		t.Fatalf("launches = %+v, want T1.1", r.launches)
+	}
+	if n := len(r.items()); n != 2 {
+		t.Errorf("items at the end = %d, want 2", n)
+	}
+	if len(r.patches) != 2 {
+		t.Errorf("patches at the end = %d, want 2", len(r.patches))
+	}
+}
+
+// TestTickQuestionPatchedOnceWhenKilledBeforeTheLedger: the daemon wrote the
+// answer into the plan and died before it wrote the ledger. The next one
+// finds a parked task and an answered item, reads the plan, sees the row is
+// answered and only finishes the ledger. No second patch.
+func TestTickQuestionPatchedOnceWhenKilledBeforeTheLedger(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"})
+	r.tick()
+	it := r.items()[0]
+	r.answerWith(it.ID, "Frankfurt")
+
+	// What the dead daemon left: the patched plan, and a ledger that still
+	// says parked.
+	_, patched, ok := masterplan.AnswerRow([]byte(r.planText()), "Which region?", "2026-10-11", "Frankfurt")
+	if !ok {
+		t.Fatal("AnswerRow refused the row")
+	}
+	r.writePlan(strings.Replace(r.planText(), regionRow, string(patched), 1))
+	r.wantStatus("T1.1", ledger.Parked)
+
+	again := r.restartAsking()
+	again.advance(5 * time.Second)
+	st := again.tick()
+	if len(again.patches) != 0 {
+		t.Errorf("patches after the restart = %d, want 0: the row was already answered", len(again.patches))
+	}
+	if n := strings.Count(again.planText(), "**Answered"); n != 1 {
+		t.Errorf("the plan holds %d answers, want 1:\n%s", n, again.planText())
+	}
+	if st.Kind != string(ActQuestionAnswered) {
+		t.Errorf("state = %+v, want question_answered", st)
+	}
+	again.wantStatus("T1.1", ledger.Pending)
+	again.advance(5 * time.Second)
+	again.tick()
+	if len(again.launches) != 1 {
+		t.Fatalf("launches = %+v, want T1.1", again.launches)
+	}
+	if n := len(again.items()); n != 1 {
+		t.Errorf("items = %d, want 1", n)
+	}
+}
+
+// TestTickQuestionFollowUp: the owner answered, and the answer is not in the
+// plan in the main checkout afterwards. The task must not start. It parks on
+// one follow-up item that says what to do; answering that item tries again.
+//
+// The three rows are the three ways it happens: the project changes its plan
+// through a pull request (the patch works and the file is unchanged), the
+// patch fails, and the daemon has no way to patch at all.
+func TestTickQuestionFollowUp(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func(r *rig)
+		patches int // patch calls for one try
+		has     []string
+	}{
+		{name: "a pull request", patches: 1,
+			setup: func(r *rig) { r.patchPR = "https://example.test/demo/pull/7" },
+			has:   []string{"https://example.test/demo/pull/7", "Merge it", "pull the base branch"}},
+		{name: "a patch that fails", patches: 1,
+			setup: func(r *rig) { r.patchErr = errors.New("the push was refused") },
+			has:   []string{"the push was refused", "**Answered 2026-10-11:** Frankfurt", "docs/PLAN.md, line"}},
+		{name: "no way to patch", patches: 0,
+			setup: func(r *rig) { r.patchOn = false },
+			has:   []string{"This daemon cannot change the plan", "**Answered 2026-10-11:** Frankfurt", "docs/PLAN.md, line"}},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"})
+			tt.setup(r)
+			r.tick()
+			q := r.items()[0]
+			r.answerWith(q.ID, "Frankfurt")
+			r.advance(5 * time.Second)
+			st := r.tick()
+
+			ups := followUps(r.items())
+			if len(ups) != 1 || len(r.items()) != 2 {
+				t.Fatalf("items = %+v, want the question and one follow-up (logs: %v)", r.items(), r.logs)
+			}
+			up := ups[0]
+			if up.Kind != "external_action" || !up.Blocking || up.Task != "T1.1" || !up.Open() ||
+				up.Title != "Put the answer in the plan: T1.1" {
+				t.Errorf("follow-up item = %+v", up)
+			}
+			wantContains(t, "the follow-up body", up.Body, tt.has...)
+			wantContains(t, "the follow-up body", up.Body, "Which region?", "has not started T1.1", "afk inbox answer")
+			t.Logf("follow-up item %s: %s\n%s", up.ID, up.Title, up.Body)
+			e := r.wantStatus("T1.1", ledger.Parked)
+			if !slices.Equal(e.ParkedOn, []string{up.ID}) || e.Session != "" {
+				t.Errorf("entry = %+v, want parked on the follow-up %s with no session", e, up.ID)
+			}
+			if st.Kind != string(ActQuestionHold) || !strings.Contains(st.Reason, up.ID) || !strings.Contains(st.Reason, "not in the plan yet") {
+				t.Errorf("state = %+v, want question_hold naming %s", st, up.ID)
+			}
+			if len(r.patches) != tt.patches {
+				t.Errorf("patches = %d, want %d", len(r.patches), tt.patches)
+			}
+			if !strings.Contains(r.planText(), regionRow) {
+				t.Errorf("the plan changed:\n%s", r.planText())
+			}
+			r.wantDecisions("question_hold", "question_follow_up")
+
+			// Ten passes and a restart: one follow-up, no second question
+			// item, no second patch, and nothing launched.
+			r.ticks(5, time.Minute)
+			again := r.restartAsking()
+			again.ticks(5, time.Minute)
+			if n, m := len(followUps(again.items())), len(questionItems(again.items())); n != 1 || m != 1 {
+				t.Errorf("follow-ups %d and question items %d after ten passes, want 1 and 1", n, m)
+			}
+			if n := len(r.patches) + len(again.patches); n != tt.patches {
+				t.Errorf("patches after ten passes = %d, want %d", n, tt.patches)
+			}
+			if n := len(r.launches) + len(again.launches); n != 0 {
+				t.Errorf("launches with the answer not in the plan = %d, want 0", n)
+			}
+
+			// Answered with nothing changed: tried again, and raised again.
+			again.answer(up.ID)
+			again.advance(5 * time.Second)
+			again.tick()
+			ups = followUps(again.items())
+			if len(ups) != 2 || len(questionItems(again.items())) != 1 {
+				t.Fatalf("items after an empty answer = %+v, want a second follow-up and still one question item", again.items())
+			}
+			var second inbox.Item
+			for _, it := range ups {
+				if it.Open() {
+					second = it
+				}
+			}
+			if e := again.wantStatus("T1.1", ledger.Parked); second.ID == "" || !slices.Equal(e.ParkedOn, []string{second.ID}) {
+				t.Errorf("entry = %+v, want parked on the new follow-up %q", e, second.ID)
+			}
+			if n := len(again.patches); n != tt.patches {
+				t.Errorf("patches on the second try = %d, want %d", n, tt.patches)
+			}
+			if len(again.launches) != 0 {
+				t.Errorf("launches = %+v, want none", again.launches)
+			}
+
+			// The owner does what the item says (the pull request is merged
+			// and pulled, or the text is written in by hand) and answers.
+			_, patched, ok := masterplan.AnswerRow([]byte(again.planText()), "Which region?", "2026-10-11", "Frankfurt")
+			if !ok {
+				t.Fatal("AnswerRow refused the row")
+			}
+			again.writePlan(strings.Replace(again.planText(), regionRow, string(patched), 1))
+			before := len(again.patches)
+			again.answer(second.ID)
+			again.advance(5 * time.Second)
+			again.tick()
+			again.wantStatus("T1.1", ledger.Pending)
+			if len(again.patches) != before {
+				t.Errorf("the plan was patched again though the row was answered: %d calls, want %d", len(again.patches), before)
+			}
+			again.advance(5 * time.Second)
+			again.tick()
+			if len(again.launches) != 1 || again.launches[0].Task != "T1.1" {
+				t.Fatalf("launches = %+v, want T1.1", again.launches)
+			}
+			if n := strings.Count(again.planText(), "**Answered"); n != 1 {
+				t.Errorf("the plan holds %d answers, want 1", n)
+			}
+		})
+	}
+}
+
+// TestTickQuestionFollowUpKilledBeforeTheLedger: the daemon raised the
+// follow-up item and died before it pointed the ledger at it. The next one
+// finds the open item, parks the task on it and neither patches again nor
+// raises a second.
+func TestTickQuestionFollowUpKilledBeforeTheLedger(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"})
+	r.patchPR = "https://example.test/demo/pull/7"
+	r.tick()
+	q := r.items()[0]
+	r.answerWith(q.ID, "Frankfurt")
+	up, err := r.store().Add(inbox.NewItem{Task: "T1.1", Kind: "external_action", Blocking: true,
+		Title: fitTitle(QuestionFollowUpTitlePrefix + "T1.1"), Body: "left by a daemon that was killed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	again := r.restartAsking()
+	again.ticks(5, 5*time.Second)
+	if n := len(again.items()); n != 2 {
+		t.Errorf("items = %d, want the question and the one follow-up", n)
+	}
+	if len(again.patches) != 0 {
+		t.Errorf("patches = %d, want 0: the dead daemon had tried already", len(again.patches))
+	}
+	if e := again.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{up.ID}) {
+		t.Errorf("parked on %v, want the follow-up %s", e.ParkedOn, up.ID)
+	}
+	if len(again.launches) != 0 {
+		t.Errorf("launches = %+v, want none", again.launches)
+	}
+}
+
+// TestTickQuestionDuplicateRow: the same question is in the table twice, so
+// there is no telling which row the answer belongs in. The edit refuses with
+// ErrRowAnswered, which the loop does not take for a failure, and the read
+// that follows still finds the rows open: the owner is told, with the place
+// of each row, and nothing starts.
+func TestTickQuestionDuplicateRow(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"}, ask{"Which region?", "T1.1"})
+	r.tick()
+	if n := len(r.items()); n != 1 {
+		t.Fatalf("items = %d, want one: the two rows are one question", n)
+	}
+	before := r.planText()
+	r.answerWith(r.items()[0].ID, "Frankfurt")
+	r.advance(5 * time.Second)
+	r.tick()
+	ups := followUps(r.items())
+	if len(ups) != 1 {
+		t.Fatalf("follow-ups = %d, want 1 (logs: %v)", len(ups), r.logs)
+	}
+	wantContains(t, "the follow-up body", ups[0].Body, "2 open questions", "could not find a single open row",
+		"**Answered 2026-10-11:** Frankfurt")
+	if len(r.patches) != 1 {
+		t.Errorf("patches = %d, want one try for the one question", len(r.patches))
+	}
+	if r.planText() != before || len(r.launches) != 0 {
+		t.Errorf("the plan changed or something launched (launches %d)", len(r.launches))
+	}
+	r.wantStatus("T1.1", ledger.Parked)
+}
+
+// TestTickQuestionAnsweredByHand: the owner writes the answer into the plan
+// themselves while the item is open. The loop answers the item, patches
+// nothing, and the task starts.
+func TestTickQuestionAnsweredByHand(t *testing.T) {
+	cases := []struct {
+		name   string
+		byHand func(plan string) string
+	}{
+		{name: "the row is answered in the plan", byHand: func(plan string) string {
+			return strings.Replace(plan, regionRow, "| 1 | Which region? **Answered 2026-10-12:** Frankfurt, by hand | T1.1 |", 1)
+		}},
+		{name: "the row is taken out of the plan", byHand: func(plan string) string {
+			return strings.Replace(plan, regionRow+"\n", "", 1)
+		}},
+	}
+	for _, tt := range cases {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"})
+			r.tick()
+			it := r.items()[0]
+			r.writePlan(tt.byHand(r.planText()))
+			after := r.planText()
+
+			r.advance(5 * time.Second)
+			r.tick()
+			got := r.items()[0]
+			if got.Open() || got.Answer != answeredInPlan || got.AnsweredVia != inbox.ViaCLI {
+				t.Errorf("item = %+v, want answered by the loop as %q", got, answeredInPlan)
+			}
+			r.wantStatus("T1.1", ledger.Pending)
+			r.advance(5 * time.Second)
+			r.tick()
+			if len(r.launches) != 1 || r.launches[0].Task != "T1.1" {
+				t.Fatalf("launches = %+v, want T1.1 (logs: %v)", r.launches, r.logs)
+			}
+			if len(r.patches) != 0 || r.planText() != after {
+				t.Errorf("patches = %d, want 0, and the plan as the owner left it", len(r.patches))
+			}
+			if n := len(r.items()); n != 1 || r.items()[0].ID != it.ID {
+				t.Errorf("items = %d, want the one item", n)
+			}
+			r.wantDecisions("question_hold", "question_closed", "question_answered", "launch")
+		})
+	}
+}
+
+// TestTickQuestionRowNeededByTwoTasks: one row, two tasks that are both
+// ready. One item is raised, both tasks wait on it, one patch answers the
+// row and both go on.
+func TestTickQuestionRowNeededByTwoTasks(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1"), task("T1.3")}, ask{"Which region?", "T1.1, T1.3"})
+	r.ticks(5, 5*time.Second)
+	items := r.items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1 for a row needed by two tasks", len(items))
+	}
+	wantContains(t, "the question body", items[0].Body, "T1.1, T1.3")
+	for _, id := range []string{"T1.1", "T1.3"} {
+		if e := r.wantStatus(id, ledger.Parked); !slices.Equal(e.ParkedOn, []string{items[0].ID}) {
+			t.Errorf("%s parked on %v, want the one item", id, e.ParkedOn)
+		}
+	}
+	if len(r.launches) != 0 {
+		t.Errorf("launches = %+v, want none", r.launches)
+	}
+
+	r.answerWith(items[0].ID, "Frankfurt")
+	r.ticks(3, 5*time.Second)
+	if len(r.patches) != 1 || strings.Count(r.planText(), "**Answered") != 1 {
+		t.Errorf("patches = %d, want 1, and one answer in the plan:\n%s", len(r.patches), r.planText())
+	}
+	if len(r.launches) != 1 || r.launches[0].Task != "T1.1" {
+		t.Fatalf("launches = %+v, want T1.1 first", r.launches)
+	}
+	r.wantStatus("T1.3", ledger.Pending)
+	if n := len(r.items()); n != 1 {
+		t.Errorf("items at the end = %d, want 1", n)
+	}
+}
+
+// TestTickQuestionIndependentTaskLaunches: a held task holds up only what
+// depends on it. A task that stands alone starts on the next pass.
+func TestTickQuestionIndependentTaskLaunches(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1"), task("T1.2", "T1.1"), task("T1.3")}, ask{"Which region?", "T1.1"})
+	r.tick()
+	r.wantStatus("T1.1", ledger.Parked)
+	r.advance(5 * time.Second)
+	r.tick()
+	if len(r.launches) != 1 || r.launches[0].Task != "T1.3" {
+		t.Fatalf("launches = %+v, want T1.3", r.launches)
+	}
+	r.wantStatus("T1.1", ledger.Parked)
+	r.wantStatus("T1.2", ledger.Pending)
+	if n := len(r.items()); n != 1 {
+		t.Errorf("items = %d, want 1", n)
+	}
+}
+
+// TestTickQuestionOwnerTask: an owner's task is held like any other, and is
+// handed to the owner only once its question is answered in the plan.
+func TestTickQuestionOwnerTask(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{ownerTask("T0.0"), task("T1.1", "T0.0")}, ask{"Which region?", "T0.0"})
+	r.ticks(3, 5*time.Second)
+	items := r.items()
+	if len(items) != 1 || !isQuestionItem(items[0]) {
+		t.Fatalf("items = %+v, want the question and not yet the owner's task", items)
+	}
+	r.answerWith(items[0].ID, "Frankfurt")
+	r.advance(5 * time.Second)
+	r.tick()
+	r.wantStatus("T0.0", ledger.Pending)
+	r.advance(5 * time.Second)
+	r.tick()
+	items = r.items()
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want the question and the owner's task", len(items))
+	}
+	e := r.wantStatus("T0.0", ledger.Parked)
+	owner := 0
+	for _, it := range items {
+		if strings.HasPrefix(it.Title, OwnerTitlePrefix) {
+			owner++
+			if !slices.Equal(e.ParkedOn, []string{it.ID}) {
+				t.Errorf("parked on %v, want the owner's item %s", e.ParkedOn, it.ID)
+			}
+		}
+	}
+	if owner != 1 || len(r.launches) != 0 || r.preflights != 0 {
+		t.Errorf("owner items %d, launches %d, preflights %d; want 1, 0 and 0", owner, len(r.launches), r.preflights)
+	}
+	r.wantDecisions("question_hold", "question_answered", "owner_task")
+}
+
+// TestTickQuestionWhilePaused: `afk pause` promises that no new task starts.
+// Asking a question and writing its answer start nothing, so both happen
+// while paused, and the launch that would follow is still held back.
+func TestTickQuestionWhilePaused(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"})
+	if err := daemonstate.Pause(r.root, *r.clock); err != nil {
+		t.Fatal(err)
+	}
+	r.ticks(3, 5*time.Second)
+	items := r.items()
+	if len(items) != 1 {
+		t.Fatalf("items while paused = %d, want the question", len(items))
+	}
+	r.answerWith(items[0].ID, "Frankfurt")
+	st := r.ticks(3, 5*time.Second)
+	if len(r.patches) != 1 || !strings.Contains(r.planText(), "**Answered 2026-10-11:** Frankfurt") {
+		t.Errorf("patches = %d, want the answer written while paused:\n%s", len(r.patches), r.planText())
+	}
+	r.wantStatus("T1.1", ledger.Pending)
+	if len(r.launches) != 0 || r.preflights != 0 {
+		t.Errorf("launches %d, preflights %d while paused; want 0 and 0", len(r.launches), r.preflights)
+	}
+	if st.Kind != string(ActWait) || !strings.Contains(st.Reason, "paused") {
+		t.Errorf("state = %+v, want the paused wait", st)
+	}
+}
+
+// TestTickQuestionStoppedLine: a stopped line holds the question back with
+// everything else. Nothing is asked until the stop is cleared.
+func TestTickQuestionStoppedLine(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"})
+	if err := daemonstate.Stop(r.root, "T0.9", "the deploy did not become healthy", *r.clock); err != nil {
+		t.Fatal(err)
+	}
+	st := r.ticks(3, 5*time.Second)
+	if st.Kind != KindLineStopped || len(r.items()) != 0 {
+		t.Errorf("state = %+v, items = %d; want line_stopped and nothing asked", st, len(r.items()))
+	}
+	r.wantStatus("T1.1", ledger.Pending)
+	if _, err := daemonstate.ClearStop(r.root); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(5 * time.Second)
+	r.tick()
+	if n := len(r.items()); n != 1 {
+		t.Errorf("items after the stop was cleared = %d, want the question", n)
+	}
+	r.wantStatus("T1.1", ledger.Parked)
+}
+
+// TestTickQuestionReadError: the plan cannot be read for its questions. The
+// task is not started blind, nothing is asked and no item is closed; when the
+// plan can be read again the hold goes on as usual.
+func TestTickQuestionReadError(t *testing.T) {
+	r := newAskingRig(t, []masterplan.Task{task("T1.1")}, ask{"Which region?", "T1.1"})
+	r.readPlanErr = errors.New("permission denied")
+	st := r.ticks(3, 5*time.Second)
+	if st.Kind != string(ActWait) || st.Task != "T1.1" || !strings.Contains(st.Reason, "permission denied") ||
+		!strings.Contains(st.Reason, "open questions could not be read") {
+		t.Errorf("state = %+v, want a wait that names the error", st)
+	}
+	if len(r.launches) != 0 || r.preflights != 0 || len(r.items()) != 0 {
+		t.Errorf("launches %d, preflights %d, items %d; want nothing", len(r.launches), r.preflights, len(r.items()))
+	}
+	r.wantStatus("T1.1", ledger.Pending)
+
+	r.readPlanErr = nil
+	r.advance(5 * time.Second)
+	r.tick()
+	items := r.items()
+	if len(items) != 1 {
+		t.Fatalf("items once the plan reads again = %d, want 1", len(items))
+	}
+	r.wantStatus("T1.1", ledger.Parked)
+
+	// An unreadable plan has not lost its rows: the open item stays open.
+	r.readPlanErr = errors.New("permission denied")
+	r.ticks(3, 5*time.Second)
+	if got := r.items()[0]; !got.Open() {
+		t.Errorf("the item was closed on a plan that could not be read: %+v", got)
+	}
+	r.wantStatus("T1.1", ledger.Parked)
+}
+
+// TestTickQuestionWithoutReadPlan: a daemon wired with no plan reader knows
+// of no open row. A task named by one launches exactly as it did before the
+// hold existed, and a question item somebody else raised is left alone.
+func TestTickQuestionWithoutReadPlan(t *testing.T) {
+	tasks := []masterplan.Task{task("T1.1")}
+	r := newRig(t, tasks...)
+	r.writePlan(planAsking(tasks, ask{"Which region?", "T1.1"}))
+	if _, err := r.store().Add(inbox.NewItem{Kind: "question", Title: QuestionTitlePrefix + "Something else?", Body: "Something else?"}); err != nil {
+		t.Fatal(err)
+	}
+	st := r.tick()
+	if len(r.launches) != 1 || r.launches[0].Task != "T1.1" || st.Kind != string(ActLaunch) {
+		t.Fatalf("launches = %+v, state = %+v; want T1.1 launched", r.launches, st)
+	}
+	items := r.items()
+	if len(items) != 1 || !items[0].Open() {
+		t.Errorf("items = %+v, want the one item still open", items)
+	}
+	r.wantDecisions("launch")
 }

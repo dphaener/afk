@@ -114,10 +114,6 @@ var (
 	looksLikeTaskRE = regexp.MustCompile(`^[Tt]\d`)
 	milestoneRE     = regexp.MustCompile(`^M\d+\s+[—–-]\s+\S`)
 	sectionNumberRE = regexp.MustCompile(`^\d+\.\s*`)
-	separatorCellRE = regexp.MustCompile(`^:?-+:?$`)
-	// taskIDTokenRE finds a task id that is not part of a longer word, so
-	// "after T2.4" names T2.4 and "XT2.4" or "T2.4bc" names nothing.
-	taskIDTokenRE = regexp.MustCompile(`\bT\d+\.\d+[a-z]?\b`)
 )
 
 // taskFields are the three bullets every task should carry, with the pattern
@@ -289,11 +285,14 @@ func Lint(data []byte) Report {
 
 	// Open questions.
 	open := 0
-	for _, r := range openQuestionRows(lines, fenced, o.Headings) {
+	for _, r := range masterplan.Questions(data) {
+		if !r.Open {
+			continue
+		}
 		open++
-		ids := taskIDTokenRE.FindAllString(r.neededBy, -1)
+		ids := r.NeededBy
 		if len(ids) == 0 {
-			add(LevelWarning, r.line, "", RuleOpenQuestionNoTask,
+			add(LevelWarning, r.Line, "", RuleOpenQuestionNoTask,
 				"This open question's \"Needed by\" names no task, so no task waits for the answer. Name the tasks that need it, or mark the question answered.")
 			continue
 		}
@@ -303,7 +302,7 @@ func Lint(data []byte) Report {
 				continue
 			}
 			seen[id] = true
-			add(LevelError, r.line, id, RuleOpenQuestionUnknownTask,
+			add(LevelError, r.Line, id, RuleOpenQuestionUnknownTask,
 				"This open question is needed by %s, which is not a task in this plan. Fix the id, or mark the question answered.", id)
 		}
 	}
@@ -431,159 +430,6 @@ func sectionHeading(headings []masterplan.Heading, name string) int {
 		}
 	}
 	return -1
-}
-
-// openRow is one unanswered row of the open-questions table.
-type openRow struct {
-	line     int
-	neededBy string
-}
-
-// openQuestionRows returns the open rows of the open-questions table, or
-// nothing when the plan has no such section or no table with a "Needed by"
-// column in it.
-//
-// A row is open unless its question cell contains "**Answered". That exact
-// marker, in that cell, is the rule a later task (T5.6) will use to hold a
-// task back while a question it needs is open, so the checker counts and
-// checks rows by the same rule and no looser one. A row marked "Done" or
-// "Decided", or one whose answer was written as a row of its own below it,
-// is still open here because it will still be open there.
-func openQuestionRows(lines []string, fenced func(int) bool, headings []masterplan.Heading) []openRow {
-	hi := sectionHeading(headings, "Open questions")
-	if hi < 0 {
-		return nil
-	}
-	start, end := headings[hi].Line, len(lines) // start is the 0-based line after the heading
-	for _, h := range headings[hi+1:] {
-		if h.Level <= 2 {
-			end = h.Line - 1
-			break
-		}
-	}
-
-	isRow := func(i int) bool {
-		return !fenced(i) && strings.HasPrefix(strings.TrimLeft(lines[i], " \t"), "|")
-	}
-	for i := start; i < end; i++ {
-		if !isRow(i) {
-			continue
-		}
-		last := i
-		for last+1 < end && isRow(last+1) {
-			last++
-		}
-		needCol, questionCol := -1, 0
-		for c, cell := range splitRow(lines[i]) {
-			switch {
-			case strings.EqualFold(cell, "Needed by") && needCol < 0:
-				needCol = c
-			case strings.EqualFold(cell, "Question"):
-				questionCol = c
-			}
-		}
-		if needCol < 0 {
-			i = last
-			continue
-		}
-		var rows []openRow
-		for r := i + 1; r <= last; r++ {
-			cells := splitRow(lines[r])
-			if isSeparator(cells) {
-				continue
-			}
-			if strings.Contains(cellAt(cells, questionCol), "**Answered") {
-				continue
-			}
-			rows = append(rows, openRow{line: r + 1, neededBy: cellAt(cells, needCol)})
-		}
-		return rows
-	}
-	return nil
-}
-
-func cellAt(cells []string, i int) string {
-	if i < len(cells) {
-		return cells[i]
-	}
-	return ""
-}
-
-func isSeparator(cells []string) bool {
-	if len(cells) == 0 {
-		return false
-	}
-	for _, c := range cells {
-		if !separatorCellRE.MatchString(c) {
-			return false
-		}
-	}
-	return true
-}
-
-// splitRow splits a table row into trimmed cells. A pipe written "\|" and a
-// pipe inside a backtick code span do not end a cell: plans quote shell
-// commands and patterns in their questions, and splitting on those pipes
-// would shift "Needed by" onto the wrong text.
-func splitRow(line string) []string {
-	s := strings.TrimPrefix(strings.TrimSpace(line), "|")
-	var cells []string
-	var cur strings.Builder
-	span := 0 // length of the backtick run that opened the current code span
-	for i := 0; i < len(s); {
-		switch c := s[i]; {
-		case c == '\\' && i+1 < len(s) && s[i+1] == '|':
-			cur.WriteByte('|')
-			i += 2
-		case c == '`':
-			n := 1
-			for i+n < len(s) && s[i+n] == '`' {
-				n++
-			}
-			switch {
-			case span == n:
-				span = 0
-			case span == 0 && hasBacktickRun(s[i+n:], n):
-				// A run with no matching closing run is plain text, so one
-				// stray backtick cannot swallow the rest of the row.
-				span = n
-			}
-			cur.WriteString(s[i : i+n])
-			i += n
-		case c == '|' && span == 0:
-			cells = append(cells, strings.TrimSpace(cur.String()))
-			cur.Reset()
-			i++
-		default:
-			cur.WriteByte(c)
-			i++
-		}
-	}
-	// Text after the last pipe is a cell only if there is any; a row
-	// normally ends with a pipe.
-	if rest := strings.TrimSpace(cur.String()); rest != "" {
-		cells = append(cells, rest)
-	}
-	return cells
-}
-
-// hasBacktickRun reports whether s holds a run of exactly n backticks.
-func hasBacktickRun(s string, n int) bool {
-	for i := 0; i < len(s); {
-		if s[i] != '`' {
-			i++
-			continue
-		}
-		j := i
-		for j < len(s) && s[j] == '`' {
-			j++
-		}
-		if j-i == n {
-			return true
-		}
-		i = j
-	}
-	return false
 }
 
 // joinOr writes "Goal", "Goal or Scope", "Goal, Scope or Acceptance".

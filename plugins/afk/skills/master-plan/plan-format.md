@@ -156,8 +156,9 @@ A task with no `Depends on` line at all is an error: the daemon refuses the plan
   to a task, so nothing can hold a task back for it; the checker warns.
 - A pipe inside a cell is written `\|`, or put inside a backtick code span.
 
-Later work will hold a task back while a question it needs is open. That is why the answered marker must
-be exact.
+The build daemon holds a task back while an open row names it. It asks the owner in the inbox, one item per
+row, and writes the answer into the Question cell as `**Answered <date>:** <answer>`. That is why the
+answered marker must be exact.
 
 ---
 

@@ -1,7 +1,7 @@
 {
   "name": "afk",
   "description": "Structured Plan → Execute → Review workflow with smart model selection, research agents, and adversarial review",
-  "version": "5.7.0",
+  "version": "5.7.1",
   "author": {
     "name": "Ontra"
   },

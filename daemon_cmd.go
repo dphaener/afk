@@ -23,6 +23,7 @@ import (
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/notify"
+	"github.com/dphaener/afk/internal/planpatch"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
@@ -532,6 +533,54 @@ func (n daemonNotifier) deliver(p daemon.Project, url string, m notify.NtfyMessa
 	}
 }
 
+// daemonPatchPlan is the loop's PatchPlan: one guarded change to the master
+// plan, made through planpatch.Run exactly as `afk plan patch` makes it.
+//
+// It lives here and not in internal/daemon because the daemon package stays
+// free of git, gh and the project's config: it only says what to write (the
+// Edit it hands over) and this file, which already owns every other real
+// call, decides how the change reaches the plan (a commit on the main
+// checkout's branch, or a pull request when [planning] via_pr is set).
+//
+// The config is read on every call, not once at start-up, so a via_pr the
+// owner turns on while the daemon runs applies to the next answer. A config
+// that cannot be read is an error and nothing is changed: guessing the
+// default would commit to the base branch of a project that asked for pull
+// requests.
+//
+// An error from req.Edit comes back from planpatch.Run as it was returned
+// (Run's patch step returns it before it writes anything), so
+// errors.Is(err, daemon.ErrRowAnswered) holds for the loop. The %w below
+// keeps that true even if Run ever wraps it.
+func daemonPatchPlan(load func(root string) (projectconfig.Config, error), run ship.RunFunc, tempDir func() (string, error)) func(daemon.Project, daemon.PlanPatchRequest) (daemon.PlanPatchResult, error) {
+	return func(p daemon.Project, req daemon.PlanPatchRequest) (daemon.PlanPatchResult, error) {
+		cfg, err := load(p.Root)
+		if err != nil {
+			return daemon.PlanPatchResult{}, fmt.Errorf("the project's afk.toml could not be read, so the plan was not changed: %w", err)
+		}
+		out, err := planpatch.Run(
+			planpatch.Deps{Run: run, TempDir: tempDir},
+			planpatch.Options{
+				Root:     p.Root,
+				PlanPath: req.PlanPath,
+				Edit: func(plan []byte) (planpatch.Edit, error) {
+					old, new, err := req.Edit(plan)
+					if err != nil {
+						return planpatch.Edit{}, fmt.Errorf("%w", err)
+					}
+					return planpatch.Edit{Old: old, New: new}, nil
+				},
+				Message: req.Message,
+				ViaPR:   cfg.Planning.ViaPR,
+				Base:    cfg.Ship.Base,
+			})
+		if err != nil {
+			return daemon.PlanPatchResult{}, err
+		}
+		return daemon.PlanPatchResult{PR: out.PR, Notes: out.Notes}, nil
+	}
+}
+
 // realDaemonDeps wires the loop to the real machine. Nothing here decides
 // anything; each field is one call into the package that owns the work.
 //
@@ -622,6 +671,8 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 			_, err := session.SpawnHost(session.HostSpawn{Name: req.Session, Worktree: req.Worktree, ResumeID: req.ResumeID}, sd)
 			return err
 		},
+		ReadPlan:    os.ReadFile,
+		PatchPlan:   daemonPatchPlan(projectconfig.Load, sw.run, func() (string, error) { return os.MkdirTemp("", "afk-plan-") }),
 		Usage:       usage.view,
 		Login:       login.view,
 		StopSession: daemonStopSession(realStopDeps()),
@@ -1082,6 +1133,10 @@ func daemonKindText(kind string) string {
 		return "the next task is yours to do, and is waiting in your inbox"
 	case string(daemon.ActOwnerDone):
 		return "you confirmed your task, so it is marked done"
+	case string(daemon.ActQuestionHold):
+		return "a task is waiting for you to answer an open question from the plan"
+	case string(daemon.ActQuestionAnswered):
+		return "an open question was answered, so the task it held can start"
 	case string(daemon.ActNoLedger):
 		return "nothing is started, because this project has no task ledger yet"
 	case daemon.KindLineStopped:
@@ -1136,7 +1191,8 @@ func daemonTaskRunning(st daemonstate.State) bool {
 		// but its work is finished: the wait is on GitHub, the deploy or the
 		// owner, not on the session.
 		return false
-	case string(daemon.ActOwner), string(daemon.ActOwnerDone), string(daemon.ActNoLedger):
+	case string(daemon.ActOwner), string(daemon.ActOwnerDone), string(daemon.ActNoLedger),
+		string(daemon.ActQuestionHold), string(daemon.ActQuestionAnswered):
 		// These never have a session; listed so every kind the loop gained
 		// with shipping is answered here on purpose.
 		return false
