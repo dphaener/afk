@@ -2502,7 +2502,7 @@ thing it does not do is attach to a session.
   shows the stand-in's numbers. `make check` is green.
 
 #### T8.9 — Sessions: the list and each session's overview
-- **Depends on:** T8.5
+- **Depends on:** T8.5, T8.7
 - **Goal:** a project's sessions are listed on the page, each with what the dashboard's overview shows
   (phase, loop count, work-plan progress, the review verdict, whether it waits for the owner, whether
   its host is alive), read-only.
