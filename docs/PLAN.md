@@ -2513,7 +2513,16 @@ thing it does not do is attach to a session.
   the dashboard's overview uses, updating live; a one-off session and the planning session are listed
   with what they are; a session's screen says that its terminal is opened from `afk dash` or
   `afk attach`, and for the planning session links to the chat view once T8.12 exists. The same under
-  `/api`. README: the web page section.
+  `/api`.
+  From the design system (reconciled 2026-10-13): session rows with the `tid` and task title, phase
+  and progress, the review verdict `badge`, a "Waits for you" `badge`, and the session id in
+  `row__aside`; a session's screen with its `tid`, status and verdict badges, an `h2` title, a `kv`
+  (phase, loop count, started, label, copy path, whether its host is alive) and, as **Summary** in
+  `prose`, what the dashboard's overview shows. Rows the design does not draw (a stale `status.json`,
+  a one-off session, the planning session, a dead host) use the same row with a badge and a line
+  saying what they are. The task screen of T8.7 gains an **Open its session** link to its session's
+  screen.
+  README: the web page section.
 - **Must not:** dial a host; write any file; block on a stale `host.json`.
 - **Acceptance:** handler tests over scratch session folders: running, waiting for the owner, stale
   `status.json`, a one-off session, the planning session, a dead host. Against a scratch build in a
