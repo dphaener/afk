@@ -2731,7 +2731,11 @@ thing it does not do is attach to a session.
   time and never a setting.
 - **Scope:** after the folder is made and before the chat view opens, one yes-or-no naming the
   repository that would be created (the folder's name, under the account `gh` is logged in as) and
-  saying it will be private; no is the default and changes nothing. Yes creates it and adds it as
+  saying it will be private; no is the default and changes nothing.
+  From the design system (reconciled 2026-10-13): the question is a `choice-list` ("Create a private
+  GitHub repository for it?") with **No** checked, asked after the folder is made and not inside the
+  form before it.
+  Yes creates it and adds it as
   `origin` through T7.6's code; nothing is pushed. When `gh` is missing or not logged in the question
   is not asked and the page says why and what to run. A failure is shown with its reason and planning
   starts all the same. The same under `/api`. README: the web page section.
