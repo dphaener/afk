@@ -1,0 +1,38 @@
+{{define "title"}}{{.Sheet.Title}}{{end}}
+{{define "content"}}
+<div class="stack">
+<h1>{{.Sheet.Title}}</h1>
+<p class="meta"><span class="tid">{{.ID}}</span> {{.Title}}</p>
+{{if .Chosen}}
+<div class="status-sentences">{{range .Choice.Lines}}<p>{{.}}</p>{{end}}</div>
+<div class="btn-row">
+  <form method="post" action="{{.Sheet.Path}}">
+    <input type="hidden" name="confirm" value="yes">
+    <input type="hidden" name="status" value="{{.Chosen}}">
+    <input type="hidden" name="replaced_by" value="{{.ReplacedBy}}">
+    <button type="submit" class="btn btn--primary">{{.Choice.Action}}</button>
+  </form>
+  <a class="btn btn--secondary" href="{{.Back}}">Back</a>
+</div>
+{{else}}
+{{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+<form method="get" action="{{.Sheet.Page}}" class="stack">
+  <fieldset>
+    <legend class="field__label">New status</legend>
+    <div class="choice-list">
+    {{range .Sheet.Choices}}<label class="choice"><input type="radio" name="to" value="{{.Status}}"{{if eq .Status $.Checked}} checked{{end}}><span class="choice__label">{{.Status}}</span>{{if .Current}}<span class="choice__meta">current</span>{{end}}</label>
+    {{end}}</div>
+  </fieldset>
+  <div class="field">
+    <label class="field__label" for="replaced-by">Replaced by (only for superseded)</label>
+    <input class="input input--mono" type="text" id="replaced-by" name="replaced_by" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="replaced-by-hint">
+    <span class="field__hint" id="replaced-by-hint">{{.Sheet.IDsHint}}</span>
+  </div>
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary">Continue</button>
+    <a class="btn btn--secondary" href="/p/{{pe .Project}}/tasks/{{pe .ID}}">{{.Sheet.Safe}}</a>
+  </div>
+</form>
+{{end}}
+</div>
+{{end}}

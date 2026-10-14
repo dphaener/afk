@@ -1,0 +1,33 @@
+{{define "title"}}Tasks: {{.Project}}{{end}}
+{{define "content"}}
+<div class="tasks">
+<h1>Tasks</h1>
+<div class="tasks__progress" id="tasks-progress" data-live="ledger" data-project="{{.Project}}">{{template "progress" .}}</div>
+<nav class="segmented" aria-label="Which tasks to show">
+{{range .Filters}}  <a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a>
+{{end}}</nav>
+<div class="tasks__list" id="tasks-list" data-live="ledger" data-project="{{.Project}}" aria-live="polite">
+{{with .Problem}}<div class="notice notice--error" role="alert"><div class="notice__body">The plan or the ledger could not be read: {{.}}</div></div>{{end}}
+{{range .Sections}}
+<section class="section" aria-labelledby="{{.Anchor}}">
+  <div class="section-head"><h2 class="section-head__title" id="{{.Anchor}}">{{.Title}}</h2><span class="meta">{{.Done}} of {{.Total}} done</span></div>
+  <ul class="list">
+  {{range .Tasks}}<li><a class="row" href="{{.Href}}">
+    <span class="row__main">
+      <span class="row__top"><span class="tid">{{.ID}}</span> <span class="row__title">{{.Title}}</span> <span class="badge {{.Badge}}">{{.Word}}</span></span>
+      {{with .Waits}}<span class="row__meta">{{.}}</span>{{end}}
+    </span>
+    <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+  </a></li>
+  {{end}}</ul>
+</section>
+{{end}}
+{{with .Empty}}
+<div class="empty">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12l5 5 9-10"/></svg>
+  <p class="empty__title">{{.}}</p>
+</div>
+{{end}}
+</div>
+</div>
+{{end}}

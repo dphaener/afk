@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -82,11 +83,11 @@ func TestTaskTokensForSurface(t *testing.T) {
 			}
 			switch c.wantState {
 			case tokensUnreadable:
-				if !strings.HasPrefix(res.Err, c.wantErr+res.Path) || res.Lines != nil {
+				if !strings.HasPrefix(res.Err, c.wantErr+res.Path) || res.Lines != nil || !reflect.DeepEqual(res.Summary, tokens.Summary{}) {
 					t.Fatalf("err %q lines %v", res.Err, res.Lines)
 				}
 			case tokensNone:
-				if res.Lines != nil || res.Compact != nil || res.Short != "" || res.Err != "" {
+				if res.Lines != nil || res.Compact != nil || !reflect.DeepEqual(res.Summary, tokens.Summary{}) || res.Short != "" || res.Err != "" {
 					t.Fatalf("none result carries content: %+v", res)
 				}
 			case tokensRecorded:
@@ -107,6 +108,9 @@ func TestTaskTokensForSurface(t *testing.T) {
 				}
 				if strings.Contains(strings.Join(res.Compact, "\n"), "cache") {
 					t.Fatalf("compact has wide columns")
+				}
+				if res.Summary.Total != res.Weighted || len(res.Summary.Phases) == 0 {
+					t.Fatalf("Summary.Total = %v, Weighted = %v, phases %v", res.Summary.Total, res.Weighted, res.Summary.Phases)
 				}
 				if res.Short != c.wantShort {
 					t.Fatalf("Short = %q, want %q", res.Short, c.wantShort)

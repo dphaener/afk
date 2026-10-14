@@ -3047,3 +3047,35 @@ Decided while building:
 - **"Updated N s ago" counts from when the page first saw the time.** The server's clock and the phone's need not agree, so the age is not taken from the `datetime`.
 - **A toast names only a task the server read.** `{task}` comes from the inbox item the answer named; an item not in the inbox's own read gets no toast.
 - **A network error before any answer comes back re-posts natively.** The server refuses a second answer to an item, and pause and resume are idempotent, so a repeat is harmless.
+
+## T8.7
+
+T8.7 gives the web page a Tasks screen: a project's master-plan tasks with their status, each task's tokens, and a way to set a task's status behind a confirm, with the same effect and words as `afk ledger set` and `afk tokens <task>`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One set of words for the status confirm (A1).** The sentences the dashboard shows when setting a task's status (what changes, what follows, and the warning when an agent is working on the task) move into a small shared package, `internal/taskstatus`, that both the dashboard and the web page use. The web page cannot use the dashboard's code directly, and two copies would drift apart.
+- **Token totals in a form a page can draw (A2).** `internal/tokens` gains a summary (the total, each phase, each role) built on the same counting as `afk tokens <task>`, so the page's split bar and role table agree with the command. The phases are the token ledger's own: plan, execute, review, fix, ship.
+- **Milestones (A3).** A task belongs to the nearest `### M<n> — Title` heading above it, the same rule the plan checker uses to count milestones. Tasks above any milestone heading, or a plan that cannot be read, are shown in one section called "Tasks".
+- **The filter (A4).** Open, Done and All are links (`?show=open`, `done`, `all`), so they work without JavaScript and survive live updates. Open is the default. Done includes superseded tasks, since their work is finished elsewhere. A milestone's "N of M done" leaves superseded tasks out, as the progress bar on the project page does.
+- **Addresses (A5).** `GET /p/<project>/tasks`, `GET /p/<project>/tasks/<id>` and `POST /p/<project>/tasks/<id>/status`, each also under `/api`. `GET /p/<project>/tasks/<id>/status` is the page used to confirm without JavaScript.
+- **The status sheet (A6).** Every status `afk ledger set` accepts can be chosen; none is disabled, because the plan asks for the command's full set (the design system suggested disabling the ones afk sets itself; the plan wins on behaviour). The sentence and the button ("Mark done") follow the choice. Without JavaScript, choosing a status and confirming it are two steps on their own page. Like pause and resume, the server refuses a status change that does not carry the confirm.
+- **The split bar without inline style (A7).** Segment widths are whole-percent classes in `page.css`, rounded so they add up to 100, because the page's templates carry no `style=`.
+- **Tokens are not live (A8).** The tokens card is read when the task's page loads. The token ledger only changes when a task ends, so a live part for it is left as a scope idea.
+- **Tests and prerequisites (A9, A10).** Table and handler tests are written with each part. T8.5, T7.11 and T7.12 were merged first, so nothing else had to be in place.
+
+Decided while building (T8.7):
+
+- **The current status's sentence is the "already" sentence.** Choosing the status a task already has says "T1.2 is already running.", as the dashboard's picker does, and writes nothing. Superseded is the exception: choosing it again gets the full confirm, because the replacing ids may be what changes.
+- **The superseded sentence is the shared words with the typed ids.** The sheet carries the sentence with a placeholder in place of the ids and the script puts the typed ids in, so the page adds no words of its own. With no ids typed it shows the "type the ids" prompt and the action button stays disabled; the page without JavaScript goes back to the first step with that prompt. Ids typed for any other status are not sent from the page; an `/api` caller gets the command's own refusal.
+- **Buttons.** The action reads "Mark <status>", the safe button "Leave it as it is", the first step of the page without JavaScript "Continue".
+- **One read of the request body.** The confirm check used to consume a JSON body, so the status POST could not read its own fields after it. The body is now read once and both the confirm and the fields come from that read; pause and resume behave as before.
+- **What the JSON answers.** The status POST answers the task (read again after the change) plus `result` (`outcome`, `old`, `new`, `text`). A change and an "already" are 200; a refusal is 400 with the command's words; a failed write is 500. The task list carries a `problem` key when the plan or ledger cannot be read; the task screen answers 500 then, because without the plan there is no telling whether the id exists.
+- **Shares are percentages at one decimal**, as `afk tokens` prints them. Phase colours come from the design system's tokens (plan accent, execute ok, review attention, fix danger, ship idle, anything else grey).
+- **The split bar's gaps.** `afk.css` puts a gap between segments, which pushed the last one out of the bar once the widths add up to 100, so `page.css` draws the divider as an inset edge instead.
+- **The dashboard keeps its names.** `internal/ui` keeps small private wrappers that call `internal/taskstatus`, so its tests did not change.
+
+Verification for the owner (T8.7): checked in a headless browser at 390 px, not on a real phone. Open a task from the phone, use Set status…, and see the Tasks list change without reloading.
+
+### Scope ideas
+
+- A live part for `.afk/log/tokens.jsonl`, so an open task screen shows new token figures when a task ends (A8).
+- The why line for a superseded task with one replacement reads "which do its work instead"; it should read "which does" (review, minor).

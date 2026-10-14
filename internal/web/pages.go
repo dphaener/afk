@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "confirm", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "confirm", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -150,6 +150,15 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 	case ItemView:
 		c.Title = v.Title
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project)+"/inbox", "Back to the inbox of "+v.Project
+	case TasksView:
+		c.Title = "Tasks"
+		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
+	case TaskView:
+		c.Title = v.ID
+		c.Back, c.BackLabel = tasksBase(v.Project), "Back to the tasks of "+v.Project
+	case TaskStatusPageView:
+		c.Title = "Set status"
+		c.Back, c.BackLabel = taskBase(v.Project, v.ID), "Back to "+v.ID
 	case ConfirmView:
 		c.Title = v.Sheet.Action
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
@@ -198,6 +207,9 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		}
 		if iv, isInbox := view.(InboxView); isInbox && r.Method == http.MethodGet {
 			ch.Toast = inboxToast(iv, r.URL.Query().Get("done"), r.URL.Query().Get("item"))
+		}
+		if tv, isTask := view.(TaskView); isTask && r.Method == http.MethodGet {
+			ch.Toast = taskToast(tv, r.URL.Query().Get("done"))
 		}
 		data := pageData{View: view, Chrome: ch}
 		if err := t.Execute(&buf, data); err != nil {
@@ -255,6 +267,11 @@ var toastTexts = map[string]string{
 	"answered": "Answer sent.",
 	"ready":    "Answer sent. {task} is ready again.",
 	"done":     "Marked as done.",
+	// The two codes a task's status change leads to. {task} and {status} are
+	// the task's id and its status as the server reads them from the ledger
+	// after the change (see taskToast), never from the request.
+	"status":  "{task} is now {status}.",
+	"already": "{task} was already {status}. Nothing changed.",
 }
 
 // toastFor is the toast sentence for a ?done= code, or "" when the code is
@@ -268,6 +285,12 @@ func toastFor(code, project, task string) string {
 		return ""
 	}
 	if strings.Contains(text, "{task}") && task == "" {
+		return ""
+	}
+	// A text that names a status belongs on a task's screen only (taskToast),
+	// where the status is read from the ledger; anywhere else there is no
+	// status to name, and a placeholder must never show.
+	if strings.Contains(text, "{status}") {
 		return ""
 	}
 	text = strings.ReplaceAll(text, "{project}", project)

@@ -323,7 +323,7 @@ func Lint(data []byte) Report {
 
 	s := Summary{Tasks: len(o.Tasks), OpenQuestions: open}
 	for _, h := range o.Headings {
-		if h.Level == 3 && milestoneRE.MatchString(h.Text) {
+		if MilestoneHeading(h) {
 			s.Milestones++
 		}
 	}
@@ -347,6 +347,15 @@ func lineAt(lines []string, n int) string {
 		return ""
 	}
 	return lines[n-1]
+}
+
+// MilestoneHeading reports whether h is a milestone heading ("### M1 — Name").
+// It is exported so the web page's task list groups tasks under the same
+// headings the checker counts; a second copy of the rule would let the two
+// disagree about what a milestone is. The level is part of the rule: a
+// level 4 heading with the same text is a task section, not a milestone.
+func MilestoneHeading(h masterplan.Heading) bool {
+	return h.Level == 3 && milestoneRE.MatchString(h.Text)
 }
 
 // validTaskHeadingText reports whether text would be a task heading if it

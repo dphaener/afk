@@ -798,7 +798,13 @@ func projectPageFor(in projectPageInput) projectPage {
 	if sum.Total > 0 {
 		planItem.Hint = fmt.Sprintf("%d of %d", sum.Done, sum.Total)
 	}
-	pg.Nav = []navItem{inboxItem, planItem, {Label: "Usage", Href: "/usage"}}
+	// Tasks carries the same "N of M" as the progress bar: it is the page
+	// that count is made of.
+	tasksItem := navItem{Label: "Tasks", Href: base + "/tasks"}
+	if sum.Total > 0 {
+		tasksItem.Hint = fmt.Sprintf("%d of %d", sum.Done, sum.Total)
+	}
+	pg.Nav = []navItem{inboxItem, tasksItem, planItem, {Label: "Usage", Href: "/usage"}}
 	return pg
 }
 

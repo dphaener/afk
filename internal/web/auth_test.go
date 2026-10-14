@@ -242,7 +242,14 @@ func TestAuthCookieSecure(t *testing.T) {
 
 // routeTarget turns a route's pattern into a real address under prefix.
 func routeTarget(prefix string, rt route) string {
-	path := strings.NewReplacer("{$}", "", "{project}", "app", "{id}", idBlocking).Replace(rt.path)
+	// {id} is an inbox item's id under /inbox and a master-plan task's id
+	// under /tasks; each must be one the rig holds, so the right token
+	// reaches the handler and not a 404.
+	id := idBlocking
+	if strings.Contains(rt.path, "/tasks/") {
+		id = "T1.2"
+	}
+	path := strings.NewReplacer("{$}", "", "{project}", "app", "{id}", id).Replace(rt.path)
 	return prefix + path
 }
 
@@ -265,8 +272,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 9 {
-		t.Fatalf("the route table has %d routes; the plan lists 9", len(routes))
+	if len(routes) != 12 {
+		t.Fatalf("the route table has %d routes; the plan lists 12", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -289,6 +296,9 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 				if len(rg.paused)+len(rg.resumed) != 0 {
 					t.Errorf("pause or resume ran without the token")
 				}
+				if len(rg.tokenCalls)+len(rg.statusCalls) != 0 {
+					t.Errorf("a task's tokens were read or its status set without the token")
+				}
 				it, err := inbox.Store{Dir: inbox.Dir(rg.root)}.Get(idBlocking)
 				must(t, err)
 				if !it.Open() {
@@ -299,11 +309,15 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		t.Run(rt.method+" "+target+" right bearer", func(t *testing.T) {
 			rg := newRig(t, Config{})
 			rg.seedInbox()
+			// The status POST carries the confirm (send adds it) but no
+			// status, so the fake answers as the real seam would: refused.
+			rg.statusResult = TaskStatusResult{Outcome: StatusRefused, Text: "unknown status"}
 			rec := authReq{method: rt.method, target: target, bearer: testToken}.send(rg.h)
-			// The answer route gets 400 (no answer was sent); every other
-			// route 200. Neither is the catch-all's 404.
+			// The answer route gets 400 (no answer was sent) and the status
+			// route 400 (no status was sent, so the seam refuses it); every
+			// other route 200. None is the catch-all's 404.
 			want := http.StatusOK
-			if strings.HasSuffix(rt.path, "/answer") {
+			if strings.HasSuffix(rt.path, "/answer") || strings.HasSuffix(rt.path, "/status") {
 				want = http.StatusBadRequest
 			}
 			if rec.Code != want {

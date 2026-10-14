@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,6 +93,71 @@ type rig struct {
 	// repository is what the fake Repository says for project "app"; every
 	// other folder has none.
 	repository string
+	// tokens is what the fake TaskTokens returns per task id; a task with
+	// no entry has none recorded. tokenCalls records the (root, task) pairs
+	// it was asked for.
+	tokens     map[string]TaskTokens
+	tokenCalls [][2]string
+	// statusCalls records every call of the fake SetTaskStatus, which
+	// answers statusResult. Nothing in the tasks pages may call it.
+	statusCalls  [][]string
+	statusResult TaskStatusResult
+	// onStatus, when set, runs inside the fake SetTaskStatus before it
+	// answers, so a test can change rg.ledger as the real write would and
+	// prove the answer was read after the call.
+	onStatus func(id, status string, replacedBy []string)
+}
+
+// tasksPlan is a plan whose tasks sit in two milestones, with one task above
+// both, for the tasks list's grouping. useTasksPlan gives it to project
+// "app" with a ledger that holds every status the list draws differently.
+const tasksPlan = `# Plan
+
+## 8. Milestones
+
+#### T0.1 — Before any milestone
+- **Depends on:** —
+
+### M1 — Foundations
+
+#### T1.1 — First
+- **Depends on:** —
+
+#### T1.2 — Second
+- **Depends on:** T1.1
+
+#### T1.3 — Third
+- **Depends on:** T1.1
+
+#### M1 notes, a level 4 heading that is not a milestone
+
+### M2 — Polish
+
+#### T2.1 — Fourth <b>bold</b>
+- **Depends on:** T1.2
+
+#### T2.2 — Fifth
+- **Depends on:** T2.1
+`
+
+// useTasksPlan points project "app" at tasksPlan: T0.1 and T1.1 done, T1.2
+// running, T1.3 superseded by T2.1, T2.1 pending (waiting for T1.2) and T2.2
+// failed. Five tasks count (superseded is left out), two of them done.
+func (rg *rig) useTasksPlan() {
+	rg.t.Helper()
+	tasks, err := masterplan.Parse([]byte(tasksPlan))
+	if err != nil {
+		rg.t.Fatalf("tasksPlan does not parse: %v", err)
+	}
+	rg.plans[rg.root] = tasksPlan
+	rg.tasks = tasks
+	rg.ledger = ledger.Ledger{Tasks: []ledger.Entry{
+		{ID: "T0.1", Status: ledger.Done, FinishedAt: "2026-10-12T09:00:00Z"},
+		{ID: "T1.1", Status: ledger.Done, FinishedAt: "2026-10-12T10:00:00Z"},
+		{ID: "T1.2", Status: ledger.Running, Session: "t1-2", Attempts: 2},
+		{ID: "T1.3", Status: ledger.Superseded, ReplacedBy: []string{"T2.1"}},
+		{ID: "T2.2", Status: ledger.Failed},
+	}}
 }
 
 // rigRows is the rows the daemon's seam would build for the rig's two
@@ -249,6 +315,20 @@ func newRig(t *testing.T, cfg Config) *rig {
 				return ""
 			}
 			return rg.repository
+		},
+		TaskTokens: func(root, task string) TaskTokens {
+			rg.tokenCalls = append(rg.tokenCalls, [2]string{root, task})
+			if tok, ok := rg.tokens[task]; ok {
+				return tok
+			}
+			return TaskTokens{State: TokensNone}
+		},
+		SetTaskStatus: func(root, id, status string, replacedBy []string) TaskStatusResult {
+			rg.statusCalls = append(rg.statusCalls, append([]string{root, id, status}, replacedBy...))
+			if rg.onStatus != nil {
+				rg.onStatus(id, status, replacedBy)
+			}
+			return rg.statusResult
 		},
 		Now: func() time.Time { return testNow },
 	})
@@ -537,6 +617,105 @@ func TestAPIGets(t *testing.T) {
 			},
 		},
 		{
+			name:  "tasks, every task in sections",
+			setup: (*rig).useTasksPlan,
+			path:  "/api/p/app/tasks?show=all",
+			check: func(t *testing.T, m map[string]any) {
+				wantKeys(t, m, "project", "done", "total", "show", "sections", "problem")
+				if len(m) != 6 {
+					t.Errorf("tasks has %d keys, want 6 (the page's layout is left out): %s", len(m), dump(m))
+				}
+				if m["project"] != "app" || m["done"] != 2.0 || m["total"] != 5.0 || m["show"] != "all" || m["problem"] != "" {
+					t.Errorf("tasks = %s", dump(m))
+				}
+				var titles, ids []string
+				for _, sec := range m["sections"].([]any) {
+					sm := sec.(map[string]any)
+					wantKeys(t, sm, "title", "done", "total", "tasks")
+					titles = append(titles, fmt.Sprintf("%s %v/%v", sm["title"], sm["done"], sm["total"]))
+					for _, row := range sm["tasks"].([]any) {
+						r := row.(map[string]any)
+						wantKeys(t, r, "id", "title", "status", "unmet", "replaced_by")
+						if len(r) != 5 {
+							t.Errorf("a task row has %d keys, want 5: %s", len(r), dump(r))
+						}
+						ids = append(ids, r["id"].(string))
+					}
+				}
+				if got, want := strings.Join(titles, "; "), "Tasks 1/1; M1 — Foundations 1/2; M2 — Polish 0/2"; got != want {
+					t.Errorf("sections = %q, want %q", got, want)
+				}
+				if got, want := strings.Join(ids, ","), "T0.1,T1.1,T1.2,T1.3,T2.1,T2.2"; got != want {
+					t.Errorf("tasks = %s, want %s", got, want)
+				}
+				rows := m["sections"].([]any)[2].(map[string]any)["tasks"].([]any)
+				if dump(rows[0]) != dump(map[string]any{"id": "T2.1", "title": "Fourth <b>bold</b>", "status": "pending", "unmet": []string{"T1.2"}, "replaced_by": []string{}}) {
+					t.Errorf("T2.1 = %s", dump(rows[0]))
+				}
+				super := m["sections"].([]any)[1].(map[string]any)["tasks"].([]any)[2]
+				if dump(super) != dump(map[string]any{"id": "T1.3", "title": "Third", "status": "superseded", "unmet": []string{}, "replaced_by": []string{"T2.1"}}) {
+					t.Errorf("T1.3 = %s", dump(super))
+				}
+			},
+		},
+		{
+			name:  "tasks, open by default",
+			setup: (*rig).useTasksPlan,
+			path:  "/api/p/app/tasks",
+			check: func(t *testing.T, m map[string]any) {
+				if m["show"] != "open" || len(m["sections"].([]any)) != 2 {
+					t.Errorf("tasks = %s", dump(m))
+				}
+			},
+		},
+		{
+			name: "task",
+			setup: func(rg *rig) {
+				rg.useTasksPlan()
+				rg.tokens = map[string]TaskTokens{"T1.2": recordedTokens}
+			},
+			path: "/api/p/app/tasks/T1.2",
+			check: func(t *testing.T, m map[string]any) {
+				wantKeys(t, m, "project", "id", "title", "status", "depends_on", "unmet", "why", "tokens")
+				if len(m) != 8 {
+					t.Errorf("task has %d keys, want 8: %s", len(m), dump(m))
+				}
+				if m["project"] != "app" || m["id"] != "T1.2" || m["title"] != "Second" || m["status"] != "running" || m["why"] != "Running in session t1-2, attempt 2." {
+					t.Errorf("task = %s", dump(m))
+				}
+				if dump(m["depends_on"]) != dump([]string{"T1.1"}) || dump(m["unmet"]) != dump([]string{}) {
+					t.Errorf("depends_on %s unmet %s", dump(m["depends_on"]), dump(m["unmet"]))
+				}
+				tok := m["tokens"].(map[string]any)
+				wantKeys(t, tok, "state", "total", "short", "phases", "roles", "error")
+				if tok["state"] != "recorded" || tok["total"] != 1000.0 || tok["short"] != "1.0K weighted" {
+					t.Errorf("tokens = %s", dump(tok))
+				}
+				if p := tok["phases"].([]any)[0].(map[string]any); p["phase"] != "plan" || p["weighted"] != 400.0 || p["share"] != 40.0 {
+					t.Errorf("first phase = %s", dump(p))
+				}
+				r := tok["roles"].([]any)[0].(map[string]any)
+				wantKeys(t, r, "role", "calls", "input", "output", "weighted")
+				if r["role"] != "executor" || r["calls"] != 3.0 || r["input"] != 1200.0 {
+					t.Errorf("first role = %s", dump(r))
+				}
+			},
+		},
+		{
+			name:  "task with no record",
+			setup: (*rig).useTasksPlan,
+			path:  "/api/p/app/tasks/T2.1",
+			check: func(t *testing.T, m map[string]any) {
+				tok := m["tokens"].(map[string]any)
+				if tok["state"] != "none" || dump(tok["phases"]) != "[]" || dump(tok["roles"]) != "[]" {
+					t.Errorf("tokens = %s", dump(tok))
+				}
+				if dump(m["unmet"]) != dump([]string{"T1.2"}) {
+					t.Errorf("unmet = %s", dump(m["unmet"]))
+				}
+			},
+		},
+		{
 			name: "item",
 			path: "/api/p/app/inbox/" + idOptions,
 			check: func(t *testing.T, m map[string]any) {
@@ -622,6 +801,11 @@ func TestAPIErrors(t *testing.T) {
 		// The pause route never reads its body, so only the declared
 		// length can refuse this one; nothing may be paused by it.
 		{name: "pause with a body over 64 KB", method: "POST", path: "/api/p/app/pause", ctype: formType, body: strings.Repeat("a", maxBody+1), wantStatus: 413},
+		{name: "unknown project, tasks", method: "GET", path: "/api/p/nope/tasks", wantStatus: 404},
+		{name: "unknown project, task", method: "GET", path: "/api/p/nope/tasks/T1.1", wantStatus: 404},
+		{name: "task not in the plan", method: "GET", path: "/api/p/app/tasks/T9.9", wantStatus: 404},
+		{name: "task id not shaped like an id", method: "GET", path: "/api/p/app/tasks/..%2Fx", wantStatus: 404},
+		{name: "task when the ledger cannot be read", setup: func(rg *rig) { rg.loadErr = errors.New("the ledger is damaged") }, method: "GET", path: "/api/p/app/tasks/T1.1", wantStatus: 500},
 		{name: "no such address", method: "GET", path: "/api/nothing-here", wantStatus: 404},
 		{name: "wrong method for an address", method: "POST", path: "/api/usage", wantStatus: 404},
 		{name: "pause with GET changes nothing", method: "GET", path: "/api/p/app/pause", wantStatus: 404},
@@ -644,6 +828,9 @@ func TestAPIErrors(t *testing.T) {
 			}
 			if len(rg.paused)+len(rg.resumed) != 0 {
 				t.Errorf("pause or resume was called: %v %v", rg.paused, rg.resumed)
+			}
+			if len(rg.statusCalls) != 0 {
+				t.Errorf("a task's status was set: %v", rg.statusCalls)
 			}
 		})
 	}
