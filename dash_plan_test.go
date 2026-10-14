@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dphaener/afk/internal/ui"
@@ -86,6 +88,39 @@ func TestWaitPlanHostReady(t *testing.T) {
 			}
 			if tt.waitErr != nil && out.Reason == "" {
 				t.Error("failed wait gave no reason")
+			}
+		})
+	}
+}
+
+// TestDashPlanNewRootResolved pins that the new mode's root is symlink
+// resolved (the switcher compares resolved paths) and that the other modes'
+// roots are passed through untouched. The "new" row is load-bearing: a link in
+// the typed folder would otherwise add a second switcher row for the project.
+func TestDashPlanNewRootResolved(t *testing.T) {
+	real := t.TempDir()
+	if r, err := filepath.EvalSymlinks(real); err == nil {
+		real = r
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name, mode, root, want string
+	}{
+		{"new resolves a link", planSurfaceNew, link, real},
+		{"new keeps a root that cannot be resolved", planSurfaceNew, filepath.Join(real, "gone"), filepath.Join(real, "gone")},
+		{"new keeps an empty root", planSurfaceNew, "", ""},
+		{"extend keeps the root as it is", "extend", link, link},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := func(planSurfaceRequest, planDeps) planSurfaceResult {
+				return planSurfaceResult{Outcome: planSurfaceStarted, Root: tt.root}
+			}
+			if got := dashStartPlanWith(start, planDeps{}, "/x", tt.mode, "").Root; got != tt.want {
+				t.Errorf("root = %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -549,11 +549,12 @@ func (m Model) scanTickCmd() tea.Cmd {
 // without them never reads the developer's real ~/.config/afk/config.toml and
 // never crawls their disk. `afk dash` opts in; nothing else does.
 //
-// PINNED and LISTED projects are discovered alongside the scanned ones, captured
-// here at Cmd-creation time in this package's standing style (scanExtraPaths).
-// They survive the merge in applyProjectScan by definition — no search root
-// produces the pinned start-up row, and a listed project stays whether or not
-// the search finds it — so leaving them out would give the switcher rows with
+// PINNED, LISTED and STARTED projects are discovered alongside the scanned
+// ones, captured here at Cmd-creation time in this package's standing style
+// (scanExtraPaths). They survive the merge in applyProjectScan by definition —
+// no search root produces the pinned start-up row, and a listed project or a
+// folder a new plan was started in stays whether or not the search finds it —
+// so leaving them out would give the switcher rows with
 // no session data, and for a user with no search folders those rows are the
 // entire list. A listed folder that is gone has no row and is not covered.
 //
@@ -579,7 +580,7 @@ func (m Model) scanCmd() tea.Cmd {
 	}
 	loadConfig, walk, discoverIn := m.deps.LoadConfig, m.deps.Scan, m.deps.Discover
 	runGit, startWatch := m.deps.RunGit, m.deps.StartFocusWatcher
-	extra := scanExtraPaths(m.projects, m.listed)
+	extra := scanExtraPaths(m.projects, m.listed, m.startedProjects)
 	held := m.rendezvousProjects()
 	launchDir := m.gitCommonDir
 	return func() tea.Msg {

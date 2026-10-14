@@ -2026,6 +2026,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   project and its row in the switcher. Against a scratch build through tmux, with a stand-in agent:
   typing the path of an empty throwaway repository leaves the dashboard on that project with the
   stand-in in the pane and `.afk/plan/state.json` in mode `new`. `make check` is green.
+- Amended 2026-10-14 (T7.4 done): later tasks may assume the following. (1) `startPlanForSurface` takes Mode `planSurfaceNew` ("new"): `Project` is the typed folder (`~` and `~/...` expanded with the home folder, other relative paths refused), it is looked at as a bare `afk plan` (so a non-git folder is initialised and an open session is resumed), and a folder with a plan and nothing open is refused with a sentence pointing at the dialog's extend, amend and document actions; T7.5 decides name-versus-path before calling it and T8.15 can call it as is. (2) The dialog row is "start a new plan", by name only (`actionPlanNew`, `ui.PlanModeNew`); the master plan's "plan a new project" was not used because `p` opens the switcher. (3) The UI calls `StartPlan(folder, "new", "")`; on a started or resumed result for another folder it adds the root to `Model.startedProjects` (a separate source in `mergeProjects`, never `Pinned`, never written to `config.toml`), switches, and only then opens the pane. (4) The dashboard's adapter resolves the new mode's root through symlinks. See `## T7.4` in `docs/decisions.md`.
 
 #### T7.5 — Create the folder for a new plan
 - **Depends on:** T7.4

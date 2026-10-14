@@ -120,7 +120,8 @@ type leaderEntry struct {
 
 // leaderTable is every dashboard action and its key after the leader, in the
 // order the dialog lists them. It is the table in docs/decisions.md "## T7.2"
-// row for row, followed by the three by-name plan actions of "## T7.3";
+// row for row, followed by the three by-name plan actions of "## T7.3" and
+// the by-name "start a new plan" of "## T7.4";
 // TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
@@ -156,6 +157,10 @@ var leaderTable = []leaderEntry{
 	{key: "", action: actionPlanExtend, reach: reachList},
 	{key: "", action: actionPlanAmend, reach: reachList},
 	{key: "", action: actionPlanReconcile, reach: reachList},
+	// "start a new plan" (T7.4) is by name for the same reasons. It is a list
+	// action because it opens a form, and a start moves the dashboard to the
+	// folder's project and the keyboard to its planning pane.
+	{key: "", action: actionPlanNew, reach: reachList},
 }
 
 // mode is the mode a reach's action runs as through applyKeyAction:
@@ -218,6 +223,7 @@ var leaderNames = map[modeAction]string{
 	actionPlanExtend:    "extend the plan",
 	actionPlanAmend:     "amend the plan",
 	actionPlanReconcile: "reconcile the plan with a document",
+	actionPlanNew:       "start a new plan",
 }
 
 // leaderHelp is the one line of help each listed action shows. Every action
@@ -247,6 +253,7 @@ var leaderHelp = map[modeAction]string{
 	actionPlanExtend:    "Start a planning session that adds work to the plan",
 	actionPlanAmend:     "Change the plan; asks what to change in a sentence",
 	actionPlanReconcile: "Fit the plan to a document; asks for its path",
+	actionPlanNew:       "Plan a project that has no plan; asks for its folder",
 }
 
 // leaderRow is one action in the dialog.
@@ -407,6 +414,9 @@ type leaderConds struct {
 	// buildKnown is Model.buildKnown: the build files have been read once,
 	// which openInbox needs before it has anything to show.
 	buildKnown bool
+	// canStartPlan is "the StartPlan seam is wired", openPlanNewForm's only
+	// guard.
+	canStartPlan bool
 	// restartLive is Model.restartKeyLive, the gate the help uses.
 	restartLive bool
 	// canFocus is normalBindingEnabled's answer for the Focus binding: a pane,
@@ -451,6 +461,14 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		// words; a guess here would dim a row that works.
 		if !c.hasActiveProject {
 			return "no project is open"
+		}
+	case actionPlanNew:
+		// Not dimmed for "no project is open": the folder is typed, so a
+		// dashboard started outside any project can still start one, and that
+		// is the case the action matters most for. Only a missing seam stops
+		// it, and openPlanNewForm says so in a sentence if it is run anyway.
+		if !c.canStartPlan {
+			return "starting a plan is not available here"
 		}
 	case actionProjects:
 		if !c.hasActiveProject {

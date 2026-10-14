@@ -366,12 +366,14 @@ type Deps struct {
 	// two it found. It has NO default either, and a nil one is answered the
 	// same way.
 	ResumeBuild func(root string) (ResumeResult, error)
-	// StartPlan is the seam behind the dashboard's three plan actions
+	// StartPlan is the seam behind the dashboard's four plan actions
 	// (planstart.go): it starts a change session on the project at root the
 	// way `afk plan <mode>` does, short of taking the terminal, and returns
-	// what happened. mode is PlanModeExtend, PlanModeAmend, PlanModeReconcile
-	// or PlanModeResume (open a planning session that is already open, never
-	// start one); text is amend's sentence or reconcile's path, as typed.
+	// what happened. mode is PlanModeExtend, PlanModeAmend, PlanModeReconcile,
+	// PlanModeNew (root is then the folder as the owner typed it, and the
+	// start behaves as bare `afk plan` there) or PlanModeResume (open a
+	// planning session that is already open, never start one); text is
+	// amend's sentence or reconcile's path, as typed.
 	// Every refusal comes back as a PlanRefused result in the command's own
 	// words, so it has no error return.
 	//
@@ -1345,10 +1347,11 @@ type Model struct {
 
 	// planTextInput is inputPlanText's field, on labelInput's terms: only
 	// read or updated while m.modal == inputPlanText. planTextMode is the
-	// form's purpose (PlanModeAmend or PlanModeReconcile); planTextRoot and
-	// planTextGen are the project it was opened for, captured at open on
-	// labelTarget's invariant, so a submit after a project switch is refused
-	// rather than sent to the wrong project. planTextNote is the line shown
+	// form's purpose (PlanModeAmend, PlanModeReconcile or PlanModeNew);
+	// planTextRoot and planTextGen are the project it was opened for,
+	// captured at open on labelTarget's invariant, so a submit after a project
+	// switch is refused rather than sent to the wrong project. The new-plan
+	// form leaves planTextRoot empty: its folder is what the owner types. planTextNote is the line shown
 	// under the field after a blank enter.
 	planTextInput textinput.Model
 	planTextMode  string
@@ -1708,6 +1711,15 @@ type Model struct {
 	// the caller handed in; see unpinnedProjects.
 	listed []ListedProject
 	found  []project.Project
+
+	// startedProjects is every folder a "start a new plan" moved the dashboard
+	// to during this run, in the order they were started, each once. It is
+	// held for the run only and never written anywhere: the dashboard does not
+	// edit config.toml (`afk plan approve` lists a project), so after a
+	// restart the folder is back only through `afk dash --project` or a search
+	// folder. It is merged as its own source (mergeInput.started) because the
+	// found and listed halves are replaced by every read and would drop it.
+	startedProjects []string
 
 	// configPath is where LoadConfig resolved the config file on the last scan,
 	// held for the empty state to render. It stays empty while the scan pipeline
@@ -3354,6 +3366,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openPlanTextForm(PlanModeAmend)
 	case actionPlanReconcile:
 		return m.openPlanTextForm(PlanModeReconcile)
+	case actionPlanNew:
+		return m.openPlanNewForm()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -4558,6 +4572,7 @@ func (m Model) leaderConditions() leaderConds {
 		listFiltered:     conds.listFiltered,
 		hasBuild:         m.hasBuild(),
 		buildKnown:       m.buildKnown,
+		canStartPlan:     m.deps.StartPlan != nil,
 		restartLive:      m.restartKeyLive(),
 		canFocus:         m.normalBindingEnabled(m.keys.Focus),
 		// toggleView is inert only on a selected row that has neither a

@@ -28,6 +28,8 @@ type planFake struct {
 	initErr   error
 	spawnErr  error
 	lint      int
+	// home is the owner's home folder, for "~" in a typed folder.
+	home string
 	// answers are what the owner types at each question, in order; asked
 	// holds the questions. A question past the last answer gets "".
 	answers []string
@@ -39,6 +41,7 @@ var planFakeNow = time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
 func (f *planFake) deps(cwd string) planDeps {
 	return planDeps{
 		cwd:          cwd,
+		home:         f.home,
 		gitCommonDir: func(string) string { return f.commonDir },
 		gitInit: func(dir string) error {
 			f.calls = append(f.calls, "init "+dir)

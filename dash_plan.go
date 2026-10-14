@@ -1,6 +1,8 @@
 package main
 
 import (
+	"path/filepath"
+
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ui"
 )
@@ -53,6 +55,15 @@ func dashStartPlanWith(start func(planSurfaceRequest, planDeps) planSurfaceResul
 		OpenPhase: res.OpenPhase,
 		Root:      res.Root,
 		Archive:   res.Archived,
+	}
+	// The switcher compares resolved paths, and the folder the owner typed
+	// may go through a link. The planning root is the one place the
+	// dashboard learns where the new project really is, so resolve it for the
+	// new mode, whose result is what the dashboard switches to.
+	if mode == planSurfaceNew && out.Root != "" {
+		if resolved, err := filepath.EvalSymlinks(out.Root); err == nil {
+			out.Root = resolved
+		}
 	}
 	// An outcome this adapter does not know stays the zero value, refused, so
 	// a new outcome added to the entry point opens no pane until it is mapped.
