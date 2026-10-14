@@ -1,0 +1,14 @@
+{{define "confirm-sheet"}}
+<dialog class="confirm-sheet" id="{{.ID}}" aria-labelledby="{{.ID}}-title" aria-describedby="{{.ID}}-body">
+  <h2 class="confirm-sheet__title" id="{{.ID}}-title">{{.Title}}</h2>
+  <p class="confirm-sheet__body" id="{{.ID}}-body">{{.Body}}</p>
+  <div class="btn-row">
+    <form method="{{.Method}}" action="{{.Path}}">
+      <button type="submit" class="btn {{if .Danger}}btn--danger{{else}}btn--primary{{end}}" data-loading-label="{{.Loading}}">{{.Action}}</button>
+    </form>
+    <form method="dialog">
+      <button type="submit" class="btn btn--secondary" autofocus>{{.Safe}}</button>
+    </form>
+  </div>
+</dialog>
+{{end}}

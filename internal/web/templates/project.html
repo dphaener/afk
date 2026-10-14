@@ -14,15 +14,15 @@
 {{with .State}}<p class="muted">Daemon: {{.Kind}}{{if .Reason}} - {{.Reason}}{{end}}{{if .At}} ({{when .At}}){{end}}</p>{{end}}
 </div>
 
-<form method="post" action="/p/{{pe .Name}}/{{if or .Paused .Stopped}}resume{{else}}pause{{end}}">
-  {{if or .Paused .Stopped}}<button type="submit">Resume</button>{{else}}<button type="submit" class="quiet">Pause</button>{{end}}
-</form>
+{{$resume := false}}{{if or .Paused .Stopped}}{{$resume = true}}{{end}}
+<p><a class="btn btn--secondary" href="/p/{{pe .Name}}/confirm/{{if $resume}}resume{{else}}pause{{end}}" data-confirm="{{if $resume}}confirm-resume{{else}}confirm-pause{{end}}">{{if $resume}}Resume project&hellip;{{else}}Pause project&hellip;{{end}}</a></p>
+{{template "confirm-sheet" (sheet .Name $resume)}}
 
 <h2 id="inbox">Inbox</h2>
 <div id="inbox-list" data-live="inbox" data-project="{{.Name}}" aria-live="polite">
 {{if .Inbox.Problem}}<p class="warn">{{.Inbox.Problem}}</p>{{end}}
 {{if .Inbox.Unreadable}}<p class="warn">{{.Inbox.Unreadable}} inbox file{{if ne .Inbox.Unreadable 1}}s{{end}} could not be read and {{if eq .Inbox.Unreadable 1}}is{{else}}are{{end}} not listed.</p>{{end}}
-<ul>
+<ul class="stack">
 {{range .Inbox.Items}}
   <li class="card"><a href="/p/{{pe $.Name}}/inbox/{{pe .ID}}">{{.Title}}</a><br>
   <span class="muted">{{.Kind}}{{if .Task}}, {{.Task}}{{end}}:

@@ -17,6 +17,7 @@ import (
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/planchat"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -80,6 +81,22 @@ type rig struct {
 	// it returns.
 	replies  []planchat.Reply
 	replyErr error
+	// rows is what the fake ProjectRows returns, as the daemon's seam
+	// would: already built and sorted. The rig starts with one row per
+	// project (rigRows); a test that wants other rows replaces it.
+	rows []projectrows.Row
+}
+
+// rigRows is the rows the daemon's seam would build for the rig's two
+// projects: app running T1.2 (1 of 3 done), "my app" with no plan.
+func rigRows(rg *rig) []projectrows.Row {
+	rows := []projectrows.Row{
+		projectrows.Build(projectrows.Input{Name: "app", Root: rg.root, Listed: true, Order: 0, HasPlan: true,
+			Done: 1, Total: 3, Task: "T1.2", Title: "Second", Phase: "executing"}),
+		projectrows.Build(projectrows.Input{Name: "my app", Root: rg.other, Listed: true, Order: 1}),
+	}
+	projectrows.Sort(rows)
+	return rows
 }
 
 // testPlan is a small master plan the checker has nothing to say about, with
@@ -158,6 +175,7 @@ func newRig(t *testing.T, cfg Config) *rig {
 		Governor:       &usagestate.Governor{Action: "run", Reason: "plenty left", At: testNow.Add(-5 * time.Minute)},
 	}
 	rg.usageOK = true
+	rg.rows = rigRows(rg)
 
 	if cfg.Token == "" {
 		cfg.Token = testToken
@@ -218,7 +236,8 @@ func newRig(t *testing.T, cfg Config) *rig {
 			_, err := daemonstate.Resume(root)
 			return err
 		},
-		Now: func() time.Time { return testNow },
+		ProjectRows: func() []projectrows.Row { return rg.rows },
+		Now:         func() time.Time { return testNow },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -335,6 +354,23 @@ func TestAPIGets(t *testing.T) {
 				}
 				if m["usage"].(map[string]any)["known"] != true {
 					t.Errorf("usage = %s", dump(m["usage"]))
+				}
+				if dump(m["reviews"]) != dump([]map[string]string{{"name": "draft"}}) {
+					t.Errorf("reviews = %s", dump(m["reviews"]))
+				}
+				// rows is new beside the three keys above, which are
+				// unchanged. Every key is present on every row.
+				rows := m["rows"].([]any)
+				if len(rows) != 2 {
+					t.Fatalf("rows = %s, want 2", dump(rows))
+				}
+				r := rows[0].(map[string]any)
+				wantKeys(t, r, "name", "state", "label", "detail", "task", "title", "phase", "done", "total", "open", "blocking", "plan_waiting", "needs_owner")
+				if r["name"] != "app" || r["state"] != "running" || r["task"] != "T1.2" || r["phase"] != "executing" || r["done"] != 1.0 || r["total"] != 3.0 || r["needs_owner"] != false {
+					t.Errorf("first row = %s", dump(r))
+				}
+				if len(r) != 13 {
+					t.Errorf("a row has %d keys, want 13 (no folder, order or listed): %s", len(r), dump(r))
 				}
 			},
 		},

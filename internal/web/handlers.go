@@ -24,6 +24,14 @@ type OverviewView struct {
 	// projects. Each has a plan view and nothing else.
 	Reviews []ReviewView `json:"reviews"`
 	Usage   UsageView    `json:"usage"`
+	// Rows are the all-projects rows from Deps.ProjectRows, in
+	// projectrows.Sort's order (needs-you first). It was added beside the
+	// three keys above rather than in place of Projects, so a reader of the
+	// API built against those keys keeps working; never null.
+	Rows []RowView `json:"rows"`
+	// Page is the home page's layout of Rows and Reviews. Only the page
+	// reads it, so the JSON leaves it out.
+	Page overviewPage `json:"-"`
 }
 
 // ReviewView is one plan waiting for approval. Name is what its plan view's
@@ -315,6 +323,16 @@ func (s *server) overview(w http.ResponseWriter, r *http.Request) {
 	for _, rv := range s.reviews(configured) {
 		v.Reviews = append(v.Reviews, ReviewView{Name: rv.Name})
 	}
+	// The rows come from the seam, already sorted, and never from a list
+	// this package read: the daemon owns the project list (see
+	// Deps.ProjectRows).
+	v.Rows = []RowView{}
+	if s.d.ProjectRows != nil {
+		for _, row := range s.d.ProjectRows() {
+			v.Rows = append(v.Rows, rowView(row))
+		}
+	}
+	v.Page = overviewPageFor(v.Rows, v.Reviews)
 	s.respond(w, r, http.StatusOK, "overview", v)
 }
 
@@ -437,6 +455,28 @@ func answerText(r *http.Request) (string, error) {
 		return text, nil
 	}
 	return r.PostForm.Get("choice"), nil
+}
+
+// confirm is the no-JS page behind the project page's Pause and Resume links.
+// It is not in routes: it has no JSON form, so it must not get an /api twin.
+// Only pause and resume exist; any other action is the same 404 as an unknown
+// project, so the address maps nothing.
+func (s *server) confirm(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.findProject(w, r)
+	if !ok {
+		return
+	}
+	var sheet ConfirmSheet
+	switch r.PathValue("action") {
+	case "pause":
+		sheet = confirmSheetFor(p.Name, false)
+	case "resume":
+		sheet = confirmSheetFor(p.Name, true)
+	default:
+		s.fail(w, r, http.StatusNotFound, "There is nothing to confirm at this address. Go back to the project and use its buttons.")
+		return
+	}
+	s.renderPage(w, r, http.StatusOK, "confirm", ConfirmView{Project: p.Name, Sheet: sheet})
 }
 
 func (s *server) pause(w http.ResponseWriter, r *http.Request) {

@@ -195,3 +195,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Planning chat**: a project's open planning session read as messages (the agent's and the owner's) plus its state (`none`, `working`, `waiting_for_text`, `waiting_for_choice`, `unknown`), served at `GET /api/p/<project>/plan/chat` and built by `internal/planchat`.
 - **Plan reply**: the owner's answer to the planning chat, sent with `POST /api/p/<project>/plan/chat`: typed text (sent as one bracketed paste and Enter) or one chosen option per pending question (sent as the keys the agent's question dialog takes).
 - **Taken over**: what the dashboard says when another client, such as a plan reply from the web page, takes a session's one client slot from its pane; enter reopens the pane.
+- **Needs you**: the first group on the web page's home screen and the dashboard's all-projects screen, holding the projects that wait on the owner (and a plan waiting for approval); the rest are under Everything else.
+- **Confirm sheet**: the native dialog the web page opens before Pause or Resume, with a safe choice that changes nothing; its no-JavaScript twin is the page `GET /p/<project>/confirm/{pause|resume}`.
+- **Toast**: the short notice on a project's page after a change, read from a whitelisted `?done=` code and gone after five seconds.
+- **Live indicator**: the bar's word for the page's stream: Live, Working (the stream is up and a part says afk is busy on a task) or "Can't reach afk, retrying".

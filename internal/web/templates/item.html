@@ -6,19 +6,23 @@
 {{if .Body}}<pre>{{.Body}}</pre>{{end}}
 {{if .Assumed}}<p><strong>If you do not answer, afk assumes:</strong></p><pre>{{.Assumed}}</pre>{{end}}
 {{if .Open}}
-<form method="post" action="/p/{{pe .Project}}/inbox/{{pe .ID}}/answer">
+<form method="post" action="/p/{{pe .Project}}/inbox/{{pe .ID}}/answer" class="stack">
   {{if .Options}}
-  <p><strong>Choose one</strong>, or write your own answer below.</p>
+  <fieldset>
+  <legend class="field__label">Choose one, or write your own answer below.</legend>
+  <div class="choice-list">
   {{$rec := .Recommended}}
   {{range $i, $o := .Options}}
-  <label class="choice"><input type="radio" name="choice" value="{{$o}}"{{if eq $o $rec}} checked{{end}}> <span>{{$o}}{{if eq $o $rec}} (recommended){{end}}</span></label>
+  <label class="choice"><input type="radio" name="choice" value="{{$o}}"{{if eq $o $rec}} checked{{end}}> <span class="choice__label">{{$o}}{{if eq $o $rec}} (recommended){{end}}</span></label>
   {{end}}
-  <p><label for="answer">Or write your own</label><input type="text" id="answer" name="answer" autocomplete="off"></p>
+  </div>
+  </fieldset>
+  <div class="field"><label class="field__label" for="answer">Or write your own</label><input class="input" type="text" id="answer" name="answer" autocomplete="off"></div>
   {{else}}
-  <p><label for="answer"><strong>Your answer</strong></label></p>
-  <textarea id="answer" name="answer" rows="5" required></textarea>
+  <div class="field"><label class="field__label" for="answer">Your answer</label>
+  <textarea class="textarea" id="answer" name="answer" rows="5" required></textarea></div>
   {{end}}
-  <p><button type="submit">Send answer</button></p>
+  <div class="btn-row"><button type="submit" class="btn btn--primary">Send answer</button></div>
 </form>
 {{else}}
 <div class="card">

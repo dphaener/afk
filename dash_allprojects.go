@@ -94,14 +94,54 @@ func loadDashAllProjects(p dashAllProjectsParts, active string) ui.AllProjects {
 		return ui.AllProjects{ConfigPath: path, Err: err}
 	}
 
-	reviews := map[string]bool{}
-	for _, rv := range p.reviews() {
-		reviews[filepath.Clean(rv.Root)] = true
-	}
+	reviews := reviewRoots(p.reviews())
 
+	listed := make([]rowProject, 0, len(cfg.Projects))
+	for _, lp := range cfg.Projects {
+		listed = append(listed, rowProject{Name: lp.Name, Path: lp.Path})
+	}
+	rows, seen := buildListedRows(p, listed, reviews)
+
+	if active != "" {
+		root := mainCheckout(active, p.gitCommonDir(active))
+		if resolved, err := p.evalSymlinks(root); err == nil {
+			root = resolved
+		}
+		if !seen[root] {
+			// The largest order, so it sorts last in its group.
+			in := projectrows.Input{Name: filepath.Base(root), Root: root, Order: len(cfg.Projects)}
+			readDashProjectRow(p, &in, reviews)
+			rows = append(rows, projectrows.Build(in))
+		}
+	}
+	return ui.AllProjects{Rows: rows, ConfigPath: path}
+}
+
+// rowProject is one listed project as buildListedRows takes it: a name and the
+// folder it was listed with. Its position in the slice is its Order.
+type rowProject struct{ Name, Path string }
+
+// reviewRoots is the set of folders whose plan is waiting for approval.
+func reviewRoots(reviews []daemonstate.Review) map[string]bool {
+	out := map[string]bool{}
+	for _, rv := range reviews {
+		out[filepath.Clean(rv.Root)] = true
+	}
+	return out
+}
+
+// buildListedRows is one row per listed project, in list order and not yet
+// sorted, plus the set of roots it covered. It takes the list as a parameter
+// so the dashboard (which reads config.toml) and the web page (which uses the
+// daemon's last good list and must never read config.toml) share every
+// per-project rule: the main checkout, symlink resolution, duplicate roots
+// skipped first-wins, a missing folder as a row saying so, and the project's
+// own files. A project whose files cannot be read is a row saying so and never
+// stops the others.
+func buildListedRows(p dashAllProjectsParts, projects []rowProject, reviews map[string]bool) ([]projectrows.Row, map[string]bool) {
 	var rows []projectrows.Row
 	seen := map[string]bool{}
-	for i, lp := range cfg.Projects {
+	for i, lp := range projects {
 		in := projectrows.Input{Name: lp.Name, Listed: true, Order: i}
 		if !p.isDir(lp.Path) {
 			in.Root = filepath.Clean(lp.Path)
@@ -124,20 +164,7 @@ func loadDashAllProjects(p dashAllProjectsParts, active string) ui.AllProjects {
 		}
 		rows = append(rows, projectrows.Build(in))
 	}
-
-	if active != "" {
-		root := mainCheckout(active, p.gitCommonDir(active))
-		if resolved, err := p.evalSymlinks(root); err == nil {
-			root = resolved
-		}
-		if !seen[root] {
-			// The largest order, so it sorts last in its group.
-			in := projectrows.Input{Name: filepath.Base(root), Root: root, Order: len(cfg.Projects)}
-			readDashProjectRow(p, &in, reviews)
-			rows = append(rows, projectrows.Build(in))
-		}
-	}
-	return ui.AllProjects{Rows: rows, ConfigPath: path}
+	return rows, seen
 }
 
 // readDashProjectRow fills in from the project's own files. It reads the same

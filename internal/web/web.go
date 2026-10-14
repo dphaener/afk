@@ -8,7 +8,9 @@
 // Every route needs the token. One middleware wraps the whole mux and nothing
 // is exempt, not even a "not found" answer, because the page can answer inbox
 // questions and pause a build: anyone who can reach the port without the
-// token must learn nothing and change nothing. New refuses an empty token for
+// token must learn nothing and change nothing. The one thing served without
+// it is the two stylesheets the refusal page itself links (see
+// isRefusedPageStyle in auth.go), which hold nothing but looks. New refuses an empty token for
 // the same reason, so a server with no secret cannot be built by mistake.
 //
 // Handlers read the files fresh on every request and keep no cache. The
@@ -43,6 +45,7 @@ import (
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/planchat"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -125,6 +128,13 @@ type Deps struct {
 	// function (by planchat), never in the web package. Nil means this page
 	// cannot send replies.
 	PlanReply func(project, root string, r planchat.Reply) error
+	// ProjectRows lists the all-projects rows, built the way the dashboard's
+	// all-projects screen builds them. It is a seam rather than something
+	// this package works out because the rows are built in the root package
+	// from the daemon's last good project list (internal/projectrows does the
+	// pure part), and the page must never read config.toml itself: the
+	// daemon owns that list. Nil means no rows, like Projects.
+	ProjectRows func() []projectrows.Row
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -168,6 +178,9 @@ type server struct {
 	hub *hub
 	// assets are the embedded static files by name, hashed once in New.
 	assets map[string]asset
+	// refusedPage is the page that refuses a request without the token,
+	// built once in New from the stylesheets' addresses (refusedPageFor).
+	refusedPage []byte
 }
 
 // route is one address and the handler method behind it. The path carries no
@@ -231,6 +244,7 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 		return nil, err
 	}
 	s.assets = assets
+	s.refusedPage = []byte(refusedPageFor(s.assetURL("afk.css"), s.assetURL("page.css")))
 	pages, err := parsePages(s.assetURL)
 	if err != nil {
 		return nil, err
@@ -252,6 +266,9 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 	// The reply goes in the same place and for the same reason: only under
 	// /api, so /p/{project}/plan/chat stays not found until T8.12.
 	mux.HandleFunc("POST /api/p/{project}/plan/chat", s.planReply)
+	// The confirm page behind Pause and Resume is HTML only, so it stays out
+	// of routes for the same reason.
+	mux.HandleFunc("GET /p/{project}/confirm/{action}", s.confirm)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong
@@ -306,7 +323,7 @@ func (s *server) respond(w http.ResponseWriter, r *http.Request, status int, nam
 		w.WriteHeader(http.StatusSeeOther)
 		return
 	}
-	s.renderPage(w, status, name, view)
+	s.renderPage(w, r, status, name, view)
 }
 
 // fail answers with an error in plain language.

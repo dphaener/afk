@@ -1,0 +1,11 @@
+{{define "title"}}{{.Sheet.Title}}{{end}}
+{{define "content"}}
+<h1>{{.Sheet.Title}}</h1>
+<p>{{.Sheet.Body}}</p>
+<div class="btn-row">
+  <form method="{{.Sheet.Method}}" action="{{.Sheet.Path}}">
+    <button type="submit" class="btn {{if .Sheet.Danger}}btn--danger{{else}}btn--primary{{end}}">{{.Sheet.Action}}</button>
+  </form>
+  <a class="btn btn--secondary" href="/p/{{pe .Project}}">{{.Sheet.Safe}}</a>
+</div>
+{{end}}

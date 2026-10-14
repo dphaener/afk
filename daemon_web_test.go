@@ -29,6 +29,7 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/planchat"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/state"
@@ -1055,5 +1056,127 @@ func TestSendPlanReply(t *testing.T) {
 				t.Fatalf("unexpected send: %q", sent)
 			}
 		})
+	}
+}
+
+// TestWebDepsProjectRows is the seam test for web.Deps.ProjectRows: the
+// daemon's project list in, the dashboard's rows out, sorted.
+//
+// Each row sets up projects under temp folders, hands them to the function as
+// the daemon's list (index = Order) and reads "name state" per row back.
+//
+// Load-bearing rows:
+//   - "paused with a blocking item sorts first": the paused project is listed
+//     second but comes first, so Sort is applied and NeedsOwner is set by the
+//     blocking count and not by the state.
+//   - "a folder that is gone and an unreadable ledger": both come back as rows
+//     saying so and the healthy project is still there, so one broken project
+//     never hides the others.
+//   - "plan waiting for approval": the review list is read from the state
+//     folder the seam is given, not from config.toml.
+//   - "empty list": no rows, not an error and not a nil dereference.
+func TestWebDepsProjectRows(t *testing.T) {
+	plan := func(t *testing.T, root string) {
+		writeBuildFile(t, root, "docs/PLAN.md", dashBuildPlan)
+	}
+	type built struct {
+		projects []daemon.Project
+		reviews  []daemonstate.Review
+	}
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) built
+		want  []string
+		check func(t *testing.T, rows []projectrows.Row)
+	}{
+		{name: "running", setup: func(t *testing.T) built {
+			a := t.TempDir()
+			plan(t, a)
+			writeBuildFile(t, a, ".afk/build/ledger.json", dashBuildLedger)
+			return built{projects: []daemon.Project{{Name: "alpha", Root: a}}}
+		}, want: []string{"alpha running"}, check: func(t *testing.T, rows []projectrows.Row) {
+			if rows[0].Task != "T1.2" || rows[0].Done != 1 || rows[0].Total != 4 || !rows[0].Listed {
+				t.Errorf("row = %+v, want T1.2, 1 of 4, listed", rows[0])
+			}
+		}},
+		{name: "paused with a blocking item sorts first", setup: func(t *testing.T) built {
+			a, b := t.TempDir(), t.TempDir()
+			plan(t, a)
+			plan(t, b)
+			seedDashInbox(t, b)
+			if err := daemonstate.Pause(b, dashBuildNow); err != nil {
+				t.Fatal(err)
+			}
+			return built{projects: []daemon.Project{{Name: "calm", Root: a}, {Name: "beta", Root: b}}}
+		}, want: []string{"beta paused", "calm nothing ready"}, check: func(t *testing.T, rows []projectrows.Row) {
+			if !rows[0].NeedsOwner || rows[0].Blocking != 1 || rows[0].Open != 2 {
+				t.Errorf("row = %+v, want needs owner with 1 blocking of 2 open", rows[0])
+			}
+		}},
+		{name: "plan waiting for approval", setup: func(t *testing.T) built {
+			a := t.TempDir()
+			plan(t, a)
+			return built{
+				projects: []daemon.Project{{Name: "alpha", Root: a}},
+				reviews:  []daemonstate.Review{{Name: "alpha", Root: a, At: "2026-10-12T11:00:00Z"}},
+			}
+		}, want: []string{"alpha nothing ready"}, check: func(t *testing.T, rows []projectrows.Row) {
+			if !rows[0].PlanWaiting || !rows[0].NeedsOwner {
+				t.Errorf("row = %+v, want plan waiting and needs owner", rows[0])
+			}
+		}},
+		{name: "a folder that is gone and an unreadable ledger", setup: func(t *testing.T) built {
+			gone := filepath.Join(t.TempDir(), "missing")
+			bad, good := t.TempDir(), t.TempDir()
+			plan(t, bad)
+			writeBuildFile(t, bad, ".afk/build/ledger.json", "{ not json")
+			plan(t, good)
+			return built{projects: []daemon.Project{{Name: "gone", Root: gone}, {Name: "bad", Root: bad}, {Name: "good", Root: good}}}
+		}, want: []string{"gone gone", "bad can't read", "good nothing ready"}, check: func(t *testing.T, rows []projectrows.Row) {
+			if !strings.Contains(rows[0].Detail, "does not exist") || rows[1].Detail == "" {
+				t.Errorf("details = %q and %q, want the missing-folder words and a reason", rows[0].Detail, rows[1].Detail)
+			}
+		}},
+		{name: "empty list", setup: func(t *testing.T) built { return built{} }, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := tt.setup(t)
+			stateDir := t.TempDir()
+			for _, rv := range b.reviews {
+				if err := daemonstate.AddReview(stateDir, rv); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows := webProjectRows(func() []daemon.Project { return b.projects }, stateDir, func() time.Time { return daemonTestNow })()
+			var got []string
+			for _, r := range rows {
+				got = append(got, r.Name+" "+string(r.State))
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("rows = %q, want %q", got, tt.want)
+			}
+			if tt.check != nil {
+				tt.check(t, rows)
+			}
+		})
+	}
+}
+
+// TestWebDepsProjectRowsFromRig checks the wiring: daemonWebDeps fills
+// ProjectRows, and it answers from the list the rig's page uses.
+func TestWebDepsProjectRowsFromRig(t *testing.T) {
+	r := newDaemonRig(t)
+	root := r.project()
+	env := r.env()
+	list := &projectList{}
+	list.set([]daemon.Project{{Name: "demo", Root: root}})
+	deps := daemonWebDeps(list.get, r.stateDir(), env.state, env.now)
+	if deps.ProjectRows == nil {
+		t.Fatal("daemonWebDeps left ProjectRows nil")
+	}
+	rows := deps.ProjectRows()
+	if len(rows) != 1 || rows[0].Name != "demo" {
+		t.Fatalf("rows = %+v, want one row named demo", rows)
 	}
 }

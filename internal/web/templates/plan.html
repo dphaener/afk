@@ -1,21 +1,5 @@
 {{define "title"}}Plan: {{.Project}}{{end}}
 {{define "content"}}
-<style>
-.plan { overflow-wrap: anywhere; }
-.plan h1 { font-size: 1.3rem; margin: 1.5rem 0 .5rem; }
-.plan h2 { font-size: 1.2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
-.plan h3, .plan h4, .plan h5, .plan h6 { font-size: 1rem; margin: 1.25rem 0 .5rem; }
-.plan ul { list-style: disc; padding-left: 1.25rem; }
-.plan ol { padding-left: 1.5rem; }
-.plan li { margin: .25rem 0; }
-.plan code { font: .875em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.plan pre { white-space: pre; overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .75rem; }
-.plan .scroll { overflow-x: auto; }
-.plan table { border-collapse: collapse; font-size: .9rem; }
-.plan th, .plan td { border: 1px solid var(--line); padding: .25rem .5rem; text-align: left; vertical-align: top; min-width: 6rem; }
-.plan blockquote { margin: .75rem 0; padding: 0 0 0 .75rem; border-left: 3px solid var(--line); color: var(--muted); }
-.plan hr { border: 0; border-top: 1px solid var(--line); margin: 1.5rem 0; }
-</style>
 <p>{{if .WaitingForApproval}}<a href="/">Back to the overview</a>{{else}}<a href="/p/{{pe .Project}}">Back to {{.Project}}</a>{{end}}</p>
 <h1>Plan: {{.Project}}</h1>
 {{if .Path}}<p class="muted">{{.Path}}</p>{{end}}
@@ -32,14 +16,14 @@
 </div>
 {{with .Errors}}
 <h2>Errors to fix before this plan can be built</h2>
-<ul>
+<ul class="stack">
 {{range .}}
   <li class="card"><span class="warn">{{if .Line}}Line {{.Line}}{{else}}Whole plan{{end}}{{if .Task}}, {{.Task}}{{end}}</span><br>{{.Message}}</li>
 {{end}}
 </ul>
 {{end}}
 <h2>Open questions</h2>
-<ul>
+<ul class="stack">
 {{range .Questions}}
   <li class="card">{{.Text}}<br>
   <span class="muted">Needed by: {{range $i, $t := .NeededBy}}{{if $i}}, {{end}}{{$t}}{{else}}no task named{{end}}</span></li>

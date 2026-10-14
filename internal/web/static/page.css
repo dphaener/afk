@@ -1,0 +1,116 @@
+/* page.css — afk's own rules on top of afk.css (the design system's sheet,
+   served unchanged). What is here is layout glue the design system leaves
+   to the product: which bar shows at which width, the page's width, and
+   the plain classes the existing pages still use. No colour or size is
+   invented: every value is one of afk.css's tokens. */
+
+/* afk.css gives .live, .btn and others a display value, and a class rule
+   beats the browser's own [hidden] rule, so without this a hidden live
+   indicator (no JavaScript yet) would show. */
+.afk [hidden] { display: none !important; }
+
+/* afk.css never clears the browser's 8 px body margin (its screens were
+   drawn as .afk.screen boxes inside a canvas, never as the body), so
+   without this the bars stop 8 px short of each edge and .shell's
+   min-height: 100vh plus the margin makes every page scroll by 16 px. */
+body.afk { margin: 0; }
+
+/* One bar per width, at the design's 760 px breakpoint (afk.css's split). */
+@media (min-width: 761px) { .app-bar { display: none; } }
+@media (max-width: 760px) { .topnav { display: none; } }
+.app-bar .live { margin-left: auto; }
+.topnav__live { margin-left: auto; }
+
+/* afk.css colours every link with ".afk a" and ".afk a:hover", which are
+   more specific than its own component classes, so a component drawn on an
+   <a> (a link-shaped button, a top-bar link, the back button) would take the
+   link blue: a primary button's label vanishes into its blue fill. These put
+   each component's own colour back for <a>, value for value from afk.css. */
+.afk a.btn--primary, .afk a.btn--primary:hover { color: var(--on-accent); }
+.afk a.btn--secondary, .afk a.btn--secondary:hover { color: var(--text); }
+.afk a.btn--quiet:hover { color: var(--accent-hover); }
+.afk a.btn--danger, .afk a.btn--danger:hover { color: var(--on-danger); }
+.afk a.icon-btn { color: var(--text-2); }
+.afk a.icon-btn:hover { color: var(--text); }
+.afk a.topnav__link { color: var(--text-2); }
+.afk a.topnav__link:hover, .afk a.topnav__link[aria-current] { color: var(--text); }
+.afk a.topnav__brand, .afk a.topnav__brand:hover { color: var(--text); text-decoration: none; }
+.afk a.row, .afk a.row:hover { color: inherit; }
+.afk a.nav-item, .afk a.nav-item:hover { color: var(--text); }
+/* The current section's link when the page is under it (a project, a plan,
+   an item): drawn like afk.css's aria-current="page". */
+.topnav__link[aria-current="true"] { background: var(--surface-2); }
+
+/* The page column. */
+.page { width: 100%; max-width: 48rem; margin: 0 auto; }
+.page--alone { padding-top: var(--space-7); }
+.page h1 { font-size: var(--text-2xl); line-height: var(--lh-2xl); font-weight: var(--weight-semibold); }
+.page h2 { font-size: var(--text-xl); line-height: var(--lh-xl); font-weight: var(--weight-semibold); }
+.page pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 0; }
+.afk fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+
+/* Plain classes the existing pages use until their own tasks redraw them. */
+.muted { color: var(--text-3); }
+.warn { color: var(--attn); font-weight: var(--weight-semibold); }
+.stack { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+
+/* The rendered master plan (moved from plan.html). */
+.plan { overflow-wrap: anywhere; }
+.plan h1 { font-size: var(--text-xl); margin: var(--space-5) 0 var(--space-2); }
+.plan h2 { font-size: var(--text-lg); border-top: 1px solid var(--border); padding-top: var(--space-4); margin: var(--space-5) 0 var(--space-2); }
+.plan h3, .plan h4, .plan h5, .plan h6 { font-size: var(--text-md); margin: var(--space-5) 0 var(--space-2); }
+.plan p { margin: var(--space-2) 0; }
+.plan ul { list-style: disc; padding-left: 1.25rem; margin: var(--space-2) 0; }
+.plan ol { padding-left: 1.5rem; margin: var(--space-2) 0; }
+.plan li { margin: var(--space-1) 0; }
+.plan code { font-family: var(--font-mono); font-size: 0.875em; }
+.plan pre { white-space: pre; overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); }
+.plan .scroll { overflow-x: auto; }
+.plan table { border-collapse: collapse; font-size: var(--text-sm); }
+.plan th, .plan td { border: 1px solid var(--border); padding: var(--space-1) var(--space-2); text-align: left; vertical-align: top; min-width: 6rem; }
+.plan blockquote { margin: var(--space-3) 0; padding: 0 0 0 var(--space-3); border-left: 3px solid var(--border); color: var(--text-3); }
+.plan hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
+
+/* The confirm sheet is a native dialog: a bottom sheet on a phone and a
+   centred card from the design's 760 px breakpoint. afk.css gives
+   .confirm-sheet a display, which would beat the closed dialog's none. */
+dialog.confirm-sheet:not([open]) { display: none; }
+dialog.confirm-sheet { position: fixed; inset: auto 0 0 0; margin: 0; max-width: none; width: 100%; color: var(--text); }
+dialog.confirm-sheet::backdrop { background: var(--scrim); }
+@media (min-width: 760px) {
+  dialog.confirm-sheet { inset: 0; margin: auto; width: min(480px, calc(100% - 32px)); border-radius: var(--radius-lg); height: fit-content; }
+}
+.confirm-sheet .btn-row form { margin: 0; }
+.btn .spinner { margin-right: var(--space-2); }
+
+/* The toast sits above the bottom edge and is hidden by confirm.js. */
+.toast-region { position: fixed; left: 0; right: 0; bottom: var(--space-5); display: flex; justify-content: center; padding: 0 var(--space-4); z-index: 20; pointer-events: none; }
+.toast-region .toast { pointer-events: auto; }
+
+/* The home page (overview.html): the all-projects list, and on a desktop the
+   selected project beside it in afk.css's split. The page column widens to
+   hold both; :has keeps this to the overview, and a browser without :has
+   gets the narrow column, where the split wraps and still works. */
+.page:has(> .overview) { max-width: 72rem; }
+.overview.split { gap: var(--space-5) 0; }
+.overview .split__list { padding: 0; }
+.overview .split__detail { padding: 0 0 0 var(--space-6); }
+.overview .split__detail .card { position: sticky; top: var(--space-4); }
+/* The detail repeats the selected row, so on a phone, where the split
+   stacks, it is left out and the row is the whole story. */
+@media (max-width: 760px) {
+  .overview .split__detail { display: none; }
+  .overview .row.is-selected { background: transparent; }
+}
+@media (min-width: 761px) { .overview .split__list { padding-right: var(--space-5); } }
+/* .page h2 above sizes every page heading; a section head stays small. */
+.page h2.section-head__title { font-size: var(--text-sm); line-height: var(--lh-sm); }
+
+/* The progress bar is a native <progress>: its value and max are attributes,
+   so no style= is needed for the fill's width (the templates hold no inline
+   style), and the browser gives it the progressbar role and its numbers.
+   These draw it as afk.css's progress__track and progress__fill. */
+.afk progress.progress__track { -webkit-appearance: none; appearance: none; display: block; border: 0; height: 6px; border-radius: var(--radius-pill); background: var(--idle-soft); color: var(--ok); }
+.afk progress.progress__track::-webkit-progress-bar { background: var(--idle-soft); border-radius: var(--radius-pill); }
+.afk progress.progress__track::-webkit-progress-value { background: var(--ok); border-radius: var(--radius-pill); }
+.afk progress.progress__track::-moz-progress-bar { background: var(--ok); border-radius: var(--radius-pill); }
