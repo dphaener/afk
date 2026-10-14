@@ -170,6 +170,17 @@ const (
 	// list. It swallows unclaimed keys, enter included, so the default is no
 	// and nothing is removed without an explicit y.
 	inputConfirmProjectRemove
+	// inputPickTaskStatus, inputTaskStatusReplacedBy and
+	// inputConfirmTaskStatus are the Build tab's "set this task's status"
+	// (T7.11, taskstatus.go): the status picker, the one-line step asking for
+	// the replacing ids when the choice is superseded, and the y/n confirm.
+	// The picker has the provider picker's shape and the confirm the remove
+	// confirm's, so both swallow unclaimed keys; the ids step is a textinput,
+	// so unclaimed keys reach the field. Three modes rather than one with a
+	// step field so each step's keys and hint are its own.
+	inputPickTaskStatus
+	inputTaskStatusReplacedBy
+	inputConfirmTaskStatus
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -227,6 +238,12 @@ func (m inputMode) String() string {
 		return "project-add-name"
 	case inputConfirmProjectRemove:
 		return "confirm-project-remove"
+	case inputPickTaskStatus:
+		return "pick-task-status"
+	case inputTaskStatusReplacedBy:
+		return "task-status-replaced-by"
+	case inputConfirmTaskStatus:
+		return "confirm-task-status"
 	}
 	return "unknown"
 }
@@ -240,7 +257,8 @@ func (m inputMode) isModal() bool {
 	switch m {
 	case inputConfirmClean, inputSpawnError, inputConfirmRestart, inputEditLabel, inputPickProvider,
 		inputPlanText, inputConfirmPlanOpen, inputConfirmPlanFolder, inputConfirmGitHubRepo,
-		inputConfirmPlanApprove, inputProjectAddFolder, inputProjectAddName, inputConfirmProjectRemove:
+		inputConfirmPlanApprove, inputProjectAddFolder, inputProjectAddName, inputConfirmProjectRemove,
+		inputPickTaskStatus, inputTaskStatusReplacedBy, inputConfirmTaskStatus:
 		return true
 	}
 	return false
@@ -473,6 +491,9 @@ var modePrecedence = []modeLayer{
 	{inputProjectAddFolder, func(s modeState) bool { return s.modal == inputProjectAddFolder }},
 	{inputProjectAddName, func(s modeState) bool { return s.modal == inputProjectAddName }},
 	{inputConfirmProjectRemove, func(s modeState) bool { return s.modal == inputConfirmProjectRemove }},
+	{inputPickTaskStatus, func(s modeState) bool { return s.modal == inputPickTaskStatus }},
+	{inputTaskStatusReplacedBy, func(s modeState) bool { return s.modal == inputTaskStatusReplacedBy }},
+	{inputConfirmTaskStatus, func(s modeState) bool { return s.modal == inputConfirmTaskStatus }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
@@ -606,6 +627,11 @@ const (
 	// (projectedit.go). They run only while the screen is open.
 	actionProjectAdd
 	actionProjectRemove
+	// actionTaskStatus is "set this task's status" (T7.11, ctrl+space S): it
+	// opens the status picker for the Build tab's cursor row
+	// (taskstatus.go). It runs only on the Build tab with the right side
+	// focused.
+	actionTaskStatus
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -624,8 +650,8 @@ const (
 	actionDismiss      // esc/enter on the spawn-error report
 	actionSubmit       // enter in the label prompt
 	actionDeleteBranch // d/D in the clean confirmation: clean AND delete the branch
-	actionPickerUp     // up/k in the provider picker: highlight the previous provider
-	actionPickerDown   // down/j in the provider picker: highlight the next provider
+	actionPickerUp     // up/k in the provider and task-status pickers: highlight the previous row
+	actionPickerDown   // down/j in the provider and task-status pickers: highlight the next row
 
 	// Form gestures. Each is CONTEXTUAL inside its handler — actionFormCancel
 	// is cancelForm, which clears an active base-list filter before it cancels
@@ -750,6 +776,8 @@ func (a modeAction) String() string {
 		return "project-add"
 	case actionProjectRemove:
 		return "project-remove"
+	case actionTaskStatus:
+		return "task-status"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -1158,6 +1186,21 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	confirmProjectRemove := key.NewBinding(
 		key.WithKeys("y", "Y"),
 		key.WithHelp("y", "remove"),
+	)
+	// The task-status steps' keys (T7.11): the picker's enter chooses, the
+	// ids step's enter goes on to the confirm, and the confirm's y says
+	// "set" because that is what it does to the ledger.
+	chooseTaskStatus := key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "choose"),
+	)
+	nextTaskStatus := key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "next"),
+	)
+	confirmTaskStatus := key.NewBinding(
+		key.WithKeys("y", "Y"),
+		key.WithHelp("y", "set"),
 	)
 	// The provider picker's keys. up/k and down/j are declared fresh rather
 	// than sharing keys.Up/keys.Down for the reason detailFocusUp gives: those
@@ -1808,6 +1851,53 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
 			confirmProjectRemove, deny, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+
+	// The task-status steps (T7.11). The picker is the provider picker's
+	// shape: a stray letter must neither choose a status nor dismiss the
+	// list. The ids step is the add form's: unclaimed keys reach the field.
+	// The confirm is the remove confirm's: nothing is written without y.
+	r[inputPickTaskStatus] = modeSpec{
+		mode: inputPickTaskStatus,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: chooseTaskStatus, action: actionConfirm},
+			{binding: pickerUp, action: actionPickerUp},
+			{binding: pickerDown, action: actionPickerDown},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			pickerUp, pickerDown, chooseTaskStatus, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+	r[inputTaskStatusReplacedBy] = modeSpec{
+		mode: inputTaskStatusReplacedBy,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: nextTaskStatus, action: actionSubmit},
+		},
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: []key.Binding{
+			nextTaskStatus, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+	r[inputConfirmTaskStatus] = modeSpec{
+		mode: inputConfirmTaskStatus,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: confirmTaskStatus, action: actionConfirm},
+			{binding: deny, action: actionDeny},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			confirmTaskStatus, deny, cancelEsc, keys.Mouse, quitChord,
 		}},
 	}
 

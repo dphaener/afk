@@ -1721,3 +1721,22 @@ func approvePlanCmd(approve func(root string) PlanApproveResult, root string, ge
 		return planApprovedMsg{root: root, gen: gen, result: approve(root)}
 	}
 }
+
+// taskStatusSetMsg carries one Deps.SetTaskStatus call's result back to
+// Update (taskstatus.go). gen is the project generation the owner said y
+// under, so a result that lands after a project switch is dropped rather than
+// told under the other project's Build tab.
+type taskStatusSetMsg struct {
+	gen    int
+	result TaskStatusResult
+}
+
+// setTaskStatusCmd runs one status change. The seam is called here, on the
+// command goroutine, and nowhere else: it takes the ledger's lock and writes
+// the file, and a lock held by the build loop must not stall the screen.
+func setTaskStatusCmd(set func(root, id, status string, replacedBy []string) TaskStatusResult,
+	root, id, status string, replacedBy []string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		return taskStatusSetMsg{gen: gen, result: set(root, id, status, replacedBy)}
+	}
+}

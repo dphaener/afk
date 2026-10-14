@@ -18,7 +18,7 @@
 │ │ i  inbox                               — the inbox has not been read yet │ │
 │ │ P  pause the build                     — this project has no build       │ │
 │ │ U  resume the build                    — this project has no build       │ │
-│ │ f  focus the right side                — Move the keyboard to the right… │ │
+│ │ S  set this task's status              — this dashboard cannot change t… │ │
 │ ╰──────────────────── key runs · enter runs · type to filter · esc closes ─╯ │
 ╰────────────────────────────╯╰─ enter: focus view · ctrl+space c: clean · c… ─╯
 enter run · ↑/↓ move · type filter · esc close …

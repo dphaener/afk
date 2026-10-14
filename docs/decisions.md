@@ -2853,3 +2853,25 @@ T7.10 lets the owner add and remove projects from the all-projects screen of `af
 - **A literal `+` is a key, not a chord.** The leader table's checks treated any key containing `+` as a chord like `ctrl+c`; a key that is exactly `+` is now allowed.
 - **Removing the last project** leaves `config.toml` as an empty file rather than deleting it, as `afk project remove` always has.
 - **Remove on the unlisted start-up row** is dimmed in the dialog, so `ctrl+space -` there does nothing but show the dialog with the reason.
+
+## T7.11
+
+T7.11 puts a cursor on the Build tab of `afk dash` and lets the owner set the selected task's status, with the same effect as `afk ledger set`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One code path (A1).** The body of `afk ledger set` after its argument parsing moves into an entry point that returns what happened (changed, already, refused, failed), each task's real old and new status read inside the ledger's lock, and the command's own words, without printing. The command prints those words, so its output and exit codes do not change, and the dashboard shows the same sentences.
+- **Key (A2).** `ctrl+space S`, "set this task's status". Lower-case `s` is not used, because typing it starts the filter for "start a new plan". The action works only on the Build tab while the detail side has the keyboard and a task is selected; elsewhere it is dimmed with the reason.
+- **The cursor (A3, A4, A5).** The detail side's movement keys (up and down, `j` and `k`, half page, page, home and end) move a cursor on the Build tab's task rows, and still scroll on the other tabs. The cursor stays on the same task when the list is read again; if that task has left the list, it lands on the row now in the same place. It starts on the task being built, or the first row. It is drawn as `›` in a two-column margin only while the detail side has the keyboard, so the tab looks as before when the session list has it.
+- **Choosing a status (A6, A7).** A list of the seven statuses the command accepts, with the current one marked. Choosing the current status writes nothing. Choosing `superseded` asks next for the ids of the tasks that replace it, which the command then checks against the plan.
+- **The confirm (A8).** One line saying what changes (`T2.3: failed → pending.`) and what follows from it (`The build loop may start it on its next pass.`). When the task is running or shipping, the confirm first says an agent is working on it and that changing the status does not stop it. Only `y` writes.
+- **After a change (A9).** A short notice in the command's words, then the Build tab is read again, so the row shows the new status. One change at a time.
+- **Modes (A10), tests (A11), prerequisites (A12).** Three new dialog steps (the list, the replacing ids, the confirm). Table tests are written with the code. Nothing had to be in place first: T7.1 is merged.
+
+Decided while building (T7.11):
+
+- **Words-only rules split out.** `ledgerSetRefusal` holds the checks that depend only on the words typed, so `afk ledger set` still reports the same mistake first when a command has two, and the dashboard's entry point runs the same checks and cannot skip them.
+- **The cursor remembers its task by id.** `landBuildCursor` takes the build's current task as an argument, so it stays a pure function. The marker is `›`, not the session list's `▌` rail: the rail means the keyboard is on the left, and the Build cursor only shows with the keyboard on the right.
+- **The cursor stays drawn behind the dialogs.** Its gate is "right side focused and detail drawn", not the derived input mode, so the marked row is visible behind the status picker.
+- **Where the offset is decided.** `revealBuildCursor` runs at the end of `syncDetailViewport`, so every path that syncs keeps the cursor row on screen.
+- **Leader row.** `S` sits after `U` and is a right-side row (the cursor that names the task only exists with the right side focused). Blocked reasons come in this order: no seam, not on the Build tab with the right side focused, no task.
+- **Every way out says nothing changed.** Esc on the picker, on the replacing-ids step and on the confirm all say "Nothing was changed.". A `y` after a project switch warns and writes nothing; a stale result is dropped.
+- **The adapter.** `dashSetTaskStatus` (`dash_ledger.go`) parses the status itself, passes one id through `setLedgerStatusForSurface` and hands the command's `Text` back unchanged, with no `afk ledger set:` prefix and no usage line.

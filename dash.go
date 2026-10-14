@@ -641,6 +641,11 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		RemoveProject: dashRemoveProject,
 		PauseBuild:    dashPauseBuild,
 		ResumeBuild:   dashResumeBuild,
+		// SetTaskStatus has no default in internal/ui (it writes a real
+		// project's ledger). It calls the entry point `afk ledger set` prints
+		// from, so the dashboard and the command cannot disagree
+		// (docs/PLAN.md §2, T7.11 row); without it S says it cannot change the ledger.
+		SetTaskStatus: dashSetTaskStatus,
 		// LoadListed has no default in internal/ui either (it reads the
 		// machine's config.toml), so without this line the switcher would
 		// silently never show the projects `afk project add` listed. The read

@@ -398,6 +398,24 @@ type Deps struct {
 	// in the actions dialog, and nothing is called.
 	AddProject    func(dir, name string) ProjectEditResult
 	RemoveProject func(root string) ProjectEditResult
+	// SetTaskStatus sets the status of the task id in the build ledger of
+	// the project whose main checkout is root (the Root of the snapshot
+	// LoadBuild returned), the way `afk ledger set id status` does (T7.11):
+	// the id and any replacing ids are checked against the plan, and the
+	// ledger is written under its lock. replacedBy is the ids that replace
+	// the task, given only with status superseded. It returns what happened
+	// as one outcome and the command's own words, and prints nothing.
+	//
+	// It is the dashboard's one write to the ledger (master plan M7, "What
+	// the dashboard writes"): the root package wires it to the code behind
+	// the command, and this package never touches the file itself. It is
+	// called only after the owner's y in inputConfirmTaskStatus, and only
+	// inside a tea.Cmd (taskstatus.go), never from Update or View.
+	//
+	// It has NO default, for ApprovePlan's reason: it writes a real project's
+	// ledger, so a zero Deps must not be able to. A nil SetTaskStatus dims
+	// the "set this task's status" row, and nothing is called.
+	SetTaskStatus func(root, id, status string, replacedBy []string) TaskStatusResult
 	// HomeDir is the home folder the add form expands `~` with. nil means
 	// os.UserHomeDir, which reads $HOME and touches no file; it is a seam so
 	// a test can pin the expansion without changing the process environment.
@@ -1288,6 +1306,14 @@ type Model struct {
 	build      buildview.Snapshot
 	buildKnown bool
 
+	// buildCursorID and buildCursorIndex are the Build tab's cursor: the task
+	// it is on and that task's row. The id is what the cursor follows across
+	// reads; the index is where it lands when the id has left the list
+	// (landBuildCursor). Both are re-landed on every build read and cleared
+	// with the snapshot on a project switch (forgetBuild).
+	buildCursorID    string
+	buildCursorIndex int
+
 	// buildRefreshing keeps one slow build read from being stacked on itself
 	// by the refresh ticker, the way stackRefreshing does for the stack. It is
 	// a pointer for the same reason: the guard must survive the Model being
@@ -1335,6 +1361,24 @@ type Model struct {
 	projectAddDir    string
 	projectAddNote   string
 	projectRemoveRow projectrows.Row
+
+	// The Build tab's "set this task's status" (T7.11, taskstatus.go).
+	// taskStatus is a copy of the cursor's task taken when the picker
+	// opened, so y changes exactly the task the dialog names whatever the
+	// two-second build read does to the rows meanwhile. taskStatusPick is the
+	// picker's highlighted row, an index into taskStatusChoices;
+	// taskStatusNew and taskStatusReplacedBy are the choice the confirm
+	// shows. taskStatusInput and taskStatusNote are the replacing-ids step's
+	// field and the line under it after a blank enter. taskStatusSetting is
+	// set from y until the result is back, so a second change cannot start
+	// meanwhile.
+	taskStatus           taskStatusTarget
+	taskStatusPick       int
+	taskStatusNew        string
+	taskStatusReplacedBy []string
+	taskStatusInput      textinput.Model
+	taskStatusNote       string
+	taskStatusSetting    bool
 
 	plainBranches []string
 	plainTrunk    string
@@ -2547,6 +2591,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projectRemovedMsg:
 		return m.applyProjectRemoved(msg)
 
+	case taskStatusSetMsg:
+		return m.applyTaskStatusSet(msg)
+
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
 		// one message, and a repo whose trunk is unresolvable (no origin/HEAD, no
@@ -3637,6 +3684,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openProjectAdd()
 	case actionProjectRemove:
 		return m.openProjectRemove()
+	case actionTaskStatus:
+		return m.openTaskStatus()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -3663,10 +3712,17 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openNewForm()
 	case actionScratch:
 		return m.openProviderPicker()
-	case actionPickerUp:
-		return m.moveProviderPick(-1)
-	case actionPickerDown:
-		return m.moveProviderPick(1)
+	case actionPickerUp, actionPickerDown:
+		// The two pickers share their move keys; the mode says whose
+		// highlight moves.
+		delta := -1
+		if a == actionPickerDown {
+			delta = 1
+		}
+		if mode == inputPickTaskStatus {
+			return m.moveTaskStatusPick(delta)
+		}
+		return m.moveProviderPick(delta)
 	case actionProjects:
 		return m.openSwitcher()
 	case actionClean:
@@ -3687,6 +3743,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 			return m.submitProjectAddFolder()
 		case inputProjectAddName:
 			return m.submitProjectAddName()
+		case inputTaskStatusReplacedBy:
+			return m.submitTaskStatusReplacedBy()
 		}
 		return m.submitLabelEdit()
 
@@ -3735,6 +3793,24 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 			return m.confirmProjectRemove()
 		case actionDeny, actionCancel:
 			return m.cancelProjectRemove()
+		}
+	case inputPickTaskStatus:
+		switch a {
+		case actionConfirm:
+			return m.chooseTaskStatus()
+		case actionCancel:
+			return m.cancelTaskStatus()
+		}
+	case inputTaskStatusReplacedBy:
+		if a == actionCancel {
+			return m.cancelTaskStatus()
+		}
+	case inputConfirmTaskStatus:
+		switch a {
+		case actionConfirm:
+			return m.confirmTaskStatus()
+		case actionDeny, actionCancel:
+			return m.cancelTaskStatus()
 		}
 	case inputConfirmPlanOpen:
 		switch a {
@@ -3803,6 +3879,10 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 	case inputProjectAddFolder, inputProjectAddName:
 		var cmd tea.Cmd
 		m.projectAddInput, cmd = m.projectAddInput.Update(k)
+		return m, cmd
+	case inputTaskStatusReplacedBy:
+		var cmd tea.Cmd
+		m.taskStatusInput, cmd = m.taskStatusInput.Update(k)
 		return m, cmd
 	}
 	return m, nil
@@ -4006,6 +4086,10 @@ func (m *Model) syncDetailViewport() {
 	rows, _ := detailRowBudget(bodyHeight, m.detailViewport.TotalLineCount())
 	m.detailViewport.SetHeight(rows)
 	m.detailViewport.SetYOffset(m.detailViewport.YOffset())
+	// While the Build tab's cursor is shown the scroll keys move the cursor
+	// and not the view, so the offset follows the cursor's row: after a key,
+	// after a read that moved the row, after a resize or a tab switch.
+	m.revealBuildCursor(contentW)
 }
 
 // resetDetailScroll snaps the detail viewport to the top when the selected
@@ -4040,6 +4124,13 @@ func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.syncDetailViewport()
+	if m.buildCursorShown() {
+		// The Build tab with the keyboard on the right: the same keys move
+		// the task cursor (buildcursor.go). Every other tab, and this one
+		// from the session list, scrolls as below.
+		m.moveBuildCursorFor(a)
+		return m, nil
+	}
 	switch a {
 	case actionDetailScrollUp:
 		m.detailViewport.ScrollUp(1)
@@ -4892,6 +4983,8 @@ func (m Model) leaderConditions() leaderConds {
 		allProjectsOpen:  m.allProjectsOpen,
 		canAddProject:    m.deps.AddProject != nil,
 		canRemoveProject: m.deps.RemoveProject != nil,
+		canSetTaskStatus: m.deps.SetTaskStatus != nil,
+		buildTabFocused:  m.focus == focusRight && m.detailDrawn() && m.activeDetailTab() == tabBuild,
 		planKnown:        m.planStatus.Known,
 		planErr:          m.planStatus.Err != "",
 		planSession:      m.planStatus.Session,
@@ -4910,6 +5003,13 @@ func (m Model) leaderConditions() leaderConds {
 		c.selectedFault = isWorktreeFault(s.Kind)
 		c.selectedCleaning = m.cleaningSessions[cleanIDFor(s)]
 		c.canToggleView = m.paneForSelection() || m.rowHasAgent(s)
+	}
+	// The cursor's index is checked against its id as well as the rows'
+	// length: the picker reads the row at the index, and a cursor whose two
+	// halves disagreed would open it on another task.
+	if m.buildCursorShown() && m.buildCursorID != "" && m.buildCursorIndex < len(m.build.Rows) &&
+		m.build.Rows[m.buildCursorIndex].ID == m.buildCursorID {
+		c.buildTaskSelected = true
 	}
 	if r, ok := m.selectedProjectRow(); ok {
 		c.projectRowSelected = true
@@ -5960,7 +6060,8 @@ func (m Model) hasInFlightWork() bool {
 		len(m.cleaningSessions) > 0 ||
 		(m.attachInFlight.name != "" && (!m.attachInFlight.preview || m.attachInFlight.claimedPreview)) ||
 		m.otherOpsInFlight > 0 ||
-		m.planApproving
+		m.planApproving ||
+		m.taskStatusSetting
 }
 
 // startSpinnerIfNeeded arms the spinner's tick loop and is a no-op if the

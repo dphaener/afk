@@ -137,6 +137,12 @@ func (m Model) activeDialog() (dialog, bool) {
 		return m.projectAddDialog(), true
 	case inputConfirmProjectRemove:
 		return m.projectRemoveDialog(), true
+	case inputPickTaskStatus:
+		return m.taskStatusPickDialog(), true
+	case inputTaskStatusReplacedBy:
+		return m.taskStatusReplacedByDialog(), true
+	case inputConfirmTaskStatus:
+		return m.taskStatusConfirmDialog(), true
 	}
 	return dialog{}, false
 }

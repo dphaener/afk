@@ -340,8 +340,11 @@ func TestBuildKey(t *testing.T) {
 	t.Run("reads the same on every row", func(t *testing.T) {
 		m := withBuild(t, testModel(sess("alpha"), sess("beta")), buildTabSnap())
 		m, _ = pressAction(t, m, keyB)
-		first := m.detailBody(70)
+		// Both bodies are read with the list holding the keyboard: with the
+		// right side focused the tab also draws its task cursor, which is
+		// not what this row compares.
 		m, _ = update(t, m, keyEsc)
+		first := m.detailBody(70)
 		m, _ = update(t, m, keyRune('j'))
 		if s, _ := m.selected(); s.Name != "beta" {
 			t.Fatalf("fixture broken: selected %q, want beta", s.Name)

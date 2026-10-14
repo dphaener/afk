@@ -1,0 +1,24 @@
+ afk Dashboard                         inbox 1 · 1 blocking  ctrl+space i: inbox
+╭─ Sessions ─────────────────╮╭─ Build ────────────────────────────────────────╮
+│     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff   B… │
+│                            ││ ────────────────────────────────────────────── │
+│ ▌ ● feat-auth      EXEC  ● ││ 1/7 done · T1.2: executing                     │
+│   ● Billing v2     REVW    ││ paused: U or afk resume starts it again        │
+│   ● fix-login-red… PLAN  ● ││ 1 item needs you · ctrl+space i: inbox         │
+│   ○ feat-search    DONE    ││                                                │
+│ ╭─ Set the task's status? ─────────────────────────────────────────────────╮ │
+│ │                                                                          │ │
+│ │ T2.3 Login redirect                                                      │ │
+│ │                                                                          │ │
+│ │ T2.3: failed → pending.                                                  │ │
+│ │ The build loop may start it on its next pass.                            │ │
+│ │                                                                          │ │
+│ ╰───────────────────────────────────────────────── y: set · n/esc: cancel ─╯ │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+╰────────────────────────────╯╰──────────────────────────── esc: back to list ─╯
+y set · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit
