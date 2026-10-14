@@ -1677,6 +1677,42 @@ type planApprovedMsg struct {
 	result PlanApproveResult
 }
 
+// projectAddedMsg carries one Deps.AddProject call's result back to Update
+// (projectedit.go). gen and openGen are the project generation and the
+// all-projects screen's opening the owner submitted under: a result that
+// lands after a project switch, or after the screen closed or was opened
+// again, is still told (config.toml changed either way, and nothing else
+// will say so) but moves no cursor.
+type projectAddedMsg struct {
+	dir     string
+	gen     int
+	openGen int
+	result  ProjectEditResult
+}
+
+// projectRemovedMsg carries one Deps.RemoveProject call's result. It needs
+// no generation: a remove moves nothing but the row it took away, which the
+// re-read after it takes away whatever the screen shows by then.
+type projectRemovedMsg struct {
+	root   string
+	result ProjectEditResult
+}
+
+// addProjectCmd and removeProjectCmd run one add or remove. The seam is
+// called here, on the command goroutine, and nowhere else: it reads and
+// writes config.toml and runs git, none of which may stall the screen.
+func addProjectCmd(add func(dir, name string) ProjectEditResult, dir, name string, gen, openGen int) tea.Cmd {
+	return func() tea.Msg {
+		return projectAddedMsg{dir: dir, gen: gen, openGen: openGen, result: add(dir, name)}
+	}
+}
+
+func removeProjectCmd(remove func(root string) ProjectEditResult, root string) tea.Cmd {
+	return func() tea.Msg {
+		return projectRemovedMsg{root: root, result: remove(root)}
+	}
+}
+
 // approvePlanCmd runs one approve. approve is called here, on the command
 // goroutine, and nowhere else: it writes files, commits and pushes, and a
 // slow push must not freeze the screen.

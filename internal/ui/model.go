@@ -377,6 +377,31 @@ type Deps struct {
 	// A nil ApprovePlan dims the "approve the plan" row with "approving is
 	// not available here", and nothing is called.
 	ApprovePlan func(root string) PlanApproveResult
+	// AddProject puts the folder dir on the machine's project list, under
+	// name or, when name is "", the folder's name, the way `afk project add`
+	// does (T7.10). dir is already absolute: the add form expands `~` and
+	// refuses any other relative path before calling it. RemoveProject takes
+	// the project whose main checkout is root off that list, the way
+	// `afk project remove` does; its folder, plan and sessions are not
+	// touched. Each returns what happened as one outcome and the command's
+	// own words, and prints nothing.
+	//
+	// They are the one exception to "the dashboard never writes config.toml"
+	// (master plan M7, "What the dashboard writes"): the root package wires
+	// them to the code behind the two commands, which edits the file as text
+	// so its comments and the [dash] table survive, and this package never
+	// touches the file itself. They are called only inside a tea.Cmd
+	// (projectedit.go), remove only after the owner's y.
+	//
+	// They have NO default, for ApprovePlan's reason: they write the real
+	// config.toml, so a zero Deps must not be able to. A nil one dims its row
+	// in the actions dialog, and nothing is called.
+	AddProject    func(dir, name string) ProjectEditResult
+	RemoveProject func(root string) ProjectEditResult
+	// HomeDir is the home folder the add form expands `~` with. nil means
+	// os.UserHomeDir, which reads $HOME and touches no file; it is a seam so
+	// a test can pin the expansion without changing the process environment.
+	HomeDir func() (string, error)
 	// AnswerInbox records the owner's answer to the inbox item id in the
 	// project whose main checkout is root (the Root of the snapshot LoadBuild
 	// returned), and returns the item as stored. It is the dashboard's only
@@ -1293,6 +1318,23 @@ type Model struct {
 	allProjectsConfigPath string
 	allProjectsGen        int
 	allProjectsRefreshing *atomic.Bool
+	// allProjectsFollow is the folder an add from the screen just listed: the
+	// next read that has a row for it puts the cursor there, so the owner
+	// sees the row they made. It is cleared when that happens and when the
+	// screen opens again (projectedit.go).
+	allProjectsFollow string
+
+	// The add form and the remove confirm of the all-projects screen
+	// (T7.10, projectedit.go). projectAddInput is the form's one field, used
+	// by both steps; projectAddDir is the folder step one took, already
+	// expanded, and projectAddNote the line under the field after an enter
+	// that could not go on. projectRemoveRow is a copy of the row the confirm
+	// was raised for, so y removes exactly the project the dialog named
+	// whatever the two-second refresh does to the rows meanwhile.
+	projectAddInput  textinput.Model
+	projectAddDir    string
+	projectAddNote   string
+	projectRemoveRow projectrows.Row
 
 	plainBranches []string
 	plainTrunk    string
@@ -1850,10 +1892,11 @@ type Model struct {
 
 	// startedProjects is every folder a "start a new plan" moved the dashboard
 	// to during this run, in the order they were started, each once. It is
-	// held for the run only and never written anywhere: the dashboard does not
-	// edit config.toml (`afk plan approve` lists a project), so after a
-	// restart the folder is back only through `afk dash --project` or a search
-	// folder. It is merged as its own source (mergeInput.started) because the
+	// held for the run only and never written anywhere: starting a plan does
+	// not list the folder in config.toml (`afk plan approve` does, and the
+	// dashboard writes that file only through the all-projects screen's add
+	// and remove, T7.10), so after a restart the folder is back only through
+	// `afk dash --project`, a search folder or that add. It is merged as its own source (mergeInput.started) because the
 	// found and listed halves are replaced by every read and would drop it.
 	startedProjects []string
 
@@ -2497,6 +2540,12 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case planApprovedMsg:
 		return m.applyPlanApproved(msg)
+
+	case projectAddedMsg:
+		return m.applyProjectAdded(msg)
+
+	case projectRemovedMsg:
+		return m.applyProjectRemoved(msg)
 
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
@@ -3584,6 +3633,10 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionAllProjectsClose:
 		m.allProjectsOpen = false
 		return m, nil
+	case actionProjectAdd:
+		return m.openProjectAdd()
+	case actionProjectRemove:
+		return m.openProjectRemove()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -3626,9 +3679,14 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionDismiss:
 		return m.dismissSpawnError()
 	case actionSubmit:
-		// enter in the two text prompts; the mode says which one.
-		if mode == inputPlanText {
+		// enter in the text prompts; the mode says which one.
+		switch mode {
+		case inputPlanText:
 			return m.submitPlanText()
+		case inputProjectAddFolder:
+			return m.submitProjectAddFolder()
+		case inputProjectAddName:
+			return m.submitProjectAddName()
 		}
 		return m.submitLabelEdit()
 
@@ -3666,6 +3724,17 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case inputPlanText:
 		if a == actionCancel {
 			return m.cancelPlanText()
+		}
+	case inputProjectAddFolder, inputProjectAddName:
+		if a == actionCancel {
+			return m.cancelProjectAdd()
+		}
+	case inputConfirmProjectRemove:
+		switch a {
+		case actionConfirm:
+			return m.confirmProjectRemove()
+		case actionDeny, actionCancel:
+			return m.cancelProjectRemove()
 		}
 	case inputConfirmPlanOpen:
 		switch a {
@@ -3730,6 +3799,10 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 	case inputPlanText:
 		var cmd tea.Cmd
 		m.planTextInput, cmd = m.planTextInput.Update(k)
+		return m, cmd
+	case inputProjectAddFolder, inputProjectAddName:
+		var cmd tea.Cmd
+		m.projectAddInput, cmd = m.projectAddInput.Update(k)
 		return m, cmd
 	}
 	return m, nil
@@ -4817,6 +4890,8 @@ func (m Model) leaderConditions() leaderConds {
 		canApprovePlan:   m.deps.ApprovePlan != nil,
 		canAllProjects:   m.deps.LoadAllProjects != nil,
 		allProjectsOpen:  m.allProjectsOpen,
+		canAddProject:    m.deps.AddProject != nil,
+		canRemoveProject: m.deps.RemoveProject != nil,
 		planKnown:        m.planStatus.Known,
 		planErr:          m.planStatus.Err != "",
 		planSession:      m.planStatus.Session,
@@ -4835,6 +4910,11 @@ func (m Model) leaderConditions() leaderConds {
 		c.selectedFault = isWorktreeFault(s.Kind)
 		c.selectedCleaning = m.cleaningSessions[cleanIDFor(s)]
 		c.canToggleView = m.paneForSelection() || m.rowHasAgent(s)
+	}
+	if r, ok := m.selectedProjectRow(); ok {
+		c.projectRowSelected = true
+		c.projectRowListed = r.Listed
+		c.projectRowName = r.Name
 	}
 	return c
 }

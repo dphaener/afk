@@ -292,6 +292,9 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"p", actionProjects},
 		// T7.9: upper-case A, so typing "approve" still filters.
 		{"A", actionAllProjects},
+		// T7.10: keyed, and run only over the all-projects screen.
+		{"+", actionProjectAdd},
+		{"-", actionProjectRemove},
 		{"c", actionClean},
 		{"r", actionRestart},
 		{"l", actionEditLabel},
@@ -404,7 +407,10 @@ func TestLeaderRowsFromTheTable(t *testing.T) {
 				}
 				continue
 			}
-			if r.keyLabel == "esc" || r.keyLabel == "enter" || strings.Contains(r.keyLabel, "+") || strings.Contains(r.keyLabel, "/f") {
+			// A "+" inside a label is a chord (ctrl+x); "+" alone is the add
+			// row's own key (T7.10), a single key like any other.
+			chord := strings.Contains(r.keyLabel, "+") && r.keyLabel != "+"
+			if r.keyLabel == "esc" || r.keyLabel == "enter" || chord || strings.Contains(r.keyLabel, "/f") {
 				t.Errorf("row %v shows %q, want a single key after the leader", r.action, r.keyLabel)
 			}
 			if len(r.keys) == 0 || r.keys[0] != r.keyLabel {

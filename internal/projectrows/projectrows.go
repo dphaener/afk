@@ -65,7 +65,11 @@ type Input struct {
 // Row is one line of the all-projects screen.
 type Row struct {
 	Name, Root string
-	State      State
+	// Listed is Input.Listed: true for a [[project]] in config.toml, false
+	// for the unlisted start-up project. The dashboard's remove action reads
+	// it, since only a listed project has an entry to remove.
+	Listed bool
+	State  State
 	// Label is the short state word; Detail is one plain sentence.
 	Label  string
 	Detail string
@@ -87,7 +91,7 @@ type Row struct {
 // stopped line outranks a pause because the stop needs a deliberate resume.
 func Build(in Input) Row {
 	r := Row{
-		Name: in.Name, Root: in.Root,
+		Name: in.Name, Root: in.Root, Listed: in.Listed,
 		Task: in.Task, Title: in.Title, Phase: in.Phase,
 		Done: in.Done, Total: in.Total,
 		Open: in.Open, Blocking: in.Blocking,

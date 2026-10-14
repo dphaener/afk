@@ -368,11 +368,15 @@ func TestAllProjectsReads(t *testing.T) {
 }
 
 // TestAllProjectsLeaderOverTheScreen pins the dialog opened over the screen:
-// the leader is a rule there, and only pause, resume, all projects, mouse
-// and quit can run. A dimmed row's key does nothing, so a list action cannot
+// the leader is a rule there, and only pause, resume, all projects, add and
+// remove a project (T7.10), mouse and quit can run. A dimmed row's key does nothing, so a list action cannot
 // open under a screen that hides the list.
 func TestAllProjectsLeaderOverTheScreen(t *testing.T) {
 	m, _, _ := allProjectsModel(t)
+	// With the add and remove seams wired, so those two rows (T7.10) are
+	// judged by the screen and the selected row (a listed one) alone.
+	m.deps.AddProject = func(string, string) ProjectEditResult { return ProjectEditResult{} }
+	m.deps.RemoveProject = func(string) ProjectEditResult { return ProjectEditResult{} }
 	m = openAllProjects(t, m)
 	m, _ = update(t, m, leaderKeyPress)
 	if !m.leaderOpen || m.leaderFrom != inputAllProjects {
@@ -380,6 +384,7 @@ func TestAllProjectsLeaderOverTheScreen(t *testing.T) {
 	}
 	runnable := map[modeAction]bool{
 		actionPauseBuild: true, actionResumeBuild: true, actionAllProjects: true,
+		actionProjectAdd: true, actionProjectRemove: true,
 		actionMouseToggle: true, actionQuit: true,
 	}
 	for _, r := range m.leader.rows {

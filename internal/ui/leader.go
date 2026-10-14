@@ -123,7 +123,8 @@ type leaderEntry struct {
 // row for row, followed by the three by-name plan actions of "## T7.3",
 // the by-name "start a new plan" of "## T7.4", the by-name "check the
 // plan" of "## T7.7" and the by-name "approve the plan" of T7.8, with
-// T7.9's "all projects" on A after switch project, its neighbour in meaning;
+// T7.9's "all projects" on A after switch project, its neighbour in meaning,
+// and T7.10's add and remove a project on + and - right after it;
 // TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
@@ -140,6 +141,13 @@ var leaderTable = []leaderEntry{
 	// list first, so esc on the screen leaves the list focused. Upper-case A,
 	// so lower-case a stays free for typing "approve" from an empty query.
 	{key: "A", action: actionAllProjects, reach: reachList},
+	// Add and remove a project (T7.10) run only over the all-projects screen
+	// (leaderBlockedReason), whose rows they change. Keyed rows, because a
+	// name cannot be typed for them: "remove" starts with r, restart's key,
+	// and "add" with a, which must stay free for "approve". + and - are no
+	// other row's key and read as what they do.
+	{key: "+", action: actionProjectAdd, reach: reachList},
+	{key: "-", action: actionProjectRemove, reach: reachList},
 	{key: "c", action: actionClean, reach: reachList},
 	{key: "r", action: actionRestart, reach: reachOverview},
 	{key: "l", action: actionEditLabel, reach: reachList},
@@ -220,6 +228,8 @@ var leaderNames = map[modeAction]string{
 	actionScratch:       "one-off session",
 	actionProjects:      "switch project",
 	actionAllProjects:   "all projects",
+	actionProjectAdd:    "add a project",
+	actionProjectRemove: "remove the project",
 	actionClean:         "clean session",
 	actionRestart:       "restart agent",
 	actionEditLabel:     "edit label",
@@ -288,6 +298,11 @@ var leaderHelp = map[modeAction]string{
 	// (TestLeaderPlanApproveWordIsUnique). The line must not say "errors"
 	// or "warnings", which are the check-the-plan row's.
 	actionPlanApprove: "Approve a new plan and start its build, as afk plan approve does",
+	// The two lines must not say "approve", "errors" or "document", which
+	// are the words other rows are found by (TestLeaderPlanApproveWordIsUnique
+	// and its neighbours).
+	actionProjectAdd:    "Put a folder on the daemon's list, as afk project add does",
+	actionProjectRemove: "Take the selected project off the daemon's list; its files stay",
 }
 
 // leaderRow is one action in the dialog.
@@ -464,6 +479,14 @@ type leaderConds struct {
 	// allProjectsOpen is Model.allProjectsOpen. Over the screen the dialog
 	// runs only what makes sense there (leaderBlockedReason).
 	allProjectsOpen bool
+	// canAddProject and canRemoveProject are "the AddProject / RemoveProject
+	// seam is wired" (T7.10).
+	canAddProject, canRemoveProject bool
+	// projectRowSelected is "the all-projects screen has a row under its
+	// cursor"; projectRowListed and projectRowName are that row's Listed and
+	// Name, which the remove row's reason reads.
+	projectRowSelected, projectRowListed bool
+	projectRowName                       string
 	// planKnown, planErr, planSession, planDamaged, planMode and planPhase
 	// are Model.planStatus as the approve row needs it: read at least once,
 	// a load error, a planning session, a damaged state file, and the
@@ -494,15 +517,24 @@ type leaderConds struct {
 // is: agent/overview and back to list are right-side actions, and from the
 // list the dialog must not let them reach across to the right side.
 //
-// Over the all-projects screen one rule comes first and decides alone: pause,
-// resume, all projects (which closes the screen), the mouse and quit run, and
-// every other row is dimmed. Those rows act on the session list, the detail
-// side or the active project, none of which is on screen. Pause and resume
+// Add and remove a project (T7.10) are decided first, by
+// projectEditBlockedReason, because they are the reverse of every other row:
+// they run only over the all-projects screen. Then, over the screen, one rule
+// decides alone: pause, resume, all projects (which closes the screen), the
+// mouse and quit run, and every other row is dimmed. Those rows act on the
+// session list, the detail side or the active project, none of which is on
+// screen. Pause and resume
 // are not dimmed there for the active project's build: they act on the
 // selected row, and pauseSelectedProject says in a sentence when that row has
 // nothing to pause.
 func leaderBlockedReason(a modeAction, c leaderConds) string {
 	const noSession = "no session selected"
+	switch a {
+	case actionProjectAdd, actionProjectRemove:
+		// Decided here whether or not the screen is open: they are the two
+		// rows that run only over it.
+		return projectEditBlockedReason(a, c)
+	}
 	if c.allProjectsOpen {
 		switch a {
 		case actionPauseBuild, actionResumeBuild, actionAllProjects, actionMouseToggle, actionQuit:

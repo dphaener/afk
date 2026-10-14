@@ -133,6 +133,15 @@ func readConfigText(env projectEnv, path string) (string, error) {
 	return string(data), nil
 }
 
+// configIOError marks a failure to find, read, create or write the config
+// file, as opposed to a refusal by daemonconfig.AddProject about the edit
+// itself. It prints exactly as the wrapped error, so `afk plan approve` shows
+// the same text as before; only addProjectForSurface tells the two apart.
+type configIOError struct{ err error }
+
+func (e configIOError) Error() string { return e.err.Error() }
+func (e configIOError) Unwrap() error { return e.err }
+
 // addProjectToConfig lists the project at root in config.toml. It is the one
 // code path `afk project add` and `afk plan approve` share, so both make the
 // same edit and report the same name. name may be empty (the folder name is
@@ -142,11 +151,11 @@ func readConfigText(env projectEnv, path string) (string, error) {
 func addProjectToConfig(env projectEnv, root, name string) (added bool, listed string, err error) {
 	path := daemonconfig.Path(env.Deps)
 	if path == "" {
-		return false, "", errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")
+		return false, "", configIOError{errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")}
 	}
 	text, err := readConfigText(env, path)
 	if err != nil {
-		return false, "", err
+		return false, "", configIOError{err}
 	}
 	listed = strings.TrimSpace(name)
 	if listed == "" {
@@ -168,10 +177,10 @@ func addProjectToConfig(env projectEnv, root, name string) (added bool, listed s
 		return false, listed, nil
 	}
 	if err := env.mkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return false, "", fmt.Errorf("could not create %s: %w", filepath.Dir(path), err)
+		return false, "", configIOError{fmt.Errorf("could not create %s: %w", filepath.Dir(path), err)}
 	}
 	if err := env.write(path, []byte(newText)); err != nil {
-		return false, "", fmt.Errorf("could not write %s: %w. The file was not changed", path, err)
+		return false, "", configIOError{fmt.Errorf("could not write %s: %w. The file was not changed", path, err)}
 	}
 	return true, listed, nil
 }
@@ -224,28 +233,9 @@ func runProjectAdd(args []string, stdout, stderr io.Writer, env projectEnv) int 
 		fmt.Fprintf(stderr, "afk project add: cannot tell which folder to add. Pass the folder.\nUsage: %s\n", projectAddUsage)
 		return 2
 	}
-	if !env.isDir(dir) {
-		fmt.Fprintf(stderr, "afk project add: %s is not a folder. Check the path.\n", dir)
-		return 1
-	}
-	common := env.gitCommonDir(dir)
-	if common == "" {
-		fmt.Fprintf(stderr, "afk project add: %s is not a git repository, so the daemon could not build in it. Run `git init` there first, or give another folder.\n", dir)
-		return 1
-	}
-	root := mainCheckout(dir, common)
-
-	added, listed, err := addProjectToConfig(env, root, *name)
-	if err != nil {
-		fmt.Fprintf(stderr, "afk project add: %v\n", err)
-		return 1
-	}
-	if !added {
-		fmt.Fprintf(stdout, "%s is already in the list. Nothing was changed.\n", listed)
-		return 0
-	}
-	fmt.Fprintf(stdout, "Added %s (%s). A running afk daemon picks it up within a few seconds.\n", listed, root)
-	return 0
+	res := addProjectForSurface(env, dir, *name)
+	printProjectResult(stdout, stderr, "afk project add: ", res)
+	return res.Code
 }
 
 func runProjectRemove(args []string, stdout, stderr io.Writer, env projectEnv) int {
@@ -260,49 +250,7 @@ func runProjectRemove(args []string, stdout, stderr io.Writer, env projectEnv) i
 		fmt.Fprintf(stderr, "afk project remove: expected a name or a folder, but got %d word(s).\nUsage: %s\n", len(words), projectRemoveUsage)
 		return 2
 	}
-	key := words[0]
-	path := daemonconfig.Path(env.Deps)
-	if path == "" {
-		fmt.Fprintln(stderr, "afk project remove: cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known.")
-		return 1
-	}
-	text, err := readConfigText(env, path)
-	if err != nil {
-		fmt.Fprintf(stderr, "afk project remove: %v\n", err)
-		return 1
-	}
-
-	// A name or the path as written first; then, for a folder given another
-	// way (relative, ~, or a linked worktree), the main checkout it resolves to.
-	keys := []string{key}
-	if cwd, cerr := env.cwd(); cerr == nil {
-		home, _ := env.HomeDir()
-		if dir, rerr := resolveProject(key, cwd, home); rerr == nil && env.isDir(dir) {
-			if root := mainCheckout(dir, env.gitCommonDir(dir)); root != key {
-				keys = append(keys, root)
-			}
-		}
-	}
-	var newText string
-	removed := false
-	for _, k := range keys {
-		newText, removed, err = daemonconfig.RemoveProject(text, k)
-		if err != nil {
-			fmt.Fprintf(stderr, "afk project remove: %v\n", err)
-			return 1
-		}
-		if removed {
-			break
-		}
-	}
-	if !removed {
-		fmt.Fprintf(stderr, "No project named %s. Run `%s` to see what is listed.\n", key, projectListUsage)
-		return 1
-	}
-	if err := env.write(path, []byte(newText)); err != nil {
-		fmt.Fprintf(stderr, "afk project remove: could not write %s: %v\nThe file was not changed.\n", path, err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "Removed %s from the list. Its files and any session that is running were left alone.\n", key)
-	return 0
+	res := removeProjectForSurface(env, words[0])
+	printProjectResult(stdout, stderr, "afk project remove: ", res)
+	return res.Code
 }

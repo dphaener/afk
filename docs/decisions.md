@@ -2834,3 +2834,22 @@ T7.9 adds the all-projects screen to `afk dash`. These are the decisions the mas
 - **`enter` on the active project's row closes the screen**, as picking it in the switcher does; a row the switcher does not list yet says to try again in a moment.
 - **The cursor stops at the ends** instead of wrapping, so a held key stays on the rows that need you.
 - **An inbox folder that cannot be listed makes the row "can't read"**; a single unreadable inbox file is skipped here, as the Build tab counts those.
+
+## T7.10
+
+T7.10 lets the owner add and remove projects from the all-projects screen of `afk dash`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One code path (A1).** The bodies of `afk project add` and `afk project remove` move into two entry points that return what happened (added, already listed, removed, not listed, refused, failed) and the command's own words, without printing. The commands print those words, so their output and exit codes do not change, and the dashboard shows the same sentences.
+- **What adding refuses (A2).** Exactly what the command refuses: a folder that does not exist, a folder that is not a git repository, a name already used by another project, and a `config.toml` that cannot be read or written. The command does not check for a master plan, so neither does the dashboard; a project with no plan already shows as such on the screen.
+- **Keys (A3, A4).** `ctrl+space +` adds a project and `ctrl+space -` removes the selected one. "remove" could not be typed by name, because `r` is restart's key. Both work only while the all-projects screen is open; elsewhere they are dimmed and say to open it first. Remove is dimmed on the row of a project that is not in `config.toml`.
+- **The add form (A5, A6, A8).** Two one-line steps: the folder, then an optional name (empty means the folder's name). The folder starts filled in with the active project when it is not listed yet. `~` and `~/` expand to the home folder; any other relative path is refused, as the new-plan form does.
+- **How remove finds the entry (A7).** The dashboard passes the row's folder; the adapter finds the matching `[[project]]` in `config.toml` and removes it by its listed name.
+- **After a change (A9).** A short notice, then the screen's rows and the project switcher's list are read again, so the row appears or goes.
+- **Tests (A10)** are table tests written with the code. **Nothing had to be in place first (A11):** T7.9 is merged.
+
+### Decided while building
+
+- **Failed versus refused.** `addProjectToConfig` now marks a config file it could not find, read, create or write, so the dashboard can say the file is the problem (naming it) rather than the request. What it prints, and what `afk plan approve` does with it, did not change.
+- **A literal `+` is a key, not a chord.** The leader table's checks treated any key containing `+` as a chord like `ctrl+c`; a key that is exactly `+` is now allowed.
+- **Removing the last project** leaves `config.toml` as an empty file rather than deleting it, as `afk project remove` always has.
+- **Remove on the unlisted start-up row** is dimmed in the dialog, so `ctrl+space -` there does nothing but show the dialog with the reason.
