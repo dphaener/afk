@@ -1,0 +1,42 @@
+{{define "title"}}Inbox{{end}}
+{{define "content"}}
+<h1>Inbox</h1>
+<div aria-live="polite">
+<div id="inbox-list" data-live="inbox" data-project="{{.Project}}">
+{{if .Problem}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.Problem}}</div></div>{{end}}
+{{if .Unreadable}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.Unreadable}} inbox file{{if ne .Unreadable 1}}s{{end}} could not be read and {{if eq .Unreadable 1}}is{{else}}are{{end}} not listed.</div></div>{{end}}
+{{with .Page.Notice}}<div class="notice notice--attention"><div class="notice__body"><span class="notice__title">{{.}}</span></div></div>{{end}}
+{{if .Page.Open}}
+<ul class="list">
+{{range .Page.Open}}<li><a class="row" href="{{.Href}}">
+  <span class="row__main">
+    <span class="row__top">{{if .Blocking}}<span class="badge badge--blocking">Blocking</span> {{end}}{{if .Task}}<span class="tid">{{.Task}}</span> {{end}}<span class="row__title">{{.Title}}</span></span>
+    <span class="row__meta">{{.Meta}}</span>
+  </span>
+  <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+</a></li>
+{{end}}</ul>
+{{else}}
+<div class="empty">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12l5 5 9-10"/></svg>
+  <p class="empty__title">Nothing needs you</p>
+  <p>When a task has a question for you, it shows up here.</p>
+</div>
+{{end}}
+{{with .Page.Answered}}
+<details class="answered">
+  <summary>Answered ({{len .}})</summary>
+  <ul class="list">
+  {{range .}}<li><a class="row" href="{{.Href}}">
+    <span class="row__main">
+      <span class="row__top">{{if .Task}}<span class="tid">{{.Task}}</span> {{end}}<span class="row__title">{{.Title}}</span></span>
+      <span class="row__meta">{{.Meta}}</span>
+    </span>
+    <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+  </a></li>
+  {{end}}</ul>
+</details>
+{{end}}
+</div>
+</div>
+{{end}}

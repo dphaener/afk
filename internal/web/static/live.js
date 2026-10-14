@@ -17,7 +17,10 @@
   // The indicator is in each bar (the phone bar and the desktop bar, one
   // shown per width). The phone bar's carries data-live-status, the desktop
   // bar's data-live-mirror, and both are given the same class and words.
-  var indicators = Array.prototype.slice.call(document.querySelectorAll('[data-live-status], [data-live-mirror]'));
+  function findIndicators() {
+    return Array.prototype.slice.call(document.querySelectorAll('[data-live-status], [data-live-mirror]'));
+  }
+  var indicators = findIndicators();
   var source = null;
   var backoff = BACKOFF_START_MS;
   var reconnectTimer = null;
@@ -106,6 +109,8 @@
           swap(old, doc);
         });
         render();
+        // submit.js restarts the "Updated ... ago" count for a fresh region.
+        document.dispatchEvent(new CustomEvent('afk:live'));
       })
       .catch(function () {
         // A failed fetch changes nothing on screen and never navigates; the
@@ -179,6 +184,17 @@
       }
     });
   }
+
+  // submit.js swaps the whole page after a form post (afk:swapped). The bars
+  // came with it, so the indicators are found again and given the stream's
+  // state; a refresh queued for the old page's regions is dropped, since the
+  // new page was read after it.
+  document.addEventListener('afk:swapped', function () {
+    indicators = findIndicators();
+    pending = [];
+    everything = false;
+    render();
+  });
 
   connect();
 })();

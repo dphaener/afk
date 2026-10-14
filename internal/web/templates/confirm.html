@@ -4,6 +4,7 @@
 <p>{{.Sheet.Body}}</p>
 <div class="btn-row">
   <form method="{{.Sheet.Method}}" action="{{.Sheet.Path}}">
+    <input type="hidden" name="confirm" value="yes">
     <button type="submit" class="btn {{if .Sheet.Danger}}btn--danger{{else}}btn--primary{{end}}">{{.Sheet.Action}}</button>
   </form>
   <a class="btn btn--secondary" href="/p/{{pe .Project}}">{{.Sheet.Safe}}</a>

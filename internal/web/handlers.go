@@ -5,15 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"mime"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
+	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/planlint"
+	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -109,6 +115,9 @@ type InboxView struct {
 	// Project is for the page's links; the JSON does not repeat it.
 	Project string       `json:"-"`
 	Items   []inbox.Item `json:"items"`
+	// Page is the inbox screen's layout of Items. Only the page reads it,
+	// and only the inbox route fills it in, so the JSON leaves it out.
+	Page inboxPage `json:"-"`
 	// Unreadable counts the files that look like items but could not be
 	// read, so the page can say that some are missing from the list.
 	Unreadable int `json:"unreadable"`
@@ -123,12 +132,23 @@ type InboxView struct {
 type ProjectView struct {
 	ProjectSummary
 	Inbox InboxView `json:"inbox"`
+	// Page is the project screen laid out (see projectPageFor). Only the
+	// project page's GET fills it in and only the page reads it, so the JSON
+	// leaves it out and the API's answer is the one it always was.
+	Page projectPage `json:"-"`
 }
 
 // ItemView is one inbox item. The JSON is the item exactly as stored.
 type ItemView struct {
 	// Project is for the page's links and the answer form's address.
 	Project string `json:"-"`
+	// DoneCode is the toast code the page redirect carries after an answer
+	// (see toastTexts). It is set only for a page answer and left out of the
+	// JSON.
+	DoneCode string `json:"-"`
+	// Page is the item laid out for the page (see itemPageFor); it is left
+	// out of the JSON.
+	Page itemPage `json:"-"`
 	inbox.Item
 }
 
@@ -273,7 +293,16 @@ func (s *server) readInbox(p Project) (InboxView, error) {
 
 // projectView reads everything about one project, from the files, now.
 func (s *server) projectView(p Project) ProjectView {
+	v, _ := s.projectViewSessions(p)
+	return v
+}
+
+// projectViewSessions is projectView that also hands back the sessions it
+// read, so the project page can list the running ones without asking
+// discovery a second time.
+func (s *server) projectViewSessions(p Project) (ProjectView, []SessionView) {
 	box, _ := s.readInbox(p)
+	sessions := s.d.Sessions(p.Root)
 	tasks, l, loadErr := s.d.LoadBuild(p.Root)
 	state, stateKnown := daemonstate.ReadState(p.Root)
 	stopTask, stopReason, stopped := daemonstate.ReadStop(p.Root)
@@ -288,11 +317,11 @@ func (s *server) projectView(p Project) ProjectView {
 		Stopped:    stopped,
 		StopTask:   stopTask,
 		StopReason: stopReason,
-		Sessions:   s.d.Sessions(p.Root),
+		Sessions:   sessions,
 		Items:      box.Items,
 		Now:        s.d.Now(),
 	})
-	return ProjectView{ProjectSummary: sum, Inbox: box}
+	return ProjectView{ProjectSummary: sum, Inbox: box}, sessions
 }
 
 func (s *server) usageView() UsageView {
@@ -345,7 +374,47 @@ func (s *server) project(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.respond(w, r, http.StatusOK, "project", s.projectView(p))
+	v, sessions := s.projectViewSessions(p)
+	// The screen's extra reads (the row, the planning state, the origin) are
+	// made only for the page: the JSON leaves Page out, so an API reader
+	// would pay for a git call it never sees.
+	if !isAPI(r.URL.Path) {
+		v.Page = s.projectPage(p, v, sessions)
+	}
+	s.respond(w, r, http.StatusOK, "project", v)
+}
+
+// projectPage reads what the project screen needs besides the summary and
+// lays it out. Every read here is a file read or a Deps function; the one
+// that runs a program (Repository, git config) is bounded by its own
+// timeout in the daemon's wiring.
+func (s *server) projectPage(p Project, v ProjectView, sessions []SessionView) projectPage {
+	in := projectPageInput{
+		Summary:  v.ProjectSummary,
+		Sessions: sessions,
+		Items:    v.Inbox.Items,
+		Folder:   p.Root,
+		Now:      s.d.Now(),
+	}
+	if s.d.ProjectRows != nil {
+		for _, row := range s.d.ProjectRows() {
+			if row.Name == p.Name {
+				in.Row = &row
+				break
+			}
+		}
+	}
+	// The row knows whether the plan waits for approval (plan-reviews.json,
+	// read by the daemon's seam); this package has no other way to tell for
+	// a configured project, because Deps.Reviews leaves those out.
+	if in.Row != nil {
+		in.PlanWaiting = in.Row.PlanWaiting
+	}
+	in.Planning, in.PlanningOK, in.PlanningErr = plansession.ReadState(p.Root)
+	if s.d.Repository != nil {
+		in.Repository = s.d.Repository(p.Root)
+	}
+	return projectPageFor(in)
 }
 
 func (s *server) inboxList(w http.ResponseWriter, r *http.Request) {
@@ -358,6 +427,7 @@ func (s *server) inboxList(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, v.Problem)
 		return
 	}
+	v.Page = inboxPageFor(v.Project, v.Items, s.d.Now())
 	s.respond(w, r, http.StatusOK, "inbox", v)
 }
 
@@ -382,7 +452,7 @@ func (s *server) item(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, fmt.Sprintf("The inbox item's file is damaged and could not be read: %v. Fix or delete the file in the project's .afk/inbox folder.", err))
 		return
 	}
-	s.respond(w, r, http.StatusOK, "item", ItemView{Project: p.Name, Item: it})
+	s.respond(w, r, http.StatusOK, "item", ItemView{Project: p.Name, Item: it, Page: itemPageFor(it, s.d.Now())})
 }
 
 func (s *server) noSuchItem(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +482,11 @@ func (s *server) answer(w http.ResponseWriter, r *http.Request) {
 	it, err := s.store(p).Answer(r.PathValue("id"), text, inbox.ViaWeb)
 	switch {
 	case err == nil:
-		s.respond(w, r, http.StatusOK, "item", ItemView{Project: p.Name, Item: it})
+		code := ""
+		if !isAPI(r.URL.Path) {
+			code = s.answerCode(p, it)
+		}
+		s.respond(w, r, http.StatusOK, "item", ItemView{Project: p.Name, Item: it, DoneCode: code})
 	case errors.Is(err, inbox.ErrNotFound):
 		s.noSuchItem(w, r)
 	case errors.Is(err, inbox.ErrAlreadyAnswered):
@@ -426,6 +500,66 @@ func (s *server) answer(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.fail(w, r, http.StatusInternalServerError, fmt.Sprintf("The answer could not be saved: %v. Nothing was changed; try again.", err))
 	}
+}
+
+// answerCode picks the toast the inbox list shows after a page answer: "done"
+// for an owner task, "ready" when the answer leaves its task with nothing
+// else to wait for, "answered" otherwise. It only reads; the build loop is
+// what un-parks the task, so "ready" says what is about to happen and the
+// ledger is not touched here.
+func (s *server) answerCode(p Project, it inbox.Item) string {
+	if isOwnerTask(it) {
+		return "done"
+	}
+	if it.Task == "" {
+		return "answered"
+	}
+	_, l, err := s.d.LoadBuild(p.Root)
+	if err != nil {
+		return "answered"
+	}
+	items, _, err := s.store(p).List()
+	if err != nil {
+		return "answered"
+	}
+	var entry *ledger.Entry
+	if e, ok := l.Get(it.Task); ok {
+		entry = &e
+	}
+	if readyAgain(it, entry, items) {
+		return "ready"
+	}
+	return "answered"
+}
+
+// isOwnerTask reports whether an item is the one afk raises for a task only
+// the owner can do (see daemon.OwnerTitlePrefix): answering it means the
+// task is done, not that a question was answered.
+func isOwnerTask(it inbox.Item) bool {
+	return it.Kind == "external_action" && it.Blocking && it.Task != "" && strings.HasPrefix(it.Title, daemon.OwnerTitlePrefix)
+}
+
+// readyAgain is the pure decision behind the "ready again" toast. It is true
+// only when the answered item has a task, that task is parked in the ledger,
+// and no other open item is one it is parked on or an open blocking item for
+// the same task. items is the inbox as it reads after the answer; the
+// answered item itself is skipped either way.
+func readyAgain(answered inbox.Item, entry *ledger.Entry, items []inbox.Item) bool {
+	if answered.Task == "" || entry == nil || entry.Status != ledger.Parked {
+		return false
+	}
+	for _, other := range items {
+		if other.ID == answered.ID || !other.Open() {
+			continue
+		}
+		if slices.Contains(entry.ParkedOn, other.ID) {
+			return false
+		}
+		if other.Blocking && other.Task == answered.Task {
+			return false
+		}
+	}
+	return true
 }
 
 // answerText reads the answer from the body: JSON when the request says its
@@ -495,9 +629,52 @@ func (s *server) setPaused(w http.ResponseWriter, r *http.Request, act func(root
 	if !ok {
 		return
 	}
+	if !s.confirmedRequest(r) {
+		verb, button := "pausing", "Pause project"
+		if done == "resumed" {
+			verb, button = "resuming", "Resume project"
+		}
+		s.fail(w, r, http.StatusBadRequest, fmt.Sprintf("Nothing changed: %s needs the confirm. Open the project page and press %s.", verb, button))
+		return
+	}
 	if err := act(p.Root); err != nil {
 		s.fail(w, r, http.StatusInternalServerError, fmt.Sprintf("The project could not be %s: %v. Check that the project folder can be written, then try again.", done, err))
 		return
 	}
 	s.respond(w, r, http.StatusOK, "project", s.projectView(p))
+}
+
+// confirmedRequest reads the confirm off a pause or resume request. The
+// confirm used to be only a dialog in the browser, so any POST that reached
+// the server paused the project; now the server asks for it too. A body that
+// cannot be read counts as no confirm, so the safe answer is nothing changed.
+func (s *server) confirmedRequest(r *http.Request) bool {
+	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if ct == "application/json" {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return false
+		}
+		return confirmed(ct, nil, body)
+	}
+	if err := r.ParseForm(); err != nil {
+		return false
+	}
+	return confirmed(ct, r.PostForm, nil)
+}
+
+// confirmed is the pure decision: a JSON body must hold {"confirm": true};
+// anything else must be a form with confirm=yes. Only the body counts, so an
+// address someone was sent cannot carry the confirm with it.
+func confirmed(contentType string, form url.Values, jsonBody []byte) bool {
+	if contentType == "application/json" {
+		var body struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := json.Unmarshal(jsonBody, &body); err != nil {
+			return false
+		}
+		return body.Confirm
+	}
+	return form.Get("confirm") == "yes"
 }

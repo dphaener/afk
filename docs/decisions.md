@@ -3020,3 +3020,30 @@ T8.5 gives every page of the daemon's web page the design system's look, and mak
 - In `docs/design-system.md` §2, scope the link rule as `.afk a:not([class])` and add `body { margin: 0 }`; `page.css` works around both today (W2.T1, W5.T2).
 - The plan page draws two `h1` elements (its own heading and the plan's `# Title`); shift rendered markdown headings down one level (W5.T2).
 - The no-JavaScript confirm page for pause still shows on a project that is already paused (and resume on a running one); it could send the owner back to the project page instead (review, W3.T1).
+
+## T8.6
+
+T8.6 rebuilds the web page's project page, the inbox list, an inbox item and its answer form, and the pause and resume buttons from the design system, and makes pause and resume ask first on the server too. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **How a POST proves the confirm (A1, A2).** The confirm sheet's form and the no-JavaScript confirm page carry a hidden field `confirm=yes`; a JSON caller sends `{"confirm": true}`. A pause or resume POST without it, on the page or under `/api`, answers 400 with a plain sentence and changes nothing. The same handler serves both, so the rule is the same everywhere.
+- **The inbox is its own screen (A3).** `GET /p/<project>/inbox` is now a page instead of a jump to the project page; its JSON twin is unchanged. An item's Back link goes there, and an answer returns there.
+- **No full reload (A4).** A small script built into the binary posts the answer form and the confirm sheet's form with `fetch`, follows the server's redirect and swaps in the page's shell (the bars, the main content and the toast). A network error, a non-2xx answer or a non-HTML answer before the server has answered falls back to a normal form submit. A page that cannot be swapped in after an answer is loaded by its address with a GET, so a post is never sent twice. With JavaScript off the page works by reloading, as before.
+- **Toasts say only what happened (A5).** After an answer the inbox shows "Answer sent.", "Answer sent. <task> is ready again." only when the task is parked and no other open item holds it, or "Marked as done." for an owner task. The codes are a whitelist and the task id is read on the server, never from the request.
+- **Owner tasks (A6).** An item is an owner task when its kind is `external_action`, it blocks, it names a task and its title starts with the daemon's owner prefix. It shows its instruction and one Mark as done button, which records the answer `done`, the answer `afk inbox answer` uses.
+- **Option buttons (A7).** An item's options are buttons, the recommended one first and marked. With JavaScript off a tap sends that option; with it on a tap selects it and Send answer stays disabled until something is picked or written. Typed text still wins over a chosen option.
+- **The project screen (A8, A9, A10, A11).** A state card (badge, "Updated … ago", a headline in words, one line of detail, progress, the one next action), Running now, Pause or Resume, a Plan row, links to the inbox, the plan and usage (the other screens arrive with their tasks), and the folder and repository. The repository is read from the project's `origin` remote with a short timeout, and any user name and password in it are dropped. These fields are page-only; the JSON API is unchanged. The "Change the plan" rows wait for T8.14.
+- **Test strategy and prerequisites (A12, A13).** Table and handler tests with each task, the scripts checked in a real headless browser at 390 px (answer, pause and resume each shown without a reload; a pause POST without the confirm answered 400 and wrote nothing), and axe-core with the WCAG 2.2 AA rules found no violation on the project, inbox and item screens. T8.5 was merged first, so nothing else had to be in place.
+
+Verification for the owner: not checked on a real phone or behind the owner's proxy. Open the project page from the phone, answer an inbox item, then Pause and Resume through the sheet, and see each change without reloading.
+
+Decided while building:
+
+- **The confirm is read from the body only.** `?confirm=yes` in the address is refused, so a link someone was sent cannot pause a project (tested in W1.T1).
+- **The project's headline and next action.** Open blocking items come first, then paused or stopped, then a plan waiting for approval. The headline says "question" only when every blocking item is a question, and counts tasks ("hold up 2 tasks").
+- **An unreadable planning state is never a session.** "Planning open" needs the planning state read and the session unfinished; otherwise the Plan row says "Read the plan", with a note when the state could not be read. The Plan row shows "Plan waiting" only from the project's own row, so without that row it says "Read the plan".
+- **Usage has no count in the nav-list.** Usage events name no project, so a figure there would go stale on a project page.
+- **Repository addresses.** An address with a scheme loses its whole user part, since on https a lone user is often a token. An scp-like address keeps its plain `git@` login. An address that will not parse is cut at its last `@`.
+- **Swap the shell, not `<main>`.** The app bar's title and Back link change with the page, and they sit outside `<main>`. Focus moves to the new `<main>` after a swap, and the toast's words go in after a short delay so a screen reader announces them.
+- **"Updated N s ago" counts from when the page first saw the time.** The server's clock and the phone's need not agree, so the age is not taken from the `datetime`.
+- **A toast names only a task the server read.** `{task}` comes from the inbox item the answer named; an item not in the inbox's own read gets no toast.
+- **A network error before any answer comes back re-posts natively.** The server refuses a second answer to an item, and pause and resume are idempotent, so a repeat is harmless.

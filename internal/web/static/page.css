@@ -114,3 +114,45 @@ dialog.confirm-sheet::backdrop { background: var(--scrim); }
 .afk progress.progress__track::-webkit-progress-bar { background: var(--idle-soft); border-radius: var(--radius-pill); }
 .afk progress.progress__track::-webkit-progress-value { background: var(--ok); border-radius: var(--radius-pill); }
 .afk progress.progress__track::-moz-progress-bar { background: var(--ok); border-radius: var(--radius-pill); }
+
+/* The inbox screen's fold of answered items. */
+.answered { margin-top: var(--space-5); }
+.answered > summary { cursor: pointer; color: var(--text-2); font-size: var(--text-sm); min-height: var(--target-min); }
+.answered > .list { margin-top: var(--space-3); }
+
+/* ───────── inbox item ───────── */
+.afk .item-body { white-space: pre-wrap; }
+.afk .item-options { display: flex; flex-direction: column; gap: var(--space-2); }
+
+/* ───────── project screen (project.html) ─────────
+   One column on a phone, in the design's order: the heading, the state
+   card, Running now, Pause, then the plan row, the nav-list and the kv.
+   From the 760 px breakpoint the heading, its badge and Pause share the
+   top line and the card sits beside the side column (plan row, nav-list,
+   kv). Grid areas move the Pause region without moving it in the markup,
+   so the live regions and their order for a screen reader stay one. */
+.page:has(> .project) { max-width: 72rem; }
+.project { display: flex; flex-direction: column; gap: var(--space-5); }
+.project__head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.project__side { display: flex; flex-direction: column; gap: var(--space-5); }
+.project__running:empty { display: none; }
+.project__state .card h2 { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .project__head { order: 1; }
+  .project__state { order: 2; }
+  .project__running { order: 3; }
+  .project__pause { order: 4; }
+  .project__side { order: 5; }
+  /* The card holds the badge on a phone; the heading's copy is for the
+     desktop line. */
+  .project__head-badge { display: none; }
+}
+@media (min-width: 761px) {
+  .project { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem); grid-template-areas: "head pause" "state side" "running side"; grid-template-rows: auto auto 1fr; gap: var(--space-5); align-items: start; }
+  .project__head { grid-area: head; }
+  .project__pause { grid-area: pause; justify-self: end; }
+  .project__state { grid-area: state; }
+  .project__running { grid-area: running; }
+  .project__side { grid-area: side; }
+  .project__card-badge { display: none; }
+}

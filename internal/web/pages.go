@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/dphaener/afk/internal/inbox"
 )
 
 // pageFiles holds the page templates inside the binary, so the page needs no
@@ -19,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "item", "confirm", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "confirm", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -142,9 +144,12 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 		if !v.WaitingForApproval {
 			c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
 		}
+	case InboxView:
+		c.Title = "Inbox"
+		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
 	case ItemView:
 		c.Title = v.Title
-		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project)+"#inbox", "Back to the inbox of "+v.Project
+		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project)+"/inbox", "Back to the inbox of "+v.Project
 	case ConfirmView:
 		c.Title = v.Sheet.Action
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
@@ -189,7 +194,10 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		}
 		ch := chromeFor(name, view, r.Method, r.URL.Path, projects)
 		if pv, isProject := view.(ProjectView); isProject && r.Method == http.MethodGet {
-			ch.Toast = toastFor(r.URL.Query().Get("done"), pv.Name)
+			ch.Toast = toastFor(r.URL.Query().Get("done"), pv.Name, "")
+		}
+		if iv, isInbox := view.(InboxView); isInbox && r.Method == http.MethodGet {
+			ch.Toast = inboxToast(iv, r.URL.Query().Get("done"), r.URL.Query().Get("item"))
 		}
 		data := pageData{View: view, Chrome: ch}
 		if err := t.Execute(&buf, data); err != nil {
@@ -204,15 +212,22 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 // redirectAfter is where a successful page POST goes next, or "" when the
-// answer is not one: an answer goes to its item, a pause or resume to the
-// project. The inbox list page has no template of its own and goes to the
-// inbox section of the project page.
+// answer is not one: an answer goes to the inbox list, a pause or resume to the
+// project. An answer goes back to the inbox list, with a code for the toast
+// and the item it was for.
 func redirectAfter(r *http.Request, status int, name string, view any) string {
 	project := "/p/" + url.PathEscape(r.PathValue("project"))
 	switch {
 	case r.Method == http.MethodPost && status == http.StatusOK && name == "item":
 		if iv, ok := view.(ItemView); ok {
-			return project + "/inbox/" + url.PathEscape(iv.ID)
+			// The code was chosen by the handler from the stored item and
+			// the ledger, never from the request, so the toast it leads to
+			// echoes nothing the request carried.
+			code := iv.DoneCode
+			if code == "" {
+				code = "answered"
+			}
+			return project + "/inbox?done=" + url.QueryEscape(code) + "&item=" + url.QueryEscape(iv.ID)
 		}
 	case r.Method == http.MethodPost && status == http.StatusOK && name == "project":
 		// The code is fixed text chosen from the address, never anything the
@@ -224,8 +239,6 @@ func redirectAfter(r *http.Request, status int, name string, view any) string {
 			return project + "?done=resumed"
 		}
 		return project
-	case r.Method == http.MethodGet && status == http.StatusOK && name == "inbox":
-		return project + "#inbox"
 	}
 	return ""
 }
@@ -237,17 +250,44 @@ func redirectAfter(r *http.Request, status int, name string, view any) string {
 var toastTexts = map[string]string{
 	"paused":  "Paused {project}. Nothing new will start.",
 	"resumed": "Resumed {project}.",
+	// The three codes an answer leads to. {task} is the task of the item the
+	// answer was for, read by the server (see inboxToast).
+	"answered": "Answer sent.",
+	"ready":    "Answer sent. {task} is ready again.",
+	"done":     "Marked as done.",
 }
 
 // toastFor is the toast sentence for a ?done= code, or "" when the code is
-// not in toastTexts. The name comes from the project list and not from the
-// query; html/template escapes it when drawn.
-func toastFor(code, project string) string {
+// not in toastTexts. The name comes from the project list and the task from
+// the server's own read of an item, never from the query; html/template
+// escapes both when drawn. A text that names a task gets no toast when there
+// is no task to name, so a placeholder is never shown.
+func toastFor(code, project, task string) string {
 	text, ok := toastTexts[code]
 	if !ok {
 		return ""
 	}
-	return strings.ReplaceAll(text, "{project}", project)
+	if strings.Contains(text, "{task}") && task == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, "{project}", project)
+	return strings.ReplaceAll(text, "{task}", task)
+}
+
+// inboxToast is the toast on the inbox list after an answer. The item named
+// by the query must be one the server's own read of the inbox holds: an
+// unknown or malformed id shows nothing, so the address cannot make the page
+// say anything about a task that has no item.
+func inboxToast(v InboxView, code, id string) string {
+	if !inbox.ValidID(id) {
+		return ""
+	}
+	for _, it := range v.Items {
+		if it.ID == id {
+			return toastFor(code, v.Project, it.Task)
+		}
+	}
+	return ""
 }
 
 // ConfirmSheet is what the shared confirm-sheet partial draws and what the
@@ -280,7 +320,7 @@ func confirmSheetFor(project string, resume bool) ConfirmSheet {
 	if resume {
 		return ConfirmSheet{
 			ID: "confirm-resume", Title: "Resume " + project + "?",
-			Body:   "afk starts the next ready task.",
+			Body:   "afk starts the next ready task again; a stopped line is cleared. Nothing is deleted.",
 			Action: "Resume project", Loading: "Resuming",
 			Method: "post", Path: base + "/resume", Safe: "Keep it paused",
 		}

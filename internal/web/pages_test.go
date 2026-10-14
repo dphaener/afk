@@ -1,30 +1,34 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/planlint"
+	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
 const idScript = "kmn345"
 
-// ownScript is the script tags every page carries: the hashed live.js and confirm.js.
-var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm)\.js" defer></script>`)
+// ownScript is the script tags every page carries: the hashed live.js, confirm.js and submit.js.
+var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit)\.js" defer></script>`)
 
 // noOwnScript removes that tag, so the tests that look for injected markup
 // still see any other script tag a hostile text managed to open.
@@ -75,13 +79,44 @@ func TestPages(t *testing.T) {
 		}, path: "/", want: []string{"badge--paused\">Paused<"}},
 		{name: "usage", path: "/usage", want: []string{"42%", "12%", "all", "Extra usage: on", "plenty left", "Resets 12 Oct 2026 14:00 UTC"}},
 		{name: "usage with no reading", setup: func(rg *rig) { rg.usageOK = false }, path: "/usage", want: []string{"No usage reading exists yet"}, notWant: []string{"% used"}},
-		{name: "project", setup: (*rig).seedInbox, path: "/p/app", want: []string{"Which database?", "Tabs or spaces?", "open, blocking", "Pause", `action="/p/app/pause"`, "1 of 3 tasks done"}},
-		{name: "project paused shows Resume", setup: func(rg *rig) { _ = daemonstate.Pause(rg.root, testNow) }, path: "/p/app", want: []string{"Resume", `action="/p/app/resume"`}, notWant: []string{">Pause<"}},
-		{name: "project with a space in its name", path: "/p/my%20app", want: []string{"my app", `action="/p/my%20app/pause"`}},
-		{name: "item with a blank answer form", setup: (*rig).seedInbox, path: "/p/app/inbox/" + idBlocking, want: []string{"Which database?", "Pick one.", "<textarea", `action="/p/app/inbox/` + idBlocking + `/answer"`}, notWant: []string{"type=\"radio\""}},
-		{name: "item with options", setup: (*rig).seedInbox, path: "/p/app/inbox/" + idOptions, want: []string{`value="tabs" checked`, "(recommended)", `value="spaces">`, `name="answer"`}},
+		{name: "project", setup: (*rig).seedInbox, path: "/p/app", want: []string{
+			`<span class="badge badge--running project__card-badge">Building</span>`, `<time class="meta" data-updated datetime="2026-10-12T12:00:00Z">Updated just now</time>`,
+			"<h2>1 question holds up T1.2</h2>", "<p>T1.2 Second: executing</p>", "1 of 3 tasks done",
+			`<a class="btn btn--primary" href="/p/app/inbox">Answer in the inbox</a>`, `data-working="true"`,
+			"Running now", `<span class="tid">T1.2</span> <span class="row__title">Title of T1.2</span>`, "Session t1-2 · executing",
+			`data-confirm="confirm-pause">Pause project&hellip;</a>`, `action="/p/app/pause"`, `action="/p/app/resume"`,
+			`<span class="row__title">Read the plan</span>`,
+			`<a class="nav-item" href="/p/app/inbox"><span>Inbox</span><span class="count">2</span></a>`,
+			`<a class="nav-item" href="/p/app/plan"><span>Plan</span><span class="meta">1 of 3</span></a>`,
+			`<a class="nav-item" href="/usage"><span>Usage</span></a>`,
+			`<dt>Folder</dt><dd class="path">`, "<dt>Repository</dt><dd>None set</dd>",
+		}, notWant: []string{"Which database?", ">Tasks<", ">Sessions<", ">Chat<", "Change the plan", "Extend", "Reconcile"}},
+		{name: "project with nothing open has a quiet inbox count", path: "/p/app", want: []string{`<span>Inbox</span><span class="count count--quiet">0</span>`, "<h2>Building T1.2</h2>"}, notWant: []string{"Answer in the inbox"}},
+		{name: "project paused shows Resume", setup: func(rg *rig) {
+			_ = daemonstate.Pause(rg.root, testNow)
+			rg.rows = []projectrows.Row{projectrows.Build(projectrows.Input{Name: "app", Root: rg.root, Listed: true, HasPlan: true, Paused: true, Done: 1, Total: 3})}
+		}, path: "/p/app", want: []string{"<h2>Paused by you</h2>", `<a class="btn btn--primary" href="/p/app/confirm/resume" data-confirm="confirm-resume">Resume</a>`, `data-confirm="confirm-resume">Resume project&hellip;</a>`, `action="/p/app/resume"`}, notWant: []string{"Pause project&hellip;"}},
+		{name: "project with a repository", setup: func(rg *rig) { rg.repository = "https://github.com/o/app.git" }, path: "/p/app", want: []string{"<dt>Repository</dt><dd>https://github.com/o/app.git</dd>"}, notWant: []string{"None set"}},
+		{name: "project with planning open", setup: func(rg *rig) {
+			must(rg.t, plansession.WriteState(rg.root, plansession.State{Mode: "amend", Phase: "draft", UpdatedAt: "2026-10-12T11:00:00Z"}))
+		}, path: "/p/app", want: []string{`<span class="row__title">Planning: amend</span> <span class="badge badge--running">draft</span>`}, notWant: []string{"Read the plan<"}},
+		{name: "project whose plan waits", setup: func(rg *rig) { rg.rows[0].PlanWaiting = true }, path: "/p/app", want: []string{`<a class="btn btn--primary" href="/p/app/plan">Read and approve the plan</a>`, `<span class="row__title">Plan waiting for your approval</span>`}},
+		{name: "project with no running session", setup: func(rg *rig) { rg.sessions = nil }, path: "/p/app", want: []string{`id="project-running" data-live="sessions ledger" data-project="app"></div>`}, notWant: []string{"Running now"}},
+		{name: "project with a space in its name", path: "/p/my%20app", want: []string{"my app", `action="/p/my%20app/pause"`, `href="/p/my%20app/inbox"`}},
+		{name: "item with a blank answer form", setup: (*rig).seedInbox, path: "/p/app/inbox/" + idBlocking, want: []string{"Which database?", "Pick one.", "<textarea", `action="/p/app/inbox/` + idBlocking + `/answer"`, `class="badge badge--blocking"`, `<span class="tid">T1.2</span>`, "<h2>Which database?</h2>", `class="prose item-body"`, "Question from t1-2 · 1 hour ago", "data-enhance", "data-answer-form", `data-live="inbox"`, `data-send>Send answer`}, notWant: []string{"type=\"radio\"", "option--recommended", "Mark as done", "disabled"}},
+		{name: "item with options", setup: (*rig).seedInbox, path: "/p/app/inbox/" + idOptions, want: []string{`class="option option--recommended" name="choice" value="tabs" aria-pressed="false"`, `class="option" name="choice" value="spaces" aria-pressed="false"`, `<span class="option__mark">Recommended</span>`, "Your answer", "Or write your own", `name="answer"`, `data-send>Send answer`}, notWant: []string{"type=\"radio\"", "checked", "(recommended)", "disabled", "required"}},
+		{name: "owner task shows Mark as done only", setup: (*rig).seedOwnerTask, path: "/p/app/inbox/" + idOwner, want: []string{"Create the account.\nThen come back.", `<input type="hidden" name="answer" value="done">`, "Mark as done", "Your task from t1-2 · 1 hour ago"}, notWant: []string{"<textarea", "Send answer", "class=\"option", "name=\"choice\""}},
 		{name: "answered item", setup: (*rig).seedInbox, path: "/p/app/inbox/" + idAnswered, want: []string{"seen", "through cli"}, notWant: []string{"<form", "<textarea"}},
-		{name: "inbox list goes to the project page", setup: (*rig).seedInbox, path: "/p/app/inbox"},
+		{name: "inbox list", setup: (*rig).seedInbox, path: "/p/app/inbox",
+			want:    []string{"<h1>Inbox</h1>", `id="inbox-list" data-live="inbox" data-project="app"`, "1 of 2 hold a task up", `badge badge--blocking`, `<span class="tid">T1.2</span>`, `<span class="row__title">Which database?</span>`, `href="/p/app/inbox/` + idBlocking + `"`, "Question from t1-2 · 1 hour ago", "Answered (1)", "<details"},
+			notWant: []string{"Nothing needs you"}},
+		{name: "inbox list with nothing open", path: "/p/app/inbox", want: []string{"Nothing needs you", "When a task has a question for you"}, notWant: []string{"hold a task up", "<details"}},
+		{name: "inbox list with no blocking item", setup: func(rg *rig) {
+			rg.seedInbox()
+			if _, err := rg.store().Answer(idBlocking, "x", inbox.ViaCLI); err != nil {
+				rg.t.Fatal(err)
+			}
+		}, path: "/p/app/inbox", want: []string{"Tabs or spaces?", "Answered (2)"}, notWant: []string{"hold a task up"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,12 +125,6 @@ func TestPages(t *testing.T) {
 				tc.setup(rg)
 			}
 			rec := rg.pageDo("GET", tc.path, "")
-			if tc.name == "inbox list goes to the project page" {
-				if rec.Code != 303 || rec.Header().Get("Location") != "/p/app#inbox" {
-					t.Fatalf("status %d, Location %q; want 303 to /p/app#inbox", rec.Code, rec.Header().Get("Location"))
-				}
-				return
-			}
 			if rec.Code != 200 {
 				t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body.String())
 			}
@@ -128,13 +157,29 @@ func TestPages(t *testing.T) {
 func TestPageEscapesMarkup(t *testing.T) {
 	rg := newRig(t, Config{})
 	rg.seedScript()
-	for _, path := range []string{"/p/app/inbox/" + idScript, "/p/app"} {
+	for _, path := range []string{"/p/app/inbox/" + idScript, "/p/app/inbox"} {
 		body := rg.pageDo("GET", path, "").Body.String()
 		if strings.Contains(strings.ToLower(noOwnScript(body)), "<script") {
 			t.Errorf("%s: markup was not escaped:\n%s", path, body)
 		}
 		if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
 			t.Errorf("%s: the escaped title is missing:\n%s", path, body)
+		}
+	}
+
+	// The project screen lists no inbox item, so its text reaches the page
+	// through the task's title (Running now), the row's detail, the
+	// repository and the folder instead.
+	rg.tasks[1].Title = "<script>alert(3)</script>"
+	rg.rows[0].Detail = "<img src=x onerror=alert(4)>"
+	rg.repository = `https://h/<b>"r`
+	body := rg.pageDo("GET", "/p/app", "").Body.String()
+	if strings.Contains(strings.ToLower(noOwnScript(body)), "<script") || strings.Contains(body, "<img") || strings.Contains(body, "<b>") {
+		t.Errorf("/p/app: markup was not escaped:\n%s", body)
+	}
+	for _, w := range []string{"&lt;script&gt;alert(3)&lt;/script&gt;", "&lt;img src=x onerror=alert(4)&gt;", "https://h/&lt;b&gt;&#34;r"} {
+		if !strings.Contains(body, w) {
+			t.Errorf("/p/app: the escaped %q is missing:\n%s", w, body)
 		}
 	}
 }
@@ -155,20 +200,22 @@ func TestPagePosts(t *testing.T) {
 		wantAnswer string
 		wantText   string
 	}{
-		{name: "answer redirects to the item", path: answer(idBlocking), body: "answer=Use+Postgres", wantStatus: 303, wantLoc: "/p/app/inbox/" + idBlocking, wantAnswer: "Use Postgres"},
-		{name: "radio only", path: answer(idOptions), body: "choice=tabs&answer=", wantStatus: 303, wantLoc: "/p/app/inbox/" + idOptions, wantAnswer: "tabs"},
-		{name: "text beats radio", path: answer(idOptions), body: "choice=tabs&answer=neither", wantStatus: 303, wantLoc: "/p/app/inbox/" + idOptions, wantAnswer: "neither"},
+		{name: "answer redirects to the item", path: answer(idBlocking), body: "answer=Use+Postgres", wantStatus: 303, wantLoc: "/p/app/inbox?done=answered&item=" + idBlocking, wantAnswer: "Use Postgres"},
+		{name: "radio only", path: answer(idOptions), body: "choice=tabs&answer=", wantStatus: 303, wantLoc: "/p/app/inbox?done=answered&item=" + idOptions, wantAnswer: "tabs"},
+		{name: "owner task records done", path: answer(idOwner), body: "answer=done", wantStatus: 303, wantLoc: "/p/app/inbox?done=done&item=" + idOwner, wantAnswer: "done"},
+		{name: "text beats radio", path: answer(idOptions), body: "choice=tabs&answer=neither", wantStatus: 303, wantLoc: "/p/app/inbox?done=answered&item=" + idOptions, wantAnswer: "neither"},
 		{name: "empty answer shows the error page", path: answer(idBlocking), body: "answer=", wantStatus: 400, wantText: "The answer was empty"},
 		{name: "second answer shows the first", path: answer(idAnswered), body: "answer=again", wantStatus: 409, wantText: "first answer is the one that is kept"},
 		{name: "unknown item", path: answer("zzz999"), body: "answer=x", wantStatus: 404, wantText: "no inbox item"},
-		{name: "pause redirects to the project", path: "/p/app/pause", wantStatus: 303, wantLoc: "/p/app?done=paused"},
-		{name: "resume redirects to the project", path: "/p/app/resume", wantStatus: 303, wantLoc: "/p/app?done=resumed"},
-		{name: "project with a space redirects escaped", path: "/p/my%20app/pause", wantStatus: 303, wantLoc: "/p/my%20app?done=paused"},
+		{name: "pause redirects to the project", path: "/p/app/pause", body: "confirm=yes", wantStatus: 303, wantLoc: "/p/app?done=paused"},
+		{name: "resume redirects to the project", path: "/p/app/resume", body: "confirm=yes", wantStatus: 303, wantLoc: "/p/app?done=resumed"},
+		{name: "project with a space redirects escaped", path: "/p/my%20app/pause", body: "confirm=yes", wantStatus: 303, wantLoc: "/p/my%20app?done=paused"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
 			rg.seedInbox()
+			rg.seedOwnerTask()
 			rec := rg.pageDo("POST", tc.path, tc.body)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d\n%s", rec.Code, tc.wantStatus, rec.Body.String())
@@ -207,22 +254,54 @@ func (rg *rig) store() inbox.Store {
 // functions exactly once, and that a failing one renders the error page.
 func TestPagePauseButtonsAct(t *testing.T) {
 	rg := newRig(t, Config{})
-	if rec := rg.pageDo("POST", "/p/app/pause", ""); rec.Code != 303 {
+	if rec := rg.pageDo("POST", "/p/app/pause", "confirm=yes"); rec.Code != 303 {
 		t.Fatalf("pause: %d", rec.Code)
 	}
 	if len(rg.paused) != 1 || !daemonstate.Paused(rg.root) {
 		t.Errorf("pause called %d times, paused = %v", len(rg.paused), daemonstate.Paused(rg.root))
 	}
-	if rec := rg.pageDo("POST", "/p/app/resume", ""); rec.Code != 303 {
+	if rec := rg.pageDo("POST", "/p/app/resume", "confirm=yes"); rec.Code != 303 {
 		t.Fatalf("resume: %d", rec.Code)
 	}
 	if len(rg.resumed) != 1 || daemonstate.Paused(rg.root) {
 		t.Errorf("resume called %d times, paused = %v", len(rg.resumed), daemonstate.Paused(rg.root))
 	}
 	rg.pauseErr = http.ErrAbortHandler
-	rec := rg.pageDo("POST", "/p/app/pause", "")
+	rec := rg.pageDo("POST", "/p/app/pause", "confirm=yes")
 	if rec.Code != 500 || !strings.Contains(rec.Body.String(), "could not be paused") {
 		t.Errorf("failing pause: %d\n%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPagePauseNeedsConfirm is the server-side half of the confirm sheet:
+// load-bearing rows are the empty body and confirm=no, which used to pause
+// the project, and the confirm in the address, which must not count. None may
+// call Pause or Resume or change the paused flag.
+func TestPagePauseNeedsConfirm(t *testing.T) {
+	tests := []struct {
+		name, path, body, wantText string
+		startPaused                bool
+	}{
+		{name: "pause with no body", path: "/p/app/pause", wantText: "pausing needs the confirm"},
+		{name: "pause with confirm=no", path: "/p/app/pause", body: "confirm=no", wantText: "Nothing changed"},
+		{name: "pause with confirm in the address", path: "/p/app/pause?confirm=yes", wantText: "Nothing changed"},
+		{name: "resume with no body", path: "/p/app/resume", startPaused: true, wantText: "resuming needs the confirm"},
+		{name: "resume with confirm=no", path: "/p/app/resume", body: "confirm=no", startPaused: true, wantText: "press Resume project"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tc.startPaused {
+				must(t, daemonstate.Pause(rg.root, testNow))
+			}
+			rec := rg.pageDo("POST", tc.path, tc.body)
+			if rec.Code != 400 || !strings.Contains(rec.Body.String(), tc.wantText) {
+				t.Fatalf("status %d, want 400 with %q\n%s", rec.Code, tc.wantText, rec.Body.String())
+			}
+			if len(rg.paused)+len(rg.resumed) != 0 || daemonstate.Paused(rg.root) != tc.startPaused {
+				t.Errorf("pause calls %v, resume calls %v, paused = %v", rg.paused, rg.resumed, daemonstate.Paused(rg.root))
+			}
+		})
 	}
 }
 
@@ -345,12 +424,15 @@ func TestPageTemplatesHaveNoInlineScript(t *testing.T) {
 		})
 	}
 	layout, _ := pageFiles.ReadFile("templates/layout.html")
-	for _, f := range []string{"live.js", "confirm.js"} {
+	for _, f := range []string{"live.js", "confirm.js", "submit.js"} {
 		if !strings.Contains(string(layout), `<script src="{{asset "`+f+`"}}" defer></script>`) {
 			t.Errorf("layout.html does not load %s", f)
 		}
 	}
 }
+
+// idAttr finds every id attribute on a page.
+var idAttr = regexp.MustCompile(` id="([^"]*)"`)
 
 // TestPageLiveMarkup checks that each page loads the hashed script and that
 // the live regions exist with the parts and project the script matches on.
@@ -372,8 +454,12 @@ func TestPageLiveMarkup(t *testing.T) {
 			`id="usage-reading" data-live="usage" data-project=""`,
 		}},
 		{name: "project", path: "/p/app", want: []string{
-			`id="summary" data-live="ledger pause sessions planning" data-project="app"`,
-			`id="inbox-list" data-live="inbox" data-project="app" aria-live="polite"`,
+			`aria-live="polite" aria-label="State of app">` + "\n" + `<div class="card" id="project-state" data-live="ledger pause sessions planning inbox" data-project="app"`,
+			`id="project-badge" data-live="ledger pause sessions planning inbox" data-project="app"`,
+			`id="project-running" data-live="sessions ledger" data-project="app"`,
+			`id="project-pause" data-live="pause" data-project="app"`,
+			`id="project-plan" data-live="planning" data-project="app"`,
+			`id="project-nav" data-live="inbox ledger" data-project="app"`,
 			`<span class="live" data-live-status hidden>Live</span>`,
 			`<span class="live topnav__live" data-live-mirror hidden>Live</span>`,
 		}},
@@ -399,6 +485,15 @@ func TestPageLiveMarkup(t *testing.T) {
 			// and mirrors it onto the desktop bar's.
 			if n := strings.Count(body, "data-live-status"); n != 1 {
 				t.Errorf("%d elements with data-live-status, want 1", n)
+			}
+			// live.js swaps a region by id, so two elements with one id
+			// would swap the wrong one.
+			seen := map[string]bool{}
+			for _, m := range idAttr.FindAllStringSubmatch(body, -1) {
+				if seen[m[1]] {
+					t.Errorf("id %q is used twice", m[1])
+				}
+				seen[m[1]] = true
 			}
 		})
 	}
@@ -488,9 +583,9 @@ func TestPlanPage(t *testing.T) {
 			setup: func(rg *rig) { rg.reviews = []Project{{Name: `a b/<i>"c`, Root: rg.draft}} },
 			want:  []string{`href="/p/a%20b%2F%3Ci%3E%22c/plan"`, "a b/&lt;i&gt;&#34;c"}, notWant: []string{"<i>"}},
 		{name: "project page links to its plan", path: "/p/app", status: 200,
-			want: []string{`<a href="/p/app/plan">Read the plan</a>`}},
+			want: []string{`<a class="row" href="/p/app/plan">`, `<span class="row__title">Read the plan</span>`}},
 		{name: "project page link is escaped", path: "/p/my%20app", status: 200,
-			want: []string{`<a href="/p/my%20app/plan">Read the plan</a>`}},
+			want: []string{`<a class="row" href="/p/my%20app/plan">`}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -654,7 +749,8 @@ func TestPageLayout(t *testing.T) {
 		{name: "project", page: "project", path: "/p/app", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/" aria-current="true"`, navTitle: "app"},
 		{name: "plan", page: "plan", path: "/p/app/plan", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Plan: app"},
 		{name: "plan waiting for approval", page: "plan", path: "/p/draft/plan", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, navTitle: "Plan: draft"},
-		{name: "item", page: "item", path: "/p/app/inbox/" + idBlocking, status: 200, bars: true, back: `href="/p/app#inbox" aria-label="Back to the inbox of app"`, navTitle: "Which database?"},
+		{name: "item", page: "item", path: "/p/app/inbox/" + idBlocking, status: 200, bars: true, back: `href="/p/app/inbox" aria-label="Back to the inbox of app"`, navTitle: "Which database?"},
+		{name: "inbox", page: "inbox", path: "/p/app/inbox", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Inbox"},
 		{name: "confirm", page: "confirm", path: "/p/app/confirm/pause", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, navTitle: "Pause project"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", path: "/p/app", noToken: true, status: 401},
@@ -760,7 +856,9 @@ func TestChromeFor(t *testing.T) {
 		{name: "plan waiting", page: "plan", view: PlanView{Project: "draft", WaitingForApproval: true}, method: "GET", path: "/p/draft/plan",
 			want: chrome{Title: "Plan: draft", Nav: "projects", Current: "true", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
 		{name: "item", page: "item", view: ItemView{Project: "my app", Item: inbox.Item{Title: "Which?"}}, method: "GET", path: "/p/my app/inbox/x",
-			want: chrome{Title: "Which?", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app#inbox", BackLabel: "Back to the inbox of my app"}},
+			want: chrome{Title: "Which?", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/inbox", BackLabel: "Back to the inbox of my app"}},
+		{name: "inbox", page: "inbox", view: InboxView{Project: "my app"}, method: "GET", path: "/p/my app/inbox",
+			want: chrome{Title: "Inbox", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
 		{name: "error", page: "error", view: ErrorView{Status: 404}, method: "GET", path: "/p/nope",
 			want: chrome{Bare: true, Status: 404, Path: "/p/nope", Retry: "/p/nope"}},
 		{name: "error after a POST", page: "error", view: ErrorView{Status: 400}, method: "POST", path: "/p/app/inbox/x/answer",
@@ -814,9 +912,9 @@ func TestConfirmPage(t *testing.T) {
 		wantNot    []string
 	}{
 		{name: "pause", path: "/p/app/confirm/pause", wantStatus: 200,
-			wantIn: []string{"Pause app?", "The running task finishes; nothing new starts. Nothing is deleted.", `action="/p/app/pause"`, `href="/p/app"`, "Keep it running"}},
+			wantIn: []string{"Pause app?", "The running task finishes; nothing new starts. Nothing is deleted.", `action="/p/app/pause"`, `<input type="hidden" name="confirm" value="yes">`, `href="/p/app"`, "Keep it running"}},
 		{name: "resume", path: "/p/app/confirm/resume", wantStatus: 200,
-			wantIn: []string{"Resume app?", "afk starts the next ready task.", `action="/p/app/resume"`, `href="/p/app"`}},
+			wantIn: []string{"Resume app?", "afk starts the next ready task again; a stopped line is cleared. Nothing is deleted.", `action="/p/app/resume"`, `<input type="hidden" name="confirm" value="yes">`, `href="/p/app"`}},
 		{name: "project with a space", path: "/p/my%20app/confirm/pause", wantStatus: 200,
 			wantIn: []string{"Pause my app?", `action="/p/my%20app/pause"`}},
 		{name: "delete", path: "/p/app/confirm/delete", wantStatus: 404, wantIn: []string{"That didn't load"}, wantNot: []string{"Delete"}},
@@ -853,10 +951,21 @@ func TestConfirmPage(t *testing.T) {
 	}
 }
 
-// TestProjectPageConfirm checks the project page holds the link and the
-// dialog for the state it is in, and that the plan page holds neither (it
-// must stay free of forms and buttons).
+// TestProjectPageConfirm checks the project page holds the link for the state
+// it is in and both dialogs, and that the plan page holds neither (it must
+// stay free of forms and buttons).
+//
+// Load-bearing: both sheets on either page (the link lives in the pause live
+// region and swaps from Pause to Resume without a reload, so the sheet it
+// then names must already be there) and the check that every dialog and form
+// comes after the last live region (live.js skips a region holding a form,
+// and a swapped region would take an open dialog with it).
 func TestProjectPageConfirm(t *testing.T) {
+	bothSheets := []string{
+		`<dialog class="confirm-sheet" id="confirm-pause"`, "Pause app?", `action="/p/app/pause" data-enhance>`,
+		`<dialog class="confirm-sheet" id="confirm-resume"`, "Resume app?", `action="/p/app/resume" data-enhance>`,
+		`<input type="hidden" name="confirm" value="yes">`,
+	}
 	tests := []struct {
 		name    string
 		path    string
@@ -864,8 +973,8 @@ func TestProjectPageConfirm(t *testing.T) {
 		wantIn  []string
 		wantNot []string
 	}{
-		{name: "running", path: "/p/app", wantIn: []string{`<dialog class="confirm-sheet" id="confirm-pause"`, `data-confirm="confirm-pause"`, `href="/p/app/confirm/pause"`, "Pause project&hellip;", "Pause app?", `action="/p/app/pause"`, "autofocus", `data-loading-label="Pausing"`}, wantNot: []string{"confirm-resume"}},
-		{name: "paused", path: "/p/app", paused: true, wantIn: []string{`id="confirm-resume"`, `data-confirm="confirm-resume"`, `href="/p/app/confirm/resume"`, "Resume app?", `action="/p/app/resume"`}, wantNot: []string{"confirm-pause"}},
+		{name: "running", path: "/p/app", wantIn: append([]string{`data-confirm="confirm-pause"`, `href="/p/app/confirm/pause"`, "Pause project&hellip;", "autofocus", `data-loading-label="Pausing"`}, bothSheets...), wantNot: []string{`data-confirm="confirm-resume"`, "Resume project&hellip;"}},
+		{name: "paused", path: "/p/app", paused: true, wantIn: append([]string{`data-confirm="confirm-resume">Resume project&hellip;`, `href="/p/app/confirm/resume"`}, bothSheets...), wantNot: []string{`data-confirm="confirm-pause"`, "Pause project&hellip;"}},
 		{name: "plan page has no sheet", path: "/p/app/plan", wantNot: []string{"<dialog", "confirm-"}},
 	}
 	for _, tc := range tests {
@@ -883,6 +992,13 @@ func TestProjectPageConfirm(t *testing.T) {
 			for _, s := range tc.wantNot {
 				if strings.Contains(body, s) {
 					t.Errorf("must not contain %q", s)
+				}
+			}
+			if last := strings.LastIndex(body, "data-live="); last >= 0 {
+				for _, tag := range []string{"<dialog", "<form", "<input", "<textarea"} {
+					if i := strings.Index(body, tag); i >= 0 && i < last {
+						t.Errorf("%s comes before the last live region", tag)
+					}
 				}
 			}
 		})
@@ -929,43 +1045,57 @@ func TestToast(t *testing.T) {
 // TestToastFor is the pure table behind the toast: only a whitelisted code
 // gives text.
 func TestToastFor(t *testing.T) {
-	tests := []struct{ code, project, want string }{
-		{"paused", "app", "Paused app. Nothing new will start."},
-		{"resumed", "app", "Resumed app."},
-		{"", "app", ""},
-		{"<script>", "app", ""},
-		{"PAUSED", "app", ""},
+	tests := []struct{ code, project, task, want string }{
+		{"paused", "app", "", "Paused app. Nothing new will start."},
+		{"resumed", "app", "", "Resumed app."},
+		{"answered", "app", "", "Answer sent."},
+		{"ready", "app", "T1.2", "Answer sent. T1.2 is ready again."},
+		{"ready", "app", "", ""}, // no task to name: no toast, never "{task}"
+		{"done", "app", "T1.2", "Marked as done."},
+		{"", "app", "", ""},
+		{"<script>", "app", "", ""},
+		{"PAUSED", "app", "", ""},
 	}
 	for _, tc := range tests {
-		t.Run(tc.code, func(t *testing.T) {
-			if got := toastFor(tc.code, tc.project); got != tc.want {
+		t.Run(tc.code+"_"+tc.task, func(t *testing.T) {
+			if got := toastFor(tc.code, tc.project, tc.task); got != tc.want {
 				t.Errorf("toastFor(%q) = %q, want %q", tc.code, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestConfirmScriptServed checks confirm.js is served at its hashed address
-// with the long cache and the security headers, and has no inline-eval shape.
+// TestConfirmScriptServed checks each page script the layout loads is served
+// at its hashed address with the long cache and the security headers, and
+// has no eval or innerHTML: the policy refuses eval, and innerHTML is how
+// text from the server (an inbox answer, a plan title) would become markup.
+//
+// Load-bearing rows: "submit.js" (it parses whole fetched pages, so it is the
+// script most tempted by innerHTML; document.importNode is the allowed way)
+// and "confirm.js"; "live.js" keeps the rule for the third script too.
 func TestConfirmScriptServed(t *testing.T) {
 	rg := newRig(t, Config{})
 	body := rg.pageDo("GET", "/p/app", "").Body.String()
-	m := regexp.MustCompile(`/static/[0-9a-f]{12}/confirm\.js`).FindString(body)
-	if m == "" {
-		t.Fatal("the project page does not load confirm.js")
-	}
-	rec := rg.pageDo("GET", m, "")
-	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/javascript") {
-		t.Fatalf("status %d, type %q", rec.Code, rec.Header().Get("Content-Type"))
-	}
-	if rec.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
-		t.Errorf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
-	}
-	if rec.Header().Get("Content-Security-Policy") != wantCSP {
-		t.Errorf("CSP = %q", rec.Header().Get("Content-Security-Policy"))
-	}
-	if js := rec.Body.String(); strings.Contains(js, "eval(") || strings.Contains(js, "innerHTML") {
-		t.Error("confirm.js uses eval or innerHTML")
+	for _, name := range []string{"confirm.js", "submit.js", "live.js"} {
+		t.Run(name, func(t *testing.T) {
+			m := regexp.MustCompile(`/static/[0-9a-f]{12}/` + regexp.QuoteMeta(name)).FindString(body)
+			if m == "" {
+				t.Fatalf("the project page does not load %s", name)
+			}
+			rec := rg.pageDo("GET", m, "")
+			if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/javascript") {
+				t.Fatalf("status %d, type %q", rec.Code, rec.Header().Get("Content-Type"))
+			}
+			if rec.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+				t.Errorf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+			}
+			if rec.Header().Get("Content-Security-Policy") != wantCSP {
+				t.Errorf("CSP = %q", rec.Header().Get("Content-Security-Policy"))
+			}
+			if js := rec.Body.String(); strings.Contains(js, "eval(") || strings.Contains(js, "innerHTML") {
+				t.Errorf("%s uses eval or innerHTML", name)
+			}
+		})
 	}
 }
 
@@ -1334,4 +1464,242 @@ func TestOverviewEdges(t *testing.T) {
 			t.Errorf("rows = %s, want the name as written", dump(rows))
 		}
 	})
+}
+
+// TestReadyAgain is the pure decision behind the "ready again" toast.
+// Load-bearing rows: "another open item in parked_on" and "another open
+// blocking item for the task" (the task is still waiting, so saying it is
+// ready would be untrue), and "task running not parked" (nothing to un-park).
+func TestReadyAgain(t *testing.T) {
+	answered := inbox.Item{ID: "aaa111", Task: "T1.2", Blocking: true}
+	parked := func(on ...string) *ledger.Entry {
+		return &ledger.Entry{ID: "T1.2", Status: ledger.Parked, ParkedOn: on}
+	}
+	tests := []struct {
+		name     string
+		answered inbox.Item
+		entry    *ledger.Entry
+		items    []inbox.Item
+		want     bool
+	}{
+		{name: "parked and alone", answered: answered, entry: parked("aaa111"), items: []inbox.Item{{ID: "aaa111", Task: "T1.2", Answer: "x"}}, want: true},
+		{name: "answered item still listed as open is skipped", answered: answered, entry: parked("aaa111"), items: []inbox.Item{answered}, want: true},
+		{name: "another open item in parked_on", answered: answered, entry: parked("aaa111", "bbb222"), items: []inbox.Item{{ID: "bbb222", Task: "T9"}}, want: false},
+		{name: "another answered item in parked_on", answered: answered, entry: parked("aaa111", "bbb222"), items: []inbox.Item{{ID: "bbb222", Answer: "y"}}, want: true},
+		{name: "another open blocking item for the task", answered: answered, entry: parked("aaa111"), items: []inbox.Item{{ID: "ccc333", Task: "T1.2", Blocking: true}}, want: false},
+		{name: "another open non-blocking item for the task", answered: answered, entry: parked("aaa111"), items: []inbox.Item{{ID: "ccc333", Task: "T1.2"}}, want: true},
+		{name: "open blocking item for another task", answered: answered, entry: parked("aaa111"), items: []inbox.Item{{ID: "ddd444", Task: "T3", Blocking: true}}, want: true},
+		{name: "task running not parked", answered: answered, entry: &ledger.Entry{ID: "T1.2", Status: ledger.Running}, want: false},
+		{name: "no task", answered: inbox.Item{ID: "aaa111"}, entry: parked(), want: false},
+		{name: "no ledger entry", answered: answered, entry: nil, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readyAgain(tc.answered, tc.entry, tc.items); got != tc.want {
+				t.Errorf("readyAgain = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsOwnerTask is the owner-task test. The load-bearing row is the
+// ordinary external action: only the daemon's "Your task: " title makes an
+// answer a "done".
+func TestIsOwnerTask(t *testing.T) {
+	tests := []struct {
+		name string
+		it   inbox.Item
+		want bool
+	}{
+		{"owner task", inbox.Item{Kind: "external_action", Blocking: true, Task: "T1.2", Title: daemon.OwnerTitlePrefix + "T1.2"}, true},
+		{"ordinary external action", inbox.Item{Kind: "external_action", Blocking: true, Task: "T1.2", Title: "Create the bucket"}, false},
+		{"not blocking", inbox.Item{Kind: "external_action", Task: "T1.2", Title: daemon.OwnerTitlePrefix + "T1.2"}, false},
+		{"no task", inbox.Item{Kind: "external_action", Blocking: true, Title: daemon.OwnerTitlePrefix + "T1.2"}, false},
+		{"a question", inbox.Item{Kind: "question", Blocking: true, Task: "T1.2", Title: daemon.OwnerTitlePrefix + "T1.2"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOwnerTask(tc.it); got != tc.want {
+				t.Errorf("isOwnerTask = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnswerCodes drives the answer redirect through the handler. Load-
+// bearing rows: "ready" (a parked task whose only item is answered) and "not
+// ready" (a second blocking item keeps it waiting), and "owner task".
+func TestAnswerCodes(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(rg *rig)
+		id    string
+		want  string
+	}{
+		{name: "no ledger entry", id: idBlocking, want: "answered"},
+		{name: "ready", id: idBlocking, setup: func(rg *rig) {
+			rg.ledger = ledger.Ledger{Tasks: []ledger.Entry{{ID: "T1.2", Status: ledger.Parked, ParkedOn: []string{idBlocking}}}}
+		}, want: "ready"},
+		{name: "not ready: another open blocking item", id: idBlocking, setup: func(rg *rig) {
+			rg.ledger = ledger.Ledger{Tasks: []ledger.Entry{{ID: "T1.2", Status: ledger.Parked, ParkedOn: []string{idBlocking}}}}
+			st := inbox.Store{Dir: inbox.Dir(rg.root), Now: func() time.Time { return testNow }, NewID: func() string { return "pqr456" }}
+			if _, err := st.Add(inbox.NewItem{Task: "T1.2", Kind: "question", Blocking: true, Title: "Second"}); err != nil {
+				rg.t.Fatal(err)
+			}
+		}, want: "answered"},
+		{name: "load error", id: idBlocking, setup: func(rg *rig) {
+			rg.ledger = ledger.Ledger{Tasks: []ledger.Entry{{ID: "T1.2", Status: ledger.Parked}}}
+			rg.loadErr = errors.New("broken")
+		}, want: "answered"},
+		{name: "owner task", id: idOwner, setup: func(rg *rig) {
+			st := inbox.Store{Dir: inbox.Dir(rg.root), Now: func() time.Time { return testNow }, NewID: func() string { return idOwner }}
+			if _, err := st.Add(inbox.NewItem{Task: "T1.2", Kind: "external_action", Blocking: true, Title: daemon.OwnerTitlePrefix + "T1.2"}); err != nil {
+				rg.t.Fatal(err)
+			}
+		}, want: "done"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			rg.seedInbox()
+			if tc.setup != nil {
+				tc.setup(rg)
+			}
+			rec := rg.pageDo("POST", "/p/app/inbox/"+tc.id+"/answer", "answer=done")
+			want := "/p/app/inbox?done=" + tc.want + "&item=" + tc.id
+			if rec.Code != 303 || rec.Header().Get("Location") != want {
+				t.Fatalf("status %d, Location %q; want 303 to %q", rec.Code, rec.Header().Get("Location"), want)
+			}
+		})
+	}
+}
+
+// TestInboxToast covers the toast on the inbox list. Load-bearing rows: the
+// two refusals. An unknown item and an unknown code show nothing, and
+// nothing from the request is printed in the page.
+func TestInboxToast(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		want    string
+		wantNot []string
+	}{
+		{name: "answered", query: "?done=answered&item=" + idBlocking, want: "Answer sent."},
+		{name: "ready names the task from the item", query: "?done=ready&item=" + idBlocking, want: "Answer sent. T1.2 is ready again."},
+		{name: "done", query: "?done=done&item=" + idOptions, want: "Marked as done."},
+		{name: "ready for an item without a task", query: "?done=ready&item=" + idOptions, wantNot: []string{"data-toast"}},
+		{name: "unknown item", query: "?done=answered&item=zzz999", wantNot: []string{"data-toast", "zzz999"}},
+		{name: "malformed item", query: "?done=answered&item=%3Cb%3Ex", wantNot: []string{"data-toast", "<b>x"}},
+		{name: "unknown code", query: "?done=%3Cscript%3Ealert(1)&item=" + idBlocking, wantNot: []string{"data-toast", "alert(1)"}},
+		{name: "no item", query: "?done=answered", wantNot: []string{"data-toast"}},
+		{name: "no query", query: "", wantNot: []string{"data-toast"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			rg.seedInbox()
+			rec := rg.pageDo("GET", "/p/app/inbox"+tc.query, "")
+			if rec.Code != 200 {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			body := rec.Body.String()
+			if tc.want != "" && !strings.Contains(body, `<div class="toast" role="status" data-toast>`+tc.want+`</div>`) {
+				t.Errorf("no toast %q in\n%s", tc.want, body)
+			}
+			for _, w := range tc.wantNot {
+				if strings.Contains(body, w) {
+					t.Errorf("page contains %q", w)
+				}
+			}
+		})
+	}
+}
+
+// TestInboxJSONUnchanged keeps the API's inbox answer free of the page's
+// layout: the keys are the same three as before.
+func TestInboxJSONUnchanged(t *testing.T) {
+	rg := newRig(t, Config{})
+	rg.seedInbox()
+	rec := rg.do("GET", "/api/p/app/inbox", "", "")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got["items"] == nil || got["unreadable"] == nil || got["problem"] == nil {
+		t.Errorf("keys = %v, want items, unreadable, problem", got)
+	}
+}
+
+// TestItemPageFor covers the option order and the owner-task switch.
+// Load-bearing rows: "recommended moves first" (the page lists it first and
+// marks it) and "recommended not among the options" (no button is marked
+// that does not exist).
+func TestItemPageFor(t *testing.T) {
+	tests := []struct {
+		name      string
+		it        inbox.Item
+		wantOpts  []itemOption
+		wantOwner bool
+	}{
+		{name: "no options", it: inbox.Item{Kind: "question"}},
+		{name: "recommended moves first", it: inbox.Item{Kind: "question", Options: []string{"a", "b", "c"}, Recommended: "c"},
+			wantOpts: []itemOption{{"c", true}, {"a", false}, {"b", false}}},
+		{name: "no recommended", it: inbox.Item{Kind: "question", Options: []string{"a", "b"}},
+			wantOpts: []itemOption{{"a", false}, {"b", false}}},
+		{name: "recommended not among the options", it: inbox.Item{Kind: "question", Options: []string{"a"}, Recommended: "z"},
+			wantOpts: []itemOption{{"a", false}}},
+		{name: "owner task has no options", it: inbox.Item{Kind: "external_action", Blocking: true, Task: "T1.2", Title: daemon.OwnerTitlePrefix + "T1.2", Options: []string{"a"}}, wantOwner: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := itemPageFor(tc.it, testNow)
+			if got.OwnerTask != tc.wantOwner || !reflect.DeepEqual(got.Options, tc.wantOpts) {
+				t.Errorf("itemPageFor = %+v, want owner %v options %v", got, tc.wantOwner, tc.wantOpts)
+			}
+		})
+	}
+}
+
+// TestProjectPageNilDeps builds the page with no ProjectRows and no
+// Repository seam, as an older or a partial wiring would. Load-bearing: the
+// screen must still draw, with the state in projectrows' words built from the
+// summary and "None set" for the repository, never a 500 or a blank.
+func TestProjectPageNilDeps(t *testing.T) {
+	root := t.TempDir()
+	must(t, daemonstate.Pause(root, testNow))
+	h, err := New(Config{Token: testToken}, Deps{
+		Projects: func() []Project { return []Project{{Name: "app", Root: root}} },
+		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) {
+			return planTasks("T1.1", "T1.2"), ledger.Ledger{Tasks: []ledger.Entry{{ID: "T1.1", Status: ledger.Done}}}, nil
+		},
+		Sessions: func(string) []SessionView { return nil },
+		Usage:    func() (usagestate.File, bool) { return usagestate.File{}, false },
+		Pause:    func(string) error { return nil },
+		Resume:   func(string) error { return nil },
+		Now:      func() time.Time { return testNow },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := httptest.NewRequest("GET", "/p/app", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, w := range []string{
+		`badge--paused project__card-badge">Paused</span>`, "<h2>Paused by you</h2>",
+		"Paused: no new task will start until you resume it.", "1 of 2 tasks done",
+		`data-confirm="confirm-resume">Resume</a>`, "<dt>Repository</dt><dd>None set</dd>",
+		`<span class="row__title">Read the plan</span>`,
+	} {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing %q\n%s", w, body)
+		}
+	}
 }

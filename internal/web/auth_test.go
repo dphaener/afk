@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -44,7 +45,17 @@ func (a authReq) send(h http.Handler) *httptest.ResponseRecorder {
 	if method == "" {
 		method = http.MethodGet
 	}
-	req := httptest.NewRequest(method, a.target, nil)
+	// A pause or resume now needs the confirm in its body, and these tests are
+	// about the token and the origin, so every request carries it: a refusal
+	// then cannot be the missing confirm.
+	var body io.Reader
+	if method == http.MethodPost {
+		body = strings.NewReader(`{"confirm":true}`)
+	}
+	req := httptest.NewRequest(method, a.target, body)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if a.host != "" {
 		req.Host = a.host
 	}
@@ -441,7 +452,14 @@ func TestAuthTokenVisitRedirects(t *testing.T) {
 			if method == "" {
 				method = http.MethodGet
 			}
-			req := httptest.NewRequest(method, "/", nil)
+			var body io.Reader
+			if method == http.MethodPost {
+				body = strings.NewReader(`{"confirm":true}`)
+			}
+			req := httptest.NewRequest(method, "/", body)
+			if body != nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
 			req.URL.Path = tc.path
 			req.URL.RawPath = ""
 			req.URL.RawQuery = tc.query
