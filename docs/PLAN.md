@@ -2600,6 +2600,28 @@ thing it does not do is attach to a session.
   `.afk/plan/state.json` in mode `new`, lands on the chat view, and shows the project on the overview.
   `make check` is green.
 
+#### T8.15a — Create the folder for a new plan
+- **Depends on:** T8.15, T7.5
+- **Goal:** the "plan a new project" field also takes a project name, and the page makes the folder
+  under the profile's project location, makes it a git repository and starts planning in it.
+- **Background:** T7.5 gives the dashboard this as a pure decision from the typed text, the profile's
+  `project location` and the disk (use this folder, create this folder, or refuse with a reason),
+  and makes the repository the way `afk plan` does.
+- **Scope:** T8.15's field takes a name as well as a path (text with no `/` and no `~` is a name),
+  through T7.5's decision and refusals: a name that is not a plain folder name (saying which
+  characters are allowed), a folder that already exists (offering to plan in it as T8.15 does), and a
+  name with no `project location` in the profile (saying how to set one with `afk profile set`, or to
+  type a full path). The confirm shows the full path before anything is created. A failure part-way
+  says what was left on disk and removes nothing. Then planning starts as in T8.15. The same under
+  `/api`. README: the web page section.
+- **Must not:** create a folder outside the project location from a bare name; create anything
+  without the confirm; delete anything; create anything on GitHub (T8.15b).
+- **Acceptance:** handler tests with a fake decision and a fake filesystem: a name created, a name with
+  no project location, a name with bad characters, a folder that exists, and a POST without the
+  confirm creating nothing. Against a scratch build with a scratch profile whose location is a
+  scratch folder and a stand-in agent: typing `demo` and confirming leaves `<scratch>/demo/.git`,
+  `.afk/plan/state.json` in mode `new`, and `demo` on the overview. `make check` is green.
+
 #### T8.16 — Add and remove projects
 - **Depends on:** T8.5, T7.10
 - **Goal:** the overview adds a folder to the daemon's project list and removes one, with the same
