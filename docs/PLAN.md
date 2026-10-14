@@ -2131,6 +2131,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   once. Against a scratch build in a throwaway repository with a new plan at `review`, a scratch
   config folder and a scratch state folder: `y` leaves the plan committed, the project in the scratch
   `config.toml` and `state.json` at `approved`. `make check` is green.
+- Amended 2026-10-13: the Must not "approve from the web page" holds for this task only; T8.11 adds approving to the web page behind a confirm, calling this task's entry point.
 
 #### T7.9 — The all-projects screen
 - **Depends on:** T7.1
