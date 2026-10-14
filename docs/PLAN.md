@@ -2622,6 +2622,28 @@ thing it does not do is attach to a session.
   scratch folder and a stand-in agent: typing `demo` and confirming leaves `<scratch>/demo/.git`,
   `.afk/plan/state.json` in mode `new`, and `demo` on the overview. `make check` is green.
 
+#### T8.15b — Offer a GitHub repository for the new folder
+- **Depends on:** T8.15a, T7.6
+- **Goal:** straight after T8.15a makes a folder, the page asks whether to create a private GitHub
+  repository for it with the owner's existing `gh` login, and on yes sets it as the folder's `origin`.
+- **Background:** T7.6 gives the dashboard the pure decision (ask, or do not ask and why) and the
+  create call behind a `gh` interface with a fake. The owner's profile has the rule "accounts: use the
+  accounts I already have, and ask before opening a new one", which is why this is a question every
+  time and never a setting.
+- **Scope:** after the folder is made and before the chat view opens, one yes-or-no naming the
+  repository that would be created (the folder's name, under the account `gh` is logged in as) and
+  saying it will be private; no is the default and changes nothing. Yes creates it and adds it as
+  `origin` through T7.6's code; nothing is pushed. When `gh` is missing or not logged in the question
+  is not asked and the page says why and what to run. A failure is shown with its reason and planning
+  starts all the same. The same under `/api`. README: the web page section.
+- **Must not:** create a public repository; create anything without the owner's yes; push; ask for a
+  folder that existed before T8.15a's form; store a token.
+- **Acceptance:** handler tests with a fake `gh`: yes makes exactly one private create and sets
+  `origin`, no makes none, `gh` missing, not logged in, name taken and a network error. No test calls
+  GitHub. Against a scratch build with a scratch profile, a stand-in agent and a stand-in `gh` on a
+  scratch `PATH`: typing `demo`, confirming and answering yes makes the stand-in record one private
+  create and `git remote -v` in the new folder show `origin`. `make check` is green.
+
 #### T8.16 — Add and remove projects
 - **Depends on:** T8.5, T7.10
 - **Goal:** the overview adds a folder to the daemon's project list and removes one, with the same
