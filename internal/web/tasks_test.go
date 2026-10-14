@@ -206,7 +206,7 @@ func TestTaskPageFor(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			v := taskPageFor("app", task, tc.ledger, TaskTokens{State: TokensNone})
+			v := taskPageFor("app", task, tc.ledger, TaskTokens{State: TokensNone}, nil)
 			if v.Why != tc.why || v.Page.Word != tc.word || !reflect.DeepEqual(v.Unmet, tc.unmet) {
 				t.Errorf("why %q word %q unmet %q\nwant %q %q %q", v.Why, v.Page.Word, v.Unmet, tc.why, tc.word, tc.unmet)
 			}
@@ -215,7 +215,7 @@ func TestTaskPageFor(t *testing.T) {
 			}
 		})
 	}
-	if got := taskPageFor("app", masterplan.Task{ID: "T1.1"}, ledger.Ledger{}, TaskTokens{}); got.Page.Depends != "Depends on no other task." || got.DependsOn == nil || got.Tokens.Phases == nil || got.Tokens.Roles == nil {
+	if got := taskPageFor("app", masterplan.Task{ID: "T1.1"}, ledger.Ledger{}, TaskTokens{}, nil); got.Page.Depends != "Depends on no other task." || got.DependsOn == nil || got.Tokens.Phases == nil || got.Tokens.Roles == nil {
 		t.Errorf("a task with no dependencies: %+v", got)
 	}
 }
@@ -387,5 +387,32 @@ func TestTaskPageTokensNotLiveAndNoSeams(t *testing.T) {
 		if strings.HasSuffix(path, "T1.2") && !strings.Contains(rec.Body.String(), "without a way to read token records") {
 			t.Errorf("%s does not say the tokens cannot be shown:\n%s", path, rec.Body.String())
 		}
+	}
+}
+
+// TestTaskPageSessionLink is the Open its session link. Load-bearing rows:
+// "named but gone" (a ledger session discovery no longer lists must not
+// become a link to a 404) and "no session" (a pending task has nothing to
+// open).
+func TestTaskPageSessionLink(t *testing.T) {
+	running := ledger.Ledger{Tasks: []ledger.Entry{{ID: "T1.2", Status: ledger.Running, Session: "t1-2"}}}
+	tests := []struct {
+		name     string
+		ledger   ledger.Ledger
+		sessions []string
+		want     string
+	}{
+		{name: "found", ledger: running, sessions: []string{"side", "t1-2"}, want: "/p/app/sessions/t1-2"},
+		{name: "named but gone", ledger: running, sessions: []string{"side"}, want: ""},
+		{name: "named with no sessions at all", ledger: running, want: ""},
+		{name: "no session", ledger: ledger.Ledger{}, sessions: []string{"t1-2"}, want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := taskPageFor("app", masterplan.Task{ID: "T1.2"}, tc.ledger, TaskTokens{}, tc.sessions)
+			if v.Page.SessionHref != tc.want {
+				t.Errorf("href = %q, want %q", v.Page.SessionHref, tc.want)
+			}
+		})
 	}
 }

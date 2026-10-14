@@ -201,3 +201,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Live indicator**: the bar's word for the page's stream: Live, Working (the stream is up and a part says afk is busy on a task) or "Can't reach afk, retrying".
 - **Inbox screen**: the web page's own page for a project's inbox, `GET /p/<project>/inbox`, listing open items blocking first; an answer returns to it.
 - **Confirm field**: the `confirm=yes` form field (or `{"confirm": true}` in JSON) a pause or resume POST must carry; without it the POST changes nothing.
+- **Sessions screen**: the web page's list of a project's sessions, `GET /p/<project>/sessions`, with each session's phase, progress, review verdict and whether it waits for you, and a badge for the rows that are not ordinary sessions.
+- **Session screen**: the web page's read-only overview of one session, `GET /p/<project>/sessions/<name>`; its terminal is opened from `afk dash` or `afk attach`.

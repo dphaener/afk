@@ -522,36 +522,118 @@ func TestServeDaemonWeb(t *testing.T) {
 //
 // Load-bearing: the one-off row. A session made with `afk new --scratch` has
 // no status.json, so discovery reports an empty phase that is not stale; it
-// is passed on as stale so the page says "unknown" and not a blank.
+// is passed on as stale so the page says "unknown" and not a blank. Also the
+// worktree-problem row (Problem is only set for those two kinds, so a stale
+// status row's Reason would not leak in), the planning row (told by name) and
+// the verdict rows (the checks keep the file's order).
 func TestWebSessionViews(t *testing.T) {
+	when := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name string
 		in   discover.SessionState
 		want web.SessionView
 	}{
 		{name: "a working session",
-			in:   discover.SessionState{Name: "t1-1", Phase: state.PhaseExecuting, HostRunning: true},
-			want: web.SessionView{Name: "t1-1", Phase: "executing", HostRunning: true}},
+			in: discover.SessionState{Name: "t1-1", Phase: state.PhaseExecuting, HostRunning: true,
+				Label: "first", Branch: "t1-1", BaseBranch: "main", SessionID: "abc", Autonomous: true,
+				LoopCount: 3, UpdatedAt: when.Format(time.RFC3339), WorktreePath: "/wt/t1-1",
+				Progress: discover.Progress{Total: 5, Complete: 2, Failed: 1}},
+			want: web.SessionView{Name: "t1-1", Phase: "executing", HostRunning: true,
+				Label: "first", Branch: "t1-1", BaseBranch: "main", SessionID: "abc", Autonomous: true,
+				LoopCount: 3, UpdatedAt: when, WorktreePath: "/wt/t1-1",
+				PlanTotal: 5, PlanDone: 2, PlanFailed: 1}},
 		{name: "waiting at its terminal",
 			in:   discover.SessionState{Name: "t1-1", Phase: state.PhaseReviewing, AwaitingInput: true, HostRunning: true},
 			want: web.SessionView{Name: "t1-1", Phase: "reviewing", AwaitingInput: true, HostRunning: true}},
 		{name: "a status file that cannot be read",
-			in:   discover.SessionState{Name: "t1-1", StatusStale: true, Kind: session.KindStaleStatus},
-			want: web.SessionView{Name: "t1-1", Stale: true}},
+			in: discover.SessionState{Name: "t1-1", StatusStale: true, Kind: session.KindStaleStatus,
+				StaleReason: state.StaleReason("unparseable"), Reason: "not a problem row"},
+			want: web.SessionView{Name: "t1-1", Stale: true, StatusStale: true, StaleReason: "unparseable"}},
 		{name: "a one-off session has no phase",
 			in:   discover.SessionState{Name: "scratch", Scratch: true, HostRunning: true},
-			want: web.SessionView{Name: "scratch", Stale: true, HostRunning: true}},
+			want: web.SessionView{Name: "scratch", Stale: true, Scratch: true, HostRunning: true}},
+		{name: "the planning session",
+			in:   discover.SessionState{Name: session.PlanSessionName, Scratch: true, HostRunning: true},
+			want: web.SessionView{Name: session.PlanSessionName, Stale: true, Scratch: true, Planning: true, HostRunning: true}},
+		{name: "a dead host that left its mark",
+			in:   discover.SessionState{Name: "t1-1", Phase: state.PhaseExecuting, WedgedSince: "2026-10-14T12:00:00Z"},
+			want: web.SessionView{Name: "t1-1", Phase: "executing", Wedged: true}},
+		{name: "a worktree with no session",
+			in:   discover.SessionState{Name: "wt", Kind: session.KindWorktreeNoSession, Reason: "no session in it"},
+			want: web.SessionView{Name: "wt", Problem: "no session in it"}},
+		{name: "a missing worktree",
+			in:   discover.SessionState{Name: "gone", Kind: session.KindWorktreeMissing, Reason: "folder is gone"},
+			want: web.SessionView{Name: "gone", Problem: "folder is gone"}},
+		{name: "an approving verdict",
+			in: discover.SessionState{Name: "t1-1", Phase: state.PhaseReviewing, Verdict: &state.ReviewVerdict{
+				Verdict: state.VerdictApprove, Compliance: state.CheckPass, Quality: state.CheckPass, QA: state.CheckPass}},
+			want: web.SessionView{Name: "t1-1", Phase: "reviewing", Verdict: "APPROVE", VerdictChecks: []web.SessionCheck{
+				{Name: "Compliance", Result: "PASS"}, {Name: "Quality", Result: "PASS"}, {Name: "QA", Result: "PASS"}}}},
+		{name: "a rejecting verdict",
+			in: discover.SessionState{Name: "t1-1", Phase: state.PhaseReviewing, Verdict: &state.ReviewVerdict{
+				Verdict: state.VerdictReject, Compliance: state.CheckPass, Quality: state.CheckFail, QA: state.CheckPass}},
+			want: web.SessionView{Name: "t1-1", Phase: "reviewing", Verdict: "REJECT", VerdictChecks: []web.SessionCheck{
+				{Name: "Compliance", Result: "PASS"}, {Name: "Quality", Result: "FAIL"}, {Name: "QA", Result: "PASS"}}}},
+		{name: "a verdict file that cannot be read",
+			in:   discover.SessionState{Name: "t1-1", Phase: state.PhaseReviewing, VerdictError: "bad verdict"},
+			want: web.SessionView{Name: "t1-1", Phase: "reviewing", VerdictError: "bad verdict"}},
+		{name: "a work plan that cannot be read",
+			in:   discover.SessionState{Name: "t1-1", Phase: state.PhaseExecuting, PlanError: "bad plan"},
+			want: web.SessionView{Name: "t1-1", Phase: "executing", PlanError: "bad plan"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := webSessionViews([]discover.SessionState{tt.in})
-			if len(got) != 1 || got[0] != tt.want {
+			if len(got) != 1 || !reflect.DeepEqual(got[0], tt.want) {
 				t.Errorf("views = %+v, want exactly %+v", got, tt.want)
 			}
 		})
 	}
 	if got := webSessionViews(nil); len(got) != 0 {
 		t.Errorf("no sessions gave %+v, want none", got)
+	}
+}
+
+// TestWebSessionStartedAt pins the host.json step.
+//
+// Load-bearing: the missing and damaged rows. A session whose host never
+// wrote host.json, or wrote a torn or malformed one, must give a zero
+// StartedAt and nothing else: no error, no panic, no dropped row. The first
+// row also proves the file is read from the row's own worktree.
+func TestWebSessionStartedAt(t *testing.T) {
+	root := t.TempDir()
+	started := time.Date(2026, 10, 14, 9, 30, 0, 0, time.UTC)
+	if err := host.WriteMeta(root, "has", host.Meta{PID: 1, StartedAt: started.Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	damaged := filepath.Join(root, ".afk", "damaged")
+	if err := os.MkdirAll(damaged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(damaged, "host.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.WriteMeta(root, "badtime", host.Meta{PID: 1, StartedAt: "yesterday"}); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		view web.SessionView
+		want time.Time
+	}{
+		{name: "host.json with started_at", view: web.SessionView{Name: "has", WorktreePath: root}, want: started},
+		{name: "StartedAt missing host.json", view: web.SessionView{Name: "missing", WorktreePath: root}},
+		{name: "StartedAt damaged host.json", view: web.SessionView{Name: "damaged", WorktreePath: root}},
+		{name: "StartedAt unparseable time", view: web.SessionView{Name: "badtime", WorktreePath: root}},
+		{name: "StartedAt no worktree path", view: web.SessionView{Name: "has"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := withStartedAt([]web.SessionView{tt.view}, host.ReadMeta)
+			if len(got) != 1 || !got[0].StartedAt.Equal(tt.want) {
+				t.Errorf("StartedAt = %v, want %v", got[0].StartedAt, tt.want)
+			}
+		})
 	}
 }
 

@@ -1,0 +1,26 @@
+{{define "title"}}{{.Name}}: {{.Project}}{{end}}
+{{define "content"}}
+<div class="session">
+<div class="session__head">
+  <h1 class="tid session__id">{{.Name}}</h1>
+  <span class="session__badges" id="session-badges" data-live="sessions" data-project="{{.Project}}">{{range .Page.Badges}}<span class="badge {{.Class}}">{{.Word}}</span> {{end}}</span>
+</div>
+<section class="session__state" aria-live="polite" aria-label="State of {{.Name}}">
+<div class="card" id="session-state" data-live="sessions" data-project="{{.Project}}">
+  <h2>{{.Page.Title}}</h2>
+  {{range .Page.Lines}}<p class="meta">{{.}}</p>
+  {{end}}
+  <dl class="kv">
+  {{range .Page.KV}}  <dt>{{.Label}}</dt><dd>{{if .Code}}<code class="path">{{.Value}}</code>{{else}}{{.Value}}{{end}}</dd>
+  {{end}}</dl>
+  <div class="section-head"><h3 class="section-head__title">Summary</h3></div>
+  <div class="prose">
+  {{range .Page.Summary}}<p>{{.}}</p>
+  {{end}}</div>
+</div>
+</section>
+<div class="notice notice--info">
+  <div class="notice__body">This page shows the session but cannot open its terminal. Open it from <code>afk dash</code> or with <code>afk attach {{.Name}}</code>.{{if .Planning}} Its chat view on this page comes with a later update.{{end}}</div>
+</div>
+</div>
+{{end}}

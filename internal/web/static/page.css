@@ -163,6 +163,17 @@ dialog.confirm-sheet::backdrop { background: var(--scrim); }
 .task__id { font-size: var(--text-2xl); }
 .task__state .card h2 { overflow-wrap: anywhere; }
 
+/* ───────── sessions (sessions.html, session.html) ───────── */
+.sessions, .session { display: flex; flex-direction: column; gap: var(--space-5); }
+/* A row's badges and its progress bar share one line and wrap together. */
+.sessions .row__sub { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.sessions .row__meta { display: block; }
+.session__head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.session__id { font-size: var(--text-2xl); }
+.session__badges { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.session__state .card { display: flex; flex-direction: column; gap: var(--space-3); }
+.session__state .card h2 { overflow-wrap: anywhere; }
+
 /* The Open / Done / All filter is three links, not radios, so it works
    without JavaScript and a live swap of the list never resets it. These
    draw a link as afk.css draws .segmented label, and the current one

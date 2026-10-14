@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,6 +114,10 @@ type taskPage struct {
 	// Sheet is the Set status… sheet, or nil when this daemon was given no
 	// way to set a status (Deps.SetTaskStatus), and then no action is drawn.
 	Sheet *statusSheet
+	// SessionName and SessionHref are the Open its session link: set only
+	// when the ledger entry names a session and discovery lists a session
+	// of that name, so the link never leads to a 404.
+	SessionName, SessionHref string
 }
 
 // tokensCard is the Tokens card laid out.
@@ -312,8 +317,9 @@ func tasksPageFor(project string, planData []byte, tasks []masterplan.Task, l le
 }
 
 // taskPageFor lays out one task's screen from the task, its ledger entry and
-// its token record. Pure.
-func taskPageFor(project string, t masterplan.Task, l ledger.Ledger, tok TaskTokens) TaskView {
+// its token record. Pure. sessions are the names of the sessions discovery
+// found, which decide whether the screen links the task's session.
+func taskPageFor(project string, t masterplan.Task, l ledger.Ledger, tok TaskTokens, sessions []string) TaskView {
 	st := l.Status(t.ID)
 	e, _ := l.Get(t.ID)
 	v := TaskView{
@@ -329,6 +335,9 @@ func taskPageFor(project string, t masterplan.Task, l ledger.Ledger, tok TaskTok
 	}
 	v.Why = whyLine(t.ID, st, e, v.Unmet)
 	v.Page = taskPage{Word: statusWord(st, e), Badge: statusBadge(st), Depends: dependsLine(t.DependsOn), Tokens: tokensCardFor(v.Tokens)}
+	if e.Session != "" && slices.Contains(sessions, e.Session) {
+		v.Page.SessionName, v.Page.SessionHref = e.Session, sessionBase(project, e.Session)
+	}
 	return v
 }
 
@@ -576,7 +585,7 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	if s.d.TaskTokens != nil {
 		tok = s.d.TaskTokens(p.Root, t.ID)
 	}
-	v := taskPageFor(p.Name, t, l, tok)
+	v := taskPageFor(p.Name, t, l, tok, s.sessionNames(p))
 	if s.d.SetTaskStatus != nil && !isAPI(r.URL.Path) {
 		sh := statusSheetFor(p.Name, t.ID, v.Status)
 		v.Page.Sheet = &sh
@@ -862,7 +871,7 @@ func (s *server) setTaskStatus(w http.ResponseWriter, r *http.Request) {
 			if s.d.TaskTokens != nil {
 				tok = s.d.TaskTokens(p.Root, t.ID)
 			}
-			s.respond(w, r, http.StatusOK, "task", TaskStatusView{TaskView: taskPageFor(p.Name, t, l, tok), Result: res})
+			s.respond(w, r, http.StatusOK, "task", TaskStatusView{TaskView: taskPageFor(p.Name, t, l, tok, s.sessionNames(p)), Result: res})
 			return
 		}
 	}
@@ -879,4 +888,14 @@ func taskToast(v TaskView, code string) string {
 	}
 	text := toastTexts[code]
 	return strings.NewReplacer("{task}", v.ID, "{status}", v.Status).Replace(text)
+}
+
+// sessionNames are the names of the project's sessions as discovery lists
+// them now, for the task screen's Open its session link.
+func (s *server) sessionNames(p Project) []string {
+	var names []string
+	for _, sv := range s.d.Sessions(p.Root) {
+		names = append(names, sv.Name)
+	}
+	return names
 }

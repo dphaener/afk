@@ -69,16 +69,78 @@ type Config struct {
 	PublicURL string
 }
 
-// SessionView is what the summary needs to know about one session. It is a
-// plain copy so this package does not depend on how sessions are discovered.
+// SessionView is what the page needs to know about one session: the
+// summary's few facts and the Sessions screens' overview. It is a plain copy
+// so this package does not depend on how sessions are discovered; nothing in
+// it is a type of internal/discover, internal/state or internal/host, and the
+// caller fills it from discovery's row.
+//
+// The whole list is also the `sessions` live part's fingerprint (live.go
+// hashes Deps.Sessions' answer), so every field here is one that changes only
+// when something the owner would want to see changes. That is why host.json's
+// last_output_at is deliberately absent, and must stay absent: the host
+// rewrites it as the agent prints, so a field holding it would differ on
+// nearly every two-second tick and every open page would refetch itself for
+// nothing. Wedged is the bounded form of the same fact (set once, cleared
+// once).
 type SessionView struct {
 	Name string
 	// Phase is the phase from the session's status.json. It means nothing
 	// when Stale is true.
-	Phase         string
+	Phase string
+	// Stale is true when Phase means nothing: status.json is unreadable, or
+	// the session is a one-off that has none (StatusStale or Scratch). The
+	// project page relies on that folding; the Sessions screens use the two
+	// fields below to tell the cases apart.
 	Stale         bool
 	AwaitingInput bool
-	HostRunning   bool
+	// HostRunning is advisory: discovery's signal-0 check, which a recycled
+	// process id can fool.
+	HostRunning bool
+
+	// Label is the session's display label, or "" when none is set.
+	Label string
+	// Branch and BaseBranch are status.json's branch and base_branch.
+	Branch, BaseBranch string
+	// SessionID is status.json's session_id, or "".
+	SessionID  string
+	Autonomous bool
+	// StatusStale is true when status.json is there but could not be read
+	// as a valid file, and StaleReason says why. A one-off is not stale.
+	StatusStale bool
+	StaleReason string
+	// Scratch marks a one-off session: a host and no status.json.
+	Scratch bool
+	// Planning marks the planning session of the project's master plan.
+	Planning bool
+	// Problem is a worktree problem row's reason in plain words, and empty
+	// for every row that is a session.
+	Problem   string
+	LoopCount int
+	// UpdatedAt is status.json's updated_at; zero when unknown.
+	UpdatedAt time.Time
+	// StartedAt is host.json's started_at; zero when unknown.
+	StartedAt    time.Time
+	WorktreePath string
+	// PlanTotal, PlanDone and PlanFailed count the session's work-plan
+	// tasks; PlanError is why the work plan could not be read, or "".
+	PlanTotal, PlanDone, PlanFailed int
+	PlanError                       string
+	// Verdict is "APPROVE", "REJECT" or "" when the session has not been
+	// reviewed. VerdictChecks are the verdict file's checks in its order;
+	// VerdictError is why the verdict file could not be read, or "".
+	Verdict       string
+	VerdictChecks []SessionCheck
+	VerdictError  string
+	// Wedged is true while the host has marked the agent as gone quiet.
+	Wedged bool
+}
+
+// SessionCheck is one check of a session's review verdict, as the verdict
+// file names it, with its result ("PASS" or "FAIL").
+type SessionCheck struct {
+	Name   string `json:"name"`
+	Result string `json:"result"`
 }
 
 // Deps is everything the handlers reach outside the package for, as
@@ -337,6 +399,10 @@ var routes = []route{
 	// Setting a task's status: what `afk ledger set` does, behind the
 	// confirm, through Deps.SetTaskStatus and nothing else.
 	{http.MethodPost, "/p/{project}/tasks/{id}/status", (*server).setTaskStatus},
+	// The sessions list and one session's overview. Read only: the page
+	// cannot open a session's terminal, and acts on none (see sessions.go).
+	{http.MethodGet, "/p/{project}/sessions", (*server).sessionsList},
+	{http.MethodGet, "/p/{project}/sessions/{name}", (*server).session},
 	{http.MethodPost, "/p/{project}/pause", (*server).pause},
 	{http.MethodPost, "/p/{project}/resume", (*server).resume},
 }

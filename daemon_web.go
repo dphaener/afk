@@ -83,7 +83,7 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 			if err != nil {
 				return nil
 			}
-			return webSessionViews(found)
+			return webSessionViewsWithStart(found)
 		},
 		Usage:        func() (usagestate.File, bool) { return usagestate.Read(st) },
 		RefreshUsage: webRefreshUsage(st),
@@ -130,7 +130,7 @@ func webProjectRows(projects func() []daemon.Project, stateDir string, now func(
 			if err != nil {
 				return nil
 			}
-			return webSessionViews(found)
+			return webSessionViewsWithStart(found)
 		},
 		now: now,
 	}
@@ -390,16 +390,82 @@ func webReadPlan(root string) (string, []byte, error) {
 // A one-off session (`afk new --scratch`) has no status.json, so its phase is
 // empty without being stale. It is passed on as stale: the page shows a stale
 // session's phase as "unknown", where an empty phase would show as a blank.
+// Stale keeps that folding for the project page; StatusStale and Scratch carry
+// the two cases apart for the Sessions screens.
+//
+// StartedAt is left zero here: it comes from host.json, a file read, which
+// webSessionViewsWithStart adds so this function stays pure.
 func webSessionViews(found []discover.SessionState) []web.SessionView {
 	views := make([]web.SessionView, 0, len(found))
 	for _, s := range found {
-		views = append(views, web.SessionView{
+		v := web.SessionView{
 			Name:          s.Name,
 			Phase:         string(s.Phase),
 			Stale:         s.StatusStale || s.Scratch,
 			AwaitingInput: s.AwaitingInput,
 			HostRunning:   s.HostRunning,
-		})
+			Label:         s.Label,
+			Branch:        s.Branch,
+			BaseBranch:    s.BaseBranch,
+			SessionID:     s.SessionID,
+			Autonomous:    s.Autonomous,
+			StatusStale:   s.StatusStale,
+			StaleReason:   string(s.StaleReason),
+			Scratch:       s.Scratch,
+			Planning:      s.Name == session.PlanSessionName,
+			LoopCount:     s.LoopCount,
+			WorktreePath:  s.WorktreePath,
+			PlanTotal:     s.Progress.Total,
+			PlanDone:      s.Progress.Complete,
+			PlanFailed:    s.Progress.Failed,
+			PlanError:     s.PlanError,
+			VerdictError:  s.VerdictError,
+			Wedged:        s.WedgedSince != "",
+		}
+		if s.Kind == session.KindWorktreeNoSession || s.Kind == session.KindWorktreeMissing {
+			v.Problem = s.Reason
+		}
+		if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err == nil {
+			v.UpdatedAt = t
+		}
+		if rv := s.Verdict; rv != nil {
+			v.Verdict = string(rv.Verdict)
+			v.VerdictChecks = []web.SessionCheck{
+				{Name: "Compliance", Result: string(rv.Compliance)},
+				{Name: "Quality", Result: string(rv.Quality)},
+				{Name: "QA", Result: string(rv.QA)},
+			}
+		}
+		views = append(views, v)
+	}
+	return views
+}
+
+// webSessionViewsWithStart is webSessionViews plus each row's StartedAt.
+// Both the web page's Sessions seam and the dashboard's all-projects seam use
+// it, so the two see the same facts.
+func webSessionViewsWithStart(found []discover.SessionState) []web.SessionView {
+	return withStartedAt(webSessionViews(found), host.ReadMeta)
+}
+
+// withStartedAt sets each view's StartedAt from its host.json. The file lives
+// at <WorktreePath>/.afk/<name>/host.json: discovery reads it from the
+// session's own worktree (applyHostMeta), not the project's main checkout, so
+// this does the same. It is a plain file read and never dials the host. A
+// missing, damaged or unparseable file leaves StartedAt zero ("unknown"), as
+// it does for a host that was never started; none of those is an error.
+func withStartedAt(views []web.SessionView, read func(root, name string) (host.Meta, error)) []web.SessionView {
+	for i := range views {
+		if views[i].WorktreePath == "" {
+			continue
+		}
+		m, err := read(views[i].WorktreePath, views[i].Name)
+		if err != nil {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, m.StartedAt); err == nil {
+			views[i].StartedAt = t
+		}
 	}
 	return views
 }

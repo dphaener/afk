@@ -67,7 +67,7 @@ func realDashAllProjectsParts() dashAllProjectsParts {
 			if err != nil {
 				return nil
 			}
-			return webSessionViews(found)
+			return webSessionViewsWithStart(found)
 		},
 		now: time.Now,
 	}
