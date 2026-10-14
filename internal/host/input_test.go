@@ -165,3 +165,119 @@ func TestSendInputErrors(t *testing.T) {
 		})
 	}
 }
+
+// collectFrames accepts one connection and sends every frame it reads, as
+// "type payload", until the peer closes.
+func collectFrames(ln net.Listener) chan string {
+	frames := make(chan string, 16)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			close(frames)
+			return
+		}
+		defer conn.Close()
+		for {
+			typ, p, err := ReadFrame(conn)
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- typ.String() + " " + string(p)
+		}
+	}()
+	return frames
+}
+
+// TestSendKeysFrames is load-bearing for the shape of the send: exactly the
+// Data chunks in order, then Detach, and nothing else. An Exit or Restart
+// would end the planning session, and a missing Detach would hold the host's
+// one client slot.
+func TestSendKeysFrames(t *testing.T) {
+	fastInput(t)
+	cases := []struct {
+		name   string
+		chunks [][]byte
+		want   []string
+	}{
+		{"one chunk", [][]byte{[]byte("\x1b[B")}, []string{"Data \x1b[B", "Detach "}},
+		{"three chunks", [][]byte{[]byte("\x1b[200~hi\x1b[201~"), []byte("\x1b[B"), []byte("\r")},
+			[]string{"Data \x1b[200~hi\x1b[201~", "Data \x1b[B", "Data \r", "Detach "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			worktree, ln := listenForInput(t, "k1")
+			frames := collectFrames(ln)
+			if err := SendKeys(worktree, "k1", tc.chunks, time.Second); err != nil {
+				t.Fatalf("SendKeys: %v", err)
+			}
+			var got []string
+			for f := range frames {
+				got = append(got, f)
+			}
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("frames = %q, want %q", got, tc.want)
+			}
+			for _, f := range got {
+				if strings.HasPrefix(f, "Exit") || strings.HasPrefix(f, "Restart") || strings.HasPrefix(f, "Resize") {
+					t.Errorf("unexpected frame %q", f)
+				}
+			}
+		})
+	}
+}
+
+// TestSendKeysErrors is load-bearing for "nothing hangs and nothing is dialled
+// for a bad list": the refusal rows run against a missing host with an hour's
+// wait, so a dial would show as "could not reach" or a hang.
+func TestSendKeysErrors(t *testing.T) {
+	fastInput(t)
+
+	refused := map[string][][]byte{
+		"empty list":     nil,
+		"empty chunk":    {[]byte("a"), {}},
+		"oversize chunk": {make([]byte, MaxFramePayload+1)},
+	}
+	for name, chunks := range refused {
+		t.Run("refuses "+name, func(t *testing.T) {
+			err := SendKeys(t.TempDir(), "x", chunks, time.Hour)
+			if err == nil || strings.Contains(err.Error(), "could not reach") {
+				t.Fatalf("err = %v, want a refusal before dialling", err)
+			}
+		})
+	}
+
+	t.Run("unreachable socket", func(t *testing.T) {
+		start := time.Now()
+		err := SendKeys(t.TempDir(), "ghost", [][]byte{[]byte("a")}, 10*time.Millisecond)
+		if err == nil || !strings.Contains(err.Error(), "ghost") {
+			t.Fatalf("err = %v, want one naming the session", err)
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("took %s; the wait did not bound it", elapsed)
+		}
+	})
+
+	t.Run("listener that never reads", func(t *testing.T) {
+		inputWriteTimeout = 200 * time.Millisecond
+		worktree, ln := listenForInput(t, "stuck")
+		done := make(chan struct{})
+		go func() {
+			conn, err := ln.Accept()
+			if err == nil {
+				<-done
+				conn.Close()
+			}
+		}()
+		defer close(done)
+		big := []byte(strings.Repeat("a", MaxFramePayload))
+		start := time.Now()
+		err := SendKeys(worktree, "stuck", [][]byte{big, big}, time.Second)
+		if err == nil || !strings.Contains(err.Error(), "stuck") {
+			t.Fatalf("err = %v, want a write error naming the session", err)
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("took %s; the write deadline did not bound it", elapsed)
+		}
+	})
+}

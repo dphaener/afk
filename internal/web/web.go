@@ -117,6 +117,14 @@ type Deps struct {
 	// a fake. Nil means this page cannot read planning sessions, and the
 	// address says so in the chat's own words.
 	PlanChat func(project, root string) planchat.Chat
+	// PlanReply sends the owner's reply to the open planning session of the
+	// project at root. A nil error means the reply was sent; a
+	// *planchat.Refusal means nothing was sent, because the reply cannot be
+	// given to the session as it is; any other error means the planning
+	// host could not be reached. The refusal decision is made behind this
+	// function (by planchat), never in the web package. Nil means this page
+	// cannot send replies.
+	PlanReply func(project, root string, r planchat.Reply) error
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -241,6 +249,9 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 	// must stay not found, so it is not in routes (that table gives every
 	// entry both forms).
 	mux.HandleFunc("GET /api/p/{project}/plan/chat", s.planChat)
+	// The reply goes in the same place and for the same reason: only under
+	// /api, so /p/{project}/plan/chat stays not found until T8.12.
+	mux.HandleFunc("POST /api/p/{project}/plan/chat", s.planReply)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong

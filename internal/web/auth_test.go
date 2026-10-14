@@ -301,6 +301,34 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 	}
 }
 
+// TestAuthPlanReplyRouteNeedsTheToken covers the one POST route that is not in
+// the route table (it has no page twin), with the same refusals. Load-bearing:
+// the fake PlanReply must not run, or a stranger could type into the planning
+// session.
+func TestAuthPlanReplyRouteNeedsTheToken(t *testing.T) {
+	for name, a := range map[string]authReq{
+		"no token":     {},
+		"wrong query":  {target: "/api/p/app/plan/chat?token=" + otherToken},
+		"wrong cookie": {cookie: goodCookie(otherToken)},
+		"wrong bearer": {bearer: otherToken},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			a.method = http.MethodPost
+			if a.target == "" {
+				a.target = "/api/p/app/plan/chat"
+			}
+			rec := a.send(rg.h)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401\n%s", rec.Code, rec.Body.String())
+			}
+			if len(rg.replies) != 0 {
+				t.Errorf("PlanReply ran without the token")
+			}
+		})
+	}
+}
+
 // TestAuthUnauthorizedOutsideAPI: away from /api the refusal is a small page a
 // person can act on. It must hold for addresses that do not exist too, so a
 // stranger cannot map the site by telling 401 from 404.

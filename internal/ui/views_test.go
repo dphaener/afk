@@ -1432,7 +1432,7 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 	}{
 		{"idle running row", func(m *Model) {}, true},
 		{"lost pane", func(m *Model) {
-			m.paneLost = lostPane{name: "a", message: "another client took over a"}
+			m.paneLost = lostPane{name: "a", message: "a was taken over by another window or the web page; press enter to reopen it"}
 		}, true},
 		{"dial out", func(m *Model) {
 			m.attachInFlight = inFlightOpen{name: "a"}
@@ -1441,7 +1441,7 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 			m.restartInFlight = inFlightRestart{name: "a", gen: m.projectGen}
 		}, false},
 		{"lost, reconnect dialing", func(m *Model) {
-			m.paneLost = lostPane{name: "a", message: "another client took over a"}
+			m.paneLost = lostPane{name: "a", message: "a was taken over by another window or the web page; press enter to reopen it"}
 			m.attachInFlight = inFlightOpen{name: "a"}
 		}, false},
 	}

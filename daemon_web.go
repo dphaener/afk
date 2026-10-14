@@ -90,8 +90,9 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 			_, err := resumeProject(root, now())
 			return webPauseError(root, err)
 		},
-		PlanChat: webPlanChat(now),
-		Now:      now,
+		PlanChat:  webPlanChat(now),
+		PlanReply: webPlanReply(now),
+		Now:       now,
 	}
 }
 
@@ -137,6 +138,87 @@ func webPlanChat(now func() time.Time) func(project, root string) planchat.Chat 
 	return func(project, root string) planchat.Chat {
 		return planchat.Read(project, root, deps)
 	}
+}
+
+// planReplyWait bounds how long one reply may spend reaching the planning
+// host. A slow or wedged host must not stall the web request behind it; the
+// owner is told the reply was not delivered and can send it again.
+const planReplyWait = 2 * time.Second
+
+// planReplyDeps are the three things sendPlanReply needs from outside, so its
+// decisions can be tested without a host, a transcript or an agent CLI.
+type planReplyDeps struct {
+	// Chat reads the planning session's current state, the same read the
+	// page's GET uses, so a refusal here is the decision the page showed.
+	Chat func(project, root string) planchat.Chat
+	// Provider resolves the agent that runs the planning host.
+	Provider func(root string) (provider.Provider, error)
+	// Send writes the chunks to the planning host's terminal.
+	Send func(root string, chunks [][]byte) error
+}
+
+// webPlanReply is the real send behind POST /api/p/{project}/plan/chat.
+func webPlanReply(now func() time.Time) func(project, root string, r planchat.Reply) error {
+	d := planReplyDeps{
+		Chat: webPlanChat(now),
+		Provider: func(root string) (provider.Provider, error) {
+			meta, err := host.ReadMeta(root, session.PlanSessionName)
+			if err != nil {
+				return nil, err
+			}
+			// An empty name is the default provider; Lookup resolves it.
+			return provider.Lookup(meta.Provider)
+		},
+		Send: func(root string, chunks [][]byte) error {
+			return host.SendKeys(root, session.PlanSessionName, chunks, planReplyWait)
+		},
+	}
+	return func(project, root string, r planchat.Reply) error {
+		return sendPlanReply(project, root, r, d)
+	}
+}
+
+// sendPlanReply checks a reply against the planning session's state and, only
+// if it may be sent, types it into the session. A refusal comes back as a
+// *planchat.Refusal and sends nothing; any other error means the send itself
+// failed.
+//
+// The state can change between the read and the send (the agent may start a
+// new turn). That race is accepted: the agent ignores the keys or reads them
+// on its next prompt, and the next read of the page shows what happened.
+func sendPlanReply(project, root string, r planchat.Reply, d planReplyDeps) error {
+	chat := d.Chat(project, root)
+	if refusal := planchat.Check(chat, r); refusal != nil {
+		return refusal
+	}
+	var chunks [][]byte
+	if r.Text != "" {
+		keys, refusal := planchat.TextKeys(r.Text)
+		if refusal != nil {
+			return refusal
+		}
+		chunks = keys
+	} else {
+		p, err := d.Provider(root)
+		if err != nil {
+			return fmt.Errorf("could not tell which agent runs the planning session: %w", err)
+		}
+		keys, err := p.PlanChoiceKeys(chat.Questions, r.Choices)
+		switch {
+		case errors.Is(err, provider.ErrChoiceUnsupported), errors.Is(err, provider.ErrNoPlanSession):
+			return &planchat.Refusal{
+				Reason:  planchat.ReasonUnsupported,
+				Message: "afk cannot answer this kind of question from the web page for this agent. Open the planning session in afk dash and answer it there.",
+			}
+		case err != nil:
+			return fmt.Errorf("could not build the keys for your choice: %w", err)
+		}
+		chunks = keys
+	}
+	if err := d.Send(root, chunks); err != nil {
+		return fmt.Errorf("could not send your reply to the planning session: %w", err)
+	}
+	return nil
 }
 
 // webReviews turns the plans waiting for approval into the page's projects,

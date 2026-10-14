@@ -63,6 +63,8 @@ earlier forge behaviour in these areas:
   skill, so the change to what the session tells the owner at `review` (read the plan, on the web page
   when they have it, then run `afk plan approve`) is not ported. `afk plan approve` and the plan view
   are part of the binary and work for any agent.
+- the `PreToolUse` hook for questions (plugin version 5.7.4): the port has no `PreToolUse` hook (it has
+  no hooks directory), so the web page cannot answer a planning question in a session run by the port.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.
