@@ -2711,6 +2711,9 @@ thing it does not do is attach to a session.
   owner. It would take the session from the dashboard (a host serves one client), is awkward at phone
   width, and is a live keyboard into an agent with permissions bypassed. Watchers beside the typing
   client would need a change to the host.
+- **Found projects on the web page** (those the dashboard finds under its `[dash]` search folders but
+  the daemon does not build): left out of M8 by the owner (2026-10-13). The dashboard shows them
+  mainly to open their sessions' terminals, which the page cannot do; T8.16 adds a folder to the build.
 - **Daemon-side write-guard and continuation enforcement**, replacing shipit's Claude-only mods.
 - Rename `.claude/worktrees/` to a provider-neutral location.
 - Open-source release: licence, install script, Homebrew tap, docs site.
