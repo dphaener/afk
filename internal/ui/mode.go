@@ -157,6 +157,19 @@ const (
 	// keeps the leader, because pause and resume act on its selected row and
 	// they are leader actions (T7.2).
 	inputAllProjects
+	// inputProjectAddFolder and inputProjectAddName are the two steps of the
+	// all-projects screen's add form (T7.10, projectedit.go): the folder,
+	// then an optional name. Two modes rather than one with a step field so
+	// each step's enter carries its own help ("next", "add") and the dialog
+	// hint, read off the keymap, says what enter does on that step. They are
+	// the plan form's shape: a textinput, so unclaimed keys reach the field.
+	inputProjectAddFolder
+	inputProjectAddName
+	// inputConfirmProjectRemove is the y/n question the all-projects screen's
+	// remove raises (T7.10): y takes the selected project off config.toml's
+	// list. It swallows unclaimed keys, enter included, so the default is no
+	// and nothing is removed without an explicit y.
+	inputConfirmProjectRemove
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -208,6 +221,12 @@ func (m inputMode) String() string {
 		return "plan-check"
 	case inputAllProjects:
 		return "all-projects"
+	case inputProjectAddFolder:
+		return "project-add-folder"
+	case inputProjectAddName:
+		return "project-add-name"
+	case inputConfirmProjectRemove:
+		return "confirm-project-remove"
 	}
 	return "unknown"
 }
@@ -221,7 +240,7 @@ func (m inputMode) isModal() bool {
 	switch m {
 	case inputConfirmClean, inputSpawnError, inputConfirmRestart, inputEditLabel, inputPickProvider,
 		inputPlanText, inputConfirmPlanOpen, inputConfirmPlanFolder, inputConfirmGitHubRepo,
-		inputConfirmPlanApprove:
+		inputConfirmPlanApprove, inputProjectAddFolder, inputProjectAddName, inputConfirmProjectRemove:
 		return true
 	}
 	return false
@@ -451,6 +470,9 @@ var modePrecedence = []modeLayer{
 	{inputConfirmPlanFolder, func(s modeState) bool { return s.modal == inputConfirmPlanFolder }},
 	{inputConfirmGitHubRepo, func(s modeState) bool { return s.modal == inputConfirmGitHubRepo }},
 	{inputConfirmPlanApprove, func(s modeState) bool { return s.modal == inputConfirmPlanApprove }},
+	{inputProjectAddFolder, func(s modeState) bool { return s.modal == inputProjectAddFolder }},
+	{inputProjectAddName, func(s modeState) bool { return s.modal == inputProjectAddName }},
+	{inputConfirmProjectRemove, func(s modeState) bool { return s.modal == inputConfirmProjectRemove }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
@@ -578,6 +600,12 @@ const (
 	actionAllProjectsBottom
 	actionAllProjectsSwitch
 	actionAllProjectsClose
+	// actionProjectAdd and actionProjectRemove are the all-projects screen's
+	// add and remove (T7.10, ctrl+space + and ctrl+space -): add opens the
+	// two-step form, remove raises the y/n confirm for the selected row
+	// (projectedit.go). They run only while the screen is open.
+	actionProjectAdd
+	actionProjectRemove
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -718,6 +746,10 @@ func (a modeAction) String() string {
 		return "all-projects-switch"
 	case actionAllProjectsClose:
 		return "all-projects-close"
+	case actionProjectAdd:
+		return "project-add"
+	case actionProjectRemove:
+		return "project-remove"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -1111,6 +1143,21 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	confirmPlanApprove := key.NewBinding(
 		key.WithKeys("y", "Y"),
 		key.WithHelp("y", "approve"),
+	)
+	// The add form's enters and the remove confirm's y (T7.10). One enter per
+	// step, so the hint says "next" on the folder and "add" on the name; the
+	// y says "remove" because that is what it does to the list.
+	nextProjectAdd := key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "next"),
+	)
+	submitProjectAdd := key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "add"),
+	)
+	confirmProjectRemove := key.NewBinding(
+		key.WithKeys("y", "Y"),
+		key.WithHelp("y", "remove"),
 	)
 	// The provider picker's keys. up/k and down/j are declared fresh rather
 	// than sharing keys.Up/keys.Down for the reason detailFocusUp gives: those
@@ -1716,6 +1763,51 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
 			confirmPlanApprove, deny, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+
+	// The add form's two steps are the plan form's spec with their own enter
+	// (T7.10): unclaimed keys reach the textinput, so the owner can type.
+	r[inputProjectAddFolder] = modeSpec{
+		mode: inputProjectAddFolder,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: nextProjectAdd, action: actionSubmit},
+		},
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: []key.Binding{
+			nextProjectAdd, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+	r[inputProjectAddName] = modeSpec{
+		mode: inputProjectAddName,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: submitProjectAdd, action: actionSubmit},
+		},
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: []key.Binding{
+			submitProjectAdd, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+	// The remove confirm is the approve confirm's shape: a stray key must
+	// neither remove the project nor dismiss the question.
+	r[inputConfirmProjectRemove] = modeSpec{
+		mode: inputConfirmProjectRemove,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: confirmProjectRemove, action: actionConfirm},
+			{binding: deny, action: actionDeny},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			confirmProjectRemove, deny, cancelEsc, keys.Mouse, quitChord,
 		}},
 	}
 

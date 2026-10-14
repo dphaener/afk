@@ -7,6 +7,8 @@
 │ │ o  one-off session                     — Start a one-off session with n… │ │
 │ │ p  switch project                      — Switch to another project       │ │
 │ │ A  all projects                        — this dashboard was started wit… │ │
+│ │ +  add a project                       — adding a project is not availa… │ │
+│ │ -  remove the project                  — removing a project is not avai… │ │
 │ │ c  clean session                       — Clean the selected session and… │ │
 │ │ r  restart agent                       — only a stopped or stuck agent … │ │
 │ │ l  edit label                          — Give the selected session a di… │ │
@@ -17,8 +19,6 @@
 │ │ P  pause the build                     — this project has no build       │ │
 │ │ U  resume the build                    — this project has no build       │ │
 │ │ f  focus the right side                — Move the keyboard to the right… │ │
-│ │ t  agent or overview                   — focus the right side first (en… │ │
-│ │ \  back to list                        — the session list already has t… │ │
 │ ╰──────────────────── key runs · enter runs · type to filter · esc closes ─╯ │
 ╰────────────────────────────╯╰─ enter: focus view · ctrl+space c: clean · c… ─╯
 enter run · ↑/↓ move · type filter · esc close …

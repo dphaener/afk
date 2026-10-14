@@ -80,7 +80,8 @@ const (
 	// and points at the shell report that says the same things.
 	allProjectsUnwiredNotice = "This dashboard was started without the project reader, so it cannot show all projects. Run afk daemon status in a shell instead."
 	// allProjectsCloseFirst is the reason every dialog row but pause,
-	// resume, all projects, mouse and quit is dimmed over the screen. Those
+	// resume, all projects, add and remove a project (T7.10), mouse and quit
+	// is dimmed over the screen. Those
 	// rows act on the session list, the detail side or the active project,
 	// none of which is on screen while it is open.
 	allProjectsCloseFirst = "Close the all-projects screen first (esc)."
@@ -172,6 +173,16 @@ func (m Model) applyAllProjectsLoaded(msg allProjectsLoadedMsg) Model {
 	if i := slices.IndexFunc(rows, func(r projectrows.Row) bool { return r.Root == keep }); keep != "" && i >= 0 {
 		m.allProjectsCursor = i
 	}
+	// A project just added from the screen takes the cursor once its row is
+	// read (projectedit.go). It waits for a read that has the row rather than
+	// the first read after the add: a tick's read already out when the add
+	// wrote the file can land first, without it.
+	if follow := m.allProjectsFollow; follow != "" {
+		if i := slices.IndexFunc(rows, func(r projectrows.Row) bool { return r.Root == follow }); i >= 0 {
+			m.allProjectsCursor = i
+			m.allProjectsFollow = ""
+		}
+	}
 	m.allProjectsCursor = clampInt(m.allProjectsCursor, 0, max(len(rows)-1, 0))
 	return m
 }
@@ -216,6 +227,7 @@ func (m Model) toggleAllProjects() (tea.Model, tea.Cmd) {
 	m.allProjectsKnown = false
 	m.allProjectsErr = ""
 	m.allProjectsCursor = 0
+	m.allProjectsFollow = ""
 	m.allProjectsRefreshing = new(atomic.Bool)
 	return m, m.allProjectsCmd()
 }

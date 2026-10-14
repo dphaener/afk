@@ -634,8 +634,13 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// only after the owner's yes in the confirm, inside a command.
 		ApprovePlan: dashApprovePlan,
 		AnswerInbox: dashAnswerInbox,
-		PauseBuild:  dashPauseBuild,
-		ResumeBuild: dashResumeBuild,
+		// AddProject and RemoveProject edit config.toml through the same entry
+		// points as `afk project`; without them the + and - rows say the
+		// dashboard was started without them.
+		AddProject:    dashAddProject,
+		RemoveProject: dashRemoveProject,
+		PauseBuild:    dashPauseBuild,
+		ResumeBuild:   dashResumeBuild,
 		// LoadListed has no default in internal/ui either (it reads the
 		// machine's config.toml), so without this line the switcher would
 		// silently never show the projects `afk project add` listed. The read

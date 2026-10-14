@@ -224,6 +224,10 @@ func TestLoadDashAllProjects(t *testing.T) {
 				if len(rows) != 2 || rows[0].Name != "listed" || rows[1].Root != b.active || rows[1].Order <= rows[0].Order {
 					t.Errorf("rows = %+v, want the listed project then the active one with a larger order", rows)
 				}
+				// Listed gates the remove action: only a config.toml entry can be removed.
+				if !rows[0].Listed || rows[1].Listed {
+					t.Errorf("Listed = %v, %v, want true for the config entry and false for the start-up project", rows[0].Listed, rows[1].Listed)
+				}
 			},
 		},
 		{

@@ -84,16 +84,43 @@ func TestBuild(t *testing.T) {
 	}
 }
 
-// TestBuildCopiesFields: the screen reads progress, counts and the plan flag
-// from the row alone, so Build must carry them through whatever the state.
+// TestBuildCopiesFields: the screen reads progress, counts, the plan flag and
+// whether the project is listed from the row alone, so Build must carry them
+// through whatever the state. Load-bearing rows: listed_running (every field
+// at once) and unlisted_gone, because the remove action (T7.10) is dimmed on
+// an unlisted row whatever state hides the rest, and offered on a listed gone
+// folder, which is the row most worth removing.
 func TestBuildCopiesFields(t *testing.T) {
-	r := Build(Input{Name: "n", Root: "/r", Order: 7, HasPlan: true, Done: 1, Total: 4,
-		Task: "T1", Title: "t", Phase: "ph", Open: 3, Blocking: 2, PlanWaiting: true})
-	want := Row{Name: "n", Root: "/r", State: StateRunning, Label: "running", Detail: "T1 t: ph",
-		Task: "T1", Title: "t", Phase: "ph", Done: 1, Total: 4, Open: 3, Blocking: 2,
-		PlanWaiting: true, NeedsOwner: true, Order: 7}
-	if !reflect.DeepEqual(r, want) {
-		t.Errorf("row = %+v, want %+v", r, want)
+	tests := []struct {
+		name string
+		in   Input
+		want Row
+	}{
+		{"listed_running",
+			Input{Name: "n", Root: "/r", Listed: true, Order: 7, HasPlan: true, Done: 1, Total: 4,
+				Task: "T1", Title: "t", Phase: "ph", Open: 3, Blocking: 2, PlanWaiting: true},
+			Row{Name: "n", Root: "/r", Listed: true, State: StateRunning, Label: "running", Detail: "T1 t: ph",
+				Task: "T1", Title: "t", Phase: "ph", Done: 1, Total: 4, Open: 3, Blocking: 2,
+				PlanWaiting: true, NeedsOwner: true, Order: 7}},
+		{"unlisted_gone",
+			Input{Name: "n", Root: "/r", Gone: true, Order: 9},
+			Row{Name: "n", Root: "/r", State: StateGone, Label: "gone",
+				Detail: "The project folder does not exist. Check its path in config.toml.", NeedsOwner: true, Order: 9}},
+		{"listed_gone",
+			Input{Name: "n", Root: "/r", Listed: true, Gone: true},
+			Row{Name: "n", Root: "/r", Listed: true, State: StateGone, Label: "gone",
+				Detail: "The project folder does not exist. Check its path in config.toml.", NeedsOwner: true}},
+		{"unlisted_no_plan",
+			Input{Name: "n", Root: "/r"},
+			Row{Name: "n", Root: "/r", State: StateNoPlan, Label: "no plan",
+				Detail: "This project has no master plan to build."}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if r := Build(tt.in); !reflect.DeepEqual(r, tt.want) {
+				t.Errorf("row = %+v, want %+v", r, tt.want)
+			}
+		})
 	}
 }
 

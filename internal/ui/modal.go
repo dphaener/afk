@@ -133,6 +133,10 @@ func (m Model) activeDialog() (dialog, bool) {
 		return m.githubRepoDialog(), true
 	case inputConfirmPlanApprove:
 		return m.planApproveDialog(), true
+	case inputProjectAddFolder, inputProjectAddName:
+		return m.projectAddDialog(), true
+	case inputConfirmProjectRemove:
+		return m.projectRemoveDialog(), true
 	}
 	return dialog{}, false
 }

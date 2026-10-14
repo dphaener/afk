@@ -588,7 +588,25 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 		m.deps.LoadAllProjects = func() AllProjects { return AllProjects{} }
 		return m
 	}
+	// screen is the all-projects screen open on the fixture's rows, the
+	// cursor on alpha (listed), with the add and remove seams wired.
+	screen := func(t *testing.T) Model {
+		m := testModel(sess("a"))
+		m.deps.LoadAllProjects = func() AllProjects { return AllProjects{Rows: allProjectsFixture()} }
+		m.deps.AddProject = func(string, string) ProjectEditResult { return ProjectEditResult{} }
+		m.deps.RemoveProject = func(string) ProjectEditResult { return ProjectEditResult{} }
+		m.allProjectsOpen = true
+		m.allProjectsKnown = true
+		m.allProjectsRows = allProjectsFixture()
+		return m
+	}
 	return map[modeAction]leaderActionCase{
+		// Add and remove a project (T7.10) never had a key; + and - on the
+		// screen are no action and must not become one.
+		actionProjectAdd: {setup: screen, mode: inputAllProjects, old: press('+'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputProjectAddFolder }},
+		actionProjectRemove: {setup: screen, mode: inputAllProjects, old: press('-'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputConfirmProjectRemove }},
 		// "all projects" (T7.9) never had a key; A on the bare list is no
 		// action and must not become one.
 		actionAllProjects: {setup: allProjects, mode: inputNormal, old: press('A'),

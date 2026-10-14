@@ -1,14 +1,15 @@
  afk Dashboard 
 ╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
-│                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ● feat╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
-│   ● Bill│ type to filter, or press an action's key                                                         │ng       │
-│   ● fix-│                                                                                                  │         │
-│   ○ feat│ n  new session                         — Start a new session from a plan or a branch             │         │
-│   ● scra│ o  one-off session                     — Start a one-off session with no plan                    │         │
-│   ○ old-│ p  switch project                      — Switch to another project                               │         │
-│         │ A  all projects                        — this dashboard was started without the project reader   │         │
+│         ╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮──────── │
+│ ▌ ● feat│ type to filter, or press an action's key                                                         │         │
+│   ● Bill│                                                                                                  │ng       │
+│   ● fix-│ n  new session                         — Start a new session from a plan or a branch             │         │
+│   ○ feat│ o  one-off session                     — Start a one-off session with no plan                    │         │
+│   ● scra│ p  switch project                      — Switch to another project                               │         │
+│   ○ old-│ A  all projects                        — this dashboard was started without the project reader   │         │
+│         │ +  add a project                       — adding a project is not available here                  │         │
+│         │ -  remove the project                  — removing a project is not available here                │         │
 │         │ c  clean session                       — Clean the selected session and its worktree             │         │
 │         │ r  restart agent                       — only a stopped or stuck agent can be restarted          │         │
 │         │ l  edit label                          — Give the selected session a display label               │         │
@@ -33,7 +34,6 @@
 │         │    check the plan                      — checking the plan is not available here                 │         │
 │         │    approve the plan                    — approving is not available here                         │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
-│                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 ╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
