@@ -490,11 +490,44 @@ type projectScanMsg struct {
 	rendezvous map[string]focusRendezvous
 }
 
+// listedProjectsMsg carries one read of the machine's project list: the
+// entries, the file's path, and the error for a file that exists but could not
+// be read or is not valid. path is set on the error path too, so the notice
+// can name the file.
+//
+// It is its own message rather than a field of projectScanMsg because the scan
+// answers only after its whole folder walk, and because the two files fail
+// independently: a broken config.json must not hide the listed projects, and a
+// broken config.toml must not stop the search.
+type listedProjectsMsg struct {
+	entries []ListedProject
+	path    string
+	err     error
+}
+
+// listedCmd reads the project list off the UI thread, and does nothing else.
+// It returns nil — no Cmd at all — when the LoadListed seam is absent, the same
+// inertness contract as scanCmd: a Model built without the seam never reads the
+// developer's real config.toml.
+func (m Model) listedCmd() tea.Cmd {
+	load := m.deps.LoadListed
+	if load == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		entries, path, err := load()
+		return listedProjectsMsg{entries: entries, path: path, err: err}
+	}
+}
+
 // scanTickCmd schedules the next project scan at the configured interval, or
-// returns nil when the scan pipeline is inert (see scanCmd) — an armed ticker is
-// itself work, and a Model that cannot scan must not carry one.
+// returns nil when there is nothing for the tick to do — an armed ticker is
+// itself work, and a Model that can neither scan nor read the project list must
+// not carry one. Either is enough to arm it: the tick re-reads the project list
+// as well as scanning, and a dashboard with no search settings still has to
+// notice a project added to the list.
 func (m Model) scanTickCmd() tea.Cmd {
-	if !m.scanEnabled() {
+	if !m.scanEnabled() && m.deps.LoadListed == nil {
 		return nil
 	}
 	interval := m.scanInterval
@@ -513,11 +546,17 @@ func (m Model) scanTickCmd() tea.Cmd {
 // without them never reads the developer's real ~/.config/afk/config.json and
 // never crawls their disk. `afk dash` opts in; nothing else does.
 //
-// PINNED projects are discovered alongside the scanned ones, captured here at
-// Cmd-creation time in this package's standing style. They survive the union in
-// applyProjectScan by definition — no search root produces them — so leaving
-// them out would give the switcher a row with no session data, and for a user
-// with no config that row is the entire list.
+// PINNED and LISTED projects are discovered alongside the scanned ones, captured
+// here at Cmd-creation time in this package's standing style (scanExtraPaths).
+// They survive the merge in applyProjectScan by definition — no search root
+// produces the pinned start-up row, and a listed project stays whether or not
+// the search finds it — so leaving them out would give the switcher rows with
+// no session data, and for a user with no search folders those rows are the
+// entire list. A listed folder that is gone has no row and is not covered.
+//
+// The listed paths are the ones HELD when the Cmd is created; this Cmd does not
+// read the project list itself (listedCmd does, and only that). A read that
+// changes the listed folders asks for a fresh pass, see applyListedResult.
 //
 // A project whose discovery fails contributes no cache entry rather than an
 // error for the whole pass: this covers every project at once, and one
@@ -537,7 +576,7 @@ func (m Model) scanCmd() tea.Cmd {
 	}
 	loadConfig, walk, discoverIn := m.deps.LoadConfig, m.deps.Scan, m.deps.Discover
 	runGit, startWatch := m.deps.RunGit, m.deps.StartFocusWatcher
-	pinned := pinnedPaths(m.projects)
+	extra := scanExtraPaths(m.projects, m.listed)
 	held := m.rendezvousProjects()
 	launchDir := m.gitCommonDir
 	return func() tea.Msg {
@@ -546,8 +585,8 @@ func (m Model) scanCmd() tea.Cmd {
 			return projectScanMsg{configPath: configPath, err: err}
 		}
 		found := walk(cfg.SearchRoots, cfg.MaxDepth)
-		sessions := make(map[string][]discover.SessionState, len(found)+len(pinned))
-		rendezvous := make(map[string]focusRendezvous, len(found)+len(pinned))
+		sessions := make(map[string][]discover.SessionState, len(found)+len(extra))
+		rendezvous := make(map[string]focusRendezvous, len(found)+len(extra))
 		resolve := func(path string) {
 			if held[path] {
 				return
@@ -573,7 +612,7 @@ func (m Model) scanCmd() tea.Cmd {
 			}
 			resolve(p.Path)
 		}
-		for _, pin := range pinned {
+		for _, pin := range extra {
 			resolve(pin)
 			if _, done := sessions[pin]; done {
 				continue

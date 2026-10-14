@@ -517,6 +517,33 @@ type Deps struct {
 	// defaults — so a non-nil error means a file that exists and could not be
 	// parsed. Like Scan it has no default, and nil means the pipeline is inert.
 	LoadConfig func() (config.Config, string, error)
+	// LoadListed reads the machine's project list (the `[[project]]` tables in
+	// config.toml, what `afk project list` prints) and returns one entry per
+	// listed project, the PATH of that file, and the error for a file that
+	// exists but could not be read or is not valid. The path comes back on an
+	// error too, so the notice can name the file to fix. A missing file is not
+	// an error: it is an empty list.
+	//
+	// It is a separate seam from LoadConfig, with its own command and message,
+	// because the two files fail independently and arrive at different speeds:
+	// this read is one small file, while a scan answers only after its whole
+	// folder walk. Listed projects must not wait for that walk, and a broken
+	// config.json must not hide them.
+	//
+	// Like Scan and LoadConfig it has NO default: withDefaults leaves it nil,
+	// and nil means no listed read is ever issued (listedCmd), which keeps a
+	// zero-Deps Model off the developer's real settings file. This package
+	// never reads that file itself; the production reader is wired by
+	// `afk dash`.
+	LoadListed func() (entries []ListedProject, path string, err error)
+	// LaunchMainCheckout is the main checkout of the start-up project (the
+	// pinned entry in Projects). It differs from that entry's path only when
+	// the dashboard was started inside a linked worktree; empty means "same as
+	// the path". A plain value resolved by the caller, because finding a main
+	// checkout is a git call and this package's merge does none. mergeProjects
+	// uses it to see that a worktree's start-up row and a listed main checkout
+	// are one project.
+	LaunchMainCheckout string
 	// LoadSelections returns every remembered project-to-session selection —
 	// keyed by resolved project path, see rememberedSelection's doc comment —
 	// for New to seed rememberedSelection from. Called exactly once, at
@@ -695,6 +722,10 @@ func (d Deps) withDefaults() Deps {
 	// the developer's real ~/.config/afk/config.json and walk whatever search
 	// roots it names. The scan pipeline is inert without them (scanCmd,
 	// scanTickCmd), so opting in is `afk dash`'s decision alone.
+	//
+	// LoadListed is absent for the same reason: wired here, every zero-Deps
+	// Model would read the developer's real config.toml. A nil LoadListed
+	// issues no command (listedCmd).
 	return d
 }
 
@@ -1078,6 +1109,13 @@ type Model struct {
 	// switchProject — the scanned config is global, not per-project, unlike
 	// notifiedStackErr/notifiedBranchesErr above.
 	notifiedScanErr string
+
+	// notifiedListedErr is the unreadable-project-list notice already raised,
+	// for the same once-per-distinct-text rule as notifiedScanErr (the list is
+	// read again on every scan tick). Cleared by the next good read. Not reset
+	// by switchProject: the project list belongs to the machine, not to one
+	// project.
+	notifiedListedErr string
 
 	width  int
 	height int
@@ -1535,6 +1573,17 @@ type Model struct {
 	// see scanTickMsg for why the two cadences cannot be shared.
 	scanInterval time.Duration
 
+	// listed is the machine's project list as last read WELL, and found is what
+	// the last GOOD folder search found. Both are remembered, rather than only
+	// the merged m.projects, because the two reads land at different times and
+	// each has to be merged against the other's last value: a listed read that
+	// arrives between two scans must not drop the found rows, and a scan must
+	// not drop the listed ones. A read that failed leaves its half untouched
+	// (foldListedRead, applyScanResult). found starts as the unpinned entries
+	// the caller handed in; see unpinnedProjects.
+	listed []ListedProject
+	found  []project.Project
+
 	// configPath is where LoadConfig resolved the config file on the last scan,
 	// held for the empty state to render. It stays empty while the scan pipeline
 	// is inert, which any reader has to tolerate.
@@ -1709,6 +1758,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		initialSession:      deps.InitialSessionName,
 		gitCommonDir:        deps.GitCommonDir,
 		projects:            deps.Projects,
+		found:               unpinnedProjects(deps.Projects),
 		activeProject:       deps.ActiveProjectIndex,
 		rememberedSelection: remembered,
 		projectOpens:        opens,
@@ -1757,7 +1807,10 @@ func (m Model) Init() tea.Cmd {
 		// interval: the startup path hands over only the cwd-derived project (a
 		// slow search root must never delay the first frame), so without this the
 		// switcher would sit at one entry for a minute.
-		m.scanCmd(), m.scanTickCmd())
+		//
+		// The listed read is its own Cmd beside the scan, not a step inside it:
+		// it is one small file, and the scan answers only after its whole walk.
+		m.listedCmd(), m.scanCmd(), m.scanTickCmd())
 	return tea.Batch(cmds...)
 }
 
@@ -1939,12 +1992,17 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case scanTickMsg:
-		// The scan and its own re-arm, and nothing else: this ticker exists to be
-		// independent of the discovery tick above.
-		return m, tea.Batch(m.scanCmd(), m.scanTickCmd())
+		// The listed read, the scan and the re-arm, and nothing else: this ticker
+		// exists to be independent of the discovery tick above. Reading the
+		// project list here is what makes a project added with `afk project add`
+		// appear without a restart.
+		return m, tea.Batch(m.listedCmd(), m.scanCmd(), m.scanTickCmd())
 
 	case projectScanMsg:
 		return m.applyProjectScan(msg)
+
+	case listedProjectsMsg:
+		return m.applyListedProjects(msg)
 
 	case previewTimerMsg:
 		return m.applyPreviewTimer(msg)
@@ -4172,7 +4230,9 @@ func (m Model) switcherComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// runs on a 60-second cadence, so waiting for it is indistinguishable from
 		// `R` doing nothing. The overlay stays open — `R` means "refresh this
 		// list", and applyProjectScan rebuilds it when the result lands.
-		return m, tea.Batch(cmd, m.scanCmd())
+		// The project list is read again too, so `R` after `afk project add`
+		// shows the new project (applyListedProjects rebuilds for that one).
+		return m, tea.Batch(cmd, m.listedCmd(), m.scanCmd())
 	case switcherChosen:
 		m.switcherOpen = false
 		// switchProject owns every consequence of the choice — repointing m.repo,
@@ -7125,19 +7185,32 @@ func (m Model) applyScanResult(msg projectScanMsg) (Model, []tea.Cmd) {
 		m.scanInterval = msg.interval
 	}
 	was := m.activeProjectPath()
-	m.projects = unionProjects(m.projects, msg.projects)
+	// Remembered, not only merged: the next listed read re-merges against it
+	// (see Model.found). Only a good search reaches this line, so a search that
+	// failed keeps the rows the last good one found.
+	m.found = msg.projects
+	m.projects = m.mergedProjects()
 	m.projectSessions = msg.sessions
+	return m.settleActiveProject(was)
+}
+
+// settleActiveProject re-finds the active project after m.projects was rebuilt,
+// by PATH: was is the active path before the rebuild. It is shared by the two
+// things that rebuild the list, a scan result and a read of the project list,
+// so both treat a kept, a vanished and a never-existed active project the same
+// way.
+func (m Model) settleActiveProject(was string) (Model, []tea.Cmd) {
 	if i, ok := indexOfProject(m.projects, was); ok {
 		m.activeProject = i
-		// The heal at the top of this function already settled m.repo on this
-		// same path — `was` IS the pre-union active entry's spelling — so the
-		// kept-active exit has nothing left to reconcile.
+		// m.repo needs nothing here. On the scan path applyScanResult's heal
+		// already settled it on this same path — `was` IS the pre-merge active
+		// entry's spelling — and a listed read leaves it as it was.
 		return m, nil
 	}
 	if len(m.projects) == 0 {
-		// Nothing found and nothing pinned. -1 rather than a fabricated entry, and
+		// Nothing found, listed or pinned. -1 rather than a fabricated entry, and
 		// the session list is left alone: the projects it came from are gone from
-		// the search roots, not necessarily gone from disk.
+		// the search roots and the project list, not necessarily gone from disk.
 		m.activeProject = -1
 		return m, nil
 	}
@@ -7148,7 +7221,8 @@ func (m Model) applyScanResult(msg projectScanMsg) (Model, []tea.Cmd) {
 	// repo pointed at a project that is gone.
 	m.activeProject = -1
 	// Either the active project vanished from the list, or there never was one
-	// (launched outside any repo, index -1, populated by this very message).
+	// (launched outside any repo, index -1, populated by this very message — a
+	// scan's found projects or a read's listed ones, whichever lands first).
 	// Never-existed and vanished are different states but they share this
 	// resolution — D7's "the first project is active" — and both have to run the
 	// full switch, because the repo every per-project command closes over changes.
@@ -7272,85 +7346,13 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	return m, m.projectCmds()
 }
 
-// unionProjects merges the projects a scan found with the PINNED entries already
-// held, de-duplicating by path.
-//
-// The union is what makes the ad-hoc cwd project survive. By definition no search
-// root produces it (that is what pinning means), so a pass that replaced the list
-// wholesale would drop it on the first rescan and yank the user to a different
-// project mid-use — and for a user with no config at all, that pinned entry is
-// the ENTIRE list, so this is the headline case rather than an edge one.
-//
-// Identity is plain string equality on the path, which is safe precisely because
-// both producers normalize the same way: internal/scan resolves each root
-// through filepath.EvalSymlinks and only ever walks real directories below it,
-// and dash.go's resolveCwdRepoRoot runs `git rev-parse --show-toplevel` through
-// EvalSymlinks too. Re-resolving here is not an option — Update performs no I/O
-// — and on macOS a /tmp path that skipped one side's resolution would surface as
-// a second row for one repo.
-//
-// Display names are recomputed over the merged set: a pinned entry can collide on
-// basename with a scanned one, and DisplayNames only widens the labels inside a
-// colliding set, so labels computed over either half alone can be wrong for the
-// whole.
-func unionProjects(prev, scanned []project.Project) []project.Project {
-	pinned := make(map[string]bool, len(prev))
-	for _, p := range prev {
-		if p.Pinned {
-			pinned[p.Path] = true
-		}
-	}
-	merged := make([]project.Project, 0, len(scanned)+len(pinned))
-	seen := make(map[string]bool, len(scanned)+len(pinned))
-	for _, p := range scanned {
-		if seen[p.Path] {
-			continue
-		}
-		seen[p.Path] = true
-		// Pinned-ness describes where an entry came from — the cwd this dashboard
-		// was launched in — not whether this particular pass happened to find it.
-		// Dropping the flag on a scan hit would let a later config change discard
-		// the project the user is standing in.
-		p.Pinned = p.Pinned || pinned[p.Path]
-		merged = append(merged, p)
-	}
-	for _, p := range prev {
-		if !p.Pinned || seen[p.Path] {
-			continue
-		}
-		seen[p.Path] = true
-		merged = append(merged, p)
-	}
-	if len(merged) == 0 {
-		return nil
-	}
-	paths := make([]string, len(merged))
-	for i, p := range merged {
-		paths[i] = p.Path
-	}
-	names := project.DisplayNames(paths)
-	for i := range merged {
-		merged[i].Name = names[i]
-	}
-	return merged
-}
-
-// pinnedPaths lists the paths of the pinned entries in projects — what scanCmd
-// needs discovery to cover beyond the walk's own results.
-func pinnedPaths(projects []project.Project) []string {
-	var paths []string
-	for _, p := range projects {
-		if p.Pinned {
-			paths = append(paths, p.Path)
-		}
-	}
-	return paths
-}
-
 // sameProjectPaths reports whether two project lists name the same paths in the
-// same order — the question "would the switcher's rows be different?", which
-// display names and Pinned flags cannot answer differently on their own (both are
-// derived from the path set by unionProjects).
+// same order — the question "would the switcher's rows be different?". Pinned
+// flags cannot answer it differently on their own, and nor can the computed
+// display names (mergeProjects derives both from the path set). A LISTED name
+// can: renaming a project in config.toml changes a label and no path. That is
+// deliberately not a rebuild — it would reset the cursor of an open switcher —
+// so the new name shows the next time the switcher is opened.
 func sameProjectPaths(a, b []project.Project) bool {
 	if len(a) != len(b) {
 		return false

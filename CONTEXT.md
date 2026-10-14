@@ -172,3 +172,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Project list**: the `[[project]]` entries of the machine config, which are the projects the daemon builds; edited with `afk project` and read again by the daemon on every pass.
 - **Review list**: `plan-reviews.json` in afk's state folder, naming the projects whose plan is waiting for approval, so the web page can show a plan before its project is in the project list.
 - **Plan view**: the read-only web page for one project that shows its master plan rendered, the checker's summary and the open questions.
+- **Project switcher**: the dashboard's list of projects, opened with `p`; it shows the listed projects, the start-up project and any found under the search folders, one row each.
+- **Listed project**: a project in the machine config's project list, as `afk project list` prints it; the switcher shows it under the name given there.
+- **Start-up project**: the project `afk dash` was started in (or named with `--project`); it is always in the switcher, listed or not.
+- **Search folders**: the folders the dashboard looks under for more projects (`search_roots`); until T6.2 they are set in `config.json`.
