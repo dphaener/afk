@@ -200,14 +200,17 @@ func withoutToken(u *url.URL) string {
 //   - nosniff and DENY: the content is what the type says, and the page is
 //     never to be shown inside another site's frame, where a button could be
 //     pressed by trickery.
-//   - The content policy allows inline styles and forms that post back to
-//     this site, and nothing else: no script, image, font or outside address.
+//   - The content policy allows scripts and connections from this site only
+//     (live.js and the /events stream), styles from this site (room for a
+//     stylesheet) and inline (today's pages still use them), and forms that
+//     post back here. Nothing else: no inline script, image, font or
+//     outside address.
 func setSecurityHeaders(h http.Header) {
 	h.Set("Cache-Control", "no-store")
 	h.Set("Referrer-Policy", "same-origin")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
-	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+	h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'")
 }
 
 // unauthorized answers a request that did not prove the token: JSON under

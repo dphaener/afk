@@ -19,6 +19,13 @@ import (
 
 const idScript = "kmn345"
 
+// ownScript is the one script tag every page carries: the hashed live.js.
+var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/live\.js" defer></script>`)
+
+// noOwnScript removes that tag, so the tests that look for injected markup
+// still see any other script tag a hostile text managed to open.
+func noOwnScript(body string) string { return ownScript.ReplaceAllString(body, "") }
+
 // pageDo sends one request with the cookie, the way a browser that has
 // already visited with ?token= does.
 func (rg *rig) pageDo(method, path, body string) *httptest.ResponseRecorder {
@@ -103,7 +110,7 @@ func TestPages(t *testing.T) {
 			if strings.Contains(body, testToken) {
 				t.Errorf("the page contains the token")
 			}
-			if !strings.Contains(body, `name="viewport"`) || strings.Contains(strings.ToLower(body), "<script") {
+			if !strings.Contains(body, `name="viewport"`) || strings.Contains(strings.ToLower(noOwnScript(body)), "<script") {
 				t.Errorf("page must have the viewport tag and no script tag")
 			}
 		})
@@ -117,7 +124,7 @@ func TestPageEscapesMarkup(t *testing.T) {
 	rg.seedScript()
 	for _, path := range []string{"/p/app/inbox/" + idScript, "/p/app"} {
 		body := rg.pageDo("GET", path, "").Body.String()
-		if strings.Contains(strings.ToLower(body), "<script") {
+		if strings.Contains(strings.ToLower(noOwnScript(body)), "<script") {
 			t.Errorf("%s: markup was not escaped:\n%s", path, body)
 		}
 		if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
@@ -268,18 +275,95 @@ func TestPageTokenVisit(t *testing.T) {
 	}
 }
 
-// TestPageTemplatesHaveNoScript keeps the promise of a script-free page at
-// the source: nothing in the templates may open a script tag.
-func TestPageTemplatesHaveNoScript(t *testing.T) {
+// scriptTag, handlerAttr and jsURL find what an inline script would be made
+// of. The handler pattern needs a space or quote before "on" so words such as
+// "button" or "action" do not match.
+var (
+	scriptTag   = regexp.MustCompile(`(?i)<script\b[^>]*>`)
+	handlerAttr = regexp.MustCompile(`(?i)[\s"'/]on[a-z]+\s*=`)
+	jsURL       = regexp.MustCompile(`(?i)javascript:`)
+)
+
+// TestPageTemplatesHaveNoInlineScript keeps the policy (script-src 'self') and
+// the source in step: every script tag in a template loads a file through
+// the asset function, and nothing carries an inline handler or a javascript:
+// address, which the policy would refuse and which would leave a page
+// broken only in a browser.
+//
+// Load-bearing rows: a layout script tag with src="{{asset (the one allowed
+// shape), and the scan over every template file so a page added later is
+// covered without a new row.
+func TestPageTemplatesHaveNoInlineScript(t *testing.T) {
 	entries, err := pageFiles.ReadDir("templates")
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("templates: %v", err)
 	}
 	for _, e := range entries {
 		b, _ := pageFiles.ReadFile("templates/" + e.Name())
-		if strings.Contains(strings.ToLower(string(b)), "<script") {
-			t.Errorf("%s holds a script tag", e.Name())
-		}
+		text := string(b)
+		t.Run(e.Name(), func(t *testing.T) {
+			for _, tag := range scriptTag.FindAllString(text, -1) {
+				if !strings.Contains(tag, `src="{{asset `) {
+					t.Errorf("script tag without src=\"{{asset: %s", tag)
+				}
+			}
+			if m := handlerAttr.FindString(text); m != "" {
+				t.Errorf("inline event handler %q", m)
+			}
+			if jsURL.MatchString(text) {
+				t.Error("holds a javascript: address")
+			}
+		})
+	}
+	layout, _ := pageFiles.ReadFile("templates/layout.html")
+	if !strings.Contains(string(layout), `<script src="{{asset "live.js"}}" defer></script>`) {
+		t.Error("layout.html does not load live.js")
+	}
+}
+
+// TestPageLiveMarkup checks that each page loads the hashed script and that
+// the live regions exist with the parts and project the script matches on.
+//
+// Load-bearing rows: "project", where the inbox list and the summary carry
+// the project's own name (a region with the wrong project would never be
+// swapped), and "usage", whose project is empty (machine-wide). The page with
+// the space in its name proves the attribute is escaped, not path-escaped.
+func TestPageLiveMarkup(t *testing.T) {
+	scriptRe := regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/live\.js" defer></script>`)
+	tests := []struct {
+		name string
+		path string
+		want []string
+	}{
+		{name: "overview", path: "/", want: []string{
+			`id="project-app" data-live="inbox ledger pause sessions planning" data-project="app"`,
+			`id="project-my%20app" data-live="inbox ledger pause sessions planning" data-project="my app"`,
+			`id="usage-reading" data-live="usage" data-project=""`,
+		}},
+		{name: "project", path: "/p/app", want: []string{
+			`id="summary" data-live="ledger pause sessions planning" data-project="app"`,
+			`id="inbox-list" data-live="inbox" data-project="app" aria-live="polite"`,
+			`data-live-status hidden`,
+		}},
+		{name: "usage", path: "/usage", want: []string{`id="usage-reading" data-live="usage" data-project=""`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			rec := rg.pageDo("GET", tt.path, "")
+			body := rec.Body.String()
+			if rec.Code != 200 {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			if !scriptRe.MatchString(body) {
+				t.Errorf("no hashed live.js script tag:\n%s", body)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("missing %q", w)
+				}
+			}
+		})
 	}
 }
 
@@ -391,14 +475,14 @@ func TestPlanPage(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(strings.ToLower(body), strings.ToLower(w)) {
+				if strings.Contains(strings.ToLower(noOwnScript(body)), strings.ToLower(w)) {
 					t.Errorf("page contains %q, which it should not\n%s", w, body)
 				}
 			}
 			if strings.Contains(body, testToken) {
 				t.Errorf("the page contains the token")
 			}
-			if !strings.Contains(body, `name="viewport"`) || strings.Contains(strings.ToLower(body), "<script") {
+			if !strings.Contains(body, `name="viewport"`) || strings.Contains(strings.ToLower(noOwnScript(body)), "<script") {
 				t.Errorf("page must have the viewport tag and no script tag")
 			}
 		})
@@ -501,7 +585,7 @@ func TestPlanPageRendersThisRepositorysPlan(t *testing.T) {
 			t.Errorf("the page does not contain %q", w)
 		}
 	}
-	if strings.Contains(strings.ToLower(body), "<script") || strings.Contains(body, "<form") {
+	if strings.Contains(strings.ToLower(noOwnScript(body)), "<script") || strings.Contains(body, "<form") {
 		t.Errorf("the page of the real plan holds a script tag or a form")
 	}
 }
