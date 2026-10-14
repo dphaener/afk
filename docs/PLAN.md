@@ -1896,6 +1896,7 @@ items need them without leaving the dashboard.
   scratch build in a throwaway repository with two open items, one blocking: the header shows both
   numbers on the Overview tab, and answering the blocking item in the overlay changes the header
   within one refresh. `make check` is green.
+- Amended 2026-10-13 (T6.4 done): later tasks may assume the following. (1) The header's inbox segment is built in `headerPieces` (`internal/ui/views.go`) from `buildview.OpenCounts(m.build.Items)`: `inbox N`, `inbox N · M blocking`, the short form `M blocking`, and the hint constant `headerInboxHint` (`i: inbox`), which is hidden while the agent pane has the keyboard. T7.2 changes that one constant when `i` moves under the leader. (2) `headerLine` is one drop sequence for every header. Weakest first: the switch hint, the inbox hint, the awaiting names, the long usage, the open count, the badge, the short usage, the awaiting line, the blocking count, and the stale warning last. A new header piece is one more step in that list. See `## T6.4` in `docs/decisions.md`.
 
 ### M7 — The dashboard is the command center
 

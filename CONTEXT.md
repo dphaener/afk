@@ -184,3 +184,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Chat view**: the web page's screen that shows a planning session as messages, with a reply box and a button per offered option; it is never the session's terminal, and a reply from it takes the session from the dashboard for a moment.
 - **Pause key**: `P` in the dashboard, which pauses the active project's build as `afk pause` does: a running task finishes and nothing new starts.
 - **Resume key**: `U` in the dashboard, which resumes the active project's build as `afk resume` does, and clears a stopped line.
+- **Inbox segment**: the part of the `afk dash` header that counts the active project's open inbox items and how many of them are blocking a task.

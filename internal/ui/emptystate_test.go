@@ -16,6 +16,7 @@ import (
 
 	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/discover"
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/palette"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/provider"
@@ -599,6 +600,267 @@ func TestHeaderLineKeepsStalenessLast(t *testing.T) {
 	if got := headerLine(failing, staleOnly-1); got != "stale · discovery failing 3…" {
 		t.Fatalf("a badge+staleness header at width %d = %q, want the staleness truncated, not the badge kept",
 			staleOnly-1, got)
+	}
+}
+
+// inboxHeaderModel is a model with one known project and a build snapshot holding
+// items, the shape the inbox header rows below start from. It has no master
+// plan (HasBuild false) on purpose: the inbox is read without one, and the
+// header must count it anyway.
+func inboxHeaderModel(items ...inbox.Item) Model {
+	m := testModel(sess("a"))
+	m.projects = nil
+	m.build = buildview.Snapshot{Items: items}
+	m.buildKnown = true
+	return m
+}
+
+// TestHeaderInboxSegment pins what the header says about the active project's
+// inbox, through the real Model path (headerPieces, then renderHeader).
+//
+// Load-bearing rows: "buildKnown true, no items" and "buildKnown false" are the two ways the
+// header must say nothing (an empty inbox is a quiet day, and before the first
+// build read there is nothing to count, so neither may print "inbox 0");
+// "answered items only" proves the count is OpenCounts' open count and not
+// the number of files; "unreadable files only" proves files the loader could
+// not read are not counted as items; "open only" pins that the blocking part
+// is absent rather than "0 blocking"; and "agent focus hides the hint" is the
+// one row where `i` would be typed to the agent instead of opening the inbox.
+func TestHeaderInboxSegment(t *testing.T) {
+	open := func(id string) inbox.Item { return inbox.Item{ID: id, Kind: "notice"} }
+	blocking := func(id string) inbox.Item { return inbox.Item{ID: id, Kind: "question", Blocking: true} }
+	answered := inbox.Item{ID: "z", Kind: "question", Blocking: true, Answer: "yes"}
+
+	cases := []struct {
+		name                   string
+		model                  func(t *testing.T) Model
+		inbox, short, hintWant string
+	}{
+		{"buildKnown true, no items", func(*testing.T) Model { return inboxHeaderModel() }, "", "", ""},
+		{"buildKnown false: no snapshot yet", func(*testing.T) Model {
+			m := inboxHeaderModel(blocking("a"), open("b"))
+			m.buildKnown = false
+			return m
+		}, "", "", ""},
+		{"answered items only", func(*testing.T) Model { return inboxHeaderModel(answered) }, "", "", ""},
+		{"unreadable files only", func(*testing.T) Model {
+			m := inboxHeaderModel()
+			m.build.Unreadable = 2
+			return m
+		}, "", "", ""},
+		{"open only", func(*testing.T) Model { return inboxHeaderModel(open("a"), open("b"), answered) },
+			"inbox 2", "", headerInboxHint},
+		{"open and blocking", func(*testing.T) Model {
+			return inboxHeaderModel(blocking("a"), open("b"), blocking("c"), answered)
+		}, "inbox 3 · 2 blocking", "2 blocking", headerInboxHint},
+		{"one item, the same words", func(*testing.T) Model { return inboxHeaderModel(blocking("a")) },
+			"inbox 1 · 1 blocking", "1 blocking", headerInboxHint},
+		{"with a master plan too", func(*testing.T) Model {
+			m := inboxHeaderModel(open("a"))
+			m.build.HasBuild = true
+			return m
+		}, "inbox 1", "", headerInboxHint},
+		{"agent focus hides the hint", func(t *testing.T) Model {
+			m := testModel(runningSess("alpha"))
+			m.projects = nil
+			m.build = buildview.Snapshot{Items: []inbox.Item{blocking("a")}}
+			m.buildKnown = true
+			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
+			m, _ = update(t, m, keyRune('f'))
+			if !m.paneOwnsKeyboard() {
+				t.Fatal("the fixture did not give the agent pane the keyboard")
+			}
+			return m
+		}, "inbox 1 · 1 blocking", "1 blocking", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.model(t)
+			p := m.headerPieces()
+			if got := xansi.Strip(p.inbox); got != tc.inbox {
+				t.Errorf("inbox = %q, want %q", got, tc.inbox)
+			}
+			if got := xansi.Strip(p.inboxShort); got != tc.short {
+				t.Errorf("inboxShort = %q, want %q", got, tc.short)
+			}
+			if got := xansi.Strip(p.inboxHint); got != tc.hintWant {
+				t.Errorf("inboxHint = %q, want %q", got, tc.hintWant)
+			}
+			m.width = 120
+			header := xansi.Strip(m.renderHeader())
+			if tc.inbox == "" {
+				if strings.Contains(header, "inbox") || strings.Contains(header, "blocking") {
+					t.Errorf("header = %q, want no inbox text", header)
+				}
+				if m.renderHeader() != wantBadgeOnlyHeader(m) {
+					t.Errorf("header = %q, want the badge-only header", header)
+				}
+				return
+			}
+			if !strings.Contains(header, tc.inbox) {
+				t.Errorf("header = %q, want it to contain %q", header, tc.inbox)
+			}
+			if tc.hintWant == "" && strings.Contains(header, headerInboxHint) {
+				t.Errorf("header = %q, want no %q while the agent has the keyboard", header, headerInboxHint)
+			}
+		})
+	}
+
+	t.Run("the open count is dim and the blocking part a warning", func(t *testing.T) {
+		p := inboxHeaderModel(blocking("a"), open("b")).headerPieces()
+		want := theme.dim.Render("inbox 2") + theme.dim.Render(" · ") + theme.awaitingFlag.Render("1 blocking")
+		if p.inbox != want {
+			t.Errorf("inbox = %q, want %q", p.inbox, want)
+		}
+		if p.inboxShort != theme.awaitingFlag.Render("1 blocking") {
+			t.Errorf("inboxShort = %q, want theme.awaitingFlag", p.inboxShort)
+		}
+		if p.inboxHint != theme.dim.Render(headerInboxHint) {
+			t.Errorf("inboxHint = %q, want theme.dim", p.inboxHint)
+		}
+	})
+
+	t.Run("the segment shows with nothing awaiting elsewhere", func(t *testing.T) {
+		// headerPieces returns early when no other project is awaiting; the
+		// inbox is the active project's own and must not be lost to it.
+		m := attentionModel(sess("a"))
+		m.projectSessions = nil
+		m.build = buildview.Snapshot{Items: []inbox.Item{blocking("a")}}
+		m.buildKnown = true
+		if got := xansi.Strip(m.renderHeader()); !strings.Contains(got, "inbox 1 · 1 blocking") ||
+			!strings.Contains(got, headerSwitchHint) {
+			t.Errorf("header = %q, want the inbox segment and the switch hint", got)
+		}
+	})
+}
+
+// TestHeaderLineDegradesWithInbox pins the one drop sequence with the inbox
+// pieces in it, rung by rung, with and without a usage reading and with the
+// staleness signal. Each fixture lists its rungs richest first as the exact
+// left and right halves; every rung is asserted at its own natural width
+// (where it must be the result, padded to the full width) and one cell under
+// the rung above's (where it must be the result, not the rung above).
+//
+// Load-bearing rungs: "badge gone, blocking stays", which is the reason the
+// short inbox form exists; "attention gone, blocking stays", the ranking
+// that puts the active project's stopped task above the other projects'
+// waiting sessions; and in the stale fixture "blocking gone, stale stays",
+// which keeps the staleness signal last. The open-only fixture pins that
+// items which block nothing leave the row at the long-to-short step and add
+// no rung of their own, so no rung repeats the one above or empties the row.
+func TestHeaderLineDegradesWithInbox(t *testing.T) {
+	const (
+		named = "● 2 awaiting in gamma · 1 in delta"
+		agg   = "● 3 awaiting in 2 other projects"
+		badge = "afk Dashboard"
+		stale = "stale · discovery failing 30s"
+		ilong = "inbox 3 · 2 blocking"
+		iblk  = "2 blocking"
+		ulong = "usage: paused until Mon 2 Jan 15:04 · Week (all models) 91%"
+		ushrt = "paused · 91%"
+	)
+	base := headerPieces{
+		badge:          badge,
+		attention:      named,
+		attentionShort: agg,
+		inbox:          ilong,
+		inboxShort:     iblk,
+		inboxHint:      headerInboxHint,
+		hint:           headerSwitchHint,
+	}
+	withUsage := base
+	withUsage.usage, withUsage.usageShort = ulong, ushrt
+	withStale := base
+	withStale.stale = stale
+	openOnly := base
+	openOnly.inbox, openOnly.inboxShort = "inbox 2", ""
+
+	type rung struct{ l, r string }
+	j := func(parts ...string) string { return strings.Join(parts, "  ") }
+	fixtures := []struct {
+		name  string
+		p     headerPieces
+		rungs []rung
+	}{
+		{"no usage", base, []rung{
+			{badge + " " + named, j(ilong, headerInboxHint, headerSwitchHint)},
+			{badge + " " + named, j(ilong, headerInboxHint)}, // switch hint gone
+			{badge + " " + named, ilong},                     // inbox hint gone
+			{badge + " " + agg, ilong},                       // names collapse
+			{badge + " " + agg, iblk},                        // inbox long to short
+			{agg, iblk},                                      // badge gone, blocking stays
+			{"", iblk},                                       // attention gone, blocking stays
+		}},
+		{"with usage", withUsage, []rung{
+			{badge + " " + named, j(ilong, headerInboxHint, ulong, headerSwitchHint)},
+			{badge + " " + named, j(ilong, headerInboxHint, ulong)},
+			{badge + " " + named, j(ilong, ulong)},
+			{badge + " " + agg, j(ilong, ulong)},
+			{badge + " " + agg, j(ilong, ushrt)},
+			{badge + " " + agg, j(iblk, ushrt)},
+			{agg, j(iblk, ushrt)}, // badge gone, blocking and short usage stay
+			{agg, iblk},           // short usage gone
+			{"", iblk},            // attention gone, blocking stays
+		}},
+		{"stale", withStale, []rung{
+			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint, headerSwitchHint)},
+			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint)},
+			{badge + " " + stale + "  " + named, ilong},
+			{badge + " " + stale + "  " + agg, ilong},
+			{badge + " " + stale + "  " + agg, iblk},
+			{stale + "  " + agg, iblk},
+			{stale, iblk},
+			{stale, ""}, // blocking gone, stale stays
+		}},
+		{"open only", openOnly, []rung{
+			{badge + " " + named, j("inbox 2", headerInboxHint, headerSwitchHint)},
+			{badge + " " + named, j("inbox 2", headerInboxHint)},
+			{badge + " " + named, "inbox 2"},
+			{badge + " " + agg, "inbox 2"},
+			{badge + " " + agg, ""}, // open-only items vanish
+			{agg, ""},
+		}},
+	}
+	natural := func(r rung) int {
+		if r.r == "" {
+			return lipgloss.Width(r.l)
+		}
+		return lipgloss.Width(r.l) + headerMinGap + lipgloss.Width(r.r)
+	}
+	padded := func(r rung, width int) string {
+		return r.l + strings.Repeat(" ", width-lipgloss.Width(r.l)-lipgloss.Width(r.r)) + r.r
+	}
+	for _, f := range fixtures {
+		for i, r := range f.rungs {
+			t.Run(fmt.Sprintf("%s/rung %d at its own width", f.name, i+1), func(t *testing.T) {
+				w := natural(r)
+				if got, want := headerLine(f.p, w), padded(r, w); got != want {
+					t.Errorf("width %d:\n got %q\nwant %q", w, got, want)
+				}
+			})
+			if i == 0 {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/rung %d one under rung %d", f.name, i+1, i), func(t *testing.T) {
+				w := natural(f.rungs[i-1]) - 1
+				if got, want := headerLine(f.p, w), padded(r, w); got != want {
+					t.Errorf("width %d:\n got %q\nwant %q", w, got, want)
+				}
+			})
+		}
+		t.Run(f.name+"/below the last rung it truncates to one row", func(t *testing.T) {
+			w := natural(f.rungs[len(f.rungs)-1]) - 1
+			got := headerLine(f.p, w)
+			if lipgloss.Width(got) > w || lipgloss.Height(got) != 1 {
+				t.Errorf("width %d: %q is not one row within the budget", w, got)
+			}
+			if strings.Contains(got, badge) || strings.Contains(got, "inbox") {
+				t.Errorf("width %d: %q kept a piece that went rungs ago", w, got)
+			}
+			if f.p.stale != "" && got != "stale · discovery failing 3…" {
+				t.Errorf("width %d: %q, want the staleness signal truncated", w, got)
+			}
+		})
 	}
 }
 
