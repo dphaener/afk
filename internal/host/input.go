@@ -71,16 +71,9 @@ func SendInput(worktree, name, text string, wait time.Duration) error {
 	if err := checkInputText(text); err != nil {
 		return err
 	}
-	socket := ""
-	if meta, err := ReadMeta(worktree, name); err == nil {
-		socket = meta.Socket
-	}
-	if socket == "" {
-		derived, err := SocketPath(worktree, name)
-		if err != nil {
-			return fmt.Errorf("could not reach session %s: %w", name, err)
-		}
-		socket = derived
+	socket, err := inputSocket(worktree, name)
+	if err != nil {
+		return err
 	}
 	conn, err := Dial(socket, wait)
 	if err != nil {
@@ -96,6 +89,73 @@ func SendInput(worktree, name, text string, wait time.Duration) error {
 	time.Sleep(inputSubmitPause)
 	if err := WriteFrame(conn, Data, []byte("\r")); err != nil {
 		return fmt.Errorf("could not press Enter in session %s: %w", name, err)
+	}
+	time.Sleep(inputSettlePause)
+	if err := WriteFrame(conn, Detach, nil); err != nil {
+		return fmt.Errorf("could not detach from session %s: %w", name, err)
+	}
+	return nil
+}
+
+// inputSocket finds the socket of a session's host: the host record's, falling
+// back to the derived SocketPath the way the dashboard's pane does. SendInput
+// and SendKeys share it so they can never reach different hosts.
+func inputSocket(worktree, name string) (string, error) {
+	if meta, err := ReadMeta(worktree, name); err == nil && meta.Socket != "" {
+		return meta.Socket, nil
+	}
+	derived, err := SocketPath(worktree, name)
+	if err != nil {
+		return "", fmt.Errorf("could not reach session %s: %w", name, err)
+	}
+	return derived, nil
+}
+
+// SendKeys writes keystrokes into the session's terminal, one Data frame per
+// chunk, then lets go. It is SendInput for a caller that has already built the
+// bytes: a bracketed paste and its Enter, or the keys that answer a dialog.
+// Unlike SendInput it does not police them, so escape sequences pass through.
+//
+// The pauses are SendInput's, for the reasons given at inputSubmitPause and
+// inputSettlePause: inputSubmitPause between chunks, so a terminal program
+// does not read two chunks as one paste, and inputSettlePause after the last,
+// so the host writes it before it sees the Detach. The whole send shares one
+// write deadline of inputWriteTimeout, and the connection is never read, as in
+// SendInput. It never sends Exit, Restart or Resize.
+//
+// Like SendInput it takes the session's single client slot, and a nil error
+// means "written to the socket", not "read by the agent". An empty list, an
+// empty chunk or a chunk over MaxFramePayload is refused before dialling.
+func SendKeys(worktree, name string, chunks [][]byte, wait time.Duration) error {
+	if len(chunks) == 0 {
+		return errors.New("nothing to send: no keystrokes were given")
+	}
+	for i, c := range chunks {
+		if len(c) == 0 {
+			return fmt.Errorf("nothing to send: keystroke chunk %d is empty", i+1)
+		}
+		if len(c) > MaxFramePayload {
+			return fmt.Errorf("keystroke chunk %d is %d bytes; at most %d can be sent at once", i+1, len(c), MaxFramePayload)
+		}
+	}
+	socket, err := inputSocket(worktree, name)
+	if err != nil {
+		return err
+	}
+	conn, err := Dial(socket, wait)
+	if err != nil {
+		return fmt.Errorf("could not reach session %s: %w", name, err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetWriteDeadline(time.Now().Add(inputWriteTimeout))
+	for i, c := range chunks {
+		if i > 0 {
+			time.Sleep(inputSubmitPause)
+		}
+		if err := WriteFrame(conn, Data, c); err != nil {
+			return fmt.Errorf("could not send keys to session %s: %w", name, err)
+		}
 	}
 	time.Sleep(inputSettlePause)
 	if err := WriteFrame(conn, Detach, nil); err != nil {

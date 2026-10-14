@@ -61,6 +61,14 @@ type Provider interface {
 	// ErrNoPlanSession, as PlanArgv does; one that finds no transcript
 	// returns ErrNoTranscript.
 	PlanConversation(q ConversationQuery) ([]ConversationEntry, error)
+	// PlanChoiceKeys returns the keystrokes that answer the planning
+	// session's open question dialog with the given labels (one list per
+	// question, in order), each element one write. The dialog is
+	// undocumented, so a provider returns only keys it has observed; a
+	// shape it cannot answer reliably is ErrChoiceUnsupported, a label not
+	// offered or a count mismatch is a plain error, and a provider that
+	// cannot run a planning session returns ErrNoPlanSession. See choice.go.
+	PlanChoiceKeys(qs []Question, choices [][]string) ([][]byte, error)
 	// ResumeArgv is the child argv that resumes an existing agent session
 	// by its id, used when the host restarts a wedged child.
 	ResumeArgv(sessionID string) []string

@@ -4899,7 +4899,7 @@ func TestPaneExitedReasonDecidesWhetherTheHostIsMarkedStopped(t *testing.T) {
 		wantRunning bool
 		wantStatus  string
 	}{
-		{"stolen", host.DetachStolen, true, "another client took over a"},
+		{"stolen", host.DetachStolen, true, "a was taken over by another window or the web page; press enter to reopen it"},
 		{"dropped", host.DetachDropped, true, "connection to a dropped — it may still be running · enter to reopen the agent"},
 		{"exited", host.DetachExited, false, "session ended: a"},
 		{"zero reason reads as exited", 0, false, "session ended: a"},
@@ -13348,7 +13348,7 @@ func TestLostPaneKeepsTheKeyboardOnTheAgentPlaceholder(t *testing.T) {
 	}{
 		{"stolen", func(p paneHandle) paneExitedMsg {
 			return paneExitedMsg{pane: p, reason: host.DetachStolen}
-		}, "another client took over a"},
+		}, "a was taken over by another window"},
 		{"dropped", func(p paneHandle) paneExitedMsg {
 			return paneExitedMsg{pane: p, reason: host.DetachDropped}
 		}, "disconnected from a"},
@@ -13435,7 +13435,7 @@ func TestLostPaneKeepsTheKeyboardOnTheAgentPlaceholder(t *testing.T) {
 		}
 		// The lost note outlives the release: if the reconnect fails, the
 		// placeholder goes back to naming why the row was lost.
-		if !m.agentPlaceholderDrawn() || m.paneLost.name != "a" || m.paneLost.message != "another client took over a" {
+		if !m.agentPlaceholderDrawn() || m.paneLost.name != "a" || m.paneLost.message != "a was taken over by another window or the web page; press enter to reopen it" {
 			t.Fatalf("the lost note should stay on the row after the keyboard leaves: drawn=%v lost=%+v", m.agentPlaceholderDrawn(), m.paneLost)
 		}
 	})
@@ -13683,5 +13683,32 @@ func TestRestartKeyMatrix(t *testing.T) {
 				t.Fatalf("r = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTakenOverNoticeSaysWhatHappenedAndHowToReopen pins the plain-words
+// sentence for a pane the host reports as Stolen. The load-bearing rows are
+// the shared text in both places (status notice and placeholder, so they
+// cannot drift), the absence of any claim that it was the web page (the
+// Stolen frame cannot say), and the host staying running: a steal is not a
+// death.
+func TestTakenOverNoticeSaysWhatHappenedAndHowToReopen(t *testing.T) {
+	const want = "a was taken over by another window or the web page; press enter to reopen it"
+	fp := newFakePane("X")
+	m := testModel(runningSess("a"))
+	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
+	m, _ = update(t, m, paneExitedMsg{pane: fp, reason: host.DetachStolen})
+
+	if m.status != want {
+		t.Fatalf("status notice = %q, want %q", m.status, want)
+	}
+	if m.paneLost.name != "a" || m.paneLost.message != want {
+		t.Fatalf("placeholder note = %+v, want name a and message %q", m.paneLost, want)
+	}
+	if !m.sessions[0].HostRunning {
+		t.Fatalf("HostRunning = false after a steal; the session is still running under the other client")
+	}
+	if strings.Contains(m.status, "another client") {
+		t.Fatalf("status %q uses the old jargon", m.status)
 	}
 }

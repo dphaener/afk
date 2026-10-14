@@ -2895,7 +2895,7 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// markHostStopped here would pin a LIVE host's PID into
 			// deadHostPIDs and hold the row at "stopped" until that PID
 			// changed — which for a live host is indefinitely.
-			m.notify(notifyInfo, "another client took over "+ended)
+			m.notify(notifyInfo, takenOverMessage(ended))
 		case msg.reason == host.DetachDropped:
 			// Not a death either, and NOT markHostStopped, for the same
 			// reason as a steal: the host closed this connection without an
@@ -5399,6 +5399,14 @@ func (m Model) releasePlaceholderFocus() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// takenOverMessage is the one sentence for a pane another client took over,
+// shared by the status notice and the placeholder so the two cannot drift. The
+// host's Stolen frame does not say who took the session, so the text names both
+// possibilities rather than claiming it was the web page.
+func takenOverMessage(name string) string {
+	return name + " was taken over by another window or the web page; press enter to reopen it"
+}
+
 // lostPaneMessage is the placeholder line for a pane that ended while its
 // session may still be running, and false for a session that ended: that row
 // reads as stopped and needs no reconnect offer.
@@ -5407,7 +5415,7 @@ func lostPaneMessage(name string, msg paneExitedMsg) (string, bool) {
 	case msg.err != nil, msg.reason == host.DetachDropped:
 		return "disconnected from " + name, true
 	case msg.reason == host.DetachStolen:
-		return "another client took over " + name, true
+		return takenOverMessage(name), true
 	}
 	return "", false
 }

@@ -28,6 +28,8 @@ import (
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
+	"github.com/dphaener/afk/internal/planchat"
+	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/state"
 	"github.com/dphaener/afk/internal/web"
@@ -950,6 +952,107 @@ func TestDaemonWebPlanChat(t *testing.T) {
 			}
 			if got.State != "none" || got.Messages == nil || len(got.Messages) != 0 {
 				t.Errorf("chat = %s, want state none and an empty list", rec.Body.String())
+			}
+		})
+	}
+}
+
+// fakeChoiceProvider answers PlanChoiceKeys with canned values; the embedded
+// interface is nil, so any other method called by mistake panics.
+type fakeChoiceProvider struct {
+	provider.Provider
+	keys [][]byte
+	err  error
+}
+
+func (f fakeChoiceProvider) PlanChoiceKeys([]provider.Question, [][]string) ([][]byte, error) {
+	return f.keys, f.err
+}
+
+// TestSendPlanReply: what reaches the planning host for each kind of reply.
+// Load-bearing: every refusal row asserts that Send was never called (a
+// refused reply must not be typed into the agent), the unsupported rows
+// (both sentinel errors become a Refusal, not a plain failure), and the
+// send-error row (a delivery failure is wrapped and is not a Refusal, so
+// the page reports it as a failure rather than a rule).
+func TestSendPlanReply(t *testing.T) {
+	choiceChat := planchat.Chat{State: planchat.StateWaitingForChoice, Questions: []provider.Question{
+		{Question: "Which?", Options: []provider.Option{{Label: "A"}, {Label: "B"}}},
+	}}
+	textChat := planchat.Chat{State: planchat.StateWaitingForText}
+	boom := errors.New("socket gone")
+	cases := []struct {
+		name       string
+		chat       planchat.Chat
+		reply      planchat.Reply
+		prov       provider.Provider
+		provErr    error
+		sendErr    error
+		wantSent   [][]byte
+		wantReason planchat.RefusalReason // "" means no refusal
+		wantErr    bool                   // a non-refusal error
+	}{
+		{name: "no session refuses", chat: planchat.Chat{State: planchat.StateNone}, reply: planchat.Reply{Text: "hi"}, wantReason: planchat.ReasonNoSession},
+		{name: "working refuses", chat: planchat.Chat{State: planchat.StateWorking}, reply: planchat.Reply{Text: "hi"}, wantReason: planchat.ReasonNotWaiting},
+		{name: "wrong kind refuses", chat: textChat, reply: planchat.Reply{Choices: [][]string{{"A"}}}, wantReason: planchat.ReasonWrongKind},
+		{name: "not offered refuses", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"Z"}}}, wantReason: planchat.ReasonNotOffered},
+		{name: "empty text refuses", chat: textChat, reply: planchat.Reply{Text: "  \n"}, wantReason: planchat.ReasonBadReply},
+		{name: "text sends paste", chat: textChat, reply: planchat.Reply{Text: "one\ntwo"},
+			wantSent: [][]byte{[]byte("\x1b[200~one\ntwo\x1b[201~"), []byte("\r")}},
+		{name: "choice sends provider keys", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"B"}}},
+			prov: fakeChoiceProvider{keys: [][]byte{[]byte("2")}}, wantSent: [][]byte{[]byte("2")}},
+		{name: "choice unsupported becomes refusal", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"A"}}},
+			prov: fakeChoiceProvider{err: provider.ErrChoiceUnsupported}, wantReason: planchat.ReasonUnsupported},
+		{name: "no plan session becomes refusal", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"A"}}},
+			prov: fakeChoiceProvider{err: provider.ErrNoPlanSession}, wantReason: planchat.ReasonUnsupported},
+		{name: "provider lookup failure is plain error", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"A"}}},
+			provErr: boom, wantErr: true},
+		{name: "key build failure is plain error", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"A"}}},
+			prov: fakeChoiceProvider{err: boom}, wantErr: true},
+		{name: "send error is wrapped", chat: textChat, reply: planchat.Reply{Text: "hi"}, sendErr: boom, wantErr: true,
+			wantSent: [][]byte{[]byte("\x1b[200~hi\x1b[201~"), []byte("\r")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sent [][]byte
+			sendCalls := 0
+			d := planReplyDeps{
+				Chat:     func(string, string) planchat.Chat { return tc.chat },
+				Provider: func(string) (provider.Provider, error) { return tc.prov, tc.provErr },
+				Send: func(_ string, chunks [][]byte) error {
+					sendCalls++
+					sent = chunks
+					return tc.sendErr
+				},
+			}
+			err := sendPlanReply("proj", "/root", tc.reply, d)
+			var refusal *planchat.Refusal
+			isRefusal := errors.As(err, &refusal)
+			switch {
+			case tc.wantReason != "":
+				if !isRefusal || refusal.Reason != tc.wantReason {
+					t.Fatalf("err = %v, want refusal %q", err, tc.wantReason)
+				}
+				if sendCalls != 0 {
+					t.Fatalf("a refused reply was sent: %q", sent)
+				}
+			case tc.wantErr:
+				if err == nil || isRefusal {
+					t.Fatalf("err = %v, want a plain error", err)
+				}
+				if tc.sendErr != nil && !errors.Is(err, tc.sendErr) {
+					t.Fatalf("send error not wrapped: %v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+			}
+			if tc.wantSent != nil && !reflect.DeepEqual(sent, tc.wantSent) {
+				t.Fatalf("sent %q, want %q", sent, tc.wantSent)
+			}
+			if tc.wantSent == nil && sendCalls != 0 {
+				t.Fatalf("unexpected send: %q", sent)
 			}
 		})
 	}

@@ -76,6 +76,10 @@ type rig struct {
 	// chatCalls records the (name, root) pairs it was asked for.
 	chat      planchat.Chat
 	chatCalls [][2]string
+	// replies records what the fake PlanReply was given; replyErr is what
+	// it returns.
+	replies  []planchat.Reply
+	replyErr error
 }
 
 // testPlan is a small master plan the checker has nothing to say about, with
@@ -191,6 +195,11 @@ func newRig(t *testing.T, cfg Config) *rig {
 			c := rg.chat
 			c.Project = project
 			return c
+		},
+		PlanReply: func(project, root string, r planchat.Reply) error {
+			rg.chatCalls = append(rg.chatCalls, [2]string{project, root})
+			rg.replies = append(rg.replies, r)
+			return rg.replyErr
 		},
 		// The fakes do the real file change, so the summary that comes
 		// back proves it was read after the call and not before.

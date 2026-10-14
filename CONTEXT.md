@@ -193,3 +193,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Short total**: the selected Build tab row's weighted token total, shortened (`2.9M weighted`), shown only when the row has room.
 - **Live part**: one of the things an open web page updates by itself when its files change: `inbox`, `ledger`, `pause`, `sessions`, `planning` or `usage`. Named in the events of the page's `/events` stream.
 - **Planning chat**: a project's open planning session read as messages (the agent's and the owner's) plus its state (`none`, `working`, `waiting_for_text`, `waiting_for_choice`, `unknown`), served at `GET /api/p/<project>/plan/chat` and built by `internal/planchat`.
+- **Plan reply**: the owner's answer to the planning chat, sent with `POST /api/p/<project>/plan/chat`: typed text (sent as one bracketed paste and Enter) or one chosen option per pending question (sent as the keys the agent's question dialog takes).
+- **Taken over**: what the dashboard says when another client, such as a plan reply from the web page, takes a session's one client slot from its pane; enter reopens the pane.
