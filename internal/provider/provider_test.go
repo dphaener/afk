@@ -2,9 +2,11 @@ package provider
 
 import (
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestLookup pins the name resolution. Load-bearing rows: "" must resolve to
@@ -173,6 +175,47 @@ func TestPlanArgv(t *testing.T) {
 	for _, n := range Names() {
 		if !covered[n] {
 			t.Errorf("provider %q has no row in TestPlanArgv", n)
+		}
+	}
+}
+
+// TestPlanConversationUnsupported sits beside TestPlanArgv because the two
+// must agree: a provider that cannot start a planning session cannot have
+// one to read. Load-bearing rows: "codex" and "opencode" must return
+// ErrNoPlanSession with no entries, which the web page turns into "no
+// planning session" rather than an error. The query names a home that does
+// not exist, so a provider that tried to read anyway would show up as a
+// different error. The loop below holds that every provider other than the
+// default has a row; the default's reading is TestPlanConversation's.
+func TestPlanConversationUnsupported(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+	}{
+		{"codex", CodexName},
+		{"opencode", OpenCodeName},
+	}
+	covered := map[string]bool{ClaudeName: true}
+	q := ConversationQuery{Home: filepath.Join(t.TempDir(), "absent"), Root: "/work/project", StartedAt: time.Now()}
+	for _, tt := range tests {
+		covered[tt.provider] = true
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := Lookup(tt.provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := p.PlanConversation(q)
+			if !errors.Is(err, ErrNoPlanSession) {
+				t.Fatalf("PlanConversation error = %v, want ErrNoPlanSession", err)
+			}
+			if got != nil {
+				t.Errorf("PlanConversation entries = %v, want nil", got)
+			}
+		})
+	}
+	for _, n := range Names() {
+		if !covered[n] {
+			t.Errorf("provider %q has no row in TestPlanConversationUnsupported", n)
 		}
 	}
 }

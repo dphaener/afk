@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
+	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/session"
@@ -902,5 +904,53 @@ func TestProjectList(t *testing.T) {
 	want := []daemon.Project{{Name: "a", Root: "/a"}, {Name: "b", Root: "/b"}}
 	if again := l.get(); !reflect.DeepEqual(again, want) {
 		t.Errorf("the list is %v after both sides changed their copies, want %v", again, want)
+	}
+}
+
+// TestDaemonWebPlanChat checks the real wiring of the planning chat: with no
+// planning host, or a host whose process is gone, the chat is "none".
+//
+// Load-bearing row: "dead pid". A host.json is left behind when a planning
+// session ends, so a transcript must not be read (or reported as a problem)
+// for it; "none" is the only right answer.
+func TestDaemonWebPlanChat(t *testing.T) {
+	// A pid that is certainly dead: a child that has been run and waited for.
+	child := exec.Command("true")
+	if err := child.Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadPID := child.Process.Pid
+
+	tests := []struct {
+		name string
+		meta *host.Meta
+	}{
+		{name: "no host.json"},
+		{name: "dead pid", meta: &host.Meta{PID: deadPID, StartedAt: "2026-10-14T09:00:00Z"}},
+		{name: "dead pid and unreadable start", meta: &host.Meta{PID: deadPID, StartedAt: "yesterday"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWebRig(t)
+			if tc.meta != nil {
+				if err := host.WriteMeta(w.root, session.PlanSessionName, *tc.meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rec := w.get("/api/p/demo/plan/chat")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body.String())
+			}
+			var got struct {
+				State    string `json:"state"`
+				Messages []any  `json:"messages"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.State != "none" || got.Messages == nil || len(got.Messages) != 0 {
+				t.Errorf("chat = %s, want state none and an empty list", rec.Body.String())
+			}
+		})
 	}
 }

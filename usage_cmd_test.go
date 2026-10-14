@@ -31,6 +31,12 @@ func (f *fakeProvider) ResumeArgv(string) []string             { return nil }
 // PlanArgv is here only to satisfy provider.Provider; the usage command never
 // starts a planning session.
 func (f *fakeProvider) PlanArgv() ([]string, error) { return nil, provider.ErrNoPlanSession }
+
+// PlanConversation is here only to satisfy provider.Provider; the usage
+// command never reads a planning conversation.
+func (f *fakeProvider) PlanConversation(provider.ConversationQuery) ([]provider.ConversationEntry, error) {
+	return nil, provider.ErrNoPlanSession
+}
 func (f *fakeProvider) Preflight(string, func(string, string, ...string) (string, error)) (bool, string) {
 	return true, ""
 }

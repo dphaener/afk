@@ -2942,3 +2942,24 @@ Decided while building (T8.2):
 - **A refused 33rd stream gets the ordinary error page** (503, HTML), not an event stream. `/api/events` is not found.
 - **The keep-alive line travels in each stream's queue** like a change, so there is no second timer; it shares the 16 slots.
 - **Planning file paths.** `state.json` comes from `internal/plansession`; the other three are written out in `internal/web`, because importing `internal/session` for one name would pull the host packages into the web page.
+
+## T8.3
+
+T8.3 reads a project's open planning session as a chat, `GET /api/p/<project>/plan/chat`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **How the conversation is found (A1).** No conversation id is recorded. The agent's id exists only once it is running, and handing it one at launch would change how every planning host is started, the dashboard's relaunch included. Instead the provider looks in its own transcript folder for the project's main checkout and takes the newest conversation that began no more than a minute before the planning host started, ran in that checkout, and opened with the planning command. The command check keeps the owner's own agent session in the same checkout out of the chat. A conversation cleared inside the planning session no longer opens with the command, so the chat keeps showing the earlier one; that is accepted.
+- **One decision for the page and the daemon (A2).** `internal/planchat` holds the pure function that turns the conversation into messages and decides whether the session waits, so T8.13's notifications use the same answer as the page.
+- **What the address returns (A3, A4).** `{"project","state","messages","questions","problem"}`. `state` is `none`, `working`, `waiting_for_text`, `waiting_for_choice` or `unknown`. A question call can ask several questions at once, so a message and the pending state carry a list; an option is recommended when its label says "(recommended)". A conversation that cannot be read is answered with 200, state `unknown` and a plain `problem`, as the plan view shows its problems.
+- **What shows (A5).** The agent's and the owner's text, questions with their options, and answers as the owner's messages. Other tool calls, the agent's thinking, tool results, the session's own housekeeping (skill text, the planning command, background-task notices, interrupt markers) and sub-agent work are left out.
+- **When it waits for typed text (A6).** When its last turn ended and nothing it started in the background is still running; a planning agent that is waiting on its own researchers or critic is working, not waiting. An unanswered question means it waits for a choice.
+- **Only a live host is read (A7).** The conversation is read only when the planning host's `host.json` exists and its process answers signal 0; otherwise the state is `none`. A host that started less than two minutes ago with no conversation yet is `working`; later the state is `unknown` with a plain reason.
+- **No page yet, not live yet (A8, A9).** The address is served only under `/api`, like `/events`; T8.12 adds the chat page and adds the conversation to the `planning` live part.
+- **Tests and prerequisites (A10, A11).** Table tests over hand-written transcripts are written with the code. Nothing had to be in place first.
+
+Decided while building (T8.3):
+
+- **Fixtures are not under a `.claude/` folder.** The owner's global git ignore leaves out `.claude/`, so a fixture laid out as a fake home would never be committed. Each case in `internal/provider/testdata/plan-chat/` holds the transcript folder itself, and the test copies it into a temporary home.
+- **The folder name for a checkout** replaces every character outside letters and digits with `-`, as seen on this machine. It is unchecked for very long or non-ASCII paths; if the agent CLI shortens those, the chat says it cannot find the conversation rather than showing the wrong one.
+- **Only an answer clears a question.** Text the owner types while a question is open, with no answer recorded for it, still reads as waiting for a choice. A declined question writes an answer, so this is rare; T8.4 should confirm it against the real agent.
+- **One turn end per turn.** A turn's two end lines become one end, so a duplicate end line never counts twice.
+- **Proved against a built binary (W4.T1).** With a stand-in planning host and a fixture transcript in a scratch home, the address returned `waiting_for_choice` with the messages and both questions' options; after the stand-in stopped it returned `none`; with no token it answered 401.

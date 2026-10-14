@@ -1071,7 +1071,7 @@ path = "/srv/another-app"
 
 **Pause and resume.** The buttons do what [`afk pause` and `afk resume`](#afk-pause-and-afk-resume--hold-and-release-the-daemon) do, including clearing a stopped line, and write to the decision log in the same way.
 
-**The JSON API.** Every page has a JSON twin under `/api`: `GET /api/`, `GET /api/usage`, `GET /api/p/<project>`, `GET /api/p/<project>/inbox`, `GET /api/p/<project>/inbox/<id>`, and `POST` to `/api/p/<project>/inbox/<id>/answer` (a body of `{"answer": "text"}` with `Content-Type: application/json`), `/api/p/<project>/pause` and `/api/p/<project>/resume`. Send the token in a header:
+**The JSON API.** Every page has a JSON twin under `/api`: `GET /api/`, `GET /api/usage`, `GET /api/p/<project>`, `GET /api/p/<project>/inbox`, `GET /api/p/<project>/inbox/<id>`, and `POST` to `/api/p/<project>/inbox/<id>/answer` (a body of `{"answer": "text"}` with `Content-Type: application/json`), `/api/p/<project>/pause` and `/api/p/<project>/resume`, and `GET /api/p/<project>/plan/chat`. The last one returns the project's open planning session as its messages, with `state` (`none` when no planning session is open, `working`, `waiting_for_text`, `waiting_for_choice`, or `unknown`), the pending `questions` with their options, and a `problem` sentence when the conversation cannot be read. It reads the conversation only while the planning session is running, and it has no page yet. Send the token in a header:
 
 ```bash
 curl -H "Authorization: Bearer <your token>" http://127.0.0.1:4253/api/p/my-app

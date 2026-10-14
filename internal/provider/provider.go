@@ -51,6 +51,16 @@ type Provider interface {
 	// no such skill returns a nil argv and ErrNoPlanSession, so a caller can
 	// refuse before anything is started and never falls back to a bare agent.
 	PlanArgv() ([]string, error)
+	// PlanConversation returns the open planning session's conversation as
+	// provider-neutral entries, for the web page's chat (conversation.go).
+	// It exists because a planning session records no conversation id
+	// (it has host.json but no status.json), so only the provider knows
+	// where its CLI keeps the conversation and how to tell which file is
+	// this session's. It reads files under q.Home only, writes nothing and
+	// runs nothing. A provider that cannot run a planning session returns
+	// ErrNoPlanSession, as PlanArgv does; one that finds no transcript
+	// returns ErrNoTranscript.
+	PlanConversation(q ConversationQuery) ([]ConversationEntry, error)
 	// ResumeArgv is the child argv that resumes an existing agent session
 	// by its id, used when the host restarts a wedged child.
 	ResumeArgv(sessionID string) []string

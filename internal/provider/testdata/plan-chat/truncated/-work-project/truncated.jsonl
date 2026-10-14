@@ -1,0 +1,6 @@
+{"type":"user","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:01.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"<command-message>afk:master-plan</command-message>\n<command-name>/afk:master-plan</command-name>"}}
+{"type":"assistant","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:05.000Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"First answer."}]}}
+{"type":"system","subtype":"stop_hook_summary","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:06.000Z","hookCount":1}
+{"type":"system","subtype":"turn_duration","isMeta":false,"isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:06.100Z","durationMs":1000}
+{"type":"user","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:20.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"Next please."}}
+{"type":"assistant","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:21.000Z","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Half wri

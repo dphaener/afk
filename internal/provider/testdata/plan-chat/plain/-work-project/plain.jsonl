@@ -1,0 +1,13 @@
+{"type":"mode","mode":"normal","sessionId":"S"}
+{"type":"user","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:01.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"<command-message>afk:master-plan</command-message>\n<command-name>/afk:master-plan</command-name>"}}
+{"type":"user","isMeta":true,"isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /skills/master-plan\n\nPlan the project."}]}}
+{"type":"assistant","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:02.000Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"The owner wants a plan.","signature":"x"}]}}
+{"type":"assistant","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:03.000Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Hello. What do you want to build?"}]}}
+{"type":"assistant","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:03.200Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Tell me in a sentence or two."}]}}
+{"type":"system","subtype":"stop_hook_summary","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:04.000Z","hookCount":1}
+{"type":"attachment","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:04.100Z","attachment":{"type":"todo"}}
+{"type":"user","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:30.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"A todo app for my family."}}
+{"type":"assistant","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:31.000Z","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Got it."}]}}
+{"type":"system","subtype":"stop_hook_summary","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:32.000Z","hookCount":1}
+{"type":"system","subtype":"turn_duration","isMeta":false,"isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:32.500Z","durationMs":1000}
+{"type":"user","isSidechain":false,"cwd":"/work/project","sessionId":"S","timestamp":"2026-10-14T10:00:33.000Z","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>The date changed.</system-reminder>"}]}}

@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":false,"cwd":"/work/other","sessionId":"O","timestamp":"2026-10-14T10:00:01.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"<command-message>afk:master-plan</command-message>\n<command-name>/afk:master-plan</command-name>"}}
+{"type":"assistant","isSidechain":false,"cwd":"/work/other","sessionId":"O","timestamp":"2026-10-14T10:00:05.000Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Another project."}]}}
