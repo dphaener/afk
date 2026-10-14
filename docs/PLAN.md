@@ -2416,7 +2416,7 @@ thing it does not do is attach to a session.
 #### T8.6 — Inbox, pause and resume in the new design
 - **Depends on:** T8.5
 - **Goal:** the project page, the inbox list, an item and its answer form, and the pause and resume
-  buttons are rebuilt from the design system, with the same behaviour as today.
+  buttons are rebuilt from the design system, with the same behaviour as today, except that pause and resume now ask first (Scope).
 - **Background:** these exist (T3.1): `project.html`, `item.html`, the POSTs to `…/answer`, `pause` and
   `resume`, `inbox.Store.Answer(…, inbox.ViaWeb)`, and `pauseProject`/`resumeProject` in
   `pause_cmd.go`.
@@ -2424,9 +2424,26 @@ thing it does not do is attach to a session.
   build's state update live through T8.2; answering and pausing work without a full reload when
   JavaScript is on and with one when it is off. An item's options are buttons and its free text a
   field, as today; typed text still wins over a selected option (`docs/decisions.md`, `## T3.1`).
+  From the design system (reconciled 2026-10-13): the Project screen is a state `card` (state `badge`,
+  "Updated 12 s ago", an `h2` headline in words, one line of detail, `progress`, and the one next
+  action as the primary button: **Answer in the inbox**, **Resume**, **Read and approve the plan**, or
+  none), **Running now** rows, **Pause project** or **Resume project**, a Plan row, a `nav-list` to
+  the project's screens (each item shown once the task that builds its screen has landed) and a `kv`
+  of Folder and Repository. The inbox is its own screen: a `notice--attention` saying how many items
+  hold a task up, rows with blocking ones first (`badge--blocking`, `tid`, the question, source and
+  age), and the `empty` "Nothing needs you". An item shows its question as an `h2`, its context as
+  `prose`, its options as `option` buttons (the recommended one first and marked) and a `textarea` "Or
+  write your own"; **Send answer** is disabled until something is picked or written; a `toast` says
+  what happened and the page goes back to the list. An owner task's item shows its instruction and a
+  single **Mark as done**, which records the same answer today's form records for it. Pause and resume
+  each ask first in a `confirm-sheet`, as the owner chose on 2026-10-13 and as the §2 row "Web page as
+  command center" says of every owner-only action: pausing says the running task finishes and nothing
+  new starts, resuming says what starts again. A pause or resume POST without the confirm changes
+  nothing, and today's tests of those POSTs gain the confirm. Toasts and confirm sentences say only
+  what really happened ("ready again" only when no other item holds the task).
   README: the web page section where it describes these screens.
 - **Must not:** change what an answer, a pause or a resume writes; write the ledger.
-- **Acceptance:** handler tests for each screen and each POST as today's tests, kept green. Against a
+- **Acceptance:** handler tests for each screen and each POST as today's tests, kept green, and a pause or resume POST without the confirm changing nothing. Against a
   scratch build in a throwaway repository with an open blocking item, in a browser at phone width:
   answering it marks it answered from the web, pause creates `.afk/build/paused` and resume removes
   it, and the page shows each change without a manual reload. An automated WCAG 2.2 AA check of the
