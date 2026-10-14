@@ -2465,3 +2465,35 @@ Search folders move into `config.toml` and `config.json` is retired. Decisions t
 
 - On the always-on machine, add a `[dash]` table with a real search folder to `config.toml`, open `afk dash` and press `p`: projects under that folder should be listed. If a `config.json` is still in afk's config folder, the notice should show once, and the lines it prints should load. The check here used a scratch config folder and throwaway projects.
 - `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.
+
+## T6.4
+
+T6.4 adds a count of the active project's inbox items to the dashboard's header. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The words (A1).** `inbox 3` when items are open, `inbox 3 · 2 blocking` when some of them hold a task up, and `i: inbox` beside them when there is room. One item reads the same way (`inbox 1 · 1 blocking`). With nothing open the header shows nothing new.
+- **What the header gives up first (A2).** As the screen narrows: the switch-projects hint, then the inbox hint, then the awaiting names shorten, then the usage text shortens, then the open count goes (leaving `2 blocking`), then the afk badge, then the short usage text, then the awaiting line, then the blocking count, and the "stale" warning last. The blocking count outlasts the badge, the hint and the short usage because it is a task in this project waiting on the owner. The stale warning stays last, as in T3.2 (A10), because it says nothing else on the row can be trusted.
+- **Where it sits (A3).** On the right, before the usage text. The open count is dim; the blocking count uses the same warning colour as the awaiting line.
+- **The hint hides while the agent has the keyboard (A4).** There `i` is typed to the agent, so the hint would be wrong.
+- **One order for every header (A5).** The header used to have two orders, one with a usage reading and one without. They are now one list in which a missing piece is simply skipped, and every header without inbox items looks exactly as before.
+- **Tests and prerequisites (A6, A7).** Tests are written with the change and the saved screens updated. Nothing had to be in place first.
+
+### Decided while building
+
+- **One exception to the order.** With nothing on the right but the switch-projects hint (no usage reading, no open item), the awaiting names shorten before the hint goes, as they always have. Otherwise the order above applies as written. Without the exception, headers with no inbox items would have changed.
+- **The last few cells.** Below about 10 columns, when nothing fits whole, the header cuts what is left in this order of preference: the stale warning, the awaiting line, the blocking count, the short usage text, the badge.
+- **No new saved screen.** Three saved screens already have open items (the Build tab and the two inbox screens at 120 by 40). Only their first line changed. The narrow widths are covered by a table test.
+- **"The agent has the keyboard"** is the dashboard's own test for when keys go to the agent (`paneOwnsKeyboard`).
+
+### Checked, and not checked
+
+- **Checked against a scratch build** (never `~/bin`), in a throwaway repository driven through tmux. With one blocking and one plain item the header read `inbox 2 · 1 blocking  i: inbox`. After the blocking item was answered in the overlay it read `inbox 1  i: inbox`. At 40 columns the hint was gone. At 30 columns only the badge and `1 blocking` were left. A repository with no items showed no inbox text. All three review checks passed.
+- **Not checked: the hint beside a live agent.** No real agent ran. Owner check: focus an agent pane and see that `i: inbox` leaves the header while the count stays.
+
+### The review
+
+All three checks passed. These minor notes were left as they are:
+- The planner and conductor edited this file and `CONTEXT.md` themselves, as they are meant to.
+- The last-cells order puts the awaiting line ahead of the blocking count, the reverse of the main order. It was planned that way.
+- One end-to-end host test, in code this change does not touch, timed out once under load and passed when run again.

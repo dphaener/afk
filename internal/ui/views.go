@@ -858,6 +858,10 @@ const headerBadgeText = "afk Dashboard"
 // user can press, not something that happened.
 const headerSwitchHint = "p: switch projects"
 
+// headerInboxHint is the inbox segment's affordance, styled and named the way
+// headerSwitchHint is, for the same reason: it is a key the reader can press.
+const headerInboxHint = "i: inbox"
+
 // headerPieces are the header's parts before headerLine's width ladder
 // decides which survive. Each is independently zeroable to "" and headerLine
 // copes with any combination of them, and each arrives pre-styled so
@@ -895,6 +899,17 @@ type headerPieces struct {
 	// header without a build exactly as it was.
 	usage      string
 	usageShort string
+	// inbox is the active project's open inbox items — "inbox 3", or
+	// "inbox 3 · 2 blocking" when some of them hold a task up — and
+	// inboxShort is the blocking part alone, "2 blocking", or "" when nothing
+	// blocks. The ladder trades the first for the second, so items that only
+	// wait to be read leave the row before items that stop the build do.
+	// inboxHint is "i: inbox". All three are "" when no item is open or no
+	// build snapshot has arrived, which keeps a quiet project's header exactly
+	// as it was before the inbox existed.
+	inbox      string
+	inboxShort string
+	inboxHint  string
 	hint       string // "" with one or zero known projects
 }
 
@@ -916,6 +931,9 @@ func (m Model) headerPieces() headerPieces {
 	}
 
 	p.usage, p.usageShort = m.usagePieces()
+	// Before the early return below: the inbox belongs to the active project,
+	// so it has nothing to do with whether any OTHER project is awaiting.
+	p.inbox, p.inboxShort, p.inboxHint = m.inboxPieces()
 
 	others := m.awaitingElsewhere()
 	if len(others) == 0 {
@@ -954,6 +972,39 @@ func (m Model) usagePieces() (long, short string) {
 		style = theme.awaitingFlag
 	}
 	return style.Render(l), style.Render(s)
+}
+
+// inboxPieces styles the active project's inbox counts for the header. They
+// come from the build snapshot the refresh tick already loads (m.build), the
+// same read the Build tab's summary line counts with buildview.OpenCounts, so
+// the header and the tab can never disagree and View still touches no file.
+//
+// It asks only for m.buildKnown, not m.build.HasBuild: the inbox is read
+// whether or not the project has a master plan, and an owner with a question
+// waiting needs to hear about it either way. Files the loader could not read
+// (m.build.Unreadable) are not items and are not counted; the Build tab is
+// where they are reported.
+//
+// The hint is left off while the agent pane owns the keyboard, because there
+// `i` is typed to the agent (inputPane forwards every unclaimed key to the
+// child) and advertising it would promise a key that does something else.
+func (m Model) inboxPieces() (long, short, hint string) {
+	if !m.buildKnown {
+		return "", "", ""
+	}
+	open, blocking := buildview.OpenCounts(m.build.Items)
+	if open == 0 {
+		return "", "", ""
+	}
+	long = theme.dim.Render(fmt.Sprintf("inbox %d", open))
+	if blocking > 0 {
+		short = theme.awaitingFlag.Render(fmt.Sprintf("%d blocking", blocking))
+		long += theme.dim.Render(" · ") + short
+	}
+	if !m.paneOwnsKeyboard() {
+		hint = theme.dim.Render(headerInboxHint)
+	}
+	return long, short, hint
 }
 
 // attentionNamed is the attention line with the projects named: a warning
@@ -1002,54 +1053,65 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 }
 
 // headerLine lays the pieces out for width: the badge, the staleness signal
-// and the attention line on the left, the hint right-aligned, and at least
-// headerMinGap cells between them so the two halves never read as one run of
-// text. It tries the candidates richest-first and takes the first that fits,
-// so a narrowing terminal sheds the least useful piece first and never wraps
-// or cuts a name mid-word until there is no other choice. Pure, so the whole
-// ladder is table-testable from plain unstyled pieces
-// (TestHeaderLineDegradesInOrder).
+// and the attention line on the left; the inbox counts, the inbox hint, the
+// usage text and the switch hint on the right, in that order and right-aligned;
+// and at least headerMinGap cells between the halves so they never read as one
+// run of text. It tries the candidates richest-first and takes the first that
+// fits, so a narrowing terminal sheds the least useful piece first and never
+// wraps or cuts a name mid-word until there is no other choice. Pure, so the
+// whole ladder is table-testable from plain unstyled pieces
+// (TestHeaderLineDegradesInOrder, TestHeaderLineDegradesWithInbox).
 //
-// The drop order, richest to poorest, with no usage reading (the common case
-// for anyone not running a build):
+// There is one drop sequence for every combination of pieces. Each step takes
+// one piece away (or swaps it for its short form); a step whose piece is
+// absent changes nothing and adds no rung. Weakest first:
 //
-//  1. badge + stale + named attention + hint
-//  2. badge + stale + aggregate attention + hint
-//  3. badge + stale + aggregate attention
-//  4. stale + aggregate attention — badge dropped
-//  5. stale ALONE — attention dropped too
-//  6. whatever is left, truncated
+//  1. the switch hint
+//  2. the inbox hint
+//  3. the attention line's names, for the aggregate
+//  4. the long usage text, for the short
+//  5. the long inbox text, for the blocking count alone (items that only
+//     wait to be read leave the row here)
+//  6. the badge
+//  7. the short usage text
+//  8. the attention line
+//  9. the blocking count
+//  10. and the staleness signal is what is left, truncated if it must be
 //
-// With a usage reading (the governor's state and the tightest window) the
-// right half carries it before the hint, and the pieces go weakest first:
-// the switch hint; the named attention for the aggregate; the long usage text
-// for the short; the badge; the short usage; the attention; the staleness
-// signal last. The short usage outlives the badge because it says whether the
-// build is being held back, which the reader cannot see anywhere else on the
-// row, while the badge says what they already know. It goes before attention
-// and staleness because those ask the reader to act, or say the screen is
-// wrong, and a usage note is neither.
+// With the switch hint alone on the right (no usage reading and no open
+// inbox item, the common case for anyone not running a build), steps 1 and 3
+// swap: the names collapse before the hint goes, the order this header has
+// always had there. Once the right half carries anything else, the hint is
+// its weakest piece, since it only repeats what the key help says.
 //
-// Rungs 4 and 5 look wrong and are not. They rank the three left-hand pieces
-// against each other, weakest first: the BADGE goes before anything else, on
-// the grounds that an alert you can act on outranks a brand mark — the badge
-// tells the reader something they already know, that they launched this
-// program, while "● 3 awaiting in gamma" asks them to go do something in a
-// project they cannot otherwise see from here.
+// The blocking count outlasts the badge, both hints and the short usage
+// because it asks the owner to act in THIS project: a task is stopped until
+// they answer, and no other part of the frame says so outside the Build tab.
+// The short usage outlives the badge because it says whether the build is
+// being held back, which the reader cannot see anywhere else on the row,
+// while the badge says what they already know. The usage goes before the
+// attention line and the blocking count because those ask the reader to act,
+// and a usage note does not.
 //
-// The attention line then goes before the staleness signal, because staleness
-// is not one more fact competing with the others: it is the statement that
-// the others cannot be trusted. A frozen list invalidates everything else on
-// the frame, the cross-project counts included — they come from the same
-// discovery machinery — so a header showing "● 3 awaiting in gamma" over a
-// dead refresh is worse than one showing nothing at all, and the last cells
-// belong to the piece that says so. It is also the rarest piece by far
+// The badge going before the alerts looks wrong and is not. An alert you can
+// act on outranks a brand mark: the badge tells the reader that they launched
+// this program, while "● 3 awaiting in gamma" asks them to go do something in
+// a project they cannot otherwise see from here.
+//
+// The attention line goes before the blocking count because the count is the
+// active project's own, read from its files on this tick, while the attention
+// line's counts lag by up to a minute (awaitingElsewhere) and can be read
+// from the switcher. Both then go before the staleness signal, because
+// staleness is not one more fact competing with the others: it is the
+// statement that the others cannot be trusted. A frozen list invalidates
+// everything else on the frame, so a header showing "● 3 awaiting in gamma"
+// over a dead refresh is worse than one showing nothing at all, and the last
+// cells belong to the piece that says so. It is also the rarest piece by far
 // (discovery is healthy nearly always), so surrendering these rungs to it
 // costs the common case nothing.
 //
-// The badge is the last thing standing only when nothing is awaiting
-// elsewhere and discovery is healthy, which is also the only case where it is
-// the only thing there is.
+// The badge is the last thing standing only when nothing else is there at
+// all, which is also the only case where it is the only thing there is.
 //
 // Every fitting rung pads out to the full width, the empty-right-half rungs
 // included, so the string this function RETURNS is width cells wide in every
@@ -1058,13 +1120,13 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 // What lands on screen is not always. With a modal or a toast up, the frame
 // goes through lipgloss's Canvas, and Canvas.Render is documented to trim
 // trailing spaces (lipgloss/v2@v2.0.6 canvas.go:85 — `uv.TrimSpace`), so a
-// header with nothing on its right half arrives at badge width instead.
-// Seven of the fifteen golden frames are exactly that case: line 1 is 17
-// cells under a modal, against 120 in the frames with no overlay and in the
-// two whose hint reaches the right edge. The trimmed cells were blank either
-// way, so nothing shifts — but the padding is this function's contract, not
-// the rendered frame's, and a reader measuring a fixture against this
-// comment has to know which of the two they are looking at.
+// header with nothing on its right half arrives at badge width instead. The
+// golden frames under a modal show exactly that case: line 1 is the badge
+// alone, against the full width in the frames with no overlay and in those
+// whose right half reaches the edge. The trimmed cells were blank either way,
+// so nothing shifts — but the padding is this function's contract, not the
+// rendered frame's, and a reader measuring a fixture against this comment has
+// to know which of the two they are looking at.
 func headerLine(p headerPieces, width int) string {
 	// alerts is the badgeless left half: the staleness signal, then the
 	// attention line. Two plain spaces between them, not the " · " the
@@ -1079,72 +1141,87 @@ func headerLine(p headerPieces, width int) string {
 		}
 		return p.stale + "  " + attention
 	}
-	left := func(attention string) string {
-		rest := alerts(attention)
-		switch {
-		case p.badge == "":
-			return rest
-		case rest == "":
-			return p.badge
-		}
-		// One plain space, not the " · " the clauses themselves join with:
-		// theme.header's Padding(0, 1) already lays a cell of accent
-		// background after the badge text, and a separator glyph butted
-		// against that edge reads as part of the badge.
-		return p.badge + " " + rest
+	// keep is which pieces a rung still shows. The staleness signal has no
+	// field because no step removes it: only the truncating fallback can.
+	type keep struct {
+		hint, inboxHint, named, usageLong, inboxLong bool
+		badge, usage, attention, blocking            bool
 	}
 	type rung struct{ l, r string }
-	var candidates []rung
-	if p.usage == "" && p.usageShort == "" {
-		candidates = []rung{
-			{left(p.attention), p.hint},
-			{left(p.attentionShort), p.hint},
-			{left(p.attentionShort), ""},
-		}
-		// Rung 4 exists only when there IS something to keep after the badge
-		// goes. With neither a staleness signal nor an attention line it would
-		// be an empty left half beside an empty right half, which "fits" at
-		// every width — it would swallow the badge into a row of spaces before
-		// the truncating rung ever got the chance at it.
-		if rest := alerts(p.attentionShort); rest != "" {
-			candidates = append(candidates, rung{rest, ""})
-		}
-	} else {
-		// With a usage reading the right half is usage, then the hint, and
-		// the hint goes first: it is the one piece that only repeats what the
-		// key help says. Then the names collapse, then the long usage text,
-		// then the badge. Short usage stays with the left half's alerts after
-		// the badge is gone, and only the alerts themselves outlive it.
-		right := func(u string, withHint bool) string {
-			switch {
-			case u == "":
-				if withHint {
-					return p.hint
-				}
-				return ""
-			case withHint && p.hint != "":
-				return u + "  " + p.hint
+	draw := func(k keep) rung {
+		attention := ""
+		if k.attention {
+			attention = p.attentionShort
+			if k.named {
+				attention = p.attention
 			}
-			return u
 		}
-		candidates = []rung{
-			{left(p.attention), right(p.usage, true)},
-			{left(p.attention), right(p.usage, false)},
-			{left(p.attentionShort), right(p.usage, false)},
-			{left(p.attentionShort), right(p.usageShort, false)},
-			// Badge dropped. The left half may be empty here, which is
-			// intended: the short usage then stands alone on the right.
-			{alerts(p.attentionShort), right(p.usageShort, false)},
+		l := alerts(attention)
+		if k.badge && p.badge != "" {
+			// One plain space, not the " · " the clauses themselves join
+			// with: theme.header's Padding(0, 1) already lays a cell of
+			// accent background after the badge text, and a separator glyph
+			// butted against that edge reads as part of the badge.
+			if l == "" {
+				l = p.badge
+			} else {
+				l = p.badge + " " + l
+			}
 		}
-		if rest := alerts(p.attentionShort); rest != "" {
-			candidates = append(candidates, rung{rest, ""})
+		var right []string
+		add := func(on bool, s string) {
+			if on && s != "" {
+				right = append(right, s)
+			}
 		}
+		if k.inboxLong {
+			add(true, p.inbox)
+		} else {
+			add(k.blocking, p.inboxShort)
+		}
+		add(k.inboxHint, p.inboxHint)
+		if k.usageLong {
+			add(true, p.usage)
+		} else {
+			add(k.usage, p.usageShort)
+		}
+		add(k.hint, p.hint)
+		// Two plain spaces between right-half pieces, the gap the halves
+		// themselves keep, so each reads as its own item.
+		return rung{l, strings.Join(right, "  ")}
 	}
-	// The staleness signal alone only differs from the rung above when both
-	// alerts are standing; with one missing that rung already IS the survivor
-	// and a duplicate would be dead width arithmetic.
-	if p.stale != "" && p.attentionShort != "" {
-		candidates = append(candidates, rung{p.stale, ""})
+
+	dropHint := func(k *keep) { k.hint = false }
+	dropInboxHint := func(k *keep) { k.inboxHint = false }
+	collapseNames := func(k *keep) { k.named = false }
+	steps := []func(*keep){dropHint, dropInboxHint, collapseNames}
+	if p.usage == "" && p.usageShort == "" && p.inbox == "" {
+		steps = []func(*keep){collapseNames, dropHint, dropInboxHint}
+	}
+	steps = append(steps,
+		func(k *keep) { k.usageLong = false },
+		func(k *keep) { k.inboxLong = false },
+		func(k *keep) { k.badge = false },
+		func(k *keep) { k.usage = false },
+		func(k *keep) { k.attention = false },
+		func(k *keep) { k.blocking = false },
+	)
+
+	k := keep{true, true, true, true, true, true, true, true, true}
+	candidates := []rung{draw(k)}
+	for _, step := range steps {
+		step(&k)
+		c := draw(k)
+		// A step whose piece is absent repeats the rung above, which would
+		// only be dead width arithmetic. And a rung with both halves empty
+		// "fits" at every width: it would swallow the last piece standing
+		// into a row of spaces before the truncating fallback ever got the
+		// chance at it. The first rung is exempt from neither on purpose —
+		// it has no rung above — but it is only empty when every piece is.
+		if c == candidates[len(candidates)-1] || (c.l == "" && c.r == "") {
+			continue
+		}
+		candidates = append(candidates, c)
 	}
 	for _, c := range candidates {
 		minGap := headerMinGap
@@ -1157,22 +1234,21 @@ func headerLine(p headerPieces, width int) string {
 			return c.l + strings.Repeat(" ", gap) + c.r
 		}
 	}
-	// Last resort, and the same ranking one rung further down: the staleness
-	// signal outlives the attention line, which outlives the badge, for the
-	// reasons the drop order above gives. truncate's own contract returns ""
-	// at width <= 0, which is what keeps a zero-width frame from emitting a
+	// Last resort: one piece, truncated. The staleness signal still comes
+	// first, for the reasons the drop order above gives. The attention line
+	// is ahead of the blocking count here, the reverse of the ladder, which
+	// is the order T6.4's plan recorded; it only decides anything below the
+	// width of the blocking count alone (about ten cells), where every piece
+	// is cut to a few characters and the attention line's leading ● is the
+	// one mark still recognisable. truncate's own contract returns "" at
+	// width <= 0, which is what keeps a zero-width frame from emitting a
 	// stray row.
-	last := p.stale
-	if last == "" {
-		last = p.attentionShort
+	for _, last := range []string{p.stale, p.attentionShort, p.inboxShort, p.usageShort, p.badge} {
+		if last != "" {
+			return truncate(last, width)
+		}
 	}
-	if last == "" {
-		last = p.usageShort
-	}
-	if last == "" {
-		last = p.badge
-	}
-	return truncate(last, width)
+	return truncate("", width)
 }
 
 // headerMinGap is the fewest cells headerLine leaves between the left and right
