@@ -178,6 +178,7 @@ afk dash [options]
 | type `extend`, then `enter` | extend the plan: starts a planning session that adds a milestone (nothing to type) |
 | type `amend`, then `enter` | amend the plan: asks for one sentence about the change first |
 | type `document`, then `enter` | reconcile the plan with a document: asks for the document's path first |
+| type `start a new plan`, then `enter` | start a new plan in another folder: asks for the folder first |
 
 The letters that used to run these actions on the list (`n o p c r l / b i q f ? P U`) and `:` now do nothing but show a one-line notice naming the key to use instead, for example `n moved: press ctrl+space then n`. The `:` palette is gone; the dialog's own name filter does its job. In the agent pane a chord such as `ctrl+t` or `ctrl+\` now belongs to the agent.
 
@@ -186,6 +187,7 @@ The letters that used to run these actions on the list (`n o p c r l / b i q f ?
 - **extend the plan** (type `extend`) starts straight away, with nothing to type.
 - **amend the plan** (type `amend`) opens a one-line form. Type one sentence about the change and press `enter`. A blank sentence keeps the form open and starts nothing.
 - **reconcile the plan with a document** (type `document`) opens a one-line form. Type the document's path inside the project (for example `docs/design-system.md`) and press `enter`. Type `document`, not `reconcile`: the letter `r` is the restart key, so a typed `reconcile` restarts the selected session when it is stopped.
+- **start a new plan** (type `start a new plan`) opens a one-line form that asks for a folder: a full path or one starting with `~/`, pre-filled with the active project when that project has no plan. The folder must exist. A folder that is not a git repository yet is made one, as `afk plan` does. A folder that already has a plan is refused, and the dashboard points you at extend, amend or document instead. An open planning session in that folder is reopened rather than started again. On success the dashboard switches to that project and opens its planning pane.
 
 A refused start shows the reason in the same words the command prints, and nothing is started. When a planning session is already open, the dashboard says which one it is (its mode and phase) and asks whether to open it: `y` opens it, and `n` or `esc` leaves it closed. After a start, the dashboard selects the `master-plan` row and opens its pane, as `enter` does on that row.
 
@@ -479,7 +481,7 @@ Without `--target`, it lists the agent CLIs it finds on `PATH` and asks which on
 
 ### `afk plan` — Plan a project with your agent
 
-Start an attended agent session that takes your idea to a first draft of the master plan. The session runs the `/afk:master-plan` skill: it asks what you want to build, asks its questions in rounds, proposes how to cut the work into tasks, writes `docs/PLAN.md` and checks it with `afk plan lint`.
+Start an attended agent session that takes your idea to a first draft of the master plan. The session runs the `/afk:master-plan` skill: it asks what you want to build, asks its questions in rounds, proposes how to cut the work into tasks, writes `docs/PLAN.md` and checks it with `afk plan lint`. The dashboard can start a new plan too, with its **start a new plan** action (see [`afk dash`](#afk-dash--launch-the-dashboard)).
 
 ```bash
 afk plan [--project DIR] [--provider NAME] [--dry-run]
@@ -1299,6 +1301,8 @@ The dashboard lists every project you added with `afk project add` (or started w
 ### Listed projects
 
 The projects in the `[[project]]` list of `config.toml` (the file `afk project list` prints) show up in the switcher on their own. Each shows the name `afk project list` shows, and a project that is also found under a search folder or is the one you started in is one row, not two. The list is read again on every scan and when you press `R` in the switcher, so a project you add appears without restarting the dashboard. A listed folder that no longer exists is left out, with no message. If `config.toml` cannot be read (for example it holds invalid TOML), the dashboard keeps the rows it already shows and a toast names the file so you can fix it. The dashboard only reads this file; it never changes it.
+
+A project started from the dashboard with **start a new plan** stays in the switcher for the rest of that run. After a restart it comes back only through `afk dash --project DIR` or a search folder, until `afk plan approve` lists it in the project list.
 
 ### Config file
 

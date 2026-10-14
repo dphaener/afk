@@ -34,6 +34,9 @@ func planModel(t *testing.T, sessions ...Session) (Model, *planSeams) {
 	m := testModel(sessions...)
 	m.projects = []project.Project{{Path: "/projects/api", Name: "api"}}
 	m.activeProject = 0
+	// The search found it, as it would have in `afk dash`: m.projects is
+	// always a merge, and a start in another folder merges again.
+	m.found = m.projects
 	m.deps.StartPlan = func(root, mode, text string) PlanStartResult {
 		rec.calls = append(rec.calls, planCall{root, mode, text})
 		return rec.reply
@@ -187,7 +190,7 @@ func TestPlanStartRootFallsBackToTheRepo(t *testing.T) {
 	}
 }
 
-// TestPlanStartEmptyTextIsRefusedInTheForm submits blank text in both forms.
+// TestPlanStartEmptyTextIsRefusedInTheForm submits blank text in each form.
 // Load-bearing: every row must keep the form open, say what is missing, and
 // call the seam zero times — a blank sentence or path must never reach the
 // start, and closing the form would make the owner open it again.
@@ -202,6 +205,8 @@ func TestPlanStartEmptyTextIsRefusedInTheForm(t *testing.T) {
 		{"blank sentence", "amend", "    ", planAmendEmpty},
 		{"empty path", "document", "", planReconcileEmpty},
 		{"blank path", "document", "  ", planReconcileEmpty},
+		{"empty folder", "start a new plan", "", planNewEmpty},
+		{"blank folder", "start a new plan", "   ", planNewEmpty},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -492,5 +497,319 @@ func TestPlanStartFormDroppedAcrossAProjectSwitch(t *testing.T) {
 	}
 	if m.modal != inputNormal || !strings.Contains(m.status, "project changed") {
 		t.Fatalf("modal=%v status=%q, want the form closed with a notice", m.modal, m.status)
+	}
+}
+
+// TestPlanStartNewCallsTheSeamOnce runs "start a new plan" by name, types a
+// folder and checks the seam was called exactly once with the folder as
+// typed, mode new and no text. Load-bearing rows: "a typed ~ path" (the UI
+// passes ~/ through unexpanded; the start expands it), "the default folder"
+// (enter on the pre-filled field starts there), and "no project open" (the
+// action needs only the seam, so a dashboard outside any project can start
+// one; guarding it on a project as the change actions are would refuse here).
+func TestPlanStartNewCallsTheSeamOnce(t *testing.T) {
+	cases := []struct {
+		name      string
+		noProject bool
+		noPlan    bool
+		text      string
+		want      planCall
+	}{
+		{name: "a typed full path", text: "/code/fresh", want: planCall{"/code/fresh", PlanModeNew, ""}},
+		{name: "a typed ~ path", text: "~/code/fresh", want: planCall{"~/code/fresh", PlanModeNew, ""}},
+		{name: "spaces around the folder are the field's", text: "  /code/fresh ", want: planCall{"/code/fresh", PlanModeNew, ""}},
+		{name: "the default folder", noPlan: true, want: planCall{"/projects/api", PlanModeNew, ""}},
+		{name: "a subfolder typed after the default", noPlan: true, text: "/web", want: planCall{"/projects/api/web", PlanModeNew, ""}},
+		{name: "no project open", noProject: true, text: "/code/fresh", want: planCall{"/code/fresh", PlanModeNew, ""}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec := planModel(t, sess("a"))
+			if tc.noProject {
+				m.projects = nil
+				m.activeProject = -1
+				m.repo = ""
+			}
+			if tc.noPlan {
+				m.buildKnown = true
+			}
+			m, cmd := runPlanAction(t, m, "start a new plan")
+			if m.modal != inputPlanText || m.planTextMode != PlanModeNew {
+				t.Fatalf("modal = %v mode = %q, want the new-plan form", m.modal, m.planTextMode)
+			}
+			if cmd != nil {
+				if _, ok := cmd().(planStartedMsg); ok {
+					t.Fatal("the seam was called before the folder was typed")
+				}
+			}
+			m = typeText(t, m, tc.text)
+			m, cmd = update(t, m, keyEnter)
+			if m.modal != inputNormal {
+				t.Fatalf("modal = %v after enter, want the form closed", m.modal)
+			}
+			got := planStarted(t, cmd)
+			if got.mode != PlanModeNew {
+				t.Errorf("message mode = %q, want %q", got.mode, PlanModeNew)
+			}
+			if len(rec.calls) != 1 || rec.calls[0] != tc.want {
+				t.Fatalf("calls = %+v, want exactly %+v", rec.calls, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlanStartNewFormDefault pins the new-plan form's starting text. The
+// load-bearing row is "build known, no plan": the field holds the active
+// project's path with the cursor at its end. The others are load-bearing in
+// the other direction: a project with a plan would only be refused, and a
+// build not read yet is a guess, so both start empty, as does no project.
+func TestPlanStartNewFormDefault(t *testing.T) {
+	cases := []struct {
+		name      string
+		known     bool
+		hasPlan   bool
+		noProject bool
+		want      string
+	}{
+		{name: "build known, no plan", known: true, want: "/projects/api"},
+		{name: "build known, has a plan", known: true, hasPlan: true, want: ""},
+		{name: "build not read yet", want: ""},
+		{name: "no project open", known: true, noProject: true, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := planModel(t, sess("a"))
+			m.buildKnown = tc.known
+			m.build.HasBuild = tc.hasPlan
+			if tc.noProject {
+				m.projects = nil
+				m.activeProject = -1
+				m.repo = ""
+			}
+			m, _ = runPlanAction(t, m, "start a new plan")
+			if m.modal != inputPlanText {
+				t.Fatalf("modal = %v, want the form", m.modal)
+			}
+			if got := m.planTextInput.Value(); got != tc.want {
+				t.Errorf("field = %q, want %q", got, tc.want)
+			}
+			if got := m.planTextInput.Position(); got != len(tc.want) {
+				t.Errorf("cursor at %d, want the end (%d)", got, len(tc.want))
+			}
+			frame := render(m)
+			for _, want := range []string{"Start a new plan", planNewQuestion} {
+				if !strings.Contains(frame, want) {
+					t.Errorf("the form does not show %q", want)
+				}
+			}
+		})
+	}
+}
+
+// TestPlanStartNewWithoutTheSeam: with no StartPlan the dialog dims the row,
+// so it cannot be reached by name, but the action can still be run directly
+// (applyKeyAction), and it must answer with a sentence pointing at the
+// terminal and open no form.
+func TestPlanStartNewWithoutTheSeam(t *testing.T) {
+	m, _ := planModel(t, sess("a"))
+	m.deps.StartPlan = nil
+	nm, cmd := m.openPlanNewForm()
+	m = nm.(Model)
+	if cmd != nil {
+		t.Fatal("a command was issued with no seam")
+	}
+	if m.modal != inputNormal || m.status != planNewUnavailableNotice {
+		t.Fatalf("modal = %v status = %q, want no form and the not-available notice", m.modal, m.status)
+	}
+}
+
+// newPlanRoot is the folder the new-plan tests start in: another project,
+// in neither the switcher's list nor any search folder.
+const newPlanRoot = "/code/fresh"
+
+// TestPlanStartNewResults folds each kind of new-plan result into the
+// dashboard.
+//
+// Load-bearing rows:
+//   - "started in another folder": the dashboard switches to it, lists it in
+//     the switcher (not Pinned), records the open, and dials master-plan in
+//     that root with the row armed for the next load. Opening before the
+//     switch would be undone by it, so the dial's root is the proof of order.
+//   - "resumed in another folder": a reopened session switches too.
+//   - "refused": the reason is shown, nothing switches, nothing is dialled.
+//   - "started in the active project": no switch and no started row; the
+//     pane opens as the change actions open it.
+//   - "started in the main checkout of the worktree the dashboard was
+//     started in": the same project under its other spelling, so no second
+//     row and no switch away from the folder the owner opened.
+//   - "stale project": a result from before a project switch does nothing.
+func TestPlanStartNewResults(t *testing.T) {
+	refusal := "this folder already has a plan (/code/fresh/.afk/plan/master-plan.md). Nothing was started."
+	cases := []struct {
+		name         string
+		reply        PlanStartResult
+		launchWT     bool
+		staleGen     bool
+		wantActive   string
+		wantStarted  []string
+		wantDialRoot string
+		wantText     string
+	}{
+		{name: "started in another folder", reply: PlanStartResult{Outcome: PlanStarted, Root: newPlanRoot},
+			wantActive: newPlanRoot, wantStarted: []string{newPlanRoot}, wantDialRoot: newPlanRoot,
+			wantText: "Started a planning session for a new plan in " + newPlanRoot + "."},
+		{name: "resumed in another folder", reply: PlanStartResult{Outcome: PlanResumed, Root: newPlanRoot},
+			wantActive: newPlanRoot, wantStarted: []string{newPlanRoot}, wantDialRoot: newPlanRoot,
+			wantText: "already open"},
+		{name: "refused", reply: PlanStartResult{Outcome: PlanRefused, Reason: refusal, Root: newPlanRoot},
+			wantActive: "/projects/api", wantText: refusal},
+		{name: "started in the active project", reply: PlanStartResult{Outcome: PlanStarted, Root: "/projects/api"},
+			wantActive: "/projects/api", wantDialRoot: "/projects/api", wantText: "new plan in /projects/api"},
+		{name: "started in the main checkout of the worktree the dashboard was started in", launchWT: true,
+			reply:      PlanStartResult{Outcome: PlanStarted, Root: "/projects/api"},
+			wantActive: "/projects/api/.wt/feature", wantDialRoot: "/projects/api", wantText: "new plan in /projects/api"},
+		{name: "stale project", reply: PlanStartResult{Outcome: PlanStarted, Root: newPlanRoot}, staleGen: true,
+			wantActive: "/projects/api"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec := planModel(t, sess("a"))
+			if tc.launchWT {
+				m.projects = []project.Project{{Path: "/projects/api/.wt/feature", Name: "feature", Pinned: true}}
+				m.repo = "/projects/api/.wt/feature"
+				m.found = nil
+				m.deps.LaunchMainCheckout = "/projects/api"
+			}
+			beforeRows := len(m.projects)
+			before := m.status
+			gen := m.projectGen
+			if tc.staleGen {
+				gen--
+			}
+			m, cmd := update(t, m, planStartedMsg{mode: PlanModeNew, res: tc.reply, gen: gen})
+			if got := m.activeProjectPath(); got != tc.wantActive {
+				t.Fatalf("active project = %q, want %q", got, tc.wantActive)
+			}
+			if !pathsEqual(m.startedProjects, tc.wantStarted) {
+				t.Errorf("started = %v, want %v", m.startedProjects, tc.wantStarted)
+			}
+			if tc.staleGen {
+				if cmd != nil || m.status != before || m.attachInFlight.name != "" {
+					t.Fatalf("a stale result did something: cmd=%v status=%q dial=%q", cmd != nil, m.status, m.attachInFlight.name)
+				}
+				return
+			}
+			if !strings.Contains(m.status, tc.wantText) {
+				t.Errorf("status = %q, want it to contain %q", m.status, tc.wantText)
+			}
+			if tc.wantDialRoot == "" {
+				if len(m.projects) != beforeRows || m.attachInFlight.name != "" {
+					t.Fatalf("a refusal changed something: rows=%d dial=%q", len(m.projects), m.attachInFlight.name)
+				}
+				if _, ok := paneDial(t, cmd); ok || len(rec.dials) != 0 {
+					t.Fatal("a refusal dialled a pane")
+				}
+				return
+			}
+			if len(tc.wantStarted) == 0 && len(m.projects) != beforeRows {
+				t.Fatalf("projects = %v, want no row added", projectPaths(m.projects))
+			}
+			if len(tc.wantStarted) > 0 {
+				i, ok := indexOfProject(m.projects, newPlanRoot)
+				if !ok {
+					t.Fatalf("projects = %v, want %s listed", projectPaths(m.projects), newPlanRoot)
+				}
+				if m.projects[i].Pinned {
+					t.Error("the started project is Pinned")
+				}
+				if m.repo != newPlanRoot {
+					t.Errorf("repo = %q, want the switch to repoint it", m.repo)
+				}
+				if m.projectOpens[newPlanRoot] != 1 {
+					t.Errorf("opens = %v, want the switch recorded once", m.projectOpens)
+				}
+				if _, ok := indexOfProject(m.projects, "/projects/api"); !ok {
+					t.Errorf("projects = %v, the project left must stay listed", projectPaths(m.projects))
+				}
+			}
+			if m.focus != focusRight || m.view != viewAgent {
+				t.Fatalf("focus=%v view=%v, want the agent view focused", m.focus, m.view)
+			}
+			if m.planSelectPending != session.PlanSessionName {
+				t.Fatalf("planSelectPending = %q, want the master-plan row armed", m.planSelectPending)
+			}
+			if _, ok := paneDial(t, cmd); !ok {
+				t.Fatal("no pane was dialled")
+			}
+			if len(rec.dials) != 1 || rec.dials[0].Name != session.PlanSessionName || rec.dials[0].Worktree != tc.wantDialRoot {
+				t.Fatalf("dials = %+v, want one for master-plan in %s", rec.dials, tc.wantDialRoot)
+			}
+		})
+	}
+}
+
+// TestPlanStartNewEndToEnd is the action through the dialog, the form and
+// the result, then the switcher: the started folder is the project on
+// screen, the master-plan row is selected once discovery lists it, and the
+// switcher (ctrl+space p) shows a row for it.
+func TestPlanStartNewEndToEnd(t *testing.T) {
+	m, rec := planModel(t, sess("a"))
+	rec.reply = PlanStartResult{Outcome: PlanStarted, Root: newPlanRoot}
+	m, _ = runPlanAction(t, m, "start a new plan")
+	m = typeText(t, m, newPlanRoot)
+	m, cmd := update(t, m, keyEnter)
+	m, cmd = update(t, m, planStarted(t, cmd))
+	if m.activeProjectPath() != newPlanRoot {
+		t.Fatalf("active project = %q, want %q", m.activeProjectPath(), newPlanRoot)
+	}
+	attached, ok := paneDial(t, cmd)
+	if !ok {
+		t.Fatal("no pane was dialled")
+	}
+	plan := masterPlanSess()
+	plan.WorktreePath = newPlanRoot
+	m, _ = update(t, m, sessionsLoadedMsg{sessions: []Session{plan}, at: time.Unix(1_000_000, 0), gen: m.projectGen})
+	if s, ok := m.selected(); !ok || s.Name != session.PlanSessionName {
+		t.Fatalf("selected = %q, want master-plan", s.Name)
+	}
+	m, _ = update(t, m, attached)
+	if m.pane == nil || m.paneName != session.PlanSessionName {
+		t.Fatalf("pane = %q, want master-plan installed", m.paneName)
+	}
+	m.focus = focusList
+	m, _ = update(t, m, leaderKeyPress)
+	m, _ = update(t, m, keyRune('p'))
+	if !m.switcherOpen {
+		t.Fatal("ctrl+space p did not open the switcher")
+	}
+	if frame := render(m); !strings.Contains(frame, "fresh") || !strings.Contains(frame, "api") {
+		t.Errorf("the switcher does not list both projects:\n%s", frame)
+	}
+}
+
+// TestPlanStartNewRowSurvivesLaterReads: the started row is held for the run,
+// so neither a later scan that does not find it nor a project-list read that
+// does not name it drops it or moves the dashboard off it. Without the
+// started source the next scan, a minute later, would switch the owner away
+// from the project they just started.
+func TestPlanStartNewRowSurvivesLaterReads(t *testing.T) {
+	m, _ := planModel(t, sess("a"))
+	m, _ = update(t, m, planStartedMsg{mode: PlanModeNew, res: PlanStartResult{Outcome: PlanStarted, Root: newPlanRoot}, gen: m.projectGen})
+	if m.activeProjectPath() != newPlanRoot {
+		t.Fatalf("setup: active project = %q, want %q", m.activeProjectPath(), newPlanRoot)
+	}
+	m, _ = update(t, m, projectScanMsg{projects: scannedProjects("/projects/api", "/roots/other")})
+	m, _ = update(t, m, listedProjectsMsg{entries: []ListedProject{{Path: "/code/listed", Name: "listed"}}, path: listedConfigPath})
+	if m.activeProjectPath() != newPlanRoot {
+		t.Fatalf("active project = %q after the reads, want %q", m.activeProjectPath(), newPlanRoot)
+	}
+	want := []string{"/projects/api", "/roots/other", "/code/listed", newPlanRoot}
+	if !pathsEqual(projectPaths(m.projects), want) {
+		t.Fatalf("projects = %v, want %v", projectPaths(m.projects), want)
+	}
+	// A second start in the same folder adds no second row.
+	m, _ = update(t, m, planStartedMsg{mode: PlanModeNew, res: PlanStartResult{Outcome: PlanResumed, Root: newPlanRoot}, gen: m.projectGen})
+	if !pathsEqual(m.startedProjects, []string{newPlanRoot}) || !pathsEqual(projectPaths(m.projects), want) {
+		t.Fatalf("started = %v projects = %v, want one row for %s", m.startedProjects, projectPaths(m.projects), newPlanRoot)
 	}
 }

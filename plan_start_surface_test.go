@@ -30,6 +30,13 @@ import (
 //     request never starts a new plan and never asks which change is wanted.
 //   - "open session": the refusal carries the open session's mode and phase,
 //     which is what lets the dashboard offer to open it.
+//   - "new, empty repository starts" and "new, empty folder is made a
+//     repository first": a bare start with a terminal, seeded in the new mode
+//     with no brief, and the init before the spawn.
+//   - "new, a folder with a plan is refused": the dashboard's own sentence,
+//     naming the plan and the change actions, and nothing written.
+//   - "new, open session ...": a new-plan request reopens a session that is
+//     open and never reseeds its answers.
 //   - "no plan": a mode never starts a session for a project with no plan.
 //   - "reason has no command name": every refusal is the command's sentence
 //     without the "afk plan <mode>: " in front.
@@ -57,6 +64,8 @@ func TestStartPlanForSurface(t *testing.T) {
 		req planSurfaceRequest
 		// refusingAgent sets the request's provider to one that cannot plan.
 		refusingAgent bool
+		// notRepo makes the fake report that the folder is not in a repository.
+		notRepo       bool
 		wantOutcome   planSurfaceOutcome
 		wantReason    string
 		wantOpen      bool
@@ -161,6 +170,71 @@ func TestStartPlanForSurface(t *testing.T) {
 			name: "resume, finished session whose agent still runs", setup: planWithFinishedChange, fake: planFake{alive: true},
 			req:         planSurfaceRequest{Mode: planSurfaceResume},
 			wantOutcome: planSurfaceRefused, wantReason: "There is no planning session open in this project",
+			unchanged: true,
+		},
+		{
+			name:        "new, empty repository starts",
+			req:         planSurfaceRequest{Mode: planSurfaceNew, Text: "ignored"},
+			wantOutcome: planSurfaceStarted,
+			wantCalls:   []string{"spawn marker new/brief"},
+			wantFiles:   map[string]string{".afk/plan/state.json": stateFor("new")},
+			absent:      []string{".afk/plan/brief.md", ".afk/plan/yes", ".afk/plan/archive"},
+		},
+		{
+			name: "new, empty folder is made a repository first", notRepo: true,
+			req:         planSurfaceRequest{Mode: planSurfaceNew},
+			wantOutcome: planSurfaceStarted,
+			wantCalls:   []string{"init {dir}", "spawn marker new/brief"},
+			wantFiles:   map[string]string{".afk/plan/state.json": stateFor("new")},
+			absent:      []string{".afk/plan/brief.md"},
+		},
+		{
+			name: "new, a folder with a plan is refused", setup: plan,
+			req:         planSurfaceRequest{Mode: planSurfaceNew},
+			wantOutcome: planSurfaceRefused,
+			wantReason:  "this folder already has a plan (" + filepath.Join("{dir}", "docs", "PLAN.md") + "). To change it, use the dashboard's extend, amend or document actions: press ctrl+space, then type the name. Nothing was started.",
+			unchanged:   true,
+		},
+		{
+			name:        "new, folder that does not exist",
+			req:         planSurfaceRequest{Mode: planSurfaceNew, Project: filepath.Join("{dir}", "gone")},
+			wantOutcome: planSurfaceRefused, wantReason: "the folder " + filepath.Join("{dir}", "gone") + " was not found", wantRoot: "-",
+			unchanged: true,
+		},
+		{
+			name:        "new, ~/ is expanded with the home folder",
+			setup:       func(t *testing.T, dir string) { writePlanFile(t, dir, "x/keep", "") },
+			req:         planSurfaceRequest{Mode: planSurfaceNew, Project: "~/x"},
+			wantOutcome: planSurfaceStarted,
+			wantCalls:   []string{"spawn marker new/brief"},
+			wantFiles:   map[string]string{".afk/plan/state.json": stateFor("new")},
+		},
+		{
+			name:        "new, a relative folder is refused",
+			req:         planSurfaceRequest{Mode: planSurfaceNew, Project: "shop"},
+			wantOutcome: planSurfaceRefused, wantReason: "is not a full path", wantRoot: "-",
+			unchanged: true,
+		},
+		{
+			name: "new, open session is resumed and nothing is seeded", setup: openSession, fake: planFake{alive: true},
+			req:         planSurfaceRequest{Mode: planSurfaceNew},
+			wantOutcome: planSurfaceResumed,
+			unchanged:   true,
+		},
+		{
+			name: "new, open session with the host gone restarts on the saved state", setup: openSession,
+			req:         planSurfaceRequest{Mode: planSurfaceNew},
+			wantOutcome: planSurfaceResumed,
+			wantCalls:   []string{"spawn marker new/rounds"},
+			wantFiles: map[string]string{
+				".afk/plan/state.json": planState(plansession.PhaseRounds),
+				".afk/plan/brief.md":   "a brief\n",
+			},
+		},
+		{
+			name: "new, finished session whose agent still runs is refused", setup: planWithFinishedChange, fake: planFake{alive: true},
+			req:         planSurfaceRequest{Mode: planSurfaceNew},
+			wantOutcome: planSurfaceRefused, wantReason: "its agent is still running",
 			unchanged: true,
 		},
 		{
@@ -294,6 +368,12 @@ func TestStartPlanForSurface(t *testing.T) {
 			before := folderFiles(t, dir)
 			f := tt.fake
 			f.commonDir = filepath.Join(dir, ".git")
+			if tt.notRepo {
+				f.commonDir = ""
+			}
+			if f.home == "" {
+				f.home = dir // "~/x" in a row means {dir}/x
+			}
 			req := tt.req
 			req.Text = fill(req.Text)
 			if req.Project == "" {
@@ -334,8 +414,12 @@ func TestStartPlanForSurface(t *testing.T) {
 			if got.Root != wantRoot {
 				t.Errorf("root = %q, want %q", got.Root, wantRoot)
 			}
-			if !reflect.DeepEqual(f.calls, tt.wantCalls) {
-				t.Errorf("calls = %v, want %v", f.calls, tt.wantCalls)
+			var wantCalls []string
+			for _, c := range tt.wantCalls {
+				wantCalls = append(wantCalls, fill(c))
+			}
+			if !reflect.DeepEqual(f.calls, wantCalls) {
+				t.Errorf("calls = %v, want %v", f.calls, wantCalls)
 			}
 			for _, spec := range f.spawned {
 				if spec.Name != session.PlanSessionName || !spec.MasterPlan || spec.Unattended || spec.Worktree != dir || spec.Provider != req.provider {

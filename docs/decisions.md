@@ -2677,3 +2677,32 @@ These are the choices the code settled differently from the assumptions above, o
 
 - Typing `reconcile` in the actions dialog sends its first `r` to the restart action, which restarts the selected session when it is stopped. The README says to type `document`. Renaming the row, or reading a by-name row's first letter as filter text, would remove the trap.
 - A long refusal is cut off in the dashboard's toast (the reconcile "outside the project folder" reason, for example). Wrapping long notices, or showing the whole reason in a small dialog, would show the full sentence.
+
+## T7.4
+
+T7.4 adds the dashboard action that starts a new plan, as bare `afk plan` does. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **The row's name (A1).** The master plan calls it "plan a new project", but a name typed in the actions dialog is reached through its first letter, and `p` opens the project switcher (the trap T7.3 hit with `reconcile`). The row is named "start a new plan", by name only; `s` is not a leader key. Its help line uses the word "folder" so a filter on it finds this row alone.
+- **A folder with a planning session open (A2)** is resumed, as bare `afk plan` resumes it: the dashboard switches to that project and opens the pane. No new plan is started over it.
+- **A folder that already has a plan (A3)** is refused with a sentence that names the plan and points at the dialog's extend, amend and document actions, because the command's own sentence (run one of these in a terminal) is wrong in the dashboard. Every other refusal keeps the command's words, the missing-folder one included.
+- **`~/` (A4)** is expanded by the entry point, with the home folder, the same way `--project` is. Any other relative path is still refused.
+- **Keeping the project in the switcher (A5).** A project started from the dashboard is a separate source in the switcher's merged list for the rest of the run, compared by its resolved path. Nothing is written to `config.toml`.
+- **The form's default (A6)** is the active project's path when the dashboard knows that project has no plan, and empty otherwise. The action works with no project open, because the folder is typed.
+- **After a start (A7)** the project is added to the list, the dashboard switches to it as the switcher's `enter` does, and only then opens the `master-plan` pane, because a switch closes any pane. A start in the active project opens the pane without a switch.
+- **Tests (A8)** are table tests written with the code. **Nothing had to be in place first (A9):** T7.3 is merged.
+
+### Decided while building
+
+- **The refusal for a folder with a plan** reads: "this folder already has a plan (<path>). To change it, use the dashboard's extend, amend or document actions: press ctrl+space, then type the name. Nothing was started."
+- **`~` is expanded only as `~` or `~/...`.** `~user` stays relative and is refused, as any relative path is.
+- **The resolved path.** The dashboard's adapter resolves the started project's root through symlinks for the new mode only, because the switcher compares resolved paths; if resolving fails the root is kept as it was.
+- **No preview after the switch.** The switcher's `enter` arms a preview of the first row; the new-plan switch does not, because the planning pane is opened at once and the preview would fight the `master-plan` selection for the cursor. It does record the project as opened, as the switcher does.
+- **A dashboard started in a linked worktree.** The start always reports the main checkout. When that is the start-up project's main checkout, it counts as the active project, so no second row appears and the dashboard does not switch away from the folder the owner opened.
+- **Where started projects sit in the list.** They are merged after the listed projects and before the start-up row, are never marked as the start-up row, and are scanned for sessions like the others; a newly started folder is scanned at once so its row has counts.
+- **Notices.** While starting: "Starting a planning session in <folder>…"; after: "Started a planning session for a new plan in <root>." Without the start seam the row is dimmed and its notice points at bare `afk plan` in a terminal.
+- **The form refuses a project switch underneath it,** as the other forms do, because its default came from the project on screen.
+- **The leader golden** shows the new row dimmed, because the golden frames are built with no start seam. Only the 120x40 frame changed.
+
+### For the owner to check
+
+- Run `afk dash` on a project with no plan and a real agent: ctrl+space, type `start a new plan`, `enter`. The folder field should already hold that project's path. The hands-on check used a stand-in agent and a project the dashboard could not yet tell had no plan, so the field was empty there.

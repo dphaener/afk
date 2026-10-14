@@ -114,7 +114,8 @@ const (
 	// modePrecedence is above all three.
 	inputLeader
 	// inputPlanText is the plan actions' one-line form (planstart.go): amend
-	// asks for a sentence, reconcile for a document's path. It is the label
+	// asks for a sentence, reconcile for a document's path, and "start a new
+	// plan" for a folder. It is the label
 	// prompt's shape — a textinput, so unclaimed keys reach the component —
 	// with a purpose (Model.planTextMode) instead of a session.
 	inputPlanText
@@ -470,11 +471,12 @@ const (
 	// (toggleFullHelp): ctrl+space ? from anywhere, and esc on the list while
 	// the full help is shown (guarded on routeConds.helpShown).
 	actionHelp
-	// The three plan actions (planstart.go). They have no key after the
+	// The four plan actions (planstart.go). They have no key after the
 	// leader: the dialog reaches them by name only (leaderTable).
 	actionPlanExtend    // startPlanExtend
 	actionPlanAmend     // openPlanTextForm(amend)
 	actionPlanReconcile // openPlanTextForm(reconcile)
+	actionPlanNew       // openPlanNewForm: start a new plan in a folder
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -591,6 +593,8 @@ func (a modeAction) String() string {
 		return "plan-amend"
 	case actionPlanReconcile:
 		return "plan-reconcile"
+	case actionPlanNew:
+		return "plan-new"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:

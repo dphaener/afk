@@ -633,6 +633,10 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 			ran: func(_, a Model, _ tea.Cmd) bool {
 				return a.modal == inputPlanText && a.planTextMode == PlanModeReconcile
 			}},
+		// "start a new plan" (T7.4) is reached by its full name: its first
+		// letter, s, is no leader key, so the whole name filters down to it.
+		actionPlanNew: {setup: planList, mode: inputNormal, old: press('s'), query: "start a new plan",
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputPlanText && a.planTextMode == PlanModeNew }},
 	}
 }
 

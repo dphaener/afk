@@ -29,10 +29,11 @@ type ListedProject struct {
 	Gone bool
 }
 
-// mergeInput is everything mergeProjects reads. The four sources arrive at
+// mergeInput is everything mergeProjects reads. The sources arrive at
 // different times (the start-up row at launch, the listed set from its own
-// small read, the found set only after a whole folder walk), so the model
-// remembers the last good value of each and re-merges whenever one changes.
+// small read, the found set only after a whole folder walk, a started folder
+// when a "start a new plan" succeeds), so the model remembers the last good
+// value of each and re-merges whenever one changes.
 type mergeInput struct {
 	// held is the list shown now. Only its Pinned rows are read: pinned-ness is
 	// where a row came from (the folder the dashboard was started in), and no
@@ -46,18 +47,28 @@ type mergeInput struct {
 	listed []ListedProject
 	// found is what the last good folder search found.
 	found []project.Project
+	// started is every folder a new plan was started in from this dashboard
+	// during this run (Model.startedProjects), each the main checkout the
+	// start reported. Nothing on disk names these folders: they need not be
+	// in config.toml or under a search folder, and `afk plan approve` is what
+	// lists one later. Without this source the next scan or listed read would
+	// drop the row the dashboard just switched to.
+	started []string
 }
 
-// mergeProjects builds the switcher's list from its three producers of paths:
-// the folder search, the machine's project list, and the pinned start-up row.
-// One row per path.
+// mergeProjects builds the switcher's list from its four producers of paths:
+// the folder search, the machine's project list, the folders a new plan was
+// started in this run, and the pinned start-up row. One row per path.
 //
 // Who stays:
 //   - a found project stays only while the latest search still finds it;
 //   - a listed project stays whether or not the search finds it, because the
 //     owner named it and most machines have no search folders at all;
 //   - a listed entry whose folder is gone gets no row;
-//   - the pinned start-up row always stays, keeps Pinned and keeps its own path.
+//   - the pinned start-up row always stays, keeps Pinned and keeps its own path;
+//   - a started folder stays for the rest of the run, whether or not anything
+//     else finds it, and is never Pinned: pinned-ness means "the folder the
+//     dashboard was started in", which a started folder is not.
 //
 // The start-up row and the list. When the pinned row's path is listed, that is
 // simply one row. When the dashboard was started inside a linked worktree of a
@@ -71,8 +82,9 @@ type mergeInput struct {
 // describes the start-up project and there is one start-up row.
 //
 // Order is fixed for a given input: found projects in search order, then
-// listed ones not already present in list order, then pinned rows not already
-// present. sameProjectPaths compares by position to decide whether an open
+// listed ones not already present in list order, then started ones not
+// already present in the order they were started, then pinned rows not
+// already present. sameProjectPaths compares by position to decide whether an open
 // switcher must be rebuilt, so an order that moved between two calls with the
 // same input would reset the owner's cursor on every read.
 //
@@ -80,7 +92,9 @@ type mergeInput struct {
 // every producer resolves the same way: internal/scan resolves each root
 // through filepath.EvalSymlinks and walks real directories below it, the
 // start-up lookup runs `git rev-parse --show-toplevel` through EvalSymlinks,
-// and the listed loader resolves each entry to its main checkout the same way.
+// and the listed loader resolves each entry to its main checkout the same way;
+// a started folder is the start's main checkout, which `afk dash` resolves
+// through EvalSymlinks before handing it back for this reason.
 // Re-resolving here is not an option, because Update performs no I/O.
 //
 // Names are computed over the whole merged set first, because a pinned or
@@ -125,7 +139,7 @@ func mergeProjects(in mergeInput) []project.Project {
 		}
 	}
 
-	merged := make([]project.Project, 0, len(in.found)+len(in.listed)+len(pinned))
+	merged := make([]project.Project, 0, len(in.found)+len(in.listed)+len(in.started)+len(pinned))
 	seen := make(map[string]bool, cap(merged))
 	add := func(p project.Project) {
 		if p.Path == "" || seen[p.Path] || (stoodInFor != "" && p.Path == stoodInFor) {
@@ -142,6 +156,11 @@ func mergeProjects(in mergeInput) []project.Project {
 	}
 	for _, e := range live {
 		add(project.Project{Path: e.Path, Pinned: pinned[e.Path]})
+	}
+	for _, path := range in.started {
+		// pinned[path] only when the start-up row has this very path, and that
+		// row is the start-up project, so it keeps the flag it already has.
+		add(project.Project{Path: path, Pinned: pinned[path]})
 	}
 	for _, p := range in.held {
 		if p.Pinned {
@@ -217,24 +236,29 @@ func unpinnedProjects(projects []project.Project) []project.Project {
 }
 
 // scanExtraPaths lists the rows a scan pass must cover beyond what its own walk
-// finds: the pinned start-up row and the listed projects. No search folder
-// produces either, so leaving them out would give the switcher rows with no
-// session counts and no click-to-focus.
+// finds: the pinned start-up row, the listed projects and the folders a new
+// plan was started in. No search folder produces any of them, so leaving them
+// out would give the switcher rows with no session counts and no
+// click-to-focus.
 //
 // It reads the ROWS rather than the listed set: a listed entry whose folder is
 // gone, or one the start-up row stands in for, has no row, and resolving a
 // rendezvous for it would open a watcher on every pass that applyRendezvous
 // then has to close.
-func scanExtraPaths(rows []project.Project, listed []ListedProject) []string {
+func scanExtraPaths(rows []project.Project, listed []ListedProject, started []string) []string {
 	isListed := make(map[string]bool, len(listed))
 	for _, e := range listed {
 		if !e.Gone {
 			isListed[e.Path] = true
 		}
 	}
+	isStarted := make(map[string]bool, len(started))
+	for _, path := range started {
+		isStarted[path] = true
+	}
 	var paths []string
 	for _, p := range rows {
-		if p.Pinned || isListed[p.Path] {
+		if p.Pinned || isListed[p.Path] || isStarted[p.Path] {
 			paths = append(paths, p.Path)
 		}
 	}
@@ -272,6 +296,7 @@ func (m Model) mergedProjects() []project.Project {
 		launchMainCheckout: m.deps.LaunchMainCheckout,
 		listed:             m.listed,
 		found:              m.found,
+		started:            m.startedProjects,
 	})
 }
 

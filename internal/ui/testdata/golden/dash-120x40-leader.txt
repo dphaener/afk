@@ -30,8 +30,8 @@
 │         │    extend the plan                     — Start a planning session that adds work to the plan     │         │
 │         │    amend the plan                      — Change the plan; asks what to change in a sentence      │         │
 │         │    reconcile the plan with a document  — Fit the plan to a document; asks for its path           │         │
+│         │    start a new plan                    — starting a plan is not available here                   │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
-│                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │

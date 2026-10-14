@@ -133,7 +133,10 @@ func TestLeaderKeyDecision(t *testing.T) {
 // way out), the agent/overview rows (from the list the right side is not
 // under control, so it must not run there even through the dialog), and the
 // close-pane and clear-filter rows, which carry the two guards the old rules
-// had (needsPane, needsFilter) now that the rules are gone.
+// had (needsPane, needsFilter) now that the rules are gone. The new-plan rows
+// are load-bearing too: "new plan runs with no project" is the case the
+// action exists for (a dashboard outside any project), and dimming it there
+// as the change actions are dimmed would hide it exactly when it is needed.
 func TestLeaderBlockedReason(t *testing.T) {
 	ready := leaderConds{
 		hasActiveProject: true,
@@ -146,6 +149,7 @@ func TestLeaderBlockedReason(t *testing.T) {
 		restartLive:      true,
 		canFocus:         true,
 		canToggleView:    true,
+		canStartPlan:     true,
 	}
 	with := func(f func(*leaderConds)) leaderConds {
 		c := ready
@@ -184,6 +188,11 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"extend runs with only a project", actionPlanExtend, leaderConds{hasActiveProject: true}, ""},
 		{"amend runs with only a project", actionPlanAmend, leaderConds{hasActiveProject: true}, ""},
 		{"reconcile runs with only a project", actionPlanReconcile, leaderConds{hasActiveProject: true}, ""},
+		// "start a new plan" types its folder, so it runs with no project
+		// at all; only a missing seam dims it.
+		{"new plan runs with no project", actionPlanNew, leaderConds{canStartPlan: true}, ""},
+		{"new plan needs the seam", actionPlanNew, with(func(c *leaderConds) { c.canStartPlan = false }), "not available"},
+		{"new plan with everything", actionPlanNew, ready, ""},
 		{"projects needs a project", actionProjects, with(func(c *leaderConds) { c.hasActiveProject = false }), "no projects"},
 		{"projects with a project", actionProjects, ready, ""},
 
@@ -273,6 +282,8 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"", actionPlanExtend},
 		{"", actionPlanAmend},
 		{"", actionPlanReconcile},
+		// T7.4: by name only, no key after the leader.
+		{"", actionPlanNew},
 	}
 	if len(leaderTable) != len(want) {
 		t.Fatalf("leaderTable has %d rows, the decided table %d", len(leaderTable), len(want))

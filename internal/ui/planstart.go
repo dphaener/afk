@@ -1,7 +1,10 @@
-// planstart.go is the dashboard's three plan actions: extend the plan, amend
-// the plan and reconcile the plan with a document. Each starts a change
-// session on the active project the way `afk plan extend`, `afk plan amend`
-// and `afk plan reconcile` do, and opens it in the agent pane (T7.3).
+// planstart.go is the dashboard's four plan actions: extend the plan, amend
+// the plan and reconcile the plan with a document, each of which starts a
+// change session on the active project the way `afk plan extend`, `afk plan
+// amend` and `afk plan reconcile` do (T7.3), and "start a new plan", which
+// starts a planning session in a folder the owner types the way bare
+// `afk plan` does there and moves the dashboard to that project (T7.4). Each
+// opens the planning session in the agent pane.
 //
 // Nothing here decides whether a session may start, and nothing here writes a
 // file. The actions call the Deps.StartPlan seam, which `afk dash` wires to
@@ -34,11 +37,15 @@ import (
 // after it, so the adapter in `afk dash` passes them on unchanged.
 // PlanModeResume is the request with no mode: open a planning session that is
 // already open, and never start a new one.
+// PlanModeNew is "start a new plan": root is then the folder as typed (the
+// start expands `~/` and refuses a relative path, so this package does
+// neither), and the start behaves as bare `afk plan` does in that folder.
 const (
 	PlanModeResume    = ""
 	PlanModeExtend    = "extend"
 	PlanModeAmend     = "amend"
 	PlanModeReconcile = "reconcile"
+	PlanModeNew       = "new"
 )
 
 // PlanStartOutcome is what one StartPlan call did.
@@ -85,6 +92,10 @@ type PlanStartResult struct {
 // a nil-function panic, as buildPauseUnavailableNotice does.
 const planStartUnavailableNotice = "Starting a plan change is not available in this dashboard. Use afk plan extend, amend or reconcile in a terminal."
 
+// planNewUnavailableNotice is planStartUnavailableNotice for "start a new
+// plan", which the terminal does with bare `afk plan` rather than a mode.
+const planNewUnavailableNotice = "Starting a plan is not available in this dashboard. Run afk plan in the project's folder in a terminal."
+
 // planNoProjectNotice is the actions' own guard when no project is open. The
 // dialog dims the rows then, so this is only reachable from a test or a
 // project that went away between opening the dialog and running the row.
@@ -94,6 +105,7 @@ const planNoProjectNotice = "No project is open, so there is no plan to change."
 const (
 	planAmendQuestion     = "What do you want to change? Say it in a sentence."
 	planReconcileQuestion = "Which document? Give its path inside the project."
+	planNewQuestion       = "Which folder? (a full path or ~/...)"
 )
 
 // The form's refusals of blank text. The form stays open with the line
@@ -101,9 +113,12 @@ const (
 const (
 	planAmendEmpty     = "Type a sentence first, or press esc to cancel."
 	planReconcileEmpty = "Type the document's path first, or press esc to cancel."
+	planNewEmpty       = "Type the folder to plan in, or press esc to cancel."
 )
 
-// planVerbs is the word each mode's notice uses.
+// planVerbs is the word each change mode's notice uses. The new mode has no
+// entry: "to start the plan" reads wrongly, so its notices are worded on
+// their own (submitPlanText, planOpenedNotice).
 var planVerbs = map[string]string{
 	PlanModeExtend:    "extend",
 	PlanModeAmend:     "amend",
@@ -198,6 +213,53 @@ func (m Model) openPlanTextForm(mode string) (tea.Model, tea.Cmd) {
 	return m, m.planTextInput.Focus()
 }
 
+// openPlanNewForm is "start a new plan": the same one-line form, asking for
+// a folder. It needs only the seam, not an active project, because the
+// folder is typed: a dashboard started outside any project can start one.
+//
+// The field starts with the active project's path when that project is known
+// to have no plan (its build has been read and there is none), since that is
+// the folder the owner most likely means; the cursor goes at the end so a
+// subfolder can be typed straight on. A project with a plan, or one whose
+// build has not been read yet, gets an empty field: a pre-filled folder there
+// would only be refused (it has a plan) or be a guess.
+//
+// The project generation is captured as the other forms capture it, because
+// the default was the project on screen when the form opened.
+func (m Model) openPlanNewForm() (tea.Model, tea.Cmd) {
+	if m.deps.StartPlan == nil {
+		m.notify(notifyWarn, planNewUnavailableNotice)
+		return m, nil
+	}
+	m.modal = inputPlanText
+	m.planTextMode = PlanModeNew
+	m.planTextRoot = ""
+	m.planTextGen = m.projectGen
+	m.planTextNote = ""
+	in := textinput.New()
+	in.Placeholder = "a folder, such as ~/code/my-app"
+	in.CharLimit = 4096
+	if m.width > 4 {
+		in.SetWidth(m.dialogContentWidth() - 4)
+	}
+	if def := m.planNewDefault(); def != "" {
+		in.SetValue(def)
+		in.CursorEnd()
+	}
+	m.planTextInput = in
+	m.clearStatus()
+	return m, m.planTextInput.Focus()
+}
+
+// planNewDefault is the new-plan form's starting text: the active project's
+// path when its build is known and has no plan, else "".
+func (m Model) planNewDefault() string {
+	if !m.buildKnown || m.build.HasBuild {
+		return ""
+	}
+	return m.activeProjectPath()
+}
+
 // clearPlanText drops everything the form captured.
 func (m *Model) clearPlanText() {
 	m.modal = inputNormal
@@ -214,9 +276,12 @@ func (m *Model) clearPlanText() {
 func (m Model) submitPlanText() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(m.planTextInput.Value())
 	if text == "" {
-		if m.planTextMode == PlanModeReconcile {
+		switch m.planTextMode {
+		case PlanModeReconcile:
 			m.planTextNote = planReconcileEmpty
-		} else {
+		case PlanModeNew:
+			m.planTextNote = planNewEmpty
+		default:
 			m.planTextNote = planAmendEmpty
 		}
 		return m, nil
@@ -226,6 +291,12 @@ func (m Model) submitPlanText() (tea.Model, tea.Cmd) {
 	if gen != m.projectGen {
 		m.notify(notifyWarn, "The project changed while the form was open, so nothing was started.")
 		return m, nil
+	}
+	if mode == PlanModeNew {
+		// The typed folder is the root and there is no text: the start looks
+		// at the folder as bare `afk plan` does, which takes no brief.
+		m.notify(notifyInfo, "Starting a planning session in "+text+"…")
+		return m, m.planStartCmd(text, PlanModeNew, "")
 	}
 	m.notify(notifyInfo, "Starting a planning session to "+planVerbs[mode]+" the plan…")
 	return m, m.planStartCmd(root, mode, text)
@@ -241,6 +312,8 @@ func (m Model) cancelPlanText() (tea.Model, tea.Cmd) {
 // applyPlanStarted folds a StartPlan result into the Model.
 //
 //   - started or resumed: open the planning session's pane (openPlanPane).
+//     For "start a new plan" in another project, switch to it first
+//     (applyPlanNewOpened).
 //   - refused because a planning session is already open: ask whether to
 //     open it (inputConfirmPlanOpen). Nothing was started.
 //   - any other refusal: say why, in the command's words, and open nothing.
@@ -251,6 +324,9 @@ func (m Model) applyPlanStarted(msg planStartedMsg) (tea.Model, tea.Cmd) {
 	res := msg.res
 	switch res.Outcome {
 	case PlanStarted, PlanResumed:
+		if msg.mode == PlanModeNew {
+			return m.applyPlanNewOpened(msg)
+		}
 		// The notice goes after the open, which says "opening master-plan…"
 		// itself; what was started is the more useful line while the pane
 		// connects. The arrival then words the pane as every connect does.
@@ -276,6 +352,104 @@ func (m Model) applyPlanStarted(msg planStartedMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// applyPlanNewOpened is a started or resumed "start a new plan". When its
+// root is another project, the dashboard moves there the way the switcher's
+// enter does, and only then opens the pane: switchProjectCmds forgets the
+// pane and the armed master-plan selection of the project it leaves, so an
+// open made first would be undone by the switch.
+//
+// The root is recorded as a started project before the switch, because
+// switchProjectCmds only switches to a path the list holds, and nothing else
+// may list it: a folder a new plan was just started in is in neither
+// config.toml nor, often, a search folder. It stays for the rest of the run
+// (mergeInput.started). One scan pass is asked for when it is new, as
+// applyListedResult asks for one when the listed folders change, so its row
+// has session counts without waiting a minute for the scan ticker.
+//
+// The switch records the open (recordProjectOpen) as the switcher's does,
+// since the owner chose this project. It does NOT arm previewOnNextLoad as
+// the switcher does: that flag previews the remembered or first row on the
+// next load, and this switch already makes an explicit open of master-plan
+// (openPaneFor clears the flag for exactly that reason, as it does for a
+// click-to-focus switch).
+func (m Model) applyPlanNewOpened(msg planStartedMsg) (tea.Model, tea.Cmd) {
+	res := msg.res
+	var cmds []tea.Cmd
+	switched := false
+	if res.Root != "" && !m.isActiveProjectRoot(res.Root) {
+		added := m.addStartedProject(res.Root)
+		before := m.projects
+		was := m.activeProjectPath()
+		gen := m.projectGen
+		m.projects = m.mergedProjects()
+		if was != "" {
+			// The merge can move the active row (a started row goes before the
+			// pinned one), so the index is re-found by path first; the switch
+			// below compares against activeProjectPath.
+			var settle []tea.Cmd
+			m, settle = m.settleActiveProject(was)
+			cmds = append(cmds, settle...)
+		}
+		if !sameProjectPaths(before, m.projects) {
+			m.refreshSwitcher()
+		}
+		var switchCmds []tea.Cmd
+		m, switchCmds = m.switchProjectCmds(res.Root)
+		cmds = append(cmds, switchCmds...)
+		// Every real switch bumps projectGen, so this is "the dashboard moved",
+		// however it got there (settling can already have landed on root).
+		if m.projectGen != gen && m.activeProjectPath() == res.Root {
+			switched = true
+			m.recordProjectOpen(res.Root)
+		}
+		if added {
+			if scan := m.scanCmd(); scan != nil {
+				cmds = append(cmds, scan)
+			}
+		}
+	}
+	if !switched {
+		cmds = append(cmds, m.loadCmd())
+	}
+	cmds = append(cmds, m.openPlanPane(res.Root))
+	m.notify(notifySuccess, planOpenedNotice(msg.mode, res))
+	return m, tea.Batch(cmds...)
+}
+
+// isActiveProjectRoot reports whether root, a main checkout the start
+// reported, is the project already on screen. Two spellings mean yes: the
+// active project's own path, and, when the dashboard was started in a linked
+// worktree, that worktree's main checkout (Deps.LaunchMainCheckout) while
+// the start-up row is active. The second matters because the start always
+// answers with the main checkout, and the start-up row keeps the worktree's
+// path (see mergeProjects); taking it for another project would add a second
+// row for one project and switch away from the folder the owner opened. A
+// dashboard with no project list has its repo as the active project, as
+// planRoot treats it.
+func (m Model) isActiveProjectRoot(root string) bool {
+	active := m.activeProjectPath()
+	if active == "" {
+		return len(m.projects) == 0 && root == m.repo
+	}
+	if root == active {
+		return true
+	}
+	mc := m.deps.LaunchMainCheckout
+	return mc != "" && root == mc && m.projects[m.activeProject].Pinned
+}
+
+// addStartedProject records root as a folder a new plan was started in, once,
+// and reports whether it was new.
+func (m *Model) addStartedProject(root string) bool {
+	for _, p := range m.startedProjects {
+		if p == root {
+			return false
+		}
+	}
+	m.startedProjects = append(m.startedProjects, root)
+	return true
+}
+
 // planOpenedNotice words a start or a resume. The archive folder is named
 // when one was used, because the earlier session's files moved there and
 // the owner may go looking for them.
@@ -284,7 +458,10 @@ func planOpenedNotice(mode string, res PlanStartResult) string {
 		return "Opening the planning session that was already open."
 	}
 	text := "Started a planning session to " + planVerbs[mode] + " the plan."
-	if planVerbs[mode] == "" {
+	switch {
+	case mode == PlanModeNew && res.Root != "":
+		text = "Started a planning session for a new plan in " + res.Root + "."
+	case planVerbs[mode] == "":
 		text = "Started a planning session."
 	}
 	if res.Archive != "" {
@@ -403,8 +580,11 @@ func planOpenDescription(r PlanStartResult) string {
 // question and the field alone.
 func (m Model) planTextDialog() dialog {
 	title, question := "Amend the plan", planAmendQuestion
-	if m.planTextMode == PlanModeReconcile {
+	switch m.planTextMode {
+	case PlanModeReconcile:
 		title, question = "Reconcile the plan", planReconcileQuestion
+	case PlanModeNew:
+		title, question = "Start a new plan", planNewQuestion
 	}
 	lines := []string{
 		theme.statusLine.Render(question),

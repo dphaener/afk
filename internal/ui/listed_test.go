@@ -119,6 +119,12 @@ func applyMsgsOfScanAndListed(t *testing.T, m Model, msgs []tea.Msg) (Model, []t
 //   - "a listed name beside a found project with the same folder name" pins
 //     that the listed row shows the listed name while the found row keeps the
 //     widened label that tells the two apart.
+//   - "a started folder alone" is T7.4's headline: a folder a new plan was
+//     started in has a row though nothing else names it, and is not Pinned.
+//   - "a started folder the search also finds" and "a started folder that is
+//     also listed" pin one row per path, as for listed and found.
+//   - "started folders go after listed and before the start-up row" pins the
+//     fixed order the started source takes.
 //
 // Every row is merged twice and the two results compared, and "mixed sources"
 // exists for that check alone: sameProjectPaths compares by position, so an
@@ -139,6 +145,7 @@ func TestMergeProjects(t *testing.T) {
 		mainCheckout string
 		found        []project.Project
 		heldListed   []ListedProject
+		started      []string
 		reads        []read
 		wantPaths    []string
 		wantNames    []string
@@ -307,6 +314,47 @@ func TestMergeProjects(t *testing.T) {
 			wantPinned: []string{"/pin"},
 		},
 		{
+			name:      "a started folder alone",
+			started:   []string{"/code/new"},
+			reads:     []read{good()},
+			wantPaths: []string{"/code/new"},
+			wantNames: []string{"new"},
+		},
+		{
+			name:      "a started folder the search also finds is one row",
+			found:     scannedProjects("/roots/a", "/code/new"),
+			started:   []string{"/code/new"},
+			reads:     []read{good()},
+			wantPaths: []string{"/roots/a", "/code/new"},
+			wantNames: []string{"a", "new"},
+		},
+		{
+			name:      "a started folder that is also listed is one row with the listed name",
+			started:   []string{"/code/new"},
+			reads:     []read{good(ListedProject{Path: "/code/new", Name: "fresh"})},
+			wantPaths: []string{"/code/new"},
+			wantNames: []string{"fresh"},
+		},
+		{
+			name:       "started folders go after listed and before the start-up row",
+			held:       []project.Project{pinnedProject("/pin")},
+			found:      scannedProjects("/roots/a"),
+			started:    []string{"/code/new", "/code/other"},
+			reads:      []read{good(ListedProject{Path: "/code/afk", Name: "afk"})},
+			wantPaths:  []string{"/roots/a", "/code/afk", "/code/new", "/code/other", "/pin"},
+			wantNames:  []string{"a", "afk", "new", "other", "pin"},
+			wantPinned: []string{"/pin"},
+		},
+		{
+			name:       "a started folder that is the start-up row stays one pinned row",
+			held:       []project.Project{pinnedProject("/pin")},
+			started:    []string{"/pin"},
+			reads:      []read{good()},
+			wantPaths:  []string{"/pin"},
+			wantNames:  []string{"pin"},
+			wantPinned: []string{"/pin"},
+		},
+		{
 			name:  "nothing anywhere is an empty list",
 			reads: []read{good()},
 		},
@@ -323,6 +371,7 @@ func TestMergeProjects(t *testing.T) {
 				launchMainCheckout: tt.mainCheckout,
 				listed:             listed,
 				found:              tt.found,
+				started:            tt.started,
 			}
 			got := mergeProjects(in)
 
@@ -375,7 +424,9 @@ func TestMergeProjects(t *testing.T) {
 // TestScanExtraPaths pins which rows a scan pass covers beyond its own walk.
 // The gone and stood-in-for rows are the load-bearing ones: neither has a row,
 // and covering them would open a click-to-focus watcher on every pass only for
-// applyRendezvous to close it again.
+// applyRendezvous to close it again. "a started folder's row is covered" is
+// load-bearing too: without it the row a new plan switched to would show no
+// session counts.
 func TestScanExtraPaths(t *testing.T) {
 	listed := []ListedProject{
 		{Path: "/code/afk", Name: "afk"},
@@ -383,9 +434,10 @@ func TestScanExtraPaths(t *testing.T) {
 		{Path: "/code/main", Name: "main"},
 	}
 	tests := []struct {
-		name string
-		rows []project.Project
-		want []string
+		name    string
+		rows    []project.Project
+		started []string
+		want    []string
 	}{
 		{
 			name: "pinned and listed rows are covered, a found-only row is not",
@@ -402,10 +454,22 @@ func TestScanExtraPaths(t *testing.T) {
 			rows: []project.Project{{Path: "/code/main/.wt/x", Pinned: true}},
 			want: []string{"/code/main/.wt/x"},
 		},
+		{
+			name:    "a started folder's row is covered",
+			rows:    []project.Project{{Path: "/roots/a"}, {Path: "/code/new"}},
+			started: []string{"/code/new"},
+			want:    []string{"/code/new"},
+		},
+		{
+			name:    "a started folder with no row is not covered",
+			rows:    []project.Project{{Path: "/roots/a"}},
+			started: []string{"/code/new"},
+			want:    nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := scanExtraPaths(tt.rows, listed); !pathsEqual(got, tt.want) {
+			if got := scanExtraPaths(tt.rows, listed, tt.started); !pathsEqual(got, tt.want) {
 				t.Errorf("scanExtraPaths = %v, want %v", got, tt.want)
 			}
 		})
