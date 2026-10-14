@@ -18,3 +18,42 @@
      a native <progress> so the fill needs no style attribute and the browser
      gives it the progressbar role; drawn only when there is a total. */}}
 {{define "progress"}}{{if .Total}}<span class="progress"><progress class="progress__track" max="{{.Total}}" value="{{.Done}}" aria-label="{{.Done}} of {{.Total}} tasks done"></progress><span class="progress__label" aria-hidden="true">{{.Done}} of {{.Total}}</span></span>{{end}}{{end}}
+
+{{/* status-sheet is a task's Set status… sheet: a confirm-sheet whose body is
+     a choice of every status, the replacing-ids field for superseded, and
+     one block of sentences per status, pre-rendered on the server from
+     internal/taskstatus. confirm.js shows the block for the checked radio,
+     fills the typed ids into superseded's and sets the action's label; the
+     radios' checked look is CSS (:has), so none of the choosing needs the
+     script to read right. The action button sits outside the form (form=),
+     so the safe button can stay the method="dialog" form the pause sheet
+     uses. */}}
+{{define "status-sheet"}}
+<dialog class="confirm-sheet" id="{{.ID}}" aria-labelledby="{{.ID}}-title" aria-describedby="{{.ID}}-body" data-status-sheet>
+  <h2 class="confirm-sheet__title" id="{{.ID}}-title">{{.Title}}</h2>
+  <form method="post" action="{{.Path}}" id="{{.ID}}-form" class="stack" data-enhance>
+    <input type="hidden" name="confirm" value="yes">
+    <fieldset>
+      <legend class="field__label">New status</legend>
+      <div class="choice-list">
+      {{range .Choices}}<label class="choice"><input type="radio" name="status" value="{{.Status}}" data-action-label="{{.Action}}"{{if .Current}} checked{{end}}><span class="choice__label">{{.Status}}</span>{{if .Current}}<span class="choice__meta">current</span>{{end}}</label>
+      {{end}}</div>
+    </fieldset>
+    <div class="field" data-ids-field{{if ne .Current "superseded"}} hidden{{end}}>
+      <label class="field__label" for="{{.ID}}-ids">Replaced by</label>
+      <input class="input input--mono" type="text" id="{{.ID}}-ids" name="replaced_by" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="{{.ID}}-ids-hint">
+      <span class="field__hint" id="{{.ID}}-ids-hint">{{.IDsHint}}</span>
+    </div>
+  </form>
+  <div class="confirm-sheet__body status-sentences" id="{{.ID}}-body" aria-live="polite">
+  {{- $empty := .EmptyIDs}}
+  {{range .Choices}}<div data-sentence="{{.Status}}"{{if not .Current}} hidden{{end}}>{{$ids := .IDsLines}}{{range $i, $l := .Lines}}<p{{if $ids}} data-ids-template="{{index $ids $i}}" data-ids-default="{{$l}}"{{end}}>{{$l}}</p>{{end}}{{if .Superseded}}<p data-ids-empty hidden>{{$empty}}</p>{{end}}</div>
+  {{end}}</div>
+  <div class="btn-row">
+    {{range .Choices}}{{if .Current}}<button type="submit" form="{{$.ID}}-form" class="btn btn--primary" data-status-action data-loading-label="Saving">{{.Action}}</button>{{end}}{{end}}
+    <form method="dialog">
+      <button type="submit" class="btn btn--secondary" autofocus>{{.Safe}}</button>
+    </form>
+  </div>
+</dialog>
+{{end}}

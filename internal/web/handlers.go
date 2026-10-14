@@ -649,19 +649,41 @@ func (s *server) setPaused(w http.ResponseWriter, r *http.Request, act func(root
 // the server paused the project; now the server asks for it too. A body that
 // cannot be read counts as no confirm, so the safe answer is nothing changed.
 func (s *server) confirmedRequest(r *http.Request) bool {
+	b, err := readPostBody(r)
+	if err != nil {
+		return false
+	}
+	return b.confirmed()
+}
+
+// postBody is a POST's body read once: the JSON bytes when the request says
+// its body is JSON, the form otherwise. The status POST needs the confirm and
+// its own fields from the same body, and a JSON body can only be read once,
+// so the confirm rule reads from this rather than from the request.
+type postBody struct {
+	contentType string
+	form        url.Values
+	json        []byte
+}
+
+// readPostBody reads the body as confirmed expects it. Only the body is read:
+// the address's query never counts (see confirmed).
+func readPostBody(r *http.Request) (postBody, error) {
 	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if ct == "application/json" {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			return false
+			return postBody{contentType: ct}, err
 		}
-		return confirmed(ct, nil, body)
+		return postBody{contentType: ct, json: body}, nil
 	}
 	if err := r.ParseForm(); err != nil {
-		return false
+		return postBody{contentType: ct}, err
 	}
-	return confirmed(ct, r.PostForm, nil)
+	return postBody{contentType: ct, form: r.PostForm}, nil
 }
+
+func (b postBody) confirmed() bool { return confirmed(b.contentType, b.form, b.json) }
 
 // confirmed is the pure decision: a JSON body must hold {"confirm": true};
 // anything else must be a form with confirm=yes. Only the body counts, so an

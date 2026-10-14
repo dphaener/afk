@@ -17,13 +17,13 @@ package ui
 
 import (
 	"strings"
-	"unicode"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/ledger"
+	"github.com/dphaener/afk/internal/taskstatus"
 )
 
 // TaskStatusResult is what one status change did, as the dashboard shows it.
@@ -84,13 +84,13 @@ func taskStatusOpenBuildFirst() string {
 // taskStatusAlreadyNotice is the picker's answer when the current status is
 // chosen: nothing would change, so nothing is called.
 func taskStatusAlreadyNotice(id, status string) string {
-	return id + " is already " + status + "."
+	return taskstatus.Already(id, status)
 }
 
 // taskStatusEmptyIDs is the replacing-ids step's answer to a blank enter. The
 // step stays open, so the owner can type the ids and press enter again.
 func taskStatusEmptyIDs(id string) string {
-	return "Type the ids of the tasks that replace " + id + ", for example " + id + "a, " + id + "b."
+	return taskstatus.EmptyIDsPrompt(id)
 }
 
 // taskStatusTarget is the task the picker was opened for, copied from the
@@ -126,63 +126,16 @@ func taskStatusBlockedReason(c leaderConds) string {
 }
 
 // taskStatusChoices is the picker's list: every status the ledger accepts,
-// in lifecycle order, as `afk ledger set` takes them.
-func taskStatusChoices() []string {
-	sts := ledger.Statuses()
-	out := make([]string, len(sts))
-	for i, s := range sts {
-		out[i] = string(s)
-	}
-	return out
-}
+// in lifecycle order, as `afk ledger set` takes them. The words live in
+// internal/taskstatus so the web page says the same.
+func taskStatusChoices() []string { return taskstatus.Choices() }
 
-// splitTaskIDs is the replacing-ids step's text as ids: split on commas and
-// white space, empty pieces dropped. The ids are not checked here; the entry
-// point checks them against the plan and says which one is wrong.
-func splitTaskIDs(text string) []string {
-	return strings.FieldsFunc(text, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
-}
+// splitTaskIDs is the replacing-ids step's text as ids.
+func splitTaskIDs(text string) []string { return taskstatus.SplitIDs(text) }
 
-// taskStatusConsequence is what follows from the new status, in one sentence,
-// so the owner reads what the build loop will do before pressing y. An
-// unknown status gets no sentence rather than a guess.
-func taskStatusConsequence(status string) string {
-	switch ledger.Status(status) {
-	case ledger.Pending:
-		return "The build loop may start it on its next pass."
-	case ledger.Done:
-		return "Tasks that depend on it may start."
-	case ledger.Failed:
-		return "The build loop will not start it again until you set it back to pending."
-	case ledger.Parked:
-		return "The build loop will wait until its inbox items are answered."
-	case ledger.Superseded:
-		return "Tasks that depend on it will wait for the tasks that replace it."
-	case ledger.Running, ledger.Shipping:
-		return "The build loop will treat it as having a session; use this only to repair the ledger."
-	}
-	return ""
-}
-
-// taskStatusConfirmText is the confirm's words, one sentence to a line: when
-// the old status is running or shipping, first that an agent is working on
-// the task and the change does not stop it (the ledger is only a record, and
-// the owner might think otherwise); then the change itself; then what follows
-// from it.
+// taskStatusConfirmText is the confirm's words, one sentence to a line.
 func taskStatusConfirmText(id, old, new string, replacedBy []string) string {
-	var lines []string
-	if old == string(ledger.Running) || old == string(ledger.Shipping) {
-		lines = append(lines, "An agent is working on "+id+" now; changing its status does not stop it.")
-	}
-	change := id + ": " + old + " → " + new
-	if len(replacedBy) > 0 {
-		change += " (replaced by " + strings.Join(replacedBy, ", ") + ")"
-	}
-	lines = append(lines, change+".")
-	if c := taskStatusConsequence(new); c != "" {
-		lines = append(lines, c)
-	}
-	return strings.Join(lines, "\n")
+	return taskstatus.ConfirmText(id, old, new, replacedBy)
 }
 
 // openTaskStatus is ctrl+space S on the Build tab: the picker for the task

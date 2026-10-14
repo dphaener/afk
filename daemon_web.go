@@ -94,11 +94,13 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 			_, err := resumeProject(root, now())
 			return webPauseError(root, err)
 		},
-		ProjectRows: webProjectRows(projects, stateDir, now),
-		Repository:  webRepository(runGitOutput),
-		PlanChat:    webPlanChat(now),
-		PlanReply:   webPlanReply(now),
-		Now:         now,
+		TaskTokens:    webTaskTokens,
+		SetTaskStatus: webSetTaskStatus,
+		ProjectRows:   webProjectRows(projects, stateDir, now),
+		Repository:    webRepository(runGitOutput),
+		PlanChat:      webPlanChat(now),
+		PlanReply:     webPlanReply(now),
+		Now:           now,
 	}
 }
 

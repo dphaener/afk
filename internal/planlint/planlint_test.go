@@ -812,3 +812,26 @@ func TestFormatDocListsEveryRule(t *testing.T) {
 		}
 	}
 }
+
+// TestMilestoneHeading checks the rule the web page and the summary share.
+// Load-bearing: the level 3 milestone row is the only true one; the level 4
+// row has the same text as a milestone and must not count; "### 4.2 Ledger"
+// is a level 3 section that is not a milestone because it has no M<n> label.
+func TestMilestoneHeading(t *testing.T) {
+	cases := []struct {
+		name string
+		h    masterplan.Heading
+		want bool
+	}{
+		{"milestone", masterplan.Heading{Level: 3, Text: "M1 — Foundations"}, true},
+		{"level 4 with milestone text", masterplan.Heading{Level: 4, Text: "M1 — Foundations"}, false},
+		{"level 3 non-milestone", masterplan.Heading{Level: 3, Text: "4.2 Ledger"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := MilestoneHeading(c.h); got != c.want {
+				t.Errorf("MilestoneHeading(%+v) = %v, want %v", c.h, got, c.want)
+			}
+		})
+	}
+}

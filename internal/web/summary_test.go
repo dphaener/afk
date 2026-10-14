@@ -545,6 +545,7 @@ func TestProjectPageForParts(t *testing.T) {
 	}
 	wantNav := []navItem{
 		{Label: "Inbox", Href: "/p/app/inbox", Count: 3, CountSet: true},
+		{Label: "Tasks", Href: "/p/app/tasks", Hint: "2 of 5"},
 		{Label: "Plan", Href: "/p/app/plan", Hint: "2 of 5"},
 		{Label: "Usage", Href: "/usage"},
 	}
@@ -556,7 +557,7 @@ func TestProjectPageForParts(t *testing.T) {
 	}
 
 	quiet := projectPageFor(projectPageInput{Summary: ProjectSummary{Name: "app"}, Repository: "git@github.com:o/app.git"})
-	if quiet.Nav[0] != (navItem{Label: "Inbox", Href: "/p/app/inbox", CountSet: true, Quiet: true}) || quiet.Nav[1].Hint != "" {
+	if quiet.Nav[0] != (navItem{Label: "Inbox", Href: "/p/app/inbox", CountSet: true, Quiet: true}) || quiet.Nav[1].Hint != "" || quiet.Nav[2].Hint != "" {
 		t.Errorf("nav with nothing = %+v", quiet.Nav)
 	}
 	if quiet.Repository != "git@github.com:o/app.git" || quiet.Running != nil {

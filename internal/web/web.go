@@ -143,6 +143,22 @@ type Deps struct {
 	// short timeout so a stuck git cannot hold a page request. Nil means
 	// the page says "None set".
 	Repository func(root string) string
+	// TaskTokens reads one task's token record from the project at root, the
+	// same read `afk tokens <task>` makes, already totalled. It is a seam
+	// because that read lives in the root package (taskTokensForSurface),
+	// which this package cannot import, and because the web page must agree
+	// with the command to the token. It only reads: nothing is recorded.
+	// Nil means the page cannot show tokens, and the task screen's Tokens
+	// card says so.
+	TaskTokens func(root, task string) TaskTokens
+	// SetTaskStatus does what `afk ledger set` does for one task of the
+	// project at root, through the one writer the command and the dashboard
+	// use (setLedgerStatusForSurface in the root package), and reports what
+	// happened in the command's own words. It is the only way this package
+	// can change the ledger; the package doc's "handlers never write the
+	// ledger" holds because the write happens behind it. Nil means the page
+	// offers no way to set a status.
+	SetTaskStatus func(root, id, status string, replacedBy []string) TaskStatusResult
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -153,6 +169,61 @@ type Deps struct {
 	// re-reads the same files every two seconds, and §3 of docs/PLAN.md
 	// forbids reading them faster than that.
 	Ticker func() (<-chan time.Time, func())
+}
+
+// TaskTokens is one task's token record as Deps.TaskTokens reports it: a plain
+// copy of what `afk tokens <task>` reads, with its own types so this package
+// does not depend on the root package's.
+type TaskTokens struct {
+	// State is "recorded", "none" (no line for this task, or no token ledger
+	// at all) or "unreadable".
+	State string `json:"state"`
+	// Total is the weighted cost of every line, the command's total.
+	Total float64 `json:"total"`
+	// Short is the total abbreviated with its unit, e.g. "2.9M weighted".
+	Short string `json:"short"`
+	// Phases are in the command's phase order; Roles heaviest first.
+	Phases []TokenPhase `json:"phases"`
+	Roles  []TokenRole  `json:"roles"`
+	// Err is the reader's own words when State is "unreadable".
+	Err string `json:"error"`
+}
+
+// TokenPhase is one phase's part of a task's tokens. Share is a percentage
+// (0 to 100) at one decimal, as the command's share column prints it.
+type TokenPhase struct {
+	Phase    string  `json:"phase"`
+	Weighted float64 `json:"weighted"`
+	Share    float64 `json:"share"`
+}
+
+// TokenRole is one role's counts over every phase and model.
+type TokenRole struct {
+	Role     string  `json:"role"`
+	Calls    int64   `json:"calls"`
+	Input    int64   `json:"input"`
+	Output   int64   `json:"output"`
+	Weighted float64 `json:"weighted"`
+}
+
+// The words TaskTokens.State takes.
+const (
+	TokensRecorded   = "recorded"
+	TokensNone       = "none"
+	TokensUnreadable = "unreadable"
+)
+
+// TaskStatusResult is what Deps.SetTaskStatus reports. Outcome is "changed",
+// "already" (the task already had that status; nothing was written),
+// "refused" (the request could never work: an unknown status or id, or
+// superseded without replacements) or "failed" (the ledger could not be
+// written). Old and New are the change's real statuses and Text is the
+// command's own sentence.
+type TaskStatusResult struct {
+	Outcome string `json:"outcome"`
+	Old     string `json:"old"`
+	New     string `json:"new"`
+	Text    string `json:"text"`
 }
 
 // maxBody is the most a POST may carry. An answer is a sentence or a pasted
@@ -213,6 +284,12 @@ var routes = []route{
 	{http.MethodGet, "/p/{project}/inbox", (*server).inboxList},
 	{http.MethodGet, "/p/{project}/inbox/{id}", (*server).item},
 	{http.MethodPost, "/p/{project}/inbox/{id}/answer", (*server).answer},
+	// The tasks list and one task's screen. {id} is a master-plan task id.
+	{http.MethodGet, "/p/{project}/tasks", (*server).tasksList},
+	{http.MethodGet, "/p/{project}/tasks/{id}", (*server).task},
+	// Setting a task's status: what `afk ledger set` does, behind the
+	// confirm, through Deps.SetTaskStatus and nothing else.
+	{http.MethodPost, "/p/{project}/tasks/{id}/status", (*server).setTaskStatus},
 	{http.MethodPost, "/p/{project}/pause", (*server).pause},
 	{http.MethodPost, "/p/{project}/resume", (*server).resume},
 }
@@ -277,6 +354,8 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 	// The confirm page behind Pause and Resume is HTML only, so it stays out
 	// of routes for the same reason.
 	mux.HandleFunc("GET /p/{project}/confirm/{action}", s.confirm)
+	// The no-JS page behind a task's Set status… is HTML only too.
+	mux.HandleFunc("GET /p/{project}/tasks/{id}/status", s.taskStatusPage)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong
@@ -317,7 +396,7 @@ func isAPI(path string) bool {
 
 // respond is the one place a handler's answer is written. name says which
 // view this is ("overview", "usage", "project", "plan", "inbox", "item",
-// "error").
+// "tasks", "task", "error").
 // A path under /api gets the view as JSON. Any other path gets the page
 // named by name, except that a successful POST redirects (see redirectAfter)
 // so that reloading the page they land on does not send the form again.

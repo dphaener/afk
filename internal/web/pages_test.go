@@ -66,9 +66,11 @@ func (rg *rig) seedScript() {
 // item" (shows the answer and where it came from, with no form).
 func TestPages(t *testing.T) {
 	tests := []struct {
-		name    string
-		setup   func(*rig)
-		path    string
+		name  string
+		setup func(*rig)
+		path  string
+		// status is the answer's status; zero means 200.
+		status  int
 		want    []string
 		notWant []string
 	}{
@@ -87,10 +89,11 @@ func TestPages(t *testing.T) {
 			`data-confirm="confirm-pause">Pause project&hellip;</a>`, `action="/p/app/pause"`, `action="/p/app/resume"`,
 			`<span class="row__title">Read the plan</span>`,
 			`<a class="nav-item" href="/p/app/inbox"><span>Inbox</span><span class="count">2</span></a>`,
+			`<a class="nav-item" href="/p/app/tasks"><span>Tasks</span><span class="meta">1 of 3</span></a>`,
 			`<a class="nav-item" href="/p/app/plan"><span>Plan</span><span class="meta">1 of 3</span></a>`,
 			`<a class="nav-item" href="/usage"><span>Usage</span></a>`,
 			`<dt>Folder</dt><dd class="path">`, "<dt>Repository</dt><dd>None set</dd>",
-		}, notWant: []string{"Which database?", ">Tasks<", ">Sessions<", ">Chat<", "Change the plan", "Extend", "Reconcile"}},
+		}, notWant: []string{"Which database?", ">Sessions<", ">Chat<", "Change the plan", "Extend", "Reconcile"}},
 		{name: "project with nothing open has a quiet inbox count", path: "/p/app", want: []string{`<span>Inbox</span><span class="count count--quiet">0</span>`, "<h2>Building T1.2</h2>"}, notWant: []string{"Answer in the inbox"}},
 		{name: "project paused shows Resume", setup: func(rg *rig) {
 			_ = daemonstate.Pause(rg.root, testNow)
@@ -110,6 +113,67 @@ func TestPages(t *testing.T) {
 		{name: "inbox list", setup: (*rig).seedInbox, path: "/p/app/inbox",
 			want:    []string{"<h1>Inbox</h1>", `id="inbox-list" data-live="inbox" data-project="app"`, "1 of 2 hold a task up", `badge badge--blocking`, `<span class="tid">T1.2</span>`, `<span class="row__title">Which database?</span>`, `href="/p/app/inbox/` + idBlocking + `"`, "Question from t1-2 · 1 hour ago", "Answered (1)", "<details"},
 			notWant: []string{"Nothing needs you"}},
+		{name: "tasks list, open by default", setup: (*rig).useTasksPlan, path: "/p/app/tasks", want: []string{
+			"<h1>Tasks</h1>", `aria-label="2 of 5 tasks done"`,
+			`<a href="/p/app/tasks?show=open" aria-current="page">Open</a>`, `<a href="/p/app/tasks?show=done">Done</a>`, `<a href="/p/app/tasks?show=all">All</a>`,
+			`>M1 — Foundations</h2><span class="meta">1 of 2 done</span>`, `>M2 — Polish</h2><span class="meta">0 of 2 done</span>`,
+			`<a class="row" href="/p/app/tasks/T1.2">`, `<span class="tid">T1.2</span> <span class="row__title">Second</span> <span class="badge badge--running">running</span>`,
+			`<span class="tid">T2.1</span> <span class="row__title">Fourth &lt;b&gt;bold&lt;/b&gt;</span> <span class="badge badge--pending">pending</span>`,
+			`<span class="row__meta">Waits for T1.2</span>`, `<span class="badge badge--failed">failed</span>`,
+		}, notWant: []string{"T0.1", "T1.1", "T1.3", ">Tasks</h2>", "M1 notes", "No open tasks", "<b>bold</b>"}},
+		{name: "tasks list, done", setup: (*rig).useTasksPlan, path: "/p/app/tasks?show=done", want: []string{
+			`<a href="/p/app/tasks?show=done" aria-current="page">Done</a>`,
+			`>Tasks</h2><span class="meta">1 of 1 done</span>`, `>M1 — Foundations</h2><span class="meta">1 of 2 done</span>`,
+			`<span class="tid">T1.3</span> <span class="row__title">Third</span> <span class="badge badge--superseded">superseded (by T2.1)</span>`,
+			`<span class="badge badge--done">done</span>`,
+		}, notWant: []string{"T1.2", "T2.2", "M2 — Polish", "Waits for"}},
+		{name: "tasks list, all", setup: (*rig).useTasksPlan, path: "/p/app/tasks?show=all", want: []string{
+			`<a href="/p/app/tasks?show=all" aria-current="page">All</a>`,
+			">T0.1<", ">T1.1<", ">T1.2<", ">T1.3<", ">T2.1<", ">T2.2<", `>M2 — Polish</h2><span class="meta">0 of 2 done</span>`,
+		}},
+		{name: "tasks list with nothing open", setup: func(rg *rig) {
+			rg.useTasksPlan()
+			for i := range rg.ledger.Tasks {
+				rg.ledger.Tasks[i].Status = ledger.Done
+			}
+			rg.ledger.Tasks = append(rg.ledger.Tasks, ledger.Entry{ID: "T2.1", Status: ledger.Done})
+		}, path: "/p/app/tasks", want: []string{`<p class="empty__title">No open tasks</p>`, `aria-label="6 of 6 tasks done"`}, notWant: []string{`class="section"`}},
+		{name: "tasks list with nothing done", setup: func(rg *rig) { rg.useTasksPlan(); rg.ledger = ledger.Ledger{} }, path: "/p/app/tasks?show=done",
+			want: []string{`<p class="empty__title">Nothing done yet</p>`}, notWant: []string{`class="section"`}},
+		{name: "tasks list of a project with no tasks", path: "/p/my%20app/tasks", want: []string{`<p class="empty__title">No tasks in the plan</p>`}},
+		{name: "tasks list whose ledger cannot be read", setup: func(rg *rig) { rg.loadErr = errors.New("the ledger is damaged") }, path: "/p/app/tasks",
+			want: []string{"The plan or the ledger could not be read: the ledger is damaged"}, notWant: []string{"empty__title"}},
+		{name: "task with a record", setup: func(rg *rig) {
+			rg.useTasksPlan()
+			rg.tokens = map[string]TaskTokens{"T1.2": recordedTokens}
+		}, path: "/p/app/tasks/T1.2", want: []string{
+			`<h1 class="tid task__id">T1.2</h1>`, `<span class="badge badge--running">running</span>`, "<h2>Second</h2>",
+			"<p>Running in session t1-2, attempt 2.</p>", "Depends on T1.1.",
+			`id="task-status" data-live="ledger" data-project="app"`,
+			`<h2 class="section-head__title" id="tokens-title">Tokens</h2><span class="meta">1.0K weighted</span>`,
+			`<div class="split-bar" role="img" aria-label="Tokens by phase: plan 40.0%, execute 59.5%, review 0.5%"><span class="split-bar__seg split-bar__seg--plan w-40"></span><span class="split-bar__seg split-bar__seg--execute w-59"></span><span class="split-bar__seg split-bar__seg--review w-1"></span></div>`,
+			`<span class="legend__swatch split-bar__seg--review" aria-hidden="true"></span>review<span class="legend__value">5 · 0.5%</span>`,
+			`<th scope="col">role</th><th scope="col">calls</th><th scope="col">input</th><th scope="col">output</th><th scope="col">weighted</th>`,
+			"<tr><td>executor</td><td>3</td><td>1200</td><td>300</td><td>595</td></tr>",
+			`<a class="btn btn--secondary" href="/p/app/tasks/T1.2/status" data-confirm="confirm-status">Set status&hellip;</a>`,
+		}, notWant: []string{"No tokens recorded", "Open its session"}},
+		{name: "task without a record", setup: (*rig).useTasksPlan, path: "/p/app/tasks/T2.1", want: []string{
+			`<span class="badge badge--pending">pending</span>`, "Waiting for T1.2 to be done first.", "Depends on T1.2.",
+			`<p class="muted">No tokens recorded for this task yet.</p>`,
+		}, notWant: []string{"split-bar", "<table", "notice--error"}},
+		{name: "task whose tokens cannot be read", setup: func(rg *rig) {
+			rg.useTasksPlan()
+			rg.tokens = map[string]TaskTokens{"T2.2": {State: TokensUnreadable, Err: "The token ledger is damaged at line 3."}}
+		}, path: "/p/app/tasks/T2.2", want: []string{
+			"Failed. The build loop will not start it again until its status is set back to pending.",
+			`<div class="notice notice--error" role="alert"><div class="notice__body">The token ledger is damaged at line 3.</div></div>`,
+		}, notWant: []string{"split-bar", "No tokens recorded"}},
+		{name: "task superseded", setup: (*rig).useTasksPlan, path: "/p/app/tasks/T1.3", want: []string{
+			`<span class="badge badge--superseded">superseded (by T2.1)</span>`, "Superseded by T2.1, which do its work instead.",
+		}},
+		{name: "task that is not in the plan", setup: (*rig).useTasksPlan, path: "/p/app/tasks/T9.9", status: 404, want: []string{
+			"There is no task with that id in this project&#39;s plan.",
+		}, notWant: []string{"<h2>", "Tokens"}},
 		{name: "inbox list with nothing open", path: "/p/app/inbox", want: []string{"Nothing needs you", "When a task has a question for you"}, notWant: []string{"hold a task up", "<details"}},
 		{name: "inbox list with no blocking item", setup: func(rg *rig) {
 			rg.seedInbox()
@@ -125,8 +189,12 @@ func TestPages(t *testing.T) {
 				tc.setup(rg)
 			}
 			rec := rg.pageDo("GET", tc.path, "")
-			if rec.Code != 200 {
-				t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body.String())
+			wantStatus := tc.status
+			if wantStatus == 0 {
+				wantStatus = 200
+			}
+			if rec.Code != wantStatus {
+				t.Fatalf("status = %d, want %d\n%s", rec.Code, wantStatus, rec.Body.String())
 			}
 			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 				t.Errorf("Content-Type = %q, want text/html", ct)
@@ -464,6 +532,11 @@ func TestPageLiveMarkup(t *testing.T) {
 			`<span class="live topnav__live" data-live-mirror hidden>Live</span>`,
 		}},
 		{name: "usage", path: "/usage", want: []string{`id="usage-reading" data-live="usage" data-project=""`}},
+		{name: "tasks", path: "/p/my%20app/tasks", want: []string{
+			`id="tasks-progress" data-live="ledger" data-project="my app"`,
+			`id="tasks-list" data-live="ledger" data-project="my app" aria-live="polite"`,
+		}},
+		{name: "task", path: "/p/app/tasks/T1.2", want: []string{`<div class="card" id="task-status" data-live="ledger" data-project="app">`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -751,6 +824,10 @@ func TestPageLayout(t *testing.T) {
 		{name: "plan waiting for approval", page: "plan", path: "/p/draft/plan", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, navTitle: "Plan: draft"},
 		{name: "item", page: "item", path: "/p/app/inbox/" + idBlocking, status: 200, bars: true, back: `href="/p/app/inbox" aria-label="Back to the inbox of app"`, navTitle: "Which database?"},
 		{name: "inbox", page: "inbox", path: "/p/app/inbox", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Inbox"},
+		{name: "tasks", page: "tasks", path: "/p/app/tasks", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Tasks"},
+		{name: "task", page: "task", path: "/p/app/tasks/T1.2", status: 200, bars: true, back: `href="/p/app/tasks" aria-label="Back to the tasks of app"`, current: `href="/" aria-current="true"`, navTitle: "T1.2"},
+		{name: "task status, no-JS", page: "task_status", path: "/p/app/tasks/T1.2/status", status: 200, bars: true, back: `href="/p/app/tasks/T1.2" aria-label="Back to T1.2"`, current: `href="/" aria-current="true"`, navTitle: "Set status"},
+		{name: "task status, no-JS, step two", page: "task_status", path: "/p/app/tasks/T1.2/status?to=done", status: 200, bars: true, back: `href="/p/app/tasks/T1.2" aria-label="Back to T1.2"`, navTitle: "Set status"},
 		{name: "confirm", page: "confirm", path: "/p/app/confirm/pause", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, navTitle: "Pause project"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", path: "/p/app", noToken: true, status: 401},
@@ -859,6 +936,12 @@ func TestChromeFor(t *testing.T) {
 			want: chrome{Title: "Which?", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/inbox", BackLabel: "Back to the inbox of my app"}},
 		{name: "inbox", page: "inbox", view: InboxView{Project: "my app"}, method: "GET", path: "/p/my app/inbox",
 			want: chrome{Title: "Inbox", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
+		{name: "tasks", page: "tasks", view: TasksView{Project: "my app"}, method: "GET", path: "/p/my app/tasks",
+			want: chrome{Title: "Tasks", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
+		{name: "task", page: "task", view: TaskView{Project: "my app", ID: "T1.2", Title: "Second"}, method: "GET", path: "/p/my app/tasks/T1.2",
+			want: chrome{Title: "T1.2", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/tasks", BackLabel: "Back to the tasks of my app"}},
+		{name: "task status", page: "task_status", view: TaskStatusPageView{Project: "my app", ID: "T1.2"}, method: "GET", path: "/p/my app/tasks/T1.2/status",
+			want: chrome{Title: "Set status", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/tasks/T1.2", BackLabel: "Back to T1.2"}},
 		{name: "error", page: "error", view: ErrorView{Status: 404}, method: "GET", path: "/p/nope",
 			want: chrome{Bare: true, Status: 404, Path: "/p/nope", Retry: "/p/nope"}},
 		{name: "error after a POST", page: "error", view: ErrorView{Status: 400}, method: "POST", path: "/p/app/inbox/x/answer",
@@ -1055,6 +1138,10 @@ func TestToastFor(t *testing.T) {
 		{"", "app", "", ""},
 		{"<script>", "app", "", ""},
 		{"PAUSED", "app", "", ""},
+		// The status codes name a status only a task's screen can read, so
+		// any other page shows nothing rather than "{status}".
+		{"status", "app", "T1.2", ""},
+		{"already", "app", "T1.2", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.code+"_"+tc.task, func(t *testing.T) {

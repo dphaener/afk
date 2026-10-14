@@ -156,3 +156,146 @@ dialog.confirm-sheet::backdrop { background: var(--scrim); }
   .project__side { grid-area: side; }
   .project__card-badge { display: none; }
 }
+
+/* ───────── tasks (tasks.html, task.html) ───────── */
+.tasks, .task { display: flex; flex-direction: column; gap: var(--space-5); }
+.tasks__list { display: flex; flex-direction: column; gap: var(--space-5); }
+.task__id { font-size: var(--text-2xl); }
+.task__state .card h2 { overflow-wrap: anywhere; }
+
+/* The Open / Done / All filter is three links, not radios, so it works
+   without JavaScript and a live swap of the list never resets it. These
+   draw a link as afk.css draws .segmented label, and the current one
+   (aria-current="page") as its .is-checked. */
+.segmented { align-self: flex-start; }
+.afk .segmented a { display: grid; place-items: center; min-height: 40px; padding: 0 var(--space-4); font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text); text-decoration: none; }
+.segmented a + a { border-left: 1px solid var(--border-input); }
+.afk .segmented a:hover { background: var(--surface-2); color: var(--text); }
+.afk .segmented a[aria-current="page"] { background: var(--text); color: var(--bg); }
+
+/* The split bar's segments. Their widths are whole-percent classes summing
+   to 100 (splitWidths in tasks.go), because the page carries no style=; the
+   2 px between segments is drawn inside each one after the first, so the
+   gap afk.css puts between them cannot push the bar past 100%. */
+.split-bar { gap: 0; }
+.split-bar .split-bar__seg + .split-bar__seg { box-shadow: inset 2px 0 0 var(--surface); }
+.split-bar__seg--plan { background: var(--accent); }
+.split-bar__seg--execute { background: var(--ok); }
+.split-bar__seg--review { background: var(--attn-solid); }
+.split-bar__seg--fix { background: var(--danger); }
+.split-bar__seg--ship { background: var(--idle); }
+.split-bar__seg--other { background: var(--text-3); }
+.legend { list-style: none; margin: 0; padding: 0; }
+.task__tokens .table td:not(:first-child), .task__tokens .table th:not(:first-child) { text-align: right; font-family: var(--font-mono); }
+.w-0 { flex: 0 0 0%; }
+.w-1 { flex: 0 0 1%; }
+.w-2 { flex: 0 0 2%; }
+.w-3 { flex: 0 0 3%; }
+.w-4 { flex: 0 0 4%; }
+.w-5 { flex: 0 0 5%; }
+.w-6 { flex: 0 0 6%; }
+.w-7 { flex: 0 0 7%; }
+.w-8 { flex: 0 0 8%; }
+.w-9 { flex: 0 0 9%; }
+.w-10 { flex: 0 0 10%; }
+.w-11 { flex: 0 0 11%; }
+.w-12 { flex: 0 0 12%; }
+.w-13 { flex: 0 0 13%; }
+.w-14 { flex: 0 0 14%; }
+.w-15 { flex: 0 0 15%; }
+.w-16 { flex: 0 0 16%; }
+.w-17 { flex: 0 0 17%; }
+.w-18 { flex: 0 0 18%; }
+.w-19 { flex: 0 0 19%; }
+.w-20 { flex: 0 0 20%; }
+.w-21 { flex: 0 0 21%; }
+.w-22 { flex: 0 0 22%; }
+.w-23 { flex: 0 0 23%; }
+.w-24 { flex: 0 0 24%; }
+.w-25 { flex: 0 0 25%; }
+.w-26 { flex: 0 0 26%; }
+.w-27 { flex: 0 0 27%; }
+.w-28 { flex: 0 0 28%; }
+.w-29 { flex: 0 0 29%; }
+.w-30 { flex: 0 0 30%; }
+.w-31 { flex: 0 0 31%; }
+.w-32 { flex: 0 0 32%; }
+.w-33 { flex: 0 0 33%; }
+.w-34 { flex: 0 0 34%; }
+.w-35 { flex: 0 0 35%; }
+.w-36 { flex: 0 0 36%; }
+.w-37 { flex: 0 0 37%; }
+.w-38 { flex: 0 0 38%; }
+.w-39 { flex: 0 0 39%; }
+.w-40 { flex: 0 0 40%; }
+.w-41 { flex: 0 0 41%; }
+.w-42 { flex: 0 0 42%; }
+.w-43 { flex: 0 0 43%; }
+.w-44 { flex: 0 0 44%; }
+.w-45 { flex: 0 0 45%; }
+.w-46 { flex: 0 0 46%; }
+.w-47 { flex: 0 0 47%; }
+.w-48 { flex: 0 0 48%; }
+.w-49 { flex: 0 0 49%; }
+.w-50 { flex: 0 0 50%; }
+.w-51 { flex: 0 0 51%; }
+.w-52 { flex: 0 0 52%; }
+.w-53 { flex: 0 0 53%; }
+.w-54 { flex: 0 0 54%; }
+.w-55 { flex: 0 0 55%; }
+.w-56 { flex: 0 0 56%; }
+.w-57 { flex: 0 0 57%; }
+.w-58 { flex: 0 0 58%; }
+.w-59 { flex: 0 0 59%; }
+.w-60 { flex: 0 0 60%; }
+.w-61 { flex: 0 0 61%; }
+.w-62 { flex: 0 0 62%; }
+.w-63 { flex: 0 0 63%; }
+.w-64 { flex: 0 0 64%; }
+.w-65 { flex: 0 0 65%; }
+.w-66 { flex: 0 0 66%; }
+.w-67 { flex: 0 0 67%; }
+.w-68 { flex: 0 0 68%; }
+.w-69 { flex: 0 0 69%; }
+.w-70 { flex: 0 0 70%; }
+.w-71 { flex: 0 0 71%; }
+.w-72 { flex: 0 0 72%; }
+.w-73 { flex: 0 0 73%; }
+.w-74 { flex: 0 0 74%; }
+.w-75 { flex: 0 0 75%; }
+.w-76 { flex: 0 0 76%; }
+.w-77 { flex: 0 0 77%; }
+.w-78 { flex: 0 0 78%; }
+.w-79 { flex: 0 0 79%; }
+.w-80 { flex: 0 0 80%; }
+.w-81 { flex: 0 0 81%; }
+.w-82 { flex: 0 0 82%; }
+.w-83 { flex: 0 0 83%; }
+.w-84 { flex: 0 0 84%; }
+.w-85 { flex: 0 0 85%; }
+.w-86 { flex: 0 0 86%; }
+.w-87 { flex: 0 0 87%; }
+.w-88 { flex: 0 0 88%; }
+.w-89 { flex: 0 0 89%; }
+.w-90 { flex: 0 0 90%; }
+.w-91 { flex: 0 0 91%; }
+.w-92 { flex: 0 0 92%; }
+.w-93 { flex: 0 0 93%; }
+.w-94 { flex: 0 0 94%; }
+.w-95 { flex: 0 0 95%; }
+.w-96 { flex: 0 0 96%; }
+.w-97 { flex: 0 0 97%; }
+.w-98 { flex: 0 0 98%; }
+.w-99 { flex: 0 0 99%; }
+.w-100 { flex: 0 0 100%; }
+
+/* Set status… (task.html's sheet and task_status.html). A choice's checked
+   look comes from its own radio through :has, so it is right with the
+   script off and needs no class kept in step; afk.css's .is-checked is the
+   same colour. The sheet holds seven choices and a field, more than a
+   phone's height, so it scrolls inside itself. */
+.afk .choice:has(:checked) { background: var(--accent-soft); }
+dialog.confirm-sheet[data-status-sheet] { max-height: 90vh; overflow-y: auto; }
+.confirm-sheet .stack + .confirm-sheet__body, .status-sentences { margin-top: var(--space-3); }
+.status-sentences p + p { margin-top: var(--space-1); }
+[data-ids-field][hidden], [data-sentence][hidden], [data-ids-empty][hidden] { display: none; }

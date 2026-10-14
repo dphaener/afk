@@ -36,6 +36,10 @@ type taskTokensResult struct {
 	Weighted float64
 	// Short is the abbreviated total with its unit, e.g. "2.9M weighted".
 	Short string
+	// Summary is the same filtered lines as numbers (total, per phase, per
+	// role), for the web page's split bar and role table. It is built from
+	// the lines Lines was, so its Total equals Weighted.
+	Summary tokens.Summary
 	// Err is the reader's own words when State is tokensUnreadable.
 	Err string
 }
@@ -63,6 +67,7 @@ func taskTokensForSurface(root, task string) taskTokensResult {
 	for _, l := range lines {
 		res.Weighted += l.Weighted
 	}
+	res.Summary = tokens.Summarize(lines)
 	res.Short = tokens.Short(res.Weighted) + " weighted"
 	res.Lines = tableLines(task, lines, tokens.RenderTable)
 	res.Compact = tableLines(task, lines, tokens.RenderCompact)

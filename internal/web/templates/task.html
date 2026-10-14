@@ -1,0 +1,43 @@
+{{define "title"}}{{.ID}}: {{.Title}}{{end}}
+{{define "content"}}
+<div class="task">
+<h1 class="tid task__id">{{.ID}}</h1>
+<section class="task__state" aria-live="polite" aria-label="Status of {{.ID}}">
+<div class="card" id="task-status" data-live="ledger" data-project="{{.Project}}">
+  <div class="row__top"><span class="badge {{.Page.Badge}}">{{.Page.Word}}</span></div>
+  <h2>{{.Title}}</h2>
+  <p>{{.Why}}</p>
+  <p class="meta">{{.Page.Depends}}</p>
+</div>
+</section>
+{{/* The action sits outside the live region above, and its sheet at the end
+     of the page, so a live swap of the status never takes the sheet away
+     while it is open. Without the script the link goes to the two-step page. */}}
+{{with .Page.Sheet}}<div class="btn-row"><a class="btn btn--secondary" href="{{.Page}}" data-confirm="{{.ID}}">Set status&hellip;</a></div>{{end}}
+
+{{with .Page.Tokens}}
+<section class="card task__tokens" aria-labelledby="tokens-title">
+  <div class="section-head"><h2 class="section-head__title" id="tokens-title">Tokens</h2>{{if .Recorded}}<span class="meta">{{.Total}}</span>{{end}}</div>
+{{if .Recorded}}
+  <div class="split-bar" role="img" aria-label="{{.Label}}">{{range .Segments}}<span class="split-bar__seg split-bar__seg--{{.Class}} w-{{.Width}}"></span>{{end}}</div>
+  <ul class="legend">
+  {{range .Legend}}<li class="legend__item"><span class="legend__swatch split-bar__seg--{{.Class}}" aria-hidden="true"></span>{{.Phase}}<span class="legend__value">{{.Value}} · {{.Share}}</span></li>
+  {{end}}</ul>
+  {{with .Roles}}<div class="table-wrap">
+  <table class="table">
+    <thead><tr><th scope="col">role</th><th scope="col">calls</th><th scope="col">input</th><th scope="col">output</th><th scope="col">weighted</th></tr></thead>
+    <tbody>
+    {{range .}}<tr><td>{{.Role}}</td><td>{{.Calls}}</td><td>{{.Input}}</td><td>{{.Output}}</td><td>{{.Weighted}}</td></tr>
+    {{end}}</tbody>
+  </table>
+  </div>{{end}}
+{{else if .Error}}
+  <div class="notice notice--error" role="alert"><div class="notice__body">{{.Message}}</div></div>
+{{else}}
+  <p class="muted">{{.Message}}</p>
+{{end}}
+</section>
+{{end}}
+</div>
+{{with .Page.Sheet}}{{template "status-sheet" .}}{{end}}
+{{end}}
