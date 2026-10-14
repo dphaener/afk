@@ -2486,9 +2486,15 @@ thing it does not do is attach to a session.
 - **Background:** T7.13 adds an entry point beside `runUsage` that takes and saves a reading and
   returns it or the reason there is none, one reading at a time.
 - **Scope:** `usage.html` rebuilt; a POST that calls T7.13's entry point off the request's critical
-  path where it would block, with a "reading usage" state shown until the reading lands through T8.2;
+  path where it would block, with a "Refreshing" state shown until the reading lands through T8.2;
   a second press while one runs does nothing; a failure is shown in plain words and the old reading
-  stays. The same under `/api`. README: the web page section and `afk usage`.
+  stays. The same under `/api`.
+  From the design system (reconciled 2026-10-13): a governor `card` ("What afk is doing", a `badge`
+  naming the decision, Run, Launch nothing new, Pause, Hold or Refuse, and one sentence), a usage
+  windows `card` with one `meter` per window (percent used and reset time; `meter--warn` from 80%,
+  `meter--full` at 100%), **Refresh usage** (secondary) whose loading label reads "Refreshing" and
+  then "Checked just now", and a `<details>` that explains the five decisions.
+  README: the web page section and `afk usage`.
 - **Must not:** probe on a timer or on page load; name a provider outside `internal/provider`.
 - **Acceptance:** handler tests with a fake entry point: a reading, each failure, a second press while
   one runs. No test probes real usage. Against a scratch build with a scratch state folder and a
