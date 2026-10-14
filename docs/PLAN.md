@@ -1769,6 +1769,108 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
 
 ---
 
+### M6 — One settings file, and more in the dashboard
+
+**Outcome:** `afk dash` started in any folder lists every project in `config.toml` in its project
+switcher, the machine has one settings file, and the owner can pause the build and see how many inbox
+items need them without leaving the dashboard.
+
+#### T6.1 — The switcher lists the projects in config.toml
+- **Depends on:** T3.2, T5.7
+- **Goal:** the dashboard's project switcher (`p`) shows every project `afk project list` prints, on a
+  machine with no `config.json` at all.
+- **Background:** the machine has two settings files. The daemon reads `config.toml`
+  (`internal/daemonconfig`), where `afk project add` and `afk plan approve` list projects. The
+  dashboard reads `config.json` (`internal/config`, carried over from forge), which holds only folders
+  to search. With no `config.json` the switcher shows just the project `afk dash` was started in, so
+  the owner's two listed projects never appeared together.
+- **Scope:** the dashboard reads the `[[project]]` list from `config.toml` through `daemonconfig` and
+  merges it into the switcher's list with the project it was started in and whatever the search finds.
+  One row per project, matched by main-checkout path; a `name` set in `config.toml` is the name shown.
+  The list is read again on every scan tick, so a project added with `afk project add` appears without
+  a restart, and the listed projects appear without waiting for a folder search to finish. A listed
+  folder that no longer exists is left out and is not an error. A `config.toml` that cannot be read
+  keeps the list the switcher had and says why in plain words, naming the file. The read goes through
+  an injected `ui.Deps` seam like `LoadConfig` and `Scan`, and the merge is a pure function. Search
+  folders still come from `config.json` in this task. README: the switcher's paragraph.
+- **Must not:** dial, use the network or block (§3: discovery is read-only); write `config.toml`;
+  change what the daemon reads.
+- **Acceptance:** table tests for the merge: listed only, found only, both (one row), the start-up
+  project not listed, a listed folder that is gone, a name from `config.toml`, an unreadable file. A
+  UI model test: with two listed projects and no search folders, the switcher shows both. Against a
+  scratch build with a scratch config folder holding two `[[project]]` entries and no `config.json`,
+  `p` lists both. `make check` is green.
+
+#### T6.2 — Search folders move into config.toml and config.json is retired
+- **Depends on:** T6.1
+- **Goal:** one settings file per machine. The dashboard's search settings live in `config.toml`, and
+  afk no longer reads `config.json`.
+- **Scope:** `config.toml` gains a `[dash]` table with `search_roots`, `scan_interval` and
+  `max_depth`, with the meanings, defaults and limits they have in `config.json` today (no roots, 60
+  seconds with a one-second floor, depth 3; `~/` expands). `daemonconfig` reads it, the dashboard uses
+  it, and `internal/config` is removed with its tests moved or dropped. The daemon ignores the table.
+  `afk project add|remove` keep the table and its comments as they keep every other line. When a
+  `config.json` is still in afk's config folder, `afk dash` says so once per start, in plain words: afk
+  no longer reads that file, and here are the `[dash]` lines to put in `config.toml`, built from the
+  old file when it can be read. It never edits or deletes either file. README: the dashboard's
+  configuration section describes `[dash]` in `config.toml`, and the sentence saying the two files
+  are different files goes. §4.6 of this plan gets an Amended line with the new table.
+- **Must not:** read `config.json` for settings; write `config.toml` on the owner's behalf; make the
+  daemon restart or fail over a `[dash]` value.
+- **Acceptance:** table tests for the `[dash]` keys: absent table, each key, a `scan_interval` under
+  the floor (an error naming the key and the file), a bad depth, `~/` expansion. A test that
+  `afk project add` and `remove` leave a `[dash]` table byte for byte as it was. A test for the notice:
+  shown once with a `config.json` present, never without one, and still shown when the old file cannot
+  be parsed. Against a scratch build: a search folder set in `[dash]` adds a found project to the
+  switcher, and an old `config.json` beside it changes nothing but the notice. `/usr/bin/grep -rn
+  'config\.json' --include='*.go' .` finds only the notice and its tests. `make check` is green.
+
+#### T6.3 — Pause and resume the build from the dashboard
+- **Depends on:** T3.1, T3.2
+- **Goal:** the owner can pause and resume the active project's build from `afk dash`, with the same
+  effect as `afk pause` and `afk resume`.
+- **Background:** T3.2 left these keys out because its scope did not list them (`docs/decisions.md`,
+  `## T3.2`). The web page already has the buttons. `pauseProject` and `resumeProject` in
+  `pause_cmd.go` are the actions without printing, and both log the owner's decision.
+- **Scope:** two normal-mode keys in `afk dash`, registered like every other key so `?` and `:` list
+  them, and typed to the agent as letters while the agent pane has the keyboard. Pick keys nothing
+  else uses and record them in `docs/decisions.md`. They act on the active project's main checkout
+  through an injected `ui.Deps` seam wired to `pauseProject` and `resumeProject`, off the
+  screen-drawing path. The dashboard says what happened in a short notice: paused (a running task
+  finishes, nothing new starts), already paused, resumed, the stop cleared (naming the task), or
+  nothing to resume. A failure is shown with its reason. The Build tab's summary line shows the new
+  state on the next refresh. In a project with no master plan the keys say there is no build to
+  pause, as `b` does. README: the key list and the Build tab paragraph.
+- **Must not:** write the ledger; stop or kill a running session; act while the agent pane or the
+  inbox overlay has the keyboard.
+- **Acceptance:** a table test for the notice wording, one row per outcome of `pauseProject` and
+  `resumeProject`, errors included. UI model tests: each key calls its seam once with the active
+  project's root, does nothing in agent focus, and appears in `?` and `:`. Against a scratch build in
+  a throwaway repository (not this checkout): the pause key creates `.afk/build/paused` and the Build
+  tab reads paused; the resume key removes it; `.afk/log/decisions.jsonl` has a line for each.
+  `make check` is green.
+
+#### T6.4 — Inbox count in the dashboard's header
+- **Depends on:** T3.2
+- **Goal:** the dashboard's header shows how many inbox items need the owner in the active project,
+  and how many of them are holding a task up, whichever tab is open.
+- **Background:** T3.2 left this out for the same reason as the pause keys. The count is already
+  worked out for the Build tab's summary line by `buildview.OpenCounts`, from the snapshot the
+  dashboard loads on its refresh tick.
+- **Scope:** a header segment from the same snapshot, with no new read: nothing when no item is open,
+  otherwise the open count and, when any item blocks a task, that number in plain words (for example
+  `inbox 3 · 2 blocking`), with a hint of the `i` key when there is room. Give it a place in the
+  order in which the header gives things up as the screen narrows (`docs/decisions.md`, `## T3.2`,
+  A10): a blocking count outlasts the afk badge and the switch-projects hint. Record the order in
+  `docs/decisions.md`. Inbox files that cannot be read are not counted here; the Build tab already
+  mentions them. README: the header's description.
+- **Must not:** add a read, a dial or a second inbox loader; show another project's count.
+- **Acceptance:** table tests for the segment's text (no items, open only, open and blocking, one
+  item) and for the header at narrow and wide widths, with the saved screens updated. Against a
+  scratch build in a throwaway repository with two open items, one blocking: the header shows both
+  numbers on the Overview tab, and answering the blocking item in the overlay changes the header
+  within one refresh. `make check` is green.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
