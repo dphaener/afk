@@ -2875,3 +2875,28 @@ Decided while building (T7.11):
 - **Leader row.** `S` sits after `U` and is a right-side row (the cursor that names the task only exists with the right side focused). Blocked reasons come in this order: no seam, not on the Build tab with the right side focused, no task.
 - **Every way out says nothing changed.** Esc on the picker, on the replacing-ids step and on the confirm all say "Nothing was changed.". A `y` after a project switch warns and writes nothing; a stale result is dropped.
 - **The adapter.** `dashSetTaskStatus` (`dash_ledger.go`) parses the status itself, passes one id through `setLedgerStatusForSurface` and hands the command's `Text` back unchanged, with no `afk ledger set:` prefix and no usage line.
+
+## T7.12
+
+T7.12 shows the selected Build tab task's token use in `afk dash`, as `afk tokens <task>` prints it. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One code path (A1).** The task form of `afk tokens` moves into an entry point that reads the token ledger and returns the record (recorded, nothing recorded, cannot be read) in the command's own lines, without printing. The command prints those lines, so its output and exit codes do not change, and the dashboard shows the same table.
+- **A narrower table when the window is narrow (A2).** The overlay shows the command's table when it fits. When it does not, it shows the same rows with only phase, role, model, calls, weighted and share, so nothing has to scroll sideways and the words and units stay the command's.
+- **The short total (A3).** The task's row ends with its weighted total, shortened (`2.9M weighted`): plain below 1000, then `k` and `M` with one decimal. It is the first thing dropped as the tab narrows, before the row's detail and title.
+- **Key (A4).** The leader, then upper-case `T`, "show this task's tokens". Lower-case `t` already switches the right side between agent and overview. It works only on the Build tab with the right side focused and a task selected, like `S`.
+- **When the dashboard reads (A5, A6).** It reads only the token ledger, on each refresh and when the cursor moves to another task, never on the screen-drawing path and never a session's transcript. A record is kept with the task it belongs to, so the overlay never shows another task's numbers; opening before the first read has landed waits for it.
+- **Tests and prerequisites (A7, A8).** Table tests are written with the code. Nothing had to be in place first: T7.11 is merged.
+
+Decided while building (T7.12):
+
+- **`Short` picks its unit after rounding.** 999950 reads `1.0M`, never `1000.0k`; below 1000 it is a whole number, as in the table.
+- **No ledger and nothing for the task are the same answer.** The overlay says `no tokens recorded for this task yet` for both. The command keeps its own sentence (`has nothing for <task>`) in both cases, as before.
+- **One record is held, the cursor's.** Only the cursor row shows a total, so the dashboard keeps one record keyed by task id. A read that lands for a task the cursor has left is dropped and the cursor's task is read again at once, so moving and pressing `T` does not wait for the next refresh.
+- **The total is shown only on a whole row.** The cursor row gets its total only when the id, title and detail all show uncut and the total still fits, so it goes first as the tab narrows and the detail-then-title narrowing is unchanged. With the 120-column test layout the detail pane is too narrow for it; it shows from about 135 columns with short titles.
+- **The overlay box is as wide as its widest line (at least 40 cells).** It shows the command's table when that fits the terminal less the modal margins, else the narrower table, chosen again on resize and never in the drawing path. Its keys are the plan check overlay's.
+- **A pending open is dropped quietly.** Pressing `T` before the record is held opens the overlay when that task's record arrives, unless the cursor, tab or project moved meanwhile. No "reading" notice is shown.
+- **Unreadable ledger.** The overlay shows the reader's own sentence (`reading ledger <path>: …`), wrapped, and the row has no total.
+
+Verification for the owner (T7.12):
+
+- At 80 columns in a real terminal, open the tokens overlay (leader, then `T`) on the Build tab and check the row and the box's border draw cleanly. The hands-on check's tmux capture showed stray tab cells and a shifted border after a resize, most likely tmux redrawing.

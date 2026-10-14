@@ -189,3 +189,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Plan line**: the one line in `afk dash` (on the `master-plan` session's overview and the Build tab) that says the planning session's mode, phase and what it waits for.
 - **All-projects screen**: the `afk dash` screen (leader, then `A`) that lists every project the daemon builds, one row each, the ones needing the owner first.
 - **Project row**: one line of the all-projects screen for one project: its name, tasks done of the total, its state, its inbox counts and whether its plan waits for approval; built by `internal/projectrows`.
+- **Tokens overlay**: the `afk dash` overlay (leader, then `T`, on the Build tab) that shows the selected task's token use as `afk tokens <task>` prints it, with a narrower table when the window is narrow.
+- **Short total**: the selected Build tab row's weighted token total, shortened (`2.9M weighted`), shown only when the row has room.

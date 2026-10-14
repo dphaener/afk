@@ -1,14 +1,13 @@
  afk Dashboard 
 ╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
-│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
-│         ╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮──────── │
-│ ▌ ● feat│ type to filter, or press an action's key                                                         │         │
-│   ● Bill│                                                                                                  │ng       │
-│   ● fix-│ n  new session                         — Start a new session from a plan or a branch             │         │
-│   ○ feat│ o  one-off session                     — Start a one-off session with no plan                    │         │
-│   ● scra│ p  switch project                      — Switch to another project                               │         │
-│   ○ old-│ A  all projects                        — this dashboard was started without the project reader   │         │
-│         │ +  add a project                       — adding a project is not available here                  │         │
+│     NAME╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮: switch │
+│         │ type to filter, or press an action's key                                                         │──────── │
+│ ▌ ● feat│                                                                                                  │         │
+│   ● Bill│ n  new session                         — Start a new session from a plan or a branch             │ng       │
+│   ● fix-│ o  one-off session                     — Start a one-off session with no plan                    │         │
+│   ○ feat│ p  switch project                      — Switch to another project                               │         │
+│   ● scra│ A  all projects                        — this dashboard was started without the project reader   │         │
+│   ○ old-│ +  add a project                       — adding a project is not available here                  │         │
 │         │ -  remove the project                  — removing a project is not available here                │         │
 │         │ c  clean session                       — Clean the selected session and its worktree             │         │
 │         │ r  restart agent                       — only a stopped or stuck agent can be restarted          │         │
@@ -20,6 +19,7 @@
 │         │ P  pause the build                     — this project has no build                               │         │
 │         │ U  resume the build                    — this project has no build                               │         │
 │         │ S  set this task's status              — this dashboard cannot change the ledger                 │         │
+│         │ T  show this task's tokens             — this dashboard cannot read the token ledger             │         │
 │         │ f  focus the right side                — Move the keyboard to the right side                     │         │
 │         │ t  agent or overview                   — focus the right side first (enter)                      │         │
 │         │ \  back to list                        — the session list already has the keyboard               │         │

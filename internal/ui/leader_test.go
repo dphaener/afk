@@ -306,6 +306,8 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"U", actionResumeBuild},
 		// T7.11: upper-case S, a right-side action on the Build tab.
 		{"S", actionTaskStatus},
+		// T7.12: upper-case T, beside S on the same cursor row.
+		{"T", actionTaskTokens},
 		{"f", actionFocusPane},
 		{"t", actionPaneToggle},
 		{"\\", actionDetailUnfocus},
@@ -434,7 +436,8 @@ func TestLeaderRowsFromTheTable(t *testing.T) {
 	t.Run("right-side rows run as the overview", func(t *testing.T) {
 		for _, r := range rows {
 			want := inputNormal
-			if r.action == actionPaneToggle || r.action == actionDetailUnfocus || r.action == actionTaskStatus {
+			if r.action == actionPaneToggle || r.action == actionDetailUnfocus || r.action == actionTaskStatus ||
+				r.action == actionTaskTokens {
 				want = inputDetail
 			}
 			if r.mode != want {

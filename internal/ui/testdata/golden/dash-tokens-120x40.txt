@@ -1,0 +1,40 @@
+ afk Dashboard                                                                 inbox 1 · 1 blocking  ctrl+space i: inbox
+╭─ Sessions ────────────────────────────────╮╭─ Build ─────────────────────────────────────────────────────────────────╮
+│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff   Build       tab/1-6: switch │
+│                                           ││ ─────────────────────────────────────────────────────────────────────── │
+│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ 1/7 done · T1.2: executing                                              │
+│   ● Billing v2          REVIEWING   7/7   ││ paused: U or afk resume starts it again                                 │
+│   ● fix-login-redirect  PLANNING      – ● ││ 1 item needs you · ctrl+space i: inbox                                  │
+│   ○ feat-search         DONE        5/5   ││                                                                         │
+│   ● scratch-1           SCRATCH       –   ││   T1.1  done      Session model         PR #12 · 4c30e4a                │
+│   ○ old-migration       BROKEN        –   ││ › T1.2  running   Auth middleware       feat-auth · executing           │
+│                                           ││   T2.1  shipping  Billing totals        ci running · PR #14             │
+│                                           ││   T2.2  parked    Legacy sessions       waiting on you: q-3             │
+│                                           ││   T2.3  failed    Login redirect        attempt 2                       │
+│                                           ││   T3.1  pending   Search index          waiting for T2.1                │
+│         ╭─ Tokens ─────────────────────────────────────────────────────────────────────────────────────────╮         │
+│         │ Task T1.2                                                                                        │         │
+│         │     phase        role    model  calls   input  output  cache write  cache read  weighted   share │         │
+│         │      plan     planner  model-a      4    1210    8812        40211      120933     71840    2.5% │         │
+│         │   execute    executor  model-b     88  118230  601230      9102342     1802311   2190334   76.3% │         │
+│         │   execute    verifier  model-b     31    6120  201330      1201112      260130    461225   16.1% │         │
+│         │    review    reviewer  model-a     20    2171   94131       660405      121840    147840    5.1% │         │
+│         │      plan  (subtotal)               4    1210    8812        40211      120933     71840    2.5% │         │
+│         │   execute  (subtotal)             119  124350  802560     10303454     2062441   2651559   92.4% │         │
+│         │    review  (subtotal)              20    2171   94131       660405      121840    147840    5.1% │         │
+│         │     total                         143  127731  905503     11004070     2305214   2871239  100.0% │         │
+│         ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+╰───────────────────────────────────────────╯╰───────────────────────────────────────────────────── esc: back to list ─╯
+↑/k up · ↓/j down · pgup page up · pgdn page down · home top · end bottom · esc close · ctrl+c quit

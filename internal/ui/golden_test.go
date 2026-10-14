@@ -623,6 +623,38 @@ func TestGoldenTaskStatusConfirm(t *testing.T) {
 	}
 }
 
+// TestGoldenTaskTokens pins the tokens overlay (T7.12) at both sizes, reached
+// the way a person reaches it: the build read lands and the cursor's task's
+// tokens are read, then `b`, then ctrl+space T. At 120x40 the box shows the
+// command's full table, cache columns included; at 80x24 the full table does
+// not fit and the compact one is shown. The cursor row behind the box has no
+// room for its short total at either size (the detail pane is narrower than
+// the terminal), so it is drawn without one. The seam answers the fixture
+// record and is called only by the read the build load issued.
+func TestGoldenTaskTokens(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-tokens-80x24", 80, 24},
+		{"dash-tokens-120x40", 120, 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m := goldenModel(t, size.w, size.h)
+			m.deps.LoadTaskTokens = func(root, task string) TaskTokens { return tokensFixture(task) }
+			m, cmd := update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
+			m, _ = update(t, m, runTokensCmd(t, cmd))
+			m = pressLeader(t, m, keyRune('b'))
+			m = pressLeader(t, m, keyRune('T'))
+			if !m.taskTokensOpen {
+				t.Fatal("ctrl+space T did not open the overlay")
+			}
+			m.clearStatus()
+			assertGolden(t, size.name, render(m))
+		})
+	}
+}
+
 // TestGoldenPlanStart pins the plan actions' screens (T7.3): the amend form
 // at both sizes, reached the way a person reaches it (ctrl+space, "amend",
 // enter) with a sentence typed; the reconcile form after a blank enter, so

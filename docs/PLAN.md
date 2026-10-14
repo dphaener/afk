@@ -2254,6 +2254,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   build in a throwaway repository whose ledger holds tokens for one task: the overlay for that task
   matches what `afk tokens <task>` prints there, and another task says none recorded. `make check`
   is green.
+- Amended 2026-10-14 (T7.12 done): later tasks may assume the following. (1) The entry point is `taskTokensForSurface(root, task)` in `tokens_surface.go`, returning `taskTokensResult` (state recorded, none or unreadable; `NoLedger`; `Lines`, exactly what `afk tokens <task>` prints; `Compact`, a narrower table from `tokens.RenderCompact`; the weighted total and `Short`, e.g. `2.9M weighted`, from `tokens.Short`); it reads only `.afk/log/tokens.jsonl` and never records. `afk tokens <task>` prints through it, output unchanged. T8's page can call it as is. (2) The seam is `ui.Deps.LoadTaskTokens(root, task) ui.TaskTokens`, wired by `dashLoadTaskTokens` in `dash_tokens.go`, read on each refresh and when the Build cursor lands on a new task; the dashboard holds one record, the cursor task's. (3) The leader row is `T` "show this task's tokens" (right side, after `S`), opening a read-only overlay (a non-footer input mode, like the plan check's); the modal count stays sixteen. `buildRowLines` became `buildRowLayout`, and `buildTabLinesAt` wraps `buildTabLinesWith`. See `## T7.12` in `docs/decisions.md`.
 
 #### T7.13 — Refresh the usage reading from the dashboard
 - **Depends on:** T7.1

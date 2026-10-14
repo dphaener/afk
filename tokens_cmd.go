@@ -224,31 +224,33 @@ func runTokensLedger(form tokensForm, task, project string, stdout, stderr io.Wr
 		fmt.Fprintf(stderr, "afk tokens: cannot find the project's main checkout: %v\nCheck that %s is a git repository, or pass --project.\n", err, project)
 		return 1
 	}
+	if form == tokensFormTask {
+		res := taskTokensForSurface(main, task)
+		switch res.State {
+		case tokensUnreadable:
+			fmt.Fprintf(stderr, "afk tokens: %s\n", res.Err)
+			return 1
+		case tokensNone:
+			fmt.Fprintf(stderr, "afk tokens: the ledger at %s has nothing for %s.\nTo add a session's token use to it, run: afk tokens --record SESSION\n", res.Path, task)
+			return 1
+		}
+		for _, l := range res.Lines {
+			fmt.Fprintln(stdout, l)
+		}
+		return 0
+	}
 	path := tokens.LedgerPath(main)
 	lines, err := tokens.Read(path)
 	if err != nil {
 		fmt.Fprintf(stderr, "afk tokens: %v\n", err)
 		return 1
 	}
-	if form == tokensFormTask {
-		lines = tokens.ForTask(lines, task)
-		if len(lines) == 0 {
-			fmt.Fprintf(stderr, "afk tokens: the ledger at %s has nothing for %s.\nTo add a session's token use to it, run: afk tokens --record SESSION\n", path, task)
-			return 1
-		}
-	} else if len(lines) == 0 {
+	if len(lines) == 0 {
 		fmt.Fprintf(stderr, "afk tokens: the ledger at %s is empty or does not exist yet.\nTo add a session's token use to it, run: afk tokens --record SESSION\n", path)
 		return 1
 	}
-	var renderErr error
-	if form == tokensFormTask {
-		fmt.Fprintf(stdout, "Task %s\n", task)
-		renderErr = tokens.RenderTable(stdout, lines)
-	} else {
-		renderErr = tokens.RenderTasks(stdout, lines)
-	}
-	if renderErr != nil {
-		fmt.Fprintf(stderr, "afk tokens: could not print the table: %v\n", renderErr)
+	if err := tokens.RenderTasks(stdout, lines); err != nil {
+		fmt.Fprintf(stderr, "afk tokens: could not print the table: %v\n", err)
 		return 1
 	}
 	return 0
