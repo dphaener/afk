@@ -243,13 +243,13 @@ func TestAuthCookieSecure(t *testing.T) {
 // routeTarget turns a route's pattern into a real address under prefix.
 func routeTarget(prefix string, rt route) string {
 	// {id} is an inbox item's id under /inbox and a master-plan task's id
-	// under /tasks; each must be one the rig holds, so the right token
-	// reaches the handler and not a 404.
+	// under /tasks, and {name} a session's name; each must be one the rig
+	// holds, so the right token reaches the handler and not a 404.
 	id := idBlocking
 	if strings.Contains(rt.path, "/tasks/") {
 		id = "T1.2"
 	}
-	path := strings.NewReplacer("{$}", "", "{project}", "app", "{id}", id).Replace(rt.path)
+	path := strings.NewReplacer("{$}", "", "{project}", "app", "{id}", id, "{name}", "t1-2").Replace(rt.path)
 	return prefix + path
 }
 
@@ -272,8 +272,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 13 {
-		t.Fatalf("the route table has %d routes; the plan lists 13", len(routes))
+	if len(routes) != 15 {
+		t.Fatalf("the route table has %d routes; the plan lists 15", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)

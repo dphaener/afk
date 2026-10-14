@@ -25,12 +25,13 @@
 <section class="section" aria-labelledby="running-title">
   <div class="section-head"><h2 class="section-head__title" id="running-title">Running now</h2></div>
   <ul class="list">
-  {{range .}}<li><div class="row">
+  {{range .}}<li>{{if .Session}}<a class="row" href="/p/{{pe $name}}/sessions/{{pe .Session}}">{{else}}<div class="row">{{end}}
     <span class="row__main">
       <span class="row__top">{{if .Task}}<span class="tid">{{.Task}}</span> <span class="row__title">{{.Title}}</span>{{else}}<span class="tid">{{.Session}}</span>{{end}}</span>
       <span class="row__meta">{{if .Task}}Session {{.Session}} · {{end}}{{.Phase}}</span>
     </span>
-  </div></li>
+    {{if .Session}}<svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+  </a>{{else}}</div>{{end}}</li>
   {{end}}</ul>
 </section>
 {{- end -}}
@@ -54,7 +55,7 @@
 </div>
 
 <nav aria-label="Pages of {{$name}}">
-<div class="nav-list" id="project-nav" data-live="inbox ledger" data-project="{{$name}}">
+<div class="nav-list" id="project-nav" data-live="inbox ledger sessions" data-project="{{$name}}">
 {{range .Nav}}  <a class="nav-item" href="{{.Href}}"><span>{{.Label}}</span>{{if .CountSet}}<span class="count{{if .Quiet}} count--quiet{{end}}">{{.Count}}</span>{{else if .Hint}}<span class="meta">{{.Hint}}</span>{{end}}</a>
 {{end}}</div>
 </nav>

@@ -176,7 +176,7 @@ func TestStatusSheet(t *testing.T) {
 		body := rg.pageDo("GET", "/p/app/tasks/T2.2", "").Body.String()
 		start := strings.Index(body, `<dialog class="confirm-sheet" id="confirm-status"`)
 		link := strings.Index(body, `data-confirm="confirm-status"`)
-		live := strings.Index(body, `id="task-status" data-live="ledger"`)
+		live := strings.Index(body, `id="task-status" data-live="ledger sessions"`)
 		liveEnd := live + strings.Index(body[live:], "</section>")
 		if start < 0 || link < 0 || live < 0 {
 			t.Fatalf("sheet %d, link %d, live region %d", start, link, live)

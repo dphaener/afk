@@ -1,0 +1,29 @@
+{{define "title"}}Sessions: {{.Project}}{{end}}
+{{define "content"}}
+<div class="sessions">
+<h1>Sessions</h1>
+<div class="sessions__list" id="sessions-list" data-live="sessions" data-project="{{.Project}}" aria-live="polite">
+{{with .Sessions}}
+  <ul class="list">
+  {{range .}}<li><a class="row" href="{{.Href}}">
+    <span class="row__main">
+      <span class="row__top"><span class="tid">{{.Name}}</span> <span class="row__title">{{.Title}}</span></span>
+      <span class="row__sub">{{range .Badges}}<span class="badge {{.Class}}">{{.Word}}</span> {{end}}{{template "progress" .}}</span>
+      {{range .Lines}}<span class="row__meta">{{.}}</span>
+      {{end}}
+    </span>
+    {{if .ShortID}}<span class="row__aside"><span class="tid" title="{{.SessionID}}">{{.ShortID}}</span></span>{{end}}
+    <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+  </a></li>
+  {{end}}</ul>
+{{end}}
+{{with .Page.Empty}}
+<div class="empty">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
+  <p class="empty__title">{{.}}</p>
+  <p>A session started with afk new, or by the build, shows here.</p>
+</div>
+{{end}}
+</div>
+</div>
+{{end}}

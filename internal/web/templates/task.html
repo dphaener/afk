@@ -3,11 +3,12 @@
 <div class="task">
 <h1 class="tid task__id">{{.ID}}</h1>
 <section class="task__state" aria-live="polite" aria-label="Status of {{.ID}}">
-<div class="card" id="task-status" data-live="ledger" data-project="{{.Project}}">
+<div class="card" id="task-status" data-live="ledger sessions" data-project="{{.Project}}">
   <div class="row__top"><span class="badge {{.Page.Badge}}">{{.Page.Word}}</span></div>
   <h2>{{.Title}}</h2>
   <p>{{.Why}}</p>
   <p class="meta">{{.Page.Depends}}</p>
+  {{with .Page.SessionHref}}<p><a href="{{.}}">Open its session</a></p>{{end}}
 </div>
 </section>
 {{/* The action sits outside the live region above, and its sheet at the end
