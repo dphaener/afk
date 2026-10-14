@@ -190,13 +190,19 @@ func TestBuildCmdIssued(t *testing.T) {
 		}
 	})
 
-	t.Run("withDefaults leaves both seams nil", func(t *testing.T) {
+	t.Run("withDefaults leaves the build seams nil", func(t *testing.T) {
 		d := Deps{}.withDefaults()
 		if d.LoadBuild != nil {
 			t.Error("withDefaults set LoadBuild; it reads real files and must stay opt-in")
 		}
 		if d.AnswerInbox != nil {
 			t.Error("withDefaults set AnswerInbox; it writes a real inbox and must stay opt-in")
+		}
+		if d.PauseBuild != nil {
+			t.Error("withDefaults set PauseBuild; it writes a real project's pause flag and must stay opt-in")
+		}
+		if d.ResumeBuild != nil {
+			t.Error("withDefaults set ResumeBuild; it clears a real project's pause and stop and must stay opt-in")
 		}
 	})
 

@@ -730,6 +730,12 @@ func TestDashDepsWiresTheBuildSeams(t *testing.T) {
 	if deps.AnswerInbox == nil {
 		t.Fatal("dashDeps(...).AnswerInbox is nil, want dashAnswerInbox")
 	}
+	if deps.PauseBuild == nil {
+		t.Fatal("dashDeps(...).PauseBuild is nil, want dashPauseBuild")
+	}
+	if deps.ResumeBuild == nil {
+		t.Fatal("dashDeps(...).ResumeBuild is nil, want dashResumeBuild")
+	}
 
 	// A scratch state home, so the real usage read finds no file and cannot
 	// touch this machine's own.

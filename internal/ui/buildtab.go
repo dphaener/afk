@@ -16,8 +16,9 @@ import (
 //
 // The tab is about the project, not the selected session, so nothing here
 // takes a Session: it reads the same on every row and with no row at all.
-// It only shows. Starting, pausing or resuming the build, and writing the
-// ledger, are not done from here.
+// It only shows. Starting the build and writing the ledger are not done from
+// the dashboard at all. Pausing and resuming are, by the `P` and `U` keys,
+// but not from this file: see buildpause.go.
 
 // noBuildNotice is what `b` says in a project that has no build to show. The
 // key stays listed in `?` and `:` in that state because it explains itself:
@@ -102,7 +103,7 @@ func buildSummaryLines(snap buildview.Snapshot, width int) []string {
 		lines = append(lines, truncate(head, width))
 	}
 	if snap.Paused {
-		lines = append(lines, theme.awaitingFlag.Render(truncate("paused: afk resume starts it again", width)))
+		lines = append(lines, theme.awaitingFlag.Render(truncate("paused: U or afk resume starts it again", width)))
 	}
 	if snap.Stopped {
 		stop := "stopped"
