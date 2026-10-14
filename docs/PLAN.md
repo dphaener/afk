@@ -2525,7 +2525,7 @@ thing it does not do is attach to a session.
   recommended one first and marked, and a field for an answer of the owner's own; a plain question
   shows the reply box. A reply posts to T8.4 and shows as sent at once; a refusal is shown in plain
   words. When the session is working the reply box says so and is disabled; when no planning session
-  is open the screen says so and links to starting one (T8.14, T8.15). The agent's markdown is
+  is open the screen says so (T8.14 and T8.15 add the links that start one). The agent's markdown is
   rendered with the page's existing renderer (`internal/web/markdown.go`), never as raw HTML. Linked
   from the project page, the plan line and the planning session's row on the sessions screen. README:
   the web page section.
