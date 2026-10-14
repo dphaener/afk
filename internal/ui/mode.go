@@ -653,6 +653,10 @@ const (
 	// (tasktokens.go). It runs only on the Build tab with the right side
 	// focused.
 	actionTaskTokens
+	// actionRefreshUsage is "refresh usage" (T7.13, ctrl+space R): it takes
+	// a fresh usage reading through Deps.RefreshUsage, off the screen-drawing
+	// path, and the header shows it when it lands (usagerefresh.go).
+	actionRefreshUsage
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -801,6 +805,8 @@ func (a modeAction) String() string {
 		return "task-status"
 	case actionTaskTokens:
 		return "task-tokens"
+	case actionRefreshUsage:
+		return "refresh-usage"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:

@@ -736,6 +736,9 @@ func TestDashDepsWiresTheBuildSeams(t *testing.T) {
 	if deps.ResumeBuild == nil {
 		t.Fatal("dashDeps(...).ResumeBuild is nil, want dashResumeBuild")
 	}
+	if deps.RefreshUsage == nil {
+		t.Fatal("dashDeps(...).RefreshUsage is nil, want dashRefreshUsage")
+	}
 	if deps.LoadPlanStatus == nil {
 		t.Fatal("dashDeps(...).LoadPlanStatus is nil, want dashLoadPlanStatus")
 	}

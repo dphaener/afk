@@ -1740,3 +1740,22 @@ func setTaskStatusCmd(set func(root, id, status string, replacedBy []string) Tas
 		return taskStatusSetMsg{gen: gen, result: set(root, id, status, replacedBy)}
 	}
 }
+
+// usageRefreshedMsg carries one Deps.RefreshUsage call's result back to
+// Update (usagerefresh.go). It carries no project generation, unlike
+// taskStatusSetMsg: the reading is the machine's, not a project's, so a
+// result that lands after a project switch is still true and is still told.
+// The header reload it triggers goes through buildCmd, which is tied to the
+// project the dashboard is on when the result lands.
+type usageRefreshedMsg struct {
+	result UsageRefreshResult
+}
+
+// refreshUsageCmd runs one usage reading. The seam is called here, on the
+// command goroutine, and nowhere else: it runs the agent's command-line
+// tool, which can take up to a minute, and the screen must not wait for it.
+func refreshUsageCmd(refresh func() UsageRefreshResult) tea.Cmd {
+	return func() tea.Msg {
+		return usageRefreshedMsg{result: refresh()}
+	}
+}

@@ -229,6 +229,11 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"resume needs a build", actionResumeBuild, with(func(c *leaderConds) { c.hasBuild = false }), "no build"},
 		{"resume runs", actionResumeBuild, ready, ""},
 
+		// "refresh usage" (T7.13) is dimmed only without its seam: the
+		// reading is the machine's, so no project or build is needed.
+		{"refresh usage needs the seam", actionRefreshUsage, ready, "cannot read usage"},
+		{"refresh usage runs with only the seam", actionRefreshUsage, leaderConds{canRefreshUsage: true}, ""},
+
 		{"inbox needs the build read", actionInbox, with(func(c *leaderConds) { c.buildKnown = false }), "not been read"},
 		{"inbox runs", actionInbox, ready, ""},
 
@@ -260,6 +265,8 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"over the screen build tasks is dimmed", actionBuild, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
 		{"over the screen help is dimmed", actionHelp, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
 		{"over the screen check the plan is dimmed", actionPlanCheck, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
+		{"over the screen refresh usage is dimmed", actionRefreshUsage,
+			leaderConds{allProjectsOpen: true, canRefreshUsage: true}, allProjectsCloseFirst},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -304,6 +311,8 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"i", actionInbox},
 		{"P", actionPauseBuild},
 		{"U", actionResumeBuild},
+		// T7.13: upper-case R, because lower-case r is restart.
+		{"R", actionRefreshUsage},
 		// T7.11: upper-case S, a right-side action on the Build tab.
 		{"S", actionTaskStatus},
 		// T7.12: upper-case T, beside S on the same cursor row.

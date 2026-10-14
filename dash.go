@@ -652,6 +652,11 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// total and the T overlay match the command (T7.12); without it T
 		// says it cannot read the token ledger.
 		LoadTaskTokens: dashLoadTaskTokens,
+		// RefreshUsage has no default in internal/ui (it probes the agent's
+		// command-line tool and writes usage.json). It calls the entry point
+		// `afk usage --refresh` works through, so the leader then R and the
+		// command cannot disagree (T7.13); without it R says it cannot read usage.
+		RefreshUsage: dashRefreshUsage,
 		// LoadListed has no default in internal/ui either (it reads the
 		// machine's config.toml), so without this line the switcher would
 		// silently never show the projects `afk project add` listed. The read

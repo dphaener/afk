@@ -37,10 +37,11 @@ type usageDeps struct {
 	LoadConfig func() (cfg daemonconfig.Config, path string, err error)
 }
 
-// cmdUsage implements `afk usage`. The real dependencies are built here and
-// not in runUsage, so tests never reach a real command or the real home.
-func cmdUsage(args []string) {
-	deps := usageDeps{
+// realUsageDeps builds the real dependencies of the usage flow: the real
+// provider lookup, the probe runner, the clock, afk's state folder and the
+// machine config. It is a constructor of its own so the dashboard can reuse it.
+func realUsageDeps() usageDeps {
+	return usageDeps{
 		Lookup: provider.Lookup,
 		Run:    realUsageRunner(usagestate.DefaultDeps()),
 		Now:    time.Now,
@@ -52,6 +53,12 @@ func cmdUsage(args []string) {
 			return cfg, daemonconfig.Path(cd), err
 		},
 	}
+}
+
+// cmdUsage implements `afk usage`. The real dependencies are built by
+// realUsageDeps and not in runUsage, so tests never reach a real command or the real home.
+func cmdUsage(args []string) {
+	deps := realUsageDeps()
 	os.Exit(runUsage(args, os.Stdout, os.Stderr, deps))
 }
 
@@ -140,18 +147,16 @@ func runUsage(args []string, stdout, stderr io.Writer, d usageDeps) int {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), usageProbeTimeout)
-	defer cancel()
-	snap, err := p.Usage(ctx, provider.UsageDeps{Run: d.Run, Now: d.Now})
-	switch {
-	case errors.Is(err, provider.ErrUsageUnsupported):
+	res := refreshUsageForSurface(p, gov, d)
+	switch res.Outcome {
+	case usageRefreshUnsupported:
 		dec := governor.Decide(governor.Input{Unsupported: true, Now: now, Thresholds: th})
 		fmt.Fprintf(stdout, "Usage is unknown for %s: this provider cannot report how much of its usage is spent.\n", p.Name())
 		writeGovernorLine(stdout, d, dec)
 		return 0
-	case err != nil:
+	case usageRefreshFailed:
 		fmt.Fprintf(stderr, "afk usage: usage could not be read: %v\n"+
-			"Check that the agent's command-line tool is installed and logged in with an interactive login, then run 'afk usage --refresh'.\n", err)
+			"Check that the agent's command-line tool is installed and logged in with an interactive login, then run 'afk usage --refresh'.\n", res.Err)
 		var fallback *provider.UsageSnapshot
 		if haveStored {
 			s := stored.Snapshot()
@@ -161,18 +166,12 @@ func runUsage(args []string, stdout, stderr io.Writer, d usageDeps) int {
 		return 1
 	}
 
-	// The decision is stored with the reading it was made from, so the daemon
-	// and `afk daemon status` see the same verdict this command prints.
-	file := usagestate.FromSnapshot(p.Name(), snap)
-	// It is stamped with the time after the probe, so the decision is never
-	// dated before the reading it was made from.
-	file.Governor = usageDecisionRecord(governor.Decide(governor.Input{Snapshot: &snap, Now: now, Thresholds: th}), d.Now())
 	code := 0
-	if werr := usagestate.Write(d.State, file); werr != nil {
-		fmt.Fprintf(stderr, "afk usage: the reading could not be saved: %v\nCheck that afk's state folder can be written to.\n", werr)
+	if res.Outcome == usageRefreshSaveFailed {
+		fmt.Fprintf(stderr, "afk usage: the reading could not be saved: %v\nCheck that afk's state folder can be written to.\n", res.Err)
 		code = 1
 	}
-	printUsageReport(stdout, d, &snap, now, false, th)
+	printUsageReport(stdout, d, &res.Snapshot, now, false, th)
 	return code
 }
 

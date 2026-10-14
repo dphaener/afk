@@ -171,6 +171,7 @@ afk dash [options]
 | `i` | Inbox |
 | `P` | Pause the build |
 | `U` | Resume the build |
+| `R` | refresh usage: take a fresh usage reading for the header, as `afk usage --refresh` does |
 | `S` | Set the selected task's status (Build tab, right side focused) |
 | `T` | Show the selected task's tokens (Build tab, right side focused) |
 | `f` | Focus the right side |
@@ -231,6 +232,7 @@ A refused start shows the reason in the same words the command prints, and nothi
 - `ctrl+space i` — Open the **inbox** overlay: the things the build loop has put in front of you, such as a question it cannot decide alone. See **Overlays and notices** below for its keys. `ctrl+space b`, `i`, `P` and `U` work from the list and the overview, and from the agent pane by way of the list; they never run while the inbox overlay is open.
 - `ctrl+space P` — Pause the project's build, the same as `afk pause`: the daemon starts no new task there. A task that is already running finishes; nothing new starts until you press `ctrl+space U`. It works where `ctrl+space b` works. A short notice says what happened, including when the build was already paused.
 - `ctrl+space U` — Resume the project's build, the same as `afk resume`: the daemon may start new tasks again, and a stopped line is cleared too. It works where `ctrl+space P` works, and a short notice says whether the build was resumed, whether only the stop was cleared, or whether there was nothing to resume. Neither action stops a session that is running.
+- `ctrl+space R` — The refresh usage action takes a fresh usage reading now, the same as `afk usage --refresh`, and show it in the header. It says "Reading usage…" while the agent's command-line tool is asked, which can take up to a minute; the header changes when the reading lands. A second press while one is still running does nothing but say so, so readings never overlap. The reading is taken from the agent you have as the default, and it is saved to `usage.json` only when it succeeds. A failure is a plain notice: the agent's command-line tool was not found, the agent cannot report its usage, usage could not be read (check that the tool is installed and logged in), or the reading could not be saved. In every failure the header keeps the old reading. It works from the list and the overview, and is dimmed over the all-projects screen.
 - `ctrl+space` — The leader itself opens the **actions dialog**: a list of every dashboard action with its key and a line saying what it does. It works from the session list, the overview and the agent pane alike, and does nothing while an overlay, a form or a confirmation is open (the inbox, the project switcher, `ctrl+space n`, `ctrl+space l`, `ctrl+space c`, a restart confirmation, the filter prompt, resize mode). Inside the dialog:
   - Press an action's key and it runs once, and the dialog closes. Pressing it from the agent pane moves the keyboard to the list first, so nothing you pick is ever typed to the agent (the few that belong to the right side, `t` and `g`, leave the keyboard there).
   - Type letters that are not an action's key to filter the list by name or help text, `↑`/`↓` move the highlight and `enter` runs the highlighted row.
@@ -259,6 +261,8 @@ When more than one project is known, every panel below describes the **active** 
 The right edge also carries the **inbox segment**, just before the usage text. It counts the open inbox items of the **active** project, the same items the Build tab's summary line counts, read from the snapshot the dashboard already loads on each refresh. It reads `inbox 3` when three items are open, and `inbox 3 · 2 blocking` when two of them block a task; the blocking part is drawn in the warning colour. It shows nothing when no item is open, and nothing until the first refresh has read the inbox. It does not need a master plan, and inbox files that cannot be read are not counted. Next to it, `ctrl+space i: inbox` names the keys that open the list.
 
 When afk has a usage reading (the last time it checked how much of your plan's allowance is used), the header's right edge also carries a **usage segment**, such as `usage: paused until Thu 15 Oct 15:57 · Week (all models) 91%`. It says what the build loop decided (running, held, paused until a time, or not launching) and shows the tightest usage window, the one closest to its limit. A segment that carries a decision other than "running" is drawn in the warning colour. A reading more than 30 minutes old is marked as stale. As the terminal narrows the usage segment shrinks to a short form (`paused · 91%`) once the switch hint, the inbox hint and the names have gone, outlives the badge, and goes only after that, with the attention line, the blocking count and the stale notice still kept. The header stays one row at every width.
+
+The reading is only taken when you ask for it, never on a timer or at start-up: press `ctrl+space`, then `R` ("refresh usage"), and the header shows `Reading usage…` while the agent's command-line tool is asked. When the new reading lands the header shows its numbers and the decision for them; a failed reading leaves the header on the old reading and says why in a plain notice.
 
 With zero or one known project — the unconfigured default — the header is just the badge, plus the inbox segment when the active project has open items. No attention line, because there's no other project to report on, and no `ctrl+space p: switch projects` hint. No keybinding hints for `ctrl+space o` or `ctrl+space l` either; the actions dialog and `ctrl+space ?` list them (see above).
 
@@ -852,7 +856,7 @@ Governor: run. Usage is within the limits, so afk is running.
 ```
 
 - `--provider NAME` — Which agent to read. Defaults to the default provider.
-- `--refresh` — Read the numbers again even if a recent reading is stored.
+- `--refresh` — Read the numbers again even if a recent reading is stored. The dashboard's refresh usage action (`ctrl+space R` in `afk dash`) does the same as `--refresh`.
 
 A reading less than 5 minutes old is reused, and the report then says how long ago it was read ("less than a minute ago", "3 min ago"). Anything older, or `--refresh`, asks the agent again; that costs no model usage. The probe runs from afk's state directory, not from the folder you ran `afk usage` in, so it leaves no records in your project. The last reading is saved per machine in `usage.json` under `$XDG_STATE_HOME/afk/` when that is set to an absolute path, otherwise `~/.local/state/afk/`. If a probe fails and an earlier reading exists, the report shows that one and exits 1.
 

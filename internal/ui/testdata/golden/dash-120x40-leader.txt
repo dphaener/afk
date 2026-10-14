@@ -18,6 +18,7 @@
 │         │ i  inbox                               — the inbox has not been read yet                         │         │
 │         │ P  pause the build                     — this project has no build                               │         │
 │         │ U  resume the build                    — this project has no build                               │         │
+│         │ R  refresh usage                       — this dashboard cannot read usage                        │         │
 │         │ S  set this task's status              — this dashboard cannot change the ledger                 │         │
 │         │ T  show this task's tokens             — this dashboard cannot read the token ledger             │         │
 │         │ f  focus the right side                — Move the keyboard to the right side                     │         │
@@ -35,6 +36,5 @@
 │         │    check the plan                      — checking the plan is not available here                 │         │
 │         │    approve the plan                    — approving is not available here                         │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
-│                                           ││                                                                         │
 ╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
 enter run · ↑/↓ move · type filter · esc close · ctrl+space close, or pass it to the agent
