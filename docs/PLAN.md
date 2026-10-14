@@ -2679,7 +2679,13 @@ thing it does not do is attach to a session.
   a confirm showing the full path, then the planning session through the entry point and the chat
   view. A project whose planning was started here stays on the overview, marked as being planned,
   until it is approved or its planning session is gone, through a small list in afk's state folder
-  that §4 gains in the same change. The same under `/api`. README: the web page section.
+  that §4 gains in the same change. The same under `/api`.
+  From the design system (reconciled 2026-10-13): **Plan a new project** is the primary button in the
+  overview's footer and in the desktop `topnav`; it opens one form that unfolds: the **Where** `field`
+  (`input--mono`, errors in `field__error`), then as the confirm a `card` "afk will create and plan
+  in" with the full `path` and a `badge` saying which kind of folder it is, then **Start planning**
+  (primary, with a loading state) and **Cancel** (quiet).
+  README: the web page section.
 - **Must not:** create a folder (T8.15a); start anything without the confirm; write `config.toml`.
 - **Acceptance:** handler tests with a fake entry point: an existing empty repository, a folder with a
   plan (refused, pointing at the change actions), a folder that does not exist (refused, naming it),
