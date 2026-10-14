@@ -2655,6 +2655,9 @@ thing it does not do is attach to a session.
   the sentence; reconcile, which asks for a file path relative to the project. On success the page
   opens the chat view. A refusal is shown in the command's own words and nothing is started; when a
   planning session is already open the actions say so and link to its chat. The same under `/api`.
+  From the design system (reconciled 2026-10-13): a **Change the plan** section on the project page
+  with action rows Extend, Amend and Reconcile, each with one line of plain explanation, and the same
+  three as buttons on the chat view's empty state.
   README: the web page section and `afk plan`.
 - **Must not:** offer `--yes` for amend; start a session for a project with no plan; name a provider
   outside `internal/provider`.
