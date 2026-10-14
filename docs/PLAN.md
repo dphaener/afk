@@ -2280,11 +2280,11 @@ set a task's status, see a task's tokens and refresh the usage reading.
 - **Plan and diff review in a browser** (Plannotator's `annotate --gate --json` / `review --json`) as an
   optional human gate, mainly for a new master plan.
 - **A socket API with an event stream** (herdr's model) if a second kind of client ever needs it; until
+  then the HTTP JSON API is the one control surface.
 - **The owner profile, installing the plugin, and starting and stopping the daemon in the dashboard**:
   left as commands in M7, because each is run once per machine or rarely.
 - **M7's controls on the web page** (start a planning session, add and remove projects, set a task's
   status, refresh usage): M7 is the dashboard only.
-  then the HTTP JSON API is the one control surface.
 - **Daemon-side write-guard and continuation enforcement**, replacing shipit's Claude-only mods.
 - Rename `.claude/worktrees/` to a provider-neutral location.
 - Open-source release: licence, install script, Homebrew tap, docs site.
