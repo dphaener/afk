@@ -121,6 +121,8 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Notifications | ntfy (plain HTTP POST) for push. Desktop toasts from forge stay as a macOS-only extra. |
 | Web surface | A small server-rendered page served by `afk daemon` (Go `net/http` + `html/template`, no JS build step). Loopback by default; protected by a shared token; meant to sit behind Tailscale or the owner's reverse proxy. |
 | Config format | TOML, hand-editable: `afk.toml` committed in each project, `~/.config/afk/config.toml` per machine. |
+| One machine settings file | Decided 2026-10-13 (M6): `config.toml` is the machine's only settings file. The dashboard's project switcher lists the `[[project]]` entries the daemon builds, plus any project found under the search folders in its `[dash]` table. `config.json`, carried over from forge, is no longer read; when one is found, afk says once what to move and touches neither file. |
+| Dashboard controls | Decided 2026-10-13 (M6): `afk dash` gets pause and resume keys and an inbox count in its header. T3.2 left both out only because its scope did not list them. |
 | Rules | `~/code/.claude/rules/*.md` are Rails rules and **do not apply** to this repo. T0.1 writes afk's own `CLAUDE.md`. |
 
 ---
