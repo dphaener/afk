@@ -201,3 +201,22 @@ func TestStaticRefusedPageStyles(t *testing.T) {
 		})
 	}
 }
+
+// TestLiveJSButtonsRegion pins the opt-in that lets the Refresh usage region
+// be swapped while its button has focus. Load-bearing: the page marks the
+// region, and live.js knows the attribute; without both the button would
+// stay on "Refreshing" for as long as the owner's focus stayed on it.
+func TestLiveJSButtonsRegion(t *testing.T) {
+	rg := newRig(t, Config{})
+	page := rg.pageDo("GET", "/usage", "").Body.String()
+	if !strings.Contains(page, "data-live-buttons") {
+		t.Errorf("the usage page does not mark its refresh region data-live-buttons")
+	}
+	js, err := staticFiles.ReadFile("static/live.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(js), "data-live-buttons") {
+		t.Errorf("live.js does not know data-live-buttons")
+	}
+}

@@ -29,6 +29,8 @@ type liveFixture struct {
 	projects []Project
 	sessions []SessionView
 	usage    usagestate.File
+	// refreshGen stands in for the usage refresher's generation.
+	refreshGen uint64
 }
 
 func newLiveFixture(t *testing.T) *liveFixture {
@@ -55,7 +57,7 @@ func (fx *liveFixture) deps() Deps {
 }
 
 func (fx *liveFixture) read() snapshot {
-	return readSnapshot(fx.projects, fx.deps())
+	return readSnapshot(fx.projects, fx.deps(), fx.refreshGen)
 }
 
 func (fx *liveFixture) write(root, rel, text string) {
@@ -210,6 +212,15 @@ func TestChangedParts(t *testing.T) {
 			want: []change{{"", partUsage}},
 		},
 		{
+			// Load-bearing: a failed reading writes no file, so the
+			// refresher's generation is the only thing that changes. Without
+			// it in the fingerprint an open page would show Refreshing
+			// forever after a failure.
+			name: "usage: the refresher's generation changes, with no file change",
+			edit: func(fx *liveFixture) { fx.refreshGen++ },
+			want: []change{{"", partUsage}},
+		},
+		{
 			name:    "first tick",
 			edit:    func(fx *liveFixture) { fx.addItem(fx.app, "abc234", "Which database?") },
 			noPrev:  true,
@@ -274,11 +285,19 @@ type liveRig struct {
 	*liveFixture
 	h     http.Handler
 	ticks chan time.Time
+	// srv is the server behind h. gate holds the fake usage reading until
+	// release, which then fails, as a reading that writes no file does.
+	srv  *server
+	gate chan struct{}
+	once sync.Once
 }
+
+// release lets the fake usage reading finish. Safe to call more than once.
+func (rg *liveRig) release() { rg.once.Do(func() { close(rg.gate) }) }
 
 func newLiveRig(t *testing.T, extra int) *liveRig {
 	t.Helper()
-	rg := &liveRig{liveFixture: newLiveFixture(t), ticks: make(chan time.Time)}
+	rg := &liveRig{liveFixture: newLiveFixture(t), ticks: make(chan time.Time), gate: make(chan struct{})}
 	for i := range extra {
 		rg.projects = append(rg.projects, Project{Name: "p" + string(rune('a'+i)), Root: t.TempDir()})
 	}
@@ -287,11 +306,19 @@ func newLiveRig(t *testing.T, extra int) *liveRig {
 	d.Pause = func(string) error { return nil }
 	d.Resume = func(string) error { return nil }
 	d.Ticker = func() (<-chan time.Time, func()) { return rg.ticks, func() {} }
-	h, err := New(Config{Token: testToken}, d)
+	d.RefreshUsage = func() UsageRefreshResult {
+		<-rg.gate
+		return UsageRefreshResult{Outcome: UsageRefreshFailed, Text: "The reading timed out."}
+	}
+	srv, h, err := build(Config{Token: testToken}, d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rg.h = h
+	rg.h, rg.srv = h, srv
+	t.Cleanup(func() {
+		rg.release()
+		srv.refresher.wait()
+	})
 	return rg
 }
 
@@ -436,6 +463,40 @@ func TestEvents(t *testing.T) {
 		rg.tick()
 		if got := st.until(""); !reflect.DeepEqual(got, []string{"event: change", `data: {"project":"app","part":"inbox"}`}) {
 			t.Errorf("event = %q", got)
+		}
+	})
+
+	// Load-bearing: this is the wiring between the refresher and the reader.
+	// The reading fails, so no file changes at all; each event here comes
+	// from the refresher's generation alone, and without it an open usage
+	// page would show Refreshing forever.
+	t.Run("a usage refresh sends a usage event when it starts and when it fails", func(t *testing.T) {
+		rg := newLiveRig(t, 0)
+		srv := httptest.NewServer(rg.h)
+		t.Cleanup(srv.Close)
+		st := openStream(t, srv)
+		st.until("retry: 3000")
+		rg.syncPing(st)
+		want := []string{"event: change", `data: {"project":"","part":"usage"}`}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/usage/refresh", nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		rec := httptest.NewRecorder()
+		rg.h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("POST /api/usage/refresh = %d", rec.Code)
+		}
+		if got := events(rg.syncPing(st)); !reflect.DeepEqual(got, want) {
+			t.Errorf("on start the stream sent %q, want %q", got, want)
+		}
+
+		rg.release()
+		rg.srv.refresher.wait()
+		if got := events(rg.syncPing(st)); !reflect.DeepEqual(got, want) {
+			t.Errorf("on failure the stream sent %q, want %q", got, want)
+		}
+		if got := events(rg.syncPing(st)); len(got) != 0 {
+			t.Errorf("with nothing changed the stream sent %q", got)
 		}
 	})
 

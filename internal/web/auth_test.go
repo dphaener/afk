@@ -272,8 +272,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 12 {
-		t.Fatalf("the route table has %d routes; the plan lists 12", len(routes))
+	if len(routes) != 13 {
+		t.Fatalf("the route table has %d routes; the plan lists 13", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -299,6 +299,10 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 				if len(rg.tokenCalls)+len(rg.statusCalls) != 0 {
 					t.Errorf("a task's tokens were read or its status set without the token")
 				}
+				rg.waitRefresh()
+				if n := rg.refreshCalls.Load(); n != 0 {
+					t.Errorf("a usage reading ran %d times without the token", n)
+				}
 				it, err := inbox.Store{Dir: inbox.Dir(rg.root)}.Get(idBlocking)
 				must(t, err)
 				if !it.Open() {
@@ -315,10 +319,14 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 			rec := authReq{method: rt.method, target: target, bearer: testToken}.send(rg.h)
 			// The answer route gets 400 (no answer was sent) and the status
 			// route 400 (no status was sent, so the seam refuses it); every
-			// other route 200. None is the catch-all's 404.
+			// other route 200, except the usage refresh, which answers 202
+			// (a reading started). None is the catch-all's 404.
 			want := http.StatusOK
 			if strings.HasSuffix(rt.path, "/answer") || strings.HasSuffix(rt.path, "/status") {
 				want = http.StatusBadRequest
+			}
+			if rt.path == "/usage/refresh" {
+				want = http.StatusAccepted
 			}
 			if rec.Code != want {
 				t.Errorf("status = %d, want %d\n%s", rec.Code, want, rec.Body.String())

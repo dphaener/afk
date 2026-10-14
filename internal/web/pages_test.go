@@ -1790,3 +1790,104 @@ func TestProjectPageNilDeps(t *testing.T) {
 		}
 	}
 }
+
+// TestUsagePage draws /usage in each state the rebuilt screen has and checks
+// the design-system markup: the decision badge, one meter per window with
+// its aria values, the Refresh usage form and its three looks, the failure
+// notice, the empty state and the details.
+//
+// Load-bearing rows:
+//   - "a warn and a full window": the colour class is not the only signal,
+//     but a window at 85% that still looked blue (or one at 100% that did not
+//     turn red) would hide the very thing the page exists to show; the
+//     bar's width class and aria-valuenow must agree and be clamped.
+//   - "refreshing": is-loading, aria-busy and data-working together, since
+//     the bar's Working word comes from data-working, and the button must
+//     not offer "Refresh usage" while one runs.
+//   - "failed reading keeps the old one": the notice and the old meters must
+//     show together, because a failure writes no file.
+//   - "no seam": a daemon that cannot refresh draws no button at all.
+func TestUsagePage(t *testing.T) {
+	reset := testNow.Add(time.Hour)
+	tests := []struct {
+		name    string
+		setup   func(rg *rig)
+		want    []string
+		notWant []string
+	}{
+		{name: "a reading", want: []string{
+			`<span class="badge badge--running">Run</span>`, "plenty left", "What afk is doing", "Usage windows",
+			`<div class="meter">`, `<span class="meter__name">Session</span><span class="meter__value">42% used</span>`,
+			`role="progressbar" aria-label="Session usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="42"><span class="meter__fill w-42"></span>`,
+			`<span class="meter__name">Weekly (all)</span>`, `aria-valuenow="12"`, "Resets 12 Oct 2026 14:00 UTC", "Reset time not known", "Extra usage: on",
+			`id="usage-reading" data-live="usage" data-project=""`, `id="usage-refresh" data-live="usage" data-project="" data-live-buttons>`,
+			`<form method="post" action="/usage/refresh" data-enhance`, `id="usage-refresh-button" class="btn btn--secondary">Refresh usage</button>`,
+			"<summary>What the five decisions mean</summary>", "Launch nothing new", "<strong>Hold</strong>", "<strong>Refuse</strong>", "[governor]",
+		}, notWant: []string{"Refreshing", "notice--error", `style=`, "<script>"}},
+		{name: "a warn and a full window", setup: func(rg *rig) {
+			rg.usage.Windows = []usagestate.Window{{Kind: "session", UsedPct: 85}, {Kind: "weekly", UsedPct: 100}, {Kind: "extra", UsedPct: 140.4}}
+		}, want: []string{
+			`<div class="meter meter--warn">`, `<div class="meter meter--full">`, `<span class="meter__value">85% used</span>`, `aria-valuenow="85"`,
+			`<span class="meter__value">100% used</span>`, `aria-valuenow="100"`, `class="meter__fill w-100"`, `<span class="meter__value">140% used</span>`,
+		}},
+		{name: "every decision has a badge", setup: func(rg *rig) {
+			rg.usage.Governor = &usagestate.Governor{Action: "no_launch", Reason: "Nearly full.", At: testNow, WakeAt: &reset}
+		},
+			want: []string{`<span class="badge badge--held">Launch nothing new</span>`, "Nearly full. It wakes 12 Oct 2026 13:00 UTC."}},
+		{name: "an unknown decision", setup: func(rg *rig) { rg.usage.Governor.Action = "sleep" },
+			want: []string{`<span class="badge badge--plain">sleep</span>`}},
+		{name: "no decision", setup: func(rg *rig) { rg.usage.Governor = nil },
+			want: []string{"No decision is recorded yet."}, notWant: []string{`class="badge `}},
+		{name: "no reading", setup: func(rg *rig) { rg.usageOK = false; rg.usage = usagestate.File{} },
+			want:    []string{"No usage reading exists yet", "No decision is recorded yet.", `id="usage-reading" data-live="usage"`, "Refresh usage"},
+			notWant: []string{`class="meter`, "% used", "Extra usage:"}},
+		{name: "refreshing", setup: func(rg *rig) {
+			rg.blockRefresh()
+			rg.do(http.MethodPost, "/api/usage/refresh", "", "")
+		}, want: []string{
+			`data-live-buttons data-working="true">`, `class="btn btn--secondary is-loading" aria-busy="true"><span class="spinner" aria-hidden="true"></span>Refreshing</button>`,
+		}, notWant: []string{">Refresh usage<", "Checked just now"}},
+		{name: "just refreshed", setup: func(rg *rig) {
+			rg.do(http.MethodPost, "/api/usage/refresh", "", "")
+			rg.waitRefresh()
+		}, want: []string{">Checked just now</button>"}, notWant: []string{"is-loading", "notice--error", "data-working"}},
+		{name: "failed reading keeps the old one", setup: func(rg *rig) {
+			rg.refreshResult = UsageRefreshResult{Outcome: UsageRefreshFailed, Text: "The agent did not answer."}
+			rg.do(http.MethodPost, "/api/usage/refresh", "", "")
+			rg.waitRefresh()
+		}, want: []string{
+			`<div class="notice notice--error" role="alert"><div class="notice__body">The agent did not answer. The reading above is the last one that worked.`,
+			">Refresh usage</button>", "42% used", `aria-valuenow="42"`,
+		}, notWant: []string{"Checked just now", "Refreshing"}},
+		{name: "unsupported reading", setup: func(rg *rig) {
+			rg.refreshResult = UsageRefreshResult{Outcome: UsageRefreshUnsupported, Text: "This agent cannot report usage."}
+			rg.do(http.MethodPost, "/api/usage/refresh", "", "")
+			rg.waitRefresh()
+		}, want: []string{"notice--error", "This agent cannot report usage."}},
+		{name: "no seam", setup: func(rg *rig) { rg.srv.d.RefreshUsage = nil },
+			want: []string{"Usage windows", "What the five decisions mean"}, notWant: []string{"usage-refresh", "Refresh usage", "/usage/refresh"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tt.setup != nil {
+				tt.setup(rg)
+			}
+			rec := rg.pageDo("GET", "/usage", "")
+			if rec.Code != 200 {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			body := rec.Body.String()
+			for _, w := range tt.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("missing %q\n%s", w, body)
+				}
+			}
+			for _, w := range tt.notWant {
+				if strings.Contains(body, w) {
+					t.Errorf("unexpected %q", w)
+				}
+			}
+		})
+	}
+}

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,6 +61,20 @@ type rig struct {
 	loadErr error
 	usage   usagestate.File
 	usageOK bool
+	// srv is the server behind h, so a test can wait for a background usage
+	// reading to finish (srv.refresher.wait).
+	srv *server
+	// refreshCalls counts calls of the fake RefreshUsage; it is atomic
+	// because the fake runs on the refresher's goroutine. The fake answers
+	// refreshResult, after waiting on refreshGate when it is set (see
+	// blockRefresh) and after running onRefresh when that is set; it panics
+	// when refreshPanic is true.
+	refreshCalls  atomic.Int32
+	refreshResult UsageRefreshResult
+	refreshGate   chan struct{}
+	refreshOnce   sync.Once
+	refreshPanic  bool
+	onRefresh     func()
 	// pauseErr and resumeErr make the injected functions fail.
 	pauseErr  error
 	resumeErr error
@@ -253,7 +269,8 @@ func newRig(t *testing.T, cfg Config) *rig {
 	if cfg.Token == "" {
 		cfg.Token = testToken
 	}
-	h, err := New(cfg, Deps{
+	rg.refreshResult = UsageRefreshResult{Outcome: UsageRefreshed, Text: "Usage read: 41% of the session used."}
+	srv, h, err := build(cfg, Deps{
 		Projects: func() []Project { return rg.projects },
 		Reviews:  func() []Project { return rg.reviews },
 		ReadPlan: func(root string) (string, []byte, error) {
@@ -330,13 +347,54 @@ func newRig(t *testing.T, cfg Config) *rig {
 			}
 			return rg.statusResult
 		},
+		RefreshUsage: func() UsageRefreshResult {
+			rg.refreshCalls.Add(1)
+			if rg.refreshGate != nil {
+				<-rg.refreshGate
+			}
+			if rg.onRefresh != nil {
+				rg.onRefresh()
+			}
+			if rg.refreshPanic {
+				panic("the fake reading broke")
+			}
+			return rg.refreshResult
+		},
 		Now: func() time.Time { return testNow },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	rg.h = h
+	rg.srv = srv
+	// No reading goroutine may outlive its test: let a blocked one go and
+	// wait for it.
+	t.Cleanup(func() {
+		rg.releaseRefresh()
+		rg.waitRefresh()
+	})
 	return rg
+}
+
+// blockRefresh makes the fake RefreshUsage wait until releaseRefresh. Call it
+// before the reading starts.
+func (rg *rig) blockRefresh() {
+	rg.refreshGate = make(chan struct{})
+}
+
+// releaseRefresh lets a blocked fake reading finish. Safe to call more than
+// once, and when nothing was blocked.
+func (rg *rig) releaseRefresh() {
+	rg.refreshOnce.Do(func() {
+		if rg.refreshGate != nil {
+			close(rg.refreshGate)
+		}
+	})
+}
+
+// waitRefresh waits until no reading goroutine runs.
+func (rg *rig) waitRefresh() {
+	rg.srv.refresher.wait()
 }
 
 // seedInbox adds three items to project "app": a blocking question, a

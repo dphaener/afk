@@ -159,6 +159,19 @@ type Deps struct {
 	// ledger" holds because the write happens behind it. Nil means the page
 	// offers no way to set a status.
 	SetTaskStatus func(root, id, status string, replacedBy []string) TaskStatusResult
+	// RefreshUsage takes one fresh usage reading and saves it to usage.json,
+	// what `afk usage --refresh` and the dashboard's refresh do, and says
+	// how it went. It is synchronous and may take up to a minute (it runs
+	// the agent's command-line tool), so the page never calls it inside a
+	// request: the refresher in usage.go runs it on its own goroutine.
+	//
+	// It is a seam because the reading lives in the root package
+	// (refreshUsageForSurface), which this package cannot import, and it is
+	// the root's entry point as it is. That entry point does not guard
+	// against two readings at once (the T7.13 amendment leaves "guarding one
+	// reading at a time" to each caller), so the guard is the refresher's.
+	// Nil means the page offers no way to refresh usage.
+	RefreshUsage func() UsageRefreshResult
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -226,14 +239,37 @@ type TaskStatusResult struct {
 	Text    string `json:"text"`
 }
 
+// UsageRefreshResult is what Deps.RefreshUsage reports: one of the
+// UsageRefresh outcomes and a plain sentence for the owner that names no
+// agent. It is this package's own type, a copy of the root's result, because
+// this package cannot import the root package.
+type UsageRefreshResult struct {
+	Outcome string `json:"outcome"`
+	Text    string `json:"text"`
+}
+
+// The outcomes a UsageRefreshResult takes. A save that failed after a good
+// reading is UsageRefreshFailed: the owner's next step is the same, and the
+// old reading still stands.
+const (
+	// UsageRefreshed: a reading was taken and saved to usage.json.
+	UsageRefreshed = "refreshed"
+	// UsageRefreshUnsupported: the agent cannot report its usage at all.
+	UsageRefreshUnsupported = "unsupported"
+	// UsageRefreshFailed: no agent, the reading failed, or it could not be
+	// saved. Nothing was written, so the old reading stays.
+	UsageRefreshFailed = "failed"
+)
+
 // maxBody is the most a POST may carry. An answer is a sentence or a pasted
 // value; 64 KB is far more than that needs and small enough that a flood of
 // requests cannot fill memory.
 const maxBody = 64 << 10
 
 // server holds what New was given plus values worked out once from the
-// token. Nothing in it changes after New, so requests share it safely, and
-// none of it is read from a project's files: that is the "no cache" rule.
+// token. Nothing in it changes after New except hub and refresher, which
+// guard themselves, so requests share it safely, and none of it is read from
+// a project's files: that is the "no cache" rule.
 type server struct {
 	cfg Config
 	d   Deps
@@ -255,6 +291,13 @@ type server struct {
 	// fingerprints, never anything a page shows, so the "no cache" rule
 	// stands.
 	hub *hub
+	// refresher runs the background usage reading behind Refresh usage (see
+	// usage.go). It is the second thing that changes after New, because
+	// "a reading is running" and "the last one failed" exist nowhere else: a
+	// running reading has written nothing yet, and a failed one writes no
+	// file at all. It holds only that, never the reading, which the page
+	// still reads fresh from usage.json, so the "no cache" rule stands.
+	refresher *usageRefresher
 	// assets are the embedded static files by name, hashed once in New.
 	assets map[string]asset
 	// refusedPage is the page that refuses a request without the token,
@@ -277,6 +320,10 @@ type route struct {
 var routes = []route{
 	{http.MethodGet, "/{$}", (*server).overview},
 	{http.MethodGet, "/usage", (*server).usage},
+	// Refresh usage: starts one reading in the background through
+	// Deps.RefreshUsage. A POST of its own, so GET /usage stays a read that
+	// can never start one, and POST /usage stays not found.
+	{http.MethodPost, "/usage/refresh", (*server).refreshUsage},
 	{http.MethodGet, "/p/{project}", (*server).project},
 	// The plan view is GET only, and that is deliberate: a plan is approved
 	// with `afk plan approve` in the project folder and never from here.
@@ -298,18 +345,25 @@ var routes = []route{
 // empty or a dependency is missing, so the caller finds out at start-up and
 // not on the first request.
 func New(cfg Config, d Deps) (http.Handler, error) {
+	_, h, err := build(cfg, d)
+	return h, err
+}
+
+// build is New that also hands back the server, so a test can wait for a
+// background usage reading to finish (usageRefresher.wait) before it ends.
+func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	if cfg.Token == "" {
-		return nil, errors.New("the web page needs a token; set [web] token in config.toml")
+		return nil, nil, errors.New("the web page needs a token; set [web] token in config.toml")
 	}
 	switch {
 	case d.LoadBuild == nil:
-		return nil, errors.New("the web page was given no way to read the plan and ledger (LoadBuild)")
+		return nil, nil, errors.New("the web page was given no way to read the plan and ledger (LoadBuild)")
 	case d.Sessions == nil:
-		return nil, errors.New("the web page was given no way to list sessions (Sessions)")
+		return nil, nil, errors.New("the web page was given no way to list sessions (Sessions)")
 	case d.Usage == nil:
-		return nil, errors.New("the web page was given no way to read usage (Usage)")
+		return nil, nil, errors.New("the web page was given no way to read usage (Usage)")
 	case d.Pause == nil, d.Resume == nil:
-		return nil, errors.New("the web page was given no way to pause or resume a project (Pause, Resume)")
+		return nil, nil, errors.New("the web page was given no way to pause or resume a project (Pause, Resume)")
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -326,16 +380,17 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 
 	assets, err := loadAssets()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.assets = assets
 	s.refusedPage = []byte(refusedPageFor(s.assetURL("afk.css"), s.assetURL("page.css")))
 	pages, err := parsePages(s.assetURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.pages = pages
-	s.hub = newHub(d)
+	s.refresher = newUsageRefresher(d.Now)
+	s.hub = newHub(d, s.refresher.generation)
 
 	mux := http.NewServeMux()
 	s.register(mux, "/api")
@@ -362,7 +417,7 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 	// method, gets the same plain sentence as any other error instead of the
 	// standard library's bare "404 page not found".
 	mux.HandleFunc("/", s.notFound)
-	return s.guard(mux), nil
+	return s, s.guard(mux), nil
 }
 
 // register adds every route under prefix ("/api" for the JSON API).
