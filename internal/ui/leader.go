@@ -253,7 +253,7 @@ var leaderHelp = map[modeAction]string{
 	actionPlanExtend:    "Start a planning session that adds work to the plan",
 	actionPlanAmend:     "Change the plan; asks what to change in a sentence",
 	actionPlanReconcile: "Fit the plan to a document; asks for its path",
-	actionPlanNew:       "Plan a project that has no plan; asks for its folder",
+	actionPlanNew:       "Plan a project that has no plan; asks for its folder or a new name",
 }
 
 // leaderRow is one action in the dialog.

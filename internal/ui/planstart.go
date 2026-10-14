@@ -21,6 +21,13 @@
 // planning session (docs/decisions.md "## T7.3", A6): the start itself finds
 // one and refuses, and only then does the dashboard ask whether to open it,
 // whose yes is a second, separate request that only opens.
+//
+// "Start a new plan" also takes a bare project name (T7.5). What the typed
+// text means is decided by the Deps.PlanFolder seam and a new folder is made
+// by Deps.CreatePlanFolder, both wired by `afk dash` and both called only
+// inside a tea.Cmd. Nothing is created without the owner's y in a dialog
+// showing the full path, and the create and the start are two separate
+// steps, so a later question (T7.6) can go between them.
 package ui
 
 import (
@@ -105,15 +112,22 @@ const planNoProjectNotice = "No project is open, so there is no plan to change."
 const (
 	planAmendQuestion     = "What do you want to change? Say it in a sentence."
 	planReconcileQuestion = "Which document? Give its path inside the project."
-	planNewQuestion       = "Which folder? (a full path or ~/...)"
+	planNewQuestion       = "Which folder? A full path or ~/..., or a new project's name."
 )
+
+// planNewNameNote is the new-plan form's second line, saying where a name
+// goes. It is its own line because a dialog line is cut at the dialog's
+// width (72 cells at most), and the question with this folded in would lose
+// its end. It is shown only when the PlanFolder seam is wired, since without
+// it a name is not created (T7.4's form).
+const planNewNameNote = "A name is made into a folder under your project location, after a yes."
 
 // The form's refusals of blank text. The form stays open with the line
 // shown under the field, so the owner can type it and press enter again.
 const (
 	planAmendEmpty     = "Type a sentence first, or press esc to cancel."
 	planReconcileEmpty = "Type the document's path first, or press esc to cancel."
-	planNewEmpty       = "Type the folder to plan in, or press esc to cancel."
+	planNewEmpty       = "Type the folder or the new project's name, or press esc to cancel."
 )
 
 // planVerbs is the word each change mode's notice uses. The new mode has no
@@ -237,7 +251,7 @@ func (m Model) openPlanNewForm() (tea.Model, tea.Cmd) {
 	m.planTextGen = m.projectGen
 	m.planTextNote = ""
 	in := textinput.New()
-	in.Placeholder = "a folder, such as ~/code/my-app"
+	in.Placeholder = "a folder, such as ~/code/my-app, or a name, such as my-app"
 	in.CharLimit = 4096
 	if m.width > 4 {
 		in.SetWidth(m.dialogContentWidth() - 4)
@@ -293,10 +307,16 @@ func (m Model) submitPlanText() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if mode == PlanModeNew {
+		if m.deps.PlanFolder != nil {
+			// What the text means (a folder, or a name to create) is decided
+			// off the drawing path, because deciding reads the profile and
+			// the disk; applyPlanFolderDecided acts on the answer.
+			m.notify(notifyInfo, "Checking "+text+"…")
+			return m, m.planFolderCmd(text)
+		}
 		// The typed folder is the root and there is no text: the start looks
 		// at the folder as bare `afk plan` does, which takes no brief.
-		m.notify(notifyInfo, "Starting a planning session in "+text+"…")
-		return m, m.planStartCmd(text, PlanModeNew, "")
+		return m.startPlanNewIn(text)
 	}
 	m.notify(notifyInfo, "Starting a planning session to "+planVerbs[mode]+" the plan…")
 	return m, m.planStartCmd(root, mode, text)
@@ -586,10 +606,11 @@ func (m Model) planTextDialog() dialog {
 	case PlanModeNew:
 		title, question = "Start a new plan", planNewQuestion
 	}
-	lines := []string{
-		theme.statusLine.Render(question),
-		m.planTextInput.View(),
+	lines := []string{theme.statusLine.Render(question)}
+	if m.planTextMode == PlanModeNew && m.deps.PlanFolder != nil {
+		lines = append(lines, theme.dim.Render(planNewNameNote))
 	}
+	lines = append(lines, m.planTextInput.View())
 	if m.planTextNote != "" {
 		lines = append(lines, theme.errorText.Render(m.planTextNote))
 	}
@@ -612,5 +633,216 @@ func (m Model) planOpenDialog() dialog {
 			theme.dim.Render("Nothing new was started. Open the one that is open?"),
 		},
 		hint: modalKeyHint(reg.spec(inputConfirmPlanOpen).keys.bindings, "open it", "cancel"),
+	}
+}
+
+// startPlanNewIn is T7.4's start of a new plan in a folder: the folder is the
+// root and there is no text, because the start looks at the folder as bare
+// `afk plan` does, which takes no brief. A typed path, a folder a name was
+// just turned into, and an existing folder the owner chose to plan in all go
+// through here, so they read and behave the same.
+func (m Model) startPlanNewIn(folder string) (tea.Model, tea.Cmd) {
+	m.notify(notifyInfo, "Starting a planning session in "+folder+"…")
+	return m, m.planStartCmd(folder, PlanModeNew, "")
+}
+
+// PlanFolderKind is what the new-plan form's text means (T7.5).
+type PlanFolderKind int
+
+const (
+	// PlanFolderRefused is the zero value on purpose, as PlanRefused is: a
+	// decision the seam forgot to fill creates nothing and starts nothing.
+	PlanFolderRefused PlanFolderKind = iota
+	// PlanFolderUse means the text is a folder (a full or ~/ path) to start
+	// in as typed, exactly as T7.4 did before names existed.
+	PlanFolderUse
+	// PlanFolderCreate means the text is a new project's name and Path is the
+	// folder under the profile's project location it would become.
+	PlanFolderCreate
+)
+
+// PlanFolderDecision is what a PlanFolder call reports. It mirrors
+// internal/planfolder's Decision, declared here because this package must
+// not import that one (the two are built and tested apart, and `afk dash`
+// maps one into the other).
+type PlanFolderDecision struct {
+	Kind PlanFolderKind
+	// Path is the folder to use or create. For a refusal it is set only with
+	// Exists.
+	Path string
+	// Reason is why the text was refused, as a plain sentence. Empty unless
+	// refused.
+	Reason string
+	// Exists is set on a refusal because a folder of that name is already
+	// there. The dashboard then offers to plan in it instead of only saying
+	// no, because that is almost always what the owner wants next.
+	Exists bool
+}
+
+// planFolderDecidedMsg carries one PlanFolder call's answer back to Update,
+// with the project generation it was asked under, as planStartedMsg does.
+type planFolderDecidedMsg struct {
+	text string
+	d    PlanFolderDecision
+	gen  int
+}
+
+// planFolderCreatedMsg carries one CreatePlanFolder call's result back to
+// Update.
+type planFolderCreatedMsg struct {
+	path string
+	err  error
+	gen  int
+}
+
+// planFolderUnavailableNotice is the y's answer when CreatePlanFolder is not
+// wired. `afk dash` always wires it with PlanFolder; this exists so a
+// dashboard built with one and not the other says so and creates nothing.
+const planFolderUnavailableNotice = "Creating a project folder is not available in this dashboard. Nothing was created. Type the full path of a folder that exists instead."
+
+// planFolderNothingCreated is the confirm's no and esc.
+const planFolderNothingCreated = "Nothing was created."
+
+// planFolderCmd asks the PlanFolder seam what text means, off the drawing
+// path.
+func (m Model) planFolderCmd(text string) tea.Cmd {
+	decide := m.deps.PlanFolder
+	gen := m.projectGen
+	return func() tea.Msg {
+		return planFolderDecidedMsg{text: text, d: decide(text), gen: gen}
+	}
+}
+
+// applyPlanFolderDecided acts on what the typed text means.
+//
+//   - use: start in it as T7.4 does.
+//   - create: ask y/n, showing the full path, before anything is made.
+//   - refused because the folder exists: ask whether to plan in it; its yes
+//     only starts, and creates nothing.
+//   - any other refusal: say why and do nothing.
+//
+// A decision that crosses a project switch is dropped, as a start result is:
+// the owner has moved on, and a dialog popping up over another project
+// would be about something they are no longer looking at.
+func (m Model) applyPlanFolderDecided(msg planFolderDecidedMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.projectGen {
+		return m, nil
+	}
+	d := msg.d
+	switch {
+	case d.Kind == PlanFolderUse:
+		folder := d.Path
+		if folder == "" {
+			folder = msg.text
+		}
+		return m.startPlanNewIn(folder)
+	case d.Kind == PlanFolderCreate && d.Path != "",
+		d.Kind == PlanFolderRefused && d.Exists && d.Path != "":
+		m.modal = inputConfirmPlanFolder
+		m.planFolder = d
+		m.planFolderGen = m.projectGen
+		m.clearStatus()
+		return m, nil
+	}
+	reason := strings.TrimSpace(d.Reason)
+	if reason == "" {
+		reason = "That cannot be used as a folder for a new plan. Nothing was created."
+	}
+	m.notify(notifyWarn, reason)
+	return m, nil
+}
+
+// confirmPlanFolder is the folder question's y. For a folder that exists it
+// only starts planning there. For a new name it creates the folder first,
+// and planning starts only once the create has succeeded
+// (applyPlanFolderCreated): create and start stay two separate steps, so a
+// later question can be asked between them.
+func (m Model) confirmPlanFolder() (tea.Model, tea.Cmd) {
+	d, gen := m.planFolder, m.planFolderGen
+	m.clearPlanFolder()
+	if gen != m.projectGen {
+		m.notify(notifyWarn, "The project changed, so nothing was created.")
+		return m, nil
+	}
+	if d.Kind != PlanFolderCreate {
+		return m.startPlanNewIn(d.Path)
+	}
+	if m.deps.CreatePlanFolder == nil {
+		m.notify(notifyWarn, planFolderUnavailableNotice)
+		return m, nil
+	}
+	m.notify(notifyInfo, "Creating "+d.Path+"…")
+	create := m.deps.CreatePlanFolder
+	path := d.Path
+	genNow := m.projectGen
+	return m, func() tea.Msg {
+		return planFolderCreatedMsg{path: path, err: create(path), gen: genNow}
+	}
+}
+
+// applyPlanFolderCreated is the create's result. An error is shown as the
+// seam wrote it (it says what was left on disk) and nothing starts. On
+// success the folder is announced and planning starts in it.
+//
+// Unlike a decision, a result that crosses a project switch is not dropped
+// silently: the folder now exists whatever the owner did meanwhile, so they
+// are told, but no planning session starts, since starting one would move
+// the dashboard off the project they switched to.
+func (m Model) applyPlanFolderCreated(msg planFolderCreatedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.notify(notifyWarn, msg.err.Error())
+		return m, nil
+	}
+	made := "Made " + msg.path + " and made it a git repository."
+	if msg.gen != m.projectGen {
+		m.notify(notifyInfo, made+" The project changed, so no planning session was started; type the full path to plan in it.")
+		return m, nil
+	}
+	// One notice for both steps rather than startPlanNewIn's, which would
+	// replace "made" before the owner could read it.
+	m.notify(notifySuccess, made+" Starting a planning session in it…")
+	return m, m.planStartCmd(msg.path, PlanModeNew, "")
+}
+
+// cancelPlanFolder is the folder question's n and esc: nothing is created
+// and nothing starts.
+func (m Model) cancelPlanFolder() (tea.Model, tea.Cmd) {
+	m.clearPlanFolder()
+	m.notify(notifyInfo, planFolderNothingCreated)
+	return m, nil
+}
+
+func (m *Model) clearPlanFolder() {
+	m.modal = inputNormal
+	m.planFolder = PlanFolderDecision{}
+	m.planFolderGen = 0
+}
+
+// planFolderDialog is the folder question (inputConfirmPlanFolder). The full
+// path is on a line of its own so a long one is cut at the dialog's edge
+// rather than mid-sentence, and the owner sees exactly where the folder
+// will go before saying yes.
+func (m Model) planFolderDialog() dialog {
+	reg := m.modes()
+	hint := modalKeyHint(reg.spec(inputConfirmPlanFolder).keys.bindings, "yes", "cancel")
+	if m.planFolder.Kind != PlanFolderCreate {
+		return dialog{
+			title: "Folder already exists",
+			lines: []string{
+				theme.statusLine.Render("This folder already exists:"),
+				theme.statusLine.Render(m.planFolder.Path),
+				theme.dim.Render("Nothing will be created. Plan in it?"),
+			},
+			hint: hint,
+		}
+	}
+	return dialog{
+		title: "Create a new project",
+		lines: []string{
+			theme.statusLine.Render("Create this folder?"),
+			theme.statusLine.Render(m.planFolder.Path),
+			theme.dim.Render("It will be made a git repository, then planning starts in it."),
+		},
+		hint: hint,
 	}
 }

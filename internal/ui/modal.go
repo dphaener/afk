@@ -127,6 +127,8 @@ func (m Model) activeDialog() (dialog, bool) {
 		return m.planTextDialog(), true
 	case inputConfirmPlanOpen:
 		return m.planOpenDialog(), true
+	case inputConfirmPlanFolder:
+		return m.planFolderDialog(), true
 	}
 	return dialog{}, false
 }

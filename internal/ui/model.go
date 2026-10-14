@@ -382,6 +382,26 @@ type Deps struct {
 	// StartPlan makes the actions say starting a plan change is not
 	// available, and nothing is called.
 	StartPlan func(root, mode, text string) PlanStartResult
+	// PlanFolder decides what the new-plan form's text means (T7.5): a full
+	// or ~/ path to use as typed, a bare project name to create under the
+	// owner profile's project location, or a refusal with its reason. It
+	// reads the profile and the disk, so it is only ever called inside a
+	// tea.Cmd, never from Update or View. The decision itself lives outside
+	// this package, which cannot import it; `afk dash` maps it into
+	// PlanFolderDecision.
+	//
+	// A nil PlanFolder keeps the form as T7.4 built it: the text goes to
+	// StartPlan unchanged, so a dashboard without the seam still plans in a
+	// typed folder and only loses the create-by-name step.
+	PlanFolder func(text string) PlanFolderDecision
+	// CreatePlanFolder makes the folder a confirmed name stands for and makes
+	// it a git repository. It is called only after the owner's y in
+	// inputConfirmPlanFolder, and only inside a tea.Cmd: it writes to disk
+	// and runs git. Its error is a plain sentence saying what was left on
+	// disk, shown as it is. It has NO default, for AnswerInbox's reason: a
+	// zero Deps must not be able to create folders. A nil one on y is
+	// answered with a sentence and nothing is created.
+	CreatePlanFolder func(path string) error
 	// SpiceDetect reports whether the repo at dir is operating in git-spice
 	// mode. Defaults to internal/spice.Detect. The stack panel is hidden
 	// entirely when this returns false — never a placeholder.
@@ -1365,6 +1385,13 @@ type Model struct {
 	planOffer    PlanStartResult
 	planOfferGen int
 
+	// planFolder is the decision inputConfirmPlanFolder was raised for (a
+	// folder to create, or one that already exists and may be planned in),
+	// and planFolderGen the project generation it arrived under, on
+	// planOffer's terms: y acts on exactly the path the dialog showed.
+	planFolder    PlanFolderDecision
+	planFolderGen int
+
 	// planSelectPending is the master-plan row's name while a plan action's
 	// pane open waits for discovery to list the row (openPlanPane). It is
 	// applied on each successful load and dropped once the row is selected,
@@ -2319,6 +2346,12 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case planStartedMsg:
 		return m.applyPlanStarted(msg)
+
+	case planFolderDecidedMsg:
+		return m.applyPlanFolderDecided(msg)
+
+	case planFolderCreatedMsg:
+		return m.applyPlanFolderCreated(msg)
 
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
@@ -3457,6 +3490,13 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 			return m.confirmPlanOpen()
 		case actionDeny, actionCancel:
 			return m.cancelPlanOpen()
+		}
+	case inputConfirmPlanFolder:
+		switch a {
+		case actionConfirm:
+			return m.confirmPlanFolder()
+		case actionDeny, actionCancel:
+			return m.cancelPlanFolder()
 		}
 	case inputPickProvider:
 		switch a {

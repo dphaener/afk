@@ -408,9 +408,10 @@ func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 			modals = append(modals, mode)
 		}
 	}
-	// Seven since T7.3 added the plan form and the open-it offer.
-	if len(modals) != 7 {
-		t.Fatalf("isModal admits %d modes, want the 7 footer modals", len(modals))
+	// Seven since T7.3 added the plan form and the open-it offer; eight since
+	// T7.5 added the new-plan folder confirm.
+	if len(modals) != 8 {
+		t.Fatalf("isModal admits %d modes, want the 8 footer modals", len(modals))
 	}
 	bools := []bool{false, true}
 	focuses := []paneFocus{focusList, focusRight}

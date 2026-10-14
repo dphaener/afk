@@ -123,6 +123,13 @@ const (
 	// refused because a planning session is already open: y opens that
 	// session. It swallows unclaimed keys like the other y/n confirmations.
 	inputConfirmPlanOpen
+	// inputConfirmPlanFolder is the y/n question the new-plan form raises
+	// for a bare project name (T7.5): y creates the folder under the
+	// profile's project location, makes it a git repository and then starts
+	// planning there, or, when a folder of that name already exists, plans in
+	// it and creates nothing. It swallows unclaimed keys like the other y/n
+	// confirmations, because a folder is made only on an explicit y.
+	inputConfirmPlanFolder
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -164,6 +171,8 @@ func (m inputMode) String() string {
 		return "plan-text"
 	case inputConfirmPlanOpen:
 		return "confirm-plan-open"
+	case inputConfirmPlanFolder:
+		return "confirm-plan-folder"
 	}
 	return "unknown"
 }
@@ -176,7 +185,7 @@ func (m inputMode) String() string {
 func (m inputMode) isModal() bool {
 	switch m {
 	case inputConfirmClean, inputSpawnError, inputConfirmRestart, inputEditLabel, inputPickProvider,
-		inputPlanText, inputConfirmPlanOpen:
+		inputPlanText, inputConfirmPlanOpen, inputConfirmPlanFolder:
 		return true
 	}
 	return false
@@ -372,6 +381,7 @@ var modePrecedence = []modeLayer{
 	{inputPickProvider, func(s modeState) bool { return s.modal == inputPickProvider }},
 	{inputPlanText, func(s modeState) bool { return s.modal == inputPlanText }},
 	{inputConfirmPlanOpen, func(s modeState) bool { return s.modal == inputConfirmPlanOpen }},
+	{inputConfirmPlanFolder, func(s modeState) bool { return s.modal == inputConfirmPlanFolder }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
@@ -921,6 +931,13 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("y", "Y"),
 		key.WithHelp("y", "open it"),
 	)
+	// The new-plan folder question's y. Its help is a plain "yes" because one
+	// binding answers both of that dialog's wordings (create the folder, or
+	// plan in the one that exists), and the dialog's own lines say which.
+	confirmPlanFolder := key.NewBinding(
+		key.WithKeys("y", "Y"),
+		key.WithHelp("y", "yes"),
+	)
 	// The provider picker's keys. up/k and down/j are declared fresh rather
 	// than sharing keys.Up/keys.Down for the reason detailFocusUp gives: those
 	// carry normal mode's session-list help text, which would label a picker
@@ -1429,6 +1446,20 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
 			confirmPlanOpen, deny, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+	r[inputConfirmPlanFolder] = modeSpec{
+		mode: inputConfirmPlanFolder,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: confirmPlanFolder, action: actionConfirm},
+			{binding: deny, action: actionDeny},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			confirmPlanFolder, deny, cancelEsc, keys.Mouse, quitChord,
 		}},
 	}
 
