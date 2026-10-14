@@ -1941,6 +1941,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   Saved screens at narrow and wide widths. Against a scratch build driven through tmux with a stand-in
   agent in the pane: ctrl+space opens the dialog while the agent has the keyboard, `esc` returns to
   it with nothing typed, and an action picked there runs. `make check` is green.
+- Amended 2026-10-13 (T7.1 done): later tasks may assume the following. (1) The leader is `keys.Leader` (ctrl+space) in `defaultKeyMap`, a rule `{keys.Leader, actionOpenLeader}` in `inputNormal`, `inputDetail` and `inputPane` only, and a new `inputLeader` mode above `inputPalette`; `placeholderKey` lets it through on the agent placeholder. (2) The dialog's rows come from `leaderRows` (`internal/ui/leader.go`), which merges the `inputNormal` and `inputDetail` rules by action and leaves out movement; every listed action needs a line in `leaderHelp` and a reason in `leaderBlockedReason`, or a test fails. T7.2 moves the action letters off the list, so it must keep each action reachable as a rule the dialog reads (or give `leaderRows` another source), and it should relabel the rows whose key the dialog keeps for itself (`esc`, `enter`). (3) A picked row runs through `applyKeyAction` in the mode it came from. (4) ctrl+@ and ctrl+2 are the same byte and also open the dialog; an inbox question asks the owner about it. See `## T7.1` in `docs/decisions.md`.
 
 #### T7.2 — Every action moves under the leader
 - **Depends on:** T7.1

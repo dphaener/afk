@@ -1,0 +1,24 @@
+ afk Dashboard 
+╭─ Sessions ─────────────────╮╭─ feat-auth ────────────────────────────────────╮
+│ ╭─ actions ────────────────────────────────────────────────────────────────╮ │
+│ │ type to filter, or press an action's key                                 │ │
+│ │                                                                          │ │
+│ │ enter/f     focus view         — Move the keyboard to the right side     │ │
+│ │ n           new session        — Start a new session from a plan or a b… │ │
+│ │ o           one-off session    — Start a one-off session with no plan    │ │
+│ │ p           switch project     — Switch to another project               │ │
+│ │ c           clean session      — Clean the selected session and its wor… │ │
+│ │ r           restart agent      — only a stopped or stuck agent can be r… │ │
+│ │ l           edit label         — Give the selected session a display la… │ │
+│ │ /           filter sessions    — Filter the session list by name         │ │
+│ │ esc         clear filter       — no filter is applied                    │ │
+│ │ :           command palette    — Open the command palette                │ │
+│ │ b           build tasks        — this project has no build               │ │
+│ │ i           inbox              — the inbox has not been read yet         │ │
+│ │ P           pause the build    — this project has no build               │ │
+│ │ U           resume the build   — this project has no build               │ │
+│ │ ctrl+\      close pane         — no agent pane is open                   │ │
+│ │ ctrl+g      release mouse      — Let the terminal select text, or take … │ │
+│ ╰──────────────────── key runs · enter runs · type to filter · esc closes ─╯ │
+╰────────────────────────────╯╰──── enter/f: focus view · c: clean · l: label ─╯
+enter run · ↑/↓ move · type filter · esc close …

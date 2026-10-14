@@ -2535,3 +2535,43 @@ All three checks passed. These minor notes were left as they are:
 - The planner and conductor edited this file and `CONTEXT.md` themselves, as they are meant to.
 - The last-cells order puts the awaiting line ahead of the blocking count, the reverse of the main order. It was planned that way.
 - One end-to-end host test, in code this change does not touch, timed out once under load and passed when run again.
+
+## T7.1
+
+T7.1 adds the leader key (ctrl+space) and the actions dialog to `afk dash`. These are the decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **How the leader is wired (A1).** ctrl+space is one more rule in the key registry, on the session list, the detail side (the agent placeholder included) and the agent pane. It opens a new dialog mode that sits above the palette. The overlays, forms and confirms do not have the rule, so the leader does nothing there without any extra check.
+- **What the dialog lists (A2).** Every action of the session list and the detail side, each once, in the order `?` shows them. Moving around (cursor, paging, scrolling, changing tab) is not an action and is left out, as is the leader itself. Each row has its key, its name and one line of help; a test fails when an action has no help line, so a later action cannot be listed without one.
+- **How a picked action runs (A3).** The dialog closes, then the action runs through the same code its own key uses. It is never typed to the agent, and there is no second copy of any action.
+- **Keys inside the dialog (A4).** `esc` closes. ctrl+space closes and, when the agent pane had the keyboard, types ctrl+space to the agent. Up and down move the highlight and `enter` runs it. While nothing has been typed, a key that is an action's key runs that action; any other letter starts the name filter, and once a filter is typed every letter goes to it.
+- **Dimmed actions (A5).** An action that cannot run where the owner is shows dimmed with the reason (no session selected, close the pane first, no build, and so on), taken from the same checks the action's own key makes. Its key and `enter` do nothing and the dialog stays open.
+- **ctrl+space and ctrl+@ (A6).** In the ordinary terminal encoding ctrl+space, ctrl+@ and (on many terminals) ctrl+2 all send the same byte, and the terminal library reports every one of them as ctrl+space. The dashboard and the agents use none of them for anything else, so the task goes ahead with ctrl+space and does not pick another key. An inbox question asks the owner whether that is acceptable. If ctrl+space turned out not to reach the dashboard through tmux at all, the session would stop and ask instead.
+- **Help and the palette (A7).** The leader appears in `?` and in the `:` palette, because both are built from the registry. The short help line at the bottom is already full and is not changed.
+- **Tests (A8)** are written first for the pure parts (the key decision, the rows, the reasons), then for the dashboard model, with saved screens at 80 by 24 and 120 by 40. **Nothing had to be in place first (A9):** T6.3 and T6.4 are merged.
+
+### How ctrl+space arrives (W3.T1, 2026-10-13)
+
+Read in the module cache (ultraviolet `v0.0.0-20260811164956-006e29f97886`, x/vt `v0.0.0-20260713092006-0d683c34c74b`, bubbletea `v2.0.9`) and confirmed against a built binary.
+
+- **The byte.** A terminal sends ctrl+space, ctrl+@ and (on many terminals) ctrl+2 as the NUL byte (0x00). Ultraviolet's `EventDecoder.parseControl` (`decoder.go`) turns NUL into `KeyPressEvent{Code: KeySpace, Mod: ModCtrl}`, unless the decoder's `Legacy` flags have `flagCtrlAt` set, in which case it returns `{Code: '@', Mod: ModCtrl}`. The legacy key table does the same in `key_table.go` (`buildKeysTable`: `nul := Key{Code: KeySpace, Mod: ModCtrl} // ctrl+@ or ctrl+space`, switched to `'@'` by the same flag), and the kitty map has `kittyKeyMap[ansi.NUL] = Key{Code: KeySpace, Mod: ModCtrl}`.
+- **The flag is never set.** The only code that sets `flagCtrlAt` is `LegacyKeyEncoding.CtrlAt(true)` (`decoder.go`). No file in bubbletea `v2.0.9` mentions `Legacy`, `LegacyKeyEncoding` or `CtrlAt` (searched with grep), so the dashboard always gets `ctrl+space`. `Key.String()` in `key.go` writes `ctrl+` and then `space` for `KeySpace`, hence the binding string `"ctrl+space"`.
+- **Why ctrl+@ cannot be told apart.** It is the same byte, so after decoding there is nothing left to compare. Both open the dialog; that is documented in the README.
+- **Back to the agent.** The pane types ctrl+space to the session through x/vt `key.go`, where `KeyPressEvent{Code: KeySpace, Mod: ModCtrl}` appends `"\x00"`. The stand-in agent showed `^@` for it.
+- **tmux.** `man tmux` mentions `C-Space` only as a key binding name (copy-mode `begin-selection`, emacs: `C-Space`), and nothing in it says tmux swallows the key when it is not the prefix. A real check settles it: in tmux 3.6, with the default prefix, `tmux send-keys C-Space` reached the dashboard as ctrl+space, and the dashboard's pane passed one NUL to the stand-in (`hello^@`). The dialog opened from the list and from the focused agent pane. Evidence: `.afk/t7-1/evidence/w3-t1-tmux.txt`. So the plan's stop condition (ctrl+space not reaching the dashboard through tmux) did not occur and ctrl+space stays the leader. A tmux whose prefix is set to C-Space would take the key itself; that is the owner's setting, not something the dashboard can see.
+- **Checked end to end** with a scratch build in a throwaway repo (never `~/bin`): the dialog opens over the focused agent pane; `esc` closes it and the stand-in received nothing; `ctrl+space`, `i` ran the inbox action; `ctrl+space` twice left one `^@` at the stand-in; ctrl+space under the inbox overlay and the project switcher changed nothing and opened no dialog (`.afk/t7-1/evidence/w3-t1-tmux-overlay.txt`).
+
+### Decided while building
+
+- **The dialog's box is sized from the terminal.** The dialog draws itself to the terminal's size, so it needed no size function of its own in the layout code.
+- **Inside the dialog, `ctrl+c`, `q` and `ctrl+g` are the dialog's rows** (quit and mouse), because the dialog mode has no rules of its own above it. Picking a list action from the agent pane moves the keyboard to the list first; `ctrl+t` and `ctrl+g` stay with the pane.
+- **The palette test that lists every mode** (`TestColonIsClaimedOnlyByNormalMode` in `internal/ui/palette_test.go`) got one row for the new mode.
+
+### For the owner to check
+
+- Try ctrl+space in your own terminal (and through tmux if you use it) with an agent pane focused: the dialog should open, and ctrl+space twice should reach the agent.
+- Try ctrl+space while the new-session form is open: nothing should happen. A test covers it; the hands-on check could not reach that state by hand.
+- The inbox question about ctrl+@ and ctrl+2 also opening the dialog is waiting for your answer.
+
+### Scope ideas
+
+- Three rows show a key the dialog keeps for itself: `clear filter` (`esc`), `back to list` (`esc/ctrl+\`) and focus (`enter/f`). In the dialog `esc` closes and `enter` runs the highlighted row, so `clear filter` can only be run by highlighting it and pressing `enter`. T7.2 could relabel these rows.

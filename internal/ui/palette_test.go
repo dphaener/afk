@@ -368,6 +368,7 @@ func TestColonIsClaimedOnlyByNormalMode(t *testing.T) {
 	want := map[inputMode]keyDecision{
 		inputNormal:         {kind: routeAction, action: actionPalette},
 		inputPalette:        {kind: routeComponent},
+		inputLeader:         {kind: routeComponent},
 		inputSwitcher:       {kind: routeComponent},
 		inputInbox:          {kind: routeComponent},
 		inputForm:           {kind: routeComponent},

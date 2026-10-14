@@ -275,6 +275,24 @@ func TestGoldenModals(t *testing.T) {
 		}
 		assertGolden(t, "dash-120x40-form", render(m))
 	})
+	// The actions dialog the leader key opens, at both sizes: at 120 columns
+	// the help lines fit, at 80 they are cut at the box edge, never wrapped.
+	// The fixture has no build, so the build rows show their dimmed reason.
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-80x24-leader", 80, 24},
+		{"dash-120x40-leader", 120, 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m := open(t, goldenModel(t, size.w, size.h), tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl})
+			if !m.leaderOpen {
+				t.Fatal("ctrl+space did not open the actions dialog")
+			}
+			assertGolden(t, size.name, render(m))
+		})
+	}
 }
 
 // TestGoldenDialogs pins the five confirmation/prompt dialogs at 120×40 over
