@@ -2669,7 +2669,11 @@ thing it does not do is attach to a session.
 - **The owner profile, installing the plugin, and starting and stopping the daemon in the dashboard**:
   left as commands in M7, because each is run once per machine or rarely.
 - **M7's controls on the web page** (start a planning session, add and remove projects, set a task's
-  status, refresh usage): M7 is the dashboard only.
+  status, refresh usage): moved to M8 (2026-10-13).
+- **A remote terminal on the web page** (attach to any session from a browser): left out of M8 by the
+  owner. It would take the session from the dashboard (a host serves one client), is awkward at phone
+  width, and is a live keyboard into an agent with permissions bypassed. Watchers beside the typing
+  client would need a change to the host.
 - **Daemon-side write-guard and continuation enforcement**, replacing shipit's Claude-only mods.
 - Rename `.claude/worktrees/` to a provider-neutral location.
 - Open-source release: licence, install script, Homebrew tap, docs site.
