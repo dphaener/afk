@@ -2645,8 +2645,8 @@ thing it does not do is attach to a session.
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
-- **Answering plan questions on the web page** instead of the terminal; M5 keeps them as records on
-  disk so this needs no change to the planner.
+- **Answering plan questions on the web page** instead of the terminal: moved to M8 (2026-10-13), as a
+  chat view of the planning session (T8.12).
 - **Prototypes during planning** (a throwaway page or state model to answer a design question), after
   Matt Pocock's prototype skill.
 - **Promote decisions to code**, using the decision log: the conductor's phase state machine (its gates
