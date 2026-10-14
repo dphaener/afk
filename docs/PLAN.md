@@ -2754,11 +2754,17 @@ thing it does not do is attach to a session.
 - **Background:** T7.10 adds entry points beside the two commands that return what happened without
   printing; they edit `config.toml` as text, so comments and the `[dash]` table survive. The page
   shows the daemon's last good list, which picks up the change on its next pass.
-- **Scope:** an add action with a folder field and an optional name, and a remove action on each row
+- **Scope:** an add action with a folder field and an optional name, and a remove action
   behind a confirm that names the project and says its folder, plan and sessions are not touched and
   a running task is left to finish. Refusals in the command's words; a `config.toml` that cannot be
   read or written is said so, naming the file. The row appears or goes when the daemon next reads the
-  list, and the page says so until then. The same under `/api`. README: the web page section and
+  list, and the page says so until then. The same under `/api`.
+  From the design system (reconciled 2026-10-13): **Add a project** is an `icon-btn` in the overview's
+  `app-bar` and a secondary button in its footer, opening a form with a Folder `field`, an optional
+  Name `field` (hint "Defaults to the folder name") and **Add project**. **Remove a project** (quiet,
+  in the footer) opens a screen with a `choice-list` of the projects and **Remove…**, which opens the
+  `confirm-sheet` with **Remove** (danger) and **Keep it** (focused).
+  README: the web page section and
   `afk project`.
 - **Must not:** write `config.toml` any other way; remove without the confirm; delete a folder, a
   session or a ledger.
