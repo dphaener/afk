@@ -1886,6 +1886,373 @@ items need them without leaving the dashboard.
   numbers on the Overview tab, and answering the blocking item in the overlay changes the header
   within one refresh. `make check` is green.
 
+### M7 — The dashboard is the command center
+
+**Outcome:** the owner runs afk from `afk dash` without going back to the shell for day-to-day work:
+one leader key opens a dialog of every action, and from it they start any planning session (a new plan
+in a new folder included), approve a plan, see every project on one screen, add and remove projects,
+set a task's status, see a task's tokens and refresh the usage reading.
+
+#### T7.1 — Leader key and actions dialog
+- **Depends on:** T6.3, T6.4
+- **Goal:** pressing ctrl+space anywhere in `afk dash`, the agent pane included, opens a dialog that
+  lists every action the dashboard has, each with its key; the next key runs that action, and typing
+  filters the list by name.
+- **Background:** the owner asked for "an actions menu (dialog)" and "a leader key much like tmux and
+  opencode", and chose ctrl+space, the dialog opening at once, and (T7.2) every action under the
+  leader. Today actions are single letters on the session list, a few ctrl chords (`ctrl+t`, `ctrl+w`,
+  `ctrl+g`, `ctrl+\`) and the `:` palette, all registered in `newModeRegistry` (`internal/ui/mode.go`)
+  and `defaultKeyMap` (`internal/ui/model.go`). While the agent pane has the keyboard every key but
+  those chords is typed to the agent. T6.3 adds the pause and resume keys and T6.4 the header's inbox
+  count, which is why this task waits for both.
+- **Scope:** one leader key, ctrl+space, handled before any key is passed to the agent, in the session
+  list, the detail side and the agent pane. It opens the actions dialog: every registered action with
+  its name, its key after the leader and one line of help, built from the same registry the `?` help
+  and the `:` palette read, so an action added later appears with no extra work. In the dialog a key
+  runs its action and closes the dialog; typing letters that match no key filters by name and `enter`
+  runs the highlighted row; `esc` closes it; ctrl+space a second time closes it and sends the key
+  itself to the agent when the agent pane has the keyboard. An action that cannot run where the owner
+  is (for example clean with no session selected) is shown dimmed with the reason and does nothing.
+  The leader is ignored while another overlay or form is open (the inbox overlay, the project
+  switcher, the new-session form, a confirm); `esc` leaves those first. Every key the dashboard has
+  today keeps working in this task; T7.2 removes them. Read in the terminal library's source how
+  ctrl+space arrives (it is not the same on every terminal) and record what was found, and what tmux
+  does to it, in `docs/decisions.md`. If ctrl+space cannot be told apart from another key in the
+  owner's terminal or through tmux, stop and raise an inbox item; do not pick another key. README: a
+  section on the leader key and the dialog.
+- **Must not:** remove or change an existing key (T7.2 does); block the screen-drawing path; swallow
+  ctrl+space so the agent can never receive it.
+- **Acceptance:** a table test for the pure decision of what a key does in the dialog (run, filter,
+  close, pass through), every branch a row. UI model tests: the leader opens the dialog from the list,
+  the detail side and the agent pane; a key runs its action once; a dimmed action does nothing; the
+  leader is ignored under each overlay; leader twice in the agent pane types the key to the agent.
+  Saved screens at narrow and wide widths. Against a scratch build driven through tmux with a stand-in
+  agent in the pane: ctrl+space opens the dialog while the agent has the keyboard, `esc` returns to
+  it with nothing typed, and an action picked there runs. `make check` is green.
+
+#### T7.2 — Every action moves under the leader
+- **Depends on:** T7.1
+- **Goal:** the leader is the one way to run a dashboard action. The session list keeps only keys
+  that move around.
+- **Background:** the owner was offered three ways to treat today's keys and chose "Everything moves
+  under the leader; the session list keeps only the movement keys and enter", having said "I'm ok
+  with re-mapping existing keys".
+- **Scope:** remove the bare action letters from the session list and the detail side (`n`, `o`, `p`,
+  `c`, `r`, `l`, `/`, `b`, `i`, `q`, `f`, `?`, the pause and resume keys of T6.3) and the chords
+  `ctrl+t`, `ctrl+w`, `ctrl+g` and `ctrl+\` of the dashboard, and remove the `:` palette, whose job
+  the dialog now does. Each becomes leader then a key; keep the letter each had where it is free, and
+  record the whole table in `docs/decisions.md`. What stays without the leader is moving around only:
+  up, down, page, home and end, `enter` to open the pane, `esc` to go back, `tab`, `shift+tab` and the
+  number keys to change tab, and scrolling. `ctrl+c` on the session list still quits, so a stuck
+  dashboard can always be left. Keys inside an overlay or form (typing an answer, `y`/`n` in a
+  confirm, the switcher's filter) are not actions and stay as they are. A removed letter pressed on
+  the session list raises one short notice naming the new key, for the letters removed here and no
+  others. `afk attach` is not the dashboard and keeps ctrl-\. The footer's help line, the header's
+  hints (the switcher hint, T6.4's inbox hint) and every notice that names a key are updated. README:
+  the key reference is rewritten around the leader, and every place that names an old key is fixed.
+- **Must not:** change what any action does; change a key inside an overlay; change `afk attach`.
+- **Acceptance:** a table test with one row per action that the leader key runs it and the old key
+  does not. UI model tests: a removed letter on the list does nothing but raise its notice; in the
+  agent pane `ctrl+t`, `ctrl+g` and `ctrl+\` are typed to the agent; `ctrl+c` on the list quits. Saved
+  screens for the footer and header are updated. `/usr/bin/grep -n` over README.md finds no old key
+  named as a way to run an action. Against a scratch build through tmux: start a session, open its
+  pane, go back to the list, switch project and quit, all through the leader. `make check` is green.
+
+#### T7.3 — Start extend, amend and reconcile from the dashboard
+- **Depends on:** T7.1
+- **Goal:** three actions start a planning session that changes the active project's plan, with the
+  same effect as `afk plan extend`, `afk plan amend "<what>"` and `afk plan reconcile FILE`, and open
+  it in the dashboard's pane.
+- **Background:** the dashboard can open a `master-plan` session that exists but cannot start one.
+  The start logic is in `plan_session_cmd.go` (`decidePlanStart`, `runPlanRequest`,
+  `startPlanSession`, `resolveReconcileFile`); it needs a terminal today because it ends by attaching
+  the terminal to the session (`finishPlanAttach`). The agent's command line comes from the provider
+  interface (`PlanArgv`).
+- **Scope:** an entry point beside the command that does everything `afk plan <mode>` does up to the
+  attach and returns the result (started, resumed, or refused with the reason) without printing and
+  without needing a terminal; the command keeps its behaviour by calling it. A `ui.Deps` seam wired
+  to it, run off the screen-drawing path. Three actions in the dialog, by name only: extend the plan;
+  amend the plan, which first asks for the sentence in a one-line form; reconcile the plan with a
+  document, which first asks for the file's path, taken as relative to the project. They act on the
+  active project's main checkout. On success the dashboard selects the `master-plan` session and
+  opens its pane, as `enter` would. A refusal is shown in the command's own plain words (no plan yet,
+  another planning session open, the file is outside the project, no agent that can plan) and nothing
+  is started. When a planning session is already open, the actions say so and offer to open it.
+  README: the `afk plan` section and the dashboard section.
+- **Must not:** name a provider outside `internal/provider`; start a session for a project with no
+  plan (T7.4 does new plans); offer `--yes` for amend; change what `afk plan` prints or does in a
+  terminal.
+- **Not in scope:** answering the planning session's questions anywhere but in its pane.
+- **Acceptance:** table tests for the entry point with a fake provider and a fake host starter: each
+  mode started, a session resumed, and each refusal, with nothing written on a refusal. UI model
+  tests: each action calls the seam once with the active project's root, the mode and the typed text;
+  an empty sentence or path is refused in the form; a refusal is shown and no pane opens. Against a
+  scratch build in a throwaway repository with a plan and a stand-in agent, through tmux: the extend
+  action creates `.afk/plan/state.json` with the mode `extend` and the stand-in is in the pane; the
+  same for amend with its sentence in `.afk/plan/brief.md`. `make check` is green.
+
+#### T7.4 — Start a new plan from the dashboard
+- **Depends on:** T7.3
+- **Goal:** an action starts a new plan, as bare `afk plan` does, for the active project or for a
+  folder the owner types, and the dashboard shows that project with the planning session open.
+- **Scope:** one more action in the dialog, "plan a new project", built on T7.3's entry point and
+  seam. It asks which folder in a one-line form, filled in with the active project's path when that
+  project has no plan; `~/` expands. The folder must exist; what `afk plan` does with a folder that is
+  not yet a git repository, or that already has a plan or an open session, the action does too, with
+  the same words. On success the dashboard switches to that project, as the switcher's `enter` does,
+  and opens the `master-plan` pane. A project started this way is kept in the switcher's list for the
+  rest of that run even when it is neither listed in `config.toml` nor under a search folder; say in
+  the README that after a restart `afk dash --project DIR` or a search folder brings it back, until
+  `afk plan approve` lists it.
+- **Must not:** create a folder (T7.5 does); write `config.toml`.
+- **Acceptance:** table tests for the new mode through the entry point: an existing empty repository,
+  a folder with a plan (refused, pointing at the change actions), a folder that does not exist
+  (refused, naming it). UI model tests: the form's default, a typed path, the switch to the new
+  project and its row in the switcher. Against a scratch build through tmux, with a stand-in agent:
+  typing the path of an empty throwaway repository leaves the dashboard on that project with the
+  stand-in in the pane and `.afk/plan/state.json` in mode `new`. `make check` is green.
+
+#### T7.5 — Create the folder for a new plan
+- **Depends on:** T7.4
+- **Goal:** the owner types a project name and the dashboard makes the folder, makes it a git
+  repository and starts planning in it.
+- **Background:** the owner chose "The dashboard can also create the folder and make it a git
+  repository", and "a typed name, created under your profile's project location". The location is the
+  owner profile's `project location` entry, read through `internal/profile`. `gitInitIn` in
+  `plan_session_cmd.go` is how `afk plan` makes a repository.
+- **Scope:** T7.4's form takes a name as well as a path: text with no `/` and no `~` is a name. A name
+  is created as a folder under the profile's project location, made a git repository, and then
+  planned as in T7.4. The decision is a pure function from the typed text, the profile's entry and
+  what exists on disk to one of: use this folder, create this folder, or refuse with a reason. It
+  refuses a name that is not a plain folder name (say which characters are allowed), a folder that
+  already exists (say so and offer to plan in it as T7.4 does), and a name typed when the profile has
+  no `project location` (say how to set one with `afk profile set`, or to type a full path). Before
+  creating anything it shows the full path and asks yes or no. A failure part-way (the folder made but
+  `git init` failed) says what was left on disk and removes nothing. README: the new-plan action.
+- **Must not:** create a folder outside the profile's project location from a bare name; delete
+  anything; create anything on GitHub (T7.6).
+- **Acceptance:** a table test for the decision, every branch a row: a name with a location, a name
+  with none, a name with bad characters, a folder that exists, a full path. A test with a scratch
+  folder as the location: the folder is created with a `.git` inside it. UI model tests for the
+  confirm (yes creates, no creates nothing). Against a scratch build through tmux with a scratch
+  profile whose location is a scratch folder: typing `demo` and `y` leaves `<scratch>/demo/.git` and
+  `<scratch>/demo/.afk/plan/state.json`, with the stand-in agent in the pane. `make check` is green.
+
+#### T7.6 — Offer a GitHub repository for the new folder
+- **Depends on:** T7.5
+- **Goal:** straight after T7.5 makes a folder, the dashboard asks whether to create a private GitHub
+  repository for it with the owner's existing login, and on yes sets it as the folder's `origin`.
+- **Background:** the owner chose "it also offers to create a private GitHub repository with your
+  existing login". Their profile has the rule "accounts: use the accounts I already have, and ask
+  before opening a new one", which is why this is a question every time and never a setting.
+  `afk plan approve` pushes to `origin`, and the daemon cannot ship without one, so a project made
+  here with no remote needs one before its build. `internal/ship` already talks to `gh` behind an
+  interface with a fake.
+- **Scope:** after the folder is made and before the planning pane opens, one yes-or-no question
+  naming the repository that would be created (the folder's name, under the account `gh` is logged in
+  as) and saying it will be private. No is the default and changes nothing. Yes creates the
+  repository and adds it as `origin`, through a `gh` interface with a fake, off the screen-drawing
+  path; nothing is pushed, because there is nothing to push yet. When `gh` is missing or not logged
+  in the question is not asked and a short notice says why and what to run. A failure (the name is
+  taken, the network is down) is shown with its reason, the folder is left as it is, and planning
+  starts all the same. The outcome is one line in the notice area. README: the new-plan action.
+- **Must not:** create a public repository; create anything without the owner's yes; push; ask for a
+  folder that already existed before T7.5's form (only for one it has just made); store a token or
+  read one from anywhere but `gh`'s own login.
+- **Acceptance:** a table test for the pure decision (ask, do not ask and why) and for the outcome
+  wording, every branch a row: yes and created, no, `gh` missing, not logged in, name taken, network
+  error. A test with the fake `gh` that yes makes exactly one create call, private, and sets `origin`,
+  and that no makes none. UI model tests for the question and each notice. No test calls GitHub.
+  Against a scratch build through tmux with a stand-in `gh` on a scratch `PATH`: answering `y` makes
+  the stand-in record one private create and `git remote -v` in the new folder shows `origin`.
+  `make check` is green.
+
+#### T7.7 — Show the planning session and the plan checker's result
+- **Depends on:** T7.1
+- **Goal:** the dashboard shows what `afk plan status` and `afk plan lint` print for the active
+  project: the planning session's mode, phase and what it is waiting for, and the checker's counts
+  and findings.
+- **Background:** `internal/plansession` holds the pure status (`plansession.Decide`, read through
+  `loadPlanSession` in `plan_session_cmd.go`) and `internal/planlint` the pure checker; both only
+  read files. The Build tab shows one plan "problem" line today and runs no check.
+- **Scope:** a `ui.Deps` seam, wired in the root package beside `dash_build.go`, that returns for a
+  project's main checkout the planning status (none, or mode, phase, waiting-for and any `Problem`
+  lines) and the checker's summary and findings for the plan `afk.toml` names. It is read on the
+  dashboard's refresh, off the screen-drawing path, from files only. Shown in two places: a plan line
+  in the overview of the `master-plan` session and in the Build tab's summary block (`extend · rounds
+  · 2 questions have no answer yet`, or `plan waiting for your approval` for a new plan at `review`),
+  and an action in the dialog, "check the plan", that opens a scrollable overlay with the summary
+  counts and one finding per line, errors first, worded as `afk plan lint` words them. With no plan
+  the action says there is no plan to check. README: the Build tab paragraph and the new action.
+- **Must not:** dial, use the network or block (§3); move the session's phase or write any file under
+  `.afk/plan/`.
+- **Acceptance:** a table test for the plan line's wording, a row per case: no session, each mode in
+  a middle phase, a new plan at `review`, a finished change session, a damaged `state.json`. UI model
+  tests for the overview line, the Build tab line and the overlay with zero findings, warnings only
+  and errors, at narrow and wide widths. Against a scratch build in a throwaway repository whose plan
+  has one error and an open `extend` session at `rounds`: the Build tab shows the line and the
+  overlay lists the error. `make check` is green.
+
+#### T7.8 — Approve a plan from the dashboard
+- **Depends on:** T7.7
+- **Goal:** an action approves the active project's plan, with the same effect as `afk plan approve`,
+  behind a confirm that shows the checker's counts.
+- **Background:** the owner chose "Yes, behind a confirm step". T5.7 forbids approving from the web
+  page, which other people might reach; the dashboard is the owner at their own terminal.
+  `runPlanApprove` in `plan_approve_cmd.go` runs the steps (write `afk.toml`, commit, push, start the
+  ledger, list the project in `config.toml`, write `approved`), each safe to repeat, and refuses with
+  a reason ending "Nothing was changed.".
+- **Scope:** an entry point beside the command that runs the same steps and returns what was done,
+  what was refused and why, or which step failed and what is left, without printing; the command
+  keeps its output by calling it. A `ui.Deps` seam wired to it. An action in the dialog, "approve the
+  plan", enabled only when T7.7's status is a new plan at `review`; otherwise it is dimmed with the
+  reason. It opens a confirm showing the project, the plan's path and the counts from the checker's
+  summary; with one or more errors the confirm has no yes and says to fix them. On yes the steps run
+  off the screen-drawing path, since they commit and push, with a "working" notice; the result is
+  shown in plain words: approved and what the daemon will do next, or the refusal, or the step that
+  failed with what to run to finish. The plan line of T7.7 and the all-projects screen pick up the new
+  state on the next refresh. README: `afk plan approve` and the dashboard section.
+- **Must not:** approve without the owner's yes in the confirm; approve a plan with errors; approve
+  from the web page; change what `afk plan approve` prints or does.
+- **Acceptance:** table tests for the entry point with fakes for git and the config file: approved,
+  each refusal, a failure at each step, and a second run that does nothing. A table test for the
+  result wording, one row per outcome. UI model tests: the action is dimmed away from `review`, the
+  confirm shows the counts, errors remove the yes, `n` and `esc` call nothing, `y` calls the seam
+  once. Against a scratch build in a throwaway repository with a new plan at `review`, a scratch
+  config folder and a scratch state folder: `y` leaves the plan committed, the project in the scratch
+  `config.toml` and `state.json` at `approved`. `make check` is green.
+
+#### T7.9 — The all-projects screen
+- **Depends on:** T7.1
+- **Goal:** one screen lists every project the daemon builds, each with its current task, the state
+  of its build and how many inbox items need the owner, and `enter` switches the dashboard to it.
+- **Background:** the owner chose "An all-projects screen". `afk daemon status` prints this per
+  project today. `web.Summarize` is the pure per-project summary the web page and the Build tab
+  share, `buildview.OpenCounts` counts inbox items, the dashboard already reads the `[[project]]`
+  list through the `LoadListed` seam (T6.1), and `plan-reviews.json` lists plans waiting for approval.
+- **Scope:** an action in the dialog, "all projects", that opens a full-width screen with one row per
+  project in `config.toml`'s list, plus the active project when it is not listed. Each row: the name
+  the switcher shows; tasks done of the total; the current task with its phase, or why nothing is
+  running, in the words `afk daemon status` uses (paused, stopped and why, waiting on you, held for
+  usage, nothing ready, finished); open inbox items and how many are holding a task up; and "plan
+  waiting for approval" when it is on the review list. Rows that need the owner sort first. `enter`
+  switches to the project, `esc` closes the screen, movement keys move. The rows come from a
+  `ui.Deps` seam wired in the root package that reads each project's files on the refresh tick, off
+  the screen-drawing path; a project whose files cannot be read gets a row saying so and never hides
+  the others; a listed folder that is gone is shown as gone. With the screen open, T6.3's pause and
+  resume actions act on the selected row. With no listed project the screen says how to add one.
+  README: a section for the screen.
+- **Must not:** dial, use the network or block (§3); write anything but through the pause and resume
+  actions; replace the project switcher.
+- **Acceptance:** a table test for the pure row builder: running, paused, stopped, parked on an inbox
+  item, held for usage, finished, no plan, plan waiting for approval, unreadable, gone; and for the
+  sort order. UI model tests: the screen at narrow and wide widths, `enter` switching project, pause
+  on the selected row calling the seam with that row's root. Against a scratch build with a scratch
+  config folder listing two throwaway repositories, one paused with an open inbox item: both rows
+  show, the paused one first with its count, and `enter` switches to it. `make check` is green.
+
+#### T7.10 — Add and remove projects from the all-projects screen
+- **Depends on:** T7.9
+- **Goal:** on the all-projects screen the owner can add a folder to the daemon's project list and
+  remove one, with the same effect as `afk project add` and `afk project remove`.
+- **Background:** `addProjectToConfig` and `runProjectRemove` in `project_cmd.go` edit `config.toml`
+  as text, so comments and the `[dash]` table survive. The daemon re-reads the list on every pass.
+  Until now the dashboard was forbidden to write `config.toml` (T6.1, T6.2); this task is the one
+  exception, and it writes only through that code.
+- **Scope:** entry points beside the two commands that return what happened (added, already listed,
+  removed, not listed, refused and why) without printing; the commands keep their output by calling
+  them. Two `ui.Deps` seams. Two actions, enabled on the all-projects screen: add a project, with a
+  one-line form for the folder (filled in with the active project when it is not listed) and an
+  optional name; remove the selected project, behind a confirm that names it and says the folder, its
+  plan and its sessions are not touched and a running task is left to finish. The outcome is a short
+  notice and the row appears or goes on the next refresh. What `afk project add` refuses (not a git
+  repository, no plan the daemon could build from, whatever the command checks) is refused here in
+  the same words. A `config.toml` that cannot be read or written is said so, naming the file.
+  README: the screen's section and `afk project`.
+- **Must not:** write `config.toml` any other way; delete a folder, a session or a ledger; remove
+  without the confirm.
+- **Acceptance:** table tests for the two entry points with a scratch config file: each outcome, and
+  that comments and a `[dash]` table are byte for byte as they were. UI model tests: the form's
+  default, add calling its seam once, remove asking first and calling its seam only on `y`, each
+  notice. Against a scratch build with a scratch config folder: adding a throwaway repository shows
+  its row and `afk project list` (same scratch folder) prints it; removing it takes both away.
+  `make check` is green.
+
+#### T7.11 — Pick a task on the Build tab and set its status
+- **Depends on:** T7.1
+- **Goal:** the Build tab has a cursor on its task rows, and an action sets the selected task's
+  status by hand, with the same effect as `afk ledger set`.
+- **Background:** the Build tab (`internal/ui/buildtab.go`, rows from `internal/buildview`) is a
+  read-only list with no cursor. T3.2 decided the dashboard never writes the ledger; the owner has now
+  asked for "set a task's status by hand" in the dashboard, so this task is the one exception, and it
+  writes only through the code behind `afk ledger set` (`runLedgerSet` in `ledger_cmd.go`), which
+  checks the ids against the plan.
+- **Scope:** a cursor on the Build tab's task rows when the detail side has the keyboard, moved with
+  the movement keys, kept on the same task id across refreshes, and scrolled into view; the tab
+  still shows the same thing whichever session is selected. An entry point beside the command that
+  sets one task's status and returns the outcome without printing; the command keeps its output by
+  calling it. A `ui.Deps` seam. An action, "set this task's status", enabled on the Build tab with a
+  task selected: it lists the statuses the command accepts with the current one marked, asks for the
+  replacing ids when the choice is `superseded`, and then confirms in one sentence what will change
+  ("T2.3: failed → pending. The build loop may start it on its next pass."). A refusal from the
+  command is shown in its words. The row shows the new status on the next refresh. README: the Build
+  tab paragraph.
+- **Must not:** write the ledger any other way; change a task that is running or shipping without
+  saying in the confirm that an agent is working on it; add `afk ledger init` to the dashboard.
+- **Acceptance:** a table test for the cursor's pure movement and for where it lands when its task
+  leaves the list. Table tests for the entry point with a scratch ledger: each status, `superseded`
+  with and without replacements, an unknown id, a ledger that cannot be written. UI model tests: the
+  cursor at narrow and wide widths, the status list, the confirm, `n` calling nothing and `y` calling
+  the seam once with the id and status. Against a scratch build in a throwaway repository with a
+  five-task plan and a ledger: setting a `failed` task to `pending` changes
+  `.afk/build/ledger.json` and the row. `make check` is green.
+
+#### T7.12 — Tokens for the selected task
+- **Depends on:** T7.11
+- **Goal:** the Build tab shows how many tokens the selected task used, as `afk tokens <task>` prints
+  it.
+- **Background:** the token record is kept with the ledger (§4.7) and printed by `runTokensLedger` in
+  `tokens_cmd.go`. T5.8 found that planning sessions record no tokens, so only master-plan tasks
+  have a record.
+- **Scope:** a `ui.Deps` seam, wired in the root package, that returns the selected task's token
+  record from the files the command reads, on the refresh, off the screen-drawing path. An action,
+  "show this task's tokens", enabled on the Build tab with a task selected, opens a small overlay with
+  the totals and the split by phase and role, in the command's own words and units; a task with no
+  record says "no tokens recorded for this task yet". The Build tab's row for the selected task also
+  carries the total when there is room, and gives it up first as the tab narrows. README: the Build
+  tab paragraph.
+- **Must not:** record or change tokens (`--record` stays a command); read a session's transcript on
+  the refresh.
+- **Acceptance:** a table test for the overlay's rows and the short total: a full record, one phase
+  only, no record, an unreadable record. UI model tests at narrow and wide widths. Against a scratch
+  build in a throwaway repository whose ledger holds tokens for one task: the overlay for that task
+  matches what `afk tokens <task>` prints there, and another task says none recorded. `make check`
+  is green.
+
+#### T7.13 — Refresh the usage reading from the dashboard
+- **Depends on:** T7.1
+- **Goal:** an action takes a fresh usage reading, with the same effect as `afk usage --refresh`, and
+  the header shows it.
+- **Background:** the header shows the last reading in `usage.json` and says when it is old (T3.2).
+  `runUsage` in `usage_cmd.go` takes a reading through the provider interface and saves it; the
+  probe starts the agent's CLI and takes a second or two, and `governor.json` records the last
+  attempt.
+- **Scope:** an entry point beside the command that takes and saves a reading as `--refresh` does and
+  returns the reading or the reason there is none, without printing; the command keeps its output by
+  calling it. A `ui.Deps` seam, run off the screen-drawing path with a "reading usage" notice. An
+  action, "refresh usage", in the dialog. One reading at a time: the action does nothing while one is
+  running. The header updates when it lands; a failure (the agent's CLI is missing, not logged in,
+  the provider has no usage reading) is a notice in plain words and the old reading stays. README:
+  the header's paragraph and `afk usage`.
+- **Must not:** name a provider outside `internal/provider`; probe on the refresh tick or on any
+  timer (only on the owner's action); change the governor's thresholds or the daemon's own probing.
+- **Acceptance:** table tests for the entry point with a fake provider and a fake clock: a reading
+  saved, each failure, and that the files written are the ones `afk usage --refresh` writes. UI model
+  tests: the action calls the seam once, a second press while it runs calls nothing, each notice, and
+  the header after a reading. No test probes real usage. Against a scratch build with a scratch state
+  folder and a stand-in for the agent's CLI on a scratch `PATH`: the action writes `usage.json` and
+  the header shows the stand-in's numbers. `make check` is green.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
