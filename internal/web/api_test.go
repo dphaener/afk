@@ -16,6 +16,7 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -71,6 +72,10 @@ type rig struct {
 	plans     map[string]string
 	planErr   error
 	planReads int
+	// chat is what the fake PlanChat returns, with its project filled in;
+	// chatCalls records the (name, root) pairs it was asked for.
+	chat      planchat.Chat
+	chatCalls [][2]string
 }
 
 // testPlan is a small master plan the checker has nothing to say about, with
@@ -181,6 +186,12 @@ func newRig(t *testing.T, cfg Config) *rig {
 			return rg.sessions
 		},
 		Usage: func() (usagestate.File, bool) { return rg.usage, rg.usageOK },
+		PlanChat: func(project, root string) planchat.Chat {
+			rg.chatCalls = append(rg.chatCalls, [2]string{project, root})
+			c := rg.chat
+			c.Project = project
+			return c
+		},
 		// The fakes do the real file change, so the summary that comes
 		// back proves it was read after the call and not before.
 		Pause: func(root string) error {

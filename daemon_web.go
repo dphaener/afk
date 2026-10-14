@@ -14,9 +14,13 @@ import (
 	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/discover"
+	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/projectconfig"
+	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
 )
@@ -86,7 +90,52 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 			_, err := resumeProject(root, now())
 			return webPauseError(root, err)
 		},
-		Now: now,
+		PlanChat: webPlanChat(now),
+		Now:      now,
+	}
+}
+
+// webPlanChat is the real read behind GET /api/p/{project}/plan/chat.
+//
+// The planning host's own files say whether a planning session is open and
+// which agent CLI runs it; the transcript is read only while that host's
+// process is alive (planchat.Read never calls Conversation otherwise), so a
+// finished or never-started session costs two file reads and nothing more.
+// The home folder is resolved once: it cannot change while the daemon runs,
+// and a failure leaves it empty, which planchat.Read reports as a
+// conversation that cannot be found.
+func webPlanChat(now func() time.Time) func(project, root string) planchat.Chat {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	deps := planchat.Deps{
+		Host: func(root string) (planchat.HostInfo, bool) {
+			meta, err := host.ReadMeta(root, session.PlanSessionName)
+			if err != nil {
+				return planchat.HostInfo{}, false
+			}
+			// A start time that cannot be read cannot be matched to a
+			// transcript, so the host is treated as not running.
+			started, err := time.Parse(time.RFC3339, meta.StartedAt)
+			if err != nil {
+				return planchat.HostInfo{Provider: meta.Provider}, true
+			}
+			return planchat.HostInfo{StartedAt: started, Provider: meta.Provider, Alive: host.Alive(meta.PID)}, true
+		},
+		// An empty name is the default provider; Lookup resolves it.
+		Conversation: func(name string, q provider.ConversationQuery) ([]provider.ConversationEntry, error) {
+			p, err := provider.Lookup(name)
+			if err != nil {
+				return nil, err
+			}
+			return p.PlanConversation(q)
+		},
+		Home: home,
+		Now:  now,
+	}
+	return func(project, root string) planchat.Chat {
+		return planchat.Read(project, root, deps)
 	}
 }
 

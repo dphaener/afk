@@ -205,3 +205,42 @@ those are the rows that show a role split across phases and a phase split across
 284 assistant lines carry 143 unique message ids. Within a single file, 103 ids appear on more than one line
 (141 extra lines in all), and 76 of those 103 have differing usage between their lines (the output count
 rises as the message streams in). No message id appears in two different files.
+
+# Planning conversation fixtures
+
+`plan-chat/` holds hand-written transcripts for the planning conversation reader (`conversation.go`,
+`TestPlanConversation`). They were written by hand to the shape seen in Claude Code transcripts on 2026-10-14
+(see `conversation.go` and the T8.3 plan's Context); none is copied from a real session. The shape is not a
+documented contract.
+
+## Layout
+
+Each folder `plan-chat/<case>/` stands for a home's `.claude/projects/` folder, and the test copies it into
+`{t.TempDir()}/.claude/projects/` before reading. Inside it, `-work-project/` is the transcript folder of the
+fixed root `/work/project` (the folder-name rule turns every `/` into `-`), and every line's `cwd` is
+`/work/project`. That root never exists on disk: the reader only encodes it and compares it.
+
+The fixtures are copied, rather than kept under a literal `.claude/` folder like `claude-home/`, for two
+reasons. A common global gitignore ignores `.claude/`, which would leave new fixture files out of a commit
+without a word. And the copy lets the test set every file's mtime to an hour after the host start it reads
+against, so the reader's "not written since the host started" cut never depends on when the repository was
+checked out.
+
+## Cases
+
+| Folder | What it holds |
+|---|---|
+| `plain` | two turns of text: one message written as two text blocks, one turn ending with `stop_hook_summary` alone, one with both end lines, a meta skill body and a `<system-reminder>` line |
+| `pending-question` | an `AskUserQuestion` with two questions and no answer; recommended labels in two cases |
+| `answered-question` | one question answered with `toolUseResult.answers`, one declined (no answers object) and the interrupt line after it |
+| `waiting-text` | the agent's last turn ended |
+| `working` | a tool call answered, then another one made, with no turn end |
+| `truncated` | the last line is half-written, with no newline |
+| `background` | a background agent and a background command started; only the command finishes |
+| `no-transcript` | only another project's folder (`-work-other`) |
+| `older` | a planning transcript begun 30 minutes before the host |
+| `non-planning` | the planning transcript plus a newer plain chat and a newer `/afk:go` session in the same folder |
+| `subagent-sidechain` | sidechain lines in the planning transcript, and a later planning-looking `plan/subagents/agent-a1.jsonl` |
+| `cwd-differs` | a planning transcript in this folder whose `cwd` is `/work.project` (same folder name, other folder) |
+
+Expected entries are written into the test table by hand, from reading these files.

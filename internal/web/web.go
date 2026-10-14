@@ -42,6 +42,7 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -109,6 +110,13 @@ type Deps struct {
 	// project at root, without printing.
 	Pause  func(root string) error
 	Resume func(root string) error
+	// PlanChat reads the open planning session of the project at root as a
+	// chat. It is a function so the web package stays free of the host, the
+	// session and the agent CLI: the daemon wires the real read (which only
+	// opens a transcript while the planning host is alive) and a test wires
+	// a fake. Nil means this page cannot read planning sessions, and the
+	// address says so in the chat's own words.
+	PlanChat func(project, root string) planchat.Chat
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -228,6 +236,11 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 	// The live-change stream is not in routes: it has no JSON form, so it
 	// must not get an /api twin. guard still wraps it like everything else.
 	mux.HandleFunc("GET /events", s.events)
+	// The planning chat is JSON only for now: the page that shows it comes
+	// with T8.12, which will register its twin. Until then /p/{project}/plan/chat
+	// must stay not found, so it is not in routes (that table gives every
+	// entry both forms).
+	mux.HandleFunc("GET /api/p/{project}/plan/chat", s.planChat)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong
