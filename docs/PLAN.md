@@ -2537,7 +2537,7 @@ thing it does not do is attach to a session.
   AA check of the screen reports no violation. `make check` is green.
 
 #### T8.13 — Notify when a planning session waits for you
-- **Depends on:** T8.3, T8.12
+- **Depends on:** T8.3, T8.12, T8.15
 - **Goal:** when a planning session starts waiting for the owner, an ntfy notification goes out that
   opens its chat view.
 - **Background:** the owner chose "Yes, with a link to the chat". Notifications carry a `Click` link
