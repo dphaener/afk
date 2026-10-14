@@ -604,6 +604,12 @@ func press(code rune, text string) tea.KeyPressMsg {
 //     the agent pane keeps every key but its three reserved chords.
 //   - "i" rows: the same shape for the inbox key, and "i in pane forwards to
 //     the child" is load-bearing for the same reason.
+//   - "P" and "U" rows: pause and resume the build, the same shape again. The
+//     pane rows are load-bearing twice over: a capital letter is ordinary text
+//     to an agent, and a rule here would pause a project's build because the
+//     owner typed a sentence. The inbox rows are the other half: in the
+//     overlay each is a letter of the answer. The confirm rows show a pending
+//     y/n question swallows them like any other letter.
 //   - inputInbox rows: the overlay has no parent rule, so EVERY key is the
 //     component's. "q in inbox" and "ctrl+c in inbox" are the load-bearing
 //     pair: a quit rule here would lose a half-typed answer. "ctrl+g in
@@ -792,6 +798,38 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"i in edit label goes to the textinput", inputEditLabel, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
 		{"i in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
 		{"i in resize is swallowed", inputResize, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
+		// P and U: pause and resume the build, on the same terms as b and i. The
+		// lower-case letters keep their own meanings, which the last four rows
+		// pin: a rule matching without regard to case would turn the project
+		// switcher's key into a pause.
+		{"P in normal pauses the build", inputNormal, routeConds{}, press('P', "P"), keyDecision{routeAction, actionPauseBuild}},
+		{"P in detail pauses the build", inputDetail, routeConds{}, press('P', "P"), keyDecision{routeAction, actionPauseBuild}},
+		{"P in pane forwards to the child", inputPane, routeConds{}, press('P', "P"), keyDecision{kind: routeChild}},
+		{"P in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('P', "P"), keyDecision{kind: routeChild}},
+		{"P in inbox is text (component)", inputInbox, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
+		{"P in form types (component)", inputForm, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
+		{"P in filter types (component)", inputFilter, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
+		{"P in switcher goes to the component", inputSwitcher, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
+		{"P in palette types (component)", inputPalette, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
+		{"P in edit label goes to the textinput", inputEditLabel, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
+		{"P in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
+		{"P in resize is swallowed", inputResize, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
+		{"U in normal resumes the build", inputNormal, routeConds{}, press('U', "U"), keyDecision{routeAction, actionResumeBuild}},
+		{"U in detail resumes the build", inputDetail, routeConds{}, press('U', "U"), keyDecision{routeAction, actionResumeBuild}},
+		{"U in pane forwards to the child", inputPane, routeConds{}, press('U', "U"), keyDecision{kind: routeChild}},
+		{"U in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('U', "U"), keyDecision{kind: routeChild}},
+		{"U in inbox is text (component)", inputInbox, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
+		{"U in form types (component)", inputForm, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
+		{"U in filter types (component)", inputFilter, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
+		{"U in switcher goes to the component", inputSwitcher, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
+		{"U in palette types (component)", inputPalette, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
+		{"U in edit label goes to the textinput", inputEditLabel, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
+		{"U in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
+		{"U in resize is swallowed", inputResize, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
+		{"p in normal still opens the projects", inputNormal, routeConds{}, press('p', "p"), keyDecision{routeAction, actionProjects}},
+		{"u in normal is still ignored", inputNormal, routeConds{}, press('u', "u"), keyDecision{kind: routeIgnored}},
+		{"p in detail is still swallowed", inputDetail, routeConds{}, press('p', "p"), keyDecision{kind: routeIgnored}},
+		{"u in pane forwards to the child", inputPane, routeConds{}, press('u', "u"), keyDecision{kind: routeChild}},
 
 		// The inbox overlay: no parent rule, every key to the component.
 		{"q in inbox is text (component)", inputInbox, routeConds{}, q, keyDecision{kind: routeComponent}},
@@ -1123,6 +1161,10 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		// the only structured record of them, for both of its screens.
 		{"normal advertises i", inputNormal, "i"},
 		{"detail advertises i", inputDetail, "i"},
+		{"normal advertises P", inputNormal, "P"},
+		{"detail advertises P", inputDetail, "P"},
+		{"normal advertises U", inputNormal, "U"},
+		{"detail advertises U", inputDetail, "U"},
 		{"inbox advertises enter", inputInbox, "enter"},
 		{"inbox advertises esc", inputInbox, "esc"},
 		{"inbox advertises up", inputInbox, "up"},

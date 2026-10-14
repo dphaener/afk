@@ -8,6 +8,8 @@
 **How to use this document.** This is the master plan. Each task (`T<milestone>.<n>`) is sized for one
 autonomous plan → execute → review cycle. Read **§1–§7 in full** before planning any task: they are the
 shared contract every task builds against. Never start a task whose dependencies are not merged.
+Where this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design system
+wins on looks. That design system covers the web page only (M8); the terminal dashboard has none.
 
 **How afk gets built (bootstrap).** As autonomously as possible, on the VM (§2, T0.0):
 
@@ -125,8 +127,11 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Dashboard controls | Decided 2026-10-13 (M6): `afk dash` gets pause and resume keys and an inbox count in its header. T3.2 left both out only because its scope did not list them. |
 | Dashboard as command center | Decided 2026-10-13 (M7): `afk dash` does the owner's day-to-day work, so the shell is needed only for set-up. It starts all four planning sessions (new, extend, amend, reconcile), approves a plan behind a confirm, has an all-projects screen, adds and removes projects, sets a task's status by hand, shows a task's tokens, shows the planning session and the checker's result, and refreshes the usage reading. The owner profile, installing the plugin, starting and stopping the daemon and `afk ledger init` stay commands. |
 | Dashboard keys | Decided 2026-10-13 (M7): one leader key, **ctrl+space**, works everywhere in the dashboard, the agent pane included, except while an overlay, form or confirm is open (`esc` leaves those first), and opens an actions dialog at once listing every action with its key. **Every action is under the leader**: the session list keeps only the keys that move around, and the bare letters, the ctrl chords and the `:` palette go (T7.2). The one exception is `ctrl+c` on the session list, which still quits so a stuck dashboard can always be left. The owner chose this over keeping today's letters as shortcuts. `afk attach` keeps ctrl-\. |
-| What the dashboard writes | Decided 2026-10-13 (M7): besides inbox answers (T3.2) and pause and resume (T6.3), the dashboard changes afk's state only through the code of the matching command: `afk plan approve` (T7.8; approving from the web page stays forbidden, because others may reach it), `afk project add` and `remove` for `config.toml` (T7.10), and `afk ledger set` for the ledger (T7.11). This replaces "the dashboard never writes the ledger" (T3.2) and "never writes `config.toml`" (T6.1, T6.2) for those actions only. Creating a new plan's folder and its GitHub repository (T7.5, T7.6) has no matching command and is governed by the row below. |
+| What the dashboard writes | Decided 2026-10-13 (M7): besides inbox answers (T3.2) and pause and resume (T6.3), the dashboard changes afk's state only through the code of the matching command: `afk plan approve` (T7.8; approving from the web page was forbidden here, because others may reach it, and M8 lifts that: see the row "Web page as command center"), `afk project add` and `remove` for `config.toml` (T7.10), and `afk ledger set` for the ledger (T7.11). This replaces "the dashboard never writes the ledger" (T3.2) and "never writes `config.toml`" (T6.1, T6.2) for those actions only. Creating a new plan's folder and its GitHub repository (T7.5, T7.6) has no matching command and is governed by the row below. |
 | New plan in a new folder | Decided 2026-10-13 (M7): the dashboard can create the folder for a new plan. A typed name is created under the owner profile's `project location` (From the owner profile, a default: `~/code`) and made a git repository; the dashboard then asks, each time, whether to create a private GitHub repository with the owner's existing `gh` login and set it as `origin`. Never without that yes, per the profile's rule on accounts. |
+| Web page as command center | Decided 2026-10-13 (M8): the web page does everything `afk dash` does except attach to a session. It holds a planning session as a chat (the agent's messages, a reply box, a button per offered option), never as a terminal; a reply sent while the dashboard has that session open takes the session and the dashboard pane is dropped with a notice. A planning session waiting for the owner sends an ntfy notification linking to its chat. Every owner-only action the dashboard has comes to the page behind a confirm, approving a plan (T8.11) and creating a new project's folder and private GitHub repository (T8.15) included, which replaces "approving from the web page stays forbidden" (T5.7, T7.8). Of coding sessions, only autonomous ones are started from the page (T8.10), because the owner cannot talk to one there; planning sessions are started from the page and held in the chat view (T8.14, T8.15). The token and the `Origin` check of T3.1 guard all of it; the reply box is a keyboard into the planning agent, so the page stays behind Tailscale or the owner's proxy. |
+| Web page technology | Decided 2026-10-13 (M8): hand-written JavaScript built into the binary, with no build step, no `npm` and no new Go dependency for live updates (server-sent events). Still server-rendered with `html/template`; the page works, by reloading, with JavaScript off. Phone first, and it works well on a desktop. Every screen meets WCAG 2.2 AA. |
+| Web page design | Decided 2026-10-13 (M8): redesigned from `docs/design-system.md`, which the owner makes in Claude Design (From the owner profile, a default: design tool) from `docs/design-brief.md` (T8.1). The plan wins on behaviour and the design system on looks. No component library (From the owner profile, a default). |
 | Rules | `~/code/.claude/rules/*.md` are Rails rules and **do not apply** to this repo. T0.1 writes afk's own `CLAUDE.md`. |
 
 ---
@@ -1584,9 +1589,9 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
 
 | Topic | Decision |
 |---|---|
-| Where questions are asked | The terminal, in an attended session on the machine that runs the daemon. Not the inbox. A web interface may answer the same records later (rule 7). |
+| Where questions are asked | The terminal, in an attended session on the machine that runs the daemon. Not the inbox. A web interface may answer the same records later (rule 7). Amended 2026-10-13 (M8): the web page holds the session itself as a chat view (T8.12), not through the records. |
 | What v1 covers | New project, extend (a new milestone), amend (one task) and reconcile (bring the plan in line with a new document). |
-| Approval | Required before the daemon builds anything. The plan is readable on the web page; approving is a terminal command. |
+| Approval | Required before the daemon builds anything. The plan is readable on the web page; approving is a terminal command. Amended 2026-10-13 (M8): approving from the web page is allowed, behind a confirm (T8.11). |
 | Names | `afk plan` is the master plan. The per-task skill `/afk:plan` is renamed `/afk:work-plan`. The new skill is `/afk:master-plan`. |
 | Owner profile | Machine-wide, `profile.toml` beside `config.toml`. Each entry is a **rule** or a **default**, and may apply to one kind of project. It includes the preferred stack. |
 | Design | A phase of the session for projects with an interface. afk writes a brief, the owner runs it in any design tool and saves the result, afk reconciles. The plan wins on behaviour; the design system wins on looks. |
@@ -1765,6 +1770,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
   integration test with the fake provider: approve a fixture project and see the daemon launch its
   first ready task with no restart. The plan view renders this plan.
 - Amended 2026-10-13 (T5.7 done): `afk plan approve` works on a `new` session at `review` only, writes `approved` last and does nothing on a second run; it commits the plan, `afk.toml`, `.gitignore`, `CONTEXT.md`, the design brief and the agent instruction files (named by `provider.InstructionFiles`) and nothing else, and pushes to `origin` unless `[planning] via_pr` is set, so in T5.8's throwaway project the owner needs a git identity and, for the daemon to ship, a remote; the project list is edited with `afk project add|remove|list` and re-read by the daemon on every pass (the only setting that is; the rest still need a restart), and `afk daemon` now starts with no projects; a plan waiting for approval is listed in `plan-reviews.json` in afk's state folder (§4.2a), written by `afk plan advance` on reaching `review`, which also sends the "Plan ready for review" notification; the plan view is `/p/<project>/plan`, read-only, drawn by afk's own renderer (no markdown library); a real approve against a running daemon and a real notification were not run here and are T5.8's; the decisions are in `docs/decisions.md` under `## T5.7`.
+- Amended 2026-10-13: approving from the web page is no longer forbidden; M8 adds it behind a confirm (T8.11), because the owner chose every owner-only action on the page.
 
 #### T5.8 — Prove it (owner + agent)
 - **Depends on:** T5.4, T5.5, T5.7
@@ -1868,6 +1874,7 @@ items need them without leaving the dashboard.
   a throwaway repository (not this checkout): the pause key creates `.afk/build/paused` and the Build
   tab reads paused; the resume key removes it; `.afk/log/decisions.jsonl` has a line for each.
   `make check` is green.
+- Amended 2026-10-13 (T6.3 done): later tasks may assume the following. (1) `afk dash` pauses with `P` and resumes with `U`, both registered in `inputNormal` and `inputDetail` after `keys.Inbox` (so the palette and saved screens before them did not move) and nowhere else, so in the agent pane they are typed and in the inbox overlay they do nothing. (2) `ui.Deps` has `PauseBuild func(root string) (already bool, err error)` and `ResumeBuild func(root string) (ui.ResumeResult, error)`, with no default, wired only in `dashDeps` to `dashPauseBuild` / `dashResumeBuild` in `dash_pause.go`, which call `pauseProject` / `resumeProject` unchanged; the notice wording is in `internal/ui/buildpause.go`. (3) The keys act on the Build snapshot's `Root` (the main checkout), drop a result from an earlier `projectGen`, and reload the Build snapshot after every result, errors included. (4) A paused build's summary reads `paused: U or afk resume starts it again`. (5) A failed flag or marker write is worded by `dashPauseError`, reason first, because the toast shows about three lines; the web page keeps `webPauseError`. T6.4's header segment should take its place in the header order without moving these keys. See `## T6.3` in `docs/decisions.md`.
 
 #### T6.4 — Inbox count in the dashboard's header
 - **Depends on:** T3.2
@@ -2126,6 +2133,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   once. Against a scratch build in a throwaway repository with a new plan at `review`, a scratch
   config folder and a scratch state folder: `y` leaves the plan committed, the project in the scratch
   `config.toml` and `state.json` at `approved`. `make check` is green.
+- Amended 2026-10-13: the Must not "approve from the web page" holds for this task only; T8.11 adds approving to the web page behind a confirm, calling this task's entry point.
 
 #### T7.9 — The all-projects screen
 - **Depends on:** T7.1
@@ -2258,11 +2266,426 @@ set a task's status, see a task's tokens and refresh the usage reading.
   folder and a stand-in for the agent's CLI on a scratch `PATH`: the action writes `usage.json` and
   the header shows the stand-in's numbers. `make check` is green.
 
+### M8 — The web page does everything the dashboard does, except attach
+
+**Outcome:** from a phone, the owner runs afk on the web page as they do in `afk dash`: every project
+on one screen, inbox, pause and resume, tasks and their status and tokens, usage, sessions and their
+actions, the plan checker, approving a plan, adding and removing projects, and every planning session,
+held as a chat. The page is redesigned from a design system the owner made in Claude Design. The one
+thing it does not do is attach to a session.
+
+#### T8.1 — Design system (owner)
+- **Depends on:** —
+- **Goal:** the web page has a design system, made by the owner in their design tool, that every M8
+  task with an interface builds from.
+- **Scope:** Take `docs/design-brief.md` to Claude Design (From the owner profile, a default), make the
+  design system there, and save the result at `docs/design-system.md`. Then run
+  `afk plan reconcile docs/design-system.md` and see that session through, so the M8 tasks name the
+  components and screens it defines.
+- **Acceptance:** `docs/design-system.md` is committed and holds the tokens, the components and the
+  screens the brief lists.
+
+#### T8.2 — Live updates and the page's own JavaScript
+- **Depends on:** —
+- **Goal:** an open page updates by itself within a few seconds when a project's files change, using
+  hand-written JavaScript built into the binary, with no build step; today's pages are the first to
+  use it.
+- **Background:** the page has no JavaScript today (`docs/decisions.md`, `## T3.1`, A6). The owner
+  chose "Hand-written JavaScript built into the binary, no build step" for the redesign, which needs
+  live updates for the chat view (T8.12) and the screens after T8.5. The dashboard re-reads files on a
+  2-second tick; the page must not read any faster or any differently (§3: files only, never block).
+- **Scope:** static files (`.js`, and room for `.css`) embedded in the binary and served under one
+  path with long-lived caching keyed by a content hash, and a `Content-Security-Policy` that allows
+  scripts only from the page's own origin. A server-sent events stream (standard library only), behind
+  the same token check as every page, that sends a small event naming the project and the part that
+  changed (inbox, ledger, pause state, sessions, planning session, usage) when the files behind it change,
+  found by a pure comparison of what was read on one tick with what was read on the last. The
+  JavaScript re-fetches the changed part of the page and swaps it in, and reconnects after a dropped
+  stream; with JavaScript off or the stream refused by a proxy, the page still works by reloading.
+  One reader serves every open stream, so ten open tabs read the files once a tick. Record the event
+  names and the stream's address in `docs/decisions.md`. README: the web page section.
+- **Must not:** add a JavaScript build step, `npm`, or a Go dependency for the stream; read files
+  more often than every 2 seconds; let a slow or stuck browser hold up the reader (drop it, as the
+  host drops a slow client).
+- **Acceptance:** a table test for the pure change detection, one row per part, plus no change and an
+  unreadable file. Handler tests: the stream refuses a request with no token, sends an event after a
+  file changes and nothing when none does, and a full browser queue drops that browser and no other.
+  A test that the static files are served with the policy and cache headers. Against a scratch build
+  with a scratch config and a throwaway repository: an inbox item added with `afk inbox add` appears
+  on an open project page in a browser within 5 seconds with no reload. `make check` is green.
+
+#### T8.3 — Read a planning session's conversation
+- **Depends on:** —
+- **Goal:** `GET /api/p/{project}/plan/chat` returns the project's open planning session as a list of
+  messages (the agent's and the owner's, in order), and, when the session is waiting for the owner,
+  whether it waits for a typed reply or for a choice among offered options, with those options.
+- **Background:** the owner chose "Chat view only: planning sessions as messages with a reply box; no
+  terminal on the page". The planning session is the `master-plan` session (`internal/session`,
+  `PlanSessionName`); it has a `host.json` and a `planning` marker but no `status.json`, so it records
+  no conversation id, which is also why `afk tokens` cannot count it (T5.8, inbox `9pxewe`). The agent
+  CLI keeps the conversation in its own transcript files, which `internal/provider/tokens.go` already
+  finds and reads for task sessions.
+- **Scope:** a provider method behind `internal/provider` that, for a project's main checkout and the
+  planning host's start time, finds the planning session's transcript and returns it as provider-neutral
+  messages: who, the text, the time, and for a question tool call its question and options. Decide how
+  the transcript is found when no conversation id is recorded, and record why in `docs/decisions.md`;
+  if recording the id is the sound way, it is written beside the planning marker by the code that
+  starts the session, and §4 gains it in the same change. A pure function turns the messages into the
+  chat: tool calls other than questions and the session's own housekeeping are left out or shown as
+  one short line each, and "waiting" is decided from the last entries. Providers with no planning
+  session return "no planning session" as `PlanArgv` does. The address returns the empty state when no
+  planning session is open and a plain reason when the transcript cannot be read. README: the JSON API
+  list.
+- **Must not:** name a provider outside `internal/provider`; read a transcript on the dashboard's or
+  the page's refresh tick unless the planning host is alive; write any file under `.afk/plan/`.
+- **Acceptance:** table tests over saved transcript fixtures (written by hand, no real agent): a plain
+  exchange, a pending question with options, an answered question, a session waiting for typed text,
+  a session still working, a truncated last line, and no transcript. A handler test for each state.
+  Against a scratch build with a stand-in planning host and a fixture transcript in a scratch home:
+  the address returns the messages and the pending question. `make check` is green.
+
+#### T8.4 — Send a reply to a planning session
+- **Depends on:** T8.3
+- **Goal:** `POST /api/p/{project}/plan/chat` sends the owner's reply into the open planning session:
+  typed text, or the choice of one offered option, and the next read of T8.3 shows it.
+- **Background:** a session host serves one client at a time (`internal/host`): a new client takes
+  the session and the old one is told `Stolen`. The owner chose "Send it anyway": the reply goes in,
+  the dashboard pane is dropped with a notice, and the owner reopens it with `enter`. How the agent
+  CLI's question dialog takes a choice by keystrokes is not documented.
+- **Scope:** an entry point that dials the planning host with `host.Dial`, sends the reply as `Data`
+  frames, then `Detach`, never `Exit` or `Restart`. A choice is turned into keystrokes by a provider
+  method behind `internal/provider`; find out how the dialog takes a choice by trying it against the
+  real CLI in a scratch session during QA, save what was found as evidence, and record it in
+  `docs/decisions.md`. If no reliable way is found, stop and raise an inbox item; do not guess. Typed
+  text is sent as a bracketed paste followed by enter, so a multi-line reply is one message. A reply
+  is refused, with nothing sent, when no planning session is open, when the session is not waiting
+  for the owner (T8.3), or when the chosen option is not one of those offered. The dashboard's notice
+  for a pane taken over by the page says so in plain words and how to reopen it. The POST is guarded
+  as every POST is (token, `Origin`, 64 KB). README: the JSON API list and the dashboard's notices.
+- **Must not:** send `Exit` or `Restart`; keep the connection open after the reply; name a provider
+  outside `internal/provider`; let a slow host stall the request past a short timeout.
+- **Acceptance:** table tests for the refusal decision, every branch a row, and for the keystrokes of
+  a choice and of typed text. A test with a fake host listener that a reply sends the expected frames
+  and a `Detach`, and nothing else. A UI model test for the dashboard's taken-over notice. Against a
+  scratch build with a stand-in agent in a planning host: a typed reply reaches the stand-in's input;
+  then, once, against the real agent CLI in a throwaway repository (live check, logged): a choice
+  posted to the address answers a question dialog. `make check` is green.
+
+#### T8.5 — New layout and the all-projects overview
+- **Depends on:** T8.1, T8.2, T7.9
+- **Goal:** every page wears the design system, and the home page lists every project the daemon
+  builds, the ones needing the owner first.
+- **Background:** the home page today is `/` (`internal/web`, templates `layout.html` and
+  `overview.html`). T7.9 builds the dashboard's all-projects rows (current task, build state in the
+  words `afk daemon status` uses, inbox counts, plan waiting for approval) as a pure row builder; the
+  page uses the same rows so the two surfaces agree, as `web.Summarize` already makes them agree. The
+  page shows the daemon's last good project list and never reads `config.toml` itself (T5.7).
+- **Scope:** the design system's tokens and layout in `layout.html` and the static CSS, with the
+  navigation the design system defines; every existing page keeps working inside it. The home page
+  becomes the all-projects screen built from T7.9's rows, with the design system's components, sorted
+  as T7.9 sorts, updating live through T8.2. Phone first: it is designed at phone width and works
+  well on a desktop. Every screen meets WCAG 2.2 AA (contrast, keyboard use, focus, labels, target
+  size). Component names follow `docs/design-system.md`. README: the web page section.
+- **Must not:** add a JavaScript build step; drop an address the page serves today; change the JSON
+  API's existing fields.
+- **Acceptance:** handler tests for the home page with each kind of row (T7.9's list) and the empty
+  state. A test that every page renders inside the new layout. Against a scratch build with a scratch
+  config listing two throwaway repositories, one paused with an open inbox item, opened in a browser
+  at 390 px and at 1280 px wide: the paused one is first with its count, and an automated WCAG 2.2 AA
+  check of the home page (run in QA, not in `make check`) reports no violation. `make check` is green.
+
+#### T8.6 — Inbox, pause and resume in the new design
+- **Depends on:** T8.5
+- **Goal:** the project page, the inbox list, an item and its answer form, and the pause and resume
+  buttons are rebuilt from the design system, with the same behaviour as today.
+- **Background:** these exist (T3.1): `project.html`, `item.html`, the POSTs to `…/answer`, `pause` and
+  `resume`, `inbox.Store.Answer(…, inbox.ViaWeb)`, and `pauseProject`/`resumeProject` in
+  `pause_cmd.go`.
+- **Scope:** the templates rebuilt with the design system's components; the inbox count and the
+  build's state update live through T8.2; answering and pausing work without a full reload when
+  JavaScript is on and with one when it is off. An item's options are buttons and its free text a
+  field, as today; typed text still wins over a selected option (`docs/decisions.md`, `## T3.1`).
+  README: the web page section where it describes these screens.
+- **Must not:** change what an answer, a pause or a resume writes; write the ledger.
+- **Acceptance:** handler tests for each screen and each POST as today's tests, kept green. Against a
+  scratch build in a throwaway repository with an open blocking item, in a browser at phone width:
+  answering it marks it answered from the web, pause creates `.afk/build/paused` and resume removes
+  it, and the page shows each change without a manual reload. An automated WCAG 2.2 AA check of the
+  three screens reports no violation. `make check` is green.
+
+#### T8.7 — Build tasks: set a task's status, see its tokens
+- **Depends on:** T8.5, T7.11, T7.12
+- **Goal:** a project's page lists its master-plan tasks with their status, and the owner can set a
+  task's status behind a confirm and see a task's tokens, with the same effect and words as
+  `afk ledger set` and `afk tokens <task>`.
+- **Background:** T7.11 adds an entry point beside `afk ledger set` that returns its outcome without
+  printing, and T7.12 a seam that returns a task's token record; the page calls the same code. The
+  owner chose all owner-only actions on the page, each behind a confirm.
+- **Scope:** a task list on the project page (id, title, status, unmet dependencies, as `afk tasks`
+  prints them), updating live. For a task: its tokens (totals and the split by phase and role, or "no
+  tokens recorded for this task yet") and a "set status" action that lists the statuses the command
+  accepts, asks for the replacing ids for `superseded`, and confirms in one sentence what will change,
+  saying so when an agent is working on the task. The same under `/api`. README: the web page section.
+- **Must not:** write the ledger any other way; record tokens; add `afk ledger init` to the page.
+- **Acceptance:** handler tests: the list, a task's tokens with a record and without, the status
+  confirm, each outcome of the set (including `superseded` with and without ids and an unknown id), and
+  a POST with no confirm that changes nothing. Against a scratch build in a throwaway repository with a
+  five-task plan and a ledger: setting a `failed` task to `pending` from a browser changes
+  `.afk/build/ledger.json` and the row. `make check` is green.
+
+#### T8.8 — Usage, with a refresh button
+- **Depends on:** T8.5, T7.13
+- **Goal:** the usage screen is rebuilt from the design system and has a button that takes a fresh
+  reading, with the same effect as `afk usage --refresh`.
+- **Background:** T7.13 adds an entry point beside `runUsage` that takes and saves a reading and
+  returns it or the reason there is none, one reading at a time.
+- **Scope:** `usage.html` rebuilt; a POST that calls T7.13's entry point off the request's critical
+  path where it would block, with a "reading usage" state shown until the reading lands through T8.2;
+  a second press while one runs does nothing; a failure is shown in plain words and the old reading
+  stays. The same under `/api`. README: the web page section and `afk usage`.
+- **Must not:** probe on a timer or on page load; name a provider outside `internal/provider`.
+- **Acceptance:** handler tests with a fake entry point: a reading, each failure, a second press while
+  one runs. No test probes real usage. Against a scratch build with a scratch state folder and a
+  stand-in for the agent's CLI on a scratch `PATH`: the button writes `usage.json` and the screen
+  shows the stand-in's numbers. `make check` is green.
+
+#### T8.9 — Sessions: the list and each session's overview
+- **Depends on:** T8.5
+- **Goal:** a project's sessions are listed on the page, each with what the dashboard's overview shows
+  (phase, loop count, work-plan progress, the review verdict, whether it waits for the owner, whether
+  its host is alive), read-only.
+- **Background:** the dashboard finds sessions with `internal/discover` (git worktrees plus
+  `status.json` and `host.json`, read-only, never blocking) and draws the overview in `internal/ui`.
+  The page cannot attach to a session (the owner chose "Chat view only").
+- **Scope:** a sessions screen per project and a session screen, from `discover` and the same readers
+  the dashboard's overview uses, updating live; a one-off session and the planning session are listed
+  with what they are; a session's screen says that its terminal is opened from `afk dash` or
+  `afk attach`, and for the planning session links to the chat view once T8.12 exists. The same under
+  `/api`. README: the web page section.
+- **Must not:** dial a host; write any file; block on a stale `host.json`.
+- **Acceptance:** handler tests over scratch session folders: running, waiting for the owner, stale
+  `status.json`, a one-off session, the planning session, a dead host. Against a scratch build in a
+  throwaway repository with a stand-in session: the screen shows its phase, and changing its
+  `status.json` changes the screen within 5 seconds. `make check` is green.
+
+#### T8.10 — Sessions: clean, restart, label, and start a new autonomous session
+- **Depends on:** T8.9
+- **Goal:** the dashboard's session actions work from the page, each behind a confirm: clean a
+  session, restart a stopped or wedged one, set its label, and start a new autonomous session.
+- **Background:** the dashboard does these through `internal/session` (clean, create), the host's
+  `Restart` frame and its label writer (`WriteLabel` in `internal/ui`). Only autonomous sessions are
+  started from the page, because the owner cannot talk to a coding session there; one-off sessions
+  are not offered, because they are only a terminal.
+- **Scope:** an entry point beside each command (`afk clean`, `afk new --autonomous`) that returns the
+  outcome without printing, the command keeping its output by calling it, where none exists yet;
+  restart and label through the same code the dashboard uses. Each action asks first, in the
+  dashboard's words: clean names the session and what is removed and refuses what `afk clean` refuses;
+  restart says what will happen to a running agent; the new-session form takes a name and a
+  description, as `afk new --autonomous` does, and refuses what it refuses. The same under `/api`.
+  README: the web page section.
+- **Must not:** start an attended or one-off session; send `Exit` to a host; delete a branch the
+  command would not; act without the confirm.
+- **Acceptance:** table tests for each entry point with fakes for git and the host: each outcome and
+  each refusal. Handler tests: each confirm, and a POST without one changing nothing. Against a scratch
+  build in a throwaway repository with a stand-in agent: a new autonomous session started from a
+  browser appears in the list with a live host; its label set from the page shows in `afk dash`;
+  cleaning it removes its worktree. `make check` is green.
+
+#### T8.11 — Plan status, the checker and approve
+- **Depends on:** T8.5, T7.8
+- **Goal:** the project page shows the planning status and the plan checker's counts and findings, and
+  the owner can approve a plan at `review` behind a confirm, with the same effect as
+  `afk plan approve`.
+- **Background:** T7.7 adds a seam that returns the planning status and the checker's summary and
+  findings, and T7.8 an entry point beside `afk plan approve` that returns what was done. Approving
+  from the page was forbidden (T5.7, T7.8) because others might reach it; the owner has now chosen
+  all owner-only actions on the page, each behind a confirm, which lifts that rule.
+- **Scope:** the plan line (mode, phase, what it waits for) and a findings screen (counts, one finding
+  per line, errors first, worded as `afk plan lint` words them), beside the existing read-only plan
+  view (`/p/{project}/plan`). An approve action, shown only for a new plan at `review` and otherwise
+  absent with the reason; its confirm shows the project, the plan's path and the counts, and has no
+  approve button when the plan has an error. The result in plain words: approved and what the daemon
+  does next, the refusal, or the step that failed and what to run to finish. A plan waiting for
+  approval on the review list (`plan-reviews.json`) can be approved too. The same under `/api`.
+  README: the web page section and `afk plan approve`.
+- **Must not:** approve without the confirm; approve a plan with errors; change what
+  `afk plan approve` prints or does.
+- **Acceptance:** handler tests with a fake entry point: the plan line for each mode, the findings
+  with none, warnings only and errors, the approve button's absence away from `review` and with
+  errors, each outcome, and a POST without the confirm changing nothing. Against a scratch build in a
+  throwaway repository with a new plan at `review`, a scratch config folder and a scratch state
+  folder: approving from a browser leaves the plan committed, the project in the scratch
+  `config.toml` and `state.json` at `approved`. `make check` is green.
+
+#### T8.12 — The planning chat view
+- **Depends on:** T8.2, T8.4, T8.5
+- **Goal:** a project's open planning session is shown as a chat: the agent's and the owner's
+  messages, a reply box, and a button per offered option when the agent asks a question with options.
+- **Background:** T8.3 reads the conversation and T8.4 sends a reply. The owner chose "Chat view only".
+- **Scope:** a chat screen per project, built from the design system's components, fed by T8.3 and
+  updated live through T8.2. A question with options shows its options as buttons with the
+  recommended one first and marked, and a field for an answer of the owner's own; a plain question
+  shows the reply box. A reply posts to T8.4 and shows as sent at once; a refusal is shown in plain
+  words. When the session is working the reply box says so and is disabled; when no planning session
+  is open the screen says so (T8.14 and T8.15 add the links that start one). The agent's markdown is
+  rendered with the page's existing renderer (`internal/web/markdown.go`), never as raw HTML. Linked
+  from the project page, the plan line and the planning session's row on the sessions screen. README:
+  the web page section.
+- **Must not:** attach to or show the session's terminal; render the agent's text as HTML.
+- **Acceptance:** handler tests over T8.3's fixtures for each state (working, waiting for text,
+  waiting for a choice, none). A test that markup in an agent message is escaped. Against a scratch
+  build with a stand-in planning host and a fixture transcript, in a browser at phone width: the
+  options show as buttons and pressing one sends the stand-in its keystrokes. An automated WCAG 2.2
+  AA check of the screen reports no violation. `make check` is green.
+
+#### T8.13 — Notify when a planning session waits for you
+- **Depends on:** T8.3, T8.12, T8.15
+- **Goal:** when a planning session starts waiting for the owner, an ntfy notification goes out that
+  opens its chat view.
+- **Background:** the owner chose "Yes, with a link to the chat". Notifications carry a `Click` link
+  only when `[web] token` and `public_url` are set (T3.1). Planning sessions are attended, so today
+  nothing tells the owner one is waiting.
+- **Scope:** the daemon checks, on each pass, the planning session of every project the page lists
+  (including a project whose planning was started from the page, T8.15) using T8.3's "waiting"
+  decision, only while the planning host is alive, and sends one notification per wait: once when it
+  starts waiting and not again until it has been answered and waits again. The notification names the
+  project and the first line of the question, and links to `public_url/p/{project}/plan/chat` when a
+  link can be sent. Which waits were notified is kept in afk's state folder, so a daemon restart does
+  not repeat one; §4 gains the file in the same change. README: notifications.
+- **Must not:** notify more than once per wait; read a transcript of a planning session whose host is
+  not alive; send a token in a link.
+- **Acceptance:** a table test for the pure notify decision (new wait, same wait, answered then
+  waiting again, host gone, no link settings). A test with a fake sender and a fake clock across a
+  simulated restart. Against a scratch build with a stand-in ntfy server and a stand-in planning host
+  whose fixture transcript ends in a question: one notification with the chat link arrives, and none
+  on the next pass. `make check` is green.
+
+#### T8.14 — Start extend, amend or reconcile from the page
+- **Depends on:** T8.12, T7.3
+- **Goal:** the project page starts a planning session that changes the project's plan, with the same
+  effect as `afk plan extend`, `afk plan amend "<what>"` and `afk plan reconcile FILE`, and opens its
+  chat view.
+- **Background:** T7.3 adds an entry point beside the command that does everything `afk plan <mode>`
+  does up to the attach and returns started, resumed or refused with the reason, without printing.
+- **Scope:** three actions on the project page, each behind a confirm: extend; amend, which asks for
+  the sentence; reconcile, which asks for a file path relative to the project. On success the page
+  opens the chat view. A refusal is shown in the command's own words and nothing is started; when a
+  planning session is already open the actions say so and link to its chat. The same under `/api`.
+  README: the web page section and `afk plan`.
+- **Must not:** offer `--yes` for amend; start a session for a project with no plan; name a provider
+  outside `internal/provider`.
+- **Acceptance:** handler tests with a fake entry point: each mode started, a session resumed, each
+  refusal, an empty sentence or path refused before the call, and a POST without the confirm changing
+  nothing. Against a scratch build in a throwaway repository with a plan and a stand-in agent: extend
+  from a browser creates `.afk/plan/state.json` in mode `extend` and lands on the chat view; amend
+  leaves its sentence in `.afk/plan/brief.md`. `make check` is green.
+
+#### T8.15 — Plan a new project in an existing folder
+- **Depends on:** T8.14, T7.4
+- **Goal:** the overview starts a new plan, as bare `afk plan` does, in a folder the owner types, opens
+  its chat view, and keeps that project on the overview while it is being planned.
+- **Background:** T7.4 extends T7.3's entry point to the new mode, with the same refusals as
+  `afk plan` (a folder that does not exist, one that already has a plan or an open session). The page
+  shows only projects the daemon lists or the review list names, so a new project would otherwise
+  vanish from the page until it is approved.
+- **Scope:** a "plan a new project" action on the overview: a field for a folder path (`~/` expands),
+  a confirm showing the full path, then the planning session through the entry point and the chat
+  view. A project whose planning was started here stays on the overview, marked as being planned,
+  until it is approved or its planning session is gone, through a small list in afk's state folder
+  that §4 gains in the same change. The same under `/api`. README: the web page section.
+- **Must not:** create a folder (T8.15a); start anything without the confirm; write `config.toml`.
+- **Acceptance:** handler tests with a fake entry point: an existing empty repository, a folder with a
+  plan (refused, pointing at the change actions), a folder that does not exist (refused, naming it),
+  and a POST without the confirm changing nothing. A table test for the being-planned list: added on
+  start, dropped on approve, dropped when the planning session is gone. Against a scratch build with a
+  stand-in agent: typing the path of an empty throwaway repository and confirming leaves
+  `.afk/plan/state.json` in mode `new`, lands on the chat view, and shows the project on the overview.
+  `make check` is green.
+
+#### T8.15a — Create the folder for a new plan
+- **Depends on:** T8.15, T7.5
+- **Goal:** the "plan a new project" field also takes a project name, and the page makes the folder
+  under the profile's project location, makes it a git repository and starts planning in it.
+- **Background:** T7.5 gives the dashboard this as a pure decision from the typed text, the profile's
+  `project location` and the disk (use this folder, create this folder, or refuse with a reason),
+  and makes the repository the way `afk plan` does.
+- **Scope:** T8.15's field takes a name as well as a path (text with no `/` and no `~` is a name),
+  through T7.5's decision and refusals: a name that is not a plain folder name (saying which
+  characters are allowed), a folder that already exists (offering to plan in it as T8.15 does), and a
+  name with no `project location` in the profile (saying how to set one with `afk profile set`, or to
+  type a full path). The confirm shows the full path before anything is created. A failure part-way
+  says what was left on disk and removes nothing. Then planning starts as in T8.15. The same under
+  `/api`. README: the web page section.
+- **Must not:** create a folder outside the project location from a bare name; create anything
+  without the confirm; delete anything; create anything on GitHub (T8.15b).
+- **Acceptance:** handler tests with a fake decision and a fake filesystem: a name created, a name with
+  no project location, a name with bad characters, a folder that exists, and a POST without the
+  confirm creating nothing. Against a scratch build with a scratch profile whose location is a
+  scratch folder and a stand-in agent: typing `demo` and confirming leaves `<scratch>/demo/.git`,
+  `.afk/plan/state.json` in mode `new`, and `demo` on the overview. `make check` is green.
+
+#### T8.15b — Offer a GitHub repository for the new folder
+- **Depends on:** T8.15a, T7.6
+- **Goal:** straight after T8.15a makes a folder, the page asks whether to create a private GitHub
+  repository for it with the owner's existing `gh` login, and on yes sets it as the folder's `origin`.
+- **Background:** T7.6 gives the dashboard the pure decision (ask, or do not ask and why) and the
+  create call behind a `gh` interface with a fake. The owner's profile has the rule "accounts: use the
+  accounts I already have, and ask before opening a new one", which is why this is a question every
+  time and never a setting.
+- **Scope:** after the folder is made and before the chat view opens, one yes-or-no naming the
+  repository that would be created (the folder's name, under the account `gh` is logged in as) and
+  saying it will be private; no is the default and changes nothing. Yes creates it and adds it as
+  `origin` through T7.6's code; nothing is pushed. When `gh` is missing or not logged in the question
+  is not asked and the page says why and what to run. A failure is shown with its reason and planning
+  starts all the same. The same under `/api`. README: the web page section.
+- **Must not:** create a public repository; create anything without the owner's yes; push; ask for a
+  folder that existed before T8.15a's form; store a token.
+- **Acceptance:** handler tests with a fake `gh`: yes makes exactly one private create and sets
+  `origin`, no makes none, `gh` missing, not logged in, name taken and a network error. No test calls
+  GitHub. Against a scratch build with a scratch profile, a stand-in agent and a stand-in `gh` on a
+  scratch `PATH`: typing `demo`, confirming and answering yes makes the stand-in record one private
+  create and `git remote -v` in the new folder show `origin`. `make check` is green.
+
+#### T8.16 — Add and remove projects
+- **Depends on:** T8.5, T7.10
+- **Goal:** the overview adds a folder to the daemon's project list and removes one, with the same
+  effect and words as `afk project add` and `afk project remove`.
+- **Background:** T7.10 adds entry points beside the two commands that return what happened without
+  printing; they edit `config.toml` as text, so comments and the `[dash]` table survive. The page
+  shows the daemon's last good list, which picks up the change on its next pass.
+- **Scope:** an add action with a folder field and an optional name, and a remove action on each row
+  behind a confirm that names the project and says its folder, plan and sessions are not touched and
+  a running task is left to finish. Refusals in the command's words; a `config.toml` that cannot be
+  read or written is said so, naming the file. The row appears or goes when the daemon next reads the
+  list, and the page says so until then. The same under `/api`. README: the web page section and
+  `afk project`.
+- **Must not:** write `config.toml` any other way; remove without the confirm; delete a folder, a
+  session or a ledger.
+- **Acceptance:** handler tests with fake entry points: each outcome and each refusal, and a POST
+  without the confirm changing nothing. Against a scratch build with a scratch config folder: adding a
+  throwaway repository from a browser makes `afk project list` (same scratch folder) print it and the
+  row appear; removing it takes both away. `make check` is green.
+
+#### T8.17 — Prove it on a phone (owner + agent)
+- **Depends on:** T8.6, T8.7, T8.8, T8.10, T8.11, T8.13, T8.15, T8.16, T8.15b, T8.15a
+- **Goal:** the owner runs afk from their phone for one whole plan, and every screen meets WCAG 2.2 AA.
+- **Scope:** the owner, on their phone through their usual way of reaching the page: plan a small
+  throwaway project from the overview (folder and private repository included), hold the planning
+  session in the chat view to `review`, approve it, answer an inbox item, pause and resume, set a
+  task's status and refresh usage. The session for this task waits for them (an inbox item), then
+  runs an automated WCAG 2.2 AA check of every screen against a scratch build, fixes what it finds,
+  and writes up in `docs/decisions.md`: what the owner had to do in a terminal or the dashboard
+  instead, every fault met and its cause, and the check's results. Faults in code that this task
+  cannot fix are filed in the inbox.
+- **Acceptance:** the throwaway project's plan was approved from the phone and its first task merged
+  by the daemon; the automated check reports no violation on any screen; the write-up names every
+  place the owner had to leave the page.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
-- **Answering plan questions on the web page** instead of the terminal; M5 keeps them as records on
-  disk so this needs no change to the planner.
+- **Answering plan questions on the web page** instead of the terminal: moved to M8 (2026-10-13), as a
+  chat view of the planning session (T8.12).
 - **Prototypes during planning** (a throwaway page or state model to answer a design question), after
   Matt Pocock's prototype skill.
 - **Promote decisions to code**, using the decision log: the conductor's phase state machine (its gates
@@ -2285,7 +2708,14 @@ set a task's status, see a task's tokens and refresh the usage reading.
 - **The owner profile, installing the plugin, and starting and stopping the daemon in the dashboard**:
   left as commands in M7, because each is run once per machine or rarely.
 - **M7's controls on the web page** (start a planning session, add and remove projects, set a task's
-  status, refresh usage): M7 is the dashboard only.
+  status, refresh usage): moved to M8 (2026-10-13).
+- **A remote terminal on the web page** (attach to any session from a browser): left out of M8 by the
+  owner. It would take the session from the dashboard (a host serves one client), is awkward at phone
+  width, and is a live keyboard into an agent with permissions bypassed. Watchers beside the typing
+  client would need a change to the host.
+- **Found projects on the web page** (those the dashboard finds under its `[dash]` search folders but
+  the daemon does not build): left out of M8 by the owner (2026-10-13). The dashboard shows them
+  mainly to open their sessions' terminals, which the page cannot do; T8.16 adds a folder to the build.
 - **Daemon-side write-guard and continuation enforcement**, replacing shipit's Claude-only mods.
 - Rename `.claude/worktrees/` to a provider-neutral location.
 - Open-source release: licence, install script, Homebrew tap, docs site.

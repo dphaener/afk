@@ -607,11 +607,15 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		RecordProjectOpen:  recordProjectOpen,
 		LoadSidebarPct:     loadSidebarPct,
 		RememberSidebarPct: rememberSidebarPct,
-		// The two build seams have no default in internal/ui (they read and
+		// The build seams have no default in internal/ui (they read and
 		// write a real project), so this is the only place they are wired.
-		// Left out, the dashboard runs with no build data and nothing says so.
+		// Left out, the dashboard runs with no build data and nothing says so,
+		// and P and U say pause and resume are not available. PauseBuild and
+		// ResumeBuild call the same functions as `afk pause` and `afk resume`.
 		LoadBuild:   dashLoadBuild,
 		AnswerInbox: dashAnswerInbox,
+		PauseBuild:  dashPauseBuild,
+		ResumeBuild: dashResumeBuild,
 		// LoadListed has no default in internal/ui either (it reads the
 		// machine's config.toml), so without this line the switcher would
 		// silently never show the projects `afk project add` listed. The read

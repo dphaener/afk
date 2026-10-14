@@ -2466,6 +2466,44 @@ Search folders move into `config.toml` and `config.json` is retired. Decisions t
 - On the always-on machine, add a `[dash]` table with a real search folder to `config.toml`, open `afk dash` and press `p`: projects under that folder should be listed. If a `config.json` is still in afk's config folder, the notice should show once, and the lines it prints should load. The check here used a scratch config folder and throwaway projects.
 - `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.
 
+## T6.3
+
+Pause and resume the build from the dashboard. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **The keys (A1).** `P` pauses the build and `U` resumes it (un-pause). No other dashboard key is a capital letter, so neither collides with anything: `r` already restarts an agent, `p` opens the project switcher, and `u` and `d` scroll the overview. A capital also makes a pause hard to press by accident.
+- **Where they work (A2).** From the session list and from the overview on the right, as `b` and `i` do. While the agent pane has the keyboard they are typing, like every other letter, and while the inbox or any other overlay is open they do nothing.
+- **How the dashboard reaches the commands (A3, A5).** Two new hand-offs from the dashboard command to the screen code, one for each key. The screen code still cannot see the commands' own code, so it is handed a small result (was it already paused; was a pause or a stop cleared, and after which task) and words the notice from that. A failure's reason is worded where the failing step is known, beside the commands, with the sentences the web page already uses where they fit.
+- **Which folder they act on (A4).** The project's main checkout, taken from the data the Build tab is showing. A dashboard started inside a session's worktree pauses the project, not the worktree.
+- **A change that went through without its log line (A6)** is shown as a failure that says the change was made, and the Build tab is refreshed anyway.
+- **The Build tab follows at once (A7, A8).** The result of either key reloads the Build tab's data without waiting for the next refresh, and a paused build's summary now names the key: "paused: U or afk resume starts it again".
+- **Switching project while a key is still working (A9)** drops the late result, so a notice never describes another project.
+- **Before the build data has loaded (A10)** the keys say there is no build, as `b` does.
+- **Pausing a paused project (A11)** still adds a `pause` line to the decision log, because `afk pause` does. The task says the keys have the same effect as the commands, so the commands' code is not changed.
+- **Tests (A12)** are written with the code, as table tests. **Nothing had to be in place first (A13).**
+- **`make install` is not run by this session (A14).** The project's `afk.toml` installs after the merge. **The OpenCode plugin is not touched (A15).**
+
+### As built
+
+- **A dashboard with no pause hand-off** (only in tests) says pause and resume are not available there and names `afk pause` and `afk resume`, instead of failing.
+- **No guard against a double press.** Two quick presses of `P` call the pause twice, which is the same as running `afk pause` twice: harmless, with a second `pause` line in the decision log. A guard would have to be released when a result is dropped after a project switch, a new way to get stuck for little gain.
+- **The failure wording puts the reason first.** The web page's sentence starts with the long path of a temporary file, and the dashboard's notice shows about three lines, so the actual cause ("permission denied") was cut off in the check against a built binary. The dashboard now says the reason, then the folder to check (`dashPauseError` in `dash_pause.go`); the web page's words are unchanged. A change made without its log line keeps the web page's words, which already say the change was made.
+- **A result that names a task but reports no stop** reads as "nothing changed": a task name alone does not mean the line was stopped.
+- **Lower-case `p` and `u` keep their meanings**, with test rows that would catch a case-insensitive match.
+
+### Checked, and not checked
+
+- **Checked against a built binary** (a scratch build, never `~/bin`): in a throwaway repository with a small master plan, driven through tmux. `P` wrote `.afk/build/paused` and the Build tab read paused at once; `P` again said already paused; `U` removed the flag; `U` again said nothing changed; a stop marker written by hand and then `U` said the stop after T1.2 was cleared and removed it. The decision log had `pause`, `resume` and `stop_cleared` lines chosen by the owner, and no ledger was written. With `.afk/build` read-only, `P` showed "permission denied" and the folder. In a folder with no master plan both keys said there is no build. This checkout was untouched. `make check` was run in full, green. The review's hands-on check repeated the walk-through.
+
+### For the owner to check
+
+- With an agent pane focused, press `P` and `U` and see that the agent gets the letters and the build is not paused. The check here had no live agent.
+- `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.
+
+### Scope ideas
+
+- The README's Build tab paragraph says the keys work "from this tab"; they work from the list and the overview too.
+- The doc comment on `resumeNotice` in `internal/ui/buildpause.go` has one unclear sentence.
+
 ## T6.4
 
 T6.4 adds a count of the active project's inbox items to the dashboard's header. These are the decisions the master plan left open, numbered as in the work plan's assumptions.

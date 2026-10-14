@@ -439,6 +439,8 @@ const (
 	actionPalette
 	actionBuild       // b in normal and detail: showBuildTab
 	actionInbox       // i in normal and detail: openInbox
+	actionPauseBuild  // P in normal and detail: pauseBuild
+	actionResumeBuild // U in normal and detail: resumeBuild
 	actionEnterResize // ctrl+w in normal and detail: enterResize
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
@@ -544,6 +546,10 @@ func (a modeAction) String() string {
 		return "build"
 	case actionInbox:
 		return "inbox"
+	case actionPauseBuild:
+		return "pause-build"
+	case actionResumeBuild:
+		return "resume-build"
 	case actionEnterResize:
 		return "enter-resize"
 	case actionExitResize:
@@ -1073,6 +1079,8 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: keys.Palette, action: actionPalette},
 			{binding: keys.Build, action: actionBuild},
 			{binding: keys.Inbox, action: actionInbox},
+			{binding: keys.PauseBuild, action: actionPauseBuild},
+			{binding: keys.ResumeBuild, action: actionResumeBuild},
 			{binding: pageUp, action: actionPageUp},
 			{binding: pageDown, action: actionPageDown},
 			{binding: listTop, action: actionListTop},
@@ -1089,13 +1097,17 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		// actions. keys.Build follows the palette and precedes the housekeeping
 		// chords: it is a view, not a per-session action, and that slot is past
 		// the palette's first viewport, so the rows a person already knows keep
-		// their places. keys.Inbox follows it for the same reason.
+		// their places. keys.Inbox follows it for the same reason, and
+		// keys.PauseBuild and keys.ResumeBuild follow that: they act on the
+		// build the two keys before them show, and going after the inbox key
+		// leaves every row above them where it was.
 		keys: modeKeyMap{bindings: []key.Binding{
 			keys.Up, keys.Down, keys.Focus,
 			pageUp, pageDown, listTop, listBottom,
 			keys.New, keys.Scratch,
 			keys.Project, keys.Clean, keys.Restart, keys.Label,
 			keys.Filter, filterClear, keys.Palette, keys.Build, keys.Inbox,
+			keys.PauseBuild, keys.ResumeBuild,
 			closePane, keys.Mouse, keys.Quit, resizeToggleKey,
 		}},
 	}
@@ -1162,7 +1174,13 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	// sorts last in the help order, where it costs the truncated line nothing.
 	// `i` (openInbox) is beside it on the same terms: it opens an overlay over
 	// the screen and moves nothing on it, and the owner reading the Build tab's
-	// "items need you" line is exactly who presses it.
+	// "items need you" line is exactly who presses it. `P` and `U`
+	// (pauseBuild, resumeBuild) are the last two: they move nothing on the
+	// screen and open nothing, they act on the build this pane's Build tab is
+	// showing, and neither can open, clean or steal a session. They are
+	// rules here and in normal mode ONLY. Pane mode has none, so a capital P
+	// typed to an agent reaches the agent, and the inbox overlay has none, so
+	// it is a letter of the answer.
 	//
 	// The bindings are ordered for TRUNCATION SURVIVAL, not for rule fidelity:
 	// renderHelp's default branch renders this whole keymap through one hard
@@ -1183,6 +1201,8 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: detailTabJumpKey, action: actionDetailTabJump},
 			{binding: keys.Build, action: actionBuild},
 			{binding: keys.Inbox, action: actionInbox},
+			{binding: keys.PauseBuild, action: actionPauseBuild},
+			{binding: keys.ResumeBuild, action: actionResumeBuild},
 			{binding: detailFocusUp, action: actionDetailScrollUp},
 			{binding: detailFocusDown, action: actionDetailScrollDown},
 			{binding: detailHalfPageUp, action: actionDetailHalfPageUp},
@@ -1200,6 +1220,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			detailFocusUp, detailFocusDown, detailHalfPageUp, detailHalfPageDown,
 			detailPageUp, detailPageDown, detailGotoTop, detailGotoBottom,
 			resizeToggleKey, keys.Build, keys.Inbox,
+			keys.PauseBuild, keys.ResumeBuild,
 		}},
 	}
 
