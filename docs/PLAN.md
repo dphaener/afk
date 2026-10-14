@@ -1589,7 +1589,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
 
 | Topic | Decision |
 |---|---|
-| Where questions are asked | The terminal, in an attended session on the machine that runs the daemon. Not the inbox. A web interface may answer the same records later (rule 7). |
+| Where questions are asked | The terminal, in an attended session on the machine that runs the daemon. Not the inbox. A web interface may answer the same records later (rule 7). Amended 2026-10-13 (M8): the web page holds the session itself as a chat view (T8.12), not through the records. |
 | What v1 covers | New project, extend (a new milestone), amend (one task) and reconcile (bring the plan in line with a new document). |
 | Approval | Required before the daemon builds anything. The plan is readable on the web page; approving is a terminal command. Amended 2026-10-13 (M8): approving from the web page is allowed, behind a confirm (T8.11). |
 | Names | `afk plan` is the master plan. The per-task skill `/afk:plan` is renamed `/afk:work-plan`. The new skill is `/afk:master-plan`. |
