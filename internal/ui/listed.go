@@ -334,3 +334,29 @@ func (m *Model) notifyListedError(notice string) {
 	m.notifiedListedErr = notice
 	m.notifyBackground(notifyError, bgListedError, notice)
 }
+
+// raiseStartupNotice shows the caller's start-up notice (Deps.StartupNotice)
+// as one toast. New is its only caller, which is the whole of the once-per-run
+// rule: nothing on a tick, a scan or a listed read comes back here, so unlike
+// notifyListedError there is no "already raised" field to keep.
+//
+// It goes through notifyBackground like every other thing the dashboard says
+// unasked, and is flushed at once. Left pending, it would land at the end of
+// the first Update together with whatever that message raised, and two
+// background events collapse to counts ("1 scan error, 1 ..."): the notice's
+// own words would be lost, and so would the other event's, for good, since its
+// emitter has already marked it as shown. Flushed here it is always alone
+// (nothing is pending and no toast is live in a Model under construction), and
+// a background event that arrives while it is up waits its turn.
+//
+// Because it is always alone, its category is never turned into a count.
+// bgScanError is passed because the argument is required and that is the
+// nearest subject: the notice is about the folder search's settings. It is a
+// warning, not an error: nothing failed, there is something to do.
+func (m *Model) raiseStartupNotice(text string) {
+	if text == "" {
+		return
+	}
+	m.notifyBackground(notifyWarn, bgScanError, text)
+	m.flushBackground()
+}

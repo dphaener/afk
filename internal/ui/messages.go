@@ -446,8 +446,9 @@ func (m Model) tickCmd() tea.Cmd {
 
 // defaultScanInterval is the project-scan cadence used until the first
 // LoadConfig result lands, and the fallback for a Model whose scanInterval was
-// never set at all. It mirrors internal/config's own default rather than reading
-// it, because that constant is unexported — the two have to move together.
+// never set at all. It mirrors internal/daemonconfig's DefaultScanInterval
+// rather than reading it, because this package does not import the settings
+// reader (see SearchSettings) — the two have to move together.
 const defaultScanInterval = 60 * time.Second
 
 // scanTickMsg fires on the PROJECT-scan ticker, which is a second timer
@@ -465,10 +466,11 @@ type scanTickMsg time.Time
 // the cache together — a cache that landed a tick before its list would be keyed
 // on paths the switcher has no rows for.
 //
-// err reports a config file that exists but could not be parsed (a MISSING file
-// is not an error; config.Load answers it with defaults). configPath is set even
-// on that path: config.Path resolves independently of config.Load, and the
-// empty state has to be able to name the file that needs fixing.
+// err reports a config file that exists but could not be parsed, or a `[dash]`
+// value the settings reader refuses (a MISSING file is not an error; the
+// reader answers it with defaults). configPath is set even on that path:
+// LoadConfig returns the path with its error, and the empty state has to be
+// able to name the file that needs fixing.
 type projectScanMsg struct {
 	projects   []project.Project
 	sessions   map[string][]discover.SessionState
@@ -496,9 +498,9 @@ type projectScanMsg struct {
 // can name the file.
 //
 // It is its own message rather than a field of projectScanMsg because the scan
-// answers only after its whole folder walk, and because the two files fail
-// independently: a broken config.json must not hide the listed projects, and a
-// broken config.toml must not stop the search.
+// answers only after its whole folder walk, and because the two reads fail
+// independently: a bad `[dash]` value fails the search's read of config.toml
+// and must not hide the listed projects.
 type listedProjectsMsg struct {
 	entries []ListedProject
 	path    string
@@ -543,7 +545,7 @@ func (m Model) scanTickCmd() tea.Cmd {
 // It returns nil — no Cmd whatsoever — when the Scan or LoadConfig seam is
 // absent, and that inertness is a contract rather than a convenience.
 // withDefaults wires neither seam on purpose (see Deps), so a Model built
-// without them never reads the developer's real ~/.config/afk/config.json and
+// without them never reads the developer's real ~/.config/afk/config.toml and
 // never crawls their disk. `afk dash` opts in; nothing else does.
 //
 // PINNED and LISTED projects are discovered alongside the scanned ones, captured
@@ -584,7 +586,7 @@ func (m Model) scanCmd() tea.Cmd {
 		if err != nil {
 			return projectScanMsg{configPath: configPath, err: err}
 		}
-		found := walk(cfg.SearchRoots, cfg.MaxDepth)
+		found := walk(cfg.Roots, cfg.MaxDepth)
 		sessions := make(map[string][]discover.SessionState, len(found)+len(extra))
 		rendezvous := make(map[string]focusRendezvous, len(found)+len(extra))
 		resolve := func(path string) {
@@ -625,7 +627,7 @@ func (m Model) scanCmd() tea.Cmd {
 			projects:   found,
 			sessions:   sessions,
 			configPath: configPath,
-			interval:   cfg.ScanInterval,
+			interval:   cfg.Interval,
 			rendezvous: rendezvous,
 		}
 	}

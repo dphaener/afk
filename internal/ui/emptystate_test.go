@@ -1292,21 +1292,21 @@ func rgb8(c color.Color) (r, g, b float64) {
 
 // TestRenderEmptyStateShowsConfigPathAndGuidance covers the acceptance
 // criterion that the empty state names the resolved config path (read off the
-// Model field, never called fresh from internal/config) plus the example and
+// Model field, never resolved afresh by the render layer) plus the example and
 // the alternative of launching from inside a repo.
 func TestRenderEmptyStateShowsConfigPathAndGuidance(t *testing.T) {
 	m := testModel()
 	m.projects = nil
 	m.activeProject = -1
-	m.configPath = "/home/dev/.config/afk/config.json"
+	m.configPath = "/home/dev/.config/afk/config.toml"
 
 	out := render(m)
-	for _, want := range []string{
-		"/home/dev/.config/afk/config.json",
-		emptyStateConfigExample,
-		"repo",
-		"q: quit",
-	} {
+	// Every line of the example is looked for, the `[dash]` header included:
+	// search_roots shown without its table would be a line that does nothing
+	// when pasted.
+	wants := append([]string{"/home/dev/.config/afk/config.toml"}, emptyStateConfigExample...)
+	wants = append(wants, "repo", "q: quit")
+	for _, want := range wants {
 		if !strings.Contains(out, want) {
 			t.Errorf("empty-state View missing %q in:\n%s", want, out)
 		}
@@ -1316,9 +1316,9 @@ func TestRenderEmptyStateShowsConfigPathAndGuidance(t *testing.T) {
 // TestRenderEmptyStateFallsBackToGenericGuidanceWithoutAPath covers the case
 // where no scan pass has landed yet (configPath is still its zero value): the
 // block must still say something useful rather than naming a GUESSED path —
-// config.Path resolves through XDG_CONFIG_HOME, which views.go cannot consult
-// (its package doc forbids the I/O), so a hardcoded guess could name a file
-// the running binary isn't actually reading.
+// the settings reader resolves it through XDG_CONFIG_HOME, which views.go
+// cannot consult (its package doc forbids the I/O), so a hardcoded guess could
+// name a file the running binary isn't actually reading.
 func TestRenderEmptyStateFallsBackToGenericGuidanceWithoutAPath(t *testing.T) {
 	m := testModel()
 	m.projects = nil

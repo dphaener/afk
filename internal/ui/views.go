@@ -742,20 +742,29 @@ func (m Model) renderPaletteModal() string {
 	return renderModalBox("Commands", "", m.palette.View(), contentW, listH+paletteChromeRows)
 }
 
-// emptyStateConfigExample is the one-line JSON snippet the empty state shows
-// the user what to add to their config file. It names search_roots — the
-// only field a first-time user needs — rather than the full Config shape
+// emptyStateConfigExample is the TOML the empty state shows the user to add to
+// their config file, one entry per line. It names search_roots — the only key
+// a first-time user needs — rather than the whole `[dash]` table
 // (scan_interval, max_depth), which would bury the one line that unblocks
-// them under fields they can leave at their defaults.
-const emptyStateConfigExample = `{"search_roots": ["~/code"]}`
+// them under keys they can leave at their defaults. The `[dash]` line is part
+// of the example because search_roots outside that table is not read.
+//
+// It is a list of lines rather than one string so each line can be cut to the
+// width on its own, and so a test can look for each line in the rendered
+// frame (the block is centred, so the lines are never adjacent in the output).
+var emptyStateConfigExample = []string{
+	"[dash]",
+	`search_roots = ["~/code"]`,
+}
 
 // genericConfigIntro is what renderEmptyState shows when configPath is still
 // unset — the scan pipeline hasn't completed a pass yet (Init's batched scan
 // Cmd hasn't resolved, or scanEnabled() is false). It deliberately names no
-// path at all rather than a guessed default: config.Path resolves through
-// XDG_CONFIG_HOME, which this render-only file cannot consult (and must
-// not — see the package doc), so a hardcoded guess could disagree with the
-// one the running binary actually reads.
+// path at all rather than a guessed default: the settings reader
+// (internal/daemonconfig) resolves the path through XDG_CONFIG_HOME, which
+// this render-only file cannot consult (and must not — see the package doc),
+// so a hardcoded guess could disagree with the one the running binary
+// actually reads.
 const genericConfigIntro = "Add search_roots to your afk config, e.g.:"
 
 // renderEmptyState draws the placeholder body for a dashboard with zero known
@@ -766,7 +775,11 @@ const genericConfigIntro = "Add search_roots to your afk config, e.g.:"
 //
 // It performs no I/O: the config path comes from m.configPath, which
 // applyProjectScan already populated from LoadConfig's result — this file's
-// package doc forbids calling internal/config directly from the render layer.
+// package doc forbids reading the settings file from the render layer.
+//
+// The example's lines are joined left-aligned before the block is centred:
+// centred one by one, `[dash]` would sit over the middle of the search_roots
+// line and stop reading as a table header above its key.
 func (m Model) renderEmptyState(outerW, outerH int) string {
 	contentW := outerW - 4
 	if contentW < 10 {
@@ -778,11 +791,16 @@ func (m Model) renderEmptyState(outerW, outerH int) string {
 		intro = "Add search_roots to " + m.configPath + ", e.g.:"
 	}
 
+	example := make([]string, len(emptyStateConfigExample))
+	for i, line := range emptyStateConfigExample {
+		example[i] = theme.dim.Render(truncate(line, contentW))
+	}
+
 	lines := []string{
 		theme.sessionName.Render("No projects found"),
 		"",
 		theme.dim.Render(truncate(intro, contentW)),
-		theme.dim.Render(truncate(emptyStateConfigExample, contentW)),
+		lipgloss.JoinVertical(lipgloss.Left, example...),
 		"",
 		theme.dim.Render(truncate("Running afk from inside a repo also works.", contentW)),
 		"",

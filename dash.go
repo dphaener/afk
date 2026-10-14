@@ -14,7 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dphaener/afk/internal/config"
+	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/scan"
@@ -96,8 +96,8 @@ func cmdDash(args []string) {
 	// The config file is deliberately NOT loaded or validated here. Exiting 1
 	// on a malformed file at launch made the empty state's whole reason to
 	// exist unreachable: renderEmptyState is where the user is told WHICH file
-	// to fix (m.configPath rides projectScanMsg even when config.Load errors —
-	// see loadDashConfig below), and a dashboard that refuses to start can
+	// to fix (m.configPath rides projectScanMsg even when the settings load
+	// errors — see loadDashConfig below), and a dashboard that refuses to start can
 	// never show it. The first scan tick reads the config through
 	// ui.Deps.LoadConfig moments after startup, so a launch-time parse error
 	// degrades to exactly the state a config that goes bad under a RUNNING
@@ -217,8 +217,35 @@ func dashLocationDiagnostic(loc dashLocation) string {
 // `afk notify` to target, and it watches the same directory for the focus
 // requests a clicked notification writes back (internal/ui's focusrequest.go).
 // One rendezvous point, both directions.
+//
+// It is also where the old-settings-file notice is decided, because this is
+// the one function every start of the dashboard passes through, and the
+// notice is owed once per start.
 func runDash(repo string, interval time.Duration, openSession string, loc dashLocation) error {
-	return runDashWith(repo, interval, openSession, loc, runDashProgram)
+	return runDashAnnouncing(repo, interval, openSession, loc, os.Stderr, realOldSettingsSource(), runDashProgram)
+}
+
+// runDashAnnouncing is runDash with its three impure parts injected: where the
+// notice is printed, what the disk says about the old settings file, and the
+// blocking program.
+//
+// The notice is printed BEFORE the program starts, on purpose. The dashboard
+// takes over the whole screen, so anything written while it runs is lost, and
+// anything written after it quits is seen only then. Written first, the text
+// sits in the terminal's own scrollback, where the lines to copy are still
+// there after quitting. The short form goes to the program so the dashboard
+// can say, while it is up, that those lines exist.
+//
+// The check runs exactly once here and its answer is handed down as a plain
+// string, so nothing further in can show the notice a second time.
+func runDashAnnouncing(repo string, interval time.Duration, openSession string, loc dashLocation,
+	stderr io.Writer, src oldSettingsSource,
+	program func(repo string, interval time.Duration, openSession string, loc dashLocation, notice string) error) error {
+	notice := announceOldSettingsFile(stderr, src)
+	return runDashWith(repo, interval, openSession, loc,
+		func(repo string, interval time.Duration, openSession string, loc dashLocation) error {
+			return program(repo, interval, openSession, loc, notice)
+		})
 }
 
 // runDashProgram is the real dashboard: a Bubble Tea program over the whole
@@ -228,9 +255,12 @@ func runDash(repo string, interval time.Duration, openSession string, loc dashLo
 // the dashmeta entry is written by the Model now (see dashDeps): the tmux values
 // that go INTO that entry have to reach ui.Deps, and threading them one at a
 // time through this signature is how they would fall out of agreement.
-func runDashProgram(repo string, interval time.Duration, openSession string, loc dashLocation) error {
+//
+// notice is the short form of the old-settings-file notice, empty when there
+// is none; runDashAnnouncing decided it.
+func runDashProgram(repo string, interval time.Duration, openSession string, loc dashLocation, notice string) error {
 	projects, activeProject := dashInitialProjects(repo)
-	model := ui.New(repo, interval, dashDeps(openSession, loc, projects, activeProject))
+	model := ui.New(repo, interval, dashDepsWithNotice(openSession, loc, projects, activeProject, notice))
 	// The alt screen and mouse reporting are the Model's to declare now: under
 	// Bubble Tea v2 they are fields on the tea.View that ui.Model.View returns
 	// (internal/ui/views.go), not tea.ProgramOptions applied here.
@@ -426,7 +456,7 @@ func pickActiveProject(projects []project.Project, cwdRepo string) ([]project.Pr
 // dashInitialProjects computes the project list and active index a dashboard
 // starting in repo hands to ui.New. The startup path never scans configured
 // search roots (a slow or unreachable one must not delay the first frame — see
-// cmdDash's config.Load comment), so the only candidate here is the
+// cmdDash's comment on not loading the config file), so the only candidate here is the
 // cwd-derived project itself; W3.T1's scan ticker is what grows this into the
 // full list a moment after startup.
 func dashInitialProjects(repo string) ([]project.Project, int) {
@@ -591,9 +621,19 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 	}
 }
 
+// dashDepsWithNotice is dashDeps plus the start-up notice. It is its own
+// function, not a line inside runDashProgram, because runDashProgram cannot be
+// tested (it blocks on the terminal), and a notice that was decided but never
+// reached the Model would fail silently: no toast, no error.
+func dashDepsWithNotice(openSession string, loc dashLocation, projects []project.Project, activeProject int, notice string) ui.Deps {
+	deps := dashDeps(openSession, loc, projects, activeProject)
+	deps.StartupNotice = notice
+	return deps
+}
+
 // scanProjects is the production implementation of ui.Deps.Scan. maxDepth is
 // a parameter rather than something this closure captures because dashDeps
-// runs before config.Load ever does — see the doc comment on ui.Deps.Scan for
+// runs before the settings are ever loaded — see the doc comment on ui.Deps.Scan for
 // why a single-argument seam here would be a dead end.
 func scanProjects(roots []string, maxDepth int) []project.Project {
 	d := scan.DefaultDeps()
@@ -601,20 +641,39 @@ func scanProjects(roots []string, maxDepth int) []project.Project {
 	return scan.Scan(roots, d)
 }
 
-// loadDashConfig is the production implementation of ui.Deps.LoadConfig.
-// config.Path is resolved as its own call, independent of config.Load's
-// outcome, because the empty state still needs to name the file even when
-// that file failed to parse (see ui.Deps.LoadConfig's doc comment) — a config
-// wired only through config.Load would lose the path on exactly the error
-// path that most needs it.
-func loadDashConfig() (config.Config, string, error) {
-	d := config.DefaultDeps()
-	path, err := config.Path(d)
+// loadDashConfig is the production implementation of ui.Deps.LoadConfig: the
+// dashboard's folder-search settings, read from the `[dash]` table of the
+// machine's config.toml.
+//
+// daemonconfig.Path is resolved as its own call, independent of
+// daemonconfig.Load's outcome, because the empty state still needs to name
+// the file even when that file failed to parse (see ui.Deps.LoadConfig's doc
+// comment) — a wrapper that took the path only from a successful load would
+// lose it on exactly the error path that most needs it.
+//
+// There are two ways this fails, and they are kept apart on purpose. A file
+// that cannot be read or is not valid TOML fails Load itself. A bad `[dash]`
+// value does not: Load carries it as Config.DashErr so the daemon and every
+// other command sharing that load never fail over a dashboard setting. This
+// wrapper is the one reader that turns DashErr back into an error, because
+// the folder search is the one thing those settings drive. Its message
+// already starts with the file and the key, so the dashboard's scan-error
+// toast shows it as it is.
+func loadDashConfig() (ui.SearchSettings, string, error) {
+	d := daemonconfig.DefaultDeps()
+	path := daemonconfig.Path(d)
+	cfg, err := daemonconfig.Load(d)
 	if err != nil {
-		return config.Config{}, "", err
+		return ui.SearchSettings{}, path, err
 	}
-	cfg, err := config.Load(d)
-	return cfg, path, err
+	if cfg.DashErr != nil {
+		return ui.SearchSettings{}, path, cfg.DashErr
+	}
+	return ui.SearchSettings{
+		Roots:    cfg.Dash.SearchRoots,
+		Interval: cfg.Dash.ScanInterval,
+		MaxDepth: cfg.Dash.MaxDepth,
+	}, path, nil
 }
 
 // resolveTmuxClientTTY asks tmux which tty the attached client is on, or returns

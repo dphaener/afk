@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/ui"
@@ -36,7 +37,7 @@ func isDir(path string) bool {
 // Everything else comes from dashDeps — the same assembly runDashProgram uses —
 // so a value dash.go neglects to thread shows up as a failure here rather than as
 // a silent absence in the field. Scan and LoadConfig are the only exceptions:
-// left wired, Init would read the developer's own ~/.config/afk/config.json
+// left wired, Init would read the developer's own ~/.config/afk/config.toml
 // and walk whatever search roots it names (see ui.Deps.Scan on why nil is
 // inert), and these tests are about the entry, not the scan. The empty repo
 // suppresses the per-project discovery Cmds for the same reason.
@@ -982,29 +983,51 @@ func TestScanProjectsWalksRealSearchRoot(t *testing.T) {
 	}
 }
 
+// writeDashConfig writes body as config.toml in a fresh config folder, points
+// XDG_CONFIG_HOME at it for this test, and returns the file's path. The folder
+// is t.TempDir, an absolute path: the settings reader ignores a relative
+// XDG_CONFIG_HOME, and a test relying on one would read the developer's own
+// file.
+func writeDashConfig(t *testing.T, body string) string {
+	t.Helper()
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	confDir := filepath.Join(xdg, "afk")
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	confPath := filepath.Join(confDir, "config.toml")
+	if err := os.WriteFile(confPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return confPath
+}
+
 // TestLoadDashConfigReadsRealConfigFile exercises loadDashConfig — the real
-// config.Load/config.Path wrapper handed to ui.Deps.LoadConfig — against a
-// real file, redirecting XDG_CONFIG_HOME rather than mocking config.Deps so
-// the assertion is against afk dash's actual wiring, not a stand-in for it.
-// Both rows are load-bearing: "existing file" pins that a real search root
-// round-trips through the seam scanCmd will call next, and "missing file"
-// pins config.Load's documented contract (no file is not an error) all the
-// way through this wrapper, since a caller that turned that into an error
-// would blank the dashboard on the common case of no config at all.
+// daemonconfig.Load/daemonconfig.Path wrapper handed to ui.Deps.LoadConfig —
+// against a real file, redirecting XDG_CONFIG_HOME rather than faking
+// daemonconfig.Deps so the assertion is against afk dash's actual wiring, not
+// a stand-in for it. Every row is load-bearing:
+//
+//   - "existing file" pins that a real search root round-trips through the
+//     seam scanCmd will call next, and that all three [dash] keys are carried
+//     across the conversion (a dropped field would leave the walk at depth 0
+//     or the ticker on its fallback, and nothing else would notice).
+//   - "missing file" pins the reader's documented contract (no file is not an
+//     error, and the defaults come back) all the way through this wrapper,
+//     since a caller that turned that into an error would blank the dashboard
+//     on the common case of no config at all.
+//   - "a bad [dash] value" is the row this wrapper exists for. The reader
+//     never fails its load over a [dash] value (the daemon shares that load),
+//     so it is this wrapper alone that must hand the carried error to the
+//     dashboard, with the path. Without the row, a wrapper that ignored
+//     DashErr would search with the defaults and never say the owner's
+//     setting was refused. The row also checks the reader's own load of the
+//     same file is still nil, which is the other half of the rule.
 func TestLoadDashConfigReadsRealConfigFile(t *testing.T) {
 	t.Run("existing file", func(t *testing.T) {
-		xdg := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", xdg)
 		root := t.TempDir()
-		confDir := filepath.Join(xdg, "afk")
-		if err := os.MkdirAll(confDir, 0o755); err != nil {
-			t.Fatalf("mkdir config dir: %v", err)
-		}
-		confPath := filepath.Join(confDir, "config.json")
-		body := fmt.Sprintf(`{"search_roots": [%q], "max_depth": 2}`, root)
-		if err := os.WriteFile(confPath, []byte(body), 0o644); err != nil {
-			t.Fatalf("write config: %v", err)
-		}
+		confPath := writeDashConfig(t, fmt.Sprintf("[dash]\nsearch_roots = [%q]\nscan_interval = \"30s\"\nmax_depth = 2\n", root))
 
 		cfg, path, err := loadDashConfig()
 		if err != nil {
@@ -1013,8 +1036,11 @@ func TestLoadDashConfigReadsRealConfigFile(t *testing.T) {
 		if path != confPath {
 			t.Errorf("path = %q, want %q", path, confPath)
 		}
-		if len(cfg.SearchRoots) != 1 || cfg.SearchRoots[0] != root {
-			t.Errorf("SearchRoots = %v, want [%q]", cfg.SearchRoots, root)
+		if len(cfg.Roots) != 1 || cfg.Roots[0] != root {
+			t.Errorf("Roots = %v, want [%q]", cfg.Roots, root)
+		}
+		if cfg.Interval != 30*time.Second {
+			t.Errorf("Interval = %v, want 30s", cfg.Interval)
 		}
 		if cfg.MaxDepth != 2 {
 			t.Errorf("MaxDepth = %d, want 2", cfg.MaxDepth)
@@ -1022,17 +1048,47 @@ func TestLoadDashConfigReadsRealConfigFile(t *testing.T) {
 	})
 
 	t.Run("missing file", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		xdg := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", xdg)
 
 		cfg, path, err := loadDashConfig()
 		if err != nil {
 			t.Fatalf("loadDashConfig() error = %v, want nil (missing file is the ordinary case)", err)
 		}
-		if path == "" {
-			t.Error(`path = "", want the resolved (non-existent) config path`)
+		if want := filepath.Join(xdg, "afk", "config.toml"); path != want {
+			t.Errorf("path = %q, want the resolved (non-existent) config path %q", path, want)
 		}
-		if cfg.SearchRoots != nil {
-			t.Errorf("SearchRoots = %v, want nil (default config)", cfg.SearchRoots)
+		if cfg.Roots != nil {
+			t.Errorf("Roots = %v, want nil (default config)", cfg.Roots)
+		}
+		if cfg.Interval != daemonconfig.DefaultScanInterval || cfg.MaxDepth != daemonconfig.DefaultMaxDepth {
+			t.Errorf("Interval, MaxDepth = %v, %d, want the defaults %v, %d",
+				cfg.Interval, cfg.MaxDepth, daemonconfig.DefaultScanInterval, daemonconfig.DefaultMaxDepth)
+		}
+	})
+
+	t.Run("a bad [dash] value", func(t *testing.T) {
+		root := t.TempDir()
+		confPath := writeDashConfig(t, fmt.Sprintf("[dash]\nsearch_roots = [%q]\nscan_interval = \"1ms\"\n", root))
+
+		cfg, path, err := loadDashConfig()
+		if err == nil {
+			t.Fatal("loadDashConfig() error = nil, want the refused scan_interval reported")
+		}
+		// Logged so a -v run shows the text the dashboard's toast will carry.
+		t.Logf("path = %s", path)
+		t.Logf("error = %v", err)
+		if !strings.Contains(err.Error(), "dash.scan_interval") || !strings.Contains(err.Error(), confPath) {
+			t.Errorf("error = %q, want it to name dash.scan_interval and %s", err, confPath)
+		}
+		if path != confPath {
+			t.Errorf("path = %q, want %q (returned with the error, so the empty state can name the file)", path, confPath)
+		}
+		if len(cfg.Roots) != 0 {
+			t.Errorf("Roots = %v, want none: a refused table must not start a search with part of it", cfg.Roots)
+		}
+		if _, lerr := daemonconfig.Load(daemonconfig.DefaultDeps()); lerr != nil {
+			t.Errorf("daemonconfig.Load error = %v, want nil: only the dashboard's search reports a [dash] value", lerr)
 		}
 	})
 }
@@ -1047,8 +1103,6 @@ func TestLoadDashConfigReadsRealConfigFile(t *testing.T) {
 // TestScanProjectsWalksRealSearchRoot) since it feeds both the written config
 // file and the expected result, and the two must agree on the same form.
 func TestScanPipelineEndToEndWithRealConfig(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatalf("resolving temp dir: %v", err)
@@ -1061,48 +1115,32 @@ func TestScanPipelineEndToEndWithRealConfig(t *testing.T) {
 	if err := os.Rename(repo, moved); err != nil {
 		t.Fatalf("move repo under root: %v", err)
 	}
-	confDir := filepath.Join(xdg, "afk")
-	if err := os.MkdirAll(confDir, 0o755); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	body := fmt.Sprintf(`{"search_roots": [%q]}`, root)
-	if err := os.WriteFile(filepath.Join(confDir, "config.json"), []byte(body), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	writeDashConfig(t, fmt.Sprintf("[dash]\nsearch_roots = [%q]\n", root))
 
 	deps := dashDeps("", dashLocation{}, nil, -1)
 	cfg, _, err := deps.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	got := deps.Scan(cfg.SearchRoots, cfg.MaxDepth)
+	got := deps.Scan(cfg.Roots, cfg.MaxDepth)
 	if len(got) != 1 || got[0].Path != moved {
-		t.Fatalf("Scan(%v, %d) = %+v, want exactly [%q]", cfg.SearchRoots, cfg.MaxDepth, got, moved)
+		t.Fatalf("Scan(%v, %d) = %+v, want exactly [%q]", cfg.Roots, cfg.MaxDepth, got, moved)
 	}
 }
 
 // TestLoadDashConfigNamesThePathOnMalformedConfig pins the contract cmdDash's
-// launch path now leans on: config.Load failing to parse must still come back
-// WITH the resolved config path. cmdDash deliberately no longer exits 1 on a
+// launch path now leans on: the settings load failing to parse must still come
+// back WITH the resolved config path. cmdDash deliberately no longer exits 1 on a
 // malformed file at launch — the empty state is where the user is told which
 // file to fix, and it can only name the file if this wrapper returns the path
 // on exactly the error path. A wrapper that returned ("", err) here would turn
 // the launch-time guidance back into the generic intro with no path at all.
 func TestLoadDashConfigNamesThePathOnMalformedConfig(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	confDir := filepath.Join(xdg, "afk")
-	if err := os.MkdirAll(confDir, 0o755); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	confPath := filepath.Join(confDir, "config.json")
-	if err := os.WriteFile(confPath, []byte("{not json"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	confPath := writeDashConfig(t, "[dash\nsearch_roots = \n")
 
 	_, path, err := loadDashConfig()
 	if err == nil {
-		t.Fatal("loadDashConfig() error = nil, want a parse error for malformed JSON")
+		t.Fatal("loadDashConfig() error = nil, want a parse error for malformed TOML")
 	}
 	if path != confPath {
 		t.Errorf("path = %q, want %q (the empty state needs it on exactly this error path)", path, confPath)

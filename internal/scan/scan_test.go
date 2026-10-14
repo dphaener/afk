@@ -578,7 +578,7 @@ func TestDefaultDeps(t *testing.T) {
 		t.Errorf("DefaultDeps().MaxDepth = %d, want %d", d.MaxDepth, DefaultMaxDepth)
 	}
 	if DefaultMaxDepth != 3 {
-		t.Errorf("DefaultMaxDepth = %d, want 3 (must match internal/config's default)", DefaultMaxDepth)
+		t.Errorf("DefaultMaxDepth = %d, want 3 (must match internal/daemonconfig's DefaultMaxDepth)", DefaultMaxDepth)
 	}
 
 	filled := Deps{}.withDefaults()
@@ -595,11 +595,11 @@ func TestDefaultDeps(t *testing.T) {
 // int-typed MaxDepth cannot itself distinguish "caller left this unset" from
 // "caller explicitly passed 0", so it treats both identically and always has
 // (see Deps.MaxDepth's doc). That is deliberately still true after the fix —
-// the fix is that internal/config.Load now refuses to ever forward a real
-// explicit 0, so this sentinel only ever fires for an actually-unset caller.
-// This row exists so that invariant cannot be silently narrowed later: if
-// Deps.MaxDepth ever needs to carry a genuine 0, it needs config's *int
-// treatment, not a change to this behavior.
+// the fix is that internal/daemonconfig's loader refuses to ever forward a
+// real explicit dash.max_depth of 0, so this sentinel only ever fires for an
+// actually-unset caller. This row exists so that invariant cannot be silently
+// narrowed later: if Deps.MaxDepth ever needs to carry a genuine 0, it needs
+// a pointer (absent and 0 told apart), not a change to this behavior.
 func TestWithDefaults_ExplicitZeroIsTreatedAsUnset(t *testing.T) {
 	got := Deps{MaxDepth: 0}.withDefaults().MaxDepth
 	if got != DefaultMaxDepth {

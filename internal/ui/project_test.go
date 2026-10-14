@@ -8,7 +8,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dphaener/afk/internal/config"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/session"
@@ -258,7 +257,7 @@ func TestApplyProjectScan(t *testing.T) {
 			msg := projectScanMsg{
 				projects:   tt.scanned,
 				sessions:   map[string][]discover.SessionState{"/roots/a": {sampleState("one")}},
-				configPath: "/cfg/config.json",
+				configPath: "/cfg/config.toml",
 				interval:   90 * time.Second,
 			}
 			got, cmd := m.Update(msg)
@@ -296,7 +295,7 @@ func TestApplyProjectScan(t *testing.T) {
 			if m.repo != tt.wantRepo {
 				t.Errorf("repo = %q, want %q", m.repo, tt.wantRepo)
 			}
-			if m.configPath != "/cfg/config.json" {
+			if m.configPath != "/cfg/config.toml" {
 				t.Errorf("configPath = %q, want the path the scan resolved", m.configPath)
 			}
 			if m.scanInterval != 90*time.Second {
@@ -337,7 +336,7 @@ func TestApplyProjectScanKeepsStateWhenTheScanFailed(t *testing.T) {
 	m.projectSessions = map[string][]discover.SessionState{"/roots/a": {sampleState("one")}}
 
 	got, cmd := m.Update(projectScanMsg{
-		configPath: "/cfg/config.json",
+		configPath: "/cfg/config.toml",
 		err:        errors.New("invalid character 'x'"),
 	})
 	m = got.(Model)
@@ -348,7 +347,7 @@ func TestApplyProjectScanKeepsStateWhenTheScanFailed(t *testing.T) {
 	if len(m.projectSessions) != 1 {
 		t.Errorf("projectSessions = %v, want the previous cache kept", m.projectSessions)
 	}
-	if m.configPath != "/cfg/config.json" {
+	if m.configPath != "/cfg/config.toml" {
 		t.Errorf("configPath = %q, want the path even on the error path", m.configPath)
 	}
 	if m.status == "" {
@@ -371,12 +370,12 @@ func TestScanCmdWalksTheConfiguredRootsAndDiscoversEveryProject(t *testing.T) {
 	awaiting := discover.SessionState{Name: "waiting", AwaitingInput: true}
 
 	d := testDeps()
-	d.LoadConfig = func() (config.Config, string, error) {
-		return config.Config{
-			SearchRoots:  []string{"/roots"},
-			MaxDepth:     5,
-			ScanInterval: 30 * time.Second,
-		}, "/cfg/config.json", nil
+	d.LoadConfig = func() (SearchSettings, string, error) {
+		return SearchSettings{
+			Roots:    []string{"/roots"},
+			MaxDepth: 5,
+			Interval: 30 * time.Second,
+		}, "/cfg/config.toml", nil
 	}
 	d.Scan = func(roots []string, maxDepth int) []project.Project {
 		gotRoots = roots
@@ -407,7 +406,7 @@ func TestScanCmdWalksTheConfiguredRootsAndDiscoversEveryProject(t *testing.T) {
 	if !pathsEqual(projectPaths(msg.projects), []string{"/roots/a", "/roots/b"}) {
 		t.Errorf("projects = %v, want the scan's result verbatim (the union happens in Update)", projectPaths(msg.projects))
 	}
-	if msg.configPath != "/cfg/config.json" || msg.interval != 30*time.Second {
+	if msg.configPath != "/cfg/config.toml" || msg.interval != 30*time.Second {
 		t.Errorf("msg carried path %q interval %v, want the config's", msg.configPath, msg.interval)
 	}
 	if got := len(msg.sessions["/roots/a"]); got != 2 {
@@ -488,8 +487,8 @@ func TestZeroValueModelIsSingleProject(t *testing.T) {
 // alongside the existing discovery pass.
 func TestInitBatchesAnImmediateScan(t *testing.T) {
 	d := testDeps()
-	d.LoadConfig = func() (config.Config, string, error) {
-		return config.Config{ScanInterval: time.Minute, MaxDepth: 3}, "/cfg/config.json", nil
+	d.LoadConfig = func() (SearchSettings, string, error) {
+		return SearchSettings{Interval: time.Minute, MaxDepth: 3}, "/cfg/config.toml", nil
 	}
 	d.Scan = func([]string, int) []project.Project { return scannedProjects("/roots/a") }
 	d.Projects = []project.Project{pinnedProject("/pin")}
@@ -515,8 +514,8 @@ func TestInitBatchesAnImmediateScan(t *testing.T) {
 func TestScanTickRescansAndRearms(t *testing.T) {
 	newModel := func() Model {
 		d := testDeps()
-		d.LoadConfig = func() (config.Config, string, error) {
-			return config.Config{ScanInterval: time.Minute, MaxDepth: 3}, "/cfg/config.json", nil
+		d.LoadConfig = func() (SearchSettings, string, error) {
+			return SearchSettings{Interval: time.Minute, MaxDepth: 3}, "/cfg/config.toml", nil
 		}
 		d.Scan = func([]string, int) []project.Project { return scannedProjects("/roots/a") }
 		d.Projects = []project.Project{pinnedProject("/pin")}
@@ -924,7 +923,7 @@ func TestRestartInSwitchedToProjectChainsIntoThePaneOpen(t *testing.T) {
 func TestScanErrorStillHealsTheRepoSpelling(t *testing.T) {
 	m := projectModel("/repo/subdir", 0, pinnedProject("/repo"))
 
-	nm, _ := update(t, m, projectScanMsg{err: errors.New("boom"), configPath: "/cfg/config.json"})
+	nm, _ := update(t, m, projectScanMsg{err: errors.New("boom"), configPath: "/cfg/config.toml"})
 	if nm.repo != "/repo" {
 		t.Fatalf("repo = %q after a failed scan, want the active entry's normalized %q", nm.repo, "/repo")
 	}

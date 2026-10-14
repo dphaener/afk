@@ -176,3 +176,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Listed project**: a project in the machine config's project list, as `afk project list` prints it; the switcher shows it under the name given there.
 - **Start-up project**: the project `afk dash` was started in (or named with `--project`); it is always in the switcher, listed or not.
 - **Search folders**: the folders the dashboard looks under for more projects (`search_roots`); until T6.2 they are set in `config.json`.
+- **Dash table**: the `[dash]` table of the machine config, holding the dashboard's search folders, how often it searches and how deep; the daemon ignores it, and a bad value in it stops nothing but the folder search.
+- **Old-settings notice**: what `afk dash` says once per start when a `config.json` is still in afk's config folder: the file is no longer read, and here are the `[dash]` lines to add to `config.toml`.

@@ -1,17 +1,20 @@
-// Package daemonconfig reads the build daemon's machine config:
-// config.toml in afk's config folder.
+// Package daemonconfig reads the machine's settings: config.toml in afk's
+// config folder.
 //
-// This is a second file beside the dashboard's config.json on purpose.
-// docs/PLAN.md §2 chose TOML for settings a person edits by hand, and the
-// JSON file belongs to the dashboard scanner, which rewrites it; sharing one
-// file would let either side clobber the other. config.json is left alone.
+// It is the machine's only settings file. docs/PLAN.md §2 chose TOML for
+// settings a person edits by hand, and T6.2 moved the dashboard's search
+// settings here so there is one file to find and one format to learn. The
+// package keeps its name because the build daemon was its first reader.
 //
 // Folder rule: $XDG_CONFIG_HOME/afk when that variable is an absolute path,
 // otherwise ~/.config/afk. That is the rule internal/usagestate uses and the
-// one the XDG spec gives (a relative value must be ignored). internal/config
-// uses the variable whenever it is non-empty, so under a relative
-// XDG_CONFIG_HOME the two files can land in different folders. This reader
-// follows the spec so that config.toml sits next to usage.json.
+// one the XDG spec gives (a relative value must be ignored), so config.toml
+// sits next to usage.json.
+//
+// The [dash] table (search_roots, scan_interval, max_depth) is read here for
+// the dashboard's folder search. The daemon ignores it, and so does every
+// other command that shares this load: a bad [dash] value never fails Load.
+// It is carried in Config.DashErr for the dashboard to report (see DashErr).
 //
 // The [governor] table holds the usage limits (pause_at, launch_below,
 // stale_after, probe_interval, on_unknown_usage). An absent key takes its
@@ -186,6 +189,61 @@ type Config struct {
 	// Web is always filled: an absent table carries the default bind and no
 	// token, so the page is off.
 	Web Web
+	// Dash is always filled: an absent [dash] table, and a [dash] table with
+	// any bad value in it, both carry the defaults (no search folders).
+	Dash Dash
+	// DashErr is what is wrong with the [dash] table, or nil. It names the
+	// file and the key.
+	//
+	// It is carried here and not returned by Load because the daemon and
+	// `afk project`, `afk usage`, `afk pause` and `afk inbox` all share this
+	// one load, and each of them refuses to go on when Load fails. The [dash]
+	// table only matters to the dashboard, and docs/PLAN.md T6.2 forbids the
+	// daemon failing over a [dash] value: a typo in a search setting must not
+	// stop the build loop or make an unrelated command refuse. So only the
+	// dashboard looks at this field, and everyone else never sees the error.
+	DashErr error
+}
+
+// The [dash] defaults: how often the dashboard looks through the search
+// folders, and how many folders deep it looks below each one.
+const (
+	DefaultScanInterval = 60 * time.Second
+	DefaultMaxDepth     = 3
+)
+
+// minScanInterval is the least dash.scan_interval accepted. A scan walks every
+// search folder and runs `git rev-parse` for each repository candidate it
+// finds (internal/scan), so an interval shorter than this arms the next tick
+// before a walk over anything but a trivial tree can have finished, and the
+// disk walks stack up instead of one replacing the last. One second is far
+// above a typo such as "1ms", the case this guards against, and still far
+// below the 60s default, which leaves room for someone who wants a quicker
+// switcher over a small set of folders.
+const minScanInterval = time.Second
+
+// Dash is the [dash] table: where the dashboard looks for projects that are
+// not listed as a [[project]].
+type Dash struct {
+	// SearchRoots are the folders to look through, each an absolute path. Nil
+	// when none is set, which turns the search off.
+	SearchRoots []string
+	// ScanInterval is the wait between two searches. Never below one second.
+	ScanInterval time.Duration
+	// MaxDepth is how many folders deep the search goes below each root.
+	//
+	// Never below 1 after Load, and a written 0 or negative number is refused
+	// instead of being passed on. internal/scan's Deps.MaxDepth is a plain int
+	// that reads any value below 1 as "not set" and replaces it with its own
+	// default, so a 0 handed on from here would silently become a different
+	// number from the one the owner wrote. The key being absent and the key
+	// being 0 can only be told apart in this loader, so this is where the 0
+	// is caught.
+	MaxDepth int
+}
+
+func defaultDash() Dash {
+	return Dash{ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth}
 }
 
 type rawFile struct {
@@ -215,6 +273,14 @@ type rawFile struct {
 		Token     string `toml:"token"`
 		PublicURL string `toml:"public_url"`
 	} `toml:"web"`
+	// Dash is left as whatever TOML value was written, and loadDash checks
+	// its shape and types by hand. A typed struct here would turn
+	// max_depth = "three", or dash = 5, into a decode error for the whole
+	// file, and that would fail Load for the daemon over a dashboard setting.
+	// The decoder fills an `any` with plain maps, slices, strings and numbers,
+	// which reflect.DeepEqual compares by value, so the "nothing but the
+	// projects changed" check in edit.go still covers this table.
+	Dash    any `toml:"dash"`
 	Project []struct {
 		Path string `toml:"path"`
 		Name string `toml:"name"`
@@ -239,7 +305,8 @@ func Path(d Deps) string {
 func Load(d Deps) (Config, error) {
 	cfg := Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
 		MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
-		MaxWakes: DefaultMaxWakes, Governor: defaultGovernor(), Web: Web{Bind: DefaultWebBind}}
+		MaxWakes: DefaultMaxWakes, Governor: defaultGovernor(), Web: Web{Bind: DefaultWebBind},
+		Dash: defaultDash()}
 	path := Path(d)
 	if path == "" {
 		return cfg, errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")
@@ -327,7 +394,89 @@ func Load(d Deps) (Config, error) {
 		seen[name] = true
 		cfg.Projects = append(cfg.Projects, Project{Name: name, Path: pp})
 	}
+
+	// Last, and never returned: see Config.DashErr. A bad [dash] value leaves
+	// the defaults in place and everything above as it was read.
+	if dash, derr := loadDash(path, raw, d); derr != nil {
+		cfg.DashErr = derr
+	} else {
+		cfg.Dash = dash
+	}
 	return cfg, nil
+}
+
+// loadDash checks the [dash] table. Its error is for Config.DashErr only: Load
+// must never return it (see DashErr). On an error the caller keeps the
+// defaults for the whole table, not the keys that were fine, so a half-read
+// table never runs a search the owner did not write.
+func loadDash(path string, raw rawFile, d Deps) (Dash, error) {
+	dash := defaultDash()
+	if raw.Dash == nil {
+		return dash, nil
+	}
+	table, ok := raw.Dash.(map[string]any)
+	if !ok {
+		return Dash{}, fmt.Errorf("%s: dash is not a table; write a [dash] line and put search_roots, scan_interval and max_depth under it", path)
+	}
+
+	if v, ok := table["scan_interval"]; ok {
+		s, isString := v.(string)
+		if !isString {
+			return Dash{}, fmt.Errorf("%s: dash.scan_interval is %v, which is not text in quotes; write it like \"60s\"", path, v)
+		}
+		var err error
+		if dash.ScanInterval, err = duration(path, "dash.scan_interval", s, DefaultScanInterval); err != nil {
+			return Dash{}, err
+		}
+		if dash.ScanInterval < minScanInterval {
+			return Dash{}, fmt.Errorf("%s: dash.scan_interval is %s, which is too short; use \"1s\" or more", path, dash.ScanInterval)
+		}
+	}
+
+	if v, ok := table["max_depth"]; ok {
+		n, isInt := v.(int64)
+		if !isInt {
+			return Dash{}, fmt.Errorf("%s: dash.max_depth is %#v, which is not a whole number; write it like 3, with no quotes", path, v)
+		}
+		// The second test catches a number too big for int on a 32-bit
+		// build, where the conversion would wrap to something else.
+		if n < 1 || int64(int(n)) != n {
+			return Dash{}, fmt.Errorf("%s: dash.max_depth is %d; write a whole number of 1 or more, such as 3", path, n)
+		}
+		dash.MaxDepth = int(n)
+	}
+
+	if v, ok := table["search_roots"]; ok {
+		list, isList := v.([]any)
+		if !isList {
+			return Dash{}, fmt.Errorf("%s: dash.search_roots is %#v, which is not a list; write it like [\"~/code\"]", path, v)
+		}
+		var home string
+		for i, item := range list {
+			root, isString := item.(string)
+			if !isString {
+				return Dash{}, fmt.Errorf("%s: dash.search_roots[%d] is %#v, which is not text in quotes; write each folder like \"~/code\"", path, i, item)
+			}
+			if root == "~" || strings.HasPrefix(root, "~/") {
+				if home == "" {
+					var err error
+					if home, err = d.HomeDir(); err != nil || home == "" {
+						return Dash{}, fmt.Errorf("%s: dash.search_roots[%d] uses ~ but the home directory is unknown; write the full path", path, i)
+					}
+				}
+				root = filepath.Join(home, strings.TrimPrefix(root, "~"))
+			}
+			// A relative folder is allowed, unlike a [[project]] path: it is
+			// taken from the folder the command was started in, which is what
+			// the search settings have always meant.
+			abs, err := filepath.Abs(root)
+			if err != nil {
+				return Dash{}, fmt.Errorf("%s: dash.search_roots[%d] is %q, which cannot be made into a full path (%v); write the full path", path, i, root, err)
+			}
+			dash.SearchRoots = append(dash.SearchRoots, abs)
+		}
+	}
+	return dash, nil
 }
 
 func duration(path, key, val string, def time.Duration) (time.Duration, error) {

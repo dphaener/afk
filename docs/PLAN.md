@@ -469,6 +469,16 @@ M5 decision's `[plan] via_pr` means this key; a `[plan]` table is refused with a
 `[planning]`. With it set, `afk plan patch` makes each change on the branch `afk-plan-changes` in a
 temporary worktree and opens a pull request, and the main checkout is not touched.
 
+Amended 2026-10-13 (T6.2): `config.toml` also reads a `[dash]` table for the dashboard's folder search:
+`search_roots` (array of strings, default none; `~/` expands and a relative folder is taken from the
+folder `afk dash` was started in), `scan_interval` (a duration, default `"60s"`, at least `"1s"`) and
+`max_depth` (a whole number, default 3, at least 1). `daemonconfig.Load` carries a bad `[dash]` value
+(or a value of the wrong kind) as `Config.DashErr`, with `Config.Dash` back at the defaults, and never
+returns it as the load error, so the daemon and every other reader of the file are unaffected; only the
+dashboard's folder search reports it, in a toast that names the file and the key. The sentence about a
+separate `config.json` in the T2.1 amendment no longer holds: `config.json` is no longer read, and
+`afk dash` says once per start what to move.
+
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
 One line per task per phase per role, written when a task ends: `{at, task, session, phase:
@@ -1828,6 +1838,7 @@ items need them without leaving the dashboard.
   be parsed. Against a scratch build: a search folder set in `[dash]` adds a found project to the
   switcher, and an old `config.json` beside it changes nothing but the notice. `/usr/bin/grep -rn
   'config\.json' --include='*.go' .` finds only the notice and its tests. `make check` is green.
+- Amended 2026-10-13 (T6.2 done): later tasks may assume the following. (1) `internal/config` is gone; the dashboard's search settings are `daemonconfig.Config.Dash` (`SearchRoots`, `ScanInterval`, `MaxDepth`), read from the `[dash]` table of `config.toml` by the one `daemonconfig.Load`. (2) A bad `[dash]` value never fails that load: it is carried as `Config.DashErr` with the table reset to its defaults, so the daemon and every other reader of the file are untouched, and a new reader of `config.toml` (T6.3, T6.4) need not think about `[dash]`. This replaces point (4) of the T6.1 amendment: a bad `[dash]` value does not hold the listed rows, only the folder search reports it. (3) `ui.Deps.LoadConfig` keeps its name and now returns the ui-local `ui.SearchSettings{Roots, Interval, MaxDepth}`; `loadDashConfig` in `dash.go` converts, and `internal/ui` still reads no file. (4) `ui.Deps.StartupNotice` is a plain string raised as one toast when the dashboard starts; `dash_notice.go` builds the old-file notice and is, with its test, the only afk code that names `config.json` (`internal/pluginstall` names OpenCode's own file of that name). See `## T6.2` in `docs/decisions.md`.
 
 #### T6.3 — Pause and resume the build from the dashboard
 - **Depends on:** T3.1, T3.2

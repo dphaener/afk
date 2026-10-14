@@ -931,7 +931,7 @@ Stopping the daemon (ctrl-c, or `systemctl --user stop afkd`) never stops a sess
 - afk wakes a session at most `max_wakes` times per task (default 3; `0` means it never wakes one). A session that still fails after that parks its task with an inbox item titled "Session kept failing: <task> (<session>)". The item says what the error was, and what to do: a fault at the agent's service usually passes by itself, while a message about your login or account has to be fixed first.
 - Answering that item gives the task a fresh set of wakes, and afk types the session's resume command into it, as for any answered item. If the session is beyond saving, `afk clean <session>` and then `afk ledger set <task> pending` start the task again in a new session.
 
-**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is a different file from the dashboard's `config.json`, and the two do not share keys. The owner profile, `profile.toml`, lives in the same folder (see `afk profile`). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build, says so once, and waits: it starts with no projects and picks up one added by `afk project add` or `afk plan approve`. `afk daemon --once` with no project prints that and exits 0. Keys it does not know are ignored.
+**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is the machine's only settings file: it also holds the dashboard's `[dash]` table (see [Multi-project support](#multi-project-support)), which the daemon ignores. The owner profile, `profile.toml`, lives in the same folder (see `afk profile`). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build, says so once, and waits: it starts with no projects and picks up one added by `afk project add` or `afk plan approve`. `afk daemon --once` with no project prints that and exits 0. Keys it does not know are ignored.
 
 ```toml
 # ~/.config/afk/config.toml
@@ -1112,7 +1112,7 @@ The daemon builds the projects listed as `[[project]]` in `config.toml` (see "Ma
 - `afk project add` — Lists a project. `DIR` is the current folder unless you give one, and from inside a session's worktree it lists the main checkout. The folder must be a git repository. `--name` sets the name it is known by; the default is the folder name. It creates `config.toml` (and its folder) if there is none. A folder that is already listed is not an error: it says so and changes nothing.
 - `afk project remove` — Takes a project out of the list by name or folder. The project's own files and any session that is running are left alone.
 
-A running `afk daemon` reads the project list again on every look (every tick), so it picks changes up within a few seconds and does not need a restart. The project list is the only setting it re-reads: the tick and everything under `[daemon]`, `[governor]`, `[web]` and `provider` are read once at the start, so restart `afk daemon` after changing any of them. If `config.toml` becomes unreadable while the daemon runs, it keeps the projects it had and logs the problem once. The web page shows a new project one look later than the daemon does.
+A running `afk daemon` reads the project list again on every look (every tick), so it picks changes up within a few seconds and does not need a restart. The daemon does not read `[dash]`. The project list is the only setting it re-reads: the tick and everything under `[daemon]`, `[governor]`, `[web]` and `provider` are read once at the start, so restart `afk daemon` after changing any of them. If `config.toml` becomes unreadable while the daemon runs, it keeps the projects it had and logs the problem once. The web page shows a new project one look later than the daemon does.
 
 **Exit codes:** 0 when done or there was nothing to do, 1 when the folder is not a repository, the name is taken, the project is not listed, or the config could not be read or written, 2 when the command was written wrongly.
 
@@ -1235,35 +1235,36 @@ A one-off session (created via `afk new --scratch` or the dashboard's `o` key) i
 
 ## Multi-project support
 
-The dashboard lists every project you added with `afk project add` (or started with `afk plan approve`), with no `config.json` needed, plus the repo you launched it from. Give it search roots in a config file and it discovers every other afk-enabled repo beneath them too, lets you switch between all of them from inside the dashboard (`p`, see [`afk dash`](#afk-dash--launch-the-dashboard)), and no longer needs a repo to launch from at all.
+The dashboard lists every project you added with `afk project add` (or started with `afk plan approve`), plus the repo you launched it from. Give it search roots in the `[dash]` table of `config.toml` and it discovers every other afk-enabled repo beneath them too, lets you switch between all of them from inside the dashboard (`p`, see [`afk dash`](#afk-dash--launch-the-dashboard)), and no longer needs a repo to launch from at all.
 
 ### Listed projects
 
-The projects in the `[[project]]` list of `config.toml` (the file `afk project list` prints) show up in the switcher on their own. Each shows the name `afk project list` shows, and a project that is also found under a search folder or is the one you started in is one row, not two. The list is read again on every scan and when you press `R` in the switcher, so a project you add appears without restarting the dashboard. A listed folder that no longer exists is left out, with no message. If `config.toml` cannot be read (for example it holds invalid TOML), the dashboard keeps the rows it already shows and a toast names the file so you can fix it. The dashboard only reads this file; it never changes it. The search folders below are still set in `config.json`.
+The projects in the `[[project]]` list of `config.toml` (the file `afk project list` prints) show up in the switcher on their own. Each shows the name `afk project list` shows, and a project that is also found under a search folder or is the one you started in is one row, not two. The list is read again on every scan and when you press `R` in the switcher, so a project you add appears without restarting the dashboard. A listed folder that no longer exists is left out, with no message. If `config.toml` cannot be read (for example it holds invalid TOML), the dashboard keeps the rows it already shows and a toast names the file so you can fix it. The dashboard only reads this file; it never changes it.
 
 ### Config file
 
-Location: `$XDG_CONFIG_HOME/afk/config.json` if `XDG_CONFIG_HOME` is set, else `~/.config/afk/config.json`. A missing file is not an error — it's the ordinary, no-config-yet case, and afk behaves as if it existed with every key at its default.
+The search folders are set in the `[dash]` table of `config.toml`, the same file as the project list. Location: `$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`. A missing file, or a file with no `[dash]` table, is not an error: afk behaves as if every key were at its default. The daemon ignores this table.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `search_roots` | array of strings | `[]` (none) | Directories to scan for other afk projects. `~/` expands to your home directory; a relative path resolves against the working directory afk itself is run from, not the config file's location. |
-| `scan_interval` | duration string | `"60s"` | How often the dashboard re-scans `search_roots` for new or removed projects — and re-reads this file, so an edit to `search_roots` or `max_depth` takes effect within one interval, no restart needed. Parsed by `time.ParseDuration`, e.g. `"30s"`, `"2m"` — but a value below a 1s floor (comfortably faster than any real scan can complete, so a smaller number can only ever queue concurrent scans rather than run more often) is a load error, not silently raised to the floor. |
-| `max_depth` | integer | `3` | How many directory levels below a search root the scan descends before giving up on that branch. Must be at least 1; `0` or a negative value is a load error, not silently replaced with the default. |
+| `search_roots` | array of strings | `[]` (none) | Folders to scan for other afk projects. `~/` expands to your home folder; a relative folder is taken from the folder `afk dash` was started in, not from the config file's location. |
+| `scan_interval` | duration string | `"60s"` | How often the dashboard scans `search_roots` again for new or removed projects, and reads this file again, so an edit to `search_roots` or `max_depth` takes effect within one interval, with no restart. A Go duration such as `"30s"` or `"2m"`, at least `"1s"`: a smaller number could only queue scans on top of each other. |
+| `max_depth` | integer | `3` | How many folder levels below a search root the scan goes down before giving up on that branch. At least 1. |
 
 Example:
 
-```json
-{
-  "search_roots": ["~/ontra", "~/code/side-projects"],
-  "scan_interval": "30s",
-  "max_depth": 4
-}
+```toml
+[dash]
+search_roots = ["~/ontra", "~/code/side-projects"]
+scan_interval = "30s"
+max_depth = 4
 ```
 
 A search root may itself be an afk repo — it registers as exactly that one project, so a single extra project doesn't need a parent directory invented for it just to be discoverable.
 
-**A malformed config is not a startup error.** Invalid JSON, an out-of-range or unparseable `scan_interval`, or a `max_depth` below `1` all make config loading fail — but `afk dash` still launches; it never exits over this. Whatever projects the dashboard already knew about (the launch repo, and anything a prior successful scan found) stay visible and usable. The load error itself appears as a toast in the dashboard rather than on the terminal before launch, so fixing the file is something you do from inside the running dashboard, not before opening it.
+**A bad `[dash]` value is not a startup error.** A `scan_interval` that is not a duration or is under `"1s"`, a `max_depth` below 1, or a value of the wrong kind (a word where a number belongs) does not stop `afk dash`, and it does not stop `afk daemon`, `afk project`, `afk usage`, `afk pause` or `afk inbox` either. The folder search does not run, and a toast in the dashboard names the file and the key (for example `dash.scan_interval`) and says what to write instead. The projects in the `[[project]]` list still show, along with the one you started in and anything an earlier search found. Fix the file from inside the running dashboard; the next scan picks it up. A file that is not valid TOML at all is different: the dashboard keeps the rows it shows and a toast names the file, as described under Listed projects.
+
+**The old `config.json`.** Earlier versions kept the search folders in a `config.json` in the same folder. afk no longer reads it. When one is still there, `afk dash` says so once each time it starts: it prints `afk no longer reads <path>.`, says the search settings now live in `config.toml`, and prints the `[dash]` lines to add, built from the old file when it can be read (a value the new file would refuse is left out with a `#` line naming the key). If `config.toml` already has a `[dash]` line, put the new keys under it and do not add a second one. If the old file cannot be read, the notice says so and gives the three keys commented out with their defaults. The text is printed in the terminal before the dashboard opens, so it is still there after you quit, and the dashboard shows a short toast at start that points to it. The same notice shows when `afk new` hands off to the dashboard. Nothing shows when there is no `config.json`. afk changes neither file: delete the old one yourself once the lines are moved.
 
 ### Scan bounds
 
@@ -1337,7 +1338,7 @@ The binary is organized into packages:
 - **internal/usagestate** — Reads and writes `usage.json`, the last usage reading, under afk's per-machine state directory
 - **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` and `afk.local.toml` reader (`plan`, `[planning]`, `[ship]` and `[notify]`), and the desktop and ntfy notification senders
 - **internal/daemon** — The build loop behind `afk daemon`: one pure function (`Decide`) picks what to do on a pass, and an executor carries it out
-- **internal/daemonconfig** — Reads `config.toml`, the daemon's machine config (projects, tick, stall limit)
+- **internal/daemonconfig** — Reads `config.toml`, the machine's one settings file (projects, tick, stall limit, and the dashboard's `[dash]` search folders)
 - **internal/daemonstate** — The pause flag, each project's `daemon.json` and the one-daemon-per-machine lock
 - **internal/decisionlog** — The append-only record of every decision, `.afk/log/decisions.jsonl`
 - **internal/profile** — The owner profile, `profile.toml` beside `config.toml`: loads and checks it, picks the entries for one kind of project, and edits one entry as text so comments survive
