@@ -85,7 +85,8 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 			}
 			return webSessionViews(found)
 		},
-		Usage: func() (usagestate.File, bool) { return usagestate.Read(st) },
+		Usage:        func() (usagestate.File, bool) { return usagestate.Read(st) },
+		RefreshUsage: webRefreshUsage(st),
 		Pause: func(root string) error {
 			_, err := pauseProject(root, now())
 			return webPauseError(root, err)

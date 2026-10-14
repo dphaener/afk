@@ -1,30 +1,67 @@
 {{define "title"}}Usage{{end}}
 {{define "content"}}
 <h1>Usage</h1>
-<div id="usage-reading" data-live="usage" data-project="">
-{{if not .Known}}
-<p>No usage reading exists yet. One appears after afk first checks how much of your plan is used.</p>
-{{else}}
-<p class="muted">Read {{when .At}}{{if .Source}} ({{.Source}}){{end}}.</p>
-{{range .Windows}}
-<div class="card">
-  <strong>{{.Kind}}{{if .Scope}} ({{.Scope}}){{end}}</strong>: {{pct .UsedPct}} used<br>
-  <span class="muted">{{if .ResetsAt}}Resets {{when .ResetsAt}}.{{else}}Reset time not known.{{end}}</span>
+<div class="stack">
+<section class="card" aria-labelledby="governor-title">
+  <h2 id="governor-title">What afk is doing</h2>
+  <div id="usage-decision" data-live="usage" data-project="" aria-live="polite">
+  {{with .Governor}}
+    <p><span class="badge {{$.Page.Badge.Class}}">{{$.Page.Badge.Word}}</span></p>
+    <p>{{.Reason}}{{if .WakeAt}} It wakes {{when .WakeAt}}.{{end}}</p>
+    <p class="meta">Decided {{when .At}}.</p>
+  {{else}}
+    <p>No decision is recorded yet. One appears with the next usage reading.</p>
+  {{end}}
+  </div>
+</section>
+<section class="card" aria-labelledby="windows-title">
+  <h2 id="windows-title">Usage windows</h2>
+  <div id="usage-reading" data-live="usage" data-project="" aria-live="polite">
+  {{if not .Known}}
+    <p>No usage reading exists yet. One appears after afk first checks how much of your plan is used.</p>
+  {{else}}
+    <p class="meta">Read {{when .At}}{{if .Source}} ({{.Source}}){{end}}.</p>
+    {{range .Page.Meters}}
+    <div class="meter{{if .Class}} {{.Class}}{{end}}">
+      <div class="meter__top"><span class="meter__name">{{.Name}}</span><span class="meter__value">{{.Value}}</span></div>
+      <div class="meter__track" role="progressbar" aria-label="{{.Label}}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Now}}"><span class="meter__fill w-{{.Now}}"></span></div>
+      <div class="meter__foot">{{if .ResetsAt}}Resets {{when .ResetsAt}}{{else}}Reset time not known{{end}}</div>
+    </div>
+    {{else}}
+    <p class="meta">The reading holds no windows.</p>
+    {{end}}
+    <p>Extra usage: {{if .OverageEnabled}}on{{else}}off{{end}}.</p>
+  {{end}}
+  </div>
+</section>
+{{with .Refresh}}
+<div id="usage-refresh" data-live="usage" data-project="" data-live-buttons{{if eq .State "running"}} data-working="true"{{end}}>
+  <form method="post" action="/usage/refresh" data-enhance class="stack">
+    <div class="btn-row">
+    {{if eq .State "running"}}
+      <button type="submit" id="usage-refresh-button" class="btn btn--secondary is-loading" aria-busy="true"><span class="spinner" aria-hidden="true"></span>Refreshing</button>
+    {{else if .JustChecked}}
+      <button type="submit" id="usage-refresh-button" class="btn btn--secondary">Checked just now</button>
+    {{else}}
+      <button type="submit" id="usage-refresh-button" class="btn btn--secondary">Refresh usage</button>
+    {{end}}
+    </div>
+  </form>
+  {{if or (eq .State "failed") (eq .State "unsupported")}}
+  <div class="notice notice--error" role="alert"><div class="notice__body">{{.Text}} The reading above is the last one that worked.</div></div>
+  {{end}}
 </div>
-{{else}}
-<p class="muted">The reading holds no windows.</p>
 {{end}}
-<p>Extra usage: {{if .OverageEnabled}}on{{else}}off{{end}}.</p>
-<h2>What afk decided</h2>
-{{with .Governor}}
-<div class="card">
-  <strong>{{.Action}}</strong><br>
-  {{.Reason}}<br>
-  <span class="muted">Decided {{when .At}}.{{if .WakeAt}} Wakes {{when .WakeAt}}.{{end}}</span>
-</div>
-{{else}}
-<p class="muted">No decision has been recorded with this reading.</p>
-{{end}}
-{{end}}
+<details class="card usage-decisions">
+  <summary>What the five decisions mean</summary>
+  <dl class="stack">
+    <div><dt><strong>Run</strong></dt><dd>Usage is within the limits, so afk runs as normal.</dd></div>
+    <div><dt><strong>Launch nothing new</strong></dt><dd>A window is past the limit for starting new work (75% for the session, 85% for the week). Nothing new starts, and a running session carries on.</dd></div>
+    <div><dt><strong>Pause</strong></dt><dd>A window is at or past 90%. A running session is paused until the window resets.</dd></div>
+    <div><dt><strong>Hold</strong></dt><dd>The reading is missing or more than 30 minutes old. Nothing new starts and a running session is left alone.</dd></div>
+    <div><dt><strong>Refuse</strong></dt><dd>Extra usage is switched on for the account. afk will not run until you turn it off.</dd></div>
+  </dl>
+  <p class="meta">Those limits are the defaults. The <code>[governor]</code> table in <code>config.toml</code> can change them.</p>
+</details>
 </div>
 {{end}}

@@ -107,6 +107,15 @@ type UsageView struct {
 	OverageEnabled bool                 `json:"overage_enabled"`
 	Source         string               `json:"source"`
 	Governor       *usagestate.Governor `json:"governor"`
+	// Refresh is the Refresh usage button's state (see usage.go). Only the
+	// usage screen fills it in, and only when this daemon can refresh
+	// (Deps.RefreshUsage is set); otherwise it is left out, which is also
+	// why the overview's copy of this view never carries it.
+	Refresh *UsageRefreshView `json:"refresh,omitempty"`
+	// Page is the usage screen's layout of the fields above (the decision's
+	// badge, one meter per window). Only the page reads it, and only the
+	// usage route fills it in, so the JSON leaves it out.
+	Page usagePage `json:"-"`
 }
 
 // InboxView is a project's inbox in the store's order: open and blocking
@@ -365,8 +374,16 @@ func (s *server) overview(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, r, http.StatusOK, "overview", v)
 }
 
+// usage is GET /usage. It only reads: it never starts a reading, however
+// old the stored one is (that is POST /usage/refresh's job, and the owner's
+// choice).
 func (s *server) usage(w http.ResponseWriter, r *http.Request) {
-	s.respond(w, r, http.StatusOK, "usage", s.usageView())
+	v := s.usageView()
+	if s.d.RefreshUsage != nil {
+		v.Refresh = refreshViewFor(s.refresher.snapshot(), s.d.Now())
+	}
+	v.Page = usagePageFor(v)
+	s.respond(w, r, http.StatusOK, "usage", v)
 }
 
 func (s *server) project(w http.ResponseWriter, r *http.Request) {

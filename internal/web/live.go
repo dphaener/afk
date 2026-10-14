@@ -129,7 +129,12 @@ func fingerprint(value any, err error) string {
 //
 // A project listed twice under one name is read twice and the later reading
 // kept; the daemon's list drops duplicates, so this does not happen there.
-func readSnapshot(projects []Project, d Deps) snapshot {
+//
+// refreshGen is the usage refresher's generation (usageRefresher.generation),
+// folded into the usage part: a reading starting, landing or failing each
+// changes it, and a failure writes no file, so the file alone would never
+// tell an open page that its Refreshing button should stop.
+func readSnapshot(projects []Project, d Deps, refreshGen uint64) snapshot {
 	snap := make(snapshot, len(projects)+1)
 	for _, p := range projects {
 		snap[p.Name] = readProject(p.Root, d)
@@ -140,9 +145,10 @@ func readSnapshot(projects []Project, d Deps) snapshot {
 		usage, ok = d.Usage()
 	}
 	snap[machineProject] = map[string]string{partUsage: fingerprint(struct {
-		File usagestate.File `json:"file"`
-		OK   bool            `json:"ok"`
-	}{usage, ok}, nil)}
+		File    usagestate.File `json:"file"`
+		OK      bool            `json:"ok"`
+		Refresh uint64          `json:"refresh"`
+	}{usage, ok, refreshGen}, nil)}
 	return snap
 }
 
@@ -271,6 +277,9 @@ type subscriber struct {
 // nothing extra.
 type hub struct {
 	d Deps
+	// refreshGen reads the usage refresher's generation each tick (see
+	// readSnapshot). Nil reads as zero.
+	refreshGen func() uint64
 
 	mu   sync.Mutex
 	subs map[*subscriber]struct{}
@@ -280,8 +289,8 @@ type hub struct {
 	quit chan struct{}
 }
 
-func newHub(d Deps) *hub {
-	return &hub{d: d, subs: make(map[*subscriber]struct{})}
+func newHub(d Deps, refreshGen func() uint64) *hub {
+	return &hub{d: d, refreshGen: refreshGen, subs: make(map[*subscriber]struct{})}
 }
 
 // subscribe opens a queue for one stream. It returns false when liveMaxStreams
@@ -338,7 +347,11 @@ func (h *hub) run(quit chan struct{}) {
 		if h.d.Projects != nil {
 			projects = h.d.Projects()
 		}
-		cur := readSnapshot(projects, h.d)
+		var gen uint64
+		if h.refreshGen != nil {
+			gen = h.refreshGen()
+		}
+		cur := readSnapshot(projects, h.d, gen)
 		changes := changedParts(last, cur)
 		last = cur
 

@@ -3079,3 +3079,33 @@ Verification for the owner (T8.7): checked in a headless browser at 390 px, not 
 
 - A live part for `.afk/log/tokens.jsonl`, so an open task screen shows new token figures when a task ends (A8).
 - The why line for a superseded task with one replacement reads "which do its work instead"; it should read "which does" (review, minor).
+
+## T8.8
+
+T8.8 rebuilds the usage screen (`/usage`) from the design system and adds a **Refresh usage** button that takes a fresh reading in the background, the same reading as `afk usage --refresh` and the dashboard's `ctrl+space R`. The page shows "Refreshing" while it runs and the new numbers when it lands, without a reload. These are the decisions the master plan left open, numbered as in the work plan's assumptions (2026-10-14).
+
+- **The address (A1).** The button POSTs to `/usage/refresh`, and the same path under `/api` (`/api/usage/refresh`). `GET /usage` never starts a reading, and `POST /usage` is still not a route.
+- **No confirm (A2).** A reading changes no owner state, and the dashboard's refresh has no confirm either, so the button and the API POST take no confirm. The POST still reads its body only to apply the 64 KB limit.
+- **Where the busy flag lives (A3).** The web server keeps an in-memory refresher: whether a reading is running, the last finished result and its time, and a generation number that goes up when a reading starts and when it finishes. A failed reading writes no file, so the generation is part of the `usage` live fingerprint: a start, a landing and a failure each send one `usage` event to an open page. The refresher is not saved anywhere, so a restart of the daemon forgets the last result and shows the saved reading again.
+- **How the button updates (A4).** The button has its own live region, and that region is swapped on a live event unless a typed field has focus, with focus put back on the new button (`data-live-buttons`, and a stable id). So the owner's typing is never swapped out from under them.
+- **The answers (A5).** The API answers 202 `{"outcome":"started"}` for a reading that starts, and 200 `{"outcome":"already"}` for a second press while one runs. `GET /api/usage` gains a `refresh` object (`state`, `text`, `at`); the existing fields keep their names and meaning, because the overview page embeds the same view. The page POST answers 303 to `/usage?done=refreshing`, or `?done=already_refreshing` for a second press, and the usage screen shows a toast for each.
+- **The badge and the meters (A6).** The governor's decision shows as a badge with a word and a colour: Run (running), Launch nothing new (held), Pause (paused), Hold (idle), Refuse (failed). A meter's width is the window's percentage rounded and held between 0 and 100; it is warn from 80 and full from 100. The templates carry no inline `style`, so widths are `w-N` classes in `page.css`.
+- **The seam (A7).** The web package cannot import the root package, so `web.Deps` gets `RefreshUsage func() UsageRefreshResult`: a synchronous function that returns an outcome (`refreshed`, `unsupported` or `failed`) and a sentence. The root wires it to the same step the dashboard uses, with the daemon's own state folder for the probe and the reading. A save that fails is folded into `failed`, so the page shows it in plain words and keeps the old reading.
+- **Tests (A8).** Table tests in the package's style, with a fake reading that blocks on a channel, so the busy guard, the failures and a panic are each checked without a real probe.
+- **Prerequisites (A9).** None. The dashboard's refresh (T7.13) and the usage screen's data (T8.5) were merged first.
+
+Decided while building (T8.8):
+
+- **A nil seam means no button.** When `Deps.RefreshUsage` is not set, `GET /api/usage` has no `refresh` key, the page draws no button and no region, and both POSTs answer 404. The page then does not offer a refresh that cannot happen.
+- **An unknown outcome is a failure.** A seam answer that is not one of the three outcomes shows as failed with a "fault in afk" sentence, so an unexpected answer cannot pass for a success.
+- **Plain fallback sentences.** An empty sentence from the seam gets one fallback per outcome. None of them names an agent, in line with the dashboard's wording.
+- **A failure notice also covers "unsupported".** An agent that cannot report usage gives the owner nothing new, so the page shows its sentence as a notice too, with "The reading above is the last one that worked." added in the template. Hiding it would leave a press with no visible answer.
+- **Toast codes are for the usage screen only.** `refreshing` and `already_refreshing` are in the toast table, but only the usage screen shows them. A hand-typed `?done=refreshing` on a project or the inbox shows nothing.
+- **A panic becomes a failure.** A reading that panics leaves the refresher idle with a failed result, "The reading stopped unexpectedly. Try again.", so the button works again.
+- **"Checked just now" is for a minute.** A successful reading that landed less than a minute before the page was drawn shows "Checked just now" on the button. A page left open keeps that label until the next live event; a reload after a minute shows "Refresh usage".
+- **The probe runs in the state folder.** The web seam uses the same runner and state folder as the daemon, so the probe leaves no records in a project, as `afk usage` does.
+- **The daemon does not wait for a reading.** A reading is bounded by the probe's own timeout, so a shutdown does not need to wait for one to finish.
+- **The decision text matches the README.** The five decisions on the page use the same words and default numbers (75%, 85% for the week, 90%, 30 minutes) as the `afk usage` section, and say that `[governor]` in `config.toml` can change them.
+- **The live rows are run by name.** The live tests are not matched by the usage test pattern, so they are run on their own names as well.
+
+Verification for the owner (T8.8): open `/usage` in a browser, press **Refresh usage**, and see "Refreshing" and then the new numbers without a reload. Then make the agent fail and press again: the plain sentence shows and the old numbers stay.

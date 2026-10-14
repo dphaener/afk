@@ -122,17 +122,37 @@
     if (!old.id || !document.contains(old)) {
       return;
     }
-    // Never take the page out from under a finger: a region holding focus
-    // (or a form) is left as it is.
-    if (old.contains(document.activeElement) || old.querySelector('form, input, textarea, select')) {
+    // A region that opts in with data-live-buttons holds a form of buttons
+    // only (the Refresh usage button). Its whole point is to change under
+    // the press: the button turns to "Refreshing" and later to "Checked just
+    // now", and the press leaves focus on it, so the plain rule below would
+    // keep it from ever updating. It is swapped unless a typed field has
+    // focus, and focus is handed to the new copy of the button with the same
+    // id so a keyboard user does not lose their place.
+    var buttons = old.hasAttribute('data-live-buttons');
+    var active = document.activeElement;
+    if (buttons) {
+      if (old.contains(active) && active.matches('input, textarea, select')) {
+        return;
+      }
+    } else if (old.contains(active) || old.querySelector('form, input, textarea, select')) {
+      // Never take the page out from under a finger: a region holding focus
+      // (or a form) is left as it is.
       return;
     }
     var fresh = doc.getElementById(old.id);
     if (!fresh) {
       return;
     }
+    var heldId = buttons && old.contains(active) ? active.id : '';
     var node = document.importNode(fresh, true);
     old.replaceWith(node);
+    if (heldId) {
+      var again = document.getElementById(heldId);
+      if (again) {
+        again.focus({ preventScroll: true });
+      }
+    }
     node.classList.add('is-changed');
     setTimeout(function () {
       node.classList.remove('is-changed');

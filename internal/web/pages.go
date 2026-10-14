@@ -211,6 +211,9 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		if tv, isTask := view.(TaskView); isTask && r.Method == http.MethodGet {
 			ch.Toast = taskToast(tv, r.URL.Query().Get("done"))
 		}
+		if _, isUsage := view.(UsageView); isUsage && r.Method == http.MethodGet {
+			ch.Toast = usageToast(r.URL.Query().Get("done"))
+		}
 		data := pageData{View: view, Chrome: ch}
 		if err := t.Execute(&buf, data); err != nil {
 			status = http.StatusInternalServerError
@@ -272,6 +275,10 @@ var toastTexts = map[string]string{
 	// after the change (see taskToast), never from the request.
 	"status":  "{task} is now {status}.",
 	"already": "{task} was already {status}. Nothing changed.",
+	// The two codes Refresh usage leads to, shown only on the usage screen
+	// (see usageToast).
+	"refreshing":         "Reading usage. This can take up to a minute.",
+	"already_refreshing": "A usage reading is already running.",
 }
 
 // toastFor is the toast sentence for a ?done= code, or "" when the code is
@@ -281,7 +288,9 @@ var toastTexts = map[string]string{
 // is no task to name, so a placeholder is never shown.
 func toastFor(code, project, task string) string {
 	text, ok := toastTexts[code]
-	if !ok {
+	if !ok || refreshToastCodes[code] {
+		// A refresh code belongs to the usage screen (usageToast); on a
+		// project or the inbox it would say a reading started when none did.
 		return ""
 	}
 	if strings.Contains(text, "{task}") && task == "" {

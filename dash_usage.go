@@ -27,12 +27,7 @@ func dashRefreshUsage() ui.UsageRefreshResult {
 // A failed save maps to failed, because the owner's next step is the same
 // either way: the header still shows the old reading.
 func dashRefreshUsageWith(d usageDeps) ui.UsageRefreshResult {
-	p, err := d.Lookup("")
-	if err != nil {
-		return ui.UsageRefreshResult{Outcome: ui.UsageRefreshFailed, Text: "No agent is set up to read usage from. Run afk usage in a terminal to see why."}
-	}
-	gov := usageGovernorConfig(io.Discard, d)
-	res := refreshUsageForSurface(p, gov, d)
+	res := refreshDefaultAgentUsage(d)
 	switch res.Outcome {
 	case usageRefreshed:
 		return ui.UsageRefreshResult{Outcome: ui.UsageRefreshed, Text: res.Text}
@@ -41,4 +36,21 @@ func dashRefreshUsageWith(d usageDeps) ui.UsageRefreshResult {
 	default:
 		return ui.UsageRefreshResult{Outcome: ui.UsageRefreshFailed, Text: res.Text}
 	}
+}
+
+// usageNoAgentText is what a surface says when no default agent can be found.
+const usageNoAgentText = "No agent is set up to read usage from. Run afk usage in a terminal to see why."
+
+// refreshDefaultAgentUsage is the step the dashboard and the web page share:
+// look up the default agent, read the governor limits, take one reading. They
+// share it so the two surfaces cannot drift apart on which agent they read or
+// which file they write. A missing agent comes back as a failed result with
+// its own sentence, since neither surface has anything else to do with it.
+func refreshDefaultAgentUsage(d usageDeps) usageRefreshResult {
+	p, err := d.Lookup("")
+	if err != nil {
+		return usageRefreshResult{Outcome: usageRefreshFailed, Err: err, Text: usageNoAgentText}
+	}
+	gov := usageGovernorConfig(io.Discard, d)
+	return refreshUsageForSurface(p, gov, d)
 }
