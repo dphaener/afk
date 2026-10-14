@@ -376,9 +376,13 @@ func TestSessionHandlers(t *testing.T) {
 				t.Errorf("missing %q", w)
 			}
 		}
+		// The rows themselves offer no action: the only form is the new
+		// session's, outside the live list.
+		list := body[strings.Index(body, `id="sessions-list"`):]
+		list = list[:strings.Index(list, `<dialog`)]
 		for _, w := range []string{"<form", "<button", "data-confirm"} {
-			if strings.Contains(body, w) {
-				t.Errorf("the list holds %q; it offers no action", w)
+			if strings.Contains(list, w) {
+				t.Errorf("the list holds %q; its rows offer no action", w)
 			}
 		}
 	})
@@ -397,10 +401,17 @@ func TestSessionHandlers(t *testing.T) {
 				t.Errorf("missing %q", w)
 			}
 		}
+		// The live regions hold no action: the Actions and their sheets sit
+		// outside them, so a live swap never takes an open sheet away.
+		state := body[strings.Index(body, `id="session-badges"`):]
+		state = state[:strings.Index(state, `</section>`)]
 		for _, w := range []string{"<form", "<button", "data-confirm", "chat view"} {
-			if strings.Contains(body, w) {
-				t.Errorf("the session page holds %q", w)
+			if strings.Contains(state, w) {
+				t.Errorf("the session's live regions hold %q", w)
 			}
+		}
+		if strings.Contains(body, "chat view") {
+			t.Errorf("an ordinary session's page mentions a chat view")
 		}
 	})
 	t.Run("planning page", func(t *testing.T) {

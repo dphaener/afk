@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"charm.land/lipgloss/v2"
@@ -97,74 +98,31 @@ Options:
 		return
 	}
 
-	name := fs.Arg(0)
-	target := findCleanTarget(sessions, name)
-	if target == nil {
-		fmt.Fprintf(os.Stderr, "afk clean: no session named %q found (run `afk clean` to list sessions)\n", name)
-		os.Exit(1)
-	}
-	if deleteBranchNoOpRefused(deleteBranch, target.Scratch, target.Kind) {
-		fmt.Fprintf(os.Stderr, "afk clean: --delete-branch has no effect on %q: it has no branch of its own\n", name)
-		os.Exit(1)
-	}
-	if cleanRefused(force, *target) {
-		fmt.Fprintf(os.Stderr,
-			"afk clean: session %q is in phase %q (not done/failed) — pass --force to clean it anyway\n",
-			name, target.Status.Phase)
-		os.Exit(1)
-	}
+	// Everything past the listing goes through cleanSessionForSurface, the
+	// same entry point the web page uses, so the two cannot check or tear down
+	// differently. The terminal questions (the forced-clean confirm and the
+	// unmerged-branch one) come in through TTY and Confirm, and only from here.
+	res := cleanSessionForSurface(repo, fs.Arg(0), cleanSurfaceRequest{Force: force, DeleteBranch: deleteBranch},
+		cleanSurfaceDeps{Clean: deps, TTY: isTerminal(os.Stdin), Confirm: prompt.Confirm})
+	os.Exit(printCleanSurfaceResult(os.Stdout, os.Stderr, res))
+}
 
-	if shouldConfirmForcedClean(force, *target, isTerminal(os.Stdin)) {
-		confirmed, err := prompt.Confirm(forcedCleanPrompt(name, target.Status.Phase, deleteBranch, target.Kind), "Force clean", "Cancel")
-		if err != nil || !confirmed {
-			fmt.Fprintln(os.Stderr, "afk clean: aborted, no changes made")
-			os.Exit(1)
-		}
+// printCleanSurfaceResult prints a clean's outcome the way `afk clean <name>`
+// always has and returns the exit code: what internal/session wrote while it
+// worked back on its own stream first (it used to write there directly, ahead
+// of everything below), then a refusal or failure on stderr behind
+// "afk clean: ", or the summary lines on stdout.
+func printCleanSurfaceResult(stdout, stderr io.Writer, res cleanSurfaceResult) int {
+	fmt.Fprint(stdout, res.EchoStdout)
+	fmt.Fprint(stderr, res.EchoStderr)
+	if res.ToStderr {
+		fmt.Fprintf(stderr, "afk clean: %s\n", res.Text)
+		return res.Code
 	}
-
-	opts := session.CleanOptions{}
-	if deleteBranch {
-		tty := isTerminal(os.Stdin)
-		merged := session.Merged(deps.Run, repo, target.Branch, target.Status.BaseBranch)
-		if deleteBranchTTYRefused(merged, tty) {
-			fmt.Fprintf(os.Stderr,
-				"afk clean: branch %q has not been merged — deleting it needs interactive confirmation, and stdin is not a TTY (omit --delete-branch, or run this from a terminal)\n",
-				target.Branch)
-			os.Exit(1)
-		}
-		if shouldConfirmUnmergedBranchDelete(merged, tty) {
-			title := fmt.Sprintf(
-				"Branch %q (session %q) has not been merged.\nDelete it anyway? Once deleted it is reflog-recoverable by SHA only.",
-				target.Branch, name)
-			confirmed, err := prompt.Confirm(title, "Delete branch", "Keep branch")
-			if err != nil || !confirmed {
-				fmt.Fprintln(os.Stderr, "afk clean: aborted, no changes made")
-				os.Exit(1)
-			}
-		}
-		opts.DeleteBranch = true
-		opts.ConfirmedUnmerged = !merged
+	for _, line := range res.Lines {
+		fmt.Fprintln(stdout, line)
 	}
-
-	result, err := session.CleanSessionWithOptions(repo, *target, deps, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "afk clean: %v\n", err)
-		os.Exit(1)
-	}
-
-	if result.SnapshotCommitted {
-		fmt.Printf("Snapshot-committed dirty worktree for %q\n", result.Name)
-	}
-	fmt.Print(cleanSummary(target.Scratch, result))
-
-	// A stranded entry and a worktree fault (or, in principle, two stranded
-	// entries in different carriers) can share a name; findCleanTarget picked
-	// exactly one of them, so tell the caller the other is still there rather
-	// than let it silently vanish from view.
-	for _, other := range sameNameRemaining(sessions, *target) {
-		fmt.Printf("Note: another entry named %q remains (%s at %s); run afk clean %q again to clean it.\n",
-			name, other.Kind, other.WorktreePath, name)
-	}
+	return res.Code
 }
 
 // findCleanTarget returns the session named name, or nil, resolving in three

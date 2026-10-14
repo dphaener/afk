@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "confirm", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -165,6 +165,13 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 	case TaskStatusPageView:
 		c.Title = "Set status"
 		c.Back, c.BackLabel = taskBase(v.Project, v.ID), "Back to "+v.ID
+	case SessionConfirmView:
+		// The bar's title is the action in a word; the question itself is
+		// the page's heading, too long for the phone bar.
+		c.Title, c.Back, c.BackLabel = sessionActionWords[v.Sheet.Action], v.Back, "Back to "+v.Name
+		if v.Sheet.Action == actionNew || v.Sheet.Action == "" {
+			c.Title, c.BackLabel = sessionActionWords[actionNew], "Back to the sessions of "+v.Project
+		}
 	case ConfirmView:
 		c.Title = v.Sheet.Action
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
@@ -216,6 +223,12 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		}
 		if tv, isTask := view.(TaskView); isTask && r.Method == http.MethodGet {
 			ch.Toast = taskToast(tv, r.URL.Query().Get("done"))
+		}
+		if sv, isSessions := view.(SessionsView); isSessions && r.Method == http.MethodGet {
+			ch.Toast = sessionsToast(sv, r.URL.Query().Get("done"), r.URL.Query().Get("session"))
+		}
+		if sv, isSession := view.(SessionScreenView); isSession && r.Method == http.MethodGet {
+			ch.Toast = sessionToast(sv, r.URL.Query().Get("done"))
 		}
 		if _, isUsage := view.(UsageView); isUsage && r.Method == http.MethodGet {
 			ch.Toast = usageToast(r.URL.Query().Get("done"))
@@ -285,6 +298,13 @@ var toastTexts = map[string]string{
 	// (see usageToast).
 	"refreshing":         "Reading usage. This can take up to a minute.",
 	"already_refreshing": "A usage reading is already running.",
+	// The four codes the session actions lead to, shown only on the
+	// Sessions screens (see sessionsToast and sessionToast). {session} is
+	// the session's name as the server reads it.
+	"cleaned":   "Cleaned {session}.",
+	"restarted": "Restarted {session}.",
+	"labelled":  "Label saved.",
+	"started":   "Started {session}. It works on its own; open its terminal from afk dash or afk attach.",
 }
 
 // toastFor is the toast sentence for a ?done= code, or "" when the code is
@@ -294,9 +314,11 @@ var toastTexts = map[string]string{
 // is no task to name, so a placeholder is never shown.
 func toastFor(code, project, task string) string {
 	text, ok := toastTexts[code]
-	if !ok || refreshToastCodes[code] {
+	if !ok || refreshToastCodes[code] || sessionToastCodes[code] {
 		// A refresh code belongs to the usage screen (usageToast); on a
 		// project or the inbox it would say a reading started when none did.
+		// A session code belongs to the Sessions screens for the same
+		// reason.
 		return ""
 	}
 	if strings.Contains(text, "{task}") && task == "" {

@@ -7,6 +7,12 @@
 // one shows, puts the typed replacing ids into superseded's, and sets the
 // action button's label from the checked radio. It writes no words of its
 // own, so the sheet says what the no-JavaScript page says.
+//
+// A form with data-confirm-form="<dialog id>" (Start a new autonomous
+// session…) opens that dialog instead of going to its no-JavaScript confirm
+// page. The dialog's hidden fields marked data-fill-field get the form's
+// values, and an element with data-fill-text gets that attribute's text
+// (the server's words) with {name} and {description} replaced by them.
 'use strict';
 
 (function () {
@@ -30,6 +36,10 @@
     if (d.hasAttribute('data-status-sheet')) {
       syncStatusSheet(d);
     }
+    openSheet(d);
+  });
+
+  function openSheet(d) {
     d.showModal();
     // The safe button is the one that starts focused (autofocus), set again
     // here for browsers that skip autofocus inside a dialog.
@@ -37,6 +47,43 @@
     if (safe) {
       safe.focus();
     }
+  }
+
+  // fillSheet copies the form's values into the dialog. The text is set with
+  // textContent, so a typed value is shown as text and never as markup, and
+  // the replacement is one pass, so a value holding "{name}" stays as typed.
+  function fillSheet(d, form) {
+    var values = {};
+    Array.prototype.slice.call(form.elements).forEach(function (el) {
+      if (el.name) {
+        values[el.name] = el.value.trim();
+      }
+    });
+    Array.prototype.slice.call(d.querySelectorAll('[data-fill-field]')).forEach(function (input) {
+      var v = values[input.getAttribute('data-fill-field')];
+      input.value = v === undefined ? '' : v;
+    });
+    Array.prototype.slice.call(d.querySelectorAll('[data-fill-text]')).forEach(function (el) {
+      el.textContent = el.getAttribute('data-fill-text').replace(/\{(name|description)\}/g, function (all, key) {
+        return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : all;
+      });
+    });
+  }
+
+  // The browser has already checked the form's required and pattern rules
+  // when submit fires, so only a form it accepted opens the sheet.
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target;
+    if (ev.defaultPrevented || !form || !form.hasAttribute || !form.hasAttribute('data-confirm-form')) {
+      return;
+    }
+    var d = document.getElementById(form.getAttribute('data-confirm-form'));
+    if (!d || typeof d.showModal !== 'function') {
+      return;
+    }
+    ev.preventDefault();
+    fillSheet(d, form);
+    openSheet(d);
   });
 
   // Escape closes a modal dialog natively and the safe button is a

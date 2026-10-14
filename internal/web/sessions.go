@@ -16,8 +16,8 @@ import (
 // The page cannot open a session's terminal: a terminal needs the session's
 // host, and this package never dials one (the handlers read files, and
 // Deps.Sessions must not block). The session screen says where the terminal
-// is opened instead. Actions on a session (restart, label, clean) are not
-// here either; they come with their own confirm sheets in a later task.
+// is opened instead. Actions on a session (restart, label, clean, and
+// starting a new one) are in sessions_actions.go.
 //
 // The facts come from Deps.Sessions, discovery's rows copied into
 // SessionView. internal/ui's overview panel draws the same facts with Lip
@@ -91,6 +91,9 @@ type SessionsView struct {
 type sessionsPage struct {
 	// Empty is the empty state's sentence, or "" when there are sessions.
 	Empty string
+	// New is the Start a new autonomous session… card and its sheet, or nil
+	// when the server cannot start one.
+	New *newSessionPart
 }
 
 // SessionRow is one row of the list: the session's facts, and how the page
@@ -129,6 +132,9 @@ type sessionPage struct {
 	KV    []kvRow
 	// Summary is the overview in sentences, one to a paragraph.
 	Summary []string
+	// Actions are the Actions rows and their sheets; empty when the row
+	// offers none the server can do.
+	Actions sessionActions
 }
 
 // kvRow is one label / value pair of the session's kv list. Code draws the
@@ -509,7 +515,11 @@ func (s *server) sessionsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.respond(w, r, http.StatusOK, "sessions", sessionsPageFor(p.Name, s.d.Sessions(p.Root)))
+	v := sessionsPageFor(p.Name, s.d.Sessions(p.Root))
+	if s.d.NewSession != nil {
+		v.Page.New = newSessionPartFor(p.Name)
+	}
+	s.respond(w, r, http.StatusOK, "sessions", v)
 }
 
 // session is one session's screen. The first row with the name wins. Names
@@ -529,9 +539,11 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	for _, sv := range s.d.Sessions(p.Root) {
 		if sv.Name == name {
-			s.respond(w, r, http.StatusOK, "session", sessionPageFor(p.Name, sv))
+			v := sessionPageFor(p.Name, sv)
+			v.Page.Actions = sessionActionsFor(p.Name, sv, s.seams())
+			s.respond(w, r, http.StatusOK, "session", v)
 			return
 		}
 	}
-	s.fail(w, r, http.StatusNotFound, "There is no session with that name in this project. It may have been cleaned up. Check the address, or go back to the project's sessions and pick it from the list.")
+	s.noSuchSession(w, r)
 }
