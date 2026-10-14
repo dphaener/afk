@@ -366,6 +366,20 @@ type Deps struct {
 	// two it found. It has NO default either, and a nil one is answered the
 	// same way.
 	ResumeBuild func(root string) (ResumeResult, error)
+	// StartPlan is the seam behind the dashboard's three plan actions
+	// (planstart.go): it starts a change session on the project at root the
+	// way `afk plan <mode>` does, short of taking the terminal, and returns
+	// what happened. mode is PlanModeExtend, PlanModeAmend, PlanModeReconcile
+	// or PlanModeResume (open a planning session that is already open, never
+	// start one); text is amend's sentence or reconcile's path, as typed.
+	// Every refusal comes back as a PlanRefused result in the command's own
+	// words, so it has no error return.
+	//
+	// It has NO default, for AnswerInbox's reason: it writes into a real
+	// project and spawns a host, so a zero Deps must not be able to. A nil
+	// StartPlan makes the actions say starting a plan change is not
+	// available, and nothing is called.
+	StartPlan func(root, mode, text string) PlanStartResult
 	// SpiceDetect reports whether the repo at dir is operating in git-spice
 	// mode. Defaults to internal/spice.Detect. The stack panel is hidden
 	// entirely when this returns false — never a placeholder.
@@ -1329,6 +1343,31 @@ type Model struct {
 	labelTarget   string
 	labelWorktree string
 
+	// planTextInput is inputPlanText's field, on labelInput's terms: only
+	// read or updated while m.modal == inputPlanText. planTextMode is the
+	// form's purpose (PlanModeAmend or PlanModeReconcile); planTextRoot and
+	// planTextGen are the project it was opened for, captured at open on
+	// labelTarget's invariant, so a submit after a project switch is refused
+	// rather than sent to the wrong project. planTextNote is the line shown
+	// under the field after a blank enter.
+	planTextInput textinput.Model
+	planTextMode  string
+	planTextRoot  string
+	planTextGen   int
+	planTextNote  string
+
+	// planOffer is the refusal inputConfirmPlanOpen was raised for (a
+	// planning session is already open), and planOfferGen the project
+	// generation it arrived under. y sends the resume request to its Root.
+	planOffer    PlanStartResult
+	planOfferGen int
+
+	// planSelectPending is the master-plan row's name while a plan action's
+	// pane open waits for discovery to list the row (openPlanPane). It is
+	// applied on each successful load and dropped once the row is selected,
+	// once the keyboard leaves the right side, or on a project switch.
+	planSelectPending string
+
 	// providerPick is inputPickProvider's highlighted row, an index into
 	// provider.Names() — the same representation newForm.provider uses, so
 	// the two selectors cannot disagree about order. openProviderPicker
@@ -2241,6 +2280,12 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rememberSelectedRow()
 			}
 		}
+		// A plan action's open waiting for the master-plan row (see
+		// planSelectPending). Successful loads only, on selectOnNextLoad's
+		// reasoning: a failed load has no rows to select from.
+		if msg.err == nil {
+			m.applyPlanSelectPending()
+		}
 		return m, tea.Batch(cmd, previewCmd)
 
 	case stackLoadedMsg:
@@ -2259,6 +2304,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case buildResumedMsg:
 		return m.applyBuildResumed(msg)
+
+	case planStartedMsg:
+		return m.applyPlanStarted(msg)
 
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
@@ -2571,6 +2619,10 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case inputEditLabel:
 			var cmd tea.Cmd
 			m.labelInput, cmd = m.labelInput.Update(msg)
+			return m, cmd
+		case inputPlanText:
+			var cmd tea.Cmd
+			m.planTextInput, cmd = m.planTextInput.Update(msg)
 			return m, cmd
 		case inputSwitcher:
 			// The overlay's filter input's cursor blink, and the
@@ -3296,6 +3348,12 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.pauseBuild()
 	case actionResumeBuild:
 		return m.resumeBuild()
+	case actionPlanExtend:
+		return m.startPlanExtend()
+	case actionPlanAmend:
+		return m.openPlanTextForm(PlanModeAmend)
+	case actionPlanReconcile:
+		return m.openPlanTextForm(PlanModeReconcile)
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -3338,6 +3396,10 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionDismiss:
 		return m.dismissSpawnError()
 	case actionSubmit:
+		// enter in the two text prompts; the mode says which one.
+		if mode == inputPlanText {
+			return m.submitPlanText()
+		}
 		return m.submitLabelEdit()
 
 	case actionFormCancel:
@@ -3371,6 +3433,17 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		if a == actionCancel {
 			return m.cancelLabelEdit()
 		}
+	case inputPlanText:
+		if a == actionCancel {
+			return m.cancelPlanText()
+		}
+	case inputConfirmPlanOpen:
+		switch a {
+		case actionConfirm:
+			return m.confirmPlanOpen()
+		case actionDeny, actionCancel:
+			return m.cancelPlanOpen()
+		}
 	case inputPickProvider:
 		switch a {
 		case actionConfirm:
@@ -3400,6 +3473,10 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 	case inputEditLabel:
 		var cmd tea.Cmd
 		m.labelInput, cmd = m.labelInput.Update(k)
+		return m, cmd
+	case inputPlanText:
+		var cmd tea.Cmd
+		m.planTextInput, cmd = m.planTextInput.Update(k)
 		return m, cmd
 	}
 	return m, nil
@@ -7454,6 +7531,9 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// session. applyFocusRequest re-sets it after this returns, for the switch it
 	// is performing — so the clear is safe on its own path too.
 	m.selectOnNextLoad = ""
+	// A plan action's armed selection belongs to the outgoing project, whose
+	// planning session is not in the incoming one's list.
+	m.planSelectPending = ""
 	// m.cleaningSessions is deliberately KEPT. A clean already dispatched is still
 	// running in the outgoing project, its cleanFinishedMsg will arrive and clear
 	// the entry, and until then the worst a stale name costs is a refused `c` on a

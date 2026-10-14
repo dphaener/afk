@@ -634,7 +634,10 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// machine's config.toml), so without this line the switcher would
 		// silently never show the projects `afk project add` listed. The read
 		// itself happens in the model's command, never before the first frame.
-		LoadListed:         dashLoadListed,
+		LoadListed: dashLoadListed,
+		// StartPlan has no default in internal/ui (it starts a real session), so
+		// this is the only place the three plan actions are wired.
+		StartPlan:          dashStartPlan,
 		LaunchMainCheckout: launchMainCheckout(projects, resolveGitCommonDirIn, filepath.EvalSymlinks),
 	}
 }

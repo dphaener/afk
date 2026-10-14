@@ -163,6 +163,24 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputPickProvider,
 		},
 		{
+			name:  "plan form alone",
+			state: modeState{modal: inputPlanText},
+			want:  inputPlanText,
+		},
+		{
+			name:  "plan open offer alone",
+			state: modeState{modal: inputConfirmPlanOpen},
+			want:  inputConfirmPlanOpen,
+		},
+		{
+			// The plan form is opened from the agent pane too (the leader
+			// moves the keyboard to the list first), and a connect landing
+			// focused under it must not take the typed sentence.
+			name:  "plan form outranks a focused pane",
+			state: modeState{modal: inputPlanText, focus: focusRight, view: viewAgent, pane: true},
+			want:  inputPlanText,
+		},
+		{
 			name:  "switcher alone",
 			state: modeState{switcherOpen: true},
 			want:  inputSwitcher,
@@ -390,8 +408,9 @@ func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 			modals = append(modals, mode)
 		}
 	}
-	if len(modals) != 5 {
-		t.Fatalf("isModal admits %d modes, want the 5 footer modals", len(modals))
+	// Seven since T7.3 added the plan form and the open-it offer.
+	if len(modals) != 7 {
+		t.Fatalf("isModal admits %d modes, want the 7 footer modals", len(modals))
 	}
 	bools := []bool{false, true}
 	focuses := []paneFocus{focusList, focusRight}
@@ -472,6 +491,16 @@ func TestModeSnapshot(t *testing.T) {
 			name: "picking a provider",
 			mut:  func(m *Model) { m.modal = inputPickProvider },
 			want: modeState{modal: inputPickProvider},
+		},
+		{
+			name: "typing a plan change",
+			mut:  func(m *Model) { m.modal = inputPlanText },
+			want: modeState{modal: inputPlanText},
+		},
+		{
+			name: "offered to open the planning session",
+			mut:  func(m *Model) { m.modal = inputConfirmPlanOpen },
+			want: modeState{modal: inputConfirmPlanOpen},
 		},
 		{
 			name: "switcher active",
@@ -668,6 +697,8 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+g in confirm restart", inputConfirmRestart, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in spawn error", inputSpawnError, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in edit label", inputEditLabel, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
+		{"ctrl+g in plan form", inputPlanText, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
+		{"ctrl+g in plan open offer", inputConfirmPlanOpen, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in detail is ignored (ctrl+space g)", inputDetail, routeConds{}, ctrlG, keyDecision{kind: routeIgnored}},
 		{"ctrl+g in switcher goes to the list", inputSwitcher, routeConds{}, ctrlG, keyDecision{kind: routeComponent}},
 
@@ -676,6 +707,23 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+c in spawn error quits", inputSpawnError, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in confirm restart quits", inputConfirmRestart, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in edit label quits", inputEditLabel, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
+		{"ctrl+c in plan form quits", inputPlanText, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
+		{"ctrl+c in plan open offer quits", inputConfirmPlanOpen, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
+		// The plan form is a text prompt: esc cancels, enter starts, and
+		// every letter (y and q included) is part of the sentence.
+		{"esc in plan form cancels", inputPlanText, routeConds{}, esc, keyDecision{routeAction, actionCancel}},
+		{"enter in plan form submits", inputPlanText, routeConds{}, enter, keyDecision{routeAction, actionSubmit}},
+		{"y in plan form goes to the textinput", inputPlanText, routeConds{}, yLower, keyDecision{kind: routeComponent}},
+		{"q in plan form goes to the textinput", inputPlanText, routeConds{}, q, keyDecision{kind: routeComponent}},
+		{"ctrl+space in plan form goes to the textinput", inputPlanText, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		// The open-it offer is a y/n confirmation: a stray key neither opens
+		// the session nor dismisses the question.
+		{"y in plan open offer confirms", inputConfirmPlanOpen, routeConds{}, yLower, keyDecision{routeAction, actionConfirm}},
+		{"Y in plan open offer confirms", inputConfirmPlanOpen, routeConds{}, yUpper, keyDecision{routeAction, actionConfirm}},
+		{"n in plan open offer denies", inputConfirmPlanOpen, routeConds{}, nLower, keyDecision{routeAction, actionDeny}},
+		{"esc in plan open offer cancels", inputConfirmPlanOpen, routeConds{}, esc, keyDecision{routeAction, actionCancel}},
+		{"q in plan open offer is swallowed", inputConfirmPlanOpen, routeConds{}, q, keyDecision{kind: routeIgnored}},
+		{"enter in plan open offer is swallowed", inputConfirmPlanOpen, routeConds{}, enter, keyDecision{kind: routeIgnored}},
 		{"ctrl+c in switcher quits", inputSwitcher, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in normal quits", inputNormal, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in detail quits", inputDetail, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
@@ -1179,6 +1227,11 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"provider picker advertises j", inputPickProvider, "j"},
 		{"provider picker advertises enter", inputPickProvider, "enter"},
 		{"provider picker advertises esc", inputPickProvider, "esc"},
+		{"plan form advertises enter", inputPlanText, "enter"},
+		{"plan form advertises esc", inputPlanText, "esc"},
+		{"plan open offer advertises y", inputConfirmPlanOpen, "y"},
+		{"plan open offer advertises n", inputConfirmPlanOpen, "n"},
+		{"plan open offer advertises esc", inputConfirmPlanOpen, "esc"},
 		{"switcher advertises R", inputSwitcher, "R"},
 		{"switcher advertises enter", inputSwitcher, "enter"},
 		{"switcher advertises esc", inputSwitcher, "esc"},

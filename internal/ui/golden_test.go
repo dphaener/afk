@@ -546,3 +546,50 @@ func TestGoldenBuildTab(t *testing.T) {
 	m.clearStatus()
 	assertGolden(t, "dash-build-120x40", render(m))
 }
+
+// TestGoldenPlanStart pins the plan actions' screens (T7.3): the amend form
+// at both sizes, reached the way a person reaches it (ctrl+space, "amend",
+// enter) with a sentence typed; the reconcile form after a blank enter, so
+// the line saying what is missing is framed; and the open-it offer raised
+// when a planning session is already open. The seam is a stand-in that only
+// answers; nothing here starts anything.
+func TestGoldenPlanStart(t *testing.T) {
+	withSeam := func(t *testing.T, w, h int, reply PlanStartResult) Model {
+		m := goldenModel(t, w, h)
+		m.deps.StartPlan = func(root, mode, text string) PlanStartResult { return reply }
+		return m
+	}
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-80x24-plan-amend", 80, 24},
+		{"dash-120x40-plan-amend", 120, 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m, _ := runPlanAction(t, withSeam(t, size.w, size.h, PlanStartResult{}), "amend")
+			if m.modal != inputPlanText {
+				t.Fatal("the amend action did not open the form")
+			}
+			m = typeText(t, m, "Add a search page.")
+			assertGolden(t, size.name, render(m))
+		})
+	}
+	t.Run("dash-120x40-plan-reconcile-empty", func(t *testing.T) {
+		m, _ := runPlanAction(t, withSeam(t, 120, 40, PlanStartResult{}), "document")
+		m, _ = update(t, m, keyEnter)
+		if m.modal != inputPlanText || m.planTextNote == "" {
+			t.Fatal("a blank path did not keep the form open with its note")
+		}
+		assertGolden(t, "dash-120x40-plan-reconcile-empty", render(m))
+	})
+	t.Run("dash-120x40-plan-open", func(t *testing.T) {
+		reply := PlanStartResult{Outcome: PlanRefused, Open: true, OpenMode: "extend", OpenPhase: "questions", Root: "/repo"}
+		m, cmd := runPlanAction(t, withSeam(t, 120, 40, reply), "extend")
+		m, _ = update(t, m, planStarted(t, cmd))
+		if m.modal != inputConfirmPlanOpen {
+			t.Fatal("an open planning session did not raise the offer")
+		}
+		assertGolden(t, "dash-120x40-plan-open", render(m))
+	})
+}

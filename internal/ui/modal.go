@@ -123,6 +123,10 @@ func (m Model) activeDialog() (dialog, bool) {
 		return m.labelDialog(), true
 	case inputPickProvider:
 		return m.providerPickDialog(), true
+	case inputPlanText:
+		return m.planTextDialog(), true
+	case inputConfirmPlanOpen:
+		return m.planOpenDialog(), true
 	}
 	return dialog{}, false
 }

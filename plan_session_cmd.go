@@ -429,25 +429,33 @@ type planProject struct {
 // for the build commands (resolveBuildRoot), so a command typed from a linked
 // worktree reads and writes the one planning state everybody else sees.
 func resolvePlanProject(cmd, flagValue string, stderr io.Writer, deps planDeps) (planProject, int) {
+	project, why, code := findPlanProject(flagValue, deps)
+	if code != 0 {
+		fmt.Fprintf(stderr, "%s: %s\n", cmd, why)
+	}
+	return project, code
+}
+
+// findPlanProject is resolvePlanProject without the printing: it returns the
+// reason as a sentence with no command name in front, for the commands to
+// print and for the dashboard's entry point (startPlanForSurface) to show as
+// it is.
+func findPlanProject(flagValue string, deps planDeps) (planProject, string, int) {
 	dir, err := resolveProject(flagValue, deps.cwd, deps.home)
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: cannot tell which folder to use. Pass --project with the project's folder.\n", cmd)
-		return planProject{}, 2
+		return planProject{}, "cannot tell which folder to use. Pass --project with the project's folder.", 2
 	}
 	fi, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		fmt.Fprintf(stderr, "%s: the folder %s was not found.\nCreate it first (mkdir -p %s), or pass --project with a folder that exists.\n", cmd, dir, dir)
-		return planProject{}, 1
+		return planProject{}, fmt.Sprintf("the folder %s was not found.\nCreate it first (mkdir -p %s), or pass --project with a folder that exists.", dir, dir), 1
 	case err != nil:
-		fmt.Fprintf(stderr, "%s: cannot look at %s: %v\n", cmd, dir, err)
-		return planProject{}, 1
+		return planProject{}, fmt.Sprintf("cannot look at %s: %v", dir, err), 1
 	case !fi.IsDir():
-		fmt.Fprintf(stderr, "%s: %s is a file, not a folder. Pass --project with the project's folder.\n", cmd, dir)
-		return planProject{}, 1
+		return planProject{}, fmt.Sprintf("%s is a file, not a folder. Pass --project with the project's folder.", dir), 1
 	}
 	common := deps.gitCommonDir(dir)
-	return planProject{Dir: dir, Root: mainCheckout(dir, common), IsRepo: common != ""}, 0
+	return planProject{Dir: dir, Root: mainCheckout(dir, common), IsRepo: common != ""}, "", 0
 }
 
 // loadPlanSession reads the planning session of the project at root and
@@ -738,49 +746,24 @@ func runPlanMode(mode string, args []string, stdout, stderr io.Writer, deps plan
 // then goes on as the mode command would have, through the same decision, so
 // an answer typed here and a command typed in full cannot behave differently.
 func runPlanRequest(req planRequest, stdout, stderr io.Writer, deps planDeps) int {
-	// The same check `afk new` makes on --provider (resolveProviderArg), minus
-	// its rule about conductor sessions, which a planning session is not.
-	// Whether the agent can run a planning session at all is the provider's
-	// own answer, PlanArgv, and is a refusal (exit 1), not bad usage.
-	p, err := provider.Lookup(req.provider)
-	if err != nil {
-		fmt.Fprintf(stderr, "%s: %v\nUsage: %s\n", req.cmd, err, req.usageLine)
-		return 2
+	look, stop := lookAtPlanProject(req.provider, req.project, req.mode, req.dryRun,
+		func() bool { return deps.stdinTTY() && deps.stdoutTTY() }, deps)
+	if stop.code != 0 {
+		fmt.Fprintf(stderr, "%s: %s\n", req.cmd, stop.text)
+		if stop.usage {
+			fmt.Fprintf(stderr, "Usage: %s\n", req.usageLine)
+		}
+		return stop.code
 	}
-	_, planArgvErr := p.PlanArgv()
+	project, in := look.project, look.in
 
-	project, code := resolvePlanProject(req.cmd, req.project, stderr, deps)
-	if code != 0 {
-		return code
-	}
-	files, planPath, err := loadPlanSession(project.Root, deps)
-	if err != nil {
-		fmt.Fprintf(stderr, "%s: %v\n", req.cmd, err)
-		return 1
-	}
-	status := plansession.Decide(files)
-	terminal := deps.stdinTTY() && deps.stdoutTTY()
-
-	in := planStartInput{
-		DryRun:       req.dryRun,
-		Mode:         req.mode,
-		IsRepo:       project.IsRepo,
-		HasState:     files.HasState,
-		StateDamaged: files.StateProblem != "",
-		Recorded:     files.State.Phase,
-		Finished:     files.HasState && plansession.Finished(files.State),
-		HasOldFiles:  planFolderHasFiles(project.Root),
-		PlanExists:   files.PlanExists,
-		HostAlive:    deps.hostAlive(project.Root),
-		Terminal:     terminal,
-		PlanArgvErr:  planArgvErr,
-	}
 	action := decidePlanStart(in)
 	if action.Kind == planChooseMode {
-		if code := choosePlanMode(&req, planPath, stderr, deps); code != 0 {
+		if code := choosePlanMode(&req, look.planPath, stderr, deps); code != 0 {
 			return code
 		}
 		in.Mode = req.mode
+		look.in = in
 		action = decidePlanStart(in)
 	}
 
@@ -794,88 +777,38 @@ func runPlanRequest(req planRequest, stdout, stderr io.Writer, deps planDeps) in
 	}
 	switch action.Kind {
 	case planDryRun, planRefuseNoTerminal, planStart:
-		switch req.mode {
-		case plansession.ModeAmend:
-			seed.Brief = req.text
-			if !strings.HasSuffix(seed.Brief, "\n") {
-				seed.Brief += "\n"
-			}
-		case plansession.ModeReconcile:
-			rel, err := resolveReconcileFile(req.file, deps.cwd, project.Root)
-			if err != nil {
-				fmt.Fprintf(stderr, "%s: %v\nNothing was started.\n", req.cmd, err)
-				return 1
-			}
-			seed.Brief = fmt.Sprintf("Reconcile the plan with %s.\n", rel)
+		brief, err := planBrief(req.mode, req.text, req.file, deps.cwd, project.Root)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\nNothing was started.\n", req.cmd, err)
+			return 1
 		}
+		seed.Brief = brief
 	}
 
-	spec := session.HostSpawn{
-		Name:       session.PlanSessionName,
-		Worktree:   project.Root,
-		MasterPlan: true,
-		Provider:   req.provider,
-	}
+	spec := planHostSpawn(project.Root, req.provider)
 
 	switch action.Kind {
-	case planRefuseProvider:
-		fmt.Fprintf(stderr, "%s: %v.\nNothing was started.\n", req.cmd, planArgvErr)
-		return 1
-	case planRefuseDamaged:
-		fmt.Fprintf(stderr, "%s: %s\nNothing was started. Fix %s by hand, then run `afk plan` again. Deleting it starts the session over from the first phase; the brief and your answers in that folder are kept.\n",
-			req.cmd, files.StateProblem, plansession.StatePath(project.Root))
-		return 1
-	case planRefuseNoPlan:
-		fmt.Fprintf(stderr, "%s: this project has no plan yet (afk looked for it at %s), so there is nothing to change.\nRun `afk plan` first to write one. Nothing was started.\n", req.cmd, planPath)
-		return 1
-	case planRefuseInProgress:
-		phase := status.Phase
-		if phase == "" {
-			phase = files.State.Phase
-		}
-		fmt.Fprintf(stderr, "%s: a planning session is already open in this project. It is in the %s mode, at the %s phase.\nRun `afk plan` to go back to it. A new change can be started once that session is finished. Nothing was started.\n",
-			req.cmd, files.State.Mode, phase)
-		return 1
-	case planRefusePlanGone:
-		fmt.Fprintf(stderr, "%s: the planning session here is finished, but its plan is not at %s.\nPut the plan back there, or name the right file with the `plan` key in afk.toml, then run `afk plan` again. To plan this project from the start instead, move the folder %s away first. Nothing was started.\n",
-			req.cmd, planPath, plansession.Dir(project.Root))
-		return 1
-	case planRefuseHostBusy:
-		fmt.Fprintf(stderr, "%s: the earlier planning session is finished, but its agent is still running.\nLeave that agent and run `afk clean %s`, then run this command again. To look at it first, run `afk attach %s`. Nothing was started.\n",
-			req.cmd, session.PlanSessionName, session.PlanSessionName)
-		return 1
-	case planRefuseNeedsMode:
-		fmt.Fprintf(stderr, "%s: This project already has a plan at %s.\nSay how you want to change it by running one of these in a terminal:\n%sNothing was started.\n", req.cmd, planPath, planModeCommands)
-		return 1
 	case planDryRun:
 		printPlanDryRun(stdout, planDryRunView{
 			cmd:      req.cmd,
 			project:  project,
 			action:   action,
-			status:   status,
+			status:   look.status,
 			command:  session.ChildCommandLine(spec),
-			terminal: terminal,
+			terminal: in.Terminal,
 			seed:     seed,
-			planPath: planPath,
+			planPath: look.planPath,
 		})
 		return 0
-	case planRefuseNoTerminal:
-		// A mode command is not repeated here with --dry-run added: amend and
-		// reconcile need their word too, and the owner still has it on screen.
-		advice := "Run `afk plan` yourself in a terminal, or `afk plan --dry-run` to see what it would do."
-		if req.mode != "" {
-			advice = "Run the same command yourself in a terminal, or add --dry-run to see what it would do."
-		}
-		fmt.Fprintf(stderr, "%s: this needs a terminal, because the planning session asks you questions. Nothing was started.\n%s\n", req.cmd, advice)
-		return 1
 	case planAttach:
 		return finishPlanAttach(stdout, stderr, project.Root, false, deps)
 	case planStart:
-		archived, code := startPlanSession(stderr, req.cmd, project, action, seed, spec, deps)
-		if code != 0 {
-			return code
+		archived, failed := startPlanSession(project, action, seed, spec, deps)
+		if failed != "" {
+			fmt.Fprintf(stderr, "%s: %s\n", req.cmd, failed)
+			return 1
 		}
-		code = finishPlanAttach(stdout, stderr, project.Root, true, deps)
+		code := finishPlanAttach(stdout, stderr, project.Root, true, deps)
 		// Said after the attach for the reason finishPlanAttach gives: printed
 		// before, the full-screen session would wipe it.
 		if archived != "" {
@@ -883,8 +816,163 @@ func runPlanRequest(req planRequest, stdout, stderr io.Writer, deps planDeps) in
 		}
 		return code
 	default:
-		fmt.Fprintf(stderr, "%s: internal error: no decision was made. Nothing was started.\n", req.cmd)
+		// Every refusal, and the internal error of a decision nobody made.
+		fmt.Fprintf(stderr, "%s: %s\n", req.cmd, planRefusal(action.Kind, look))
 		return 1
+	}
+}
+
+// planLook is what a request to start or resume a planning session found when
+// it looked at the project: everything decidePlanStart reads, plus what the
+// refusals and the dry run name.
+type planLook struct {
+	project     planProject
+	files       plansession.Files
+	planPath    string
+	status      plansession.Status
+	in          planStartInput
+	planArgvErr error
+}
+
+// planStop is a request that ended before anything was decided: the reason
+// with no command name in front, the exit code, and whether it was bad usage
+// (the command then prints its usage line under it). code 0 means go on.
+type planStop struct {
+	text  string
+	code  int
+	usage bool
+}
+
+// lookAtPlanProject is the looking that `afk plan`, the three mode commands
+// and the dashboard's entry point (startPlanForSurface) share: the provider,
+// the project, its planning files and the facts decidePlanStart reads, in the
+// order the commands have always looked. Sharing it is what keeps the
+// dashboard from deciding a start differently from the command.
+//
+// terminal is a function and is only asked once the project has been read,
+// where the commands always asked it.
+func lookAtPlanProject(providerName, projectFlag, mode string, dryRun bool, terminal func() bool, deps planDeps) (planLook, planStop) {
+	// The same check `afk new` makes on --provider (resolveProviderArg), minus
+	// its rule about conductor sessions, which a planning session is not.
+	// Whether the agent can run a planning session at all is the provider's
+	// own answer, PlanArgv, and is a refusal (exit 1), not bad usage.
+	p, err := provider.Lookup(providerName)
+	if err != nil {
+		return planLook{}, planStop{text: err.Error(), code: 2, usage: true}
+	}
+	_, planArgvErr := p.PlanArgv()
+
+	project, why, code := findPlanProject(projectFlag, deps)
+	if code != 0 {
+		return planLook{}, planStop{text: why, code: code}
+	}
+	files, planPath, err := loadPlanSession(project.Root, deps)
+	if err != nil {
+		return planLook{project: project}, planStop{text: err.Error(), code: 1}
+	}
+	look := planLook{
+		project:     project,
+		files:       files,
+		planPath:    planPath,
+		status:      plansession.Decide(files),
+		planArgvErr: planArgvErr,
+	}
+	look.in = planStartInput{
+		DryRun:       dryRun,
+		Mode:         mode,
+		IsRepo:       project.IsRepo,
+		HasState:     files.HasState,
+		StateDamaged: files.StateProblem != "",
+		Recorded:     files.State.Phase,
+		Finished:     files.HasState && plansession.Finished(files.State),
+		HasOldFiles:  planFolderHasFiles(project.Root),
+		PlanExists:   files.PlanExists,
+		HostAlive:    deps.hostAlive(project.Root),
+		Terminal:     terminal(),
+		PlanArgvErr:  planArgvErr,
+	}
+	return look, planStop{}
+}
+
+// planOpenPhase is the phase an open session is said to be at: the phase its
+// files show, or the recorded one when the files say nothing.
+func planOpenPhase(look planLook) string {
+	if look.status.Phase != "" {
+		return look.status.Phase
+	}
+	return look.files.State.Phase
+}
+
+// planRefusal is the sentence for each refusal decidePlanStart can make, with
+// no command name in front and no line break at the end. The commands print it
+// after "<cmd>: "; the dashboard shows it as it is. Built in one place so the
+// two say the same thing.
+//
+// A kind that is not a refusal gets the internal-error sentence: it means a
+// caller reached here with a decision it does not act on.
+func planRefusal(kind planStartKind, look planLook) string {
+	root := look.project.Root
+	switch kind {
+	case planRefuseProvider:
+		return fmt.Sprintf("%v.\nNothing was started.", look.planArgvErr)
+	case planRefuseDamaged:
+		return fmt.Sprintf("%s\nNothing was started. Fix %s by hand, then run `afk plan` again. Deleting it starts the session over from the first phase; the brief and your answers in that folder are kept.",
+			look.files.StateProblem, plansession.StatePath(root))
+	case planRefuseNoPlan:
+		return fmt.Sprintf("this project has no plan yet (afk looked for it at %s), so there is nothing to change.\nRun `afk plan` first to write one. Nothing was started.", look.planPath)
+	case planRefuseInProgress:
+		return fmt.Sprintf("a planning session is already open in this project. It is in the %s mode, at the %s phase.\nRun `afk plan` to go back to it. A new change can be started once that session is finished. Nothing was started.",
+			look.files.State.Mode, planOpenPhase(look))
+	case planRefusePlanGone:
+		return fmt.Sprintf("the planning session here is finished, but its plan is not at %s.\nPut the plan back there, or name the right file with the `plan` key in afk.toml, then run `afk plan` again. To plan this project from the start instead, move the folder %s away first. Nothing was started.",
+			look.planPath, plansession.Dir(root))
+	case planRefuseHostBusy:
+		return fmt.Sprintf("the earlier planning session is finished, but its agent is still running.\nLeave that agent and run `afk clean %s`, then run this command again. To look at it first, run `afk attach %s`. Nothing was started.",
+			session.PlanSessionName, session.PlanSessionName)
+	case planRefuseNeedsMode:
+		return fmt.Sprintf("This project already has a plan at %s.\nSay how you want to change it by running one of these in a terminal:\n%sNothing was started.", look.planPath, planModeCommands)
+	case planRefuseNoTerminal:
+		// A mode command is not repeated here with --dry-run added: amend and
+		// reconcile need their word too, and the owner still has it on screen.
+		advice := "Run `afk plan` yourself in a terminal, or `afk plan --dry-run` to see what it would do."
+		if look.in.Mode != "" {
+			advice = "Run the same command yourself in a terminal, or add --dry-run to see what it would do."
+		}
+		return "this needs a terminal, because the planning session asks you questions. Nothing was started.\n" + advice
+	default:
+		return "internal error: no decision was made. Nothing was started."
+	}
+}
+
+// planBrief is the brief a start in mode writes: amend's text word for word
+// with a line break at the end, reconcile's one sentence naming the document,
+// and "" for the modes whose session asks for the brief itself. It returns
+// resolveReconcileFile's error for a document it cannot use.
+func planBrief(mode, text, file, cwd, root string) (string, error) {
+	switch mode {
+	case plansession.ModeAmend:
+		if !strings.HasSuffix(text, "\n") {
+			text += "\n"
+		}
+		return text, nil
+	case plansession.ModeReconcile:
+		rel, err := resolveReconcileFile(file, cwd, root)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Reconcile the plan with %s.\n", rel), nil
+	}
+	return "", nil
+}
+
+// planHostSpawn is the host a planning session runs in: the master-plan
+// session in the project's main checkout.
+func planHostSpawn(root, providerName string) session.HostSpawn {
+	return session.HostSpawn{
+		Name:       session.PlanSessionName,
+		Worktree:   root,
+		MasterPlan: true,
+		Provider:   providerName,
 	}
 }
 
@@ -1016,7 +1104,9 @@ func resolveReconcileFile(arg, cwd, root string) (string, error) {
 
 // startPlanSession does what a start needs before the terminal is handed
 // over. It returns the folder an earlier session's files were moved to ("" when
-// none were) and the exit code to stop with (0 to go on).
+// none were) and, when it stopped, why: a sentence with no command name in
+// front, which the command prints after "<cmd>: " and exits 1, and which the
+// dashboard's entry point shows as it is. failed is "" when the host started.
 //
 // The order matters. The marker is written before the host is spawned and on
 // every start, not only the first: cleaning the session removes its folder and
@@ -1033,31 +1123,26 @@ func resolveReconcileFile(arg, cwd, root string) (string, error) {
 // leaves no session, so the same command can simply be run again; had the
 // state been written first, the second try would be refused as "a session is
 // already open" and would find it without its brief.
-func startPlanSession(stderr io.Writer, cmd string, project planProject, action planStartAction, seed planSeed, spec session.HostSpawn, deps planDeps) (string, int) {
+func startPlanSession(project planProject, action planStartAction, seed planSeed, spec session.HostSpawn, deps planDeps) (archived, failed string) {
 	root := project.Root
 	if action.InitRepo {
 		if err := deps.gitInit(root); err != nil {
-			fmt.Fprintf(stderr, "%s: could not turn %s into a git repository: %v\nNothing was started. Check that git is installed and that you may write to the folder.\n", cmd, root, err)
-			return "", 1
+			return "", fmt.Sprintf("could not turn %s into a git repository: %v\nNothing was started. Check that git is installed and that you may write to the folder.", root, err)
 		}
 	}
 	sessionDir := filepath.Join(root, ".afk", session.PlanSessionName)
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		fmt.Fprintf(stderr, "%s: could not create %s: %v\nNothing was started.\n", cmd, sessionDir, err)
-		return "", 1
+		return "", fmt.Sprintf("could not create %s: %v\nNothing was started.", sessionDir, err)
 	}
 	if err := session.WritePlanningMarker(sessionDir); err != nil {
-		fmt.Fprintf(stderr, "%s: could not write to %s: %v\nNothing was started.\n", cmd, sessionDir, err)
-		return "", 1
+		return "", fmt.Sprintf("could not write to %s: %v\nNothing was started.", sessionDir, err)
 	}
-	archived := ""
 	if action.SeedState {
 		if action.Archive {
 			var err error
 			archived, err = plansession.Archive(root, deps.now())
 			if err != nil {
-				fmt.Fprintf(stderr, "%s: could not put the earlier planning session's files away: %v.\nNothing was started.\n", cmd, err)
-				return archived, 1
+				return archived, fmt.Sprintf("could not put the earlier planning session's files away: %v.\nNothing was started.", err)
 			}
 		}
 		// Where the old files went is part of every failure from here on, or
@@ -1068,21 +1153,18 @@ func startPlanSession(stderr io.Writer, cmd string, project planProject, action 
 		}
 		planDir := plansession.Dir(root)
 		if err := os.MkdirAll(planDir, 0o755); err != nil {
-			fmt.Fprintf(stderr, "%s: could not create %s: %v\nNothing was started.%s\n", cmd, planDir, err, moved)
-			return archived, 1
+			return archived, fmt.Sprintf("could not create %s: %v\nNothing was started.%s", planDir, err, moved)
 		}
 		if seed.Brief != "" {
 			path := filepath.Join(planDir, planBriefFile)
 			if err := os.WriteFile(path, []byte(seed.Brief), 0o644); err != nil {
-				fmt.Fprintf(stderr, "%s: could not write %s: %v\nNothing was started.%s\n", cmd, path, err, moved)
-				return archived, 1
+				return archived, fmt.Sprintf("could not write %s: %v\nNothing was started.%s", path, err, moved)
 			}
 		}
 		if seed.Yes {
 			path := filepath.Join(planDir, plansession.YesFile)
 			if err := os.WriteFile(path, nil, 0o644); err != nil {
-				fmt.Fprintf(stderr, "%s: could not write %s: %v\nNothing was started.%s\n", cmd, path, err, moved)
-				return archived, 1
+				return archived, fmt.Sprintf("could not write %s: %v\nNothing was started.%s", path, err, moved)
 			}
 		}
 		state := plansession.State{
@@ -1091,15 +1173,13 @@ func startPlanSession(stderr io.Writer, cmd string, project planProject, action 
 			UpdatedAt: plansession.FormatTime(deps.now()),
 		}
 		if err := plansession.WriteState(root, state); err != nil {
-			fmt.Fprintf(stderr, "%s: could not write %s: %v\nNothing was started.%s\n", cmd, plansession.StatePath(root), err, moved)
-			return archived, 1
+			return archived, fmt.Sprintf("could not write %s: %v\nNothing was started.%s", plansession.StatePath(root), err, moved)
 		}
 	}
 	if _, err := deps.spawn(spec); err != nil {
-		fmt.Fprintf(stderr, "%s: could not start the planning session: %v\nRun `afk plan` again once that is fixed; what is already saved in .afk/plan/ is kept.\n", cmd, err)
-		return archived, 1
+		return archived, fmt.Sprintf("could not start the planning session: %v\nRun `afk plan` again once that is fixed; what is already saved in .afk/plan/ is kept.", err)
 	}
-	return archived, 0
+	return archived, ""
 }
 
 // finishPlanAttach hands the terminal to the session and prints how it ended.

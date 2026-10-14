@@ -4,33 +4,33 @@
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
 │ ▌ ● feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
 │   ● Billing v2          REVIEWING   7/7   ││  executing   loop 3  updated 2026-07-10T00:00:00Z  ● host running       │
-│   ● fix-login-redirect  PLANNING      – ● ││                                                                         │
-│   ○ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
-│   ● scra╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
-│   ○ old-│ type to filter, or press an action's key                                                         │         │
-│         │                                                                                                  │         │
-│         │ n  new session           — Start a new session from a plan or a branch                           │         │
-│         │ o  one-off session       — Start a one-off session with no plan                                  │         │
-│         │ p  switch project        — Switch to another project                                             │         │
-│         │ c  clean session         — Clean the selected session and its worktree                           │         │
-│         │ r  restart agent         — only a stopped or stuck agent can be restarted                        │         │
-│         │ l  edit label            — Give the selected session a display label                             │         │
-│         │ /  filter sessions       — Filter the session list by name                                       │         │
-│         │ x  clear filter          — no filter is applied                                                  │         │
-│         │ b  build tasks           — this project has no build                                             │         │
-│         │ i  inbox                 — the inbox has not been read yet                                       │         │
-│         │ P  pause the build       — this project has no build                                             │         │
-│         │ U  resume the build      — this project has no build                                             │         │
-│         │ f  focus the right side  — Move the keyboard to the right side                                   │         │
-│         │ t  agent or overview     — focus the right side first (enter)                                    │         │
-│         │ \  back to list          — the session list already has the keyboard                             │         │
-│         │ \  close pane            — no agent pane is open                                                 │         │
-│         │ g  mouse                 — Let the terminal select text, or take the mouse back                  │         │
-│         │ w  resize panes          — Move the divider between the list and the right side                  │         │
-│         │ ?  help                  — Show every key on the session list, or hide them again                │         │
-│         │ q  quit                  — Leave the dashboard; every session keeps running                      │         │
+│   ● fix-╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
+│   ○ feat│ type to filter, or press an action's key                                                         │         │
+│   ● scra│                                                                                                  │         │
+│   ○ old-│ n  new session                         — Start a new session from a plan or a branch             │         │
+│         │ o  one-off session                     — Start a one-off session with no plan                    │         │
+│         │ p  switch project                      — Switch to another project                               │         │
+│         │ c  clean session                       — Clean the selected session and its worktree             │         │
+│         │ r  restart agent                       — only a stopped or stuck agent can be restarted          │         │
+│         │ l  edit label                          — Give the selected session a display label               │         │
+│         │ /  filter sessions                     — Filter the session list by name                         │         │
+│         │ x  clear filter                        — no filter is applied                                    │         │
+│         │ b  build tasks                         — this project has no build                               │         │
+│         │ i  inbox                               — the inbox has not been read yet                         │         │
+│         │ P  pause the build                     — this project has no build                               │         │
+│         │ U  resume the build                    — this project has no build                               │         │
+│         │ f  focus the right side                — Move the keyboard to the right side                     │         │
+│         │ t  agent or overview                   — focus the right side first (enter)                      │         │
+│         │ \  back to list                        — the session list already has the keyboard               │         │
+│         │ \  close pane                          — no agent pane is open                                   │         │
+│         │ g  mouse                               — Let the terminal select text, or take the mouse back    │         │
+│         │ w  resize panes                        — Move the divider between the list and the right side    │         │
+│         │ ?  help                                — Show every key on the session list, or hide them again  │         │
+│         │ q  quit                                — Leave the dashboard; every session keeps running        │         │
+│         │    extend the plan                     — Start a planning session that adds work to the plan     │         │
+│         │    amend the plan                      — Change the plan; asks what to change in a sentence      │         │
+│         │    reconcile the plan with a document  — Fit the plan to a document; asks for its path           │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
-│                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
