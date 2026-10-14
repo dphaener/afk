@@ -2279,6 +2279,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   the header after a reading. No test probes real usage. Against a scratch build with a scratch state
   folder and a stand-in for the agent's CLI on a scratch `PATH`: the action writes `usage.json` and
   the header shows the stand-in's numbers. `make check` is green.
+- Amended 2026-10-14 (T7.13 done): later tasks may assume the following. (1) The entry point is `refreshUsageForSurface(p, gov, d)` in `usage_surface.go`, returning `usageRefreshResult` (outcome refreshed, unsupported, failed or save failed; the snapshot and the file written; the raw error; `Text`, a plain sentence with no prefix and no provider name); it writes `usage.json` only, never `governor.json`, and makes one probe with no login check. `afk usage` probes and saves through it, output unchanged; `realUsageDeps()` in `usage_cmd.go` builds the real deps (probe run in afk's state folder). T8.8's page can call it as is, guarding one reading at a time itself. (2) The seam is `ui.Deps.RefreshUsage() ui.UsageRefreshResult`, wired by `dashRefreshUsage` in `dash_usage.go` with the default provider, as `afk usage --refresh` uses. (3) The leader row is `R` "refresh usage" (list and overview, after `U`), no new modal mode; the result is never dropped on a project switch, and the header shows the reading by re-reading `usage.json` through `LoadBuild`. See `## T7.13` in `docs/decisions.md`.
 
 ### M8 — The web page does everything the dashboard does, except attach
 

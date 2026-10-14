@@ -432,6 +432,23 @@ type Deps struct {
 	// filesystem, so a zero Deps must not. A nil LoadTaskTokens dims the
 	// "show this task's tokens" row, gives no row a total, and reads nothing.
 	LoadTaskTokens func(root, task string) TaskTokens
+	// RefreshUsage takes a fresh usage reading of the machine's agent and
+	// saves it, with the governor's decision for it, to usage.json, the way
+	// `afk usage --refresh` does (T7.13). It returns what happened as one
+	// outcome and a plain sentence, and prints nothing. The header then
+	// shows the new reading through the next LoadBuild, which reads
+	// usage.json; on a failure the file is left as it was, so the header
+	// keeps the old reading.
+	//
+	// It runs the agent's command-line tool, which takes a second or two
+	// and can take up to a minute, so it is called only inside a tea.Cmd
+	// (usagerefresh.go), never from Update or View, and only on the owner's
+	// action: never on the refresh tick, at start-up or on a timer.
+	//
+	// It has NO default, for LoadBuild's reason: it runs a real CLI and
+	// writes the real state folder, so a zero Deps must not. A nil
+	// RefreshUsage dims the "refresh usage" row, and nothing is called.
+	RefreshUsage func() UsageRefreshResult
 	// HomeDir is the home folder the add form expands `~` with. nil means
 	// os.UserHomeDir, which reads $HOME and touches no file; it is a seam so
 	// a test can pin the expansion without changing the process environment.
@@ -1407,6 +1424,12 @@ type Model struct {
 	taskStatusInput      textinput.Model
 	taskStatusNote       string
 	taskStatusSetting    bool
+
+	// usageRefreshing is set from the "refresh usage" action until its
+	// result is back, so a second press cannot start a second reading of
+	// the agent's usage meanwhile (usagerefresh.go). It is not reset on a
+	// project switch: the reading is the machine's, not the project's.
+	usageRefreshing bool
 
 	plainBranches []string
 	plainTrunk    string
@@ -2640,6 +2663,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case taskStatusSetMsg:
 		return m.applyTaskStatusSet(msg)
 
+	case usageRefreshedMsg:
+		return m.applyUsageRefreshed(msg)
+
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
 		// one message, and a repo whose trunk is unresolvable (no origin/HEAD, no
@@ -3734,6 +3760,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openTaskStatus()
 	case actionTaskTokens:
 		return m.openTaskTokens()
+	case actionRefreshUsage:
+		return m.refreshUsage()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -5041,6 +5069,7 @@ func (m Model) leaderConditions() leaderConds {
 		canRemoveProject:  m.deps.RemoveProject != nil,
 		canSetTaskStatus:  m.deps.SetTaskStatus != nil,
 		canLoadTaskTokens: m.deps.LoadTaskTokens != nil,
+		canRefreshUsage:   m.deps.RefreshUsage != nil,
 		buildTabFocused:   m.focus == focusRight && m.detailDrawn() && m.activeDetailTab() == tabBuild,
 		planKnown:         m.planStatus.Known,
 		planErr:           m.planStatus.Err != "",
@@ -6106,7 +6135,9 @@ func (m *Model) applyDeadHostOverrides() {
 // otherOpsInFlight covers the remaining three async dispatches
 // (restartHostCmd, restartChildCmd, writeLabelCmd) that keep no record of
 // their own. planApproving is the dashboard's plan approve (planapprove.go),
-// whose commit and push can outlast the working notice's toast.
+// whose commit and push can outlast the working notice's toast, and
+// usageRefreshing is the dashboard's usage reading (usagerefresh.go), which
+// runs the agent's CLI and can take up to a minute.
 //
 // attachInFlight is read with its preview half excluded on purpose. A
 // preview dial (applyPreviewTimer) sets no status text, so a spinner tied to
@@ -6118,7 +6149,8 @@ func (m Model) hasInFlightWork() bool {
 		(m.attachInFlight.name != "" && (!m.attachInFlight.preview || m.attachInFlight.claimedPreview)) ||
 		m.otherOpsInFlight > 0 ||
 		m.planApproving ||
-		m.taskStatusSetting
+		m.taskStatusSetting ||
+		m.usageRefreshing
 }
 
 // startSpinnerIfNeeded arms the spinner's tick loop and is a no-op if the

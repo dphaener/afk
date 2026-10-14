@@ -617,7 +617,19 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 		m, _ = update(t, m, taskTokensLoadedMsg{gen: m.projectGen, root: m.build.Root, task: m.buildCursorID, rec: TaskTokens{Task: m.buildCursorID}})
 		return m
 	}
+	// usageList is the session list with the usage reading seam wired
+	// (T7.13); the seam is never reached, since ran reads only the flag the
+	// action sets before its command runs.
+	usageList := func(t *testing.T) Model {
+		m := testModel(sess("a"))
+		m.deps.RefreshUsage = func() UsageRefreshResult { return UsageRefreshResult{} }
+		return m
+	}
 	return map[modeAction]leaderActionCase{
+		// "refresh usage" (T7.13) never had a key; R on the bare list is no
+		// action and must not become one.
+		actionRefreshUsage: {setup: usageList, mode: inputNormal, old: press('R'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.usageRefreshing }},
 		// "show this task's tokens" (T7.12) never had a key; T on the Build
 		// tab is no action and must not become one.
 		actionTaskTokens: {setup: tokensTab, mode: inputDetail, old: press('T'),

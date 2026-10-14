@@ -125,7 +125,8 @@ type leaderEntry struct {
 // plan" of "## T7.7" and the by-name "approve the plan" of T7.8, with
 // T7.9's "all projects" on A after switch project, its neighbour in meaning,
 // T7.10's add and remove a project on + and - right after it, and T7.12's
-// "show this task's tokens" on T right after T7.11's S;
+// "show this task's tokens" on T right after T7.11's S, and T7.13's
+// "refresh usage" on R right after resume;
 // TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
@@ -158,6 +159,12 @@ var leaderTable = []leaderEntry{
 	{key: "i", action: actionInbox, reach: reachOverview},
 	{key: "P", action: actionPauseBuild, reach: reachOverview},
 	{key: "U", action: actionResumeBuild, reach: reachOverview},
+	// "refresh usage" (T7.13) takes a fresh usage reading for the header.
+	// Upper-case R: lower-case r is restart's key, and a free lower-case
+	// letter would run the row from an empty query instead of starting a
+	// filter. It sits after pause and resume, the other rows about the
+	// build's use of the agent.
+	{key: "R", action: actionRefreshUsage, reach: reachOverview},
 	// "set this task's status" (T7.11) acts on the Build tab's cursor row,
 	// which is drawn only while the right side has the keyboard, so it is a
 	// right-side action. Upper-case S: lower-case s would run it from an
@@ -252,6 +259,7 @@ var leaderNames = map[modeAction]string{
 	actionResumeBuild:   "resume the build",
 	actionTaskStatus:    "set this task's status",
 	actionTaskTokens:    "show this task's tokens",
+	actionRefreshUsage:  "refresh usage",
 	actionFocusPane:     "focus the right side",
 	actionPaneToggle:    "agent or overview",
 	actionDetailUnfocus: "back to list",
@@ -321,6 +329,8 @@ var leaderHelp = map[modeAction]string{
 	actionTaskStatus: "Change the selected Build task's status, as afk ledger set does",
 	// The same words to avoid as the line above.
 	actionTaskTokens: "Show how many tokens the selected Build task used, as afk tokens does",
+	// The same words to avoid as the two lines above.
+	actionRefreshUsage: "Take a fresh usage reading for the header, as afk usage --refresh does",
 }
 
 // leaderRow is one action in the dialog.
@@ -507,6 +517,8 @@ type leaderConds struct {
 	projectRowName                       string
 	// canLoadTaskTokens is "the LoadTaskTokens seam is wired" (T7.12).
 	canLoadTaskTokens bool
+	// canRefreshUsage is "the RefreshUsage seam is wired" (T7.13).
+	canRefreshUsage bool
 	// canSetTaskStatus is "the SetTaskStatus seam is wired" (T7.11).
 	// buildTabFocused is "the Build tab is drawn on the right and the right
 	// side has the keyboard", and buildTaskSelected "its cursor is on a
@@ -618,6 +630,8 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		return taskStatusBlockedReason(c)
 	case actionTaskTokens:
 		return taskTokensBlockedReason(c)
+	case actionRefreshUsage:
+		return usageRefreshBlockedReason(c)
 	case actionProjects:
 		if !c.hasActiveProject {
 			return "no projects to switch between"

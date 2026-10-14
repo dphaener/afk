@@ -2900,3 +2900,24 @@ Decided while building (T7.12):
 Verification for the owner (T7.12):
 
 - At 80 columns in a real terminal, open the tokens overlay (leader, then `T`) on the Build tab and check the row and the box's border draw cleanly. The hands-on check's tmux capture showed stray tab cells and a shifted border after a resize, most likely tmux redrawing.
+
+## T7.13
+
+T7.13 adds a dashboard action that takes a fresh usage reading, as `afk usage --refresh` does, and shows it in the header. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One code path (A1).** The probe-and-save step of `afk usage` moves into an entry point that takes a reading, saves it and returns it (or the reason there is none) without printing. The command calls it and keeps its reuse window, output and exit codes; the dashboard calls the same code.
+- **Which agent is read (A2).** The default one, as `afk usage --refresh` reads when no `--provider` is given.
+- **What a failure says (A3).** Four plain cases: the agent's command-line tool was not found; this agent cannot report its usage; usage could not be read (check the tool is installed and logged in); the reading could not be saved. afk does not run a separate login check to tell "logged out" apart, because the command does not either.
+- **Only `usage.json` is written (A4).** That is what `--refresh` writes: the reading plus the governor's decision for it. `governor.json` is the daemon's record of its own probes and is left alone, although the master plan's background line mentions it.
+- **Key (A5).** The leader, then upper-case `R`, "refresh usage", from the session list or the overview. Lower-case `r` is restart, and a free lower-case letter would run the row from an empty query instead of starting a filter. It is dimmed over the all-projects screen, like the other project actions.
+- **A reading that lands after a project switch (A6)** is kept and its notice shown, because usage belongs to the machine, not the project. The header reload it triggers still belongs to whichever project is open.
+- **Tests and prerequisites (A7, A8).** Table tests are written with the code. Nothing had to be in place first: T7.1 is merged.
+
+Decided while building (T7.13):
+
+- **The result keeps the raw error and the sentence apart.** The shared entry point returns the error as it was, so `afk usage` prints its own stderr lines unchanged, and a separate plain sentence for the dashboard. The dashboard never sees the command's `afk usage:` prefix or the provider's name.
+- **The governor decision is judged before the probe and stamped after it.** The decision is made on the new reading, judged at the time the probe started (as `afk usage` always did), and stamped with the time after the probe, so it is never dated before the reading it came from. The unsupported case keeps its decision in the command, which prints it and stores nothing, so the shared entry point has no printing in it.
+- **An empty result sentence is never shown as a success.** If the root package hands back an outcome with no sentence, the dashboard says it could not tell whether usage was read and points at `afk usage`, as the task-status notice does. An outcome it does not know is shown as information, not as a success.
+- **One reading at a time.** A second press while a reading is running calls nothing and says so. The running reading also counts as work in progress for the dashboard, so the screen does not treat the program as idle while the agent's command-line tool is being asked.
+- **The header catches up on the next tick if a build read is in flight.** The reload after a reading goes through the header's own build read, which skips a second read while one is running. If a tick's build read is still going when the reading lands, the header shows the new numbers on the next tick (at most 2 seconds later) rather than at once. Nothing is lost: the reading is saved either way.
+- **The reading is shown from the file, not from the result.** The result carries only an outcome and a sentence, never the numbers. The header re-reads `usage.json`, so it cannot show a reading that was not saved, and a failed reading leaves the old one on screen.
