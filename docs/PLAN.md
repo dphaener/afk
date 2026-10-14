@@ -2543,6 +2543,12 @@ thing it does not do is attach to a session.
   dashboard's words: clean names the session and what is removed and refuses what `afk clean` refuses;
   restart says what will happen to a running agent; the new-session form takes a name and a
   description, as `afk new --autonomous` does, and refuses what it refuses. The same under `/api`.
+  From the design system (reconciled 2026-10-13): the session screen's **Actions** rows (Restart,
+  Label, and Clean in danger text), each opening a `confirm-sheet` with the safe button focused, and
+  **Start a new autonomous session…** opening a `card` form (Name in `input--mono`, a "What should it
+  do?" `textarea`, **Start session**) that is confirmed before it starts. The confirm sentences are
+  the dashboard's and say what `afk clean` really removes; the design's sample sentence is not used
+  where it differs.
   README: the web page section.
 - **Must not:** start an attended or one-off session; send `Exit` to a host; delete a branch the
   command would not; act without the confirm.
