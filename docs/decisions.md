@@ -2779,3 +2779,32 @@ T7.7 has the dashboard show what `afk plan status` and `afk plan lint` print for
 ### Scope ideas
 
 - **Singular counts in the plan check.** The overlay's counts line says "1 owner tasks" and "1 open questions". It should use the singular for a count of one, as its "1 error" line already does.
+
+## T7.8
+
+T7.8 lets the owner approve a plan from `afk dash`, with the same effect as `afk plan approve`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One code path for both (A1).** A new entry point, `approvePlanForSurface` in `plan_approve_surface.go`, runs the gate and the steps and returns what happened as data: approved, already approved, refused, no project, or which step failed with what was done and what is left. It also keeps the lines the command prints, in order and with the stream each goes to, so `afk plan approve` prints from it and its output does not change by a byte. The web page (T8.11) can call it as it is.
+- **Who words the result (A2).** A plain function in the dashboard's adapter (`dash_approve.go`) turns the result into one notice. The screen code only shows the text, so it still never imports the command's package.
+- **The dialog row (A3).** "approve the plan", by name: type `approve`, since `a` is no row's key. It is dimmed, with the reason, unless a new plan is at `review`: no project, status not read yet, no planning session, a damaged state file, already approved, a change session, or another phase.
+- **The confirm (A4).** It shows the project, the plan's path and the checker's counts. With one or more errors it has no yes, and says to fix them first and how to see them (`errors`). It is a tenth modal mode.
+- **Running it (A5).** `y` closes the confirm, shows a working notice and runs the steps once, away from the screen drawing, because they commit and push. A second `y` while it runs does nothing. The result is shown as a notice and the plan line is read again at once.
+- **Long errors (A6).** A notice carries only the first line of what git said, and points at `afk plan approve --project <folder>` for the rest.
+- **Tests (A7)** are table tests written with the code; the command's existing tests stay as they are and guard its output. **Nothing had to be in place first (A8):** T7.7 is merged.
+
+### Decided while building
+
+- **Lines are printed after the run, not as each step finishes.** `afk plan approve` now replays the lines `approvePlanForSurface` returns once the run ends. The bytes, their order within each stream and the exit codes are unchanged. Only the timing differs: a run killed half way (during a slow push) prints nothing for the steps it did. Accepted because the run is one bounded push at most, and a re-run reports and finishes what is left.
+- **Errors remove the confirm's yes through the mode code, not a second mode.** While the plan has errors, `Model.modes()` swaps the confirm for one without the yes key, so the footer and the dialog hint never offer a key that does nothing. The handler also refuses on errors, as a second guard. A separate "approve with errors" mode was rejected: it would add another modal and another precedence row for one dialog.
+- **The row's reason is one function.** The dimmed reason for **approve the plan** comes from one function that both the dialog row and the action read. An action run without the dialog gets the same sentence, "The plan cannot be approved: <reason>."
+- **A second approve, or a project switch under an open confirm, does nothing.** While an approve is out, opening the action says "The plan is already being approved. Wait for it to finish." and calls nothing. A `y` under a confirm after a project switch approves nothing and says so, following the GitHub question's rule.
+- **Notices carry the first line of a reason, and push notes appear only when a push did not happen.** A refusal shows its first line and "Nothing was changed.", since a notice has no room for the hint line. A failed notice says to approve again here or run `afk plan approve --project <root>`. The push note is added for via-PR, no origin, no branch and a failed push, and says how to push by hand.
+
+### Verification for the owner
+
+- **Approve a real plan from your own dashboard.** The scratch run approved a throwaway repository with no origin. On a project with an origin, check that the notice says the commit was pushed and that a running `afk daemon` starts the first ready task.
+
+### Scope ideas
+
+- **Long results are cut off by the notice.** On a 140-column terminal the approved notice ended at "No afk daemon seems to be running."; the start-the-daemon hint and any push note were cut. Showing the full result in a dialog, or on the Build tab's plan line, would keep it readable.
+- **The web page sentence in the README** ("there is no button to approve … or from `afk dash`") reads a little awkwardly; T8.11 will rewrite it when the page gains approving.

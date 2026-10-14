@@ -31,8 +31,8 @@
 │         │    reconcile the plan with a document  — Fit the plan to a document; asks for its path           │         │
 │         │    start a new plan                    — starting a plan is not available here                   │         │
 │         │    check the plan                      — checking the plan is not available here                 │         │
+│         │    approve the plan                    — approving is not available here                         │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
-│                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │

@@ -1666,3 +1666,22 @@ func cleanErr(err error, out *bytes.Buffer) error {
 	}
 	return err
 }
+
+// planApprovedMsg carries one Deps.ApprovePlan call's result back to Update
+// (planapprove.go). root and gen are the project folder and generation the
+// owner said y under, so a result that crosses a project switch is dropped
+// rather than told under the other project's name.
+type planApprovedMsg struct {
+	root   string
+	gen    int
+	result PlanApproveResult
+}
+
+// approvePlanCmd runs one approve. approve is called here, on the command
+// goroutine, and nowhere else: it writes files, commits and pushes, and a
+// slow push must not freeze the screen.
+func approvePlanCmd(approve func(root string) PlanApproveResult, root string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		return planApprovedMsg{root: root, gen: gen, result: approve(root)}
+	}
+}

@@ -652,6 +652,16 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 			return withPlanStatus(t, testModel(sess("a")), planCheckStatusErrors())
 		}, mode: inputNormal, old: press('e'), query: "errors",
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.planCheckOpen }},
+		// "approve the plan" (T7.8) is reached by "approve": a, its first
+		// letter, is no leader key, and only this row says the word
+		// (TestLeaderPlanApproveWordIsUnique). Running it raises the confirm;
+		// nothing is approved until its y.
+		actionPlanApprove: {setup: func(t *testing.T) Model {
+			m := withPlanStatus(t, testModel(sess("a")), planApproveStatus(0))
+			m.deps.ApprovePlan = func(string) PlanApproveResult { return PlanApproveResult{} }
+			return m
+		}, mode: inputNormal, old: press('a'), query: "approve",
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputConfirmPlanApprove }},
 	}
 }
 

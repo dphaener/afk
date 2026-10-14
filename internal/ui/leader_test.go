@@ -292,6 +292,8 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"", actionPlanNew},
 		// T7.7: by name only, no key after the leader.
 		{"", actionPlanCheck},
+		// T7.8: by name only, no key after the leader.
+		{"", actionPlanApprove},
 	}
 	if len(leaderTable) != len(want) {
 		t.Fatalf("leaderTable has %d rows, the decided table %d", len(leaderTable), len(want))
