@@ -736,6 +736,9 @@ func TestDashDepsWiresTheBuildSeams(t *testing.T) {
 	if deps.ResumeBuild == nil {
 		t.Fatal("dashDeps(...).ResumeBuild is nil, want dashResumeBuild")
 	}
+	if deps.LoadPlanStatus == nil {
+		t.Fatal("dashDeps(...).LoadPlanStatus is nil, want dashLoadPlanStatus")
+	}
 
 	// A scratch state home, so the real usage read finds no file and cannot
 	// touch this machine's own.

@@ -228,6 +228,45 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputSwitcher,
 		},
 		{
+			name:  "plan check alone",
+			state: modeState{planCheckOpen: true},
+			want:  inputPlanCheck,
+		},
+		{
+			// Reachable: "check the plan" is a list action, but a pane that
+			// was focused on arrival can land under the overlay.
+			name:  "plan check over focused pane: the overlay is what is on screen",
+			state: modeState{planCheckOpen: true, focus: focusRight, view: viewAgent, pane: true},
+			want:  inputPlanCheck,
+		},
+		{
+			name:  "plan check over form",
+			state: modeState{planCheckOpen: true, formOpen: true},
+			want:  inputPlanCheck,
+		},
+		{
+			name:  "plan check over resizing",
+			state: modeState{planCheckOpen: true, resizing: true},
+			want:  inputPlanCheck,
+		},
+		{
+			name:  "inbox over plan check",
+			state: modeState{inboxOpen: true, planCheckOpen: true},
+			want:  inputInbox,
+		},
+		{
+			name:  "leader over plan check",
+			state: modeState{leaderOpen: true, planCheckOpen: true},
+			want:  inputLeader,
+		},
+		{
+			// Reachable for the inbox's reason: a background create can fail
+			// while the overlay is up.
+			name:  "spawn error over plan check: modal wins",
+			state: modeState{modal: inputSpawnError, planCheckOpen: true},
+			want:  inputSpawnError,
+		},
+		{
 			name:  "leader over inbox",
 			state: modeState{leaderOpen: true, inboxOpen: true},
 			want:  inputLeader,
@@ -518,6 +557,11 @@ func TestModeSnapshot(t *testing.T) {
 			name: "inbox open",
 			mut:  func(m *Model) { m.inboxOpen = true },
 			want: modeState{inboxOpen: true},
+		},
+		{
+			name: "plan check open",
+			mut:  func(m *Model) { m.planCheckOpen = true },
+			want: modeState{planCheckOpen: true},
 		},
 		{
 			name: "inbox open over a focused overview",
@@ -901,6 +945,14 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"esc in inbox goes to the component (two-stage)", inputInbox, routeConds{}, esc, keyDecision{kind: routeComponent}},
 		{"enter in inbox goes to the component", inputInbox, routeConds{}, enter, keyDecision{kind: routeComponent}},
 		{"i in inbox is text (component)", inputInbox, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		// The plan check holds nothing typed, so ctrl+c quits over it as over
+		// the switcher; every other key, the leader included, is the
+		// overlay's, which is what keeps the dialog shut while it is up.
+		{"ctrl+c in plan check quits", inputPlanCheck, routeConds{}, ctrlC, keyDecision{kind: routeAction, action: actionQuit}},
+		{"esc in plan check goes to the component", inputPlanCheck, routeConds{}, esc, keyDecision{kind: routeComponent}},
+		{"q in plan check goes to the component", inputPlanCheck, routeConds{}, q, keyDecision{kind: routeComponent}},
+		{"ctrl+space in plan check goes to the component", inputPlanCheck, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"pgdown in plan check goes to the component", inputPlanCheck, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgDown}, keyDecision{kind: routeComponent}},
 		{"b in inbox is text (component)", inputInbox, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
 		{"ctrl+t in inbox goes to the component", inputInbox, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
 		{"ctrl+backslash in inbox goes to the component", inputInbox, routeConds{paneOpen: true}, ctrlBackslash, keyDecision{kind: routeComponent}},
@@ -1268,6 +1320,16 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"inbox advertises pgup", inputInbox, "pgup"},
 		{"inbox advertises pgdown", inputInbox, "pgdown"},
 		{"inbox advertises ctrl+g", inputInbox, "ctrl+g"},
+		// The plan-check overlay's scroll keys and esc are the component's,
+		// so this keymap is their only structured record.
+		{"plan check advertises esc", inputPlanCheck, "esc"},
+		{"plan check advertises up", inputPlanCheck, "up"},
+		{"plan check advertises down", inputPlanCheck, "down"},
+		{"plan check advertises pgup", inputPlanCheck, "pgup"},
+		{"plan check advertises pgdown", inputPlanCheck, "pgdown"},
+		{"plan check advertises home", inputPlanCheck, "home"},
+		{"plan check advertises end", inputPlanCheck, "end"},
+		{"plan check advertises ctrl+c", inputPlanCheck, "ctrl+c"},
 		// The leader is listed by `?` (normal mode's full help), and the
 		// dialog's own gestures are the component's, so this keymap is their
 		// only structured record.

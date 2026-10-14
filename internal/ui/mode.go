@@ -136,6 +136,13 @@ const (
 	// after either. It swallows unclaimed keys, enter included, so the
 	// default is no and a repository is made only on an explicit y.
 	inputConfirmGitHubRepo
+	// inputPlanCheck is the check-the-plan overlay (Model.planCheckOpen,
+	// plancheckoverlay.go): the plan checker's counts and findings in a
+	// scrollable box. It is an overlay like the inbox, not a footer modal:
+	// it asks no question, so nothing about it needs to outrank a create's
+	// failure report, and it coexists with the modals the same way the
+	// inbox does.
+	inputPlanCheck
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -181,6 +188,8 @@ func (m inputMode) String() string {
 		return "confirm-plan-folder"
 	case inputConfirmGitHubRepo:
 		return "confirm-github-repo"
+	case inputPlanCheck:
+		return "plan-check"
 	}
 	return "unknown"
 }
@@ -239,6 +248,8 @@ type modeState struct {
 	pane bool
 	// inboxOpen mirrors Model.inboxOpen.
 	inboxOpen bool
+	// planCheckOpen mirrors Model.planCheckOpen.
+	planCheckOpen bool
 	// leaderOpen mirrors Model.leaderOpen.
 	leaderOpen bool
 	// resizing mirrors Model.resizing. It needs no conjunction: resize mode
@@ -261,6 +272,7 @@ func (m Model) modeSnapshot() modeState {
 		view:          m.view,
 		pane:          m.paneForSelection(),
 		inboxOpen:     m.inboxOpen,
+		planCheckOpen: m.planCheckOpen,
 		leaderOpen:    m.leaderOpen,
 		resizing:      m.resizing,
 	}
@@ -341,6 +353,11 @@ type modeLayer struct {
 //     above the form, the filter prompt, resize mode and both right-side
 //     focuses, so a pane that arrives focused under it cannot take keys
 //     meant for the answer field.
+//   - The check-the-plan overlay sits directly below the inbox, for the
+//     inbox's reasons: it is opened only through the actions dialog, so no
+//     other overlay is up when it appears, and it outranks the form, the
+//     filter prompt, resize mode and both right-side focuses so a pane that
+//     arrives focused under it cannot take the scroll keys.
 //   - The form outranks a focused pane. THIS IS THE ONE DELIBERATE CHANGE:
 //     today's if-order lets an invisible focused pane swallow every key while
 //     the form is on screen (the known uncovered corner at model.go:1613-1620,
@@ -394,6 +411,7 @@ var modePrecedence = []modeLayer{
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
+	{inputPlanCheck, func(s modeState) bool { return s.planCheckOpen }},
 	{inputForm, func(s modeState) bool { return s.formOpen }},
 	{inputFilter, func(s modeState) bool { return s.listFiltering }},
 	{inputResize, func(s modeState) bool { return s.resizing }},
@@ -496,6 +514,10 @@ const (
 	actionPlanAmend     // openPlanTextForm(amend)
 	actionPlanReconcile // openPlanTextForm(reconcile)
 	actionPlanNew       // openPlanNewForm: start a new plan in a folder
+	// actionPlanCheck is "check the plan" (T7.7): openPlanCheck shows the
+	// plan checker's result from the last plan status read. By name only,
+	// like the plan actions above.
+	actionPlanCheck
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -614,6 +636,8 @@ func (a modeAction) String() string {
 		return "plan-reconcile"
 	case actionPlanNew:
 		return "plan-new"
+	case actionPlanCheck:
+		return "plan-check"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -1376,6 +1400,20 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		mode: inputInbox,
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: inboxModeKeys()},
+	}
+
+	// Plan-check mode is the switcher's shape: ctrl+c quits, as it does over
+	// the switcher, because the overlay holds nothing typed that quitting
+	// could lose; every other key is the overlay's, staged in
+	// planCheckOverlay.Update, so the scroll keys and esc are implemented
+	// once. ctrl+g is absent for the switcher's documented reason.
+	r[inputPlanCheck] = modeSpec{
+		mode: inputPlanCheck,
+		rules: []modeRule{
+			{binding: quitChord, action: actionQuit},
+		},
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: append(planCheckKeys(), quitChord)},
 	}
 
 	// The modals transcribe their update handlers rung for rung: mouse

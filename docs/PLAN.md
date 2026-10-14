@@ -2110,6 +2110,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   and errors, at narrow and wide widths. Against a scratch build in a throwaway repository whose plan
   has one error and an open `extend` session at `rounds`: the Build tab shows the line and the
   overlay lists the error. `make check` is green.
+- Amended 2026-10-14 (T7.7 done): later tasks may assume the following. (1) The seam is `ui.Deps.LoadPlanStatus(repo) ui.PlanStatus` (`internal/ui/planstatus.go`), wired by `dashLoadPlanStatus` in `dash_planstatus.go`; it reads the main checkout's files only and carries `Session`, `Damaged`, `Mode`, `Phase`, `Waiting`, `Problems`, `OpenQuestions`, `PlanExists`, `PlanPath`, `Summary` (the checker's counts) and `Findings`, so T7.8 enables approve when `Session && Mode == "new" && Phase == "review"` and shows `Summary` in its confirm. (2) The model keeps it in `Model.planStatus` (`Known` once read), refreshed by `planStatusCmd` on every refresh and dropped on a project switch; read it there, never call the seam from a view. (3) The dialog row "check the plan" (`actionPlanCheck`, non-modal overlay `inputPlanCheck`, still nine modal modes) is reached by typing `errors`: a by-name row's typed word must start with a letter no row uses as its key (`a d e h j k m s u v y z`), because the first letter typed runs that key's row. See `## T7.7` in `docs/decisions.md`.
 
 #### T7.8 — Approve a plan from the dashboard
 - **Depends on:** T7.7

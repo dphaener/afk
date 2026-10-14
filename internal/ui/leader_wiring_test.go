@@ -180,6 +180,14 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 			mode: inputInbox,
 		},
 		{
+			name: "plan check",
+			open: func(t *testing.T, m Model) Model {
+				m, _ = runPlanAction(t, withPlanStatus(t, m, planCheckStatusErrors()), "errors")
+				return m
+			},
+			mode: inputPlanCheck,
+		},
+		{
 			name: "new-session form",
 			open: func(t *testing.T, m Model) Model { return pressLeader(t, m, keyRune('n')) },
 			mode: inputForm,
@@ -637,6 +645,13 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 		// letter, s, is no leader key, so the whole name filters down to it.
 		actionPlanNew: {setup: planList, mode: inputNormal, old: press('s'), query: "start a new plan",
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputPlanText && a.planTextMode == PlanModeNew }},
+		// "check the plan" (T7.7) is reached by "errors", a word only its
+		// help line has: its name starts with c, clean's key, and "warnings"
+		// with w, resize's (TestLeaderPlanCheckWordsAreUnique).
+		actionPlanCheck: {setup: func(t *testing.T) Model {
+			return withPlanStatus(t, testModel(sess("a")), planCheckStatusErrors())
+		}, mode: inputNormal, old: press('e'), query: "errors",
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.planCheckOpen }},
 	}
 }
 

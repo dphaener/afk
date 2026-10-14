@@ -3,12 +3,11 @@
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
 │ ▌ ● feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
-│   ● Billing v2          REVIEWING   7/7   ││  executing   loop 3  updated 2026-07-10T00:00:00Z  ● host running       │
-│   ● fix-╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
-│   ○ feat│ type to filter, or press an action's key                                                         │         │
-│   ● scra│                                                                                                  │         │
-│   ○ old-│ n  new session                         — Start a new session from a plan or a branch             │         │
-│         │ o  one-off session                     — Start a one-off session with no plan                    │         │
+│   ● Bill╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮ng       │
+│   ● fix-│ type to filter, or press an action's key                                                         │         │
+│   ○ feat│                                                                                                  │         │
+│   ● scra│ n  new session                         — Start a new session from a plan or a branch             │         │
+│   ○ old-│ o  one-off session                     — Start a one-off session with no plan                    │         │
 │         │ p  switch project                      — Switch to another project                               │         │
 │         │ c  clean session                       — Clean the selected session and its worktree             │         │
 │         │ r  restart agent                       — only a stopped or stuck agent can be restarted          │         │
@@ -31,6 +30,7 @@
 │         │    amend the plan                      — Change the plan; asks what to change in a sentence      │         │
 │         │    reconcile the plan with a document  — Fit the plan to a document; asks for its path           │         │
 │         │    start a new plan                    — starting a plan is not available here                   │         │
+│         │    check the plan                      — checking the plan is not available here                 │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │

@@ -2752,3 +2752,30 @@ T7.6 has the dashboard offer a private GitHub repository straight after T7.5 mak
 ### Scope ideas
 
 - **A shorter "gh not installed" notice.** The notice in `internal/ghrepo` is about 190 characters, longer than the toast's three lines, so its end is cut. Something like "No GitHub repository offered: gh is not installed. Get it from https://cli.github.com, then run `gh auth login`." would fit. Left for a later change.
+
+## T7.7
+
+T7.7 has the dashboard show what `afk plan status` and `afk plan lint` print for the active project. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **Its own seam (A1).** The planning status and the checker's result come through a new `ui.Deps.LoadPlanStatus`, read on the dashboard's refresh with its own guard, not as part of the Build tab's snapshot. The `master-plan` session's overview needs the status even when the project has no plan yet, and so no Build tab.
+- **The dashboard's own types (A2).** `internal/ui` gets its own plain types for the status, the counts and the findings, filled in by the root package, as it already does for starting a plan.
+- **The plan line (A3).** One short line, worded by one function: "no planning session", "extend · rounds · 2 questions have no answer yet", "plan waiting for your approval" for a new plan at review, "amend · finished · the changes are in the plan", "plan approved", or "the planning state file is damaged: …". Other phases show the mode, the phase and what the session waits for. The Build tab leaves the line out when there is no planning session.
+- **Reaching "check the plan" (A4).** The action is in the dialog by name. Typing "check" would run clean, because `c` is clean's key, so its help line holds a word no other row has. The work plan chose "warnings", but `w` is resize's key, so the word is "errors": type `errors` and press enter (see "Decided while building"). With no plan it says there is no plan to check, rather than being dimmed.
+- **The overlay (A5).** It works like the inbox overlay: it shows what was read when it opened, scrolls, and `esc` closes it. It is not a confirm, so it does not count as a modal.
+- **The wording of findings (A6).** Each finding is written as `afk plan lint` writes it, with the plan's path relative to the project, errors first and the plan's order kept within each level, under a line of counts.
+- **Tests (A7)** are table tests written before the code. **Nothing had to be in place first (A8):** T7.1 is merged.
+
+### Decided while building
+
+- **The typed word is `errors`, not `warnings` (changes A4).** In the actions dialog the first typed letter runs any row whose key it is, and `w` is the resize key, so `warnings` cannot be typed from an empty box. The row is reached by typing `errors`; its help line holds both words and tests keep both unique to this row.
+- **Two extra cases when the action runs.** If the dashboard is run without the reader wired, it says so and points at `afk plan lint`. If reading the plan failed, the notice gives the reason instead of "no plan to check at ".
+- **The overlay is not refreshed while open.** A moving list would shift the line being read, and nothing in it can be acted on; reopening shows the latest reading. Findings wrap rather than truncate so the message and rule stay visible.
+- **A new plan with a lint error shows phase `check`, not `review`**, because the status uses the same error count as `afk plan status`.
+
+### Verification for the owner
+
+- **Look at the plan line in your own terminal.** Open `afk dash` on a project with an open planning session and go to the Build tab. Check that the `plan:` line ends cleanly before the right border: a tmux capture of the scratch build showed tab characters there, which is probably how the screen was redrawn and not text in the line.
+
+### Scope ideas
+
+- **Singular counts in the plan check.** The overlay's counts line says "1 owner tasks" and "1 open questions". It should use the singular for a count of one, as its "1 error" line already does.

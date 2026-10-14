@@ -112,8 +112,8 @@ func (m Model) View() tea.View {
 	// replacing a region of it, so the list and the pane a person was reading
 	// stay on screen behind the box. The order matches modePrecedence — the
 	// actions dialog outranks the switcher, which outranks the inbox, which
-	// outranks the form — so the frame and the key routing agree on which
-	// surface is on top. The four are mutually
+	// outranks the plan check, which outranks the form — so the frame and the
+	// key routing agree on which surface is on top. The five are mutually
 	// exclusive in practice (each owns every key while it is up), so this is
 	// fidelity to the precedence table, not a state a user can reach. Whatever
 	// owns the keyboard must be ON SCREEN, and that holds in the empty state
@@ -130,6 +130,8 @@ func (m Model) View() tea.View {
 		frame = composeModal(frame, m.renderSwitcherModal(), m.width, m.height)
 	case m.inboxOpen:
 		frame = composeModal(frame, m.renderInboxModal(), m.width, m.height)
+	case m.planCheckOpen:
+		frame = composeModal(frame, m.renderPlanCheckModal(), m.width, m.height)
 	case m.formOpen:
 		frame = composeModal(frame, m.renderNewFormModal(), m.width, m.height)
 	}
@@ -1923,6 +1925,11 @@ func (m Model) renderHelp() string {
 		// keymap lists both. The line shows the ones for the screen that is
 		// up, read off the same bindings the overlay matches against.
 		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: m.inbox.helpKeys()}, false, width))
+	case mode == inputPlanCheck:
+		// The registry's keymap is the whole surface; it is named here only
+		// so the overlay's line does not depend on the default arm's shape.
+		reg := m.modes()
+		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(inputPlanCheck).keys, false, width))
 	default:
 		reg := m.modes()
 		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(mode).keys, false, width))
@@ -2743,7 +2750,7 @@ func (m Model) composeDetailBody(contentW int) string {
 		return b.String()
 	}
 
-	ctx := panelContext{Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build}
+	ctx := panelContext{Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build, PlanStatus: m.planStatus}
 	spec := detailTabSpecs()[active]
 	rendered := 0
 	for _, p := range spec.panels {
@@ -3012,6 +3019,12 @@ func (overviewPanel) Render(ctx panelContext, width int) []string {
 			meta += "  " + theme.errorText.Render(wedgedGlyph+" wedged "+durationShort(age))
 		}
 		out = append(out, truncate(meta, width))
+	}
+
+	// Only the planning session's overview carries the plan line: the status
+	// is about the project's plan, which no other session owns.
+	if s.Name == session.PlanSessionName && ctx.PlanStatus.Known {
+		out = append(out, theme.dim.Render(truncate("plan: "+planStatusLine(ctx.PlanStatus), width)))
 	}
 
 	if showsAwaitingInput(s) {
@@ -3365,6 +3378,10 @@ type panelContext struct {
 	// Build is the project's build snapshot, for the Build tab. It is the one
 	// field that is not about the selected session.
 	Build buildview.Snapshot
+	// PlanStatus is the project's planning status and plan check, for the
+	// plan line on the master-plan overview and the Build tab. Like Build it is
+	// about the project and not the selected session.
+	PlanStatus PlanStatus
 }
 
 // wavesPanel renders the plan's waves and tasks with their checkbox states.

@@ -50,7 +50,7 @@ type buildPanel struct{}
 func (buildPanel) Title() string { return "Build" }
 
 func (buildPanel) Render(ctx panelContext, width int) []string {
-	return buildTabLines(ctx.Build, width)
+	return buildTabLines(ctx.Build, ctx.PlanStatus, width)
 }
 
 // buildTabLines is the Build tab's content at the given width: the summary
@@ -60,11 +60,11 @@ func (buildPanel) Render(ctx panelContext, width int) []string {
 //
 // It is a pure function of the snapshot so the whole layout is table-testable
 // without a Model.
-func buildTabLines(snap buildview.Snapshot, width int) []string {
+func buildTabLines(snap buildview.Snapshot, plan PlanStatus, width int) []string {
 	if width < 1 {
 		width = 1
 	}
-	lines := buildSummaryLines(snap, width)
+	lines := buildSummaryLines(snap, plan, width)
 	if snap.Problem != "" {
 		// The loader leaves the rows empty when the plan or the ledger cannot
 		// be read. Saying "no tasks" under the reason would be a second,
@@ -85,7 +85,7 @@ func buildTabLines(snap buildview.Snapshot, width int) []string {
 // The problem sentence is wrapped, not cut, and it replaces the count: it
 // holds an absolute path, the path is what the owner needs to go and fix the
 // file, and with a problem the loader has no count to give.
-func buildSummaryLines(snap buildview.Snapshot, width int) []string {
+func buildSummaryLines(snap buildview.Snapshot, plan PlanStatus, width int) []string {
 	var lines []string
 	if snap.Problem != "" {
 		wrapped := lipgloss.Wrap(snap.Problem, width, "")
@@ -101,6 +101,11 @@ func buildSummaryLines(snap buildview.Snapshot, width int) []string {
 			}
 		}
 		lines = append(lines, truncate(head, width))
+	}
+	// The plan line follows the first line. It is left out with no planning
+	// session, so a project that never planned through afk shows nothing new.
+	if plan.Known && (plan.Session || plan.Err != "") {
+		lines = append(lines, theme.dim.Render(truncate("plan: "+planStatusLine(plan), width)))
 	}
 	if snap.Paused {
 		lines = append(lines, theme.awaitingFlag.Render(truncate("paused: U or afk resume starts it again", width)))
