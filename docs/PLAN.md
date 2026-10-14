@@ -2457,11 +2457,21 @@ thing it does not do is attach to a session.
 - **Background:** T7.11 adds an entry point beside `afk ledger set` that returns its outcome without
   printing, and T7.12 a seam that returns a task's token record; the page calls the same code. The
   owner chose all owner-only actions on the page, each behind a confirm.
-- **Scope:** a task list on the project page (id, title, status, unmet dependencies, as `afk tasks`
+- **Scope:** a task list on the project's Tasks screen, linked from the project page's `nav-list` (id, title, status, unmet dependencies, as `afk tasks`
   prints them), updating live. For a task: its tokens (totals and the split by phase and role, or "no
   tokens recorded for this task yet") and a "set status" action that lists the statuses the command
   accepts, asks for the replacing ids for `superseded`, and confirms in one sentence what will change,
-  saying so when an agent is working on the task. The same under `/api`. README: the web page section.
+  saying so when an agent is working on the task. The same under `/api`.
+  From the design system (reconciled 2026-10-13): the Tasks screen has `progress` for the whole plan,
+  a `segmented` Open / Done / All filter, and one `section` per milestone (its title and "2 of 7
+  done") of task rows (`tid`, title, status `badge`, "Waits for T3.4" for unmet dependencies). A
+  task's screen shows its status `badge`, an `h2` title, one line on why it is in that state, and the
+  Tokens `card`: the total, a `split-bar` and `legend` by phase using the token ledger's own phases
+  (§4.7: plan, execute, review, fix, ship), and a `table` by role. **Set status…** opens a
+  `confirm-sheet` with a `choice-list` of every status `afk ledger set` accepts (none disabled), a
+  field for the replacing ids when `superseded` is picked, and one sentence that changes with the
+  choice; the action button reads the choice ("Mark done").
+  README: the web page section.
 - **Must not:** write the ledger any other way; record tokens; add `afk ledger init` to the page.
 - **Acceptance:** handler tests: the list, a task's tokens with a record and without, the status
   confirm, each outcome of the set (including `superseded` with and without ids and an unknown id), and
