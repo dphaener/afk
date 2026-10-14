@@ -114,6 +114,17 @@ func TestLeaderOpensTheDialog(t *testing.T) {
 			from:     inputPane,
 			fromPane: true,
 		},
+		{
+			// T7.9: the all-projects screen keeps the leader, unlike the
+			// overlays (TestLeaderIgnoredUnderEveryOverlay), because pause and
+			// resume act on its rows through the dialog.
+			name: "from the all-projects screen",
+			model: func(t *testing.T) (Model, *fakePane) {
+				m, _, _ := allProjectsModel(t)
+				return openAllProjects(t, m), nil
+			},
+			from: inputAllProjects,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -572,7 +583,16 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 		}
 		return m
 	}
+	allProjects := func(t *testing.T) Model {
+		m := testModel(sess("a"))
+		m.deps.LoadAllProjects = func() AllProjects { return AllProjects{} }
+		return m
+	}
 	return map[modeAction]leaderActionCase{
+		// "all projects" (T7.9) never had a key; A on the bare list is no
+		// action and must not become one.
+		actionAllProjects: {setup: allProjects, mode: inputNormal, old: press('A'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.allProjectsOpen }},
 		actionNewSession: {setup: list1, mode: inputNormal, old: press('n'),
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.formOpen }},
 		actionScratch: {setup: list1, mode: inputNormal, old: press('o'),

@@ -2808,3 +2808,29 @@ T7.8 lets the owner approve a plan from `afk dash`, with the same effect as `afk
 
 - **Long results are cut off by the notice.** On a 140-column terminal the approved notice ended at "No afk daemon seems to be running."; the start-the-daemon hint and any push note were cut. Showing the full result in a dialog, or on the Build tab's plan line, would keep it readable.
 - **The web page sentence in the README** ("there is no button to approve … or from `afk dash`") reads a little awkwardly; T8.11 will rewrite it when the page gains approving.
+
+## T7.9
+
+T7.9 adds the all-projects screen to `afk dash`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **Where the rows are built (A1, A2).** A new pure package, `internal/projectrows`, turns one project's facts into one row. It reads no file and imports neither the web page nor the dashboard, so the web page's overview (T8.5) can use the same rows later. The dashboard's adapter in the root package reads the files and fills in the facts, using `web.Summarize` for the current task and `buildview.OpenCounts` for the inbox counts.
+- **The phase of a running task (A3).** For a project with a running task, the adapter lists its sessions the way the web page does (git worktrees and files, never a connection to a session). If that fails the phase reads "unknown".
+- **One state per row (A4).** The first that applies wins: gone, can't read, no plan, stopped, paused, waiting on you, held for usage, running, finished, nothing ready. The longer line under the state uses the words `afk daemon status` prints. "Plan waiting for approval" and the inbox counts are shown beside the state, not instead of it.
+- **What comes first (A5).** A row needs you when its folder is gone, it cannot be read, its line is stopped, it waits on you, an inbox item holds a task up, or its plan waits for approval. Those rows come first; within each group the order is the order of `config.toml`, with the project the dashboard was started in last when it is not listed.
+- **When the files are read (A6).** Through a new `ui.Deps.LoadAllProjects`, only while the screen is open: once when it opens and then on every refresh tick, away from the screen drawing.
+- **The screen (A7, A8).** It takes the place of the session list and the detail side until `esc`. It is opened from the actions dialog as "all projects", key `A` after the leader (lower-case `a` stays free, so typing `approve` still works). Over the screen the dialog runs only pause, resume, all projects, mouse and quit; the rest are dimmed with "Close the all-projects screen first (esc)."
+- **enter, pause and resume (A9, A10).** `enter` switches to the selected project. On a gone or unreadable row it does not switch and says why. Pause and resume act on the selected row's project, not the active one, and say which project they acted on.
+- **Narrow terminals (A11).** Below 100 columns each project takes two lines; long text is cut, not wrapped.
+- **No projects, or a broken config.toml (A12).** With nothing listed the screen shows the active project and how to add one with `afk project add`. A `config.toml` that cannot be read keeps the rows already shown and says why, naming the file.
+- **One source for the words (A13).** The daemon's state words and the stopped line move into `internal/projectrows`; `afk daemon status` uses them from there and prints exactly what it printed before.
+- **Tests (A14)** are table tests for the row builder and its order first, then the dashboard model and saved screens, then the adapter. **Nothing had to be in place first (A15):** T7.1 to T7.8 are merged.
+
+### Decided while building
+
+- **The daemon's owner kind is `owner_task`.** The plan named it `owner`; the row builder uses the string the daemon writes.
+- **Wording the plan left open.** A project with no master plan reads "This project has no master plan to build."; a finished one "Every task is done."; nothing ready shows the daemon's own words for what it last did, or "Nothing is ready to start." when it has not looked yet.
+- **Pause and resume over the screen are never dimmed.** They act on the selected row and refuse with a notice: a gone row names `afk project remove`, a row with no plan gets T6.3's "no build to pause" sentence with the project's name in front.
+- **Opening the screen starts empty.** It shows "Reading the projects…" until the first read lands, rather than rows from an earlier opening that could show a stopped project as running.
+- **`enter` on the active project's row closes the screen**, as picking it in the switcher does; a row the switcher does not list yet says to try again in a moment.
+- **The cursor stops at the ends** instead of wrapping, so a held key stays on the rows that need you.
+- **An inbox folder that cannot be listed makes the row "can't read"**; a single unreadable inbox file is skipped here, as the Build tab counts those.

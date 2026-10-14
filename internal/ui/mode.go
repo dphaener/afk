@@ -150,6 +150,13 @@ const (
 	// failure report, and it coexists with the modals the same way the
 	// inbox does.
 	inputPlanCheck
+	// inputAllProjects is the all-projects screen (Model.allProjectsOpen,
+	// allprojects.go): one row per project, in the place of the session list
+	// and the detail side. It is not a footer modal: it asks nothing, and a
+	// create's failure report must still outrank it. Unlike the overlays it
+	// keeps the leader, because pause and resume act on its selected row and
+	// they are leader actions (T7.2).
+	inputAllProjects
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -199,6 +206,8 @@ func (m inputMode) String() string {
 		return "confirm-plan-approve"
 	case inputPlanCheck:
 		return "plan-check"
+	case inputAllProjects:
+		return "all-projects"
 	}
 	return "unknown"
 }
@@ -260,6 +269,8 @@ type modeState struct {
 	inboxOpen bool
 	// planCheckOpen mirrors Model.planCheckOpen.
 	planCheckOpen bool
+	// allProjectsOpen mirrors Model.allProjectsOpen.
+	allProjectsOpen bool
 	// leaderOpen mirrors Model.leaderOpen.
 	leaderOpen bool
 	// resizing mirrors Model.resizing. It needs no conjunction: resize mode
@@ -274,17 +285,18 @@ type modeState struct {
 // reviewable file.
 func (m Model) modeSnapshot() modeState {
 	return modeState{
-		modal:         m.modal,
-		switcherOpen:  m.switcherOpen,
-		formOpen:      m.formOpen,
-		listFiltering: m.list.SettingFilter(),
-		focus:         m.focus,
-		view:          m.view,
-		pane:          m.paneForSelection(),
-		inboxOpen:     m.inboxOpen,
-		planCheckOpen: m.planCheckOpen,
-		leaderOpen:    m.leaderOpen,
-		resizing:      m.resizing,
+		modal:           m.modal,
+		switcherOpen:    m.switcherOpen,
+		formOpen:        m.formOpen,
+		listFiltering:   m.list.SettingFilter(),
+		focus:           m.focus,
+		view:            m.view,
+		pane:            m.paneForSelection(),
+		inboxOpen:       m.inboxOpen,
+		planCheckOpen:   m.planCheckOpen,
+		allProjectsOpen: m.allProjectsOpen,
+		leaderOpen:      m.leaderOpen,
+		resizing:        m.resizing,
 	}
 }
 
@@ -380,6 +392,14 @@ type modeLayer struct {
 //     other overlay is up when it appears, and it outranks the form, the
 //     filter prompt, resize mode and both right-side focuses so a pane that
 //     arrives focused under it cannot take the scroll keys.
+//   - The all-projects screen sits directly below the check-the-plan
+//     overlay. It is opened only through the actions dialog, so no overlay is
+//     up when it appears, and over it the dialog runs nothing that opens one;
+//     the dialog itself outranks it, which is how pause and resume reach its
+//     rows. It outranks the form, the filter prompt, resize mode and both
+//     right-side focuses because it takes their place on screen: a pane that
+//     arrives focused while it is open (a click on a notification for this
+//     project) must not take keys meant for the rows.
 //   - The form outranks a focused pane. THIS IS THE ONE DELIBERATE CHANGE:
 //     today's if-order lets an invisible focused pane swallow every key while
 //     the form is on screen (the known uncovered corner at model.go:1613-1620,
@@ -435,6 +455,7 @@ var modePrecedence = []modeLayer{
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
 	{inputPlanCheck, func(s modeState) bool { return s.planCheckOpen }},
+	{inputAllProjects, func(s modeState) bool { return s.allProjectsOpen }},
 	{inputForm, func(s modeState) bool { return s.formOpen }},
 	{inputFilter, func(s modeState) bool { return s.listFiltering }},
 	{inputResize, func(s modeState) bool { return s.resizing }},
@@ -544,6 +565,19 @@ const (
 	// actionPlanApprove is "approve the plan" (T7.8): openPlanApprove raises
 	// the confirm (planapprove.go). By name only, like the plan actions.
 	actionPlanApprove
+	// actionAllProjects is "all projects" (T7.9, ctrl+space A): it opens the
+	// all-projects screen, or closes it when it is open (allprojects.go).
+	actionAllProjects
+	// The all-projects screen's own keys: move (clamped), switch to the
+	// selected project, close.
+	actionAllProjectsUp
+	actionAllProjectsDown
+	actionAllProjectsPageUp
+	actionAllProjectsPageDown
+	actionAllProjectsTop
+	actionAllProjectsBottom
+	actionAllProjectsSwitch
+	actionAllProjectsClose
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -666,6 +700,24 @@ func (a modeAction) String() string {
 		return "plan-check"
 	case actionPlanApprove:
 		return "plan-approve"
+	case actionAllProjects:
+		return "all-projects"
+	case actionAllProjectsUp:
+		return "all-projects-up"
+	case actionAllProjectsDown:
+		return "all-projects-down"
+	case actionAllProjectsPageUp:
+		return "all-projects-page-up"
+	case actionAllProjectsPageDown:
+		return "all-projects-page-down"
+	case actionAllProjectsTop:
+		return "all-projects-top"
+	case actionAllProjectsBottom:
+		return "all-projects-bottom"
+	case actionAllProjectsSwitch:
+		return "all-projects-switch"
+	case actionAllProjectsClose:
+		return "all-projects-close"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -858,6 +910,44 @@ var resizeToggleKey = key.NewBinding(
 var unfocusPaneKey = key.NewBinding(
 	key.WithKeys("ctrl+\\"),
 	key.WithHelp("ctrl+\\", "return to dashboard"),
+)
+
+// The all-projects screen's keys (inputAllProjects). They are declared fresh
+// rather than sharing the list's bindings for the reason detailFocusUp gives:
+// the list's carry the session list's help text.
+var (
+	allProjectsUpKey = key.NewBinding(
+		key.WithKeys("up", "k"),
+		key.WithHelp("↑/k", "up"),
+	)
+	allProjectsDownKey = key.NewBinding(
+		key.WithKeys("down", "j"),
+		key.WithHelp("↓/j", "down"),
+	)
+	allProjectsPageUpKey = key.NewBinding(
+		key.WithKeys("pgup"),
+		key.WithHelp("pgup", "page up"),
+	)
+	allProjectsPageDownKey = key.NewBinding(
+		key.WithKeys("pgdown"),
+		key.WithHelp("pgdn", "page down"),
+	)
+	allProjectsTopKey = key.NewBinding(
+		key.WithKeys("home"),
+		key.WithHelp("home", "first project"),
+	)
+	allProjectsBottomKey = key.NewBinding(
+		key.WithKeys("end"),
+		key.WithHelp("end", "last project"),
+	)
+	allProjectsSwitchKey = key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "switch"),
+	)
+	allProjectsCloseKey = key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "close"),
+	)
 )
 
 // modeRegistry holds every mode's spec, indexed by inputMode.
@@ -1449,6 +1539,43 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		},
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: append(planCheckKeys(), quitChord)},
+	}
+
+	// All-projects mode is the screen's (allprojects.go). Its key set is
+	// ENUMERATED with an ignored fall-through, as detail mode's is: the screen
+	// has nothing to type, so a stray letter must do nothing rather than
+	// reach the list hidden under it. The movement keys are its own bindings,
+	// not the list's, so the footer says what they move. ctrl+c quits, as it
+	// does over the switcher, because nothing typed can be lost here. The
+	// leader is a rule, unlike in the overlays: pause and resume act on the
+	// selected row and are reached through it, and the dialog over the screen
+	// dims everything else (leaderBlockedReason). Pause and resume are in the
+	// keymap as help only, named with their leader chords, so the footer says
+	// how to reach them; the bindings are ordered for truncation survival,
+	// enter and esc first.
+	r[inputAllProjects] = modeSpec{
+		mode: inputAllProjects,
+		rules: []modeRule{
+			{binding: quitChord, action: actionQuit},
+			{binding: allProjectsUpKey, action: actionAllProjectsUp},
+			{binding: allProjectsDownKey, action: actionAllProjectsDown},
+			{binding: allProjectsPageUpKey, action: actionAllProjectsPageUp},
+			{binding: allProjectsPageDownKey, action: actionAllProjectsPageDown},
+			{binding: allProjectsTopKey, action: actionAllProjectsTop},
+			{binding: allProjectsBottomKey, action: actionAllProjectsBottom},
+			{binding: allProjectsSwitchKey, action: actionAllProjectsSwitch},
+			{binding: allProjectsCloseKey, action: actionAllProjectsClose},
+			{binding: keys.Leader, action: actionOpenLeader},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			allProjectsSwitchKey, allProjectsCloseKey, allProjectsUpKey, allProjectsDownKey,
+			leaderHelpBinding(actionPauseBuild, "pause", true),
+			leaderHelpBinding(actionResumeBuild, "resume", true),
+			keys.Leader,
+			allProjectsPageUpKey, allProjectsPageDownKey, allProjectsTopKey, allProjectsBottomKey,
+			quitChord,
+		}},
 	}
 
 	// The modals transcribe their update handlers rung for rung: mouse

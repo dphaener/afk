@@ -122,7 +122,8 @@ type leaderEntry struct {
 // order the dialog lists them. It is the table in docs/decisions.md "## T7.2"
 // row for row, followed by the three by-name plan actions of "## T7.3",
 // the by-name "start a new plan" of "## T7.4", the by-name "check the
-// plan" of "## T7.7" and the by-name "approve the plan" of T7.8;
+// plan" of "## T7.7" and the by-name "approve the plan" of T7.8, with
+// T7.9's "all projects" on A after switch project, its neighbour in meaning;
 // TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
@@ -134,6 +135,11 @@ var leaderTable = []leaderEntry{
 	{key: "n", action: actionNewSession, reach: reachList},
 	{key: "o", action: actionScratch, reach: reachList},
 	{key: "p", action: actionProjects, reach: reachList},
+	// "all projects" (T7.9) is a list action because the screen it opens
+	// takes the list's place; from the right side the keyboard comes to the
+	// list first, so esc on the screen leaves the list focused. Upper-case A,
+	// so lower-case a stays free for typing "approve" from an empty query.
+	{key: "A", action: actionAllProjects, reach: reachList},
 	{key: "c", action: actionClean, reach: reachList},
 	{key: "r", action: actionRestart, reach: reachOverview},
 	{key: "l", action: actionEditLabel, reach: reachList},
@@ -213,6 +219,7 @@ var leaderNames = map[modeAction]string{
 	actionNewSession:    "new session",
 	actionScratch:       "one-off session",
 	actionProjects:      "switch project",
+	actionAllProjects:   "all projects",
 	actionClean:         "clean session",
 	actionRestart:       "restart agent",
 	actionEditLabel:     "edit label",
@@ -249,6 +256,7 @@ var leaderHelp = map[modeAction]string{
 	actionNewSession:    "Start a new session from a plan or a branch",
 	actionScratch:       "Start a one-off session with no plan",
 	actionProjects:      "Switch to another project",
+	actionAllProjects:   "Every project's build and inbox on one screen; enter switches",
 	actionClean:         "Clean the selected session and its worktree",
 	actionRestart:       "Restart the selected session's stopped or stuck agent",
 	actionEditLabel:     "Give the selected session a display label",
@@ -449,6 +457,13 @@ type leaderConds struct {
 	canCheckPlan bool
 	// canApprovePlan is "the ApprovePlan seam is wired".
 	canApprovePlan bool
+	// canAllProjects is "the LoadAllProjects seam is wired": without it the
+	// all-projects screen has nothing to show, and toggleAllProjects only
+	// says so.
+	canAllProjects bool
+	// allProjectsOpen is Model.allProjectsOpen. Over the screen the dialog
+	// runs only what makes sense there (leaderBlockedReason).
+	allProjectsOpen bool
 	// planKnown, planErr, planSession, planDamaged, planMode and planPhase
 	// are Model.planStatus as the approve row needs it: read at least once,
 	// a load error, a planning session, a damaged state file, and the
@@ -478,9 +493,31 @@ type leaderConds struct {
 // handlers do not check — with two exceptions, both about where the keyboard
 // is: agent/overview and back to list are right-side actions, and from the
 // list the dialog must not let them reach across to the right side.
+//
+// Over the all-projects screen one rule comes first and decides alone: pause,
+// resume, all projects (which closes the screen), the mouse and quit run, and
+// every other row is dimmed. Those rows act on the session list, the detail
+// side or the active project, none of which is on screen. Pause and resume
+// are not dimmed there for the active project's build: they act on the
+// selected row, and pauseSelectedProject says in a sentence when that row has
+// nothing to pause.
 func leaderBlockedReason(a modeAction, c leaderConds) string {
 	const noSession = "no session selected"
+	if c.allProjectsOpen {
+		switch a {
+		case actionPauseBuild, actionResumeBuild, actionAllProjects, actionMouseToggle, actionQuit:
+			return ""
+		}
+		return allProjectsCloseFirst
+	}
 	switch a {
+	case actionAllProjects:
+		// Not dimmed for "no project is open": the screen lists the projects
+		// in config.toml, which a dashboard started outside any project can
+		// still show and switch to.
+		if !c.canAllProjects {
+			return "this dashboard was started without the project reader"
+		}
 	case actionPaneClose:
 		if !c.paneOpen {
 			return "no agent pane is open"

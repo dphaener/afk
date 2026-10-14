@@ -151,6 +151,7 @@ func TestLeaderBlockedReason(t *testing.T) {
 		canToggleView:    true,
 		canStartPlan:     true,
 		canCheckPlan:     true,
+		canAllProjects:   true,
 	}
 	with := func(f func(*leaderConds)) leaderConds {
 		c := ready
@@ -237,6 +238,28 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"agent/overview needs the right side focused", actionPaneToggle, with(func(c *leaderConds) { c.rightFocused = false }), "focus the right side first"},
 		{"agent/overview needs a live agent", actionPaneToggle, with(func(c *leaderConds) { c.canToggleView = false }), "no live agent"},
 		{"agent/overview runs", actionPaneToggle, ready, ""},
+
+		// "all projects" (T7.9) is dimmed only without its reader: it lists
+		// config.toml's projects, so a dashboard with no project open can
+		// still show them.
+		{"all projects runs with only the seam", actionAllProjects, leaderConds{canAllProjects: true}, ""},
+		{"all projects needs the seam", actionAllProjects, with(func(c *leaderConds) { c.canAllProjects = false }), "without the project reader"},
+
+		// Over the all-projects screen five rows run and the rest are
+		// dimmed with one reason. Pause and resume run even for an active
+		// project with no build, because over the screen they act on the
+		// selected row, not on the active project; that row is the
+		// load-bearing one.
+		{"over the screen pause runs without an active build", actionPauseBuild, leaderConds{allProjectsOpen: true}, ""},
+		{"over the screen resume runs without an active build", actionResumeBuild, leaderConds{allProjectsOpen: true}, ""},
+		{"over the screen all projects runs (closes it)", actionAllProjects, leaderConds{allProjectsOpen: true, canAllProjects: true}, ""},
+		{"over the screen mouse runs", actionMouseToggle, leaderConds{allProjectsOpen: true}, ""},
+		{"over the screen quit runs", actionQuit, leaderConds{allProjectsOpen: true}, ""},
+		{"over the screen new session is dimmed", actionNewSession, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
+		{"over the screen switch project is dimmed", actionProjects, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
+		{"over the screen build tasks is dimmed", actionBuild, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
+		{"over the screen help is dimmed", actionHelp, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
+		{"over the screen check the plan is dimmed", actionPlanCheck, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,6 +290,8 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"n", actionNewSession},
 		{"o", actionScratch},
 		{"p", actionProjects},
+		// T7.9: upper-case A, so typing "approve" still filters.
+		{"A", actionAllProjects},
 		{"c", actionClean},
 		{"r", actionRestart},
 		{"l", actionEditLabel},

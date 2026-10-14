@@ -129,7 +129,14 @@ type buildResumedMsg struct {
 // That is left alone on purpose: pausing a paused build is harmless, it is
 // what running `afk pause` twice does, and a guard would need releasing on
 // the dropped-message path too.
+//
+// With the all-projects screen open the key acts on the selected row's
+// project instead (pauseSelectedProject, allprojects.go): the active project
+// is not what is on screen then, and the row is what the owner pointed at.
 func (m Model) pauseBuild() (tea.Model, tea.Cmd) {
+	if m.allProjectsOpen {
+		return m.pauseSelectedProject()
+	}
 	if !m.hasBuild() || !m.hasActiveProject() {
 		m.notify(notifyInfo, noBuildToPauseNotice)
 		return m, nil
@@ -147,8 +154,12 @@ func (m Model) pauseBuild() (tea.Model, tea.Cmd) {
 	}
 }
 
-// resumeBuild is `U`, on exactly pauseBuild's terms.
+// resumeBuild is `U`, on exactly pauseBuild's terms, the all-projects
+// screen's row included.
 func (m Model) resumeBuild() (tea.Model, tea.Cmd) {
+	if m.allProjectsOpen {
+		return m.resumeSelectedProject()
+	}
 	if !m.hasBuild() || !m.hasActiveProject() {
 		m.notify(notifyInfo, noBuildToResumeNotice)
 		return m, nil

@@ -641,6 +641,11 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// silently never show the projects `afk project add` listed. The read
 		// itself happens in the model's command, never before the first frame.
 		LoadListed: dashLoadListed,
+		// LoadAllProjects has no default in internal/ui either; without this
+		// line "all projects" in the leader dialog says the dashboard was
+		// started without the reader. The start-up project's main checkout is
+		// the row the screen adds when that project is not listed.
+		LoadAllProjects: dashLoadAllProjects(launchMainCheckout(projects, resolveGitCommonDirIn, filepath.EvalSymlinks)),
 		// StartPlan has no default in internal/ui (it starts a real session), so
 		// this is the only place the three plan actions are wired. Nor do the
 		// GitHub seams (they run gh and can make a repository): without

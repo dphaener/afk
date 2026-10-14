@@ -49,6 +49,7 @@ import (
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/project"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/spice"
@@ -350,6 +351,18 @@ type Deps struct {
 	// It has NO default, like LoadBuild: it reads the real filesystem. A nil
 	// LoadPlanStatus means no plan status, ever, and no command is issued.
 	LoadPlanStatus func(repo string) PlanStatus
+	// LoadAllProjects reads one row for every project the daemon builds (the
+	// `[[project]]` list in config.toml, plus the dashboard's active project
+	// when it is not listed) for the all-projects screen (allprojects.go): its
+	// current task, the state of its build, its inbox counts and whether its
+	// plan waits for approval. A project that cannot be read is a row saying
+	// so, never an error; Err is config.toml itself failing. It is read off the
+	// draw path, inside a tea.Cmd, and only while the screen is open.
+	//
+	// It has NO default, like LoadBuild: it reads the real filesystem, and
+	// only the root package (`afk dash`) wires it. A nil LoadAllProjects means
+	// the screen cannot open, and the dialog row says so.
+	LoadAllProjects func() AllProjects
 	// ApprovePlan turns the new plan at review in the project at root into a
 	// build, the way `afk plan approve --project root` does (T7.8): it writes
 	// afk.toml, commits and pushes the plan, starts the ledger, lists the
@@ -1263,6 +1276,24 @@ type Model struct {
 	planStatus           PlanStatus
 	planStatusRefreshing *atomic.Bool
 
+	// The all-projects screen (allprojects.go). allProjectsOpen is its "is it
+	// open" flag, beside the overlays' for their reason; while it is set the
+	// screen replaces the list and the detail side. allProjectsRows are the
+	// rows as last read and sorted, allProjectsKnown whether a read has landed
+	// since it opened, allProjectsCursor the selected row, allProjectsErr why
+	// the last read of config.toml failed and allProjectsConfigPath the file
+	// it names. allProjectsGen counts openings, so a read started under an
+	// earlier one is dropped; allProjectsRefreshing is the in-flight guard, a
+	// pointer for the reason buildRefreshing is.
+	allProjectsOpen       bool
+	allProjectsRows       []projectrows.Row
+	allProjectsKnown      bool
+	allProjectsCursor     int
+	allProjectsErr        string
+	allProjectsConfigPath string
+	allProjectsGen        int
+	allProjectsRefreshing *atomic.Bool
+
 	plainBranches []string
 	plainTrunk    string
 	// notifiedBranchesErr is the plainBranchesLoadedMsg listing-failure text a
@@ -2003,27 +2034,28 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		}
 	}
 	m := Model{
-		repo:                 repo,
-		interval:             interval,
-		deps:                 d,
-		keys:                 keys,
-		stackRefreshing:      new(atomic.Bool),
-		buildRefreshing:      new(atomic.Bool),
-		planStatusRefreshing: new(atomic.Bool),
-		list:                 newSessionList(keys, d.Now),
-		detailViewport:       viewport.New(),
-		initialSession:       deps.InitialSessionName,
-		gitCommonDir:         deps.GitCommonDir,
-		projects:             deps.Projects,
-		found:                unpinnedProjects(deps.Projects),
-		activeProject:        deps.ActiveProjectIndex,
-		rememberedSelection:  remembered,
-		projectOpens:         opens,
-		dirtyOpens:           dirtyOpens,
-		previewOnNextLoad:    previewOnNextLoad,
-		scanInterval:         defaultScanInterval,
-		pid:                  d.Pid(),
-		focusWatch:           d.StartFocusWatcher(deps.GitCommonDir),
+		repo:                  repo,
+		interval:              interval,
+		deps:                  d,
+		keys:                  keys,
+		stackRefreshing:       new(atomic.Bool),
+		buildRefreshing:       new(atomic.Bool),
+		planStatusRefreshing:  new(atomic.Bool),
+		allProjectsRefreshing: new(atomic.Bool),
+		list:                  newSessionList(keys, d.Now),
+		detailViewport:        viewport.New(),
+		initialSession:        deps.InitialSessionName,
+		gitCommonDir:          deps.GitCommonDir,
+		projects:              deps.Projects,
+		found:                 unpinnedProjects(deps.Projects),
+		activeProject:         deps.ActiveProjectIndex,
+		rememberedSelection:   remembered,
+		projectOpens:          opens,
+		dirtyOpens:            dirtyOpens,
+		previewOnNextLoad:     previewOnNextLoad,
+		scanInterval:          defaultScanInterval,
+		pid:                   d.Pid(),
+		focusWatch:            d.StartFocusWatcher(deps.GitCommonDir),
 		dashEntry: dashEntryMeta{
 			tmux:      deps.Tmux,
 			paneID:    deps.PaneID,
@@ -2205,6 +2237,11 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the whole mechanism when no watch could be created.
 		cmds := append(m.projectCmds(), m.tickCmd())
 		cmds = append(cmds, m.focusRequestPollCmds()...)
+		// The all-projects screen is read again on this tick while it is open,
+		// and only then: allProjectsCmd is nil while it is closed.
+		if all := m.allProjectsCmd(); all != nil {
+			cmds = append(cmds, all)
+		}
 		// The spinner's tick loop is armed HERE, not at any of the dispatch
 		// sites that add an in-flight operation — see startSpinnerIfNeeded's
 		// doc comment for why this is the one safe place. hasInFlightWork is
@@ -2433,6 +2470,15 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case buildResumedMsg:
 		return m.applyBuildResumed(msg)
+
+	case allProjectsLoadedMsg:
+		return m.applyAllProjectsLoaded(msg), nil
+
+	case allProjectsPausedMsg:
+		return m.applyAllProjectsPaused(msg)
+
+	case allProjectsResumedMsg:
+		return m.applyAllProjectsResumed(msg)
 
 	case planStartedMsg:
 		return m.applyPlanStarted(msg)
@@ -3518,6 +3564,26 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openPlanCheck()
 	case actionPlanApprove:
 		return m.openPlanApprove()
+
+	case actionAllProjects:
+		return m.toggleAllProjects()
+	case actionAllProjectsUp:
+		return m.moveAllProjects(-1)
+	case actionAllProjectsDown:
+		return m.moveAllProjects(1)
+	case actionAllProjectsPageUp:
+		return m.moveAllProjects(-m.allProjectsPage())
+	case actionAllProjectsPageDown:
+		return m.moveAllProjects(m.allProjectsPage())
+	case actionAllProjectsTop:
+		return m.moveAllProjects(-len(m.allProjectsRows))
+	case actionAllProjectsBottom:
+		return m.moveAllProjects(len(m.allProjectsRows))
+	case actionAllProjectsSwitch:
+		return m.switchFromAllProjects()
+	case actionAllProjectsClose:
+		m.allProjectsOpen = false
+		return m, nil
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -4749,6 +4815,8 @@ func (m Model) leaderConditions() leaderConds {
 		canStartPlan:     m.deps.StartPlan != nil,
 		canCheckPlan:     m.deps.LoadPlanStatus != nil,
 		canApprovePlan:   m.deps.ApprovePlan != nil,
+		canAllProjects:   m.deps.LoadAllProjects != nil,
+		allProjectsOpen:  m.allProjectsOpen,
 		planKnown:        m.planStatus.Known,
 		planErr:          m.planStatus.Err != "",
 		planSession:      m.planStatus.Session,
@@ -7713,6 +7781,11 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// The plan-check overlay shows the outgoing project's plan. It holds
 	// nothing typed, so closing it loses nothing.
 	m.planCheckOpen = false
+	// The all-projects screen closes with a switch, whichever way the switch
+	// came (its own enter, a click on a notification, a plan started in
+	// another folder): the owner moved to a project, and the project is what
+	// they should see.
+	m.allProjectsOpen = false
 	m.deadHostPIDs = nil
 	m.pendingSpawns = nil
 	// A preview timer armed on the outgoing project's rows is inert from here (see
