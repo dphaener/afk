@@ -346,6 +346,26 @@ type Deps struct {
 	// reason LoadBuild has none: a zero Deps must not be able to write into a
 	// real project's inbox.
 	AnswerInbox func(root, id, text string) (inbox.Item, error)
+	// PauseBuild pauses the build of the project whose main checkout is root
+	// (the Root of the snapshot LoadBuild returned): a task that is running
+	// finishes and nothing new starts. already reports that the build was
+	// paused before the call. It is the dashboard's `P` key (buildpause.go),
+	// and `afk dash` wires it to what `afk pause` runs, so the key and the
+	// command write the same files and the same decision-log line.
+	//
+	// It has NO default, for AnswerInbox's reason: it writes into a real
+	// project, so a zero Deps must not be able to. A nil PauseBuild makes the
+	// key say pausing is not available, and nothing is called.
+	//
+	// An error does not mean nothing changed. The flag can be written and the
+	// decision-log line after it refused; the error then says so, and the
+	// dashboard reads the build files again either way.
+	PauseBuild func(root string) (already bool, err error)
+	// ResumeBuild is the `U` key's seam, on PauseBuild's terms: it clears the
+	// owner's pause and a stop the build set itself, and reports which of the
+	// two it found. It has NO default either, and a nil one is answered the
+	// same way.
+	ResumeBuild func(root string) (ResumeResult, error)
 	// SpiceDetect reports whether the repo at dir is operating in git-spice
 	// mode. Defaults to internal/spice.Detect. The stack panel is hidden
 	// entirely when this returns false — never a placeholder.
@@ -747,6 +767,10 @@ func (d Deps) withDefaults() Deps {
 	// file, and the second writes a real inbox. A nil LoadBuild issues no
 	// command (buildCmd), so a zero-Deps Model has no build data.
 	//
+	// PauseBuild and ResumeBuild are absent too: they write a real project's
+	// pause flag, stop marker and decision log. A nil one makes its key say
+	// pausing is not available here (buildpause.go) and calls nothing.
+	//
 	// Scan and LoadConfig are absent from this list deliberately, and it is the
 	// one omission here that is load-bearing. Wiring them would make every
 	// zero-Deps Model — the whole of this package's test suite included — read
@@ -798,7 +822,11 @@ type keyMap struct {
 	Palette key.Binding
 	Build   key.Binding
 	Inbox   key.Binding
-	Quit    key.Binding
+	// PauseBuild and ResumeBuild are the only capital-letter keys in this
+	// map. See their comments in defaultKeyMap for why.
+	PauseBuild  key.Binding
+	ResumeBuild key.Binding
+	Quit        key.Binding
 }
 
 func defaultKeyMap() keyMap {
@@ -942,6 +970,26 @@ func defaultKeyMap() keyMap {
 		Inbox: key.NewBinding(
 			key.WithKeys("i"),
 			key.WithHelp("i", "inbox"),
+		),
+		// `P` pauses the build and `U` resumes it (un-pause), from the list and
+		// from a focused overview, as `b` and `i` work (buildpause.go). They are
+		// capitals on purpose. Every lower-case letter that would read well is
+		// taken (`p` opens the project switcher, `r` restarts an agent, `u`
+		// scrolls the overview), and a pause should be hard to press by
+		// accident: it holds the whole project's build until someone notices.
+		//
+		// Like `b` and `i` they are rules in normal mode and in detail mode and
+		// in no other, so with the agent pane focused each is a letter the
+		// agent is being sent, and in the inbox overlay a letter of the answer.
+		// Their help rides the full help view and the palette only: the short
+		// footer line is at its measured-width cap.
+		PauseBuild: key.NewBinding(
+			key.WithKeys("P"),
+			key.WithHelp("P", "pause the build"),
+		),
+		ResumeBuild: key.NewBinding(
+			key.WithKeys("U"),
+			key.WithHelp("U", "resume the build"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
@@ -2193,6 +2241,12 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inboxAnsweredMsg:
 		return m.applyInboxAnswered(msg)
 
+	case buildPausedMsg:
+		return m.applyBuildPaused(msg)
+
+	case buildResumedMsg:
+		return m.applyBuildResumed(msg)
+
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
 		// one message, and a repo whose trunk is unresolvable (no origin/HEAD, no
@@ -3234,6 +3288,10 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.showBuildTab()
 	case actionInbox:
 		return m.openInbox()
+	case actionPauseBuild:
+		return m.pauseBuild()
+	case actionResumeBuild:
+		return m.resumeBuild()
 
 	case actionEnterResize:
 		return m.enterResize()

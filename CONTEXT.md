@@ -182,3 +182,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Actions dialog**: the list the leader key opens, showing every dashboard action with its key; a key runs one, and typing filters by name.
 - **All-projects screen**: one dashboard screen with a row per project the daemon builds, showing its current task, build state and inbox count.
 - **Chat view**: the web page's screen that shows a planning session as messages, with a reply box and a button per offered option; it is never the session's terminal, and a reply from it takes the session from the dashboard for a moment.
+- **Pause key**: `P` in the dashboard, which pauses the active project's build as `afk pause` does: a running task finishes and nothing new starts.
+- **Resume key**: `U` in the dashboard, which resumes the active project's build as `afk resume` does, and clears a stopped line.

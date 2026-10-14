@@ -180,7 +180,7 @@ func TestBuildTabSummary(t *testing.T) {
 		{
 			name: "paused",
 			snap: base(func(s *buildview.Snapshot) { s.Paused = true }),
-			want: []string{"paused: afk resume starts it again"},
+			want: []string{"paused: U or afk resume starts it again"},
 		},
 		{
 			name: "stopped with the task and the reason",
