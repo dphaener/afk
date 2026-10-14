@@ -120,6 +120,8 @@ const (
 	bgBranchesError
 	// bgScanError: the project-scan config file failed to parse.
 	bgScanError
+	// bgListedError: the machine's project list (config.toml) could not be read.
+	bgListedError
 
 	backgroundCategoryCount
 )
@@ -136,6 +138,7 @@ var backgroundLabels = [backgroundCategoryCount][2]string{
 	bgStackError:     {"stack error", "stack errors"},
 	bgBranchesError:  {"branch listing error", "branch listing errors"},
 	bgScanError:      {"scan error", "scan errors"},
+	bgListedError:    {"project list error", "project list errors"},
 }
 
 // backgroundEvent is one background notification awaiting the slot: the

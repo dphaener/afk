@@ -947,6 +947,9 @@ func TestDashDepsWiresScanAndLoadConfig(t *testing.T) {
 	if deps.LoadConfig == nil {
 		t.Error("dashDeps(...).LoadConfig is nil, want the loadDashConfig wrapper")
 	}
+	if deps.LoadListed == nil {
+		t.Error("dashDeps(...).LoadListed is nil, want the dashLoadListed wrapper")
+	}
 }
 
 // TestScanProjectsWalksRealSearchRoot exercises scanProjects — the real

@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Project identifies a discovered repo and how it should be labeled in the
+// Project identifies a repo the dashboard shows and how it is labeled in the
 // UI. Path is the resolved absolute repo root and is the sole identity —
 // there is deliberately no alias or nickname field. An alias would let two
 // different labels point at the same on-disk repo, which would diverge from
@@ -17,6 +17,15 @@ import (
 // disambiguate same-named sessions across repos, and it does that keyed on
 // the real path, not a display name. A stored alias would let the two
 // diverge silently.
+//
+// Name is a display label and nothing else. For most rows it is computed from
+// the paths on screen (DisplayNames). For a project in the machine's project
+// list it is the name config.toml gives that project, the one `afk project
+// list` prints, so the same word is used in both places. That is a second
+// SOURCE for the label, not an alias: nothing looks a project up by Name, two
+// rows may show the same Name, and everything that identifies a project (the
+// active project, remembered selections, open counts, the session sockets)
+// still goes by Path. So SocketPath is unaffected by where a Name came from.
 //
 // Pinned marks an entry that must survive a rescan even though no search
 // root would produce it — the cwd-derived project a user is standing in

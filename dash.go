@@ -582,6 +582,12 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// Left out, the dashboard runs with no build data and nothing says so.
 		LoadBuild:   dashLoadBuild,
 		AnswerInbox: dashAnswerInbox,
+		// LoadListed has no default in internal/ui either (it reads the
+		// machine's config.toml), so without this line the switcher would
+		// silently never show the projects `afk project add` listed. The read
+		// itself happens in the model's command, never before the first frame.
+		LoadListed:         dashLoadListed,
+		LaunchMainCheckout: launchMainCheckout(projects, resolveGitCommonDirIn, filepath.EvalSymlinks),
 	}
 }
 

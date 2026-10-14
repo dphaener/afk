@@ -2134,3 +2134,39 @@ Where the code does something the section above does not say (2026-10-13).
 - Approve a real plan while `afk daemon` runs and see the first task start with no restart. The test does this with a stand-in for the agent launch.
 - Open a plan view on a phone and judge whether the rendered plan reads well, and whether the "Plan ready for review" notification's link opens it.
 - `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.
+
+## T6.1
+
+The switcher lists the projects in `config.toml`. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **How the dashboard gets the list (A1).** Through one new injected reader beside the two it already has for `config.json` and the folder search. The reader lives with the dashboard command, not in the screen code, because working out a project's main checkout asks git, and those helpers live there. It hands back each listed project's main-checkout path, its name and whether its folder is gone, plus the file's path and any error.
+- **Listed projects do not wait for the folder search (A2).** They are read by their own small step, at the start, on every scan and on `R`. The folder search answers only when its whole walk is done, and a broken `config.json` stops it early; neither should hide the listed projects.
+- **One merge (A3).** A single pure function builds the switcher's list from the start-up project, the last good read of the listed projects and what the last folder search found. The dashboard remembers the last two, because they arrive at different times.
+- **The name shown (A4).** A listed project shows the name `afk project list` prints: the `name` key, or the folder name without one. Other projects keep the labels they had. The folder path is still the only thing that identifies a project.
+- **Started inside a session's worktree of a listed project (A5).** Still one row. The start-up row keeps the folder the owner opened and stays the active project, and it takes the listed name.
+- **What "cannot be read" means (A6).** Anything the daemon's own loader refuses: a file it cannot open, a file that is not valid TOML, or a bad value anywhere in it. The switcher keeps the rows it had and one notice names the file. A second, more forgiving reader was the other way; it would let the dashboard and the daemon disagree about whether the file is good.
+- **Session counts for listed projects (A7).** The scan covers them the way it covers the start-up project, so a listed row shows its sessions and click-to-focus works for it.
+- **Tests (A8)** are written with the code, as table tests. **Nothing had to be in place first (A9).**
+
+### As built
+
+Where the code does something the section above does not say (2026-10-13).
+
+- **A listed read that changes the listed folders asks for one more scan.** The scan learns which folders to count sessions in when it starts, and at start-up it starts beside the first read of the list. Without the extra scan a listed row would show no session counts for a minute. A read that changes nothing asks for nothing.
+- **Started in a worktree of a listed project, the search's own row for that project's main folder is hidden too,** so there is still one row. For a project that is not listed nothing changes.
+- **Removing the active project from the list moves the dashboard to the first row,** as it does when a folder search stops finding the active project. This only happens to a project that was in the switcher because it was listed, and is not the one the dashboard was started in.
+- **A project renamed in `config.toml` shows its new name the next time the switcher is opened.** An open switcher is rebuilt only when the set of folders changes, so the cursor and the filter are not reset under the owner's hands.
+- **A folder that is gone is never asked about in git,** and the scan does not watch it.
+- **The notice reads** "Could not read the project list: <the loader's message>. The switcher keeps the projects it had." The loader's message starts with the file's full path.
+- **Nothing outside display uses a project's name.** The active project, remembered selections, open counts and session sockets all go by the folder path, so showing the `config.toml` name changes no identity.
+- **`afk project add` saves `config.toml` by writing a new file and renaming it,** so the dashboard never reads a half-saved list.
+
+### Scope ideas
+
+- The README's `p` entry has one clumsy sentence left by this change ("A listed project shows the name `afk project list` shows. Each row showing its session count…"). The review marked it minor; it wants a one-line tidy.
+- A comment in `internal/ui/focusrequest_test.go` still says "unionProjects order"; the order it describes is unchanged, only the function's name is.
+
+### For the owner to check
+
+- Open `afk dash` on the always-on machine with the real `config.toml` and press `p`: both listed projects should be there under the names `afk project list` prints. The check here used a scratch config folder and throwaway projects.
+- `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.
