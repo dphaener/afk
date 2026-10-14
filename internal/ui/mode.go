@@ -136,6 +136,13 @@ const (
 	// after either. It swallows unclaimed keys, enter included, so the
 	// default is no and a repository is made only on an explicit y.
 	inputConfirmGitHubRepo
+	// inputConfirmPlanApprove is the y/n question the "approve the plan"
+	// action raises (T7.8, planapprove.go): it shows the project, the plan
+	// and the checker's counts, and y approves, which commits and pushes. It
+	// swallows unclaimed keys, enter included, so the default is no. When
+	// the plan has errors it has no y at all (Model.modes drops it), because
+	// `afk plan approve` would refuse and the dialog says to fix them first.
+	inputConfirmPlanApprove
 	// inputPlanCheck is the check-the-plan overlay (Model.planCheckOpen,
 	// plancheckoverlay.go): the plan checker's counts and findings in a
 	// scrollable box. It is an overlay like the inbox, not a footer modal:
@@ -188,6 +195,8 @@ func (m inputMode) String() string {
 		return "confirm-plan-folder"
 	case inputConfirmGitHubRepo:
 		return "confirm-github-repo"
+	case inputConfirmPlanApprove:
+		return "confirm-plan-approve"
 	case inputPlanCheck:
 		return "plan-check"
 	}
@@ -202,7 +211,8 @@ func (m inputMode) String() string {
 func (m inputMode) isModal() bool {
 	switch m {
 	case inputConfirmClean, inputSpawnError, inputConfirmRestart, inputEditLabel, inputPickProvider,
-		inputPlanText, inputConfirmPlanOpen, inputConfirmPlanFolder, inputConfirmGitHubRepo:
+		inputPlanText, inputConfirmPlanOpen, inputConfirmPlanFolder, inputConfirmGitHubRepo,
+		inputConfirmPlanApprove:
 		return true
 	}
 	return false
@@ -307,7 +317,19 @@ func (m Model) detailOwnsKeyboard() bool {
 // routeIgnored (the zero routeKind) and strand keys the form and the pane are
 // supposed to receive. Building from m.keys leaves an unconstructed Model
 // differing only in the global bindings it never had.
-func (m Model) modes() modeRegistry { return newModeRegistry(m.keys) }
+//
+// It is newModeRegistry with one state-dependent edit: while the approve
+// confirm holds a plan with errors, that confirm has no y. Removing the rule
+// makes y a swallowed key like any stray letter, and removing the binding
+// keeps it out of the footer and the dialog's hint, which both read this
+// registry, so neither offers a key that would do nothing.
+func (m Model) modes() modeRegistry {
+	r := newModeRegistry(m.keys)
+	if m.planApprove.Summary.Errors > 0 {
+		r[inputConfirmPlanApprove] = withoutPlanApproveYes(r[inputConfirmPlanApprove])
+	}
+	return r
+}
 
 // modeLayer is one row of the precedence table: a mode and the predicate that
 // says whether it is active in a given snapshot.
@@ -408,6 +430,7 @@ var modePrecedence = []modeLayer{
 	{inputConfirmPlanOpen, func(s modeState) bool { return s.modal == inputConfirmPlanOpen }},
 	{inputConfirmPlanFolder, func(s modeState) bool { return s.modal == inputConfirmPlanFolder }},
 	{inputConfirmGitHubRepo, func(s modeState) bool { return s.modal == inputConfirmGitHubRepo }},
+	{inputConfirmPlanApprove, func(s modeState) bool { return s.modal == inputConfirmPlanApprove }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
@@ -518,6 +541,9 @@ const (
 	// plan checker's result from the last plan status read. By name only,
 	// like the plan actions above.
 	actionPlanCheck
+	// actionPlanApprove is "approve the plan" (T7.8): openPlanApprove raises
+	// the confirm (planapprove.go). By name only, like the plan actions.
+	actionPlanApprove
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -638,6 +664,8 @@ func (a modeAction) String() string {
 		return "plan-new"
 	case actionPlanCheck:
 		return "plan-check"
+	case actionPlanApprove:
+		return "plan-approve"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -986,6 +1014,13 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	escGitHubRepo := key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "no"),
+	)
+	// The approve confirm's y says what it does, since it commits and
+	// pushes. Its n and esc are the plain cancel bindings: nothing happens
+	// after them, unlike the GitHub question's no.
+	confirmPlanApprove := key.NewBinding(
+		key.WithKeys("y", "Y"),
+		key.WithHelp("y", "approve"),
 	)
 	// The provider picker's keys. up/k and down/j are declared fresh rather
 	// than sharing keys.Up/keys.Down for the reason detailFocusUp gives: those
@@ -1537,6 +1572,23 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
 			confirmGitHubRepo, denyGitHubRepo, escGitHubRepo, keys.Mouse, quitChord,
+		}},
+	}
+	// The approve confirm is the other y/n confirmations' shape. Its y rule
+	// and binding are removed by Model.modes while the plan has errors
+	// (withoutPlanApproveYes), so the registry built here is the full one.
+	r[inputConfirmPlanApprove] = modeSpec{
+		mode: inputConfirmPlanApprove,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: confirmPlanApprove, action: actionConfirm},
+			{binding: deny, action: actionDeny},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			confirmPlanApprove, deny, cancelEsc, keys.Mouse, quitChord,
 		}},
 	}
 

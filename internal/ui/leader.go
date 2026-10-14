@@ -121,8 +121,8 @@ type leaderEntry struct {
 // leaderTable is every dashboard action and its key after the leader, in the
 // order the dialog lists them. It is the table in docs/decisions.md "## T7.2"
 // row for row, followed by the three by-name plan actions of "## T7.3",
-// the by-name "start a new plan" of "## T7.4" and the by-name "check the
-// plan" of "## T7.7";
+// the by-name "start a new plan" of "## T7.4", the by-name "check the
+// plan" of "## T7.7" and the by-name "approve the plan" of T7.8;
 // TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
@@ -167,6 +167,10 @@ var leaderTable = []leaderEntry{
 	// it changes nothing, so where the keyboard was matters only for where
 	// esc returns it.
 	{key: "", action: actionPlanCheck, reach: reachList},
+	// "approve the plan" (T7.8) is by name for the same reasons. It is a list
+	// action because its confirm is a footer modal over the list; on y the
+	// work runs in the background and the keyboard stays on the list.
+	{key: "", action: actionPlanApprove, reach: reachList},
 }
 
 // mode is the mode a reach's action runs as through applyKeyAction:
@@ -231,6 +235,7 @@ var leaderNames = map[modeAction]string{
 	actionPlanReconcile: "reconcile the plan with a document",
 	actionPlanNew:       "start a new plan",
 	actionPlanCheck:     "check the plan",
+	actionPlanApprove:   "approve the plan",
 }
 
 // leaderHelp is the one line of help each listed action shows. Every action
@@ -269,6 +274,12 @@ var leaderHelp = map[modeAction]string{
 	// row's name or help says "errors" or "warnings"
 	// (TestLeaderPlanCheckWordsAreUnique).
 	actionPlanCheck: "Show the plan's errors and warnings, as afk plan lint does",
+	// "approve" is the word this row is found by, and its first letter, a,
+	// is no row's key, so typing it from an empty query filters rather than
+	// running anything. No other row's name or help says "approve"
+	// (TestLeaderPlanApproveWordIsUnique). The line must not say "errors"
+	// or "warnings", which are the check-the-plan row's.
+	actionPlanApprove: "Approve a new plan and start its build, as afk plan approve does",
 }
 
 // leaderRow is one action in the dialog.
@@ -436,6 +447,16 @@ type leaderConds struct {
 	// plan status ever arrives, and openPlanCheck could only ever say the
 	// plan has not been read yet.
 	canCheckPlan bool
+	// canApprovePlan is "the ApprovePlan seam is wired".
+	canApprovePlan bool
+	// planKnown, planErr, planSession, planDamaged, planMode and planPhase
+	// are Model.planStatus as the approve row needs it: read at least once,
+	// a load error, a planning session, a damaged state file, and the
+	// session's mode and phase. They are the facts `afk plan approve` gates
+	// on, so the row is dimmed for exactly the plans the command refuses for
+	// their state; the command still has the last word (it re-reads them).
+	planKnown, planErr, planSession, planDamaged bool
+	planMode, planPhase                          string
 	// restartLive is Model.restartKeyLive, the gate the help uses.
 	restartLive bool
 	// canFocus is normalBindingEnabled's answer for the Focus binding: a pane,
@@ -496,6 +517,8 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		if !c.canCheckPlan {
 			return "checking the plan is not available here"
 		}
+	case actionPlanApprove:
+		return planApproveBlockedReason(c)
 	case actionProjects:
 		if !c.hasActiveProject {
 			return "no projects to switch between"
@@ -550,6 +573,47 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		case !c.canToggleView:
 			return "this session has no live agent"
 		}
+	}
+	return ""
+}
+
+// planApproveBlockedReason is the "approve the plan" row's reason, the one
+// row dimmed for the plan's state rather than the dashboard's. Only a new plan
+// at review can be approved; the reasons follow the command's own refusals
+// (plan_approve_cmd.go) in plainer words, and openPlanApprove asks this same
+// function, so the row and the action cannot disagree.
+//
+// The order is load-bearing. The seam and the project come first because
+// without them nothing about the plan is known. A status not read yet must
+// not be worded as "no planning session", which it may well have. A load
+// error and a damaged file win over any phase, because the phase of a file
+// that cannot be read or trusted means nothing. Approved is checked before
+// the mode, so an approved plan says so rather than that it is the wrong
+// kind of session.
+func planApproveBlockedReason(c leaderConds) string {
+	switch {
+	case !c.canApprovePlan:
+		return "approving is not available here"
+	case !c.hasActiveProject:
+		return "no project is open"
+	case !c.planKnown:
+		return "the plan status has not been read yet"
+	case c.planErr:
+		return "the plan status cannot be read"
+	case !c.planSession:
+		return "no planning session"
+	case c.planDamaged:
+		return "the planning state file is damaged"
+	case c.planPhase == "approved":
+		return "the plan is already approved"
+	case c.planMode != "new":
+		return "only a new plan is approved; this session is " + c.planMode
+	case c.planPhase == "":
+		// planStatusLine words an empty phase by what it waits for; here
+		// "at , not review" would be all that was left.
+		return "the plan is not at review yet"
+	case c.planPhase != "review":
+		return "the plan is at " + c.planPhase + ", not review"
 	}
 	return ""
 }

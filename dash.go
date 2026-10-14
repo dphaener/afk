@@ -630,9 +630,12 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// LoadPlanStatus has no default either: left out, the Build tab shows
 		// no plan line and the check-the-plan action says it cannot read the plan.
 		LoadPlanStatus: dashLoadPlanStatus,
-		AnswerInbox:    dashAnswerInbox,
-		PauseBuild:     dashPauseBuild,
-		ResumeBuild:    dashResumeBuild,
+		// ApprovePlan commits and pushes the plan, so the dashboard calls it
+		// only after the owner's yes in the confirm, inside a command.
+		ApprovePlan: dashApprovePlan,
+		AnswerInbox: dashAnswerInbox,
+		PauseBuild:  dashPauseBuild,
+		ResumeBuild: dashResumeBuild,
 		// LoadListed has no default in internal/ui either (it reads the
 		// machine's config.toml), so without this line the switcher would
 		// silently never show the projects `afk project add` listed. The read

@@ -2141,6 +2141,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   config folder and a scratch state folder: `y` leaves the plan committed, the project in the scratch
   `config.toml` and `state.json` at `approved`. `make check` is green.
 - Amended 2026-10-13: the Must not "approve from the web page" holds for this task only; T8.11 adds approving to the web page behind a confirm, calling this task's entry point.
+- Amended 2026-10-14 (T7.8 done): later tasks may assume the following. (1) The entry point is `approvePlanForSurface(projectFlag string, deps approveDeps) approveResult` in `plan_approve_surface.go` (outcomes approved, already approved, refused, no project, failed, with `Reason`, `Code`, `Failed`/`Done`/`Left`, `Counts`, `DaemonRunning`, `Push` and the command's `Lines`); `afk plan approve` replays its `Lines`, so T8.11 calls it as is and words it with `approveResultText` in `dash_approve.go` or its own function. (2) The dashboard seam is `ui.Deps.ApprovePlan(root) ui.PlanApproveResult{Outcome, Text}`, wired by `dashApprovePlan`; the dialog row is "approve the plan" (`actionPlanApprove`), reached by typing `approve`, and the confirm is the modal `inputConfirmPlanApprove` (ten modal modes now). (3) A task adding a leader row also edits `internal/ui/leader_wiring_test.go` and the golden `dash-120x40-leader.txt`. (4) A long notice is cut by the toast, so the approved result's last sentences can be hidden (a scope idea). See `## T7.8` in `docs/decisions.md`.
 
 #### T7.9 — The all-projects screen
 - **Depends on:** T7.1

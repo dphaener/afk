@@ -180,6 +180,7 @@ afk dash [options]
 | type `document`, then `enter` | reconcile the plan with a document: asks for the document's path first |
 | type `start a new plan`, then `enter` | start a new plan: asks for a folder, or a new project's name to create under your profile's `project location` (and then offers a private GitHub repository for it) |
 | type `errors`, then `enter` | check the plan: lists the master plan's errors and warnings, as `afk plan lint` does, in a scrollable box; with no plan it shows a notice |
+| type `approve`, then `enter` | approve the plan: for a new plan at review, asks for a yes first (showing the project, the plan's path and the checker's counts), then runs the same steps as `afk plan approve`; dimmed with the reason otherwise |
 
 The letters that used to run these actions on the list (`n o p c r l / b i q f ? P U`) and `:` now do nothing but show a one-line notice naming the key to use instead, for example `n moved: press ctrl+space then n`. The `:` palette is gone; the dialog's own name filter does its job. In the agent pane a chord such as `ctrl+t` or `ctrl+\` now belongs to the agent.
 
@@ -195,6 +196,8 @@ The letters that used to run these actions on the list (`n o p c r l / b i q f ?
   - On success the dashboard switches to that project and opens its planning pane.
 
 - **check the plan** (type `errors`) opens a scrollable box titled `Plan check · <plan path>` with a counts line (`3 milestones · 12 tasks · 2 owner tasks · 1 open questions`), then `<plan path>: no problems found` or `<plan path>: 1 error, 2 warnings`, then one finding per line, errors first, worded as `afk plan lint` words them (`docs/PLAN.md:42: error: T1.2: missing Files [rule]`). `↑/↓`, `pgup`/`pgdn`, `home`/`end` scroll and `esc` closes it. The box shows what was read when it opened; open it again to see a newer reading. Type `errors` (or `warnings`, which shares the help line but cannot be typed first because `w` is the resize key). With no plan it shows the notice `There is no plan to check at docs/PLAN.md.` and opens nothing; before the first read it says `The plan has not been read yet; try again in a moment.`
+
+- **approve the plan** (type `approve`) is available only for a new plan that is at review. Otherwise the row is dimmed and says why. Press `enter` and the confirm shows the project, the plan's path and the checker's counts. `y` approves, and `n` or `esc` leaves the plan at review. The steps are the ones `afk plan approve` runs, in the same order, and the commit and push run away from the screen. A plan with one or more errors has no yes: fix them first, and type `errors` to see them. The result is one notice, and a long git error is cut to its first line (run `afk plan approve --project <folder>` for the rest).
 
 A refused start shows the reason in the same words the command prints, and nothing is started. When a planning session is already open, the dashboard says which one it is (its mode and phase) and asks whether to open it: `y` opens it, and `n` or `esc` leaves it closed. After a start, the dashboard selects the `master-plan` row and opens its pane, as `enter` does on that row.
 
@@ -535,7 +538,7 @@ The nine phases, in order:
 
 When a new plan reaches `review`, afk also notes it on a list of plans waiting for approval (so the web page can show it, see "The web page") and, when the project has an `ntfy_url`, sends a "Plan ready for review" notification. That message gives the counts from `afk plan lint --summary`, tells you to read the plan and run `afk plan approve`, and links to the plan's page when the web page is on. The list entry is written even without an `ntfy_url`; a failure to write it or to send is a one-line note and never stops the phase.
 
-**`afk plan approve`** is your "go". Run it in the project, or give `--project DIR`.
+**`afk plan approve`** is your "go". Run it in the project, or give `--project DIR`. The dashboard's **approve the plan** action (type `approve` in `afk dash`, see [the actions dialog](#afk-dash--launch-the-dashboard)) runs the same steps behind a confirm.
 
 ```bash
 afk plan approve [--project DIR]
@@ -1049,7 +1052,7 @@ path = "/srv/another-app"
 - `/` — every project: the task being worked on and its phase, how many tasks are done, the last ship, whether it is paused or stopped, how many questions block work, and the usage reading.
 - `/p/<project>` — the same for one project, the daemon's state, a Pause or Resume button, and the project's inbox.
 - `/p/<project>/inbox/<id>` — one inbox item. If it is open, the form takes your answer (a choice, your own text, or both; typed text wins). The answer is stored with the channel `web` (the item then reads "Given ... through web"), and the daemon un-parks the task on its next pass, exactly as after `afk inbox answer`. A second answer to the same item is refused and the first is kept.
-- `/p/<project>/plan` — the project's master plan, drawn as a page: the checker's summary (the counts from `afk plan lint --summary`), the open questions, and the plan's own text with each task heading linkable (`#T5.7`). It is read-only: there is no button to approve, because a plan is approved with `afk plan approve` in the project folder. A plan waiting for approval is shown here even though its project is not in `config.toml` yet, and the overview `/` lists it under "Plans waiting for approval". If the plan cannot be read, the page says which file and why.
+- `/p/<project>/plan` — the project's master plan, drawn as a page: the checker's summary (the counts from `afk plan lint --summary`), the open questions, and the plan's own text with each task heading linkable (`#T5.7`). It is read-only: there is no button to approve, because a plan is approved with `afk plan approve` in the project folder, or from `afk dash`. A plan waiting for approval is shown here even though its project is not in `config.toml` yet, and the overview `/` lists it under "Plans waiting for approval". If the plan cannot be read, the page says which file and why.
 - `/usage` — each usage window, when it resets, and what the governor decided.
 
 **Pause and resume.** The buttons do what [`afk pause` and `afk resume`](#afk-pause-and-afk-resume--hold-and-release-the-daemon) do, including clearing a stopped line, and write to the decision log in the same way.

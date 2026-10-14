@@ -350,6 +350,20 @@ type Deps struct {
 	// It has NO default, like LoadBuild: it reads the real filesystem. A nil
 	// LoadPlanStatus means no plan status, ever, and no command is issued.
 	LoadPlanStatus func(repo string) PlanStatus
+	// ApprovePlan turns the new plan at review in the project at root into a
+	// build, the way `afk plan approve --project root` does (T7.8): it writes
+	// afk.toml, commits and pushes the plan, starts the ledger, lists the
+	// project and records the phase approved, stopping at the first step that
+	// fails. It returns what happened as one outcome and one plain line, and
+	// prints nothing. It commits and pushes, so it is called only after the
+	// owner's y in inputConfirmPlanApprove, and only inside a tea.Cmd
+	// (planapprove.go), never from Update or View.
+	//
+	// It has NO default, for AnswerInbox's reason: it writes into a real
+	// project and pushes to its remote, so a zero Deps must not be able to.
+	// A nil ApprovePlan dims the "approve the plan" row with "approving is
+	// not available here", and nothing is called.
+	ApprovePlan func(root string) PlanApproveResult
 	// AnswerInbox records the owner's answer to the inbox item id in the
 	// project whose main checkout is root (the Root of the snapshot LoadBuild
 	// returned), and returns the item as stored. It is the dashboard's only
@@ -1436,6 +1450,19 @@ type Model struct {
 	githubRepo string
 	githubGen  int
 
+	// planApprove is a copy of the plan status inputConfirmPlanApprove was
+	// raised with, planApproveRoot the project folder and planApproveGen the
+	// project generation it was raised under, on githubPath's terms: y
+	// approves exactly the project the dialog named, and the counts the
+	// dialog shows cannot change under the owner's eyes when the two-second
+	// refresh stores a newer status. planApproving is set from y until the
+	// outcome is back, so a second approve cannot start a second commit and
+	// push of the same plan meanwhile (planapprove.go).
+	planApprove     PlanStatus
+	planApproveRoot string
+	planApproveGen  int
+	planApproving   bool
+
 	// pendingPaneLead is the GitHub step's outcome line while the
 	// master-plan pane a new plan's start opened is still dialing
 	// (armPaneLead). The pane's arrival notice would otherwise replace it the
@@ -2421,6 +2448,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case githubRepoCreatedMsg:
 		return m.applyGitHubRepoCreated(msg)
+
+	case planApprovedMsg:
+		return m.applyPlanApproved(msg)
 
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
@@ -3486,6 +3516,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openPlanNewForm()
 	case actionPlanCheck:
 		return m.openPlanCheck()
+	case actionPlanApprove:
+		return m.openPlanApprove()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -3589,6 +3621,13 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 			return m.confirmGitHubRepo()
 		case actionDeny, actionCancel:
 			return m.cancelGitHubRepo()
+		}
+	case inputConfirmPlanApprove:
+		switch a {
+		case actionConfirm:
+			return m.confirmPlanApprove()
+		case actionDeny, actionCancel:
+			return m.cancelPlanApprove()
 		}
 	case inputPickProvider:
 		switch a {
@@ -4709,6 +4748,13 @@ func (m Model) leaderConditions() leaderConds {
 		buildKnown:       m.buildKnown,
 		canStartPlan:     m.deps.StartPlan != nil,
 		canCheckPlan:     m.deps.LoadPlanStatus != nil,
+		canApprovePlan:   m.deps.ApprovePlan != nil,
+		planKnown:        m.planStatus.Known,
+		planErr:          m.planStatus.Err != "",
+		planSession:      m.planStatus.Session,
+		planDamaged:      m.planStatus.Damaged,
+		planMode:         m.planStatus.Mode,
+		planPhase:        m.planStatus.Phase,
 		restartLive:      m.restartKeyLive(),
 		canFocus:         m.normalBindingEnabled(m.keys.Focus),
 		// toggleView is inert only on a selected row that has neither a
@@ -5754,7 +5800,8 @@ func (m *Model) applyDeadHostOverrides() {
 // rather than inventing a duplicate of facts three of them already track;
 // otherOpsInFlight covers the remaining three async dispatches
 // (restartHostCmd, restartChildCmd, writeLabelCmd) that keep no record of
-// their own.
+// their own. planApproving is the dashboard's plan approve (planapprove.go),
+// whose commit and push can outlast the working notice's toast.
 //
 // attachInFlight is read with its preview half excluded on purpose. A
 // preview dial (applyPreviewTimer) sets no status text, so a spinner tied to
@@ -5764,7 +5811,8 @@ func (m Model) hasInFlightWork() bool {
 	return len(m.pendingSpawns) > 0 ||
 		len(m.cleaningSessions) > 0 ||
 		(m.attachInFlight.name != "" && (!m.attachInFlight.preview || m.attachInFlight.claimedPreview)) ||
-		m.otherOpsInFlight > 0
+		m.otherOpsInFlight > 0 ||
+		m.planApproving
 }
 
 // startSpinnerIfNeeded arms the spinner's tick loop and is a no-op if the

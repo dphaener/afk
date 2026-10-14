@@ -15,11 +15,9 @@ import (
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/ledger"
-	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
-	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/usagestate"
 )
@@ -271,112 +269,28 @@ func approveDocsChanged(run ship.RunFunc, root string, docs []string) (bool, err
 // already approved; 1 refused, or a step failed; 2 the command was written
 // wrongly.
 //
-// It has three parts. The gate refuses anything that is not a reviewed, clean
-// draft, and changes nothing. The facts are gathered once, before any step.
-// Then the steps approveSteps returns are run in order, stopping at the first
-// that fails.
+// Everything after the flags is approvePlanForSurface, which the dashboard
+// calls too; the command only prints what it returns, in order, each line to
+// the stream it was meant for.
 func runPlanApprove(args []string, stdout, stderr io.Writer, deps approveDeps) int {
 	flags := flag.NewFlagSet("plan approve", flag.ContinueOnError)
 	proj := addProjectFlag(flags)
 	if code := parsePlanFlags(flags, args, planApproveCmd, planApproveUsageLine, stderr); code >= 0 {
 		return code
 	}
-	project, code := resolvePlanProject(planApproveCmd, *proj, stderr, deps.plan)
-	if code != 0 {
-		return code
-	}
-	root := project.Root
-
-	// refuse is for everything before the first step, where it is still true
-	// that nothing was changed.
-	refuse := func(format string, a ...any) int {
-		fmt.Fprintf(stderr, planApproveCmd+": the plan was not approved.\n"+format+"\n", a...)
-		fmt.Fprintln(stderr, planNothingChanged)
-		return 1
-	}
-
-	files, planPath, err := loadPlanSession(root, deps.plan)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	verdict, err := plansession.Approve(files)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	if verdict == plansession.ApproveAlready {
-		fmt.Fprintf(stdout, "The plan is already approved. %s\n", planNothingChanged)
-		return 0
-	}
-
-	// The planning session passed, but the daemon reads the plan its own way
-	// (masterplan.Parse and Validate, and the ledger). A plan it would refuse
-	// must never be approved: the project would be listed and then sit there
-	// with an error on every pass.
-	if _, err := loadBuildState(root); err != nil {
-		return refuse("The daemon could not build from this project as it is: %v.", err)
-	}
-	if !project.IsRepo {
-		return refuse("%s is not a git repository, so the plan cannot be committed and the daemon could not build in it. Run `git init` there, then run `%s` again.", root, planApproveCmd)
-	}
-	planRel, err := filepath.Rel(root, planPath)
-	if err != nil || planRel == ".." || strings.HasPrefix(planRel, ".."+string(filepath.Separator)) {
-		return refuse("The master plan %s is outside the project folder %s, so it cannot be committed with the project. Move it into the project and set `plan` in afk.toml to where it is.", planPath, root)
-	}
-	planRel = filepath.ToSlash(planRel)
-
-	// via_pr is read before afk.toml is written. A project with no afk.toml
-	// can still have it set, in afk.local.toml.
-	projCfg, err := projectconfig.Load(root)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	machine, err := daemonconfig.Load(deps.project.Deps)
-	if err != nil {
-		// Step 4 would fail on the same file, after the commit was made.
-		return refuse("afk's config cannot be read, so the project could not be added to it: %v.", err)
-	}
-
-	run := approveRun{deps: deps, root: root, planRel: planRel, files: files, viaPR: projCfg.Planning.ViaPR, stdout: stdout, stderr: stderr}
-	for _, p := range machine.Projects {
-		if filepath.Clean(p.Path) == root {
-			run.facts.Listed = true
+	res := approvePlanForSurface(*proj, deps)
+	for _, l := range res.Lines {
+		w := stdout
+		if l.toStderr {
+			w = stderr
 		}
+		_, _ = io.WriteString(w, l.text+"\n")
 	}
-	run.facts.HasConfig = deps.exists(filepath.Join(root, projectconfig.FileName))
-	if run.facts.HasConfig {
-		changed, err := approveDocsChanged(deps.run, root, approveDocuments(root, planRel, deps.exists))
-		if err != nil {
-			return refuse("%v.", err)
-		}
-		run.facts.DocsChanged = changed
-	}
-	run.facts.HasLedger = deps.ledgerExists(root)
-	run.facts.Approved = files.State.Phase == plansession.PhaseApproved
-	// The state folder is only needed for the review list and the closing
-	// sentence. When it cannot be found there is no list to tidy.
-	if dir, err := deps.stateDir(); err == nil {
-		run.stateDir = dir
-		for _, r := range daemonstate.ReadReviews(dir) {
-			if filepath.Clean(r.Root) == root {
-				run.facts.Reviewed = true
-			}
-		}
-	}
-
-	steps := approveSteps(run.facts)
-	for i, step := range steps {
-		if err := run.do(step); err != nil {
-			run.reportFailure(step, err, steps[:i], steps[i:])
-			return 1
-		}
-	}
-
-	run.reportApproved(planPath)
-	return 0
+	return res.Code
 }
 
-// approveRun is one run of the steps: what the gate learned, and where to
-// print.
+// approveRun is one run of the steps: what the gate learned, and the result
+// the steps add their lines to.
 type approveRun struct {
 	deps    approveDeps
 	root    string
@@ -386,12 +300,11 @@ type approveRun struct {
 	facts   approveFacts
 	// stateDir is afk's state folder, "" when it could not be found.
 	stateDir string
-	stdout   io.Writer
-	stderr   io.Writer
+	res      *approveResult
 }
 
-// do runs one step and prints one line when it changed something. A step
-// that finds its work already done (another run got there first) prints
+// do runs one step and adds one line when it changed something. A step
+// that finds its work already done (another run got there first) adds
 // nothing and is not a failure.
 func (a *approveRun) do(step approveStep) error {
 	switch step {
@@ -407,7 +320,7 @@ func (a *approveRun) do(step approveStep) error {
 		if err != nil {
 			return fmt.Errorf("could not create the task ledger %s: %w", ledger.Path(a.root), err)
 		}
-		fmt.Fprintf(a.stdout, "Created the task ledger (%s). No task is recorded as done yet.\n", ledger.Path(a.root))
+		a.res.say("Created the task ledger (%s). No task is recorded as done yet.", ledger.Path(a.root))
 		return nil
 	case approveProject:
 		added, listed, err := addProjectToConfig(a.deps.project, a.root, "")
@@ -415,7 +328,7 @@ func (a *approveRun) do(step approveStep) error {
 			return fmt.Errorf("could not add the project to afk's config: %w", err)
 		}
 		if added {
-			fmt.Fprintf(a.stdout, "Added %s to the projects the daemon builds (%s).\n", listed, daemonconfig.Path(a.deps.project.Deps))
+			a.res.say("Added %s to the projects the daemon builds (%s).", listed, daemonconfig.Path(a.deps.project.Deps))
 		}
 		return nil
 	case approvePhase:
@@ -425,16 +338,16 @@ func (a *approveRun) do(step approveStep) error {
 		if err := a.deps.writeState(a.root, st); err != nil {
 			return fmt.Errorf("could not write %s: %w", plansession.StatePath(a.root), err)
 		}
-		fmt.Fprintln(a.stdout, "Marked the planning session approved.")
+		a.res.say("Marked the planning session approved.")
 		return nil
 	case approveDropReview:
 		// The plan is approved by now. A list that cannot be written only
 		// leaves a stale line on the web page, so it is a note.
 		if err := daemonstate.RemoveReview(a.stateDir, a.root); err != nil {
-			fmt.Fprintf(a.stderr, "Note: the plan is approved, but it could not be taken off the list of plans waiting for approval (%s): %v\n", daemonstate.ReviewsPath(a.stateDir), err)
+			a.res.warn("Note: the plan is approved, but it could not be taken off the list of plans waiting for approval (%s): %v", daemonstate.ReviewsPath(a.stateDir), err)
 			return nil
 		}
-		fmt.Fprintln(a.stdout, "Took the plan off the list of plans waiting for approval.")
+		a.res.say("Took the plan off the list of plans waiting for approval.")
 		return nil
 	}
 	return fmt.Errorf("afk does not know approve step %d", int(step))
@@ -463,7 +376,7 @@ func (a *approveRun) writeConfig() error {
 		}
 		return fmt.Errorf("wrote %s, but it does not read back as it should, so it was removed again: %w", path, err)
 	}
-	fmt.Fprintf(a.stdout, "Wrote %s, which says where the plan is (%s).\n", projectconfig.FileName, a.planRel)
+	a.res.say("Wrote %s, which says where the plan is (%s).", projectconfig.FileName, a.planRel)
 	return nil
 }
 
@@ -492,7 +405,7 @@ func (a *approveRun) commit() error {
 	if out, err := a.deps.run(a.root, "git", append([]string{"commit", "-m", planApproveSubject, "--"}, docs...)...); err != nil {
 		return approveGitError("git commit", out, err)
 	}
-	fmt.Fprintf(a.stdout, "Committed the plan and the project's documents: %s.\n", strings.Join(docs, ", "))
+	a.res.say("Committed the plan and the project's documents: %s.", strings.Join(docs, ", "))
 	a.push()
 	return nil
 }
@@ -517,63 +430,28 @@ func approveGitError(cmd, stdout string, err error) error {
 // out with the first task's pull request, whose branch is made from it.
 func (a *approveRun) push() {
 	if a.viaPR {
-		fmt.Fprintln(a.stdout, "The commit was not pushed, because this project sends plan changes out as pull requests (via_pr under [planning]). It goes out with the first task's pull request.")
+		a.res.Push = approvePush{Outcome: approvePushViaPR}
+		a.res.say("The commit was not pushed, because this project sends plan changes out as pull requests (via_pr under [planning]). It goes out with the first task's pull request.")
 		return
 	}
 	if _, err := a.deps.run(a.root, "git", "remote", "get-url", "origin"); err != nil {
-		fmt.Fprintln(a.stdout, "The repository has no origin, so the commit was not pushed.")
+		a.res.Push = approvePush{Outcome: approvePushNoOrigin}
+		a.res.say("The repository has no origin, so the commit was not pushed.")
 		return
 	}
 	// `git branch --show-current` prints nothing on a detached HEAD.
 	out, err := a.deps.run(a.root, "git", "branch", "--show-current")
 	branch := strings.TrimSpace(out)
 	if err != nil || branch == "" {
-		fmt.Fprintf(a.stderr, "Note: the commit was not pushed, because the project is not on a branch. To push it by hand, check out a branch in %s and run: git push origin <branch>\n", a.root)
+		a.res.Push = approvePush{Outcome: approvePushNoBranch}
+		a.res.warn("Note: the commit was not pushed, because the project is not on a branch. To push it by hand, check out a branch in %s and run: git push origin <branch>", a.root)
 		return
 	}
 	if _, err := a.deps.run(a.root, "git", "push", "origin", branch); err != nil {
-		fmt.Fprintf(a.stderr, "Note: the commit could not be pushed: %v\nTo push it by hand, run: git -C %s push origin %s\n", err, a.root, branch)
+		a.res.Push = approvePush{Outcome: approvePushFailed, Branch: branch, Err: err}
+		a.res.warn("Note: the commit could not be pushed: %v\nTo push it by hand, run: git -C %s push origin %s", err, a.root, branch)
 		return
 	}
-	fmt.Fprintf(a.stdout, "Pushed the commit to origin (%s).\n", branch)
-}
-
-// reportFailure says what stopped the run, which steps this run did and
-// which are left, and that running the command again finishes them.
-func (a *approveRun) reportFailure(failed approveStep, err error, done, left []approveStep) {
-	fmt.Fprintf(a.stderr, "%s: could not %s.\n%v\n", planApproveCmd, failed.todo(), err)
-	if len(done) == 0 {
-		fmt.Fprintln(a.stderr, "Done in this run: nothing.")
-	} else {
-		parts := make([]string, len(done))
-		for i, s := range done {
-			parts[i] = s.did()
-		}
-		fmt.Fprintf(a.stderr, "Done in this run: %s.\n", strings.Join(parts, "; "))
-	}
-	parts := make([]string, len(left))
-	for i, s := range left {
-		parts[i] = s.todo()
-	}
-	fmt.Fprintf(a.stderr, "Not done: %s.\n", strings.Join(parts, "; "))
-	fmt.Fprintf(a.stderr, "The plan is not approved yet. Fix that and run %s again. It does only the steps that are left.\n", planApproveCmd)
-}
-
-// reportApproved is the closing lines of a run that finished. The counts
-// come from the checker's summary, the one place a plan is counted, so they
-// are the numbers `afk plan lint --summary` prints.
-func (a *approveRun) reportApproved(planPath string) {
-	if data, err := os.ReadFile(planPath); err == nil {
-		s := planlint.Lint(data).Summary
-		fmt.Fprintf(a.stdout, "Approved the plan at %s: %s in %s, %s for you to do, %s.\n", a.planRel,
-			plural(s.Tasks, "task"), plural(s.Milestones, "milestone"), plural(s.OwnerTasks, "task"), plural(s.OpenQuestions, "open question"))
-	} else {
-		fmt.Fprintf(a.stdout, "Approved the plan at %s.\n", a.planRel)
-	}
-	if a.stateDir != "" && a.deps.daemonRunning(a.stateDir) {
-		fmt.Fprintln(a.stdout, "A running afk daemon starts the first ready task within a few seconds.")
-	} else {
-		fmt.Fprintln(a.stdout, "No afk daemon seems to be running. Start it with afk daemon, and it starts the first ready task.")
-	}
-	fmt.Fprintf(a.stdout, "The planning session is no longer needed. You can close it with afk clean %s.\n", session.PlanSessionName)
+	a.res.Push = approvePush{Outcome: approvePushed, Branch: branch}
+	a.res.say("Pushed the commit to origin (%s).", branch)
 }

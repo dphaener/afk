@@ -431,9 +431,9 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 	}
 }
 
-// TestActiveInputModeModalAlwaysWins covers the 1152 combinations the named
+// TestActiveInputModeModalAlwaysWins covers the 1280 combinations the named
 // matrix above samples: every modal, crossed with every setting of the five
-// composing flags and the two focus axes (9 × 2^7 = 1152), must derive the
+// composing flags and the two focus axes (10 × 2^7 = 1280), must derive the
 // modal. This is the exhaustive form of the "modal outranks everything"
 // invariant — a precedence-table edit that slips any layer above the modals
 // turns some cell here red. The modal set is derived from isModal rather than
@@ -449,9 +449,9 @@ func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 	}
 	// Seven since T7.3 added the plan form and the open-it offer; eight since
 	// T7.5 added the new-plan folder confirm; nine since T7.6 added the GitHub
-	// repository question.
-	if len(modals) != 9 {
-		t.Fatalf("isModal admits %d modes, want the 9 footer modals", len(modals))
+	// repository question; ten since T7.8 added the approve-the-plan confirm.
+	if len(modals) != 10 {
+		t.Fatalf("isModal admits %d modes, want the 10 footer modals", len(modals))
 	}
 	bools := []bool{false, true}
 	focuses := []paneFocus{focusList, focusRight}

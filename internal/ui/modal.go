@@ -131,6 +131,8 @@ func (m Model) activeDialog() (dialog, bool) {
 		return m.planFolderDialog(), true
 	case inputConfirmGitHubRepo:
 		return m.githubRepoDialog(), true
+	case inputConfirmPlanApprove:
+		return m.planApproveDialog(), true
 	}
 	return dialog{}, false
 }
