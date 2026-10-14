@@ -13,7 +13,9 @@ import (
 // each row of that table names exactly the row it runs. The `\` pair is
 // load-bearing: two rows answer the same key (back to list on the right side
 // and close pane on the list), which is the one key the real table shares.
-// The quit row carries ctrl+c as a second, unshown key.
+// The quit row carries ctrl+c as a second, unshown key. The last row is a
+// by-name row (the T7.3 plan actions): no key label and no keys, so it is
+// reached only through the filter and enter.
 func leaderTestRows() []leaderRow {
 	return []leaderRow{
 		{action: actionNewSession, mode: inputNormal, name: "new session", keyLabel: "n", keys: []string{"n"}, help: "Start a new session"},
@@ -23,6 +25,7 @@ func leaderTestRows() []leaderRow {
 		{action: actionPaneClose, mode: inputNormal, name: "close pane", keyLabel: "\\", keys: []string{"\\"}, help: "Close"},
 		{action: actionPaneToggle, mode: inputDetail, name: "agent or overview", keyLabel: "t", keys: []string{"t"}, help: "Switch", blocked: "focus the right side first"},
 		{action: actionQuit, mode: inputNormal, name: "quit", keyLabel: "q", keys: []string{"q", "ctrl+c"}, help: "Leave"},
+		{action: actionPlanExtend, mode: inputNormal, name: "extend the plan", help: "Add work"},
 	}
 }
 
@@ -100,6 +103,10 @@ func TestLeaderKeyDecision(t *testing.T) {
 		{name: "shared key runs the runnable row", k: leaderPress("\\"), rows: rows, want: leaderRun, wantRun: actionPaneClose},
 		{name: "non-printable unknown key is ignored", k: leaderPress("ctrl+y"), rows: rows, want: leaderIgnore},
 		{name: "chord with a query is ignored", k: leaderPress("ctrl+c"), query: "b", rows: rows, want: leaderIgnore},
+		// The by-name row: its name's first letter is nobody's key, so it
+		// starts the query, and enter on the highlighted row runs it.
+		{name: "a by-name row's letter filters", k: leaderPress("e"), rows: rows, want: leaderFilter, wantText: "e"},
+		{name: "enter runs a highlighted by-name row", k: leaderPress("enter"), rows: rows, highlight: 7, want: leaderRun, wantRun: actionPlanExtend},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -169,6 +176,14 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"new session with a project", actionNewSession, ready, ""},
 		{"one-off needs a project", actionScratch, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project"},
 		{"one-off with a project", actionScratch, ready, ""},
+		{"extend needs a project", actionPlanExtend, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project is open"},
+		{"amend needs a project", actionPlanAmend, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project is open"},
+		{"reconcile needs a project", actionPlanReconcile, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project is open"},
+		// Nothing else dims them: no build, no selection, no pane. Whether a
+		// change session may start is the start's own answer.
+		{"extend runs with only a project", actionPlanExtend, leaderConds{hasActiveProject: true}, ""},
+		{"amend runs with only a project", actionPlanAmend, leaderConds{hasActiveProject: true}, ""},
+		{"reconcile runs with only a project", actionPlanReconcile, leaderConds{hasActiveProject: true}, ""},
 		{"projects needs a project", actionProjects, with(func(c *leaderConds) { c.hasActiveProject = false }), "no projects"},
 		{"projects with a project", actionProjects, ready, ""},
 
@@ -254,6 +269,10 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"w", actionEnterResize},
 		{"?", actionHelp},
 		{"q", actionQuit},
+		// T7.3: by name only, no key after the leader.
+		{"", actionPlanExtend},
+		{"", actionPlanAmend},
+		{"", actionPlanReconcile},
 	}
 	if len(leaderTable) != len(want) {
 		t.Fatalf("leaderTable has %d rows, the decided table %d", len(leaderTable), len(want))
@@ -332,6 +351,13 @@ func TestLeaderRowsFromTheTable(t *testing.T) {
 
 	t.Run("rows show the key after the leader", func(t *testing.T) {
 		for _, r := range rows {
+			if r.keyLabel == "" {
+				// A by-name row answers to no key at all.
+				if len(r.keys) != 0 {
+					t.Errorf("by-name row %v answers to keys %q", r.action, r.keys)
+				}
+				continue
+			}
 			if r.keyLabel == "esc" || r.keyLabel == "enter" || strings.Contains(r.keyLabel, "+") || strings.Contains(r.keyLabel, "/f") {
 				t.Errorf("row %v shows %q, want a single key after the leader", r.action, r.keyLabel)
 			}

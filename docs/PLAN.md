@@ -2004,6 +2004,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   scratch build in a throwaway repository with a plan and a stand-in agent, through tmux: the extend
   action creates `.afk/plan/state.json` with the mode `extend` and the stand-in is in the pane; the
   same for amend with its sentence in `.afk/plan/brief.md`. `make check` is green.
+- Amended 2026-10-14 (T7.3 done): later tasks may assume the following. (1) The terminal-free start is `startPlanForSurface(planSurfaceRequest{Mode, Project, Text}, planDeps) planSurfaceResult` in `plan_start_surface.go` (outcomes `started`, `resumed`, `refused`; Mode `""` is a resume-only request that opens an open session and never starts a new plan); `afk plan` shares its look, decision and refusal text (`lookAtPlanProject`, `planRefusal`), so T7.4 extends it with the `new` mode rather than writing a second path, and T8.14 can call it. (2) The dashboard seam is `ui.Deps.StartPlan(root, mode, text) PlanStartResult` (`internal/ui/planstart.go`), wired by `dashStartPlan` in `dash_plan.go`, which waits for `host.json` before returning so the pane opens on the first try. (3) By-name dialog rows have `key: ""` in `leaderTable`; a name starting with a leader key letter is reached through that key first, which is why reconcile is typed as `document`. (4) A one-line form mode `inputPlanText` and the open-it confirm `inputConfirmPlanOpen` exist. See `## T7.3` in `docs/decisions.md`.
 
 #### T7.4 — Start a new plan from the dashboard
 - **Depends on:** T7.3

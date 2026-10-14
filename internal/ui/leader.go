@@ -106,7 +106,9 @@ const (
 type leaderEntry struct {
 	// key is what is pressed after ctrl+space. It is a key.Matches string
 	// ("n", "P", "\\", "?"), so a dialog key is compared with KeyPressMsg's
-	// String() exactly as a binding would be.
+	// String() exactly as a binding would be. It is "" for an action reached
+	// by name only (the plan actions): such a row shows no key, answers to no
+	// key, and is run by typing its name in the filter and pressing enter.
 	key    string
 	action modeAction
 	reach  leaderReach
@@ -118,7 +120,8 @@ type leaderEntry struct {
 
 // leaderTable is every dashboard action and its key after the leader, in the
 // order the dialog lists them. It is the table in docs/decisions.md "## T7.2"
-// row for row; TestLeaderTableIsTheDecidedTable holds the two together.
+// row for row, followed by the three by-name plan actions of "## T7.3";
+// TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
 // rows sharing a key the first one that can run wins (leaderKeyDecision). On
@@ -146,6 +149,13 @@ var leaderTable = []leaderEntry{
 	{key: "w", action: actionEnterResize, reach: reachOverview},
 	{key: "?", action: actionHelp, reach: reachList},
 	{key: "q", action: actionQuit, reach: reachAnywhere, also: []string{"ctrl+c"}},
+	// The plan actions (T7.3) have no key: the master plan says "by name
+	// only", and the dashboard is short of free letters. They are list
+	// actions because amend and reconcile open a form, which belongs over the
+	// list; a start then moves the keyboard to the planning session's pane.
+	{key: "", action: actionPlanExtend, reach: reachList},
+	{key: "", action: actionPlanAmend, reach: reachList},
+	{key: "", action: actionPlanReconcile, reach: reachList},
 }
 
 // mode is the mode a reach's action runs as through applyKeyAction:
@@ -205,6 +215,9 @@ var leaderNames = map[modeAction]string{
 	actionEnterResize:   "resize panes",
 	actionHelp:          "help",
 	actionQuit:          "quit",
+	actionPlanExtend:    "extend the plan",
+	actionPlanAmend:     "amend the plan",
+	actionPlanReconcile: "reconcile the plan with a document",
 }
 
 // leaderHelp is the one line of help each listed action shows. Every action
@@ -231,6 +244,9 @@ var leaderHelp = map[modeAction]string{
 	actionDetailUnfocus: "Hand the keyboard back to the session list",
 	actionPaneToggle:    "Switch the right side between the agent and the overview",
 	actionHelp:          "Show every key on the session list, or hide them again",
+	actionPlanExtend:    "Start a planning session that adds work to the plan",
+	actionPlanAmend:     "Change the plan; asks what to change in a sentence",
+	actionPlanReconcile: "Fit the plan to a document; asks for its path",
 }
 
 // leaderRow is one action in the dialog.
@@ -246,7 +262,8 @@ type leaderRow struct {
 	keyLabel string
 	// keys are every key the row answers to in the dialog; keys[0] is
 	// keyLabel's key, the one a press is synthesized from when the action
-	// needs the key itself (the filter's `/` is handed on to the list).
+	// needs the key itself (the filter's `/` is handed on to the list). It is
+	// empty for a row reached by name only, so no typed key can match it.
 	keys []string
 	// help is one line of plain language from leaderHelp.
 	help string
@@ -260,13 +277,20 @@ type leaderRow struct {
 func leaderRows(conds leaderConds) []leaderRow {
 	rows := make([]leaderRow, 0, len(leaderTable))
 	for _, e := range leaderTable {
+		// A by-name row gets no keys at all rather than [""]: an empty string
+		// in keys would be one more thing every matcher has to know never to
+		// match.
+		var keys []string
+		if e.key != "" {
+			keys = append([]string{e.key}, e.also...)
+		}
 		rows = append(rows, leaderRow{
 			action:   e.action,
 			mode:     e.reach.mode(),
 			reach:    e.reach,
 			name:     leaderNames[e.action],
 			keyLabel: e.key,
-			keys:     append([]string{e.key}, e.also...),
+			keys:     keys,
 			help:     leaderHelp[e.action],
 			blocked:  leaderBlockedReason(e.action, conds),
 		})
@@ -339,8 +363,12 @@ func leaderHelpBinding(a modeAction, desc string, enabled bool) key.Binding {
 }
 
 // leaderActionForKey is the first table action whose key is s, or
-// actionNone.
+// actionNone. An empty s is nobody's key: the by-name rows store "" and must
+// not be found by it.
 func leaderActionForKey(s string) modeAction {
+	if s == "" {
+		return actionNone
+	}
 	for _, e := range leaderTable {
 		if e.key == s {
 			return e.action
@@ -416,7 +444,11 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		case !c.canFocus:
 			return "nothing to focus on the right"
 		}
-	case actionNewSession, actionScratch:
+	case actionNewSession, actionScratch, actionPlanExtend, actionPlanAmend, actionPlanReconcile:
+		// The plan actions are dimmed for nothing else. Whether a change
+		// session may start (a plan exists, none is open, the agent can plan)
+		// is the start's own decision, and its refusal is shown in its own
+		// words; a guess here would dim a row that works.
 		if !c.hasActiveProject {
 			return "no project is open"
 		}
@@ -813,8 +845,9 @@ func leaderRowLine(r leaderRow, keyW, nameW, width int, selected bool) string {
 	default:
 		// The key column in the help key's colour so the eye can run down the
 		// keys. The cut above is measured on the plain text, so styling the
-		// key cannot change where it falls.
-		if lipgloss.Width(r.keyLabel) <= width && strings.HasPrefix(line, r.keyLabel) {
+		// key cannot change where it falls. A by-name row has no key to
+		// colour.
+		if r.keyLabel != "" && lipgloss.Width(r.keyLabel) <= width && strings.HasPrefix(line, r.keyLabel) {
 			return theme.helpStyles.ShortKey.Render(r.keyLabel) + strings.TrimPrefix(line, r.keyLabel)
 		}
 		return line

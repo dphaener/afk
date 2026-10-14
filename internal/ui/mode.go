@@ -113,6 +113,15 @@ const (
 	// placeholder) and the agent pane, which is why its place in
 	// modePrecedence is above all three.
 	inputLeader
+	// inputPlanText is the plan actions' one-line form (planstart.go): amend
+	// asks for a sentence, reconcile for a document's path. It is the label
+	// prompt's shape — a textinput, so unclaimed keys reach the component —
+	// with a purpose (Model.planTextMode) instead of a session.
+	inputPlanText
+	// inputConfirmPlanOpen is the y/n offer raised when a plan action was
+	// refused because a planning session is already open: y opens that
+	// session. It swallows unclaimed keys like the other y/n confirmations.
+	inputConfirmPlanOpen
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -150,6 +159,10 @@ func (m inputMode) String() string {
 		return "inbox"
 	case inputLeader:
 		return "leader"
+	case inputPlanText:
+		return "plan-text"
+	case inputConfirmPlanOpen:
+		return "confirm-plan-open"
 	}
 	return "unknown"
 }
@@ -161,7 +174,8 @@ func (m inputMode) String() string {
 // precedence-tested the moment its constant exists.
 func (m inputMode) isModal() bool {
 	switch m {
-	case inputConfirmClean, inputSpawnError, inputConfirmRestart, inputEditLabel, inputPickProvider:
+	case inputConfirmClean, inputSpawnError, inputConfirmRestart, inputEditLabel, inputPickProvider,
+		inputPlanText, inputConfirmPlanOpen:
 		return true
 	}
 	return false
@@ -282,7 +296,7 @@ type modeLayer struct {
 // Every row reproduces today's behavior except one, and each deviation-free
 // row's reachability is documented in decisions.md:
 //
-//   - Rows 1-5 (the modals) outrank everything, including the switcher —
+//   - Rows 1-7 (the modals) outrank everything, including the switcher —
 //     model.go:872-895 documents that in words, and it is reachable because
 //     spawnFinishedMsg raises the modal asynchronously under an open overlay
 //     or form. Their relative order is immaterial (one enum field holds them).
@@ -355,6 +369,8 @@ var modePrecedence = []modeLayer{
 	{inputConfirmRestart, func(s modeState) bool { return s.modal == inputConfirmRestart }},
 	{inputEditLabel, func(s modeState) bool { return s.modal == inputEditLabel }},
 	{inputPickProvider, func(s modeState) bool { return s.modal == inputPickProvider }},
+	{inputPlanText, func(s modeState) bool { return s.modal == inputPlanText }},
+	{inputConfirmPlanOpen, func(s modeState) bool { return s.modal == inputConfirmPlanOpen }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
@@ -454,6 +470,11 @@ const (
 	// (toggleFullHelp): ctrl+space ? from anywhere, and esc on the list while
 	// the full help is shown (guarded on routeConds.helpShown).
 	actionHelp
+	// The three plan actions (planstart.go). They have no key after the
+	// leader: the dialog reaches them by name only (leaderTable).
+	actionPlanExtend    // startPlanExtend
+	actionPlanAmend     // openPlanTextForm(amend)
+	actionPlanReconcile // openPlanTextForm(reconcile)
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -564,6 +585,12 @@ func (a modeAction) String() string {
 		return "open-leader"
 	case actionHelp:
 		return "help"
+	case actionPlanExtend:
+		return "plan-extend"
+	case actionPlanAmend:
+		return "plan-amend"
+	case actionPlanReconcile:
+		return "plan-reconcile"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -878,6 +905,17 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	saveLabel := key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "save (blank clears it)"),
+	)
+	// The plan form's enter and the open-it offer's y. Their own bindings
+	// rather than saveLabel and confirmRestart, so the dialog hints say what
+	// these keys do here.
+	startPlanText := key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "start"),
+	)
+	confirmPlanOpen := key.NewBinding(
+		key.WithKeys("y", "Y"),
+		key.WithHelp("y", "open it"),
 	)
 	// The provider picker's keys. up/k and down/j are declared fresh rather
 	// than sharing keys.Up/keys.Down for the reason detailFocusUp gives: those
@@ -1354,6 +1392,39 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: []key.Binding{
 			saveLabel, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+
+	// The plan form is the label prompt's spec with its own enter: unclaimed
+	// keys reach the textinput, so the owner can type.
+	r[inputPlanText] = modeSpec{
+		mode: inputPlanText,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: startPlanText, action: actionSubmit},
+		},
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: []key.Binding{
+			startPlanText, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+
+	// The open-it offer is the restart confirmation's spec with its own y:
+	// a stray key must neither open the session nor dismiss the question.
+	r[inputConfirmPlanOpen] = modeSpec{
+		mode: inputConfirmPlanOpen,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: cancelEsc, action: actionCancel},
+			{binding: confirmPlanOpen, action: actionConfirm},
+			{binding: deny, action: actionDeny},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			confirmPlanOpen, deny, cancelEsc, keys.Mouse, quitChord,
 		}},
 	}
 

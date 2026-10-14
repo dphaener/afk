@@ -2633,3 +2633,47 @@ T7.2 makes the leader key (ctrl+space) the one way to run a dashboard action. Th
 ### Follow-ups
 
 - Some doc comments in `internal/ui/model.go` still call ctrl+t the agent/overview toggle. It is ctrl+space `t` now.
+
+## T7.3
+
+T7.3 lets `afk dash` start a change session (extend, amend, reconcile) and open it in the pane. These are the decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **One start path for the command and the dashboard (A1).** A function beside `afk plan` does everything the command does up to the point where it takes the terminal, and returns what happened (started, resumed, or refused with the reason) instead of printing it. The command uses the same code, so the two cannot drift, and `afk plan` prints and does exactly what it did before.
+- **What "resumed" means (A2).** With a mode, `afk plan` never resumes: it refuses while a session is open. So the start function also takes a request with no mode that only opens a planning session that is already open: when its agent is running nothing is started, and when it is not, the agent is started again on the saved state and nothing is rewritten. With no open session that request is refused; it never starts a new plan, which is T7.4's job.
+- **Refusals (A3)** use the command's own sentences, without the `afk plan amend:` at the front, built once so the terminal and the dashboard say the same thing.
+- **The three actions have no key (A4).** The master plan says "by name only": in the actions dialog, type part of the name (extend, amend, reconcile) and press `enter`.
+- **The form (A5).** Amend asks for one sentence and reconcile for a path inside the project, in a one-line form like the label form. Empty text keeps the form open and starts nothing.
+- **An open session (A6)** is found by the start itself, after the form, and the dashboard then asks whether to open it; `y` opens it. Each action therefore calls the start once.
+- **Which agent (A7).** The default one, as `afk plan` without `--provider`.
+- **After a start (A8)** the dashboard selects the `master-plan` row and opens its pane, as `enter` does. A result that arrives after a project switch is dropped.
+- **Tests (A9)** are table tests written with the code. **Nothing had to be in place first (A10):** T7.1 and T7.2 are merged.
+
+### Decided while building
+
+These are the choices the code settled differently from the assumptions above, or that the assumptions did not cover.
+
+- **Reconcile is typed as `document`, not `reconcile` (corrects A4's example).** The leader's `r` is the restart key, so a typed `reconcile` restarts the selected session when it is stopped. `extend`, `amend` and `document` begin with no leader key, so they are safe. A4's text is kept as the planner wrote it; this line is the correction. The dashboard rows and README say `document`.
+- **One start path, one result, no error return.** The entry point reports every outcome, a spawn failure included, as refused with the command's own sentence. The dashboard's seam has no error return, and `PlanRefused` is its zero value, so a result that is never filled opens nothing.
+- **One text field for both questions.** Amend's sentence and reconcile's path share one `Text` field; the mode says which it is.
+- **Resume looks for an open session first.** A damaged state still reaches the decision, so the owner sees the "fix state.json by hand" refusal rather than "nothing is open". An open session whose plan file is missing is resumed, as bare `afk plan` does. A finished session is refused as nothing open, so the plan-gone refusal never comes from the entry point.
+- **A relative project folder is refused**, not resolved against the folder the dashboard was started in, which the owner did not choose.
+- **Two kinds of refusal text.** Refusals before the decision (a project folder that is missing, a bad `afk.toml`) are the command's sentences exactly, so not every one ends in "Nothing was started.". The entry point's own refusals (blank text, unknown mode, relative folder, nothing open) do end that way. The missing-folder refusal still says "pass --project with a folder that exists", which reads oddly in the dashboard; it is the command's wording and was left as it is.
+- **The terminal check is asked by the command only.** `lookAtPlanProject` takes the terminal check as a function, asked after the project is read, so `afk plan` asks it where it always did. The dashboard never asks it.
+- **Two modal modes.** `inputPlanText` is the one-line form; `inputConfirmPlanOpen` is the open-it offer, where `y` opens and `n` or `esc` cancels. Stray keys do nothing while the offer is up.
+- **The form captures its project when it opens.** A submit after a project switch is refused with a notice, so nothing starts in another project. Blank text is checked after trimming spaces, and the trimmed text is what is sent.
+- **The pane opens before the row is listed.** The result's root is dialled at once, and `master-plan` is selected once it is listed. That selection is dropped when the keyboard goes back to the list, and on a project switch, so a later tick never moves the owner's cursor.
+- **The success notice follows the connect.** It is raised after the dial, so it shows while the pane connects; the pane's arrival then words itself as every connect does.
+- **Plan rows reach the list first.** From the agent pane the keyboard moves to the list before the form opens, and a successful start moves it to the planning pane.
+- **Help lines are short** so each fits in 120 columns, and each action's name is the only row containing its own word, so a filter leaves exactly one row.
+- **`internal/ui/views_test.go` was edited outside the task's Files list.** `TestLeaderChordNamesEveryTableKey` expected `ctrl+space <key>` for every table row. A by-name row has no key, so the test now expects the leader alone for it. That is the only change in that file, and the package cannot pass without it.
+- **CONTEXT.md glossary.** "Leader key" and "Actions dialog" were already in CONTEXT.md from T7.1, so no term was added; the existing lines are kept as they are.
+- **The start waits for the host to be reachable.** A started or resumed result is held until the planning host has written `host.json` (the same bounded wait `afk plan` uses before attaching). Without it the pane dialled before the host was ready and failed on the first try.
+
+### For the owner to check
+
+- Run `afk dash` in your own terminal on a project with a plan and a real agent: ctrl+space, type `extend`, `enter`; then, after that session is finished or cleaned, `amend` with a sentence and `document` with a path. The hands-on check used a stand-in agent only.
+
+### Scope ideas
+
+- Typing `reconcile` in the actions dialog sends its first `r` to the restart action, which restarts the selected session when it is stopped. The README says to type `document`. Renaming the row, or reading a by-name row's first letter as filter text, would remove the trap.
+- A long refusal is cut off in the dashboard's toast (the reconcile "outside the project folder" reason, for example). Wrapping long notices, or showing the whole reason in a small dialog, would show the full sentence.

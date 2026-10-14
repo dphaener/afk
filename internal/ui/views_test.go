@@ -1481,7 +1481,14 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 func TestLeaderChordNamesEveryTableKey(t *testing.T) {
 	for _, e := range leaderTable {
 		t.Run(leaderNames[e.action], func(t *testing.T) {
-			if got, want := leaderChord(e.action), leaderKey+" "+e.key; got != want {
+			// A by-name row (the T7.3 plan actions) has no key to name, so
+			// its chord is the leader alone, never "ctrl+space " with a
+			// dangling space.
+			want := leaderKey + " " + e.key
+			if e.key == "" {
+				want = leaderKey
+			}
+			if got := leaderChord(e.action); got != want {
 				t.Errorf("leaderChord = %q, want %q", got, want)
 			}
 		})

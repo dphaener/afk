@@ -515,6 +515,9 @@ type leaderActionCase struct {
 	// ran reports whether the action happened, from the model before and
 	// after and the command the key returned.
 	ran func(before, after Model, cmd tea.Cmd) bool
+	// query is what a by-name row (no key after the leader) is reached by:
+	// typed into the dialog's filter, then enter. Empty for keyed rows.
+	query string
 }
 
 // leaderApplyFilter applies a session-list filter the way a user does now:
@@ -554,6 +557,13 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 		return withBuild(t, m, buildPauseSnap())
 	}
 	cmdIs := func(cmd tea.Cmd, want func(tea.Msg) bool) bool { return cmd != nil && want(cmd()) }
+	planList := func(t *testing.T) Model {
+		m := testModel(sess("a"))
+		m.deps.StartPlan = func(root, mode, text string) PlanStartResult {
+			return PlanStartResult{Outcome: PlanStarted, Root: root}
+		}
+		return m
+	}
 	return map[modeAction]leaderActionCase{
 		actionNewSession: {setup: list1, mode: inputNormal, old: press('n'),
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.formOpen }},
@@ -609,6 +619,20 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.helpShowAll }},
 		actionQuit: {setup: list1, mode: inputNormal, old: press('q'),
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.quitting }},
+		// The plan actions (T7.3) never had a key; the "old" key is the
+		// first letter of the query, which on the bare list is nothing. The
+		// reconcile row is reached by "document": its name starts with r,
+		// which is restart's key and would run restart when it can.
+		actionPlanExtend: {setup: planList, mode: inputNormal, old: press('e'), query: "extend",
+			ran: func(_, _ Model, cmd tea.Cmd) bool {
+				return cmdIs(cmd, func(msg tea.Msg) bool { _, ok := msg.(planStartedMsg); return ok })
+			}},
+		actionPlanAmend: {setup: planList, mode: inputNormal, old: press('a'), query: "amend",
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputPlanText && a.planTextMode == PlanModeAmend }},
+		actionPlanReconcile: {setup: planList, mode: inputNormal, old: press('d'), query: "document",
+			ran: func(_, a Model, _ tea.Cmd) bool {
+				return a.modal == inputPlanText && a.planTextMode == PlanModeReconcile
+			}},
 	}
 }
 
@@ -655,11 +679,25 @@ func TestLeaderRunsEveryAction(t *testing.T) {
 				if !ok || row.blocked != "" {
 					t.Fatalf("setup: the %v row is missing or dimmed (%q)", e.action, row.blocked)
 				}
-				k, ok := leaderPressFor(e.key)
-				if !ok {
-					t.Fatalf("key %q does not round-trip", e.key)
+				var after Model
+				var cmd tea.Cmd
+				if e.key == "" {
+					// By name only: type the query, then enter on the
+					// one row it leaves.
+					for _, r := range tc.query {
+						m, _ = update(t, m, keyRune(r))
+					}
+					if v := m.leader.visible(); len(v) != 1 || v[0].action != e.action {
+						t.Fatalf("query %q leaves %d rows, want only %v", tc.query, len(v), e.action)
+					}
+					after, cmd = update(t, m, keyEnter)
+				} else {
+					k, ok := leaderPressFor(e.key)
+					if !ok {
+						t.Fatalf("key %q does not round-trip", e.key)
+					}
+					after, cmd = update(t, m, k)
 				}
-				after, cmd := update(t, m, k)
 				if after.leaderOpen {
 					t.Fatal("the dialog stayed open")
 				}
