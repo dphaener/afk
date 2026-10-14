@@ -2827,8 +2827,9 @@ and anyone who wants another key sets it in `config.toml`.
 - **Must not:** change any key after the leader, `ctrl+c` quitting from the session list, or
   `afk attach`'s ctrl-\.
 - **Acceptance:** `go test ./internal/ui/` passes with a table row each that ctrl+] opens the dialog
-  from the list, the detail side and the agent pane, that ctrl+space does nothing there, and that ctrl+]
-  twice in the pane sends one 0x1D. `/usr/bin/grep -rn 'ctrl+space' --exclude-dir=.git --exclude-dir=.afk
+  from the list, the detail side and the agent pane, that ctrl+space opens no dialog in any of them
+  (in the agent pane it types one NUL to the agent), and that ctrl+] twice in the pane sends one 0x1D.
+  Outside the pane's key encoding and its tests, `/usr/bin/grep -rn 'ctrl+space' --exclude-dir=.git --exclude-dir=.afk
   --exclude-dir=.claude . | grep -v -e docs/PLAN.md -e docs/decisions.md` prints nothing. Against a
   scratch build in a throwaway repo, inside tmux with the default prefix: `tmux send-keys C-]` opens the
   dialog from the list and from a focused agent pane, and twice leaves one `^]` at a stand-in agent.
