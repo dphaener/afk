@@ -1,0 +1,40 @@
+ afk Dashboard 
+╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
+│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
+│                                           ││ ─────────────────────────────────────────────────────────────────────── │
+│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
+│   ● Billing v2          REVIEWING   7/7   ││  executing   loop 3  updated 2026-07-10T00:00:00Z  ● host running       │
+│   ● fix-login-redirect  PLANNING      – ● ││                                                                         │
+│   ○ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
+│   ● scra╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
+│   ○ old-│ type to filter, or press an action's key                                                         │         │
+│         │                                                                                                  │         │
+│         │ enter/f     focus view         — Move the keyboard to the right side                             │         │
+│         │ n           new session        — Start a new session from a plan or a branch                     │         │
+│         │ o           one-off session    — Start a one-off session with no plan                            │         │
+│         │ p           switch project     — Switch to another project                                       │         │
+│         │ c           clean session      — Clean the selected session and its worktree                     │         │
+│         │ r           restart agent      — only a stopped or stuck agent can be restarted                  │         │
+│         │ l           edit label         — Give the selected session a display label                       │         │
+│         │ /           filter sessions    — Filter the session list by name                                 │         │
+│         │ esc         clear filter       — no filter is applied                                            │         │
+│         │ :           command palette    — Open the command palette                                        │         │
+│         │ b           build tasks        — this project has no build                                       │         │
+│         │ i           inbox              — the inbox has not been read yet                                 │         │
+│         │ P           pause the build    — this project has no build                                       │         │
+│         │ U           resume the build   — this project has no build                                       │         │
+│         │ ctrl+\      close pane         — no agent pane is open                                           │         │
+│         │ ctrl+g      release mouse      — Let the terminal select text, or take the mouse back            │         │
+│         │ q           quit               — Leave the dashboard; every session keeps running                │         │
+│         │ ctrl+w      resize panes       — Move the divider between the list and the right side            │         │
+│         │ esc/ctrl+\  back to list       — the session list already has the keyboard                       │         │
+│         │ ctrl+t      agent or overview  — focus the right side first (enter)                              │         │
+│         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+│                                           ││                                                                         │
+╰───────────────────────────────────────────╯╰───────────────────────────── enter/f: focus view · c: clean · l: label ─╯
+enter run · ↑/↓ move · type filter · esc close · ctrl+space close, or pass it to the agent

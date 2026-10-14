@@ -827,6 +827,9 @@ type keyMap struct {
 	PauseBuild  key.Binding
 	ResumeBuild key.Binding
 	Quit        key.Binding
+	// Leader is ctrl+space, the leader key that opens the actions dialog
+	// (leader.go). See its comment in defaultKeyMap for how the key arrives.
+	Leader key.Binding
 }
 
 func defaultKeyMap() keyMap {
@@ -994,6 +997,22 @@ func defaultKeyMap() keyMap {
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
 			key.WithHelp("q", "quit"),
+		),
+		// ctrl+space opens the actions dialog (T7.1). A terminal sends it as
+		// a NUL byte, and ultraviolet's decoder turns NUL into
+		// {Code: KeySpace, Mod: ModCtrl} (decoder.go parseControl, and the
+		// same entry in its kitty key map) unless the LegacyKeyEncoding
+		// CtrlAt flag is set, which bubbletea v2 never sets — so String()
+		// is "ctrl+space", the string this binding matches. ctrl+@ is the
+		// same byte and cannot be told apart, so it opens the dialog too.
+		//
+		// It is a rule in normal, detail and pane mode only (mode.go). In
+		// the agent pane that takes a key from the agent, which is why the
+		// dialog gives it back: ctrl+space pressed twice sends ctrl+space on,
+		// and the pane encodes it to NUL again (ctrlChordEvent, messages.go).
+		Leader: key.NewBinding(
+			key.WithKeys(leaderKey),
+			key.WithHelp(leaderKey, "actions"),
 		),
 	}
 }
@@ -1754,6 +1773,18 @@ type Model struct {
 	// viewport, and keeping the last-built one makes a stray render harmless.
 	inbox     inboxOverlay
 	inboxOpen bool
+
+	// leader is the actions dialog the leader key opens (leader.go);
+	// leaderOpen is its "is it open" flag, beside the other overlays' for
+	// their reason. leaderFrom is the mode the leader was pressed in
+	// (inputNormal, inputDetail or inputPane) and leaderFromPlaceholder says
+	// the detail side was showing the agent placeholder. Both are recorded at
+	// open because the dialog's own mode outranks all three, so they cannot
+	// be derived again when a row is run (runLeaderRow).
+	leader                leaderDialog
+	leaderOpen            bool
+	leaderFrom            inputMode
+	leaderFromPlaceholder bool
 
 	// helpShowAll is renderHelp's ShowAll flag (views.go), toggled by `?` in
 	// normal mode only (dispatchKey). It is presentational — no mode reads it
@@ -3284,6 +3315,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.clearSessionFilter()
 	case actionPalette:
 		return m.openPalette()
+	case actionOpenLeader:
+		return m.openLeader(mode)
 	case actionBuild:
 		return m.showBuildTab()
 	case actionInbox:
@@ -3390,6 +3423,8 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 		return m.switcherComponentKey(k)
 	case inputPalette:
 		return m.paletteComponentKey(k)
+	case inputLeader:
+		return m.leaderComponentKey(k)
 	case inputInbox:
 		return m.inboxComponentKey(k)
 	case inputFilter:
@@ -4543,6 +4578,132 @@ func (m *Model) sizePalette() {
 	m.palette.SetSize(m.paletteListSize())
 }
 
+// openLeader is the leader key (ctrl+space) from mode `from`: inputNormal,
+// inputDetail (the overview or the agent placeholder) or inputPane. It opens
+// the actions dialog with a snapshot of every action and whether it can run
+// right now, and records where it was opened, which runLeaderRow and the
+// pass-through need later and cannot work out again once the dialog's own
+// mode outranks the pane's. Opening is pure state: no Cmd, nothing blocking.
+func (m Model) openLeader(from inputMode) (tea.Model, tea.Cmd) {
+	m.leaderFrom = from
+	m.leaderFromPlaceholder = from == inputDetail && m.agentPlaceholderDrawn()
+	m.leader = newLeaderDialog(leaderRows(m.modes(), m.leaderConditions()), from == inputPane)
+	m.leaderOpen = true
+	m.clearStatus()
+	return m, nil
+}
+
+// leaderConditions fills leaderConds from the live Model. Each field is the
+// same expression the guard it mirrors uses (see leaderConds), so a row is
+// dimmed exactly when its key would do nothing or only say why.
+func (m Model) leaderConditions() leaderConds {
+	conds := m.routeConditions()
+	c := leaderConds{
+		hasActiveProject: m.hasActiveProject(),
+		paneOpen:         conds.paneOpen,
+		rightFocused:     m.focus == focusRight,
+		listFiltered:     conds.listFiltered,
+		hasBuild:         m.hasBuild(),
+		buildKnown:       m.buildKnown,
+		restartLive:      m.restartKeyLive(),
+		canFocus:         m.normalBindingEnabled(m.keys.Focus),
+		// toggleView is inert only on a selected row that has neither a
+		// pane nor a live agent; with no selection it goes ahead.
+		canToggleView: true,
+	}
+	if s, ok := m.selected(); ok {
+		c.selected = true
+		c.selectedPending = s.Pending
+		c.selectedFault = isWorktreeFault(s.Kind)
+		c.selectedCleaning = m.cleaningSessions[cleanIDFor(s)]
+		c.canToggleView = m.paneForSelection() || m.rowHasAgent(s)
+	}
+	return c
+}
+
+// leaderComponentKey is inputLeader's fall-through: every key reaches the
+// dialog, and this carries out what leaderKeyDecision decided. Filter and
+// move change only the dialog. Close, pass-through and run close it first,
+// so the action a row runs sees the dashboard as it is with the dialog gone
+// — a run that opens an overlay or a modal gets the keyboard, not the dialog.
+func (m Model) leaderComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	o := m.leader.decide(k)
+	switch o.kind {
+	case leaderClose:
+		m.leaderOpen = false
+	case leaderPassThrough:
+		m.leaderOpen = false
+		// The leader pressed twice from the agent: the agent gets the key the
+		// dashboard took. forwardKeyToPane encodes it back to NUL through
+		// ctrlChordEvent, as it would have done with no rule in the way.
+		if m.pane != nil {
+			forwardKeyToPane(m.pane, tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl})
+		}
+	case leaderRun:
+		m.leaderOpen = false
+		return m.runLeaderRow(o.row)
+	case leaderFilter, leaderMove:
+		m.leader.apply(o)
+	}
+	return m, nil
+}
+
+// runLeaderRow runs a dialog row's action through applyKeyAction, the same
+// function its own key reaches, so the dialog never has a second
+// implementation of anything and nothing is ever typed to the agent.
+//
+// Which mode it runs as is the whole decision here, in three steps:
+//
+//  1. Where the leader was pressed has a rule for the action (b, i, P, U, r,
+//     q, ctrl+g, ctrl+w and ctrl+t on the overview; ctrl+t and ctrl+g in the
+//     agent pane): it runs there, as that key would have, and the keyboard
+//     stays where it was.
+//  2. Back to list from the agent pane or its placeholder runs as their own
+//     ctrl+\ does, which says the right thing about the agent; the overview's
+//     release would talk about scrolling it.
+//  3. Anything else is a list action (n, o, p, c, l, /, :, close pane), and
+//     it runs as from the list: the keyboard goes to the list first, then the
+//     action runs as inputNormal. Running a list action with the agent still
+//     focused would be worse than odd — a palette opened over a focused agent
+//     re-presses its chosen key through dispatchKey, and that key would be
+//     typed to the agent.
+//
+// The pane is never closed here unless the action is the one that closes it.
+func (m Model) runLeaderRow(r leaderRow) (tea.Model, tea.Cmd) {
+	// The handlers that read the key (startSessionFilter hands `/` on to the
+	// list) get the row's own first key, built the way the palette builds it.
+	var press tea.KeyPressMsg
+	if len(r.keys) > 0 {
+		press, _ = paletteKeyPress(r.keys[0])
+	}
+	from := m.leaderFrom
+	if r.action == actionDetailUnfocus {
+		switch {
+		case from == inputPane:
+			return m.applyKeyAction(inputPane, actionPaneUnfocus, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+		case m.leaderFromPlaceholder:
+			return m.placeholderKey(tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+		}
+	}
+	if from != inputNormal && modeHasAction(m.modes(), from, r.action) {
+		return m.applyKeyAction(from, r.action, press)
+	}
+	if r.mode == inputNormal {
+		m.focus = focusList
+	}
+	return m.applyKeyAction(r.mode, r.action, press)
+}
+
+// modeHasAction reports whether mode has a rule for action a.
+func modeHasAction(reg modeRegistry, mode inputMode, a modeAction) bool {
+	for _, rule := range reg.spec(mode).rules {
+		if rule.action == a {
+			return true
+		}
+	}
+	return false
+}
+
 // dismissSpawnError closes the spawn-error modal. Both esc and enter map to it
 // (the modal is pure information — there is nothing to confirm, so demanding a
 // specific key would only be a trap), and its spec swallows every other key, so
@@ -4739,8 +4900,9 @@ func (m *Model) startRestart(req paneOpenRequest) tea.Cmd {
 // placeholderKey answers a key while the agent placeholder owns the keyboard:
 // enter/f connects (or reconnects) the selected row through connectSelected,
 // ctrl+t switches to the overview, ctrl+\ returns to the list, `r` is the
-// restart key as everywhere outside a live agent (restartSelected), and
-// ctrl+g keeps toggling the mouse as it does over a live agent. Every other
+// restart key as everywhere outside a live agent (restartSelected),
+// ctrl+g keeps toggling the mouse as it does over a live agent, and the
+// leader (ctrl+space) opens the actions dialog as it does there. Every other
 // key is swallowed, so nothing typed at a lost or still-connecting agent
 // reaches a list binding.
 //
@@ -4762,6 +4924,10 @@ func (m Model) placeholderKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(k, m.keys.Mouse):
 		return m.toggleMouseCapture()
+	case key.Matches(k, m.keys.Leader):
+		// The placeholder stands in for the agent pane, and the leader
+		// opens the actions dialog from the pane, so it does here too.
+		return m.openLeader(inputDetail)
 	}
 	return m, nil
 }

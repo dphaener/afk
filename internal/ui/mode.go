@@ -112,6 +112,13 @@ const (
 	// and it has no parent rule at all — see its spec in newModeRegistry for
 	// why not even the quit chord.
 	inputInbox
+	// inputLeader is the actions dialog the leader key (ctrl+space) opens
+	// (Model.leaderOpen, leader.go). Every key is the dialog's: an action's key
+	// runs it, other letters filter, enter runs the highlighted row, esc
+	// closes. It is opened from the list, the overview (and the agent
+	// placeholder) and the agent pane, which is why its place in
+	// modePrecedence is above all three.
+	inputLeader
 
 	// inputModeCount bounds the enum for exhaustive iteration (registry
 	// completeness tests, and Wave 6 enumerating modes for the palette).
@@ -149,6 +156,8 @@ func (m inputMode) String() string {
 		return "resize"
 	case inputInbox:
 		return "inbox"
+	case inputLeader:
+		return "leader"
 	}
 	return "unknown"
 }
@@ -208,6 +217,8 @@ type modeState struct {
 	paletteOpen bool
 	// inboxOpen mirrors Model.inboxOpen.
 	inboxOpen bool
+	// leaderOpen mirrors Model.leaderOpen.
+	leaderOpen bool
 	// resizing mirrors Model.resizing. It needs no conjunction: resize mode
 	// moves the divider between surfaces that are always drawn, whichever of
 	// them happens to be in the main region.
@@ -229,6 +240,7 @@ func (m Model) modeSnapshot() modeState {
 		pane:          m.paneForSelection(),
 		paletteOpen:   m.paletteOpen,
 		inboxOpen:     m.inboxOpen,
+		leaderOpen:    m.leaderOpen,
 		resizing:      m.resizing,
 	}
 }
@@ -285,6 +297,16 @@ type modeLayer struct {
 //     model.go:872-895 documents that in words, and it is reachable because
 //     spawnFinishedMsg raises the modal asynchronously under an open overlay
 //     or form. Their relative order is immaterial (one enum field holds them).
+//   - The actions dialog (the leader key's) sits directly below the modals
+//     and above the palette. Below the modals for the switcher's reason: a
+//     create can fail underneath and its report must get the keyboard. Above
+//     everything else because it is opened from the list, the overview and a
+//     FOCUSED AGENT PANE, and its mode has to outrank the pane's or the keys
+//     typed into the dialog would reach the agent behind it. Nothing else is
+//     open when it appears (the leader is a rule only in normal, detail and
+//     pane mode), so its rank against the other overlays only matters for an
+//     attach that lands focused underneath — and the dialog is what is on
+//     screen then.
 //   - The palette sits directly below the modals and above every other
 //     overlay. Below the modals for the switcher's reason verbatim: a
 //     background create can fail asynchronously and raise a modal over it, and
@@ -352,6 +374,7 @@ var modePrecedence = []modeLayer{
 	{inputConfirmRestart, func(s modeState) bool { return s.modal == inputConfirmRestart }},
 	{inputEditLabel, func(s modeState) bool { return s.modal == inputEditLabel }},
 	{inputPickProvider, func(s modeState) bool { return s.modal == inputPickProvider }},
+	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputPalette, func(s modeState) bool { return s.paletteOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
@@ -442,6 +465,12 @@ const (
 	actionPauseBuild  // P in normal and detail: pauseBuild
 	actionResumeBuild // U in normal and detail: resumeBuild
 	actionEnterResize // ctrl+w in normal and detail: enterResize
+	// actionOpenLeader is ctrl+space, the leader key: it opens the actions
+	// dialog (leader.go, openLeader in model.go). It is a rule in normal,
+	// detail and pane mode and nowhere else, and the dialog's row builder
+	// names it in its exclusion set — the dialog must never list the key
+	// that opened it.
+	actionOpenLeader
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -552,6 +581,8 @@ func (a modeAction) String() string {
 		return "resume-build"
 	case actionEnterResize:
 		return "enter-resize"
+	case actionOpenLeader:
+		return "open-leader"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -1086,6 +1117,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: listTop, action: actionListTop},
 			{binding: listBottom, action: actionListBottom},
 			{binding: resizeToggleKey, action: actionEnterResize},
+			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeIgnored,
 		// Help/palette order is intentionally independent of routing-rule order.
@@ -1108,7 +1140,10 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			keys.Project, keys.Clean, keys.Restart, keys.Label,
 			keys.Filter, filterClear, keys.Palette, keys.Build, keys.Inbox,
 			keys.PauseBuild, keys.ResumeBuild,
-			closePane, keys.Mouse, keys.Quit, resizeToggleKey,
+			// The leader sits just ahead of ctrl+w, which stays last for the
+			// reason above, so `?` lists it while the palette's first viewport
+			// and the curated short line stay as they were.
+			closePane, keys.Mouse, keys.Quit, keys.Leader, resizeToggleKey,
 		}},
 	}
 
@@ -1136,12 +1171,19 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	// else forwards to the child: esc, q, tab, ctrl+w, and ctrl+c (the session
 	// owns SIGINT) included. Adding a rule here takes a key away from every
 	// agent the dashboard hosts, which is why the plan pins this set.
+	//
+	// The leader (ctrl+space) is the fourth and last (T7.1). The agent does
+	// not lose the key: pressed twice, the dialog closes and sends ctrl+space
+	// on (leaderComponentKey, model.go). It is deliberately not in this
+	// mode's help keymap: the pane footer is a curated short line
+	// (renderPaneHelpKeyMap) with no room to give.
 	r[inputPane] = modeSpec{
 		mode: inputPane,
 		rules: []modeRule{
 			{binding: keys.Toggle, action: actionPaneToggle},
 			{binding: unfocusPaneKey, action: actionPaneUnfocus},
 			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeChild,
 		keys: modeKeyMap{bindings: []key.Binding{
@@ -1212,6 +1254,11 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: detailGotoTop, action: actionDetailGotoTop},
 			{binding: detailGotoBottom, action: actionDetailGotoBottom},
 			{binding: resizeToggleKey, action: actionEnterResize},
+			// The leader opens the actions dialog from the overview too. It
+			// is not in the help keymap below: renderHelp draws that whole
+			// keymap through one truncate, so a binding added there would
+			// change the focused overview's footer line.
+			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
@@ -1288,6 +1335,20 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: []key.Binding{
 			paletteRunKey, paletteMoveKey, paletteCloseKey, quitChord,
+		}},
+	}
+
+	// Leader mode is the actions dialog (leader.go). It has NO parent rule:
+	// every key is the dialog's, decided by leaderKeyDecision, because every
+	// key worth asking about is either one of the dialog's own gestures or
+	// the key of an action it lists — ctrl+c and q run the quit row, ctrl+g
+	// the mouse row. A parent rule would answer a key before the dialog
+	// could. The bindings are help-only, for the footer while it is up.
+	r[inputLeader] = modeSpec{
+		mode: inputLeader,
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: []key.Binding{
+			leaderRunKey, leaderMoveKey, leaderFilterKey, leaderCloseKey, leaderAgainKey,
 		}},
 	}
 

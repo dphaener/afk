@@ -111,15 +111,21 @@ func (m Model) View() tea.View {
 	// The overlays float over the finished frame (modal.go) rather than
 	// replacing a region of it, so the list and the pane a person was reading
 	// stay on screen behind the box. The order matches modePrecedence — the
-	// palette outranks the switcher, which outranks the inbox, which outranks
-	// the form — so the frame and the key routing agree on which surface is on
-	// top. The four are mutually exclusive in practice (each owns every key
-	// while it is up), so this is fidelity to the precedence table, not a
-	// state a user can reach. Whatever
+	// actions dialog outranks the palette, which outranks the switcher, which
+	// outranks the inbox, which outranks the form — so the frame and the key
+	// routing agree on which surface is on top. The five are mutually
+	// exclusive in practice (each owns every key while it is up), so this is
+	// fidelity to the precedence table, not a state a user can reach. Whatever
 	// owns the keyboard must be ON SCREEN, and that holds in the empty state
 	// too: a scan can empty the project list under an open overlay, and a
 	// component that still routes `q` while invisible would be a keyboard trap.
 	switch {
+	case m.leaderOpen:
+		// The actions dialog outranks the palette in modePrecedence. Its view
+		// takes the terminal size and sizes its own box (leader.go), from a
+		// snapshot of rows taken at open, so drawing it reads no file and
+		// runs nothing.
+		frame = composeModal(frame, m.leader.view(m.width, m.height), m.width, m.height)
 	case m.paletteOpen:
 		frame = composeModal(frame, m.renderPaletteModal(), m.width, m.height)
 	case m.switcherOpen:

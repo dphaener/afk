@@ -338,6 +338,36 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			},
 			want: inputEditLabel,
 		},
+
+		// The actions dialog (T7.1). "leader over a focused pane" is the row
+		// the dialog cannot work without: it is opened FROM the pane, so the
+		// pane's layer is active the whole time it is up, and if the pane
+		// outranked it every key typed into the dialog would reach the agent.
+		{
+			name:  "leader alone",
+			state: modeState{leaderOpen: true},
+			want:  inputLeader,
+		},
+		{
+			name:  "leader over a focused pane",
+			state: modeState{leaderOpen: true, focus: focusRight, view: viewAgent, pane: true},
+			want:  inputLeader,
+		},
+		{
+			name:  "leader over a focused overview",
+			state: modeState{leaderOpen: true, focus: focusRight, view: viewOverview},
+			want:  inputLeader,
+		},
+		{
+			name:  "leader over the palette",
+			state: modeState{leaderOpen: true, paletteOpen: true},
+			want:  inputLeader,
+		},
+		{
+			name:  "a modal outranks the leader",
+			state: modeState{modal: inputSpawnError, leaderOpen: true},
+			want:  inputSpawnError,
+		},
 	}
 
 	for _, tc := range cases {
@@ -528,6 +558,11 @@ func TestModeSnapshot(t *testing.T) {
 			want: modeState{resizing: true},
 		},
 		{
+			name: "leader open",
+			mut:  func(m *Model) { m.leaderOpen = true },
+			want: modeState{leaderOpen: true},
+		},
+		{
 			name: "resizing over a drawn pane still counts",
 			mut: func(m *Model) {
 				m.resizing = true
@@ -610,6 +645,11 @@ func press(code rune, text string) tea.KeyPressMsg {
 //     owner typed a sentence. The inbox rows are the other half: in the
 //     overlay each is a letter of the answer. The confirm rows show a pending
 //     y/n question swallows them like any other letter.
+//   - ctrl+space rows: the leader is a rule in normal, detail and pane mode and
+//     in no other, so under every overlay, form and confirm it is that
+//     surface's key (or swallowed) and the dialog cannot open over it. "in
+//     pane opens the leader" is the one that takes a key from the agent; the
+//     dialog hands it back when pressed twice (leader_wiring_test.go).
 //   - inputInbox rows: the overlay has no parent rule, so EVERY key is the
 //     component's. "q in inbox" and "ctrl+c in inbox" are the load-bearing
 //     pair: a quit rule here would lose a half-typed answer. "ctrl+g in
@@ -639,6 +679,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 	nLower := press('n', "n")
 	q := press('q', "q")
 	plainX := press('x', "x")
+	ctrlSpace := tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
 
 	cases := []struct {
 		name  string
@@ -878,6 +919,30 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"up in resize is ignored", inputResize, routeConds{}, up, keyDecision{kind: routeIgnored}},
 		{"plain text in resize is ignored", inputResize, routeConds{}, plainX, keyDecision{kind: routeIgnored}},
 		{"h in normal is ignored", inputNormal, routeConds{}, press('h', "h"), keyDecision{kind: routeIgnored}},
+
+		// ctrl+space, the leader: a rule in normal, detail and pane mode only.
+		{"ctrl+space in normal opens the leader", inputNormal, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+space in detail opens the leader", inputDetail, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+space in pane opens the leader", inputPane, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+space in pane opens the leader with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+space in leader goes to the dialog", inputLeader, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+space in palette types (component)", inputPalette, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+space in switcher goes to the component", inputSwitcher, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+space in inbox goes to the component", inputInbox, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+space in form goes to the component", inputForm, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+space in filter goes to the prompt", inputFilter, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+space in edit label goes to the textinput", inputEditLabel, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+space in confirm clean is swallowed", inputConfirmClean, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		{"ctrl+space in confirm restart is swallowed", inputConfirmRestart, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		{"ctrl+space in spawn error is swallowed", inputSpawnError, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		{"ctrl+space in provider picker is swallowed", inputPickProvider, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		{"ctrl+space in resize is swallowed", inputResize, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		// Leader mode has no parent rule: q and ctrl+c are the dialog's (they
+		// run its quit row), esc closes it there.
+		{"q in leader goes to the dialog", inputLeader, routeConds{}, q, keyDecision{kind: routeComponent}},
+		{"ctrl+c in leader goes to the dialog", inputLeader, routeConds{}, ctrlC, keyDecision{kind: routeComponent}},
+		{"esc in leader goes to the dialog", inputLeader, routeConds{}, esc, keyDecision{kind: routeComponent}},
+		{"ctrl+g in leader goes to the dialog", inputLeader, routeConds{}, ctrlG, keyDecision{kind: routeComponent}},
 	}
 
 	for _, tc := range cases {
@@ -1172,6 +1237,14 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"inbox advertises pgup", inputInbox, "pgup"},
 		{"inbox advertises pgdown", inputInbox, "pgdown"},
 		{"inbox advertises ctrl+g", inputInbox, "ctrl+g"},
+		// The leader is listed by `?` (normal mode's full help), and the
+		// dialog's own gestures are the component's, so this keymap is their
+		// only structured record.
+		{"normal advertises ctrl+space", inputNormal, "ctrl+space"},
+		{"leader advertises enter", inputLeader, "enter"},
+		{"leader advertises esc", inputLeader, "esc"},
+		{"leader advertises up", inputLeader, "up"},
+		{"leader advertises ctrl+space", inputLeader, "ctrl+space"},
 	}
 
 	for _, tc := range wantKeys {
