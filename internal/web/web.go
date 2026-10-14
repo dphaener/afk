@@ -111,6 +111,14 @@ type Deps struct {
 	Resume func(root string) error
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
+	// Ticker starts the clock the live-change stream's reader runs on (see
+	// live.go) and returns its channel and the function that stops it. It is
+	// here so a test can decide exactly when the reader looks at the files,
+	// instead of waiting on a real clock. Nil means a real time.Ticker every
+	// two seconds. The interval is deliberately not a setting: the dashboard
+	// re-reads the same files every two seconds, and §3 of docs/PLAN.md
+	// forbids reading them faster than that.
+	Ticker func() (<-chan time.Time, func())
 }
 
 // maxBody is the most a POST may carry. An answer is a sentence or a pasted
@@ -137,6 +145,13 @@ type server struct {
 	secure       bool
 	// pages holds one parsed template set per page name, built once in New.
 	pages map[string]*template.Template
+	// hub is the live-change stream's shared reader and its open streams.
+	// It is the one thing in the server that changes after New, and it holds
+	// fingerprints, never anything a page shows, so the "no cache" rule
+	// stands.
+	hub *hub
+	// assets are the embedded static files by name, hashed once in New.
+	assets map[string]asset
 }
 
 // route is one address and the handler method behind it. The path carries no
@@ -195,15 +210,26 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 		s.publicOrigin = strings.ToLower(u.Scheme + "://" + u.Host)
 	}
 
-	pages, err := parsePages()
+	assets, err := loadAssets()
+	if err != nil {
+		return nil, err
+	}
+	s.assets = assets
+	pages, err := parsePages(s.assetURL)
 	if err != nil {
 		return nil, err
 	}
 	s.pages = pages
+	s.hub = newHub(d)
 
 	mux := http.NewServeMux()
 	s.register(mux, "/api")
 	s.register(mux, "")
+	// The live-change stream is not in routes: it has no JSON form, so it
+	// must not get an /api twin. guard still wraps it like everything else.
+	mux.HandleFunc("GET /events", s.events)
+	// Static files likewise have no JSON form and no /api twin.
+	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong
 	// method, gets the same plain sentence as any other error instead of the
 	// standard library's bare "404 page not found".

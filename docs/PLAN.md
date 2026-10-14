@@ -2328,6 +2328,7 @@ thing it does not do is attach to a session.
   A test that the static files are served with the policy and cache headers. Against a scratch build
   with a scratch config and a throwaway repository: an inbox item added with `afk inbox add` appears
   on an open project page in a browser within 5 seconds with no reload. `make check` is green.
+- Amended 2026-10-14 (T8.2 done): later tasks may assume the following. (1) The stream is `GET /events` (token-guarded, no `/api` twin): SSE events of type `change` with data `{"project","part"}`, parts `inbox`, `ledger`, `pause` (pause flag, stop marker, `daemon.json`), `sessions`, `planning` (`.afk/plan/state.json`, `questions.jsonl`, the `master-plan` session's `host.json`/`status.json`; T8.3 or T8.12 adds the transcript in `readProject` in `internal/web/live.go`) and `usage` (project ""); one hub reader on `Deps.Ticker` (2 s), 16-event queues, 32 streams. (2) Static files live in `internal/web/static/`, served at `/static/<hash>/<file>` through the template func `asset`; T8.5 adds `afk.css` there and the CSP already allows `style-src 'self'`. (3) A page region is live when it has an `id`, `data-live` (space-separated parts) and `data-project`; `live.js` swaps it by id, adds `is-changed`, skips a region with focus or a form, and refetches every region on each stream open; the bar's `<span class="live" data-live-status>` shows Live or `live--offline`. See `## T8.2` in `docs/decisions.md`.
 
 #### T8.3 — Read a planning session's conversation
 - **Depends on:** —

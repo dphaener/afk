@@ -1,6 +1,7 @@
 {{define "title"}}Usage{{end}}
 {{define "content"}}
 <h1>Usage</h1>
+<div id="usage-reading" data-live="usage" data-project="">
 {{if not .Known}}
 <p>No usage reading exists yet. One appears after afk first checks how much of your plan is used.</p>
 {{else}}
@@ -25,4 +26,5 @@
 <p class="muted">No decision has been recorded with this reading.</p>
 {{end}}
 {{end}}
+</div>
 {{end}}

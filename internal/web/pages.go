@@ -32,11 +32,12 @@ var pageNames = []string{"overview", "usage", "project", "plan", "item", "error"
 // lists and tables has to carry tags. renderPlan in markdown.go builds it
 // and escapes every piece of the plan's text itself before joining it to a
 // tag; its doc comment has the argument. Do not add a second exception.
-func parsePages() (map[string]*template.Template, error) {
+func parsePages(asset func(name string) string) (map[string]*template.Template, error) {
 	funcs := template.FuncMap{
-		"when": whenUTC,
-		"pe":   url.PathEscape,
-		"pct":  func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
+		"when":  whenUTC,
+		"asset": asset,
+		"pe":    url.PathEscape,
+		"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
 	}
 	out := make(map[string]*template.Template, len(pageNames))
 	for _, name := range pageNames {

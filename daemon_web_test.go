@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -422,6 +424,62 @@ func TestServeDaemonWeb(t *testing.T) {
 		serveDaemonWeb(ln, ok, log.logf)()
 		if !ln.isClosed() {
 			t.Error("the listener is still open after stop")
+		}
+		if log.String() != "" {
+			t.Errorf("a clean stop logged %q, want nothing", log.String())
+		}
+	})
+
+	t.Run("stop ends an open live stream at once", func(t *testing.T) {
+		// The real page, so the stream is the real one: a request that never
+		// ends by itself. Without the cancelled base context, Shutdown would
+		// wait its whole webShutdownLimit for it.
+		w := newWebRig(t)
+		ln := newPipeListener()
+		var log lockedLog
+		stop := serveDaemonWeb(ln, w.handler, log.logf)
+		client := &http.Client{Transport: &http.Transport{
+			DisableKeepAlives: true,
+			DialContext:       func(context.Context, string, string) (net.Conn, error) { return ln.dial() },
+		}}
+		req, err := http.NewRequest(http.MethodGet, "http://afk.test/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+daemonTestWebToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("/events answered %d, want 200", resp.StatusCode)
+		}
+		// The first line proves the handler is inside its loop, holding
+		// the request open.
+		body := bufio.NewReader(resp.Body)
+		line, err := body.ReadString('\n')
+		if err != nil || line != "retry: 3000\n" {
+			t.Fatalf("first line = %q, %v; want the retry line", line, err)
+		}
+		// Keep reading, as a browser does. A pipe has no buffer, so a
+		// client that stopped reading would hold the server's last write
+		// (the end of the response) and time the test, not the server.
+		ended := make(chan struct{})
+		go func() {
+			defer close(ended)
+			_, _ = io.Copy(io.Discard, body)
+		}()
+
+		start := time.Now()
+		stop()
+		if took := time.Since(start); took > webShutdownLimit/2 {
+			t.Errorf("stop took %v with a stream open, want well under %v", took, webShutdownLimit)
+		}
+		select {
+		case <-ended:
+		case <-time.After(10 * time.Second):
+			t.Error("the stream was still open after stop")
 		}
 		if log.String() != "" {
 			t.Errorf("a clean stop logged %q, want nothing", log.String())

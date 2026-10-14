@@ -103,7 +103,7 @@ func wantSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 		"Referrer-Policy":         "same-origin",
 		"X-Content-Type-Options":  "nosniff",
 		"X-Frame-Options":         "DENY",
-		"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+		"Content-Security-Policy": "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'",
 	}
 	for k, v := range want {
 		if got := rec.Header().Get(k); got != v {

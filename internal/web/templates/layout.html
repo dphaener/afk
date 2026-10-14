@@ -28,9 +28,10 @@ label.choice { display: flex; align-items: center; gap: .75rem; min-height: 44px
 label.choice input { width: 1.25rem; height: 1.25rem; }
 form { margin: .75rem 0; }
 </style>
+<script src="{{asset "live.js"}}" defer></script>
 </head>
 <body>
-<div class="bar"><a href="/">Overview</a><a href="/usage">Usage</a></div>
+<div class="bar"><a href="/">Overview</a><a href="/usage">Usage</a><span class="live" data-live-status hidden>Live</span></div>
 <main>
 {{template "content" .}}
 </main>

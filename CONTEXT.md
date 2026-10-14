@@ -191,3 +191,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Project row**: one line of the all-projects screen for one project: its name, tasks done of the total, its state, its inbox counts and whether its plan waits for approval; built by `internal/projectrows`.
 - **Tokens overlay**: the `afk dash` overlay (leader, then `T`, on the Build tab) that shows the selected task's token use as `afk tokens <task>` prints it, with a narrower table when the window is narrow.
 - **Short total**: the selected Build tab row's weighted token total, shortened (`2.9M weighted`), shown only when the row has room.
+- **Live part**: one of the things an open web page updates by itself when its files change: `inbox`, `ledger`, `pause`, `sessions`, `planning` or `usage`. Named in the events of the page's `/events` stream.

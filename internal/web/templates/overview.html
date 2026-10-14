@@ -3,7 +3,7 @@
 <h1>What afk is doing</h1>
 {{if not .Projects}}<p class="muted">No projects are set up in afk's config.toml yet.</p>{{end}}
 {{range .Projects}}
-<div class="card">
+<div class="card" id="project-{{pe .Name}}" data-live="inbox ledger pause sessions planning" data-project="{{.Name}}">
   <h2 style="margin-top:0"><a href="/p/{{pe .Name}}">{{.Name}}</a></h2>
   {{if .Problem}}<p class="warn">Problem: {{.Problem}}</p>{{end}}
   {{if .Paused}}<p class="warn">Paused. Nothing new will start until you resume.</p>{{end}}
@@ -27,7 +27,7 @@
 </ul>
 {{end}}
 <h2>Usage</h2>
-<p>
+<p id="usage-reading" data-live="usage" data-project="">
 {{if .Usage.Known}}
   {{range .Usage.Windows}}{{.Kind}}{{if .Scope}} ({{.Scope}}){{end}}: {{pct .UsedPct}} used. {{end}}
   {{with .Usage.Governor}}<span class="muted">Decision: {{.Action}}.</span>{{end}}

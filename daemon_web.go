@@ -211,14 +211,28 @@ const (
 // itself after start-up, that is one line in the log and nothing else: the
 // loop is not told and carries on. logf must be safe to call from a second
 // goroutine.
+//
+// Every request's context descends from one base context that is cancelled
+// the moment shutdown starts. That is for the page's live-change stream
+// (GET /events): it is a request that never finishes by itself, and Shutdown
+// only closes connections once their requests have ended. Without the cancel
+// each open page would hold the stop for the whole webShutdownLimit and then
+// be cut by Close; with it the stream handler sees its context end and
+// returns at once, and the daemon stops in milliseconds. Ordinary requests
+// are unaffected: they finish in far less time than it takes to notice.
 func serveDaemonWeb(ln net.Listener, h http.Handler, logf func(format string, args ...any)) (stop func()) {
+	base, cancelBase := context.WithCancel(context.Background())
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: webReadHeaderTimeout,
 		ReadTimeout:       webReadTimeout,
 		WriteTimeout:      webWriteTimeout,
 		IdleTimeout:       webIdleTimeout,
+		BaseContext:       func(net.Listener) context.Context { return base },
 	}
+	// net/http runs the functions registered here when Shutdown starts, each
+	// on its own goroutine, before it waits for anything.
+	srv.RegisterOnShutdown(cancelBase)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -227,6 +241,9 @@ func serveDaemonWeb(ln net.Listener, h http.Handler, logf func(format string, ar
 		}
 	}()
 	return func() {
+		// Shutdown has cancelled the base already; this releases it in
+		// every case, and a second cancel does nothing.
+		defer cancelBase()
 		ctx, cancel := context.WithTimeout(context.Background(), webShutdownLimit)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
