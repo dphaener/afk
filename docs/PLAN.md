@@ -2665,7 +2665,7 @@ thing it does not do is attach to a session.
   row appear; removing it takes both away. `make check` is green.
 
 #### T8.17 — Prove it on a phone (owner + agent)
-- **Depends on:** T8.6, T8.7, T8.8, T8.10, T8.11, T8.13, T8.15, T8.16, T8.15b
+- **Depends on:** T8.6, T8.7, T8.8, T8.10, T8.11, T8.13, T8.15, T8.16, T8.15b, T8.15a
 - **Goal:** the owner runs afk from their phone for one whole plan, and every screen meets WCAG 2.2 AA.
 - **Scope:** the owner, on their phone through their usual way of reaching the page: plan a small
   throwaway project from the overview (folder and private repository included), hold the planning
