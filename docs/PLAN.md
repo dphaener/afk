@@ -2083,6 +2083,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   Against a scratch build through tmux with a stand-in `gh` on a scratch `PATH`: answering `y` makes
   the stand-in record one private create and `git remote -v` in the new folder shows `origin`.
   `make check` is green.
+- Amended 2026-10-14 (T7.6 done): later tasks may assume the following. (1) The offer, its wording and the create step are `internal/ghrepo`: `Offer(lookErr, authErr, login, loginErr, folder)` (ask, or why not with the notice), `OutcomeText`, and `Create(gh, git, dir, repo)` behind its own `GH`/`Git` interfaces (`NewGH`/`NewGit` over `ship.RunFunc`), which runs `gh repo create <account>/<folder> --private` then `git remote add origin` itself, never pushing; `ship.GH` is unchanged. T8.15 can call it as is. (2) The dashboard seams are `ui.Deps.GitHubOffer` and `ui.Deps.CreateGitHubRepo` (wired by `dashGitHubOffer`/`dashCreateGitHubRepo` in `dash_plan.go`); both nil keeps T7.5's behaviour. The question is asked only from `applyPlanFolderCreated` (modal `inputConfirmGitHubRepo`, nine modal modes now). (3) A notice that must outlast a pane opening goes through `planStartedMsg.lead` and `Model.pendingPaneLead`, which the pane-arrival notice puts first, once. (4) A repository with no commits now lists as no branches rather than a failed branch listing. See `## T7.6` in `docs/decisions.md`.
 
 #### T7.7 — Show the planning session and the plan checker's result
 - **Depends on:** T7.1

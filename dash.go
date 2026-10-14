@@ -636,10 +636,15 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// itself happens in the model's command, never before the first frame.
 		LoadListed: dashLoadListed,
 		// StartPlan has no default in internal/ui (it starts a real session), so
-		// this is the only place the three plan actions are wired.
+		// this is the only place the three plan actions are wired. Nor do the
+		// GitHub seams (they run gh and can make a repository): without
+		// GitHubOffer and CreateGitHubRepo a folder made by name would go
+		// straight to planning and no question would ever be asked.
 		StartPlan:          dashStartPlan,
 		PlanFolder:         dashPlanFolder,
 		CreatePlanFolder:   dashCreatePlanFolder,
+		GitHubOffer:        dashGitHubOffer,
+		CreateGitHubRepo:   dashCreateGitHubRepo,
 		LaunchMainCheckout: launchMainCheckout(projects, resolveGitCommonDirIn, filepath.EvalSymlinks),
 	}
 }

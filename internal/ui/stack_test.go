@@ -438,3 +438,44 @@ func leadingSpaces(s string) int {
 	}
 	return n
 }
+
+// TestPlainBranchesEmptyRepoIsNotAFailure: a repository with no commits yet
+// lists no branches and has no trunk. That is a folder the dashboard has just
+// made for a new plan (T7.5), and its normal state. Load-bearing rows:
+//   - "no commits yet": the listing worked, so the message carries a non-nil
+//     empty list and notifyBranchesError stays silent. Left nil, it read as
+//     "branch listing failed" and replaced the new plan's notice seconds
+//     after the planning pane opened.
+//   - "listing failed": a real failure still leaves branches nil and is
+//     raised, so the fix does not hide one.
+func TestPlainBranchesEmptyRepoIsNotAFailure(t *testing.T) {
+	cases := []struct {
+		name      string
+		fetchErr  error
+		wantNil   bool
+		wantError bool
+	}{
+		{name: "no commits yet"},
+		{name: "listing failed", fetchErr: errors.New("git for-each-ref: exit status 128"), wantNil: true, wantError: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel(sess("a"))
+			m.deps.PlainBranches = func(string) ([]string, error) { return nil, tc.fetchErr }
+			m.deps.PlainTrunk = func(string) (string, error) {
+				return "", errors.New("could not determine a trunk branch in /repo")
+			}
+			msg, ok := m.plainBranchesCmd()().(plainBranchesLoadedMsg)
+			if !ok {
+				t.Fatalf("plainBranchesCmd() returned %T, want plainBranchesLoadedMsg", msg)
+			}
+			if (msg.branches == nil) != tc.wantNil {
+				t.Fatalf("branches = %#v, want nil=%v", msg.branches, tc.wantNil)
+			}
+			m, _ = update(t, m, msg)
+			if raised := m.statusKind == notifyError || len(m.pendingBackground) != 0; raised != tc.wantError {
+				t.Errorf("status = %q kind = %v pending = %d, want raised=%v", m.status, m.statusKind, len(m.pendingBackground), tc.wantError)
+			}
+		})
+	}
+}

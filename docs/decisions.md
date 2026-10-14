@@ -2729,3 +2729,26 @@ T7.5 lets the dashboard's "start a new plan" form take a project name as well as
 - **A create that finishes after a project switch** is not dropped: it says the folder was made and that no planning session was started. A `y` given after a switch creates nothing.
 - **An empty path is a refusal.** A create or exists decision without a path never opens a confirm.
 - **The second form line** ("A name is made into a folder under your project location, after a yes.") shows only when the folder seam is wired, so a dashboard without it promises nothing.
+
+## T7.6
+
+T7.6 has the dashboard offer a private GitHub repository straight after T7.5 makes a new project's folder. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **Where the code lives (A1).** The decision to ask (or why not), the wording of every outcome and the create step are a new package, `internal/ghrepo`, behind its own small `gh` and `git` interfaces with fakes. `internal/ship`'s `gh` interface is left alone, because its fakes would all have to change.
+- **How the repository is made (A2).** afk runs `gh repo create <account>/<folder> --private` and nothing else, then sets `origin` itself with `git remote add`. Nothing is pushed.
+- **Whether to ask (A3).** After the folder is made, and off the screen, afk checks that `gh` is installed, logged in and can say which account it uses. If any of these fails, the question is not asked and a notice says why and what to run.
+- **Keeping the outcome on screen (A4).** The outcome line is shown at the start of the notice that appears when the planning pane opens, because that notice would otherwise replace it.
+- **Failures (A5).** A name GitHub already has is reported as taken; any other failure shows `gh`'s own first line. If the repository was made but `origin` could not be set, the notice gives the `git remote add` command. The remote address follows `gh`'s own setting (ssh or https). Planning starts in every case.
+- **Tests (A6)** are table tests written with the code. **Nothing had to be in place first (A7):** T7.5 is merged.
+
+### Decided while building
+
+- **The checks stop at the first that fails.** `afk dash` looks `gh` up on the PATH, then runs `gh auth status`, then asks for the account name, and runs a later check only when the earlier one passed. A missing `gh` is never run, and a logged-out one is never asked for its account, so the notice always names the first thing to fix.
+- **Each `gh` and `git` call has the shipping step's limits.** They run through the same runner the build loop ships with: at most 30 seconds each, with no keyboard, and with `gh`'s prompts turned off, so a `gh` that wants to ask something fails with its reason instead of waiting behind the dashboard's screen.
+- **The outcome line stays once the planning pane opens.** Checked against a scratch build through tmux (2026-10-14), the line was first only on screen until the planning pane connected. The pane's arrival notice ("input goes to master-plan") then replaced it, because a notice keeps no history. The dashboard now keeps the line for the master-plan pane the start opened and puts it before that pane's arrival notice, or before its failure notice if the pane does not connect. It is said once: an arrival for another session, or a project switch, drops it, so a later open of master-plan by hand is not prefixed with an old outcome. The arrival's own words follow it with a capital first letter ("… Nothing was pushed. Input goes to master-plan · …").
+- **After a lead, the interim notice leaves out the folder.** The toast is cut at three lines of 48 cells. The yes line and the not-logged-in notice each take about two of them, so "Starting a planning session in <path>…" would push the path off, or with a long `gh` reason cut the reason. With a lead it reads "Starting the planning session…"; the folder is named again in the started notice and the pane's title. The not-installed notice is longer than three lines on its own and is still cut at the end; shortening it belongs in `internal/ghrepo`.
+- **A repository with no commits has no branches yet, not a failed listing.** A folder made by name has no commits, so `git for-each-ref` lists nothing and no trunk can be found. The dashboard read that empty list as a failed branch listing and raised "branch listing failed: could not determine a trunk branch" a few seconds after the planning pane opened, over the outcome line. A listing that worked now always reports a list, even an empty one, so only a real `git` failure raises that notice (T7.5's behaviour is otherwise unchanged).
+
+### Scope ideas
+
+- **A shorter "gh not installed" notice.** The notice in `internal/ghrepo` is about 190 characters, longer than the toast's three lines, so its end is cut. Something like "No GitHub repository offered: gh is not installed. Get it from https://cli.github.com, then run `gh auth login`." would fit. Left for a later change.

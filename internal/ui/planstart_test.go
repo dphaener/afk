@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/project"
@@ -985,7 +986,9 @@ func TestPlanFolderNameConfirmThenCreateThenStart(t *testing.T) {
 // refused with Exists, and the dashboard offers to plan in it. Load-bearing:
 // the yes calls StartPlan once with the path and never CreatePlanFolder (the
 // folder is there; making it again would fail or, worse, touch it), and the
-// no calls neither.
+// no calls neither. The T7.6 GitHub seams are wired and never called on any
+// row: the question is for a folder just made, and one that already existed
+// may well have a remote of its own.
 func TestPlanFolderExistingFolderOffer(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -999,6 +1002,12 @@ func TestPlanFolderExistingFolderOffer(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m, rec, fs := folderModel(t)
+			gs := wireGitHub(&m)
+			defer func() {
+				if len(gs.offers) != 0 || len(gs.creates) != 0 {
+					t.Errorf("GitHub seams called for a folder that exists: offers=%v creates=%v", gs.offers, gs.creates)
+				}
+			}()
 			fs.decision = PlanFolderDecision{
 				Kind: PlanFolderRefused, Exists: true, Path: folderPath,
 				Reason: folderPath + " already exists. Nothing was created.",
@@ -1285,4 +1294,674 @@ func TestPlanFolderFormSaysANameWorks(t *testing.T) {
 			t.Errorf("the form does not show %q:\n%s", want, frame)
 		}
 	}
+}
+
+// githubSeams records every GitHubOffer and CreateGitHubRepo call (T7.6) and
+// holds the answers the test wants them to give.
+type githubSeams struct {
+	offers  []string
+	creates []githubCreateCall
+	offer   GitHubOffer
+	line    string
+}
+
+// githubCreateCall is one CreateGitHubRepo call as the fake saw it.
+type githubCreateCall struct{ path, repo string }
+
+// githubRepoName is the repository the tests' offer names.
+const githubRepoName = "owner/demo"
+
+// githubCreatedLine is the outcome line the fake gives for a made repository.
+const githubCreatedLine = "Made the private GitHub repository owner/demo and set it as origin. Nothing was pushed."
+
+// wireGitHub wires both T7.6 seams on m to recording fakes. By default the
+// offer asks about githubRepoName and the create reports it made.
+func wireGitHub(m *Model) *githubSeams {
+	gs := &githubSeams{
+		offer: GitHubOffer{Ask: true, Repo: githubRepoName},
+		line:  githubCreatedLine,
+	}
+	m.deps.GitHubOffer = func(path string) GitHubOffer {
+		gs.offers = append(gs.offers, path)
+		return gs.offer
+	}
+	m.deps.CreateGitHubRepo = func(path, repo string) string {
+		gs.creates = append(gs.creates, githubCreateCall{path, repo})
+		return gs.line
+	}
+	return gs
+}
+
+// githubModel is folderModel with the GitHub seams wired too.
+func githubModel(t *testing.T) (Model, *planSeams, *folderSeams, *githubSeams) {
+	t.Helper()
+	m, rec, fs := folderModel(t)
+	gs := wireGitHub(&m)
+	return m, rec, fs, gs
+}
+
+// makeFolder types demo, says y to the folder confirm and folds the create's
+// success back in, returning the model and the command the create's result
+// produced (the GitHubOffer call, when the seam is wired). It asserts the
+// T7.6 step did not start planning on its own.
+func makeFolder(t *testing.T, m Model, fs *folderSeams) (Model, tea.Cmd) {
+	t.Helper()
+	fs.decision = PlanFolderDecision{Kind: PlanFolderCreate, Path: folderPath}
+	m, _ = submitPlanFolder(t, m, "demo")
+	m, cmd := update(t, m, keyRune('y'))
+	created, ok := cmd().(planFolderCreatedMsg)
+	if !ok {
+		t.Fatalf("yes produced %T, want planFolderCreatedMsg", created)
+	}
+	return update(t, m, created)
+}
+
+// askGitHub runs makeFolder and then the offer, returning the model with
+// whatever the offer raised.
+func askGitHub(t *testing.T, m Model, fs *folderSeams) (Model, tea.Cmd) {
+	t.Helper()
+	m, cmd := makeFolder(t, m, fs)
+	if want := "Made " + folderPath + " and made it a git repository. Checking GitHub…"; m.status != want {
+		t.Errorf("status after the create = %q, want %q", m.status, want)
+	}
+	if cmd == nil {
+		t.Fatal("the create's result issued no command: GitHubOffer was not asked")
+	}
+	msg, ok := cmd().(githubOfferMsg)
+	if !ok {
+		t.Fatalf("the create's result produced %T, want githubOfferMsg", msg)
+	}
+	return update(t, m, msg)
+}
+
+// finishStart runs cmd, which must be the start, checks StartPlan was called
+// once in the new folder with lead carried on the message, then folds a
+// started result back in and returns the notice it left.
+func finishStart(t *testing.T, m Model, cmd tea.Cmd, rec *planSeams, lead string) string {
+	t.Helper()
+	rec.reply = PlanStartResult{Outcome: PlanStarted, Root: folderPath}
+	got := planStarted(t, cmd)
+	want := planCall{folderPath, PlanModeNew, ""}
+	if len(rec.calls) != 1 || rec.calls[0] != want {
+		t.Fatalf("StartPlan calls = %+v, want exactly %+v", rec.calls, want)
+	}
+	if got.lead != lead {
+		t.Errorf("start lead = %q, want %q", got.lead, lead)
+	}
+	m, _ = update(t, m, got)
+	return m.status
+}
+
+// TestGitHubRepoQuestionAnswers answers the GitHub question each way after a
+// folder is made by name. Load-bearing rows:
+//   - "y" and "Y": CreateGitHubRepo is called exactly once with the folder and
+//     the repository the dialog named, and only after its line is back does
+//     planning start, with that line leading the notice once the pane opens.
+//     A start before the create's answer would let the plan notice bury the
+//     outcome; a second create would make (or fail on) a second repository.
+//   - "n", "N" and "esc": nothing is made on GitHub and planning starts all
+//     the same, the notice leading with the declined line. A create here
+//     would make a repository the owner refused; no start would leave the
+//     owner with a folder and nothing running.
+//   - "enter" and "a stray key": swallowed with the question still up, so the
+//     default is no and a mistyped key neither makes nor dismisses.
+func TestGitHubRepoQuestionAnswers(t *testing.T) {
+	cases := []struct {
+		name       string
+		answer     tea.Msg
+		wantCreate bool
+		wantOpen   bool
+	}{
+		{name: "y makes the repository then starts", answer: keyRune('y'), wantCreate: true},
+		{name: "Y makes the repository then starts", answer: keyRune('Y'), wantCreate: true},
+		{name: "n makes nothing and starts", answer: keyRune('n')},
+		{name: "N makes nothing and starts", answer: keyRune('N')},
+		{name: "esc makes nothing and starts", answer: keyEsc},
+		{name: "enter keeps the question", answer: keyEnter, wantOpen: true},
+		{name: "a stray key keeps the question", answer: keyRune('q'), wantOpen: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs, gs := githubModel(t)
+			m, cmd := askGitHub(t, m, fs)
+			noStart(t, cmd)
+			if len(gs.offers) != 1 || gs.offers[0] != folderPath {
+				t.Fatalf("GitHubOffer calls = %q, want exactly [%s]", gs.offers, folderPath)
+			}
+			if m.modal != inputConfirmGitHubRepo {
+				t.Fatalf("modal = %v, want the GitHub question", m.modal)
+			}
+			frame := render(m)
+			for _, want := range []string{"Create a GitHub repository?", githubRepoName, "private", "Nothing is pushed", "y: yes", "n/esc: no"} {
+				if !strings.Contains(frame, want) {
+					t.Errorf("the question does not show %q:\n%s", want, frame)
+				}
+			}
+			if len(gs.creates) != 0 || len(rec.calls) != 0 {
+				t.Fatalf("creates=%v starts=%v before the answer, want none", gs.creates, rec.calls)
+			}
+
+			m, cmd = update(t, m, tc.answer)
+			if tc.wantOpen {
+				noStart(t, cmd)
+				if m.modal != inputConfirmGitHubRepo {
+					t.Fatalf("modal = %v after %s, want the question still up", m.modal, tc.name)
+				}
+				if len(gs.creates) != 0 {
+					t.Fatalf("CreateGitHubRepo called %v", gs.creates)
+				}
+				return
+			}
+			if m.modal != inputNormal {
+				t.Fatalf("modal = %v after the answer, want closed", m.modal)
+			}
+			if !tc.wantCreate {
+				if len(gs.creates) != 0 {
+					t.Fatalf("CreateGitHubRepo called %v after no", gs.creates)
+				}
+				if m.status != githubRepoDeclined+" Starting the planning session…" {
+					t.Errorf("status = %q, want the declined line then starting", m.status)
+				}
+				notice := finishStart(t, m, cmd, rec, githubRepoDeclined)
+				if !strings.HasPrefix(notice, "No GitHub repository was made. Started a planning session") {
+					t.Errorf("notice once started = %q, want it to lead with the declined line", notice)
+				}
+				return
+			}
+			if m.status != "Making "+githubRepoName+" on GitHub…" {
+				t.Errorf("status = %q, want the making notice", m.status)
+			}
+			if cmd == nil {
+				t.Fatal("yes issued no command")
+			}
+			made, ok := cmd().(githubRepoCreatedMsg)
+			if !ok {
+				t.Fatalf("yes produced %T, want githubRepoCreatedMsg", made)
+			}
+			want := githubCreateCall{folderPath, githubRepoName}
+			if len(gs.creates) != 1 || gs.creates[0] != want {
+				t.Fatalf("CreateGitHubRepo calls = %+v, want exactly %+v", gs.creates, want)
+			}
+			if len(rec.calls) != 0 {
+				t.Fatalf("StartPlan called %v before the create's line, want after", rec.calls)
+			}
+			m, cmd = update(t, m, made)
+			notice := finishStart(t, m, cmd, rec, githubCreatedLine)
+			if !strings.HasPrefix(notice, githubCreatedLine+" Started a planning session") {
+				t.Errorf("notice once started = %q, want it to lead with the outcome line", notice)
+			}
+			if len(gs.creates) != 1 || len(gs.offers) != 1 {
+				t.Fatalf("offers=%d creates=%d, want one each", len(gs.offers), len(gs.creates))
+			}
+		})
+	}
+}
+
+// TestGitHubOfferNotAsked: when the offer says not to ask, no question is
+// raised and planning starts with the offer's notice as the lead. Load-bearing
+// rows: "gh missing" and "logged out" (the two the README promises: the owner
+// is told why and what to run, instead of being asked), "ask with no repo" (a
+// badly filled offer must not raise a question naming nothing), and "no
+// notice" (still starts, worded as T7.5 would).
+func TestGitHubOfferNotAsked(t *testing.T) {
+	missing := "No GitHub repository offered: gh (the GitHub command) is not installed. Install it from https://cli.github.com, run `gh auth login`, then `gh repo create --private` in the folder."
+	loggedOut := "No GitHub repository offered: gh is not logged in. Run `gh auth login`, then `gh repo create --private` in the folder."
+	cases := []struct {
+		name  string
+		offer GitHubOffer
+		lead  string
+	}{
+		{name: "gh missing", offer: GitHubOffer{Notice: missing}, lead: missing},
+		{name: "logged out", offer: GitHubOffer{Notice: loggedOut}, lead: loggedOut},
+		{name: "ask with no repo", offer: GitHubOffer{Ask: true, Notice: "No account."}, lead: "No account."},
+		{name: "no notice", offer: GitHubOffer{}, lead: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs, gs := githubModel(t)
+			gs.offer = tc.offer
+			m, cmd := askGitHub(t, m, fs)
+			if m.modal != inputNormal {
+				t.Fatalf("modal = %v, want no question", m.modal)
+			}
+			starting := "Starting a planning session in " + folderPath + "…"
+			if tc.lead != "" {
+				// The path is left out after a lead, so the toast's three
+				// lines hold the lead whole (startPlanAfterGitHub).
+				starting = "Starting the planning session…"
+			}
+			if m.status != withLead(tc.lead, starting) {
+				t.Errorf("status = %q, want the offer's notice then starting", m.status)
+			}
+			notice := finishStart(t, m, cmd, rec, tc.lead)
+			if !strings.HasPrefix(notice, withLead(tc.lead, "Started a planning session for a new plan in "+folderPath)) {
+				t.Errorf("notice once started = %q, want it to lead with %q", notice, tc.lead)
+			}
+			if len(gs.creates) != 0 {
+				t.Fatalf("CreateGitHubRepo called %v without a question", gs.creates)
+			}
+		})
+	}
+}
+
+// TestGitHubRepoFailureStillStarts: whatever line the create returns is shown
+// and planning starts. Load-bearing: "name taken" and "network error" (the
+// folder is fine without a remote, so a failure must not strand the owner),
+// and "empty line", which still says something rather than nothing.
+func TestGitHubRepoFailureStillStarts(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "name taken", line: "GitHub already has a repository named owner/demo, so none was made. The folder is left as it is.",
+			want: "GitHub already has a repository named owner/demo, so none was made. The folder is left as it is."},
+		{name: "network error", line: "Could not make the GitHub repository owner/demo: error connecting to api.github.com. The folder is left as it is.",
+			want: "Could not make the GitHub repository owner/demo: error connecting to api.github.com. The folder is left as it is."},
+		{name: "no origin", line: "Made the private GitHub repository owner/demo, but could not set it as origin: boom. Run `git remote add origin https://github.com/owner/demo.git` in " + folderPath + ".",
+			want: "Made the private GitHub repository owner/demo, but could not set it as origin: boom."},
+		{name: "empty line", line: "  ", want: githubRepoNoAnswer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs, gs := githubModel(t)
+			gs.line = tc.line
+			m, _ = askGitHub(t, m, fs)
+			m, cmd := update(t, m, keyRune('y'))
+			made := cmd().(githubRepoCreatedMsg)
+			m, cmd = update(t, m, made)
+			if !strings.HasPrefix(m.status, tc.want) {
+				t.Errorf("status = %q, want it to lead with %q", m.status, tc.want)
+			}
+			lead := strings.TrimSpace(tc.line)
+			if lead == "" {
+				lead = githubRepoNoAnswer
+			}
+			notice := finishStart(t, m, cmd, rec, lead)
+			if !strings.HasPrefix(notice, tc.want) || !strings.Contains(notice, "Started a planning session") {
+				t.Errorf("notice once started = %q, want the line then the start", notice)
+			}
+		})
+	}
+}
+
+// TestGitHubCreateUnavailable: GitHubOffer wired but CreateGitHubRepo not
+// (only a half-built dashboard): the y says so, makes nothing, and planning
+// still starts.
+func TestGitHubCreateUnavailable(t *testing.T) {
+	m, rec, fs, gs := githubModel(t)
+	m.deps.CreateGitHubRepo = nil
+	m, _ = askGitHub(t, m, fs)
+	m, cmd := update(t, m, keyRune('y'))
+	if m.modal != inputNormal {
+		t.Fatalf("modal = %v, want closed", m.modal)
+	}
+	notice := finishStart(t, m, cmd, rec, githubRepoUnavailable)
+	if !strings.HasPrefix(notice, githubRepoUnavailable+" Started") {
+		t.Errorf("notice = %q, want the unavailable line then the start", notice)
+	}
+	if len(gs.creates) != 0 {
+		t.Fatalf("CreateGitHubRepo called %v", gs.creates)
+	}
+}
+
+// TestGitHubNotAskedForOtherFlows: only a folder made by name gets the
+// question. Load-bearing rows: "a folder that exists" (planning in a folder
+// the owner already had; it may have a remote) and "a typed path" (T7.4's
+// flow, which makes nothing), each with the GitHub seams wired so a call
+// would be seen; and "nil GitHubOffer", where a wired CreateGitHubRepo is
+// still never reached and T7.5's notice is unchanged.
+func TestGitHubNotAskedForOtherFlows(t *testing.T) {
+	t.Run("a folder that exists", func(t *testing.T) {
+		m, rec, fs, gs := githubModel(t)
+		fs.decision = PlanFolderDecision{Kind: PlanFolderRefused, Exists: true, Path: folderPath}
+		m, _ = submitPlanFolder(t, m, "demo")
+		m, cmd := update(t, m, keyRune('y'))
+		planStarted(t, cmd)
+		if len(rec.calls) != 1 || len(gs.offers) != 0 || len(gs.creates) != 0 {
+			t.Fatalf("starts=%v offers=%v creates=%v, want one start and no GitHub call", rec.calls, gs.offers, gs.creates)
+		}
+		if m.modal != inputNormal {
+			t.Fatalf("modal = %v", m.modal)
+		}
+	})
+	t.Run("a typed path", func(t *testing.T) {
+		m, rec, fs, gs := githubModel(t)
+		fs.decision = PlanFolderDecision{Kind: PlanFolderUse, Path: "/code/fresh"}
+		_, cmd := submitPlanFolder(t, m, "/code/fresh")
+		planStarted(t, cmd)
+		if len(rec.calls) != 1 || len(gs.offers) != 0 || len(gs.creates) != 0 {
+			t.Fatalf("starts=%v offers=%v creates=%v, want one start and no GitHub call", rec.calls, gs.offers, gs.creates)
+		}
+	})
+	t.Run("nil GitHubOffer", func(t *testing.T) {
+		m, rec, fs, gs := githubModel(t)
+		m.deps.GitHubOffer = nil
+		m, cmd := makeFolder(t, m, fs)
+		if want := "Made " + folderPath + " and made it a git repository. Starting a planning session in it…"; m.status != want {
+			t.Errorf("status = %q, want T7.5's %q", m.status, want)
+		}
+		got := planStarted(t, cmd)
+		if got.lead != "" || len(rec.calls) != 1 || len(gs.creates) != 0 {
+			t.Fatalf("lead=%q starts=%v creates=%v, want T7.5's start alone", got.lead, rec.calls, gs.creates)
+		}
+	})
+}
+
+// TestGitHubDroppedAcrossAProjectSwitch: each GitHub step that crosses a
+// project switch makes and starts nothing it should not. Load-bearing rows:
+//   - "between create and offer": no question pops up over the other
+//     project and nothing starts; the owner is told the folder was made.
+//   - "between question and yes": nothing is made on GitHub.
+//   - "between create and its line": the line is still said (the repository
+//     exists whatever the owner did), but planning does not start.
+//   - "between start and its result": the lead is still said, since nothing
+//     else will ever show it.
+func TestGitHubDroppedAcrossAProjectSwitch(t *testing.T) {
+	t.Run("between create and offer", func(t *testing.T) {
+		m, rec, fs, gs := githubModel(t)
+		m, cmd := makeFolder(t, m, fs)
+		msg := cmd().(githubOfferMsg)
+		m.projectGen++
+		m, cmd = update(t, m, msg)
+		noStart(t, cmd)
+		if m.modal != inputNormal {
+			t.Fatalf("modal = %v, want no question", m.modal)
+		}
+		if !strings.Contains(m.status, "Made "+folderPath) || !strings.Contains(m.status, "no planning session was started") {
+			t.Errorf("status = %q, want the made-but-not-started notice", m.status)
+		}
+		if len(rec.calls) != 0 || len(gs.creates) != 0 {
+			t.Fatalf("starts=%v creates=%v, want none", rec.calls, gs.creates)
+		}
+	})
+	t.Run("between question and yes", func(t *testing.T) {
+		m, rec, fs, gs := githubModel(t)
+		m, _ = askGitHub(t, m, fs)
+		m.projectGen++
+		m, cmd := update(t, m, keyRune('y'))
+		noStart(t, cmd)
+		if cmd != nil {
+			t.Fatal("a stale yes issued a command")
+		}
+		if m.status != "The project changed, so no GitHub repository was made." {
+			t.Errorf("status = %q, want the project-changed notice", m.status)
+		}
+		if len(rec.calls) != 0 || len(gs.creates) != 0 {
+			t.Fatalf("starts=%v creates=%v, want none", rec.calls, gs.creates)
+		}
+	})
+	t.Run("between create and its line", func(t *testing.T) {
+		m, rec, fs, _ := githubModel(t)
+		m, _ = askGitHub(t, m, fs)
+		m, cmd := update(t, m, keyRune('y'))
+		made := cmd().(githubRepoCreatedMsg)
+		m.projectGen++
+		m, cmd = update(t, m, made)
+		noStart(t, cmd)
+		if !strings.HasPrefix(m.status, githubCreatedLine) || !strings.Contains(m.status, "no planning session was started") {
+			t.Errorf("status = %q, want the line and not started", m.status)
+		}
+		if len(rec.calls) != 0 {
+			t.Fatalf("StartPlan called %v after a project switch", rec.calls)
+		}
+	})
+	t.Run("between start and its result", func(t *testing.T) {
+		m, _, fs, _ := githubModel(t)
+		m, _ = askGitHub(t, m, fs)
+		m, cmd := update(t, m, keyRune('n'))
+		got := planStarted(t, cmd)
+		m.projectGen++
+		m, cmd = update(t, m, got)
+		if cmd != nil {
+			t.Fatal("a stale start did something")
+		}
+		if m.status != githubRepoDeclined {
+			t.Errorf("status = %q, want the lead alone", m.status)
+		}
+	})
+}
+
+// TestPlanStartLead: a lead goes before every notice applyPlanStarted sets,
+// and an empty one changes nothing. Load-bearing rows: "refused" (the
+// outcome must survive a refusal too), "open offer" (the question's modal
+// would otherwise clear it), and "no lead", which is every start before T7.6
+// and must read exactly as it did.
+func TestPlanStartLead(t *testing.T) {
+	const lead = "No GitHub repository was made."
+	cases := []struct {
+		name  string
+		res   PlanStartResult
+		lead  string
+		want  string
+		modal inputMode
+	}{
+		{name: "started", res: PlanStartResult{Outcome: PlanStarted, Root: "/projects/api"}, lead: lead,
+			want: lead + " Started a planning session for a new plan in /projects/api."},
+		{name: "refused", res: PlanStartResult{Outcome: PlanRefused, Reason: "No."}, lead: lead, want: lead + " No."},
+		{name: "open offer", res: PlanStartResult{Outcome: PlanRefused, Open: true, Root: "/projects/api"}, lead: lead,
+			want: lead, modal: inputConfirmPlanOpen},
+		{name: "no lead", res: PlanStartResult{Outcome: PlanStarted, Root: "/projects/api"},
+			want: "Started a planning session for a new plan in /projects/api."},
+		{name: "no lead refused", res: PlanStartResult{Outcome: PlanRefused, Reason: "No."}, want: "No."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := planModel(t, sess("a"))
+			m, _ = update(t, m, planStartedMsg{mode: PlanModeNew, res: tc.res, gen: m.projectGen, lead: tc.lead})
+			if m.status != tc.want {
+				t.Errorf("status = %q, want %q", m.status, tc.want)
+			}
+			if m.modal != tc.modal {
+				t.Errorf("modal = %v, want %v", m.modal, tc.modal)
+			}
+		})
+	}
+}
+
+// TestGitHubRepoConfirmKeys pins the GitHub question's routing at the table
+// level, as TestPlanFolderConfirmKeys does for the folder confirm.
+// Load-bearing: y/Y confirm, n/N deny and esc cancels, and every other key,
+// enter included, is swallowed, so the default is no and only an explicit y
+// makes a repository.
+func TestGitHubRepoConfirmKeys(t *testing.T) {
+	reg := newModeRegistry(defaultKeyMap())
+	cases := []struct {
+		name string
+		key  tea.KeyPressMsg
+		want keyDecision
+	}{
+		{"y confirms", press('y', "y"), keyDecision{routeAction, actionConfirm}},
+		{"Y confirms", press('Y', "Y"), keyDecision{routeAction, actionConfirm}},
+		{"n denies", press('n', "n"), keyDecision{routeAction, actionDeny}},
+		{"N denies", press('N', "N"), keyDecision{routeAction, actionDeny}},
+		{"esc cancels", tea.KeyPressMsg{Code: tea.KeyEsc}, keyDecision{routeAction, actionCancel}},
+		{"enter is swallowed", tea.KeyPressMsg{Code: tea.KeyEnter}, keyDecision{kind: routeIgnored}},
+		{"q is swallowed", press('q', "q"), keyDecision{kind: routeIgnored}},
+		{"ctrl+space is swallowed", tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}, keyDecision{kind: routeIgnored}},
+		{"ctrl+c quits", chord('c'), keyDecision{routeAction, actionQuit}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reg.route(inputConfirmGitHubRepo, routeConds{}, tc.key); got != tc.want {
+				t.Fatalf("route(%q) = {%v %v}, want {%v %v}", tc.key.String(), got.kind, got.action, tc.want.kind, tc.want.action)
+			}
+		})
+	}
+	if !(inputConfirmGitHubRepo).isModal() {
+		t.Error("the GitHub question is not a modal")
+	}
+	if got := (modeState{modal: inputConfirmGitHubRepo}); activeInputMode(got) != inputConfirmGitHubRepo {
+		t.Errorf("activeInputMode = %v, want the GitHub question", activeInputMode(got))
+	}
+}
+
+// arriveAfterStart folds a started result for the new folder into m, the
+// way the start's command delivers it, then dials the master-plan pane the
+// result opened and delivers its arrival. It returns the model after the
+// arrival, with the notice the arrival left.
+func arriveAfterStart(t *testing.T, m Model, cmd tea.Cmd, rec *planSeams) Model {
+	t.Helper()
+	rec.reply = PlanStartResult{Outcome: PlanStarted, Root: folderPath}
+	m, cmd = update(t, m, planStarted(t, cmd))
+	if m.activeProjectPath() != folderPath {
+		t.Fatalf("active project = %q, want the new folder %q", m.activeProjectPath(), folderPath)
+	}
+	attached, ok := paneDial(t, cmd)
+	if !ok {
+		t.Fatal("the start dialled no pane")
+	}
+	m, _ = update(t, m, attached)
+	if m.pane == nil || m.paneName != session.PlanSessionName {
+		t.Fatalf("pane = %q, want master-plan installed", m.paneName)
+	}
+	return m
+}
+
+// TestGitHubOutcomeOutlastsThePaneArrival follows each GitHub outcome past
+// the planStartedMsg to the master-plan pane's arrival, which is where the
+// outcome used to be lost: the arrival's "input goes to master-plan" replaced
+// the notice the moment the pane connected (seen against a built binary).
+// Load-bearing rows:
+//   - "yes made the repository", "no", "logged out": the three outcomes the
+//     README promises stay on screen; the arrival notice must still start
+//     with the line, and the arrival's own words follow it.
+//   - "gh missing": the longest notice, still first.
+//   - "failure": a gh failure's reason is what the owner most needs to read.
+//
+// Every row also checks the lead is disarmed after the arrival, so a later
+// open of master-plan by hand is not prefixed with an old outcome, and that
+// the lead fits the toast whole wherever it can (three lines of 48 cells).
+func TestGitHubOutcomeOutlastsThePaneArrival(t *testing.T) {
+	missing := "No GitHub repository offered: gh (the GitHub command) is not installed. Install it from https://cli.github.com, run `gh auth login`, then `gh repo create --private` in the folder."
+	loggedOut := "No GitHub repository offered: gh is not logged in. Run `gh auth login`, then `gh repo create --private` in the folder."
+	failed := "Could not make the GitHub repository owner/demo: HTTP 422. The folder is left as it is."
+	cases := []struct {
+		name     string
+		offer    GitHubOffer
+		answer   tea.Msg // nil when no question is asked
+		line     string  // what CreateGitHubRepo returns, on y
+		lead     string
+		fitToast bool
+	}{
+		{name: "yes made the repository", offer: GitHubOffer{Ask: true, Repo: githubRepoName}, answer: keyRune('y'),
+			line: githubCreatedLine, lead: githubCreatedLine, fitToast: true},
+		{name: "no", offer: GitHubOffer{Ask: true, Repo: githubRepoName}, answer: keyRune('n'),
+			lead: githubRepoDeclined, fitToast: true},
+		{name: "logged out", offer: GitHubOffer{Notice: loggedOut}, lead: loggedOut, fitToast: true},
+		{name: "gh missing", offer: GitHubOffer{Notice: missing}, lead: missing},
+		{name: "failure", offer: GitHubOffer{Ask: true, Repo: githubRepoName}, answer: keyRune('y'),
+			line: failed, lead: failed, fitToast: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs, gs := githubModel(t)
+			gs.offer = tc.offer
+			gs.line = tc.line
+			m, cmd := askGitHub(t, m, fs)
+			if tc.answer != nil {
+				m, cmd = update(t, m, tc.answer)
+				if made, ok := cmd().(githubRepoCreatedMsg); ok {
+					m, cmd = update(t, m, made)
+				}
+			}
+			m = arriveAfterStart(t, m, cmd, rec)
+			want := tc.lead + " Input goes to " + session.PlanSessionName
+			if !strings.HasPrefix(m.status, want) {
+				t.Errorf("notice after the pane arrived = %q, want it to start with %q", m.status, want)
+			}
+			if m.pendingPaneLead != "" {
+				t.Errorf("pendingPaneLead = %q after the arrival, want it disarmed", m.pendingPaneLead)
+			}
+			if tc.fitToast {
+				toast := xansi.Strip(renderToast(m.statusKind, m.status, 120))
+				// Compared with the spaces out: the wrap may break a line
+				// inside a word ("--private"), and the border is drawn
+				// between the pieces.
+				squash := func(s string) string {
+					s = strings.NewReplacer("│", "", "╭", "", "╮", "", "╰", "", "╯", "", "─", "").Replace(s)
+					return strings.Join(strings.Fields(s), "")
+				}
+				if !strings.Contains(squash(toast), squash(tc.lead)) {
+					t.Errorf("the toast cuts the lead %q:\n%s", tc.lead, toast)
+				}
+			}
+		})
+	}
+}
+
+// TestPaneLeadIsSaidOnce pins when an armed lead is dropped rather than
+// shown. Load-bearing rows:
+//   - "project switch": the lead belongs to the project the start opened;
+//     after a switch the incoming project's master-plan arrival must not
+//     carry it.
+//   - "another session arrives first": the owner moved on, so the lead goes,
+//     and a later master-plan arrival is worded as any other.
+//   - "the dial fails": the failure notice carries the lead, since it is the
+//     last word about the pane the start opened.
+//   - "no lead": nothing is armed, which is every plan start without the
+//     GitHub step.
+func TestPaneLeadIsSaidOnce(t *testing.T) {
+	planArrival := func(m Model) paneAttachedMsg {
+		return paneAttachedMsg{pane: newFakePane("PLANNER"), name: session.PlanSessionName, worktree: folderPath, focusOnArrival: true, gen: m.projectGen}
+	}
+	start := func(t *testing.T, lead string) (Model, tea.Cmd) {
+		t.Helper()
+		m, _ := planModel(t, sess("a"))
+		m, cmd := update(t, m, planStartedMsg{mode: PlanModeNew, res: PlanStartResult{Outcome: PlanStarted, Root: folderPath}, gen: m.projectGen, lead: lead})
+		return m, cmd
+	}
+	t.Run("project switch", func(t *testing.T) {
+		m, _ := start(t, githubRepoDeclined)
+		if m.pendingPaneLead != githubRepoDeclined {
+			t.Fatalf("setup: pendingPaneLead = %q, want the lead armed", m.pendingPaneLead)
+		}
+		m, _ = m.switchProject("/projects/api")
+		if m.pendingPaneLead != "" {
+			t.Fatalf("pendingPaneLead = %q after a project switch, want it dropped", m.pendingPaneLead)
+		}
+		m.focus = focusRight
+		m, _ = update(t, m, planArrival(m))
+		if strings.Contains(m.status, githubRepoDeclined) {
+			t.Errorf("notice = %q, an old project's lead turned up", m.status)
+		}
+	})
+	t.Run("another session arrives first", func(t *testing.T) {
+		m, _ := start(t, githubRepoDeclined)
+		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("A"), name: "a", worktree: "/wt/a", focusOnArrival: true, gen: m.projectGen})
+		if m.pendingPaneLead != "" {
+			t.Fatalf("pendingPaneLead = %q after another session arrived, want it dropped", m.pendingPaneLead)
+		}
+		if strings.Contains(m.status, githubRepoDeclined) {
+			t.Errorf("notice = %q, the lead went before another session's arrival", m.status)
+		}
+		m.focus = focusRight
+		m, _ = update(t, m, planArrival(m))
+		if strings.Contains(m.status, githubRepoDeclined) {
+			t.Errorf("notice = %q, a disarmed lead turned up", m.status)
+		}
+	})
+	t.Run("the dial fails", func(t *testing.T) {
+		m, _ := start(t, githubRepoDeclined)
+		msg := planArrival(m)
+		msg.pane = nil
+		msg.err = errors.New("dial: refused")
+		m, _ = update(t, m, msg)
+		if !strings.HasPrefix(m.status, githubRepoDeclined+" ") {
+			t.Errorf("notice = %q, want the failure to lead with the outcome", m.status)
+		}
+		if m.pendingPaneLead != "" {
+			t.Errorf("pendingPaneLead = %q, want it disarmed", m.pendingPaneLead)
+		}
+	})
+	t.Run("no lead", func(t *testing.T) {
+		m, _ := start(t, "")
+		if m.pendingPaneLead != "" {
+			t.Fatalf("pendingPaneLead = %q with no lead, want nothing armed", m.pendingPaneLead)
+		}
+		m, _ = update(t, m, planArrival(m))
+		if want := focusRequestHonoredStatus(session.PlanSessionName); m.status != want {
+			t.Errorf("notice = %q, want the arrival worded as before (%q)", m.status, want)
+		}
+	})
 }

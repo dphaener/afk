@@ -143,10 +143,17 @@ var planVerbs = map[string]string{
 // the project generation the action ran under, so a result that crosses a
 // project switch is dropped and no pane opens in a project the owner has
 // left (see Model.projectGen).
+//
+// lead is a line to put before every notice the result raises (T7.6). The
+// GitHub question's outcome travels here rather than being shown before the
+// start, because applyPlanStarted replaces the notice once the start returns:
+// an outcome set first would be gone before the owner could read it. Empty
+// for every start but the one after a new folder's GitHub step.
 type planStartedMsg struct {
 	mode string
 	res  PlanStartResult
 	gen  int
+	lead string
 }
 
 // planRoot is the folder the seam is given: the active project's path, or
@@ -164,11 +171,78 @@ func (m Model) planRoot() string {
 // seam is called, so "each action calls it once" is a property of the
 // callers alone.
 func (m Model) planStartCmd(root, mode, text string) tea.Cmd {
+	return m.planStartLeadCmd(root, mode, text, "")
+}
+
+// planStartLeadCmd is planStartCmd carrying a lead line for the result's
+// notice (planStartedMsg.lead).
+func (m Model) planStartLeadCmd(root, mode, text, lead string) tea.Cmd {
 	start := m.deps.StartPlan
 	gen := m.projectGen
 	return func() tea.Msg {
-		return planStartedMsg{mode: mode, res: start(root, mode, text), gen: gen}
+		return planStartedMsg{mode: mode, res: start(root, mode, text), gen: gen, lead: lead}
 	}
+}
+
+// withLead puts lead before text, so the GitHub step's outcome stays on
+// screen in the notice that replaces it. An empty lead leaves text exactly as
+// it was, which is what keeps every start without one worded as before.
+func withLead(lead, text string) string {
+	if lead == "" {
+		return text
+	}
+	if text == "" {
+		return lead
+	}
+	return lead + " " + text
+}
+
+// armPaneLead keeps lead for the master-plan pane the caller has just asked
+// to open (openPlanPane), so the pane's arrival notice can carry it too. The
+// lead is put before the start's notice already, but that notice lives only
+// until the pane connects: applyPaneAttached then says "input goes to
+// master-plan" with notify, which keeps no history, and the GitHub step's
+// outcome would be on screen for the fraction of a second the dial takes
+// (seen against a built binary; T7.6). Nothing is armed for an empty lead,
+// and nothing when the pane is already installed: openPlanPane then only
+// focuses it, no arrival follows, and the start's notice is the last word.
+func (m *Model) armPaneLead(lead string) {
+	if lead == "" || (m.pane != nil && m.paneName == session.PlanSessionName) {
+		return
+	}
+	m.pendingPaneLead = lead
+}
+
+// takePaneLead returns the armed lead when name is the pane it was armed
+// for, and disarms it whatever name is. It is called once per explicit
+// arrival (installed or failed): the lead is said once, with the first word
+// about a pane, so it cannot turn up later in front of an open of
+// master-plan the owner makes by hand. An arrival for another session means
+// the owner moved on, and the lead goes with it.
+func (m *Model) takePaneLead(name string) string {
+	lead := m.pendingPaneLead
+	m.pendingPaneLead = ""
+	if name != session.PlanSessionName {
+		return ""
+	}
+	return lead
+}
+
+// withPaneLead is an arrival notice with the armed lead in front, for name's
+// pane (takePaneLead). The arrival notices start lower case, being fragments
+// ("input goes to master-plan · …"); after a lead, which ends in a full stop,
+// the first letter is raised so the two read as sentences.
+func (m *Model) withPaneLead(name, text string) string {
+	return leadSentence(m.takePaneLead(name), text)
+}
+
+// leadSentence is withLead with text's first letter raised when there is a
+// lead (withPaneLead).
+func leadSentence(lead, text string) string {
+	if lead == "" || text == "" {
+		return withLead(lead, text)
+	}
+	return lead + " " + strings.ToUpper(text[:1]) + text[1:]
 }
 
 // planActionGuard is the check every action makes before anything else. It
@@ -337,8 +411,16 @@ func (m Model) cancelPlanText() (tea.Model, tea.Cmd) {
 //   - refused because a planning session is already open: ask whether to
 //     open it (inputConfirmPlanOpen). Nothing was started.
 //   - any other refusal: say why, in the command's words, and open nothing.
+//
+// A non-empty lead goes before each of those notices (withLead).
 func (m Model) applyPlanStarted(msg planStartedMsg) (tea.Model, tea.Cmd) {
 	if msg.gen != m.projectGen {
+		// A lead is said even so: it reports something that happened on
+		// GitHub (a repository made, or not), which the project switch does
+		// not undo, and nothing else will ever show it.
+		if msg.lead != "" {
+			m.notify(notifyInfo, msg.lead)
+		}
 		return m, nil
 	}
 	res := msg.res
@@ -351,7 +433,8 @@ func (m Model) applyPlanStarted(msg planStartedMsg) (tea.Model, tea.Cmd) {
 		// itself; what was started is the more useful line while the pane
 		// connects. The arrival then words the pane as every connect does.
 		cmd := m.openPlanPane(res.Root)
-		m.notify(notifySuccess, planOpenedNotice(msg.mode, res))
+		m.notify(notifySuccess, withLead(msg.lead, planOpenedNotice(msg.mode, res)))
+		m.armPaneLead(msg.lead)
 		return m, tea.Batch(m.loadCmd(), cmd)
 	}
 	if res.Open {
@@ -361,14 +444,21 @@ func (m Model) applyPlanStarted(msg planStartedMsg) (tea.Model, tea.Cmd) {
 		if m.planOffer.Root == "" {
 			m.planOffer.Root = m.planRoot()
 		}
-		m.clearStatus()
+		// The other modals clear the notice so a stale one does not sit
+		// under the question; a lead is not stale, it is the only report of
+		// the GitHub step, so it stays.
+		if msg.lead != "" {
+			m.notify(notifyInfo, msg.lead)
+		} else {
+			m.clearStatus()
+		}
 		return m, nil
 	}
 	reason := strings.TrimSpace(res.Reason)
 	if reason == "" {
 		reason = "The planning session could not be started."
 	}
-	m.notify(notifyWarn, reason)
+	m.notify(notifyWarn, withLead(msg.lead, reason))
 	return m, nil
 }
 
@@ -432,7 +522,10 @@ func (m Model) applyPlanNewOpened(msg planStartedMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.loadCmd())
 	}
 	cmds = append(cmds, m.openPlanPane(res.Root))
-	m.notify(notifySuccess, planOpenedNotice(msg.mode, res))
+	m.notify(notifySuccess, withLead(msg.lead, planOpenedNotice(msg.mode, res)))
+	// After the switch, never before it: switchProjectCmds drops the lead
+	// along with everything else the outgoing project armed.
+	m.armPaneLead(msg.lead)
 	return m, tea.Batch(cmds...)
 }
 
@@ -793,16 +886,39 @@ func (m Model) applyPlanFolderCreated(msg planFolderCreatedMsg) (tea.Model, tea.
 		m.notify(notifyWarn, msg.err.Error())
 		return m, nil
 	}
-	made := "Made " + msg.path + " and made it a git repository."
+	made := planFolderMade(msg.path)
 	if msg.gen != m.projectGen {
-		m.notify(notifyInfo, made+" The project changed, so no planning session was started; type the full path to plan in it.")
+		m.notify(notifyInfo, made+" "+planFolderNotStarted)
 		return m, nil
+	}
+	if m.deps.GitHubOffer != nil {
+		// T7.6: the GitHub question goes between the create and the start.
+		// Whether to ask runs gh, so it is found out off the drawing path;
+		// applyGitHubOffer acts on the answer and every branch of it starts
+		// planning (or says why it did not).
+		m.notify(notifyInfo, made+" Checking GitHub…")
+		offer := m.deps.GitHubOffer
+		path := msg.path
+		gen := m.projectGen
+		return m, func() tea.Msg {
+			return githubOfferMsg{path: path, offer: offer(path), gen: gen}
+		}
 	}
 	// One notice for both steps rather than startPlanNewIn's, which would
 	// replace "made" before the owner could read it.
 	m.notify(notifySuccess, made+" Starting a planning session in it…")
 	return m, m.planStartCmd(msg.path, PlanModeNew, "")
 }
+
+// planFolderMade is the first half of every notice after a folder was made.
+func planFolderMade(path string) string {
+	return "Made " + path + " and made it a git repository."
+}
+
+// planFolderNotStarted ends a notice for a step that finished after the
+// owner switched project: the folder exists, but planning is not started in
+// it, since starting would move the dashboard off the project they chose.
+const planFolderNotStarted = "The project changed, so no planning session was started; type the full path to plan in it."
 
 // cancelPlanFolder is the folder question's n and esc: nothing is created
 // and nothing starts.
@@ -844,5 +960,165 @@ func (m Model) planFolderDialog() dialog {
 			theme.dim.Render("It will be made a git repository, then planning starts in it."),
 		},
 		hint: hint,
+	}
+}
+
+// GitHubOffer is what a GitHubOffer call reports (T7.6): whether to ask the
+// owner about a GitHub repository for a folder just made, and, when not, why
+// not. It mirrors the decision in internal/ghrepo, declared here because this
+// package must not run gh or import the package that does; `afk dash` maps
+// one into the other, as it does PlanFolderDecision.
+type GitHubOffer struct {
+	// Ask is set when gh is installed and logged in, so the question can be
+	// asked. It is asked only with a Repo to name.
+	Ask bool
+	// Repo is the repository the question names, as <account>/<folder name>.
+	Repo string
+	// Notice is why nothing was asked and what to run instead, as a plain
+	// sentence. It leads the planning notice when Ask is false.
+	Notice string
+}
+
+// githubOfferMsg carries one GitHubOffer call's answer back to Update with
+// the project generation the folder's create arrived under.
+type githubOfferMsg struct {
+	path  string
+	offer GitHubOffer
+	gen   int
+}
+
+// githubRepoCreatedMsg carries one CreateGitHubRepo call's outcome line back
+// to Update.
+type githubRepoCreatedMsg struct {
+	path string
+	line string
+	gen  int
+}
+
+// githubRepoDeclined is the question's n and esc. It is internal/ghrepo's
+// declined wording, kept here as its own constant because this package cannot
+// import that one; the two must say the same thing.
+const githubRepoDeclined = "No GitHub repository was made."
+
+// githubRepoUnavailable is the y's lead when CreateGitHubRepo is not wired.
+// `afk dash` wires it with GitHubOffer; this exists so a dashboard built with
+// one and not the other says so, makes nothing, and still starts planning.
+const githubRepoUnavailable = "Making a GitHub repository is not available in this dashboard, so none was made."
+
+// githubRepoNoAnswer stands in for an empty outcome line, so the owner is
+// never left without word of what the GitHub step did.
+const githubRepoNoAnswer = "Could not tell whether the GitHub repository was made. Check GitHub before making one by hand."
+
+// applyGitHubOffer acts on whether to ask about a GitHub repository.
+//
+//   - the project changed meanwhile: say the folder was made, as T7.5 does,
+//     and start nothing.
+//   - ask, with a repository to name: raise inputConfirmGitHubRepo.
+//   - anything else (gh missing, logged out, no account, or an Ask with no
+//     Repo, which a badly filled offer could send): start planning with the
+//     offer's Notice as the lead, since the question is optional and planning
+//     is what the owner asked for.
+func (m Model) applyGitHubOffer(msg githubOfferMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.projectGen {
+		m.notify(notifyInfo, planFolderMade(msg.path)+" "+planFolderNotStarted)
+		return m, nil
+	}
+	o := msg.offer
+	if o.Ask && strings.TrimSpace(o.Repo) != "" {
+		m.modal = inputConfirmGitHubRepo
+		m.githubPath = msg.path
+		m.githubRepo = o.Repo
+		m.githubGen = m.projectGen
+		m.clearStatus()
+		return m, nil
+	}
+	return m.startPlanAfterGitHub(msg.path, strings.TrimSpace(o.Notice))
+}
+
+// startPlanAfterGitHub starts planning in the new folder with lead, the
+// GitHub step's one line, in front of the notices: the interim one now, and
+// the result's through planStartedMsg.lead.
+//
+// With a lead the interim line leaves out the path: the toast is cut at three
+// lines of 48 cells, and a lead followed by a path would push the path (or,
+// with a long gh reason, the end of the lead) off it. The folder is named
+// again in the started notice and in the pane's title.
+func (m Model) startPlanAfterGitHub(path, lead string) (tea.Model, tea.Cmd) {
+	interim := "Starting a planning session in " + path + "…"
+	if lead != "" {
+		interim = "Starting the planning session…"
+	}
+	m.notify(notifyInfo, withLead(lead, interim))
+	return m, m.planStartLeadCmd(path, PlanModeNew, "", lead)
+}
+
+// confirmGitHubRepo is the question's y. The repository is made only here,
+// and only inside a tea.Cmd, because it runs gh and git. Planning starts once
+// the outcome is back (applyGitHubRepoCreated), whatever it is.
+func (m Model) confirmGitHubRepo() (tea.Model, tea.Cmd) {
+	path, repo, gen := m.githubPath, m.githubRepo, m.githubGen
+	m.clearGitHubRepo()
+	if gen != m.projectGen {
+		m.notify(notifyWarn, "The project changed, so no GitHub repository was made.")
+		return m, nil
+	}
+	if m.deps.CreateGitHubRepo == nil {
+		return m.startPlanAfterGitHub(path, githubRepoUnavailable)
+	}
+	m.notify(notifyInfo, "Making "+repo+" on GitHub…")
+	create := m.deps.CreateGitHubRepo
+	genNow := m.projectGen
+	return m, func() tea.Msg {
+		return githubRepoCreatedMsg{path: path, line: create(path, repo), gen: genNow}
+	}
+}
+
+// cancelGitHubRepo is the question's n and esc: nothing is made on GitHub,
+// and planning starts as it would have without the question.
+func (m Model) cancelGitHubRepo() (tea.Model, tea.Cmd) {
+	path := m.githubPath
+	m.clearGitHubRepo()
+	return m.startPlanAfterGitHub(path, githubRepoDeclined)
+}
+
+// applyGitHubRepoCreated is the create's outcome line. A failure is a line
+// like any other: the folder is fine without a remote, so planning starts
+// either way. Across a project switch the line is still said, since the
+// repository exists (or not) whatever the owner did meanwhile, but planning
+// is not started, on applyPlanFolderCreated's terms.
+func (m Model) applyGitHubRepoCreated(msg githubRepoCreatedMsg) (tea.Model, tea.Cmd) {
+	line := strings.TrimSpace(msg.line)
+	if line == "" {
+		line = githubRepoNoAnswer
+	}
+	if msg.gen != m.projectGen {
+		m.notify(notifyInfo, line+" "+planFolderNotStarted)
+		return m, nil
+	}
+	return m.startPlanAfterGitHub(msg.path, line)
+}
+
+func (m *Model) clearGitHubRepo() {
+	m.modal = inputNormal
+	m.githubPath = ""
+	m.githubRepo = ""
+	m.githubGen = 0
+}
+
+// githubRepoDialog is the GitHub question (inputConfirmGitHubRepo). The
+// repository is on a line of its own, as planFolderDialog puts the path, so
+// a dialog line cut at its width (72 cells) loses none of the question and
+// the owner sees the account and name in full before saying yes. It says n
+// changes nothing, because enter is not bound: the default answer is no.
+func (m Model) githubRepoDialog() dialog {
+	reg := m.modes()
+	return dialog{
+		title: "Create a GitHub repository?",
+		lines: []string{
+			theme.statusLine.Render("Make this private repository on GitHub and set it as origin?"),
+			theme.statusLine.Render(m.githubRepo),
+			theme.dim.Render("It will be private. Nothing is pushed. n changes nothing."),
+		},
+		hint: modalKeyHint(reg.spec(inputConfirmGitHubRepo).keys.bindings, "yes", "no"),
 	}
 }
