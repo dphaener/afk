@@ -130,6 +130,12 @@ const (
 	// it and creates nothing. It swallows unclaimed keys like the other y/n
 	// confirmations, because a folder is made only on an explicit y.
 	inputConfirmPlanFolder
+	// inputConfirmGitHubRepo is the y/n question asked after a new project's
+	// folder is made (T7.6): y makes a private GitHub repository and sets it
+	// as the folder's origin, n or esc makes nothing, and planning starts
+	// after either. It swallows unclaimed keys, enter included, so the
+	// default is no and a repository is made only on an explicit y.
+	inputConfirmGitHubRepo
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -173,6 +179,8 @@ func (m inputMode) String() string {
 		return "confirm-plan-open"
 	case inputConfirmPlanFolder:
 		return "confirm-plan-folder"
+	case inputConfirmGitHubRepo:
+		return "confirm-github-repo"
 	}
 	return "unknown"
 }
@@ -185,7 +193,7 @@ func (m inputMode) String() string {
 func (m inputMode) isModal() bool {
 	switch m {
 	case inputConfirmClean, inputSpawnError, inputConfirmRestart, inputEditLabel, inputPickProvider,
-		inputPlanText, inputConfirmPlanOpen, inputConfirmPlanFolder:
+		inputPlanText, inputConfirmPlanOpen, inputConfirmPlanFolder, inputConfirmGitHubRepo:
 		return true
 	}
 	return false
@@ -382,6 +390,7 @@ var modePrecedence = []modeLayer{
 	{inputPlanText, func(s modeState) bool { return s.modal == inputPlanText }},
 	{inputConfirmPlanOpen, func(s modeState) bool { return s.modal == inputConfirmPlanOpen }},
 	{inputConfirmPlanFolder, func(s modeState) bool { return s.modal == inputConfirmPlanFolder }},
+	{inputConfirmGitHubRepo, func(s modeState) bool { return s.modal == inputConfirmGitHubRepo }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
@@ -938,6 +947,22 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("y", "Y"),
 		key.WithHelp("y", "yes"),
 	)
+	// The GitHub question's keys. n and esc get their own bindings rather
+	// than deny and cancelEsc, whose help says "cancel": here they are the
+	// answer no, and planning still starts after them, so the hint must not
+	// suggest the whole new project is being called off.
+	confirmGitHubRepo := key.NewBinding(
+		key.WithKeys("y", "Y"),
+		key.WithHelp("y", "yes"),
+	)
+	denyGitHubRepo := key.NewBinding(
+		key.WithKeys("n", "N"),
+		key.WithHelp("n", "no"),
+	)
+	escGitHubRepo := key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "no"),
+	)
 	// The provider picker's keys. up/k and down/j are declared fresh rather
 	// than sharing keys.Up/keys.Down for the reason detailFocusUp gives: those
 	// carry normal mode's session-list help text, which would label a picker
@@ -1460,6 +1485,20 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
 			confirmPlanFolder, deny, cancelEsc, keys.Mouse, quitChord,
+		}},
+	}
+	r[inputConfirmGitHubRepo] = modeSpec{
+		mode: inputConfirmGitHubRepo,
+		rules: []modeRule{
+			{binding: keys.Mouse, action: actionMouseToggle},
+			{binding: quitChord, action: actionQuit},
+			{binding: escGitHubRepo, action: actionCancel},
+			{binding: confirmGitHubRepo, action: actionConfirm},
+			{binding: denyGitHubRepo, action: actionDeny},
+		},
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{
+			confirmGitHubRepo, denyGitHubRepo, escGitHubRepo, keys.Mouse, quitChord,
 		}},
 	}
 

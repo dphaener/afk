@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dphaener/afk/internal/planfolder"
@@ -196,5 +198,142 @@ func TestDashPlanCreateFolder(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(loc, "missing")); err == nil {
 		t.Error("the location folder was created")
+	}
+}
+
+// fakeDashGH is a recording ghrepo.GH: it never runs gh, and it counts the
+// calls so a test can see how far the offer went and that yes creates once.
+type fakeDashGH struct {
+	authErr    error
+	login      string
+	loginErr   error
+	createdURL string
+	createErr  error
+
+	authCalls, loginCalls int
+	creates               []string
+}
+
+func (f *fakeDashGH) AuthStatus() error { f.authCalls++; return f.authErr }
+func (f *fakeDashGH) Login() (string, error) {
+	f.loginCalls++
+	return f.login, f.loginErr
+}
+func (f *fakeDashGH) Protocol() string { return "https" }
+func (f *fakeDashGH) CreatePrivate(repo string) (string, error) {
+	f.creates = append(f.creates, repo)
+	return f.createdURL, f.createErr
+}
+
+// fakeDashGit is a recording ghrepo.Git.
+type fakeDashGit struct {
+	err  error
+	adds [][2]string
+}
+
+func (f *fakeDashGit) AddOrigin(dir, url string) error {
+	f.adds = append(f.adds, [2]string{dir, url})
+	return f.err
+}
+
+// TestDashGitHubOfferMapping pins how the checks become the dashboard's offer.
+// Load-bearing rows: "gh missing" (gh is never run, so a missing gh cannot
+// be mistaken for a logged-out one) and "logged out" (the account is never
+// asked for, and the notice names `gh auth login`); "ask" carries the
+// account/folder name the question shows.
+func TestDashGitHubOfferMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		lookErr    error
+		gh         *fakeDashGH
+		want       ui.GitHubOffer
+		wantNotice string
+		wantAuth   int
+		wantLogin  int
+	}{
+		{"ask", nil, &fakeDashGH{login: "owner"},
+			ui.GitHubOffer{Ask: true, Repo: "owner/demo"}, "", 1, 1},
+		{"gh missing", exec.ErrNotFound, &fakeDashGH{login: "owner"},
+			ui.GitHubOffer{}, "not installed", 0, 0},
+		{"logged out", nil, &fakeDashGH{authErr: errors.New("exit status 1"), login: "owner"},
+			ui.GitHubOffer{}, "gh auth login", 1, 0},
+		{"no account", nil, &fakeDashGH{loginErr: errors.New("HTTP 401")},
+			ui.GitHubOffer{}, "HTTP 401", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			look := func(name string) (string, error) {
+				if name != "gh" {
+					t.Errorf("looked up %q, want gh", name)
+				}
+				return "/bin/gh", tt.lookErr
+			}
+			got := dashGitHubOfferWith(look, tt.gh, "/loc/demo")
+			notice := got.Notice
+			got.Notice = ""
+			if got != tt.want {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+			if tt.wantNotice == "" && notice != "" {
+				t.Errorf("notice = %q, want none", notice)
+			}
+			if !strings.Contains(notice, tt.wantNotice) {
+				t.Errorf("notice = %q, want it to contain %q", notice, tt.wantNotice)
+			}
+			if tt.gh.authCalls != tt.wantAuth || tt.gh.loginCalls != tt.wantLogin {
+				t.Errorf("auth calls %d, login calls %d; want %d, %d", tt.gh.authCalls, tt.gh.loginCalls, tt.wantAuth, tt.wantLogin)
+			}
+			if len(tt.gh.creates) != 0 {
+				t.Errorf("the offer created %v", tt.gh.creates)
+			}
+		})
+	}
+}
+
+// TestDashCreateGitHubRepo pins the create seam. Load-bearing rows: "yes"
+// (exactly one private create and one origin add with the .git URL) and
+// "name taken" (no origin is added to a repository that is not ours).
+func TestDashCreateGitHubRepo(t *testing.T) {
+	tests := []struct {
+		name     string
+		gh       *fakeDashGH
+		git      *fakeDashGit
+		wantAdds [][2]string
+		wantLine string
+	}{
+		{"yes", &fakeDashGH{createdURL: "https://github.com/owner/demo\n"}, &fakeDashGit{},
+			[][2]string{{"/loc/demo", "https://github.com/owner/demo.git"}}, "Made the private GitHub repository owner/demo"},
+		{"name taken", &fakeDashGH{createErr: errors.New("GraphQL: Name already exists on this account")}, &fakeDashGit{},
+			nil, "already has a repository named owner/demo"},
+		{"origin fails", &fakeDashGH{createdURL: "https://github.com/owner/demo"}, &fakeDashGit{err: errors.New("remote origin already exists")},
+			[][2]string{{"/loc/demo", "https://github.com/owner/demo.git"}}, "could not set it as origin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := dashCreateGitHubRepoWith(tt.gh, tt.git, "/loc/demo", "owner/demo")
+			if len(tt.gh.creates) != 1 || tt.gh.creates[0] != "owner/demo" {
+				t.Errorf("creates = %v, want exactly [owner/demo]", tt.gh.creates)
+			}
+			if len(tt.git.adds) != len(tt.wantAdds) {
+				t.Fatalf("origin adds = %v, want %v", tt.git.adds, tt.wantAdds)
+			}
+			for i := range tt.wantAdds {
+				if tt.git.adds[i] != tt.wantAdds[i] {
+					t.Errorf("origin add %d = %v, want %v", i, tt.git.adds[i], tt.wantAdds[i])
+				}
+			}
+			if !strings.Contains(line, tt.wantLine) {
+				t.Errorf("line = %q, want it to contain %q", line, tt.wantLine)
+			}
+		})
+	}
+}
+
+// TestDashGitHubDepsSetsSeams checks dashDeps wires both GitHub seams; left
+// nil, internal/ui keeps T7.5's behaviour and the question is never asked.
+func TestDashGitHubDepsSetsSeams(t *testing.T) {
+	d := dashDeps("", dashLocation{}, nil, -1)
+	if d.GitHubOffer == nil || d.CreateGitHubRepo == nil {
+		t.Fatalf("GitHubOffer nil: %v, CreateGitHubRepo nil: %v", d.GitHubOffer == nil, d.CreateGitHubRepo == nil)
 	}
 }

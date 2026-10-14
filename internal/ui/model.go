@@ -402,6 +402,24 @@ type Deps struct {
 	// zero Deps must not be able to create folders. A nil one on y is
 	// answered with a sentence and nothing is created.
 	CreatePlanFolder func(path string) error
+	// GitHubOffer finds out whether to ask the owner about a GitHub
+	// repository for a folder CreatePlanFolder has just made (T7.6): gh
+	// installed, logged in, and the account to name. It runs gh, so it is
+	// only ever called inside a tea.Cmd, and only for a folder made by name,
+	// never for a typed path or a folder that already existed.
+	//
+	// It has NO default: a zero Deps must not run gh. A nil GitHubOffer
+	// keeps T7.5 exactly as it was: planning starts straight after the
+	// create and no question is asked.
+	GitHubOffer func(path string) GitHubOffer
+	// CreateGitHubRepo makes the private repository repo on GitHub and adds
+	// it as path's origin, pushing nothing, and returns the outcome as one
+	// plain line (made, name taken, failed, or made without origin). It is
+	// called only after the owner's y in inputConfirmGitHubRepo, inside a
+	// tea.Cmd. It has NO default, for AnswerInbox's reason: a zero Deps must
+	// not be able to make a repository. A nil one on y makes nothing, says
+	// so, and planning starts all the same.
+	CreateGitHubRepo func(path, repo string) string
 	// SpiceDetect reports whether the repo at dir is operating in git-spice
 	// mode. Defaults to internal/spice.Detect. The stack panel is hidden
 	// entirely when this returns false — never a placeholder.
@@ -1392,6 +1410,21 @@ type Model struct {
 	planFolder    PlanFolderDecision
 	planFolderGen int
 
+	// githubPath and githubRepo are the folder and the repository
+	// inputConfirmGitHubRepo was raised for, and githubGen the project
+	// generation it arrived under, on planFolder's terms: y makes exactly
+	// the repository the dialog named, for exactly that folder.
+	githubPath string
+	githubRepo string
+	githubGen  int
+
+	// pendingPaneLead is the GitHub step's outcome line while the
+	// master-plan pane a new plan's start opened is still dialing
+	// (armPaneLead). The pane's arrival notice would otherwise replace it the
+	// moment the pane connects, so the arrival puts it first (withPaneLead)
+	// and disarms it. A project switch drops it with planSelectPending.
+	pendingPaneLead string
+
 	// planSelectPending is the master-plan row's name while a plan action's
 	// pane open waits for discovery to list the row (openPlanPane). It is
 	// applied on each successful load and dropped once the row is selected,
@@ -2353,6 +2386,12 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planFolderCreatedMsg:
 		return m.applyPlanFolderCreated(msg)
 
+	case githubOfferMsg:
+		return m.applyGitHubOffer(msg)
+
+	case githubRepoCreatedMsg:
+		return m.applyGitHubRepoCreated(msg)
+
 	case plainBranchesLoadedMsg:
 		// Keep the branches even when trunk resolution failed: both come back in
 		// one message, and a repo whose trunk is unresolvable (no origin/HEAD, no
@@ -2810,14 +2849,14 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		if msg.preview {
 			if claimedPreview {
 				m.handBackUnansweredFocus()
-				m.notify(notifyWarn, "opening "+msg.name+" did not connect · "+m.keys.Focus.Help().Key+" to retry")
+				m.notify(notifyWarn, m.withPaneLead(msg.name, "opening "+msg.name+" did not connect · "+m.keys.Focus.Help().Key+" to retry"))
 			}
 			return m, nil
 		}
 		if focusOnArrival {
 			m.handBackUnansweredFocus()
 		}
-		m.notify(notifyError, paneAttachFailedStatus(msg))
+		m.notify(notifyError, m.withPaneLead(msg.name, paneAttachFailedStatus(msg)))
 		if errors.Is(msg.err, host.ErrHostNotReachable) {
 			m.markHostStopped(msg.name)
 		}
@@ -2872,7 +2911,15 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	if m.pane != nil && msg.name == m.paneName {
 		_ = msg.pane.Close()
 		if honourFocus {
-			return m.focusPane()
+			// focusPane words its own notice; an armed lead goes before it
+			// as before the install path's (withPaneLead).
+			lead := m.takePaneLead(msg.name)
+			next, cmd := m.focusPane()
+			if fm, ok := next.(Model); ok && lead != "" {
+				fm.notify(fm.statusKind, leadSentence(lead, fm.status))
+				return fm, cmd
+			}
+			return next, cmd
 		}
 		return m, nil
 	}
@@ -2934,18 +2981,24 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	// user walked away from (back to the list, or to the overview) installs
 	// the pane unfocused, and "input goes to X" would then be false. That
 	// click falls through to "switched to" or "opened", which are true.
+	//
+	// Whichever wording it gets, a lead armed for this pane goes first
+	// (withPaneLead): the new plan's GitHub outcome was on screen only while
+	// the pane dialed, and this notice is what would replace it.
 	if !passivePreview {
+		var text string
 		switch {
 		case msg.focusRequest && honourFocus:
-			m.notify(notifyInfo, focusRequestHonoredStatus(msg.name))
+			text = focusRequestHonoredStatus(msg.name)
 		case previous != nil:
-			m.notify(notifyInfo, "switched to "+msg.name+" — "+previousName+
-				" still running in the background")
+			text = "switched to " + msg.name + " — " + previousName +
+				" still running in the background"
 		case honourFocus:
-			m.notify(notifyInfo, focusRequestHonoredStatus(msg.name))
+			text = focusRequestHonoredStatus(msg.name)
 		default:
-			m.notify(notifyInfo, "opened "+msg.name+" · "+m.keys.Focus.Help().Key+" to focus, "+leaderChord(actionDetailUnfocus)+" to return")
+			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to focus, " + leaderChord(actionDetailUnfocus) + " to return"
 		}
+		m.notify(notifyInfo, m.withPaneLead(msg.name, text))
 	}
 	// Begin listening for redraw/exit notifications from the pane.
 	return m, paneEventCmd(msg.pane)
@@ -3497,6 +3550,13 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 			return m.confirmPlanFolder()
 		case actionDeny, actionCancel:
 			return m.cancelPlanFolder()
+		}
+	case inputConfirmGitHubRepo:
+		switch a {
+		case actionConfirm:
+			return m.confirmGitHubRepo()
+		case actionDeny, actionCancel:
+			return m.cancelGitHubRepo()
 		}
 	case inputPickProvider:
 		switch a {
@@ -7587,8 +7647,10 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// is performing — so the clear is safe on its own path too.
 	m.selectOnNextLoad = ""
 	// A plan action's armed selection belongs to the outgoing project, whose
-	// planning session is not in the incoming one's list.
+	// planning session is not in the incoming one's list. So does the lead
+	// armed for its pane: applyPlanNewOpened arms it after its own switch.
 	m.planSelectPending = ""
+	m.pendingPaneLead = ""
 	// m.cleaningSessions is deliberately KEPT. A clean already dispatched is still
 	// running in the outgoing project, its cleanFinishedMsg will arrive and clear
 	// the entry, and until then the worst a stale name costs is a refused `c` on a

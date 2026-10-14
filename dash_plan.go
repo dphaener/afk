@@ -3,11 +3,14 @@ package main
 import (
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 
+	"github.com/dphaener/afk/internal/ghrepo"
 	"github.com/dphaener/afk/internal/planfolder"
 	"github.com/dphaener/afk/internal/profile"
 	"github.com/dphaener/afk/internal/session"
+	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/ui"
 )
 
@@ -114,4 +117,49 @@ func dashPlanFolderWith(location func() planfolder.Location, stat func(string) (
 // os.Mkdir, never MkdirAll, so the project location itself is never created.
 func dashCreatePlanFolder(path string) error {
 	return planfolder.Create(path, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn)
+}
+
+// dashGitHubOffer finds out whether the dashboard should ask about a GitHub
+// repository for the folder it has just made (T7.6). It runs gh up to twice
+// (auth status, then the account name), so internal/ui only ever calls it
+// inside a command. Each gh call is bounded by ship.DefaultTimeout and runs
+// with stdin on the null device, so a gh that wants to ask something fails
+// rather than waiting behind the dashboard's screen.
+func dashGitHubOffer(path string) ui.GitHubOffer {
+	return dashGitHubOfferWith(exec.LookPath, ghrepo.NewGH(ship.NewRun(ship.DefaultTimeout)), path)
+}
+
+// dashGitHubOfferWith is dashGitHubOffer with the PATH lookup and gh passed
+// in, so a test pins the mapping without a real gh. It stops at the first
+// check that fails: there is no point asking a logged-out gh for its account,
+// and a gh that is not installed cannot be asked anything. ghrepo.Offer then
+// sees the missing later answers as nil, which it never reaches because it
+// checks in the same order.
+func dashGitHubOfferWith(look func(string) (string, error), gh ghrepo.GH, path string) ui.GitHubOffer {
+	var authErr, loginErr error
+	login := ""
+	_, lookErr := look("gh")
+	if lookErr == nil {
+		authErr = gh.AuthStatus()
+		if authErr == nil {
+			login, loginErr = gh.Login()
+		}
+	}
+	d := ghrepo.Offer(lookErr, authErr, login, loginErr, path)
+	return ui.GitHubOffer{Ask: d.Ask, Repo: d.Repo, Notice: d.Notice}
+}
+
+// dashCreateGitHubRepo makes the private repository and sets it as path's
+// origin, after the owner's yes, and returns the outcome as one line. gh only
+// creates (no --push, no --source), and git adds the remote itself, so
+// nothing leaves the machine but the empty repository's name.
+func dashCreateGitHubRepo(path, repo string) string {
+	run := ship.NewRun(ship.DefaultTimeout)
+	return dashCreateGitHubRepoWith(ghrepo.NewGH(run), ghrepo.NewGit(run), path, repo)
+}
+
+// dashCreateGitHubRepoWith is dashCreateGitHubRepo with gh and git passed in,
+// so a test can count the create and the remote add without a real gh.
+func dashCreateGitHubRepoWith(gh ghrepo.GH, git ghrepo.Git, path, repo string) string {
+	return ghrepo.OutcomeText(ghrepo.Create(gh, git, path, repo))
 }

@@ -121,6 +121,16 @@ func (m Model) plainBranchesCmd() tea.Cmd {
 		if err != nil {
 			return plainBranchesLoadedMsg{err: err}
 		}
+		// A listing that worked is never nil, even with nothing to list:
+		// notifyBranchesError reads nil branches as "the listing itself
+		// failed". A repository with no commits yet (a folder the dashboard
+		// has just made for a new plan, T7.5) lists no branches and has no
+		// trunk, which is its normal state, not a failure. Left nil, it
+		// raised "branch listing failed" seconds after the planning pane
+		// opened, over the new plan's own notice.
+		if branches == nil {
+			branches = []string{}
+		}
 		trunk, terr := resolveTrunk(repo)
 		return plainBranchesLoadedMsg{branches: branches, trunk: trunk, err: terr}
 	}
