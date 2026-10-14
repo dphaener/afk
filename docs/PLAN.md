@@ -1591,7 +1591,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
 |---|---|
 | Where questions are asked | The terminal, in an attended session on the machine that runs the daemon. Not the inbox. A web interface may answer the same records later (rule 7). |
 | What v1 covers | New project, extend (a new milestone), amend (one task) and reconcile (bring the plan in line with a new document). |
-| Approval | Required before the daemon builds anything. The plan is readable on the web page; approving is a terminal command. |
+| Approval | Required before the daemon builds anything. The plan is readable on the web page; approving is a terminal command. Amended 2026-10-13 (M8): approving from the web page is allowed, behind a confirm (T8.11). |
 | Names | `afk plan` is the master plan. The per-task skill `/afk:plan` is renamed `/afk:work-plan`. The new skill is `/afk:master-plan`. |
 | Owner profile | Machine-wide, `profile.toml` beside `config.toml`. Each entry is a **rule** or a **default**, and may apply to one kind of project. It includes the preferred stack. |
 | Design | A phase of the session for projects with an interface. afk writes a brief, the owner runs it in any design tool and saves the result, afk reconciles. The plan wins on behaviour; the design system wins on looks. |
