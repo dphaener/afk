@@ -1899,7 +1899,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
 
 #### T7.1 — Leader key and actions dialog
 - **Depends on:** T6.3, T6.4
-- **Goal:** pressing ctrl+space anywhere in `afk dash`, the agent pane included, opens a dialog that
+- **Goal:** pressing ctrl+space anywhere in `afk dash` outside an overlay, form or confirm, the agent pane included, opens a dialog that
   lists every action the dashboard has, each with its key; the next key runs that action, and typing
   filters the list by name.
 - **Background:** the owner asked for "an actions menu (dialog)" and "a leader key much like tmux and
