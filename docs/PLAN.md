@@ -2296,7 +2296,7 @@ thing it does not do is attach to a session.
   path with long-lived caching keyed by a content hash, and a `Content-Security-Policy` that allows
   scripts only from the page's own origin. A server-sent events stream (standard library only), behind
   the same token check as every page, that sends a small event naming the project and the part that
-  changed (inbox, ledger, pause state, planning session, usage) when the files behind it change,
+  changed (inbox, ledger, pause state, sessions, planning session, usage) when the files behind it change,
   found by a pure comparison of what was read on one tick with what was read on the last. The
   JavaScript re-fetches the changed part of the page and swaps it in, and reconnects after a dropped
   stream; with JavaScript off or the stream refused by a proxy, the page still works by reloading.
