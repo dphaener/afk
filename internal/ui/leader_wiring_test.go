@@ -608,7 +608,20 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 		m, _ = pressAction(t, m, keyB)
 		return m
 	}
+	// tokensTab is the Build tab as buildTab sets it up, with the tokens
+	// seam wired and the cursor's task's record held (T7.12).
+	tokensTab := func(t *testing.T) Model {
+		m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
+		m.deps.LoadTaskTokens = func(string, string) TaskTokens { return TaskTokens{} }
+		m, _ = pressAction(t, m, keyB)
+		m, _ = update(t, m, taskTokensLoadedMsg{gen: m.projectGen, root: m.build.Root, task: m.buildCursorID, rec: TaskTokens{Task: m.buildCursorID}})
+		return m
+	}
 	return map[modeAction]leaderActionCase{
+		// "show this task's tokens" (T7.12) never had a key; T on the Build
+		// tab is no action and must not become one.
+		actionTaskTokens: {setup: tokensTab, mode: inputDetail, old: press('T'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.taskTokensOpen }},
 		// "set this task's status" (T7.11) never had a key; S on the Build
 		// tab is no action and must not become one.
 		actionTaskStatus: {setup: buildTab, mode: inputDetail, old: press('S'),

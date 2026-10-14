@@ -181,6 +181,12 @@ const (
 	inputPickTaskStatus
 	inputTaskStatusReplacedBy
 	inputConfirmTaskStatus
+	// inputTaskTokens is the tokens overlay (Model.taskTokensOpen,
+	// tasktokensoverlay.go, T7.12): the Build tab cursor's task as `afk
+	// tokens` prints it, in a scrollable box. It is the plan check's kind of
+	// overlay, not a footer modal: it asks nothing, and a create's failure
+	// report must still outrank it.
+	inputTaskTokens
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -244,6 +250,8 @@ func (m inputMode) String() string {
 		return "task-status-replaced-by"
 	case inputConfirmTaskStatus:
 		return "confirm-task-status"
+	case inputTaskTokens:
+		return "task-tokens"
 	}
 	return "unknown"
 }
@@ -306,6 +314,8 @@ type modeState struct {
 	inboxOpen bool
 	// planCheckOpen mirrors Model.planCheckOpen.
 	planCheckOpen bool
+	// taskTokensOpen mirrors Model.taskTokensOpen.
+	taskTokensOpen bool
 	// allProjectsOpen mirrors Model.allProjectsOpen.
 	allProjectsOpen bool
 	// leaderOpen mirrors Model.leaderOpen.
@@ -331,6 +341,7 @@ func (m Model) modeSnapshot() modeState {
 		pane:            m.paneForSelection(),
 		inboxOpen:       m.inboxOpen,
 		planCheckOpen:   m.planCheckOpen,
+		taskTokensOpen:  m.taskTokensOpen,
 		allProjectsOpen: m.allProjectsOpen,
 		leaderOpen:      m.leaderOpen,
 		resizing:        m.resizing,
@@ -429,9 +440,13 @@ type modeLayer struct {
 //     other overlay is up when it appears, and it outranks the form, the
 //     filter prompt, resize mode and both right-side focuses so a pane that
 //     arrives focused under it cannot take the scroll keys.
-//   - The all-projects screen sits directly below the check-the-plan
-//     overlay. It is opened only through the actions dialog, so no overlay is
-//     up when it appears, and over it the dialog runs nothing that opens one;
+//   - The tokens overlay (T7.12) sits directly below the check-the-plan
+//     overlay, for the same reasons: it is opened only through the actions
+//     dialog (or when a read it waited on lands, and then only while the
+//     Build tab has the keyboard), so no other overlay is up when it appears.
+//   - The all-projects screen sits directly below the tokens overlay. It is
+//     opened only through the actions dialog, so no overlay is up when it
+//     appears, and over it the dialog runs nothing that opens one;
 //     the dialog itself outranks it, which is how pause and resume reach its
 //     rows. It outranks the form, the filter prompt, resize mode and both
 //     right-side focuses because it takes their place on screen: a pane that
@@ -498,6 +513,7 @@ var modePrecedence = []modeLayer{
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
 	{inputPlanCheck, func(s modeState) bool { return s.planCheckOpen }},
+	{inputTaskTokens, func(s modeState) bool { return s.taskTokensOpen }},
 	{inputAllProjects, func(s modeState) bool { return s.allProjectsOpen }},
 	{inputForm, func(s modeState) bool { return s.formOpen }},
 	{inputFilter, func(s modeState) bool { return s.listFiltering }},
@@ -632,6 +648,11 @@ const (
 	// (taskstatus.go). It runs only on the Build tab with the right side
 	// focused.
 	actionTaskStatus
+	// actionTaskTokens is "show this task's tokens" (T7.12, ctrl+space T):
+	// it opens the tokens overlay for the Build tab's cursor row
+	// (tasktokens.go). It runs only on the Build tab with the right side
+	// focused.
+	actionTaskTokens
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -778,6 +799,8 @@ func (a modeAction) String() string {
 		return "project-remove"
 	case actionTaskStatus:
 		return "task-status"
+	case actionTaskTokens:
+		return "task-tokens"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -1629,6 +1652,18 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		},
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: append(planCheckKeys(), quitChord)},
+	}
+
+	// Task-tokens mode is the plan check's shape for the plan check's
+	// reasons: ctrl+c quits, since the overlay holds nothing typed, and every
+	// other key is the overlay's, staged in taskTokensOverlay.Update.
+	r[inputTaskTokens] = modeSpec{
+		mode: inputTaskTokens,
+		rules: []modeRule{
+			{binding: quitChord, action: actionQuit},
+		},
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: append(taskTokensKeys(), quitChord)},
 	}
 
 	// All-projects mode is the screen's (allprojects.go). Its key set is

@@ -124,7 +124,8 @@ type leaderEntry struct {
 // the by-name "start a new plan" of "## T7.4", the by-name "check the
 // plan" of "## T7.7" and the by-name "approve the plan" of T7.8, with
 // T7.9's "all projects" on A after switch project, its neighbour in meaning,
-// and T7.10's add and remove a project on + and - right after it;
+// T7.10's add and remove a project on + and - right after it, and T7.12's
+// "show this task's tokens" on T right after T7.11's S;
 // TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
@@ -162,6 +163,11 @@ var leaderTable = []leaderEntry{
 	// right-side action. Upper-case S: lower-case s would run it from an
 	// empty query instead of filtering for "start a new plan".
 	{key: "S", action: actionTaskStatus, reach: reachRight},
+	// "show this task's tokens" (T7.12) reads the same cursor row, so it is
+	// a right-side action beside S. Upper-case T: lower-case t is the
+	// agent-or-overview toggle, and a free lower-case letter would run the
+	// row from an empty query instead of starting a filter.
+	{key: "T", action: actionTaskTokens, reach: reachRight},
 	{key: "f", action: actionFocusPane, reach: reachList},
 	{key: "t", action: actionPaneToggle, reach: reachRight},
 	{key: "\\", action: actionDetailUnfocus, reach: reachRight},
@@ -245,6 +251,7 @@ var leaderNames = map[modeAction]string{
 	actionPauseBuild:    "pause the build",
 	actionResumeBuild:   "resume the build",
 	actionTaskStatus:    "set this task's status",
+	actionTaskTokens:    "show this task's tokens",
 	actionFocusPane:     "focus the right side",
 	actionPaneToggle:    "agent or overview",
 	actionDetailUnfocus: "back to list",
@@ -312,6 +319,8 @@ var leaderHelp = map[modeAction]string{
 	// Must not say "approve", "errors", "warnings" or "document", the words
 	// other rows are found by.
 	actionTaskStatus: "Change the selected Build task's status, as afk ledger set does",
+	// The same words to avoid as the line above.
+	actionTaskTokens: "Show how many tokens the selected Build task used, as afk tokens does",
 }
 
 // leaderRow is one action in the dialog.
@@ -496,6 +505,8 @@ type leaderConds struct {
 	// Name, which the remove row's reason reads.
 	projectRowSelected, projectRowListed bool
 	projectRowName                       string
+	// canLoadTaskTokens is "the LoadTaskTokens seam is wired" (T7.12).
+	canLoadTaskTokens bool
 	// canSetTaskStatus is "the SetTaskStatus seam is wired" (T7.11).
 	// buildTabFocused is "the Build tab is drawn on the right and the right
 	// side has the keyboard", and buildTaskSelected "its cursor is on a
@@ -605,6 +616,8 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		return planApproveBlockedReason(c)
 	case actionTaskStatus:
 		return taskStatusBlockedReason(c)
+	case actionTaskTokens:
+		return taskTokensBlockedReason(c)
 	case actionProjects:
 		if !c.hasActiveProject {
 			return "no projects to switch between"

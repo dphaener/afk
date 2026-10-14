@@ -417,3 +417,89 @@ func TestRenderStartUp(t *testing.T) {
 		}
 	})
 }
+
+// TestShort pins the row abbreviation. Load-bearing rows: 999 and 1000 (the
+// switch to k), 999949 (the largest value that still reads in k) and
+// 999950 (rounds up to 1.0M, never "1000.0k"), 2871239 (M with one decimal).
+func TestShort(t *testing.T) {
+	cases := []struct {
+		name string
+		in   float64
+		want string
+	}{
+		{"zero", 0, "0"},
+		{"below a thousand", 999, "999"},
+		{"a thousand", 1000, "1.0k"},
+		{"tens of thousands", 45300, "45.3k"},
+		{"top of k", 999949, "999.9k"},
+		{"k rounds up into M", 999950, "1.0M"},
+		{"millions", 2871239, "2.9M"},
+		{"exactly two million keeps the decimal", 2000000, "2.0M"},
+		{"fraction below a thousand rounds", 812.4, "812"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Short(c.in); got != c.want {
+				t.Fatalf("Short(%v) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRenderCompact: the compact table must carry the same rows as the full
+// one with only phase, role, model, calls, weighted and share. The exact-text
+// rows are load-bearing because they pin column order, the tabwriter settings
+// and the subtotal and total rows; the "same shares" row guards against the
+// two renderers drifting apart.
+func TestRenderCompact(t *testing.T) {
+	lines := []Line{
+		{Phase: "execute", Role: "task", Model: "m1", Calls: 3, Input: 1000, Output: 200, CacheWrite: 400, CacheRead: 5000, Weighted: Weighted(1000, 200, 400, 5000)},
+		{Phase: "review", Role: "verifier", Model: "m2", Calls: 1, Input: 50, Output: 10, Weighted: Weighted(50, 10, 0, 0)},
+	}
+	t.Run("exact text", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := RenderCompact(&buf, lines); err != nil {
+			t.Fatal(err)
+		}
+		want := "    phase        role  model  calls  weighted   share\n" +
+			"  execute        task     m1      3      3000   96.8%\n" +
+			"   review    verifier     m2      1       100    3.2%\n" +
+			"  execute  (subtotal)             3      3000   96.8%\n" +
+			"   review  (subtotal)             1       100    3.2%\n" +
+			"    total                         4      3100  100.0%\n"
+		if buf.String() != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", buf.String(), want)
+		}
+	})
+	t.Run("same rows and shares as the full table", func(t *testing.T) {
+		var full, compact bytes.Buffer
+		RenderTable(&full, lines)
+		RenderCompact(&compact, lines)
+		fr := strings.Split(strings.TrimRight(full.String(), "\n"), "\n")
+		cr := strings.Split(strings.TrimRight(compact.String(), "\n"), "\n")
+		if len(fr) != len(cr) {
+			t.Fatalf("row count %d vs %d", len(fr), len(cr))
+		}
+		for i := range fr {
+			ff, cf := strings.Fields(fr[i]), strings.Fields(cr[i])
+			if ff[len(ff)-1] != cf[len(cf)-1] || ff[len(ff)-2] != cf[len(cf)-2] {
+				t.Fatalf("row %d weighted/share differ:\n%s\n%s", i, fr[i], cr[i])
+			}
+		}
+	})
+	t.Run("no wide columns", func(t *testing.T) {
+		var buf bytes.Buffer
+		RenderCompact(&buf, lines)
+		for _, w := range []string{"input", "output", "cache"} {
+			if strings.Contains(buf.String(), w) {
+				t.Fatalf("compact table has %q:\n%s", w, buf.String())
+			}
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := RenderCompact(&buf, nil); err != nil || strings.Contains(buf.String(), "NaN") {
+			t.Fatalf("err %v out %s", err, buf.String())
+		}
+	})
+}

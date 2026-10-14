@@ -267,6 +267,39 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputSpawnError,
 		},
 		{
+			name:  "task tokens alone",
+			state: modeState{taskTokensOpen: true},
+			want:  inputTaskTokens,
+		},
+		{
+			// Reachable in the way the overlay is opened: from the Build tab
+			// with the right side focused, so the detail focus is under it.
+			name:  "task tokens over focused detail",
+			state: modeState{taskTokensOpen: true, focus: focusRight, view: viewOverview},
+			want:  inputTaskTokens,
+		},
+		{
+			name:  "plan check over task tokens",
+			state: modeState{planCheckOpen: true, taskTokensOpen: true},
+			want:  inputPlanCheck,
+		},
+		{
+			name:  "leader over task tokens",
+			state: modeState{leaderOpen: true, taskTokensOpen: true},
+			want:  inputLeader,
+		},
+		{
+			// Reachable: a background create can fail while the overlay is up.
+			name:  "spawn error over task tokens: modal wins",
+			state: modeState{modal: inputSpawnError, taskTokensOpen: true},
+			want:  inputSpawnError,
+		},
+		{
+			name:  "task tokens over all projects",
+			state: modeState{taskTokensOpen: true, allProjectsOpen: true},
+			want:  inputTaskTokens,
+		},
+		{
 			name:  "all projects alone",
 			state: modeState{allProjectsOpen: true},
 			want:  inputAllProjects,
@@ -601,6 +634,11 @@ func TestModeSnapshot(t *testing.T) {
 			name: "plan check open",
 			mut:  func(m *Model) { m.planCheckOpen = true },
 			want: modeState{planCheckOpen: true},
+		},
+		{
+			name: "task tokens open",
+			mut:  func(m *Model) { m.taskTokensOpen = true },
+			want: modeState{taskTokensOpen: true},
 		},
 		{
 			name: "all projects open",
@@ -997,6 +1035,12 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"q in plan check goes to the component", inputPlanCheck, routeConds{}, q, keyDecision{kind: routeComponent}},
 		{"ctrl+space in plan check goes to the component", inputPlanCheck, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
 		{"pgdown in plan check goes to the component", inputPlanCheck, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgDown}, keyDecision{kind: routeComponent}},
+		// The tokens overlay is the plan check's shape (T7.12).
+		{"ctrl+c in task tokens quits", inputTaskTokens, routeConds{}, ctrlC, keyDecision{kind: routeAction, action: actionQuit}},
+		{"esc in task tokens goes to the component", inputTaskTokens, routeConds{}, esc, keyDecision{kind: routeComponent}},
+		{"q in task tokens goes to the component", inputTaskTokens, routeConds{}, q, keyDecision{kind: routeComponent}},
+		{"ctrl+space in task tokens goes to the component", inputTaskTokens, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"pgdown in task tokens goes to the component", inputTaskTokens, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgDown}, keyDecision{kind: routeComponent}},
 		// The all-projects screen enumerates its keys and ignores the rest,
 		// as detail mode does; the leader is a rule there (pause and resume
 		// act on its rows through the dialog), unlike in the overlays.
@@ -1387,6 +1431,13 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"plan check advertises home", inputPlanCheck, "home"},
 		{"plan check advertises end", inputPlanCheck, "end"},
 		{"plan check advertises ctrl+c", inputPlanCheck, "ctrl+c"},
+		// The tokens overlay's keys are the plan check's (T7.12).
+		{"task tokens advertises esc", inputTaskTokens, "esc"},
+		{"task tokens advertises up", inputTaskTokens, "up"},
+		{"task tokens advertises down", inputTaskTokens, "down"},
+		{"task tokens advertises pgup", inputTaskTokens, "pgup"},
+		{"task tokens advertises pgdown", inputTaskTokens, "pgdown"},
+		{"task tokens advertises ctrl+c", inputTaskTokens, "ctrl+c"},
 		// The all-projects footer names enter, esc, the movement keys and
 		// the leader chords for pause and resume (help-only bindings).
 		{"all projects advertises enter", inputAllProjects, "enter"},

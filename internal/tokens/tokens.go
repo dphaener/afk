@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -236,17 +237,23 @@ func pct(part, total float64) string {
 
 func whole(v float64) string { return fmt.Sprintf("%.0f", v) }
 
-// RenderTable prints the lines grouped as the ledger holds them, then one
-// subtotal row per phase and a total row. Share is a row's weighted cost over
-// the total. Numbers are right-aligned.
-func RenderTable(w io.Writer, lines []Line) error {
+// tableRow is one printed row of the per-task table, before it is formatted:
+// a ledger line, a per-phase subtotal or the total. Both renderers print the
+// same rows so the compact table can never disagree with the full one.
+type tableRow struct {
+	phase, role, model     string
+	calls, in, out, cw, cr int64
+	weighted               float64
+}
+
+// tableRows aggregates lines into the rows RenderTable prints: each line, then
+// one subtotal row per phase, then the total. The returned float is the total
+// weighted cost, the denominator of every share.
+func tableRows(lines []Line) ([]tableRow, float64) {
 	var total float64
 	for _, l := range lines {
 		total += l.Weighted
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "phase\trole\tmodel\tcalls\tinput\toutput\tcache write\tcache read\tweighted\tshare\t")
-
 	type sum struct {
 		calls, in, out, cw, cr int64
 		weighted               float64
@@ -254,10 +261,9 @@ func RenderTable(w io.Writer, lines []Line) error {
 	sums := map[string]*sum{}
 	var phases []string
 	var all sum
+	var rows []tableRow
 	for _, l := range lines {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t\n",
-			l.Phase, l.Role, l.Model, l.Calls, l.Input, l.Output, l.CacheWrite, l.CacheRead,
-			whole(l.Weighted), pct(l.Weighted, total))
+		rows = append(rows, tableRow{l.Phase, l.Role, l.Model, l.Calls, l.Input, l.Output, l.CacheWrite, l.CacheRead, l.Weighted})
 		s := sums[l.Phase]
 		if s == nil {
 			s = &sum{}
@@ -276,12 +282,55 @@ func RenderTable(w io.Writer, lines []Line) error {
 	sort.Slice(phases, func(i, j int) bool { return phaseLess(phases[i], phases[j]) })
 	for _, p := range phases {
 		s := sums[p]
-		fmt.Fprintf(tw, "%s\t(subtotal)\t\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t\n",
-			p, s.calls, s.in, s.out, s.cw, s.cr, whole(s.weighted), pct(s.weighted, total))
+		rows = append(rows, tableRow{p, "(subtotal)", "", s.calls, s.in, s.out, s.cw, s.cr, s.weighted})
 	}
-	fmt.Fprintf(tw, "total\t\t\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t\n",
-		all.calls, all.in, all.out, all.cw, all.cr, whole(all.weighted), pct(all.weighted, total))
+	rows = append(rows, tableRow{"total", "", "", all.calls, all.in, all.out, all.cw, all.cr, all.weighted})
+	return rows, total
+}
+
+// RenderTable prints the lines grouped as the ledger holds them, then one
+// subtotal row per phase and a total row. Share is a row's weighted cost over
+// the total. Numbers are right-aligned.
+func RenderTable(w io.Writer, lines []Line) error {
+	rows, total := tableRows(lines)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprintln(tw, "phase\trole\tmodel\tcalls\tinput\toutput\tcache write\tcache read\tweighted\tshare\t")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t\n",
+			r.phase, r.role, r.model, r.calls, r.in, r.out, r.cw, r.cr,
+			whole(r.weighted), pct(r.weighted, total))
+	}
 	return tw.Flush()
+}
+
+// RenderCompact prints the same rows as RenderTable with only phase, role,
+// model, calls, weighted and share. The dashboard uses it when its box is too
+// narrow for the full table, so the words and units stay the command's own
+// without horizontal scrolling.
+func RenderCompact(w io.Writer, lines []Line) error {
+	rows, total := tableRows(lines)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprintln(tw, "phase\trole\tmodel\tcalls\tweighted\tshare\t")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t\n",
+			r.phase, r.role, r.model, r.calls, whole(r.weighted), pct(r.weighted, total))
+	}
+	return tw.Flush()
+}
+
+// Short abbreviates a weighted total for a dashboard row, where every column
+// counts: a whole number below 1000, then one decimal with k below a million
+// and M above. The decimal is kept even when it is .0 so the width and style
+// stay uniform. The unit is chosen after rounding, so 999950 reads 1.0M and
+// never 1000.0k.
+func Short(weighted float64) string {
+	if math.Round(weighted) < 1000 {
+		return whole(weighted)
+	}
+	if k := math.Round(weighted/100) / 10; k < 1000 {
+		return fmt.Sprintf("%.1fk", k)
+	}
+	return fmt.Sprintf("%.1fM", weighted/1e6)
 }
 
 // StartUpRow is the start-up cost of one role: the first model call of each of

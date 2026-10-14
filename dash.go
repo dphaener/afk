@@ -646,6 +646,12 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// from, so the dashboard and the command cannot disagree
 		// (docs/PLAN.md §2, T7.11 row); without it S says it cannot change the ledger.
 		SetTaskStatus: dashSetTaskStatus,
+		// LoadTaskTokens has no default in internal/ui. It calls the entry
+		// point `afk tokens <task>` prints from and reads only the token
+		// ledger (never a transcript, never a write), so the Build tab's
+		// total and the T overlay match the command (T7.12); without it T
+		// says it cannot read the token ledger.
+		LoadTaskTokens: dashLoadTaskTokens,
 		// LoadListed has no default in internal/ui either (it reads the
 		// machine's config.toml), so without this line the switcher would
 		// silently never show the projects `afk project add` listed. The read

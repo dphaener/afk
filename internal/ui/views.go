@@ -119,10 +119,11 @@ func (m Model) View() tea.View {
 	// replacing a region of it, so the list and the pane a person was reading
 	// stay on screen behind the box. The order matches modePrecedence — the
 	// actions dialog outranks the switcher, which outranks the inbox, which
-	// outranks the plan check, which outranks the form — so the frame and the
-	// key routing agree on which surface is on top. The five are mutually
-	// exclusive in practice (each owns every key while it is up), so this is
-	// fidelity to the precedence table, not a state a user can reach. Whatever
+	// outranks the plan check, which outranks the tokens overlay, which
+	// outranks the form — so the frame and the key routing agree on which
+	// surface is on top. The six are mutually exclusive in practice (each
+	// owns every key while it is up), so this is fidelity to the precedence
+	// table, not a state a user can reach. Whatever
 	// owns the keyboard must be ON SCREEN, and that holds in the empty state
 	// too: a scan can empty the project list under an open overlay, and a
 	// component that still routes `q` while invisible would be a keyboard trap.
@@ -139,6 +140,8 @@ func (m Model) View() tea.View {
 		frame = composeModal(frame, m.renderInboxModal(), m.width, m.height)
 	case m.planCheckOpen:
 		frame = composeModal(frame, m.renderPlanCheckModal(), m.width, m.height)
+	case m.taskTokensOpen:
+		frame = composeModal(frame, m.renderTaskTokensModal(), m.width, m.height)
 	case m.formOpen:
 		frame = composeModal(frame, m.renderNewFormModal(), m.width, m.height)
 	}
@@ -1937,6 +1940,11 @@ func (m Model) renderHelp() string {
 		// so the overlay's line does not depend on the default arm's shape.
 		reg := m.modes()
 		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(inputPlanCheck).keys, false, width))
+	case mode == inputTaskTokens:
+		// Named for the plan check's reason: the line is the registry's
+		// keymap, whatever the default arm becomes.
+		reg := m.modes()
+		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(inputTaskTokens).keys, false, width))
 	default:
 		reg := m.modes()
 		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(mode).keys, false, width))
@@ -2762,6 +2770,7 @@ func (m Model) composeDetailBody(contentW int) string {
 	ctx := panelContext{
 		Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build, PlanStatus: m.planStatus,
 		BuildCursorShown: m.buildCursorShown(), BuildCursor: m.buildCursorIndex,
+		BuildCursorTotal: m.buildCursorTotal(),
 	}
 	spec := detailTabSpecs()[active]
 	rendered := 0
@@ -3406,6 +3415,11 @@ type panelContext struct {
 	// panelContext built without them draws the tab with no cursor.
 	BuildCursorShown bool
 	BuildCursor      int
+	// BuildCursorTotal is the short token total the cursor's row ends with
+	// when there is room (Model.buildCursorTotal), or "" for none. It is a
+	// string and not the record, so the tab is drawn from what is held and
+	// nothing here can read the ledger.
+	BuildCursorTotal string
 }
 
 // wavesPanel renders the plan's waves and tasks with their checkbox states.

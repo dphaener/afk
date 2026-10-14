@@ -416,6 +416,22 @@ type Deps struct {
 	// ledger, so a zero Deps must not be able to. A nil SetTaskStatus dims
 	// the "set this task's status" row, and nothing is called.
 	SetTaskStatus func(root, id, status string, replacedBy []string) TaskStatusResult
+	// LoadTaskTokens reads the token record of the task id in the project
+	// whose main checkout is root (the Root of the snapshot LoadBuild
+	// returned), the way `afk tokens id` reads it (T7.12): the command's own
+	// lines, a compact form of its table and a short total, or why there is
+	// nothing to show. It prints nothing.
+	//
+	// It reads only the token ledger. It never reads a transcript and never
+	// records tokens, so the dashboard cannot add to the ledger it shows;
+	// recording stays `afk tokens --record`. It is called on the refresh tick
+	// and when the Build tab's cursor lands on another task, and only inside
+	// a tea.Cmd (tasktokens.go), never from Update or View.
+	//
+	// It has NO default, for LoadBuild's reason: it reads the real
+	// filesystem, so a zero Deps must not. A nil LoadTaskTokens dims the
+	// "show this task's tokens" row, gives no row a total, and reads nothing.
+	LoadTaskTokens func(root, task string) TaskTokens
 	// HomeDir is the home folder the add form expands `~` with. nil means
 	// os.UserHomeDir, which reads $HOME and touches no file; it is a seam so
 	// a test can pin the expansion without changing the process environment.
@@ -1327,6 +1343,18 @@ type Model struct {
 	planStatus           PlanStatus
 	planStatusRefreshing *atomic.Bool
 
+	// taskTokens is the token record Deps.LoadTaskTokens last returned for
+	// the Build tab cursor's task, and taskTokensID the task it is for ("" when
+	// none is held). Only one is held: only the cursor's row shows a total.
+	// taskTokensPending is the task "show this task's tokens" is waiting on
+	// when it ran before the record was held, and taskTokensLoading the
+	// in-flight guard, a pointer for the reason buildRefreshing is. All four
+	// are cleared on a project switch (forgetTaskTokens).
+	taskTokens        TaskTokens
+	taskTokensID      string
+	taskTokensPending string
+	taskTokensLoading *atomic.Bool
+
 	// The all-projects screen (allprojects.go). allProjectsOpen is its "is it
 	// open" flag, beside the overlays' for their reason; while it is set the
 	// screen replaces the list and the detail side. allProjectsRows are the
@@ -2037,6 +2065,12 @@ type Model struct {
 	planCheck     planCheckOverlay
 	planCheckOpen bool
 
+	// taskTokensView is the tokens overlay (tasktokensoverlay.go) and
+	// taskTokensOpen its "is it open" flag, beside planCheckOpen for the same
+	// reason; the struct is not zeroed on close, for the same reason either.
+	taskTokensView taskTokensOverlay
+	taskTokensOpen bool
+
 	// leader is the actions dialog the leader key opens (leader.go);
 	// leaderOpen is its "is it open" flag, beside the other overlays' for
 	// their reason. leaderFrom is the mode the leader was pressed in
@@ -2128,6 +2162,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		stackRefreshing:       new(atomic.Bool),
 		buildRefreshing:       new(atomic.Bool),
 		planStatusRefreshing:  new(atomic.Bool),
+		taskTokensLoading:     new(atomic.Bool),
 		allProjectsRefreshing: new(atomic.Bool),
 		list:                  newSessionList(keys, d.Now),
 		detailViewport:        viewport.New(),
@@ -2544,7 +2579,18 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case buildLoadedMsg:
-		return m.applyBuildLoaded(msg), nil
+		// A read can land the cursor on another task (the first read, or its
+		// task gone from the plan), and that task's tokens are read at once
+		// rather than at the next tick.
+		prevTask := m.buildCursorID
+		m = m.applyBuildLoaded(msg)
+		if m.buildCursorID != prevTask {
+			return m, m.taskTokensCmd()
+		}
+		return m, nil
+
+	case taskTokensLoadedMsg:
+		return m.applyTaskTokensLoaded(msg)
 
 	case planStatusLoadedMsg:
 		return m.applyPlanStatusLoaded(msg), nil
@@ -3686,6 +3732,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openProjectRemove()
 	case actionTaskStatus:
 		return m.openTaskStatus()
+	case actionTaskTokens:
+		return m.openTaskTokens()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -3866,6 +3914,8 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 		return m.inboxComponentKey(k)
 	case inputPlanCheck:
 		return m.planCheckComponentKey(k)
+	case inputTaskTokens:
+		return m.taskTokensComponentKey(k)
 	case inputFilter:
 		return m.sessionFilterKey(k)
 	case inputEditLabel:
@@ -3947,6 +3997,7 @@ func (m *Model) relayout() {
 	m.sizeSwitcher()
 	m.sizeInbox()
 	m.sizePlanCheck()
+	m.sizeTaskTokens()
 	m.sizeSessionList()
 	m.syncDetailViewport()
 	if m.pane != nil {
@@ -4127,8 +4178,13 @@ func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 	if m.buildCursorShown() {
 		// The Build tab with the keyboard on the right: the same keys move
 		// the task cursor (buildcursor.go). Every other tab, and this one
-		// from the session list, scrolls as below.
+		// from the session list, scrolls as below. A move onto another
+		// task reads that task's tokens for its row and the overlay.
+		prevTask := m.buildCursorID
 		m.moveBuildCursorFor(a)
+		if m.buildCursorID != prevTask {
+			return m, m.taskTokensCmd()
+		}
 		return m, nil
 	}
 	switch a {
@@ -4970,29 +5026,30 @@ func (m Model) openLeader(from inputMode) (tea.Model, tea.Cmd) {
 func (m Model) leaderConditions() leaderConds {
 	conds := m.routeConditions()
 	c := leaderConds{
-		hasActiveProject: m.hasActiveProject(),
-		paneOpen:         conds.paneOpen,
-		rightFocused:     m.focus == focusRight,
-		listFiltered:     conds.listFiltered,
-		hasBuild:         m.hasBuild(),
-		buildKnown:       m.buildKnown,
-		canStartPlan:     m.deps.StartPlan != nil,
-		canCheckPlan:     m.deps.LoadPlanStatus != nil,
-		canApprovePlan:   m.deps.ApprovePlan != nil,
-		canAllProjects:   m.deps.LoadAllProjects != nil,
-		allProjectsOpen:  m.allProjectsOpen,
-		canAddProject:    m.deps.AddProject != nil,
-		canRemoveProject: m.deps.RemoveProject != nil,
-		canSetTaskStatus: m.deps.SetTaskStatus != nil,
-		buildTabFocused:  m.focus == focusRight && m.detailDrawn() && m.activeDetailTab() == tabBuild,
-		planKnown:        m.planStatus.Known,
-		planErr:          m.planStatus.Err != "",
-		planSession:      m.planStatus.Session,
-		planDamaged:      m.planStatus.Damaged,
-		planMode:         m.planStatus.Mode,
-		planPhase:        m.planStatus.Phase,
-		restartLive:      m.restartKeyLive(),
-		canFocus:         m.normalBindingEnabled(m.keys.Focus),
+		hasActiveProject:  m.hasActiveProject(),
+		paneOpen:          conds.paneOpen,
+		rightFocused:      m.focus == focusRight,
+		listFiltered:      conds.listFiltered,
+		hasBuild:          m.hasBuild(),
+		buildKnown:        m.buildKnown,
+		canStartPlan:      m.deps.StartPlan != nil,
+		canCheckPlan:      m.deps.LoadPlanStatus != nil,
+		canApprovePlan:    m.deps.ApprovePlan != nil,
+		canAllProjects:    m.deps.LoadAllProjects != nil,
+		allProjectsOpen:   m.allProjectsOpen,
+		canAddProject:     m.deps.AddProject != nil,
+		canRemoveProject:  m.deps.RemoveProject != nil,
+		canSetTaskStatus:  m.deps.SetTaskStatus != nil,
+		canLoadTaskTokens: m.deps.LoadTaskTokens != nil,
+		buildTabFocused:   m.focus == focusRight && m.detailDrawn() && m.activeDetailTab() == tabBuild,
+		planKnown:         m.planStatus.Known,
+		planErr:           m.planStatus.Err != "",
+		planSession:       m.planStatus.Session,
+		planDamaged:       m.planStatus.Damaged,
+		planMode:          m.planStatus.Mode,
+		planPhase:         m.planStatus.Phase,
+		restartLive:       m.restartKeyLive(),
+		canFocus:          m.normalBindingEnabled(m.keys.Focus),
 		// toggleView is inert only on a selected row that has neither a
 		// pane nor a live agent; with no selection it goes ahead.
 		canToggleView: true,
@@ -7317,6 +7374,11 @@ func (m Model) projectCmds() []tea.Cmd {
 	if ps := m.planStatusCmd(); ps != nil {
 		cmds = append(cmds, ps)
 	}
+	// The cursor's task's tokens, so its row total follows the ledger as
+	// the build loop records, and the overlay opens without waiting.
+	if tt := m.taskTokensCmd(); tt != nil {
+		cmds = append(cmds, tt)
+	}
 	return cmds
 }
 
@@ -7954,6 +8016,7 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// before projectCmds below issues the incoming project's first read.
 	m.forgetBuild()
 	m.forgetPlanStatus()
+	m.forgetTaskTokens()
 	// The inbox overlay shows the outgoing project's items, and an answer
 	// typed into it would be sent against a snapshot that has just been
 	// dropped. It closes with the switch; an answer already on its way to
@@ -7962,6 +8025,9 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// The plan-check overlay shows the outgoing project's plan. It holds
 	// nothing typed, so closing it loses nothing.
 	m.planCheckOpen = false
+	// The tokens overlay shows a task of the outgoing project's plan, and
+	// holds nothing typed.
+	m.taskTokensOpen = false
 	// The all-projects screen closes with a switch, whichever way the switch
 	// came (its own enter, a click on a notification, a plan started in
 	// another folder): the owner moved to a project, and the project is what

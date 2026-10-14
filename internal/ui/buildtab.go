@@ -52,11 +52,10 @@ type buildPanel struct{}
 func (buildPanel) Title() string { return "Build" }
 
 func (buildPanel) Render(ctx panelContext, width int) []string {
-	cursor := -1
-	if ctx.BuildCursorShown {
-		cursor = ctx.BuildCursor
+	if !ctx.BuildCursorShown {
+		return buildTabLinesAt(ctx.Build, ctx.PlanStatus, width, -1)
 	}
-	return buildTabLinesAt(ctx.Build, ctx.PlanStatus, width, cursor)
+	return buildTabLinesWith(ctx.Build, ctx.PlanStatus, width, ctx.BuildCursor, ctx.BuildCursorTotal)
 }
 
 // buildTabLines is the Build tab's content at the given width: the summary
@@ -86,6 +85,14 @@ func buildRowsTop(snap buildview.Snapshot, plan PlanStatus, width int) int {
 // cursor moves, and laid out two cells narrower so the columns keep their
 // trim order inside the same width.
 func buildTabLinesAt(snap buildview.Snapshot, plan PlanStatus, width, cursor int) []string {
+	return buildTabLinesWith(snap, plan, width, cursor, "")
+}
+
+// buildTabLinesWith is buildTabLinesAt with the cursor's row ending in total,
+// the task's short token total, when the row has room for it
+// (buildCursorRowLines). An empty total, or no cursor, draws exactly what
+// buildTabLinesAt draws.
+func buildTabLinesWith(snap buildview.Snapshot, plan PlanStatus, width, cursor int, total string) []string {
 	if width < 1 {
 		width = 1
 	}
@@ -103,7 +110,7 @@ func buildTabLinesAt(snap buildview.Snapshot, plan PlanStatus, width, cursor int
 	if cursor < 0 {
 		return append(lines, buildRowLines(snap.Rows, width)...)
 	}
-	return append(lines, buildCursorRowLines(snap.Rows, width, cursor)...)
+	return append(lines, buildCursorRowLines(snap.Rows, width, cursor, total)...)
 }
 
 // buildRowGutter is the cells the cursor's gutter takes on the left of every
@@ -124,13 +131,26 @@ const buildCursorMarker = "›"
 // status always show) holds exactly as it does without a cursor. The selected
 // row goes through spanStyle for the reason padSessionRow does: Render alone
 // would paint the background only up to the first styled cell (the id).
-func buildCursorRowLines(rows []buildview.Row, width, cursor int) []string {
-	inner := buildRowLines(rows, max(width-buildRowGutter, 1))
+//
+// total, when not empty, is the cursor's task's short token total (T7.12). It
+// follows the row's content after the usual column gap, and only when the
+// row shows everything it has (its whole id, title and detail) and the total
+// still fits beside them. So the total is the first thing a narrowing tab
+// gives up, before the detail and the title, which buildRowLines then narrows
+// exactly as it would with no total; the row stays one line either way.
+func buildCursorRowLines(rows []buildview.Row, width, cursor int, total string) []string {
+	innerW := max(width-buildRowGutter, 1)
+	inner, whole := buildRowLayout(rows, innerW)
 	out := make([]string, len(inner))
 	for i, ln := range inner {
 		if i != cursor {
 			out[i] = truncate(strings.Repeat(" ", buildRowGutter)+ln, width)
 			continue
+		}
+		if total != "" && whole[i] {
+			if withTotal := ln + strings.Repeat(" ", buildColumnGap) + theme.dim.Render(total); lipgloss.Width(withTotal) <= innerW {
+				ln = withTotal
+			}
 		}
 		line := truncate(theme.rowCursor.Render(buildCursorMarker)+" "+ln, width)
 		out[i] = theme.rowSelected.Width(width).Render(spanStyle(line, theme.rowSelected))
@@ -216,6 +236,17 @@ func buildSummaryLines(snap buildview.Snapshot, plan PlanStatus, width int) []st
 // long title would otherwise remove the detail from every row, and the detail
 // is where "waiting on you" and the pull request number are.
 func buildRowLines(rows []buildview.Row, width int) []string {
+	lines, _ := buildRowLayout(rows, width)
+	return lines
+}
+
+// buildRowLayout is buildRowLines that also says, row by row, whether the row
+// shows everything it has: its id uncut, its title uncut and its detail when
+// it has one. The cursor's row adds its token total only to a whole row
+// (buildCursorRowLines), which is what makes the total go before the detail
+// and the title as the tab narrows. The answer comes from the same branch
+// that lays the row out, so it cannot disagree with what is drawn.
+func buildRowLayout(rows []buildview.Row, width int) ([]string, []bool) {
 	idW, statusW, titleW, detailW := 0, 0, 0, 0
 	for _, r := range rows {
 		idW = max(idW, lipgloss.Width(r.ID))
@@ -229,8 +260,10 @@ func buildRowLines(rows []buildview.Row, width int) []string {
 	aligned := detailW == 0 || lead+titleW+buildColumnGap+detailW <= width
 
 	out := make([]string, 0, len(rows))
+	whole := make([]bool, 0, len(rows))
 	for _, r := range rows {
 		id := truncate(r.ID, idW)
+		complete := false
 		line := theme.sessionName.Render(id) + strings.Repeat(" ", idW-lipgloss.Width(id)) + gap +
 			buildStatusStyle(r.Status).Render(r.Status) + strings.Repeat(" ", statusW-lipgloss.Width(r.Status))
 		room := width - lead
@@ -240,15 +273,19 @@ func buildRowLines(rows []buildview.Row, width int) []string {
 		case aligned && r.Detail != "":
 			line += gap + r.Title + strings.Repeat(" ", titleW-lipgloss.Width(r.Title)) +
 				gap + theme.dim.Render(r.Detail)
+			complete = true
 		case r.Detail != "" && lipgloss.Width(r.Title)+buildColumnGap+lipgloss.Width(r.Detail) <= room:
 			line += gap + r.Title + gap + theme.dim.Render(r.Detail)
+			complete = true
 		default:
 			line += gap + truncate(r.Title, room)
+			complete = r.Detail == "" && lipgloss.Width(r.Title) <= room
 		}
 		// A last guard for a width smaller than the id and status together.
 		out = append(out, truncate(line, width))
+		whole = append(whole, complete && lipgloss.Width(r.ID) <= idW && lipgloss.Width(line) <= width)
 	}
-	return out
+	return out, whole
 }
 
 // buildStatusStyle colours a ledger status with styles the theme already has:
