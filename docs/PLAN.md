@@ -2799,6 +2799,70 @@ thing it does not do is attach to a session.
   by the daemon; the automated check reports no violation on any screen; the write-up names every
   place the owner had to leave the page.
 
+### M9 — Choose your own leader key
+
+**Outcome:** the dashboard's leader is ctrl+], which no common launcher, tmux default or agent takes,
+and anyone who wants another key sets it in `config.toml`.
+
+#### T9.1 — The default leader becomes ctrl+]
+- **Depends on:** T7.11, T7.12, T7.13 (all three edit `internal/ui`, and tasks in one Go package collide at merge)
+- **Goal:** ctrl+] opens the actions dialog everywhere ctrl+space did, and the dashboard names ctrl+]
+  wherever it named ctrl+space. ctrl+space, ctrl+@ and ctrl+2 no longer open it.
+- **Background:** the owner asked: "Change the leader - ctrl-space is owned by Raycast, I forgot. I can
+  use ctrl-2 for the time being but it needs to be something different." ctrl+space, ctrl+@ and ctrl+2
+  are one byte (NUL), which is why ctrl+2 works today (`docs/decisions.md`, `## T7.1`, "How ctrl+space
+  arrives"). ctrl+] is its own byte (0x1D) in the ordinary encoding, and tmux's default prefix is ctrl+b;
+  the owner's is ctrl+a. The key is the constant `leaderKey` in `internal/ui/leader.go`; hints and help
+  go through `leaderChord` and `leaderHelpBinding`, so most text follows it. The pass-through (leader
+  twice in the agent pane types the leader to the agent) is in `internal/ui/messages.go`.
+- **Scope:** read in the module cache how ultraviolet decodes 0x1D and how a kitty-protocol terminal's
+  ctrl+] arrives, and record the key string bubbletea reports for both (`docs/decisions.md`, `## T9.1`).
+  Change the leader to that key. Pressing it twice in the agent pane types one ctrl+] (0x1D) to the
+  agent. Remove the ctrl+space special case in the pane's key encoding only if nothing else needs it
+  (say which in decisions). Update every code comment, test, saved screen
+  (`internal/ui/testdata/golden/`, regenerated with the tests' update flag), `dash.go`, `README.md`,
+  `CONTEXT.md` and the leader's line in the README that says ctrl+@ also opens it.
+- **Must not:** change any key after the leader, `ctrl+c` quitting from the session list, or
+  `afk attach`'s ctrl-\.
+- **Acceptance:** `go test ./internal/ui/` passes with a table row each that ctrl+] opens the dialog
+  from the list, the detail side and the agent pane, that ctrl+space does nothing there, and that ctrl+]
+  twice in the pane sends one 0x1D. `/usr/bin/grep -rn 'ctrl+space' --exclude-dir=.git --exclude-dir=.afk
+  --exclude-dir=.claude . | grep -v -e docs/PLAN.md -e docs/decisions.md` prints nothing. Against a
+  scratch build in a throwaway repo, inside tmux with the default prefix: `tmux send-keys C-]` opens the
+  dialog from the list and from a focused agent pane, and twice leaves one `^]` at a stand-in agent.
+  `make check` is green.
+
+#### T9.2 — Set the leader in config.toml
+- **Depends on:** T9.1
+- **Goal:** `leader = "<key>"` in the `[dash]` table of `config.toml` makes that key the dashboard's
+  leader; with no such line it is ctrl+].
+- **Background:** the owner asked that the leader "should be configurable, as some people remap keys",
+  and chose `[dash]` in `config.toml` over a flag. `internal/daemonconfig` already reads `[dash]`, and a
+  bad `[dash]` value is carried as `Config.DashErr`, which the dashboard reports and never treats as a
+  load failure.
+- **Scope:** a `Leader` field on `daemonconfig.Dash`, checked by a pure function in `internal/ui` (or a
+  small package it imports) that takes the configured string and returns the key to use and, when it
+  refuses, why. It refuses an empty-after-trim value as "unset" (use the default, no warning), and
+  refuses with a reason: a name bubbles/key would never report, a key with no modifier (a plain letter,
+  digit or symbol), and the keys the dashboard keeps for itself without the leader (`enter`, `esc`,
+  `ctrl+c`, the movement keys, `tab`). A refused key falls back to ctrl+] and the header shows one line
+  saying what is wrong and what to put in `config.toml`, through the same path as other `[dash]`
+  mistakes. `leaderKey` becomes a value the model holds, so every hint, help line, the dialog's title
+  and the pass-through name and use the configured key; the pass-through types to the agent what x/vt
+  encodes for that key. README: the `[dash]` settings, the leader section, and a note that a key sharing
+  a byte with another (ctrl+m with Enter, ctrl+i with Tab, ctrl+h with Backspace, ctrl+[ with Esc) works
+  only in a terminal that reports it apart (kitty protocol, as Ghostty does) and, under tmux, with
+  `set -s extended-keys on`.
+- **Must not:** read the setting anywhere but `config.toml`; stop the dashboard from starting over a
+  bad value.
+- **Acceptance:** a table test of the pure check with a row for each refusal and for `ctrl+]`,
+  `ctrl+m`, `alt+space` and an unset value; a `daemonconfig` test that `[dash] leader` is read and a
+  non-string value lands in `DashErr`; UI model tests that a configured `ctrl+o` opens the dialog and
+  its hints say `ctrl+o`, and that `leader = "q"` leaves ctrl+] working with the header line shown.
+  Against a scratch build with a scratch config folder: `leader = "ctrl+o"` opens the dialog on ctrl+o
+  through tmux `send-keys C-o`, and `leader = "enter"` shows the header line and ctrl+] still works.
+  `make check` is green.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
