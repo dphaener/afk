@@ -2603,7 +2603,17 @@ thing it does not do is attach to a session.
   words. When the session is working the reply box says so and is disabled; when no planning session
   is open the screen says so (T8.14 and T8.15 add the links that start one). The agent's markdown is
   rendered with the page's existing renderer (`internal/web/markdown.go`), never as raw HTML. Linked
-  from the project page, the plan line and the planning session's row on the sessions screen. README:
+  from the project page, the plan line and the planning session's row on the sessions screen.
+  From the design system (reconciled 2026-10-13): an `app-bar` titled with the project, a second line
+  giving the mode and the phase as `state.json` records them, and `live`; a `thread` of agent `msg`s
+  as full-width `prose` and owner `msg`s as bubbles; `question` cards with `option`s (the recommended
+  one first, marked "Recommended") and an own-answer `field`; picking an option sends it as the reply
+  and marks it `is-chosen`; the `composer` pinned to the bottom; while the agent works,
+  `live--working` in the bar and the `working` line where the next message will appear. On the desktop
+  a `split` shows on the left the `steps` of the session's own mode (§4.8), the folder and the
+  repository, and on the right the thread at 720px with the composer under it. With no planning
+  session, the `empty` "No planning session".
+  README:
   the web page section.
 - **Must not:** attach to or show the session's terminal; render the agent's text as HTML.
 - **Acceptance:** handler tests over T8.3's fixtures for each state (working, waiting for text,
