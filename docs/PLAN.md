@@ -2385,7 +2385,26 @@ thing it does not do is attach to a session.
   becomes the all-projects screen built from T7.9's rows, with the design system's components, sorted
   as T7.9 sorts, updating live through T8.2. Phone first: it is designed at phone width and works
   well on a desktop. Every screen meets WCAG 2.2 AA (contrast, keyboard use, focus, labels, target
-  size). Component names follow `docs/design-system.md`. README: the web page section.
+  size). Component names follow `docs/design-system.md`.
+  From the design system (reconciled 2026-10-13): serve its reference stylesheet (§2, `afk.css`) as it
+  stands through T8.2's static path, dropping only the canvas frame `.afk.screen` and the canvas-only
+  `.is-hover`, `.is-focus` and `.is-active` rules; `class="afk"` on `<body>`, dark following the
+  device. Phone screens have the `app-bar` (the `wordmark` on the overview, otherwise back, title and
+  `live`); the desktop has the `topnav` (Projects with its `count`, Usage, `live`) over a `shell` and
+  `split`, with the selected project on the right of the overview. The `live` indicator shows Live,
+  Working or Offline ("Can't reach afk, retrying") from T8.2's stream; a lost stream is never an error
+  page, and the last data stays on screen. A region T8.2 swaps in gets `is-changed` once, and the
+  inbox list and the project state card are `aria-live="polite"`. The shared `confirm-sheet` (a native
+  `<dialog>`, focus on the safe button, Escape closes it, the action button loading until the server
+  answers) and `toast` are built here for the later tasks; with JavaScript off a confirm is its own
+  page with the same title, sentence and buttons. The overview follows the design's Overview screen:
+  an `h1` naming how many projects need the owner ("Nothing needs you" when none), a **Needs you**
+  section of `row--needs-you` rows, then **Everything else**, each row with its state `badge`, its
+  current task and phase or why nothing runs (in T7.9's words), `progress` and its inbox counts. The
+  error page and the page that refuses a request with no token take the design's look; the refused
+  page stays fixed text that echoes nothing and says how to open the page with the token, with no Sign
+  in button, because afk has no sign-in.
+  README: the web page section.
 - **Must not:** add a JavaScript build step; drop an address the page serves today; change the JSON
   API's existing fields.
 - **Acceptance:** handler tests for the home page with each kind of row (T7.9's list) and the empty
