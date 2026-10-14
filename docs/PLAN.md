@@ -2819,8 +2819,9 @@ and anyone who wants another key sets it in `config.toml`.
 - **Scope:** read in the module cache how ultraviolet decodes 0x1D and how a kitty-protocol terminal's
   ctrl+] arrives, and record the key string bubbletea reports for both (`docs/decisions.md`, `## T9.1`).
   Change the leader to that key. Pressing it twice in the agent pane types one ctrl+] (0x1D) to the
-  agent. Remove the ctrl+space special case in the pane's key encoding only if nothing else needs it
-  (say which in decisions). Update every code comment, test, saved screen
+  agent. ctrl+space stops being the leader and becomes an ordinary key: in the agent pane it reaches
+  the agent as NUL, as every non-leader key does (T7.2), so the pane's encoding of it stays. Update
+  every code comment, test, saved screen
   (`internal/ui/testdata/golden/`, regenerated with the tests' update flag), `dash.go`, `README.md`,
   `CONTEXT.md` and the leader's line in the README that says ctrl+@ also opens it.
 - **Must not:** change any key after the leader, `ctrl+c` quitting from the session list, or
