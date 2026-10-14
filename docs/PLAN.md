@@ -2706,7 +2706,11 @@ thing it does not do is attach to a session.
   through T7.5's decision and refusals: a name that is not a plain folder name (saying which
   characters are allowed), a folder that already exists (offering to plan in it as T8.15 does), and a
   name with no `project location` in the profile (saying how to set one with `afk profile set`, or to
-  type a full path). The confirm shows the full path before anything is created. A failure part-way
+  type a full path). The confirm shows the full path before anything is created.
+  From the design system (reconciled 2026-10-13): the field's hint names the profile's `project
+  location` ("A name makes a new folder in …"), never a fixed folder, and the confirm card's badge
+  reads "New, empty folder".
+  A failure part-way
   says what was left on disk and removes nothing. Then planning starts as in T8.15. The same under
   `/api`. README: the web page section.
 - **Must not:** create a folder outside the project location from a bare name; create anything
