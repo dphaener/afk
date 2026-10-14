@@ -2053,6 +2053,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   confirm (yes creates, no creates nothing). Against a scratch build through tmux with a scratch
   profile whose location is a scratch folder: typing `demo` and `y` leaves `<scratch>/demo/.git` and
   `<scratch>/demo/.afk/plan/state.json`, with the stand-in agent in the pane. `make check` is green.
+- Amended 2026-10-14 (T7.5 done): later tasks may assume the following. (1) The decision and the create step are `internal/planfolder`: `Decide(text, LocationFrom(profile, found, loadErr, home), os.Stat)` gives `KindUse` (text with `/` or `~`, passed to T7.4's start unchanged), `KindCreate` (`<project location>/<name>`) or `KindRefuse` (with `Exists` for a folder already there), and `Create(path, mkdir, gitInit)` makes the folder and its repository and removes nothing on failure; T8.15a can call both as is. (2) The dashboard reaches them through `ui.Deps.PlanFolder` and `ui.Deps.CreatePlanFolder` (wired by `dashPlanFolder` and `dashCreatePlanFolder` in `dash.go`); a name's yes runs the create (`planFolderCreatedMsg`) and only then `planStartCmd(path, "new", "")`, so T7.6 puts its GitHub question in that `planFolderCreatedMsg` step, for the create case only (the exists offer never creates). (3) The confirm is the new mode `inputConfirmPlanFolder`; `TestActiveInputModeModalAlwaysWins` counts modal modes. See `## T7.5` in `docs/decisions.md`.
 
 #### T7.6 — Offer a GitHub repository for the new folder
 - **Depends on:** T7.5

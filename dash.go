@@ -638,6 +638,8 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// StartPlan has no default in internal/ui (it starts a real session), so
 		// this is the only place the three plan actions are wired.
 		StartPlan:          dashStartPlan,
+		PlanFolder:         dashPlanFolder,
+		CreatePlanFolder:   dashCreatePlanFolder,
 		LaunchMainCheckout: launchMainCheckout(projects, resolveGitCommonDirIn, filepath.EvalSymlinks),
 	}
 }

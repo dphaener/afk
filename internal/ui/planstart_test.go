@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -811,5 +812,477 @@ func TestPlanStartNewRowSurvivesLaterReads(t *testing.T) {
 	m, _ = update(t, m, planStartedMsg{mode: PlanModeNew, res: PlanStartResult{Outcome: PlanResumed, Root: newPlanRoot}, gen: m.projectGen})
 	if !pathsEqual(m.startedProjects, []string{newPlanRoot}) || !pathsEqual(projectPaths(m.projects), want) {
 		t.Fatalf("started = %v projects = %v, want one row for %s", m.startedProjects, projectPaths(m.projects), newPlanRoot)
+	}
+}
+
+// folderSeams records every PlanFolder and CreatePlanFolder call and holds
+// what the test wants each to answer, on planSeams' pattern.
+type folderSeams struct {
+	decides   []string
+	creates   []string
+	decision  PlanFolderDecision
+	createErr error
+}
+
+// folderModel is planModel with both T7.5 seams wired to recording fakes.
+func folderModel(t *testing.T) (Model, *planSeams, *folderSeams) {
+	t.Helper()
+	m, rec := planModel(t, sess("a"))
+	fs := &folderSeams{}
+	m.deps.PlanFolder = func(text string) PlanFolderDecision {
+		fs.decides = append(fs.decides, text)
+		return fs.decision
+	}
+	m.deps.CreatePlanFolder = func(path string) error {
+		fs.creates = append(fs.creates, path)
+		return fs.createErr
+	}
+	return m, rec, fs
+}
+
+// folderPath is where the tests' profile location puts a new project.
+const folderPath = "/code/projects/demo"
+
+// submitPlanFolder runs "start a new plan", types text, presses enter and
+// folds the PlanFolder decision back in, returning the model after it and
+// whatever command the decision produced.
+func submitPlanFolder(t *testing.T, m Model, text string) (Model, tea.Cmd) {
+	t.Helper()
+	m, _ = runPlanAction(t, m, "start a new plan")
+	m = typeText(t, m, text)
+	m, cmd := update(t, m, keyEnter)
+	if cmd == nil {
+		t.Fatal("enter issued no command: PlanFolder was not asked")
+	}
+	msg, ok := cmd().(planFolderDecidedMsg)
+	if !ok {
+		t.Fatalf("enter's command produced %T, want planFolderDecidedMsg", msg)
+	}
+	return update(t, m, msg)
+}
+
+// noStart fails when cmd, run, would call StartPlan or CreatePlanFolder.
+func noStart(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	switch msg := cmd().(type) {
+	case planStartedMsg:
+		t.Fatal("a command started a planning session")
+	case planFolderCreatedMsg:
+		t.Fatal("a command created a folder")
+	case tea.BatchMsg:
+		for _, c := range msg {
+			noStart(t, c)
+		}
+	}
+}
+
+// TestPlanFolderNameConfirmThenCreateThenStart types a bare name and answers
+// the confirm each way. Load-bearing rows:
+//   - "y" and "Y": the folder is created exactly once with the full path the
+//     dialog showed, and only after the create's success is StartPlan called,
+//     once, with (path, new, ""). The create and the start being two messages
+//     is the T7.6 seam: a question goes between them later.
+//   - "n" and "esc": neither seam is called and the notice says nothing was
+//     created. A create on either would make a folder the owner refused.
+//   - "a stray key": swallowed with the dialog still up, so a mistyped key
+//     neither creates nor dismisses.
+func TestPlanFolderNameConfirmThenCreateThenStart(t *testing.T) {
+	cases := []struct {
+		name       string
+		answer     tea.Msg
+		wantCreate bool
+		wantOpen   bool
+	}{
+		{name: "y creates then starts", answer: keyRune('y'), wantCreate: true},
+		{name: "Y creates then starts", answer: keyRune('Y'), wantCreate: true},
+		{name: "n creates nothing", answer: keyRune('n')},
+		{name: "N creates nothing", answer: keyRune('N')},
+		{name: "esc creates nothing", answer: keyEsc},
+		{name: "a stray key keeps the question", answer: keyRune('q'), wantOpen: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs := folderModel(t)
+			fs.decision = PlanFolderDecision{Kind: PlanFolderCreate, Path: folderPath}
+			m, cmd := submitPlanFolder(t, m, "demo")
+			noStart(t, cmd)
+			if len(fs.decides) != 1 || fs.decides[0] != "demo" {
+				t.Fatalf("PlanFolder calls = %q, want exactly [demo]", fs.decides)
+			}
+			if m.modal != inputConfirmPlanFolder {
+				t.Fatalf("modal = %v, want the folder confirm", m.modal)
+			}
+			frame := render(m)
+			for _, want := range []string{"Create a new project", folderPath, "git repository", "y: yes", "n/esc: cancel"} {
+				if !strings.Contains(frame, want) {
+					t.Errorf("the confirm does not show %q:\n%s", want, frame)
+				}
+			}
+			if len(fs.creates) != 0 || len(rec.calls) != 0 {
+				t.Fatalf("creates=%v starts=%v before the answer, want none", fs.creates, rec.calls)
+			}
+
+			m, cmd = update(t, m, tc.answer)
+			if tc.wantOpen {
+				noStart(t, cmd)
+				if m.modal != inputConfirmPlanFolder {
+					t.Fatalf("modal = %v after a stray key, want the confirm still up", m.modal)
+				}
+				return
+			}
+			if m.modal != inputNormal {
+				t.Fatalf("modal = %v after the answer, want closed", m.modal)
+			}
+			if !tc.wantCreate {
+				noStart(t, cmd)
+				if len(fs.creates) != 0 || len(rec.calls) != 0 {
+					t.Fatalf("creates=%v starts=%v after no, want none", fs.creates, rec.calls)
+				}
+				if m.status != "Nothing was created." {
+					t.Errorf("status = %q, want %q", m.status, "Nothing was created.")
+				}
+				return
+			}
+			if m.status != "Creating "+folderPath+"…" {
+				t.Errorf("status = %q, want the creating notice", m.status)
+			}
+			if cmd == nil {
+				t.Fatal("yes issued no command")
+			}
+			created, ok := cmd().(planFolderCreatedMsg)
+			if !ok {
+				t.Fatalf("yes produced %T, want planFolderCreatedMsg", created)
+			}
+			if len(fs.creates) != 1 || fs.creates[0] != folderPath {
+				t.Fatalf("CreatePlanFolder calls = %q, want exactly [%s]", fs.creates, folderPath)
+			}
+			if len(rec.calls) != 0 {
+				t.Fatalf("StartPlan called %v before the create's result, want after", rec.calls)
+			}
+			m, cmd = update(t, m, created)
+			if wantMade := "Made " + folderPath + " and made it a git repository. Starting a planning session in it…"; m.status != wantMade {
+				t.Errorf("status = %q, want %q", m.status, wantMade)
+			}
+			got := planStarted(t, cmd)
+			if got.mode != PlanModeNew {
+				t.Errorf("start mode = %q, want %q", got.mode, PlanModeNew)
+			}
+			want := planCall{folderPath, PlanModeNew, ""}
+			if len(rec.calls) != 1 || rec.calls[0] != want {
+				t.Fatalf("StartPlan calls = %+v, want exactly %+v", rec.calls, want)
+			}
+			if len(fs.creates) != 1 {
+				t.Fatalf("CreatePlanFolder called %d times, want 1", len(fs.creates))
+			}
+		})
+	}
+}
+
+// TestPlanFolderExistingFolderOffer: a name whose folder is already there is
+// refused with Exists, and the dashboard offers to plan in it. Load-bearing:
+// the yes calls StartPlan once with the path and never CreatePlanFolder (the
+// folder is there; making it again would fail or, worse, touch it), and the
+// no calls neither.
+func TestPlanFolderExistingFolderOffer(t *testing.T) {
+	cases := []struct {
+		name      string
+		answer    tea.Msg
+		wantStart bool
+	}{
+		{name: "yes plans in it", answer: keyRune('y'), wantStart: true},
+		{name: "no does nothing", answer: keyRune('n')},
+		{name: "esc does nothing", answer: keyEsc},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs := folderModel(t)
+			fs.decision = PlanFolderDecision{
+				Kind: PlanFolderRefused, Exists: true, Path: folderPath,
+				Reason: folderPath + " already exists. Nothing was created.",
+			}
+			m, cmd := submitPlanFolder(t, m, "demo")
+			noStart(t, cmd)
+			if m.modal != inputConfirmPlanFolder {
+				t.Fatalf("modal = %v, want the plan-in-it offer", m.modal)
+			}
+			frame := render(m)
+			for _, want := range []string{"already exists", folderPath, "Plan in it?"} {
+				if !strings.Contains(frame, want) {
+					t.Errorf("the offer does not show %q:\n%s", want, frame)
+				}
+			}
+			m, cmd = update(t, m, tc.answer)
+			if m.modal != inputNormal {
+				t.Fatalf("modal = %v after the answer, want closed", m.modal)
+			}
+			if !tc.wantStart {
+				noStart(t, cmd)
+				if len(rec.calls) != 0 || len(fs.creates) != 0 {
+					t.Fatalf("starts=%v creates=%v, want none", rec.calls, fs.creates)
+				}
+				return
+			}
+			planStarted(t, cmd)
+			want := planCall{folderPath, PlanModeNew, ""}
+			if len(rec.calls) != 1 || rec.calls[0] != want {
+				t.Fatalf("StartPlan calls = %+v, want exactly %+v", rec.calls, want)
+			}
+			if len(fs.creates) != 0 {
+				t.Fatalf("CreatePlanFolder called %v for a folder that exists", fs.creates)
+			}
+		})
+	}
+}
+
+// TestPlanFolderUseStartsAsTyped: a path is used as T7.4 used it: StartPlan
+// once with the path, no confirm, nothing created. Load-bearing: the "~/"
+// row, because the start expands it and the decision must hand it on as
+// typed (A6), and the "empty Path" row, which falls back to the text rather
+// than starting in "".
+func TestPlanFolderUseStartsAsTyped(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		path string
+		want string
+	}{
+		{name: "a full path", text: "/code/fresh", path: "/code/fresh", want: "/code/fresh"},
+		{name: "a ~/ path", text: "~/code/fresh", path: "~/code/fresh", want: "~/code/fresh"},
+		{name: "empty Path falls back to the text", text: "/code/fresh", path: "", want: "/code/fresh"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs := folderModel(t)
+			fs.decision = PlanFolderDecision{Kind: PlanFolderUse, Path: tc.path}
+			m, cmd := submitPlanFolder(t, m, tc.text)
+			if m.modal != inputNormal {
+				t.Fatalf("modal = %v, want no confirm for a path", m.modal)
+			}
+			if m.status != "Starting a planning session in "+tc.want+"…" {
+				t.Errorf("status = %q, want T7.4's starting notice", m.status)
+			}
+			planStarted(t, cmd)
+			want := planCall{tc.want, PlanModeNew, ""}
+			if len(rec.calls) != 1 || rec.calls[0] != want {
+				t.Fatalf("StartPlan calls = %+v, want exactly %+v", rec.calls, want)
+			}
+			if len(fs.creates) != 0 {
+				t.Fatalf("CreatePlanFolder called %v for a path", fs.creates)
+			}
+		})
+	}
+}
+
+// TestPlanFolderRefusalShowsTheReason: a refusal shows its reason as a
+// warning and opens nothing. Load-bearing: "a bad name" (the commonest
+// refusal, whose reason names the allowed characters), "a create with no
+// path" (a decision the seam filled badly must not open a confirm for ""),
+// and "no reason", which still says something rather than leaving the owner
+// with a silent dashboard.
+func TestPlanFolderRefusalShowsTheReason(t *testing.T) {
+	bad := `"my app" is not a name a new project can have: use letters, digits, ".", "_" and "-", starting with a letter or digit. Nothing was created.`
+	cases := []struct {
+		name     string
+		decision PlanFolderDecision
+		want     string
+	}{
+		{name: "a bad name", decision: PlanFolderDecision{Kind: PlanFolderRefused, Reason: bad}, want: bad},
+		{name: "no location set", decision: PlanFolderDecision{Kind: PlanFolderRefused, Reason: "No project location is set. Nothing was created."}, want: "No project location is set. Nothing was created."},
+		{name: "exists with no path", decision: PlanFolderDecision{Kind: PlanFolderRefused, Exists: true, Reason: "It exists. Nothing was created."}, want: "It exists. Nothing was created."},
+		{name: "a create with no path", decision: PlanFolderDecision{Kind: PlanFolderCreate}, want: "That cannot be used as a folder for a new plan. Nothing was created."},
+		{name: "no reason", decision: PlanFolderDecision{}, want: "That cannot be used as a folder for a new plan. Nothing was created."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec, fs := folderModel(t)
+			fs.decision = tc.decision
+			m, cmd := submitPlanFolder(t, m, "my app")
+			noStart(t, cmd)
+			if m.modal != inputNormal {
+				t.Fatalf("modal = %v, want nothing opened", m.modal)
+			}
+			if m.status != tc.want {
+				t.Errorf("status = %q, want %q", m.status, tc.want)
+			}
+			if len(rec.calls) != 0 || len(fs.creates) != 0 {
+				t.Fatalf("starts=%v creates=%v, want none", rec.calls, fs.creates)
+			}
+		})
+	}
+}
+
+// TestPlanFolderCreateErrorStartsNothing: a create that fails part-way shows
+// the seam's sentence as it is (it says what was left on disk) and never
+// starts a planning session in a folder that is not a git repository.
+func TestPlanFolderCreateErrorStartsNothing(t *testing.T) {
+	m, rec, fs := folderModel(t)
+	fs.decision = PlanFolderDecision{Kind: PlanFolderCreate, Path: folderPath}
+	fs.createErr = errors.New("The folder " + folderPath + " was made and is left on disk, but git init failed: no git. Nothing was removed.")
+	m, _ = submitPlanFolder(t, m, "demo")
+	m, cmd := update(t, m, keyRune('y'))
+	created, ok := cmd().(planFolderCreatedMsg)
+	if !ok {
+		t.Fatalf("yes produced %T, want planFolderCreatedMsg", created)
+	}
+	m, cmd = update(t, m, created)
+	noStart(t, cmd)
+	if m.status != fs.createErr.Error() {
+		t.Errorf("status = %q, want the create's error", m.status)
+	}
+	if len(fs.creates) != 1 {
+		t.Fatalf("CreatePlanFolder called %d times, want 1", len(fs.creates))
+	}
+	if len(rec.calls) != 0 {
+		t.Fatalf("StartPlan called %v after a failed create", rec.calls)
+	}
+}
+
+// TestPlanFolderCreateUnavailable: PlanFolder wired but CreatePlanFolder not
+// (only a half-built dashboard): the y says so and creates nothing.
+func TestPlanFolderCreateUnavailable(t *testing.T) {
+	m, rec, fs := folderModel(t)
+	m.deps.CreatePlanFolder = nil
+	fs.decision = PlanFolderDecision{Kind: PlanFolderCreate, Path: folderPath}
+	m, _ = submitPlanFolder(t, m, "demo")
+	m, cmd := update(t, m, keyRune('y'))
+	noStart(t, cmd)
+	if m.modal != inputNormal || m.status != planFolderUnavailableNotice {
+		t.Fatalf("modal=%v status=%q, want closed with the not-available notice", m.modal, m.status)
+	}
+	if len(rec.calls) != 0 {
+		t.Fatalf("StartPlan called %v", rec.calls)
+	}
+}
+
+// TestPlanFolderNilKeepsTheT74Form: with no PlanFolder seam the form is
+// exactly T7.4's: the text, even a bare name, goes to StartPlan unchanged
+// and no decision is asked for.
+func TestPlanFolderNilKeepsTheT74Form(t *testing.T) {
+	for _, text := range []string{"demo", "/code/fresh"} {
+		t.Run(text, func(t *testing.T) {
+			m, rec := planModel(t, sess("a"))
+			m, _ = runPlanAction(t, m, "start a new plan")
+			m = typeText(t, m, text)
+			m, cmd := update(t, m, keyEnter)
+			planStarted(t, cmd)
+			want := planCall{text, PlanModeNew, ""}
+			if len(rec.calls) != 1 || rec.calls[0] != want {
+				t.Fatalf("StartPlan calls = %+v, want exactly %+v", rec.calls, want)
+			}
+			if m.status != "Starting a planning session in "+text+"…" {
+				t.Errorf("status = %q, want T7.4's notice", m.status)
+			}
+		})
+	}
+}
+
+// TestPlanFolderDroppedAcrossAProjectSwitch: each step that crosses a
+// project switch does the safe thing. Load-bearing rows:
+//   - "between submit and decision": the decision is dropped, no confirm
+//     pops up over the other project, nothing is called.
+//   - "between confirm and yes": the yes creates nothing.
+//   - "between create and its result": the folder exists, so the owner is
+//     told, but no planning session starts and moves them off the project
+//     they switched to.
+func TestPlanFolderDroppedAcrossAProjectSwitch(t *testing.T) {
+	t.Run("between submit and decision", func(t *testing.T) {
+		m, rec, fs := folderModel(t)
+		fs.decision = PlanFolderDecision{Kind: PlanFolderCreate, Path: folderPath}
+		m, _ = runPlanAction(t, m, "start a new plan")
+		m = typeText(t, m, "demo")
+		m, cmd := update(t, m, keyEnter)
+		msg := cmd().(planFolderDecidedMsg)
+		m.projectGen++
+		m, cmd = update(t, m, msg)
+		noStart(t, cmd)
+		if m.modal != inputNormal {
+			t.Fatalf("modal = %v, want the decision dropped", m.modal)
+		}
+		if len(rec.calls) != 0 || len(fs.creates) != 0 {
+			t.Fatalf("starts=%v creates=%v, want none", rec.calls, fs.creates)
+		}
+	})
+	t.Run("between confirm and yes", func(t *testing.T) {
+		m, rec, fs := folderModel(t)
+		fs.decision = PlanFolderDecision{Kind: PlanFolderCreate, Path: folderPath}
+		m, _ = submitPlanFolder(t, m, "demo")
+		m.projectGen++
+		m, cmd := update(t, m, keyRune('y'))
+		noStart(t, cmd)
+		if !strings.Contains(m.status, "nothing was created") {
+			t.Errorf("status = %q, want the project-changed notice", m.status)
+		}
+		if len(rec.calls) != 0 || len(fs.creates) != 0 {
+			t.Fatalf("starts=%v creates=%v, want none", rec.calls, fs.creates)
+		}
+	})
+	t.Run("between create and its result", func(t *testing.T) {
+		m, rec, fs := folderModel(t)
+		fs.decision = PlanFolderDecision{Kind: PlanFolderCreate, Path: folderPath}
+		m, _ = submitPlanFolder(t, m, "demo")
+		m, cmd := update(t, m, keyRune('y'))
+		created := cmd().(planFolderCreatedMsg)
+		m.projectGen++
+		m, cmd = update(t, m, created)
+		noStart(t, cmd)
+		if !strings.Contains(m.status, "Made "+folderPath) || !strings.Contains(m.status, "no planning session was started") {
+			t.Errorf("status = %q, want the made-but-not-started notice", m.status)
+		}
+		if len(rec.calls) != 0 {
+			t.Fatalf("StartPlan called %v after a project switch", rec.calls)
+		}
+	})
+}
+
+// TestPlanFolderConfirmKeys pins the folder confirm's routing at the table
+// level, as TestRouteKeyMatrix does for the other y/n modals. Load-bearing:
+// y/Y confirm and n/esc deny, and every other key, enter included, is
+// swallowed, so only an explicit y can create a folder.
+func TestPlanFolderConfirmKeys(t *testing.T) {
+	reg := newModeRegistry(defaultKeyMap())
+	cases := []struct {
+		name string
+		key  tea.KeyPressMsg
+		want keyDecision
+	}{
+		{"y confirms", press('y', "y"), keyDecision{routeAction, actionConfirm}},
+		{"Y confirms", press('Y', "Y"), keyDecision{routeAction, actionConfirm}},
+		{"n denies", press('n', "n"), keyDecision{routeAction, actionDeny}},
+		{"N denies", press('N', "N"), keyDecision{routeAction, actionDeny}},
+		{"esc cancels", tea.KeyPressMsg{Code: tea.KeyEsc}, keyDecision{routeAction, actionCancel}},
+		{"enter is swallowed", tea.KeyPressMsg{Code: tea.KeyEnter}, keyDecision{kind: routeIgnored}},
+		{"q is swallowed", press('q', "q"), keyDecision{kind: routeIgnored}},
+		{"ctrl+space is swallowed", tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}, keyDecision{kind: routeIgnored}},
+		{"ctrl+c quits", chord('c'), keyDecision{routeAction, actionQuit}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reg.route(inputConfirmPlanFolder, routeConds{}, tc.key); got != tc.want {
+				t.Fatalf("route(%q) = {%v %v}, want {%v %v}", tc.key.String(), got.kind, got.action, tc.want.kind, tc.want.action)
+			}
+		})
+	}
+	if !(inputConfirmPlanFolder).isModal() {
+		t.Error("the folder confirm is not a modal")
+	}
+	if got := (modeState{modal: inputConfirmPlanFolder}); activeInputMode(got) != inputConfirmPlanFolder {
+		t.Errorf("activeInputMode = %v, want the folder confirm", activeInputMode(got))
+	}
+}
+
+// TestPlanFolderFormSaysANameWorks: with the seam wired the form says a name
+// is accepted and where it goes, each line whole (a dialog line is cut at
+// the dialog's width, so a sentence that does not fit loses its end).
+func TestPlanFolderFormSaysANameWorks(t *testing.T) {
+	m, _, _ := folderModel(t)
+	m, _ = runPlanAction(t, m, "start a new plan")
+	frame := render(m)
+	for _, want := range []string{planNewQuestion, planNewNameNote} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("the form does not show %q:\n%s", want, frame)
+		}
 	}
 }

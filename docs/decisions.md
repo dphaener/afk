@@ -2706,3 +2706,26 @@ T7.4 adds the dashboard action that starts a new plan, as bare `afk plan` does. 
 ### For the owner to check
 
 - Run `afk dash` on a project with no plan and a real agent: ctrl+space, type `start a new plan`, `enter`. The folder field should already hold that project's path. The hands-on check used a stand-in agent and a project the dashboard could not yet tell had no plan, so the field was empty there.
+
+## T7.5
+
+T7.5 lets the dashboard's "start a new plan" form take a project name as well as a folder: a name is created under the owner profile's `project location`, made a git repository, and planned in. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **Where the code lives (A1).** The decision (use this folder, create this folder, or refuse) and the create step are a new package, `internal/planfolder`. The decision is a pure function of the typed text, the profile's location and what is on disk. The dashboard reaches both through two new seams, so the screen never reads the profile or touches the disk itself.
+- **What a name may be (A2).** Letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 100 characters. Anything else is refused with that list, so a name is never a hidden folder or something that looks like a command-line flag.
+- **A location that is missing (A3).** If the profile's location is not a full path, or the folder it names does not exist, the name is refused and nothing is created. afk never makes the location folder itself.
+- **A name that already exists (A4).** The dashboard says so and asks whether to plan in that folder, which then goes the way a typed path does (T7.4). A file of that name is refused with no offer.
+- **A failure part-way (A5).** If the folder was made but `git init` failed, the dashboard says the folder is left on disk, removes nothing, and starts no planning session.
+- **Paths (A6).** Text with a `/` or a `~` is a path and goes to T7.4's start unchanged, so the words for a missing or relative folder stay T7.4's.
+- **Two steps (A7).** Creating the folder and starting the planning session are separate steps in the dashboard, so T7.6 can ask its GitHub question between them.
+- **Tests (A8)** are table tests written with the code. **Nothing had to be in place first (A9):** T7.4 is merged.
+
+### Decided while building
+
+- **Constant names.** The decision's kinds are `KindUse`, `KindCreate` and `KindRefuse` (refuse is the zero value), because `Create` is already the create step's function in the same package.
+- **A path is anything with `/` or `~`.** Even a lone `~` goes to T7.4's start unchanged; only a bare word is treated as a name, and it is trimmed first.
+- **A broken profile is explained, not called unset.** A profile that fails to load is reported with a pointer to `afk profile check`; a missing profile file simply means no location is set.
+- **One notice after a create.** "Made <path> and made it a git repository. Starting a planning session in it…" is one notice, since two in a row would hide the first. Create and start are still two separate steps, which is where T7.6 goes.
+- **A create that finishes after a project switch** is not dropped: it says the folder was made and that no planning session was started. A `y` given after a switch creates nothing.
+- **An empty path is a refusal.** A create or exists decision without a path never opens a confirm.
+- **The second form line** ("A name is made into a folder under your project location, after a yes.") shows only when the folder seam is wired, so a dashboard without it promises nothing.

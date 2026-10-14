@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dphaener/afk/internal/planfolder"
 	"github.com/dphaener/afk/internal/ui"
 )
 
@@ -123,5 +124,77 @@ func TestDashPlanNewRootResolved(t *testing.T) {
 				t.Errorf("root = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDashPlanFolderMapping pins how the decision becomes the dashboard's.
+// Load-bearing rows: "refused" (the zero kind, so a refusal never creates or
+// starts anything) and "exists" (the flag and the path survive, or the offer to
+// plan in the folder is lost).
+func TestDashPlanFolderMapping(t *testing.T) {
+	loc := planfolder.Location{Path: "/loc", Set: true}
+	dir := t.TempDir()
+	tests := []struct {
+		name string
+		loc  planfolder.Location
+		text string
+		want ui.PlanFolderDecision
+	}{
+		{"create", planfolder.Location{Path: dir, Set: true}, "demo",
+			ui.PlanFolderDecision{Kind: ui.PlanFolderCreate, Path: filepath.Join(dir, "demo")}},
+		{"use", loc, "/some/where",
+			ui.PlanFolderDecision{Kind: ui.PlanFolderUse, Path: "/some/where"}},
+		{"refused", planfolder.Location{}, "my app",
+			ui.PlanFolderDecision{}},
+	}
+	if err := os.Mkdir(filepath.Join(dir, "there"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tests = append(tests, struct {
+		name string
+		loc  planfolder.Location
+		text string
+		want ui.PlanFolderDecision
+	}{"exists", planfolder.Location{Path: dir, Set: true}, "there",
+		ui.PlanFolderDecision{Path: filepath.Join(dir, "there"), Exists: true}})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dashPlanFolderWith(func() planfolder.Location { return tt.loc }, os.Stat, tt.text)
+			reason := got.Reason
+			got.Reason = ""
+			if tt.want.Kind == ui.PlanFolderRefused && reason == "" {
+				t.Errorf("refusal %+v has no reason", got)
+			}
+			if got != tt.want {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDashPlanFolderDepsSetsSeams checks dashDeps wires both folder seams;
+// left nil, a typed name would be handed to the start as a folder path.
+func TestDashPlanFolderDepsSetsSeams(t *testing.T) {
+	d := dashDeps("", dashLocation{}, nil, -1)
+	if d.PlanFolder == nil || d.CreatePlanFolder == nil {
+		t.Fatalf("PlanFolder nil: %v, CreatePlanFolder nil: %v", d.PlanFolder == nil, d.CreatePlanFolder == nil)
+	}
+}
+
+// TestDashPlanCreateFolder makes a real folder in a temp location and checks
+// the location itself is never created.
+func TestDashPlanCreateFolder(t *testing.T) {
+	loc := t.TempDir()
+	if err := dashCreatePlanFolder(filepath.Join(loc, "demo")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(loc, "demo", ".git")); err != nil {
+		t.Errorf(".git missing: %v", err)
+	}
+	if err := dashCreatePlanFolder(filepath.Join(loc, "missing", "demo")); err == nil {
+		t.Error("creating under a missing location succeeded, want an error")
+	}
+	if _, err := os.Stat(filepath.Join(loc, "missing")); err == nil {
+		t.Error("the location folder was created")
 	}
 }

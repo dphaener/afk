@@ -1,8 +1,12 @@
 package main
 
 import (
+	"io/fs"
+	"os"
 	"path/filepath"
 
+	"github.com/dphaener/afk/internal/planfolder"
+	"github.com/dphaener/afk/internal/profile"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ui"
 )
@@ -76,4 +80,38 @@ func dashStartPlanWith(start func(planSurfaceRequest, planDeps) planSurfaceResul
 		out.Outcome = ui.PlanRefused
 	}
 	return out
+}
+
+// dashPlanFolder tells the new-plan form what its text means: a folder to use,
+// a new folder to make under the profile's project location, or a refusal. It
+// reads the profile and the disk, so the dashboard only calls it inside a
+// command, never while drawing.
+func dashPlanFolder(text string) ui.PlanFolderDecision {
+	return dashPlanFolderWith(func() planfolder.Location {
+		p, _, found, _, err := profile.Load(profile.DefaultDeps())
+		home, _ := os.UserHomeDir()
+		return planfolder.LocationFrom(p, found, err, home)
+	}, os.Stat, text)
+}
+
+// dashPlanFolderWith is dashPlanFolder with the location and the stat call
+// passed in, so a test pins the mapping without a real profile or disk.
+func dashPlanFolderWith(location func() planfolder.Location, stat func(string) (fs.FileInfo, error), text string) ui.PlanFolderDecision {
+	d := planfolder.Decide(text, location(), stat)
+	out := ui.PlanFolderDecision{Path: d.Path, Reason: d.Reason, Exists: d.Exists}
+	// An unknown kind stays the zero value, refused, so nothing is created or
+	// started until a new kind is mapped here.
+	switch d.Kind {
+	case planfolder.KindUse:
+		out.Kind = ui.PlanFolderUse
+	case planfolder.KindCreate:
+		out.Kind = ui.PlanFolderCreate
+	}
+	return out
+}
+
+// dashCreatePlanFolder makes the folder and the git repository in it. mkdir is
+// os.Mkdir, never MkdirAll, so the project location itself is never created.
+func dashCreatePlanFolder(path string) error {
+	return planfolder.Create(path, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn)
 }

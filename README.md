@@ -178,7 +178,7 @@ afk dash [options]
 | type `extend`, then `enter` | extend the plan: starts a planning session that adds a milestone (nothing to type) |
 | type `amend`, then `enter` | amend the plan: asks for one sentence about the change first |
 | type `document`, then `enter` | reconcile the plan with a document: asks for the document's path first |
-| type `start a new plan`, then `enter` | start a new plan in another folder: asks for the folder first |
+| type `start a new plan`, then `enter` | start a new plan: asks for a folder, or a new project's name to create under your profile's `project location` |
 
 The letters that used to run these actions on the list (`n o p c r l / b i q f ? P U`) and `:` now do nothing but show a one-line notice naming the key to use instead, for example `n moved: press ctrl+space then n`. The `:` palette is gone; the dialog's own name filter does its job. In the agent pane a chord such as `ctrl+t` or `ctrl+\` now belongs to the agent.
 
@@ -187,7 +187,10 @@ The letters that used to run these actions on the list (`n o p c r l / b i q f ?
 - **extend the plan** (type `extend`) starts straight away, with nothing to type.
 - **amend the plan** (type `amend`) opens a one-line form. Type one sentence about the change and press `enter`. A blank sentence keeps the form open and starts nothing.
 - **reconcile the plan with a document** (type `document`) opens a one-line form. Type the document's path inside the project (for example `docs/design-system.md`) and press `enter`. Type `document`, not `reconcile`: the letter `r` is the restart key, so a typed `reconcile` restarts the selected session when it is stopped.
-- **start a new plan** (type `start a new plan`) opens a one-line form that asks for a folder: a full path or one starting with `~/`, pre-filled with the active project when that project has no plan. The folder must exist. A folder that is not a git repository yet is made one, as `afk plan` does. A folder that already has a plan is refused, and the dashboard points you at extend, amend or document instead. An open planning session in that folder is reopened rather than started again. On success the dashboard switches to that project and opens its planning pane.
+- **start a new plan** (type `start a new plan`) opens a one-line form that asks for a folder or a name, pre-filled with the active project when that project has no plan.
+  - **A folder** (a full path, or one starting with `~/`) must exist. A folder that is not a git repository yet is made one, as `afk plan` does. A folder that already has a plan is refused, and the dashboard points you at extend, amend or document instead. An open planning session in that folder is reopened rather than started again.
+  - **A name** (no `/` and no `~`) is made into a folder under the `project location` entry in your profile, after a yes/no question that shows the full path (`y` creates it and makes it a git repository; `n` or `esc` creates nothing). A name may use letters, digits, `.`, `_` and `-`, must start with a letter or digit, and may be at most 100 characters. If your profile has no project location, the name is refused and the message says how to set one (`afk profile set "project location" ~/code`) or to type a full path instead. The location folder itself is never created. If a folder with that name already exists, the dashboard offers to plan in it and creates nothing. If making the repository fails part-way, the folder stays on disk, nothing is removed, and no planning session starts; type its full path to plan in it, or remove it yourself.
+  - On success the dashboard switches to that project and opens its planning pane.
 
 A refused start shows the reason in the same words the command prints, and nothing is started. When a planning session is already open, the dashboard says which one it is (its mode and phase) and asks whether to open it: `y` opens it, and `n` or `esc` leaves it closed. After a start, the dashboard selects the `master-plan` row and opens its pane, as `enter` does on that row.
 
