@@ -2574,6 +2574,13 @@ thing it does not do is attach to a session.
   approve button when the plan has an error. The result in plain words: approved and what the daemon
   does next, the refusal, or the step that failed and what to run to finish. A plan waiting for
   approval on the review list (`plan-reviews.json`) can be approved too. The same under `/api`.
+  From the design system (reconciled 2026-10-13): the Plan screen puts the checker `card` first (a
+  `badge`, `stats` of tasks, milestones, errors and warnings, and the `finding` list, errors first,
+  each linking to its line in the plan below), then **Approve the plan…** or, with errors, a
+  `notice--error` in its place ("Fix 2 errors before approving. Ask the agent in the chat."), then the
+  plan as `prose`. On the desktop a `split` holds the checker on the left and the plan at 68ch on the
+  right. Approve opens a centred `confirm-sheet` naming the project, the plan's path and the counts,
+  with **Not yet** focused and **Approve and start**.
   README: the web page section and `afk plan approve`.
 - **Must not:** approve without the confirm; approve a plan with errors; change what
   `afk plan approve` prints or does.
