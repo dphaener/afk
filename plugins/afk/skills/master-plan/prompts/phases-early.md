@@ -22,7 +22,7 @@ Read before you ask. In this order:
    - **A non-zero exit means stop.** The profile has a problem, and the command prints the problems instead of the entries. Tell the owner to run `afk profile check`, fix what it lists, and then say so. Never plan from part of a profile: a missing rule is a guessed fact.
    - Once the kind of project is plain from the brief (`web-app`, `cli`, `library`, or whatever the owner's entries use), run `afk profile --kind <kind>` too. An entry for that kind beats a general entry on the same topic. If the kind is not plain yet, it is a round-one question; run the kind-specific command then, before the round's other questions are settled.
 2. **The rule files** the profile lists. Read each one in full. They are the owner's house rules and the plan has to follow them, but they are read, never copied into the plan.
-3. **The folder.** Look at what is in the project folder: an existing README, code, a `package.json` or `go.mod`, a `.github/workflows/` folder, an `AGENTS.md` or `CLAUDE.md`. An empty folder with only `.git` and `.afk` is the usual case for a new project, and that is a fact worth one line. Use a fact look-up sub-agent when the folder is large.
+3. **The folder.** Look at what is in the project folder: an existing README, code, a `package.json` or `go.mod`, a `.github/workflows/` folder, an `AGENTS.md` or `CLAUDE.md`. Run `git remote -v` and note the folder's name. A project name and repository found this way are shown to the owner for confirmation with the profile entries in round one, not asked as open setup questions. An empty folder with only `.git` and `.afk` is the usual case for a new project, and that is a fact worth one line. Use a fact look-up sub-agent when the folder is large.
 4. **Nothing else.** Do not read a sibling project, a folder above this one or the owner's other repositories, however similar they look, unless the owner names one. What a sibling project did is not a fact about this one.
 
 Write `.afk/plan/survey.md`: what you read (each file or folder, one line, with what it told you), the profile entries that apply to this project (every one, with its strength), the rule files you read, and which setup facts the profile does not cover and will have to be asked. This file is for the resumed session and the owner, so it is short and plain.
@@ -54,7 +54,9 @@ This is where rules 2 and 3 are applied. Every choice the plan depends on that n
 - **A product question** is a choice about what the thing is or does. It is asked through `AskUserQuestion` with options and one recommendation, worded so that the owner can accept it by choosing the first option. Put the recommended option first and mark it `(recommended)`; give two to four options in all; say in the question why you recommend what you do, in a few words. The owner can always type something else, and what they type is their answer.
 - **A setup question** is a fact about how the owner builds, hosts or names things that the profile does not hold: the project's name, where it will run, which accounts exist, the address of a machine. It is asked as a plain question in your message, with no options and no `AskUserQuestion`, because the owner knows the answer and a list of guesses only gets in the way. Several setup questions go in one message, numbered.
 
-Never turn a setup fact into a multiple-choice question, and never present a product choice without a recommendation.
+Never turn a setup fact into a multiple-choice question, and never present a product choice without a recommendation. A setup question that asks for a reference project asks where it is in the same question, so it does not cost a round of its own.
+
+**Never put a question in a dialog that the owner cannot answer without trying something.** When the survey finds that what the owner asked for is already built, say so in a plain message that names where it is, and ask in free text what they want instead.
 
 ### Rounds
 
@@ -64,7 +66,7 @@ A round holds every question whose prerequisites are settled. Ask them all, prod
 
 1. Who the project is for (a product question: for example only the owner, their household, a club, the public), with a recommendation drawn from the brief.
 2. Whether it has an interface, and of what kind (a product question: a web page, a command line, an API only, none), with a recommendation. This question always has the id `r1-interface`, and its recorded answer always starts with `yes` or `no`, then a colon and the kind in the owner's words: `yes: a web page`, `yes: a phone app`, `no: a command line`, `no: an API only`, `no: none`. **Yes means screens a person looks at**, which a design tool could draw; a command line, an API only or none is `no`. When the owner's answer does not make that plain, ask them which it is; do not decide for them.
-3. The profile entries being applied, shown as `afk profile` printed them, with the plain question whether any of them does not fit this project. The owner's answer is recorded as a setup question with the id `r1-profile`. An entry the owner overrides is used the way they say for this project, and the plan's Decisions table later says the profile said otherwise.
+3. The profile entries being applied, shown as `afk profile` printed them, with the plain question whether any of them does not fit this project. The owner's answer is recorded as a setup question with the id `r1-profile`. An entry the owner overrides is used the way they say for this project, and the plan's Decisions table later says the profile said otherwise. Mark each entry that depends on an answer still open (for example a database rule before the hosting and storage answers are in), and confirm those entries again once those answers are in. When a later answer overrides an entry, correct the recorded answer of `r1-profile` so it no longer says nothing was overridden.
 
 Plus every setup fact `survey.md` listed as not covered, and every product question that needs nothing else settled first.
 
@@ -93,7 +95,7 @@ Every question is one line of `.afk/plan/questions.jsonl`, written **when it is 
 | `options` | For a product question, the options as offered, the recommended one first. For a setup question, `[]`. |
 | `recommended` | For a product question, the recommended option, word for word one of `options`. For a setup question, `""`. |
 | `answer` | Empty until answered; then what the owner chose or wrote. |
-| `answered_at` | Empty until answered; then the time, RFC 3339 in UTC, such as `2026-10-13T14:02:00Z`. |
+| `answered_at` | Empty until answered; then the time, RFC 3339 in UTC, such as `2026-10-13T14:02:00Z`. Read the time with `date -u +%FT%TZ`; never write a time from memory or from this example. |
 
 A line that does not follow this is read as no question at all, and `afk plan status` reports it as a problem. When you answer a line, replace the whole line with Edit, matching on its `"id"`. When the owner reworded a recommendation rather than choosing it, the answer is their wording. The one answer with a fixed form is `r1-interface`: `yes: <kind>` or `no: <kind>`, with the kind in the owner's words.
 

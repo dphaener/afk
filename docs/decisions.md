@@ -2170,3 +2170,264 @@ Where the code does something the section above does not say (2026-10-13).
 
 - Open `afk dash` on the always-on machine with the real `config.toml` and press `p`: both listed projects should be there under the names `afk project list` prints. The check here used a scratch config folder and throwaway projects.
 - `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.
+
+## T5.8
+
+T5.8 is the proof run for `afk plan`: the owner planned afk's next milestone with `afk plan extend` and a small throwaway project (`~/code/todo`) with `afk plan`, approved it and let the daemon merge its first task. This session read the files both runs left behind and wrote up how they compare with the hand-run nebari session. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The session waited for the owner's two runs before doing any work (A9).** Both are attended terminal sessions, which a task session cannot run. It raised one inbox item that stopped the task (`u76qn2`) and started again when the owner answered.
+- **All nine prompt faults the two runs showed are fixed here (A1).** Each one is tied to a real turn the owner had to take or a real piece of rework, so none is a matter of taste.
+- **The brief stays unedited when the owner changes the request (A2).** The plan says `brief.md` is never edited after it is saved. So the fix for "the critic reviewed against a request nobody wanted any more" is to hand the critic the owner's later words beside the brief, not to rewrite the brief.
+- **Code faults are filed, not fixed (A3).** The task says so. Each of the four found is one non-blocking inbox notice, because each needs its own reviewed change.
+- **The two sessions are not run again to prove the prompt fixes (A4).** That would need the owner at a terminal again. The next real planning session is the test, and an inbox item asks the owner to watch for the fixed faults then.
+- **Tokens are given as raw counts from the session transcripts, plus the weighted figure of the plan's section 4.7 (A5).** afk records no tokens for a planning session, which is one of the filed faults. Nebari's planning session has no token figure in the plan, so tokens are not compared with it.
+- **Where the owner's answer and the files disagree, the write-up gives both and the files decide the facts (A6).** The owner's answer said the new project needed no action; the files show a login and one typed line.
+- **The plugin version goes from 5.7.2 to 5.7.3 (A7),** as every earlier change to the planning skill did, so an agent that caches the plugin by version picks up the new prompts.
+- **No new automated tests (A8).** The change is prompt text and documents. The plugin's own tests and `make check` cover the prompt files' size and presence.
+- **Turns and questions are counted the same way for both sessions, and every number below was counted again for this write-up.** A turn is a message the owner typed or a question dialog the owner submitted, and the two are given separately. A question is anything the session asked the owner to answer after the request itself, whether or not it was saved in `questions.jsonl`. Where a choice was made in a dialog, the quoted words are the label the owner picked, because the saved record words some of them differently.
+
+### The two sessions beside nebari's
+
+Both sessions ran on the evening of 13 October 2026 in the owner's time zone, which is 14 October in UTC. Every time below is UTC.
+
+Nebari's figures are the ones `docs/PLAN.md` gives for its hand-run session (M5's introduction and T5.8's entry). Where the plan gives no figure the cell says "not recorded".
+
+| | Nebari, by hand | Extend (afk's M6) | New project (todo) |
+|---|---|---|---|
+| Human turns | 35 | 4 typed, 1 dialog submitted, 1 dialog rejected | 6 typed, 3 dialogs submitted |
+| Questions asked | 12 | 6, of which 4 were saved | 21, of which 14 were saved |
+| Recommendations overridden | 2 of 8, and 1 reworded | 1 of 4, and 1 never answered as asked | 2 of 7, and 1 profile rule |
+| Setup facts that had to be asked | not recorded | 0 | 6, and the profile check |
+| Rework | the name, the deploy tool, storage three times, the component library, two addresses patched twice | none in the plan; the brief was left out of date | a made-up time, storage asked twice, a third round, two patches, one out-of-date record |
+| Checker findings | no checker ran; the draft said 27 tasks and held 31 | 0 errors, 14 warnings, all older than M6 | 0 errors, 0 warnings |
+| Critic findings | no critic ran; two spending caps contradicted each other | 0 | 1, fixed |
+| Wall-clock time | first draft under 12 minutes; the whole session not recorded | 37 minutes 20 seconds, 27 of them with one dialog left open | 14 minutes |
+| Tokens (weighted) | not recorded | 657,052 | 580,154 |
+
+How the counts were made:
+
+- **A turn** is one entry in the planning agent's transcript that came from the owner: a typed message, or a question dialog sent back. The command that started the session and the notices a finished sub-agent sends are not turns. A dialog holds up to three questions and is one turn.
+- **The extend session** asked 4 questions in dialogs (all saved) and 2 in plain text when it showed the task breakdown (is each task the right size, are the blocking edges right). Those 2 were not saved.
+- **The new session asked 21 questions and saved 14.** The 7 not saved were asked in plain text: 4 about what the words in the request mean, 2 with the task breakdown, and 1 offer to save a fact to the profile. Of the 14 saved, 7 were product questions and 7 were setup questions.
+- **Wall-clock time** runs from the first entry of the transcript to the last: 00:39:24 to 01:16:44 for the extend session and 01:18:18 to 01:32:19 for the new one.
+
+### The extend session and the new-project session
+
+#### The extend session
+
+**The request.** The session opened with "What should the next milestone deliver, and what made you want it?" The owner's first reply was a question, "What is available?", and the second was the request: "Ah, I know. I would like the afk tasks output to be available in the dashboard." That sentence was saved as the brief.
+
+**Round one, 1 question.** The survey found that the dashboard already has this: the Build tab (T3.2) lists every task with its status. The session put that to the owner as a dialog, `r1-gap`, asking what should change, with "Try the Build tab first; no new milestone if it covers it" as the recommendation. The dialog opened at 00:42:16 and was rejected at 01:09:23, 27 minutes later. The owner then typed: "Ok nevermind, I didn't know that was there. Let's pivot. I've noticed that the project switcher only shows a single project. It looks like maybe we have two configuration sources now?" That message was saved as the answer to `r1-gap`.
+
+**Round two, 3 questions, one dialog.** Which projects the switcher lists (`r2-switcher-source`), what happens to the old `config.json` (`r2-old-config`), and how much the milestone holds (`r2-scope`). The owner took the first two recommendations.
+
+**Recommendations overridden: one.** For `r2-scope` the session recommended only the settings-file fix. The owner picked "Plus both", which adds pause and resume keys and an inbox count to the dashboard. That one choice doubled the milestone from two tasks to four.
+
+**Setup facts asked: none.** The owner profile and the plan's Decisions table covered everything the milestone needed.
+
+**The task breakdown** was shown once, with two plain questions, and the owner answered "1. Yes 2. Yes".
+
+**What it produced.** Milestone M6, "One settings file, and more in the dashboard", with four tasks (T6.1 to T6.4), added by one `afk plan insert`, and two new rows in the Decisions table, added by one `afk plan patch`. Both commands succeeded first time and were committed and pushed. The plan went from 6 milestones and 30 tasks to 7 and 34.
+
+**One thing the saved file does not show.** The dialog offered short labels ("Plus both", "Drop it, say so once") and `questions.jsonl` holds longer wordings of the same options ("This, plus both of those"). The meaning is the same, but the record is not word for word what the owner saw. The session edits that file by hand, which is filed below as `8szxye`.
+
+#### The new-project session
+
+**The request,** saved word for word as the brief: "We're going to build a simple todo list application, like the ones that are built as demos to show off the hot new framework of the week."
+
+**Before the rounds, 4 plain questions** on what "todo" and "todo list" mean and on two edge cases. The owner answered all four in one message ("1. Correct 2. Just one list 3. Classic demo behavior 4. Gone for good"). The session wrote them into `CONTEXT.md`.
+
+**Round one, 6 saved questions.** One dialog with three product questions: who it is for, what kind of interface, how much of the classic demo. Then three setup questions in plain text: whether any profile entry does not fit, the project's name, and where the repository is hosted.
+
+**Round two, 6 saved questions.** One dialog with three product questions: whether to put it online, when another person's change shows up, and three small behaviours. Then three setup questions: how Postgres runs on the machine, how Ruby is installed and which version, and which project to use as a reference for interface components.
+
+**Round three, 2 saved questions and one offer.** A one-question dialog asking which "local storage" the owner meant (`r3-storage`), then a plain question asking where the reference project is (`r3-nebari`), with an offer to save the Ruby answer to the profile.
+
+**Recommendations overridden: two of seven.**
+
+- `r1-features`: the session recommended the full classic set (edit, filters, a count, complete all). The owner picked "Bare minimum": add, complete, delete, clear completed.
+- `r2-deploy`: the session recommended putting it online on the owner's homelab, which is the profile's default for a web app. The owner picked "Only my own machine".
+
+One profile rule was overridden as well: the database (see the next section).
+
+**Setup facts asked, and whether the profile could have held them.**
+
+| Fact | Could the profile have held it? |
+|---|---|
+| The project's name | No, it belongs to one project. But the folder's name answered it. |
+| Where the repository is | No. But the folder's `origin` remote answered it. |
+| How Postgres runs on the machine | Yes. In the end it did not matter, because the owner dropped Postgres. |
+| How Ruby is installed | Yes, and it does now: the session offered to save it, the owner said "Yes please run it", and `afk profile set` ran. |
+| Which Ruby and Rails version | Yes. The owner's answer, "use the latest", reads like a standing preference. |
+| The reference project for interface components | Yes. The profile says to look at similar projects and names none. |
+| Where the reference project is | Yes. The profile already says projects live in `~/code`. |
+
+The seventh saved setup question is the profile check itself, which is always asked.
+
+Taken from the profile without asking: the framework, the test framework, the CI service, the design tool, the project location, the accounts rule and the "no component library" default.
+
+**The task breakdown** was shown once with two plain questions, and the owner answered "1. Yes 2. Yes".
+
+**What it produced.** A plan with two milestones and six tasks, zero open questions, and one owner task. Beside it: the glossary (`CONTEXT.md`), the agent instruction files, `afk.toml` and `.gitignore`. Then the design phase wrote `docs/design-brief.md`, added the owner's design task, T1.2 "Design system (owner)", with `afk plan insert`, and made T2.1 to T2.4 depend on it with four `afk plan depend` calls. The CI workflow is part of T1.1, not a task of its own.
+
+**Two things the session decided itself, and said so.** The owner named the reference project for interface components and answered only where it was, not what to take from it. The session took how the interface is built, and also the reference project's browser-test driver, test-data library, lint rules and security scanner. It also decided that a completed todo can be marked open again. Both were shown as notes with the task breakdown and the owner confirmed the breakdown, so neither is a guess made in silence, but neither was a question.
+
+### Where the owner had to correct a session
+
+Each is marked as the owner choosing differently, which is the method working, or as a session fault.
+
+- **Asking what was available (extend). Session fault.** The session asked what the next milestone should deliver and listed nothing. The owner had to ask: "What is available?" Only then did the session list the plan's deferred items. Cause: the extend prompt's first question named no candidates.
+- **The round-one dialog that sat open 27 minutes (extend). Session fault.** The owner had asked for something that was already built, and the session told them so inside a question dialog. The only honest answer was to go and try the Build tab, and a dialog cannot wait for that. The owner rejected it after 27 minutes. Cause: the prompts had no rule for a request that is already delivered, so it was asked as an ordinary product question.
+- **The pivot (extend). The owner choosing differently.** "Ok nevermind, I didn't know that was there. Let's pivot. I've noticed that the project switcher only shows a single project. It looks like maybe we have two configuration sources now?" The owner dropped the request and brought a new one. No session could have guessed it. The survey doing its job is what made it happen: it found the feature before any task was written for it.
+- **The scope (extend). The owner choosing differently.** "Plus both", against a recommendation of the smallest milestone. One answer, no back and forth.
+- **The features (new). The owner choosing differently.** "Bare minimum", against the full classic set.
+- **The deploy (new). The owner choosing differently.** "Only my own machine", against the profile's default. This is a default doing what a default should: offered, and declined in one answer.
+- **Postgres, accepted and then overridden (new). Session fault.** In round one the session showed the profile entries, among them "rule database: Postgres", and the owner said "Looks good". At that point nobody had yet asked whether the app would be online or what it would store. In round two the session asked how Postgres runs on the machine, and the owner answered: "No postgres, just use local storage, keep it simple". Cause: the profile check came before the answers the database rule depends on, so the owner approved a rule they were about to drop.
+- **The storage question asked again (new). Partly a session fault.** "Local storage" could mean a file on the machine or the browser's own storage, so the session asked a third-round dialog and the owner picked "A SQLite file". Asking was right, because the two build very differently. But the question only existed because of the fault above, and it is the one kind of nebari's rework that came back.
+- **The project's name and repository (new). Session fault.** The session asked both as open setup questions. The owner answered: "Todo - repo is todo, you're in it already and it's github origin is set" and "Github, it's all set up already". The folder was named `todo` and its `origin` remote pointed at the repository; the survey had read the folder but had not run `git remote -v`. Cause: the survey step did not say to read the remote or use the folder's name.
+- **Where the reference project is (new). Session fault.** Round two asked which project to use as a reference ("Nebari"), and round three asked where it was ("It's in ~/code on this machine"). Cause: the first question did not ask for the location, so one fact cost a turn of its own.
+
+No proposal was refused outright, nothing was interrupted, and neither task breakdown had to be shown twice.
+
+### Rework and its cause
+
+- **A made-up time, fixed by hand (new).** After the first dialog the session wrote `answered_at` as `2026-10-13T18:30:00Z`. The real time was `2026-10-14T01:22:54Z`. It noticed two seconds later and fixed the file with `sed`. Every later answer read the clock. Cause: the prompt showed an example time and did not say how to read the real one.
+- **A third round (new).** Two follow-ups that should not have needed a round: which "local storage", and where the reference project is. Cause: the two faults above.
+- **Two guarded patches for the critic's finding (new).** The plan's Routes table said T2.1 adds `GET /`, while T1.1's scope adds it and T1.1's acceptance needs it to answer. Two `afk plan patch` calls fixed the table and the rule above it, and the checker was clean afterwards. This is rework of the kind the method is for: found by a check before the owner read the plan, fixed by patches, no task entry rewritten.
+- **A record that still says no profile entry was overridden (new).** The saved answer to the profile check, `r1-profile`, reads "Looks good. No entry is overridden." It was true when written and was never corrected after the owner dropped Postgres and the homelab deploy. The plan itself is right: its Decisions table records both departures from the profile. Only the session's own record is out of date.
+- **The brief left describing a request the owner had dropped (extend).** `brief.md` still asks for the `afk tasks` output in the dashboard. The pivot is recorded only as the answer to `r1-gap` and in a note in `critic.md`. The plan says the brief is never edited, so the session followed its rules, and the rules left the critic with the wrong request.
+
+Nothing was written to either plan and then written again. No `afk plan` command failed. `afk plan advance` ran once per phase in both sessions, apart from one run in the extend session made on purpose while a dialog was open, which reported that questions were still unanswered.
+
+**Against nebari's rework.** Nebari's session guessed the project's name, guessed a deploy tool from a sibling project, decided storage three times, read a preference for a component library as a strict rule, and patched two machine addresses twice. None of those happened again. Here the name was asked (it should have been read from the folder, but it was not guessed), the deploy was asked as a product question with the profile's default as the recommendation, the component-library entry was shown as "a starting point, not a strict rule", and there were no addresses. The one exception is storage, which was asked twice in the new session: once as Postgres and once as which local storage.
+
+### Checker and critic
+
+- **afk's plan:** `afk plan lint` reports 0 errors and 14 warnings, with 7 milestones, 34 tasks, 1 owner task and 9 open questions.
+- **The 14 warnings are older than M6.** The plan as it stood in the commit before M6 was added gives the same 14: 13 `missing-task-field` warnings on tasks from T0.0 to T4.2, all done and written before the format asked for a Goal line, and 1 `open-question-no-task` on the licence question. M6 added none.
+- **The todo plan:** 0 errors and 0 warnings, with 2 milestones, 6 tasks, 1 owner task and 0 open questions. It was clean before the critic ran and after the two patches.
+- **The critic on M6: zero findings, which says little.** The critic is given the plan and the brief and nothing else. The brief was the dropped request, so the critic judged M6 against a sentence M6 does not try to deliver. Its report says the brief "is delivered by T3.2's Build tab (already built, outside the scope of this review)". It did check M6 against the Decisions table and found nothing, and that part stands. Whether M6 covers what the owner asked for after the pivot was not checked by anyone but the owner.
+- **The critic on the todo plan: one finding, and a real one.** The `GET /` conflict described above. Two tasks claiming one route would have had T2.1 breaking the plan's own rule against changing another task's route.
+- **Counts came from code.** Both closing summaries were the output of `afk plan lint --summary`. The split of afk's warnings into 13 and 1 in `critic.md` was counted by hand from the checker's listing, and it is right.
+
+### The daemon's first build
+
+The task was **T1.1**, "Set up the Rails app and the CI workflow", in session `t1-1`. Times are from todo's decision log, its ledger and GitHub.
+
+| Time | What happened |
+|---|---|
+| 01:34:04 | `afk plan approve` committed the plan (`e7ba222`); the session was marked approved at 01:34:09 |
+| 01:34:12 | The daemon picked the project up and waited: usage was close to its limit |
+| 01:40:17 | The usage window reset and T1.1 was launched |
+| 01:51:17 | The build session finished and the task was handed to shipping |
+| 01:51:22 | Parked: GitHub's command-line tool was not logged in (inbox `kc3c6m`) |
+| 01:51:27 | T1.2 parked as the owner's task (inbox `r5tpxz`) |
+| 02:01:15 | The owner answered `kc3c6m`: "Logged in now" |
+| 02:05:52 | Pushed; the pull request was open at 02:06:07 |
+| 02:06:13 | The first CI run started; it failed at 02:08:26 |
+| 02:09:27 | The daemon handed the task back to its session with the failure |
+| 02:10:06 | The session committed the fix (`eb16f69`) |
+| 02:12:17 | The pull request was open again with the fix; the second CI run passed at 02:13:01 |
+| 02:13:48 | Merged, as pull request 1 (`1a11813`) |
+| 02:15:07 | T1.1 marked done |
+
+- **How long.** 39 minutes 44 seconds from the approve commit to the merge, and 34 minutes 50 seconds from launch to done. Of that, 6 minutes were the wait for usage, 11 were the build, 10 were the park on the login, and about 12 were shipping with one failed CI run in the middle.
+- **The wait for the usage window** was the daemon's own rule and needed nobody.
+- **The park on the GitHub login** did need the owner. The stored login had gone invalid. The daemon stopped, said why in the inbox, and went on two seconds after the answer. The item told the owner to run `gh auth login`, while the tool's own message, quoted in the same item, said to run `gh auth refresh -h github.com`.
+- **The failed first CI run.** The step "Prepare test database" failed because `db/schema.rb` did not exist. The app has no tables yet, so no schema file had ever been committed, and the build session's own test runs on the machine had not shown it. The daemon typed the failure into the session with the instruction to fix it and not to push, the session committed an empty schema, and the daemon put it on the pull request. Nobody was asked.
+- **The merge.** All three checks passed (`scan_ruby`, `lint`, `test`). The log then records `deploy_healthy` although the project is not deployed anywhere; this session did not look into what that step checked.
+- **T1.2 is parked on the owner by design.** It is the design task. The daemon started no agent for it and raised `r5tpxz`. T2.1 to T2.4 wait for it, so the build is idle until the owner makes the design system. That is the intended state, not a stall.
+
+**What the owner did by hand, according to the files:**
+
+1. Logged in to GitHub again and answered `kc3c6m`.
+2. Typed one line, "push it", into the build session's terminal at 02:13:19. The fix was already on the pull request and its CI run had passed at 02:13:01, so the line changed nothing. Nothing in afk's code types that line into a session, so it was the owner.
+
+**The owner's own answer** to this task's inbox item `u76qn2` was: "All done, no action needed on my part for the new project, everything ran smoothly." The files decide the facts (A6): two things were done by hand. Both were small, and it is fair to say the owner did not have to rescue anything. But "no action needed" is not what the files show, and the login park is 10 of the 40 minutes.
+
+### Tokens
+
+afk recorded nothing for either planning session. `afk tokens --project ~/code/afk master-plan` exits 1 and prints no figures. The numbers below were summed for this write-up from the planning agent's transcripts with the rule of the plan's section 4.7: each message counted once, taking the largest of each field. Weighted is `input + 5×output + 1.25×cache write + 0.1×cache read`.
+
+| Session | Part | Calls | Input | Cache write | Cache read | Output | Weighted |
+|---|---|---|---|---|---|---|---|
+| Extend | main session | 28 | 66 | 113,475 | 2,827,620 | 20,130 | 525,322 |
+| Extend | critic sub-agent | 5 | 132 | 61,694 | 98,212 | 8,932 | 131,731 |
+| Extend | **total** | **33** | **198** | **175,169** | **2,925,832** | **29,062** | **657,052** |
+| New | main session | 30 | 76 | 82,158 | 2,455,874 | 30,191 | 499,316 |
+| New | look-up sub-agent | 6 | 12 | 20,619 | 53,927 | 3,181 | 47,083 |
+| New | critic sub-agent | 2 | 34 | 11,517 | 4,595 | 3,773 | 33,755 |
+| New | **total** | **38** | **122** | **114,294** | **2,514,396** | **37,145** | **580,154** |
+
+Both sessions kept to "one session, one write": the only sub-agents were one critic each, on the reasoning-tier model, and one fact look-up in the new session that read the reference project.
+
+T1.1, the task the daemon built, as `afk tokens --project ~/code/todo T1.1` prints it:
+
+| Phase | Calls | Weighted | Share |
+|---|---|---|---|
+| plan | 12 | 457,216 | 33.9% |
+| execute | 67 | 600,880 | 44.6% |
+| review | 16 | 215,453 | 16.0% |
+| ship | 3 | 74,425 | 5.5% |
+| **Total** | **98** | **1,347,974** | 100% |
+
+Its raw totals were 202 input, 432,298 cache write, 4,107,097 cache read and 79,338 output.
+
+Planning the whole todo project cost less than half of building its first task. T1.1 cost about a twelfth of the plan's baseline of about 16M weighted per task, but it is a small set-up task in a tiny project, so that says nothing about the baseline.
+
+Nebari's planning session has no token figure in the plan, so there is nothing to compare these with.
+
+### Fixed or filed
+
+**The nine prompt faults, fixed in `plugins/afk/skills/master-plan/prompts/`:**
+
+1. **The extend session asked an open question with no candidates.** `modes.md`: the first question of an extend session now lists, in the same message, the entries of the plan's Deferred section and its open questions.
+2. **"Read the master plan in full" cannot be done on a long plan.** `modes.md`: the extend survey now reads the header, the Decisions table, the milestone list and the sections and tasks the request touches, and says a long plan is not read line by line. The session had already done this against its instructions; the instructions now match.
+3. **A request that is already built was put in a dialog.** `phases-early.md` and `modes.md`: when the survey finds the request is already built, the session says so in a plain message that names where it is and asks in free text what the owner wants instead. A question the owner cannot answer without trying something never goes in a dialog.
+4. **The critic judged against a request the owner had dropped.** `critic.md`, `phases-late.md` and `modes.md`: the critic's prompt has a third slot holding the owner's own later words that replaced or widened the request, quoted exactly, or `none`. The session fills it from the saved answers. The brief itself stays unedited (A2).
+5. **A made-up time.** `phases-early.md`: the time of an answer is read with `date -u +%FT%TZ`, never written from memory or from the example.
+6. **The name and the repository were asked although the folder answered them.** `phases-early.md`: the survey runs `git remote -v` and notes the folder's name, and shows what it found for the owner to confirm with the profile entries instead of asking open questions.
+7. **The reference project's location cost a round.** `phases-early.md`: a setup question that asks for a reference project asks where it is in the same question.
+8. **A profile rule was confirmed before the answers it depends on.** `phases-early.md`: entries that depend on an answer still open are marked when the profile is shown and confirmed again once those answers are in. When a later answer overrides an entry, the saved answer to the profile check is corrected.
+9. **The CI task asked the build session for something only afk can see.** T1.1's acceptance ended with "the pull request for this task shows the `CI` workflow's three jobs passing". A build session does not push, so T1.1's agent raised two inbox items (`rfsv6p`, `ygtwsp`) about a check it could not make. `phases-late.md`: the CI task's Acceptance now names the commands the workflow runs and says they pass in a fresh clone; it does not ask to see the workflow pass on a pull request, because afk checks that when it ships.
+
+The plugin version went from 5.7.2 to 5.7.3 in both plugin files.
+
+**The four code faults, filed as notices in afk's inbox and not fixed:**
+
+- `9pxewe`: afk records no tokens for a planning session, so `afk tokens` has nothing for one.
+- `yrww8c`: inbox items a task's agent raised stay open after the task is merged and done. Todo still shows `ygtwsp`, `rfsv6p` and `jfcu5y` from T1.1.
+- `taa7na`: the park message for an invalid GitHub login says to run `gh auth login` where the tool itself asked for `gh auth refresh -h github.com`.
+- `8szxye`: `afk plan` has no command to record an answer to a planning question, so the session edits `questions.jsonl` by hand. That is how a time was made up, and how saved options came to differ from the ones shown.
+
+**The owner check:** `wnr9uy`, "Watch the next real afk plan session for the nine prompt fixes". It lists the nine and says they were not proven by a second run.
+
+### What this does and does not show
+
+What it shows:
+
+- **Both plans pass the checker with zero errors.** Met.
+- **The throwaway project has one task merged by the daemon.** Met: T1.1, pull request 1, about 40 minutes after the approve.
+- **The write-up names every place the owner had to correct a session.** Ten are listed above, five of them session faults, four the owner choosing differently and one partly a fault.
+- **The method's main claim held in these two runs.** Guessed setup facts caused almost all of nebari's rework. Here no setup fact was guessed, and the owner's turns fell from 35 to 9 in the session that planned a whole project.
+
+What it does not show:
+
+- **Two sessions is a small sample.** One owner, one evening, one machine.
+- **The todo project is far smaller than nebari.** Six tasks against nebari's 31, no accounts, no hosting, no addresses, no file storage. Most of nebari's rework was in exactly the parts this project does not have, so 9 turns against 35 is not a like-for-like comparison.
+- **The nine prompt fixes were not proven.** They were written from what went wrong and checked for size and presence. No session has run with them. The next real planning session is the test (`wnr9uy`).
+- **The fresh-clone wording may not be enough by itself.** T1.1's acceptance already said "`bin/setup` succeeds on a fresh clone", and the missing schema file still reached CI.
+- **The critic's worth is half shown.** It found a real fault in the todo plan. On M6 it was given the wrong request, so its clean report there is not evidence that M6 is right.
+- **Not exercised by these two runs:** plan changes that go through a pull request (`[planning] via_pr`), a reconcile against a real design system (T1.2 is still the owner's to do), and a real `afk plan amend --yes`.
+- **The session was not attached to either run.** Everything here is from the files, the transcripts and GitHub. What the owner thought or did away from the keyboard is not in them, beyond the one answer quoted above.
+
+### Scope ideas
+
+- The todo project's decision log records `deploy_healthy` although the project is not deployed anywhere. It was noticed and not looked into: it may be a deliberate pass for a project with no deploy check, or a misleading line. Filed as an inbox notice.
+
+### For the owner to check
+
+- Watch the next real `afk plan` session for the nine prompt fixes (inbox `wnr9uy`). None of them has been run by a real session yet.
+- `make install` was not run by this session: the daemon's `after_merge` command installs the new afk and refreshes the plugin when this merges. Until then the installed afk still carries the old prompts.
