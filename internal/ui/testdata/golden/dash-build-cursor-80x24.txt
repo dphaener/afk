@@ -1,0 +1,24 @@
+ afk Dashboard                         inbox 1 · 1 blocking  ctrl+space i: inbox
+╭─ Sessions ─────────────────╮╭─ Build ────────────────────────────────────────╮
+│     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff   B… │
+│                            ││ ────────────────────────────────────────────── │
+│ ▌ ● feat-auth      EXEC  ● ││ 1/7 done · T1.2: executing                     │
+│   ● Billing v2     REVW    ││ paused: U or afk resume starts it again        │
+│   ● fix-login-red… PLAN  ● ││ 1 item needs you · ctrl+space i: inbox         │
+│   ○ feat-search    DONE    ││                                                │
+│   ● scratch-1      SCR     ││   T1.1  done      Session model                │
+│   ○ old-migration  BRKN    ││   T1.2  running   Auth middleware              │
+│                            ││   T2.1  shipping  Billing totals               │
+│                            ││   T2.2  parked    Legacy sessions              │
+│                            ││   T2.3  failed    Login redirect  attempt 2    │
+│                            ││   T3.1  pending   Search index                 │
+│                            ││ › T3.2  pending   Pick a mail provider         │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+│                            ││                                                │
+╰────────────────────────────╯╰──────────────────────────── esc: back to list ─╯
+esc back to list · ctrl+space actions · ctrl+c quit · tab next tab …            

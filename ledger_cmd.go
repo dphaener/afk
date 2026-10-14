@@ -139,71 +139,18 @@ func runLedgerSet(args []string, stdout, stderr io.Writer, cwd, home string, git
 			}
 		}
 	}
-	if replacedGiven && st != ledger.Superseded {
-		return usage("--replaced-by only goes with the status superseded, not %s. Drop --replaced-by, or use superseded.", st)
-	}
-	if st == ledger.Superseded && len(repl) == 0 {
-		return usage("a superseded task needs the tasks that replace it. Add --replaced-by with their ids, for example --replaced-by T4.2a,T4.2b.")
-	}
-	if replacedGiven && len(ids) > 1 {
-		return usage("--replaced-by names the tasks that replace one task, so it cannot be used with %d task ids. Run the command once for each superseded task.", len(ids))
-	}
-	for _, id := range ids {
-		if slices.Contains(repl, id) {
-			return usage("%s cannot be replaced by itself. Name the other tasks in --replaced-by.", id)
-		}
+	if r := ledgerSetRefusal(ids, st, repl, replacedGiven); r != nil {
+		printLedgerSetResult(stdout, stderr, *r)
+		return r.Code
 	}
 
 	root, err := resolveBuildRoot(*proj, cwd, home, gitCommonDir)
 	if err != nil {
 		return usage("cannot tell which project to use. Pass --project with the folder that holds the master plan.")
 	}
-	state, err := loadBuildState(root)
-	if err != nil {
-		fmt.Fprintf(stderr, "afk ledger set: %v\n", err)
-		return 1
-	}
-
-	inPlan := make(map[string]bool, len(state.Tasks))
-	for _, t := range state.Tasks {
-		inPlan[t.ID] = true
-	}
-	for _, want := range append(slices.Clone(ids), repl...) {
-		if !inPlan[want] {
-			fmt.Fprintf(stderr, "afk ledger set: %s is not a task in %s.\nRun \"afk tasks\" to see the task ids.\n", want, state.PlanPath)
-			return 1
-		}
-	}
-
-	olds := make([]ledger.Status, len(ids))
-	changed := make([]bool, len(ids))
-	err = ledger.Update(root, func(l *ledger.Ledger) error {
-		for i, id := range ids {
-			olds[i] = l.Status(id)
-			var serr error
-			if changed[i], serr = l.Set(id, st, repl); serr != nil {
-				return serr
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "afk ledger set: could not update %s: %v\nNothing was changed. Fix the problem above and run the command again.\n", ledger.Path(root), err)
-		return 1
-	}
-
-	for i, id := range ids {
-		if !changed[i] {
-			fmt.Fprintf(stdout, "%s is already %s\n", id, st)
-			continue
-		}
-		line := fmt.Sprintf("%s: %s → %s", id, olds[i], st)
-		if st == ledger.Superseded {
-			line += " (replaced by " + strings.Join(dedupe(repl), ", ") + ")"
-		}
-		fmt.Fprintln(stdout, line)
-	}
-	return 0
+	res := setLedgerStatusForSurface(root, ids, st, repl, replacedGiven)
+	printLedgerSetResult(stdout, stderr, res)
+	return res.Code
 }
 
 // runLedgerInit implements `afk ledger init` and returns the exit code: 0 when

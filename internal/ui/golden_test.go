@@ -547,6 +547,82 @@ func TestGoldenBuildTab(t *testing.T) {
 	assertGolden(t, "dash-build-120x40", render(m))
 }
 
+// TestGoldenBuildCursor pins the Build tab's task cursor (T7.11) at both
+// sizes, reached the way a user moves it: `b`, then the arrow keys. At 120×40
+// it is moved two rows down from the current task, so the frame shows the
+// gutter on every row and the selection on a row that is not where the cursor
+// starts. At 80×24 it is sent to the last task with end, the case where the
+// rows are laid out two cells narrower and the cursor's row has to be scrolled
+// into a window that cannot show the whole tab.
+func TestGoldenBuildCursor(t *testing.T) {
+	cases := []struct {
+		name string
+		w, h int
+		keys []tea.Msg
+	}{
+		{"dash-build-cursor-120x40", 120, 40, []tea.Msg{keyDown, keyDown}},
+		{"dash-build-cursor-80x24", 80, 24, []tea.Msg{tea.KeyPressMsg{Code: tea.KeyEnd}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := goldenModel(t, tc.w, tc.h)
+			m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
+			m = pressLeader(t, m, keyRune('b'))
+			for _, k := range tc.keys {
+				m, _ = update(t, m, k)
+			}
+			if !m.buildCursorShown() {
+				t.Fatalf("the cursor is not shown (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
+			}
+			m.clearStatus()
+			assertGolden(t, tc.name, render(m))
+		})
+	}
+}
+
+// TestGoldenTaskStatusConfirm pins the "set this task's status" confirm
+// (T7.11) at both sizes, reached the way a person reaches it: `b`, the cursor
+// moved to the failed task, ctrl+space S, the highlight moved to pending, and
+// enter. The frame shows the change, what follows from it and the y/n hint;
+// at 80×24 the dialog is narrowest and the consequence has to wrap. The seam
+// is a stand-in that is never called: nothing is pressed after the confirm.
+func TestGoldenTaskStatusConfirm(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-build-status-confirm-80x24", 80, 24},
+		{"dash-build-status-confirm-120x40", 120, 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m := goldenModel(t, size.w, size.h)
+			m.deps.SetTaskStatus = func(root, id, status string, replacedBy []string) TaskStatusResult {
+				t.Fatal("the seam was called by a frame")
+				return TaskStatusResult{}
+			}
+			m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
+			m = pressLeader(t, m, keyRune('b'))
+			for m.buildCursorID != "T2.3" {
+				before := m.buildCursorIndex
+				m, _ = update(t, m, keyDown)
+				if m.buildCursorIndex == before {
+					t.Fatal("the cursor did not reach T2.3")
+				}
+			}
+			m = pressLeader(t, m, keyRune('S'))
+			for m.taskStatusPick > 0 {
+				m, _ = update(t, m, keyUp)
+			}
+			m, _ = update(t, m, keyEnter)
+			if m.modal != inputConfirmTaskStatus || m.taskStatusNew != "pending" {
+				t.Fatalf("the confirm is not up for pending (modal=%v new=%q)", m.modal, m.taskStatusNew)
+			}
+			m.clearStatus()
+			assertGolden(t, size.name, render(m))
+		})
+	}
+}
+
 // TestGoldenPlanStart pins the plan actions' screens (T7.3): the amend form
 // at both sizes, reached the way a person reaches it (ctrl+space, "amend",
 // enter) with a sentence typed; the reconcile form after a blank enter, so

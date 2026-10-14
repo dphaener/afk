@@ -157,6 +157,11 @@ var leaderTable = []leaderEntry{
 	{key: "i", action: actionInbox, reach: reachOverview},
 	{key: "P", action: actionPauseBuild, reach: reachOverview},
 	{key: "U", action: actionResumeBuild, reach: reachOverview},
+	// "set this task's status" (T7.11) acts on the Build tab's cursor row,
+	// which is drawn only while the right side has the keyboard, so it is a
+	// right-side action. Upper-case S: lower-case s would run it from an
+	// empty query instead of filtering for "start a new plan".
+	{key: "S", action: actionTaskStatus, reach: reachRight},
 	{key: "f", action: actionFocusPane, reach: reachList},
 	{key: "t", action: actionPaneToggle, reach: reachRight},
 	{key: "\\", action: actionDetailUnfocus, reach: reachRight},
@@ -239,6 +244,7 @@ var leaderNames = map[modeAction]string{
 	actionInbox:         "inbox",
 	actionPauseBuild:    "pause the build",
 	actionResumeBuild:   "resume the build",
+	actionTaskStatus:    "set this task's status",
 	actionFocusPane:     "focus the right side",
 	actionPaneToggle:    "agent or overview",
 	actionDetailUnfocus: "back to list",
@@ -303,6 +309,9 @@ var leaderHelp = map[modeAction]string{
 	// and its neighbours).
 	actionProjectAdd:    "Put a folder on the daemon's list, as afk project add does",
 	actionProjectRemove: "Take the selected project off the daemon's list; its files stay",
+	// Must not say "approve", "errors", "warnings" or "document", the words
+	// other rows are found by.
+	actionTaskStatus: "Change the selected Build task's status, as afk ledger set does",
 }
 
 // leaderRow is one action in the dialog.
@@ -487,6 +496,12 @@ type leaderConds struct {
 	// Name, which the remove row's reason reads.
 	projectRowSelected, projectRowListed bool
 	projectRowName                       string
+	// canSetTaskStatus is "the SetTaskStatus seam is wired" (T7.11).
+	// buildTabFocused is "the Build tab is drawn on the right and the right
+	// side has the keyboard", and buildTaskSelected "its cursor is on a
+	// task" (buildCursorShown and a cursor id in the rows): the picker acts
+	// on that task, and the cursor is not drawn anywhere else.
+	canSetTaskStatus, buildTabFocused, buildTaskSelected bool
 	// planKnown, planErr, planSession, planDamaged, planMode and planPhase
 	// are Model.planStatus as the approve row needs it: read at least once,
 	// a load error, a planning session, a damaged state file, and the
@@ -588,6 +603,8 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		}
 	case actionPlanApprove:
 		return planApproveBlockedReason(c)
+	case actionTaskStatus:
+		return taskStatusBlockedReason(c)
 	case actionProjects:
 		if !c.hasActiveProject {
 			return "no projects to switch between"

@@ -2743,6 +2743,8 @@ func (m Model) composeDetailBody(contentW int) string {
 	// fixture above every tab: the strip is the pane's title row now, and a
 	// head repeated over Waves or Stack would cost two rows on the tab that
 	// most needs them.
+	// The strip and the rule are detailStripLines lines; the Build tab's
+	// cursor counts on that (revealBuildCursor).
 	tabs := visibleDetailTabs(m.stack, hasBuild)
 	active := m.activeDetailTab()
 	b.WriteString(renderTabStrip(tabs, active, contentW))
@@ -2757,7 +2759,10 @@ func (m Model) composeDetailBody(contentW int) string {
 		return b.String()
 	}
 
-	ctx := panelContext{Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build, PlanStatus: m.planStatus}
+	ctx := panelContext{
+		Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build, PlanStatus: m.planStatus,
+		BuildCursorShown: m.buildCursorShown(), BuildCursor: m.buildCursorIndex,
+	}
 	spec := detailTabSpecs()[active]
 	rendered := 0
 	for _, p := range spec.panels {
@@ -2923,6 +2928,12 @@ func (m Model) activeDetailTab() detailTab {
 	}
 	return tabOverview
 }
+
+// detailStripLines is the lines composeDetailBody writes above a tab's
+// content: the tab strip (exactly one row, renderTabStrip) and the rule under
+// it. The Build tab's cursor adds it to the row's place in the tab to find the
+// row's line in the detail body.
+const detailStripLines = 2
 
 // renderTabStrip draws the tab names on one line, the active one in the panel
 // title style and the rest dim, with a right-aligned key hint when the width
@@ -3389,6 +3400,12 @@ type panelContext struct {
 	// plan line on the master-plan overview and the Build tab. Like Build it is
 	// about the project and not the selected session.
 	PlanStatus PlanStatus
+	// BuildCursorShown and BuildCursor are the Build tab's cursor: whether it
+	// is drawn (Model.buildCursorShown) and the index of its row. They are a
+	// separate flag and index, not one index with a "none" value, so a
+	// panelContext built without them draws the tab with no cursor.
+	BuildCursorShown bool
+	BuildCursor      int
 }
 
 // wavesPanel renders the plan's waves and tasks with their checkbox states.

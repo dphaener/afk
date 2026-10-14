@@ -16,8 +16,10 @@ import (
 //
 // The tab is about the project, not the selected session, so nothing here
 // takes a Session: it reads the same on every row and with no row at all.
-// It only shows. Starting the build and writing the ledger are not done from
-// the dashboard at all. Pausing and resuming are, by the `P` and `U` keys,
+// It only shows. While the right side has the keyboard it draws a cursor on
+// one task row (buildcursor.go), which is where the dashboard points at a
+// task; it still writes nothing. Starting the build is not done from the
+// dashboard at all. Pausing and resuming are, by the `P` and `U` keys,
 // but not from this file: see buildpause.go.
 
 // noBuildNotice is what `b` says in a project that has no build to show. The
@@ -50,7 +52,11 @@ type buildPanel struct{}
 func (buildPanel) Title() string { return "Build" }
 
 func (buildPanel) Render(ctx panelContext, width int) []string {
-	return buildTabLines(ctx.Build, ctx.PlanStatus, width)
+	cursor := -1
+	if ctx.BuildCursorShown {
+		cursor = ctx.BuildCursor
+	}
+	return buildTabLinesAt(ctx.Build, ctx.PlanStatus, width, cursor)
 }
 
 // buildTabLines is the Build tab's content at the given width: the summary
@@ -59,8 +65,27 @@ func (buildPanel) Render(ctx panelContext, width int) []string {
 // row count stays one per task.
 //
 // It is a pure function of the snapshot so the whole layout is table-testable
-// without a Model.
+// without a Model. It is the tab with no cursor, as it is drawn while the
+// session list has the keyboard.
 func buildTabLines(snap buildview.Snapshot, plan PlanStatus, width int) []string {
+	return buildTabLinesAt(snap, plan, width, -1)
+}
+
+// buildRowsTop is how many lines of buildTabLinesAt come before the first task
+// row: the summary block and the blank line under it. It is computed from
+// buildSummaryLines, the function that writes those lines, so the model's
+// count of where the cursor's row is (revealBuildCursor) cannot drift from
+// what is drawn.
+func buildRowsTop(snap buildview.Snapshot, plan PlanStatus, width int) int {
+	return len(buildSummaryLines(snap, plan, max(width, 1))) + 1
+}
+
+// buildTabLinesAt is buildTabLines with the cursor on row cursor, or with no
+// cursor when cursor is negative. With a cursor every row is drawn behind a
+// two-cell gutter (buildRowGutter), so the rows do not shift sideways as the
+// cursor moves, and laid out two cells narrower so the columns keep their
+// trim order inside the same width.
+func buildTabLinesAt(snap buildview.Snapshot, plan PlanStatus, width, cursor int) []string {
 	if width < 1 {
 		width = 1
 	}
@@ -75,7 +100,42 @@ func buildTabLines(snap buildview.Snapshot, plan PlanStatus, width int) []string
 		return append(lines, "", theme.dim.Render(truncate("The master plan has no tasks.", width)))
 	}
 	lines = append(lines, "")
-	return append(lines, buildRowLines(snap.Rows, width)...)
+	if cursor < 0 {
+		return append(lines, buildRowLines(snap.Rows, width)...)
+	}
+	return append(lines, buildCursorRowLines(snap.Rows, width, cursor)...)
+}
+
+// buildRowGutter is the cells the cursor's gutter takes on the left of every
+// row while the cursor is shown: the marker and a space.
+const buildRowGutter = 2
+
+// buildCursorMarker is the cursor's glyph. It is the chevron and not the
+// session list's rail (cursorRail) on purpose: the rail is that list's sign
+// that the keyboard is on the left, and the Build tab's cursor is shown only
+// while it is on the right.
+const buildCursorMarker = "›"
+
+// buildCursorRowLines is buildRowLines inside a gutter, with the row at
+// cursor marked and painted in the session list's selected-row style.
+//
+// The rows are laid out at width minus the gutter by buildRowLines itself, so
+// the rule it keeps (the detail goes first, then the title is cut, the id and
+// status always show) holds exactly as it does without a cursor. The selected
+// row goes through spanStyle for the reason padSessionRow does: Render alone
+// would paint the background only up to the first styled cell (the id).
+func buildCursorRowLines(rows []buildview.Row, width, cursor int) []string {
+	inner := buildRowLines(rows, max(width-buildRowGutter, 1))
+	out := make([]string, len(inner))
+	for i, ln := range inner {
+		if i != cursor {
+			out[i] = truncate(strings.Repeat(" ", buildRowGutter)+ln, width)
+			continue
+		}
+		line := truncate(theme.rowCursor.Render(buildCursorMarker)+" "+ln, width)
+		out[i] = theme.rowSelected.Width(width).Render(spanStyle(line, theme.rowSelected))
+	}
+	return out
 }
 
 // buildSummaryLines is the block above the task rows. Each line is a separate

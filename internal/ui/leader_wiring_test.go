@@ -600,7 +600,19 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 		m.allProjectsRows = allProjectsFixture()
 		return m
 	}
+	// buildTab is the Build tab with the keyboard on the right and the
+	// cursor on the current task, with the status seam wired (T7.11).
+	buildTab := func(t *testing.T) Model {
+		m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
+		m.deps.SetTaskStatus = func(string, string, string, []string) TaskStatusResult { return TaskStatusResult{} }
+		m, _ = pressAction(t, m, keyB)
+		return m
+	}
 	return map[modeAction]leaderActionCase{
+		// "set this task's status" (T7.11) never had a key; S on the Build
+		// tab is no action and must not become one.
+		actionTaskStatus: {setup: buildTab, mode: inputDetail, old: press('S'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputPickTaskStatus }},
 		// Add and remove a project (T7.10) never had a key; + and - on the
 		// screen are no action and must not become one.
 		actionProjectAdd: {setup: screen, mode: inputAllProjects, old: press('+'),
