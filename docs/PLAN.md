@@ -2578,34 +2578,27 @@ thing it does not do is attach to a session.
   from a browser creates `.afk/plan/state.json` in mode `extend` and lands on the chat view; amend
   leaves its sentence in `.afk/plan/brief.md`. `make check` is green.
 
-#### T8.15 — Plan a new project: folder and GitHub repo
-- **Depends on:** T8.14, T7.6
-- **Goal:** the overview starts a new plan, as bare `afk plan` does, in an existing folder or in a new
-  one made from a typed name under the profile's project location, offers a private GitHub repository
-  for a folder it just made, and opens the chat view.
-- **Background:** T7.4, T7.5 and T7.6 give the dashboard this: the pure decision from the typed text,
-  the profile's `project location` and the disk (use, create, refuse), the folder made a git
-  repository, and the yes-or-no for a private repository with the owner's `gh` login, asked every
-  time because the profile's rule is "accounts: use the accounts I already have, and ask before
-  opening a new one". The page shows only projects the daemon lists or the review list names, so a new
-  project would otherwise vanish from the page until it is approved.
-- **Scope:** a "plan a new project" action on the overview: a field for a path or a name, the same
-  decision and refusals, a confirm showing the full path before anything is created, then for a
-  folder just made the repository question (no by default; not asked, with the reason and what to
-  run, when `gh` is missing or not logged in), then the planning session through T7.3's entry point
-  and the chat view. A project whose planning was started here stays on the overview, marked as being
-  planned, until it is approved or its planning session is gone, through a small list in afk's state
-  folder that §4 gains in the same change. The same under `/api`. README: the web page section.
-- **Must not:** create a folder outside the project location from a bare name; create anything
-  without the confirm; create a public repository or push; store a token.
-- **Acceptance:** handler tests with fakes for the entry point, the filesystem decision and `gh`: an
-  existing empty repository, a name created, a name with no project location, a folder with a plan
-  (refused), the repository question's yes, no, `gh` missing and a failure. A test that the
-  being-planned list adds and drops a project. No test calls GitHub. Against a scratch build with a
-  scratch profile whose location is a scratch folder and a stand-in `gh` on a scratch `PATH`: typing
-  `demo`, confirming and answering yes leaves `<scratch>/demo/.git`, the stand-in's record of one
-  private create, `.afk/plan/state.json` in mode `new`, and `demo` on the overview. `make check` is
-  green.
+#### T8.15 — Plan a new project in an existing folder
+- **Depends on:** T8.14, T7.4
+- **Goal:** the overview starts a new plan, as bare `afk plan` does, in a folder the owner types, opens
+  its chat view, and keeps that project on the overview while it is being planned.
+- **Background:** T7.4 extends T7.3's entry point to the new mode, with the same refusals as
+  `afk plan` (a folder that does not exist, one that already has a plan or an open session). The page
+  shows only projects the daemon lists or the review list names, so a new project would otherwise
+  vanish from the page until it is approved.
+- **Scope:** a "plan a new project" action on the overview: a field for a folder path (`~/` expands),
+  a confirm showing the full path, then the planning session through the entry point and the chat
+  view. A project whose planning was started here stays on the overview, marked as being planned,
+  until it is approved or its planning session is gone, through a small list in afk's state folder
+  that §4 gains in the same change. The same under `/api`. README: the web page section.
+- **Must not:** create a folder (T8.15a); start anything without the confirm; write `config.toml`.
+- **Acceptance:** handler tests with a fake entry point: an existing empty repository, a folder with a
+  plan (refused, pointing at the change actions), a folder that does not exist (refused, naming it),
+  and a POST without the confirm changing nothing. A table test for the being-planned list: added on
+  start, dropped on approve, dropped when the planning session is gone. Against a scratch build with a
+  stand-in agent: typing the path of an empty throwaway repository and confirming leaves
+  `.afk/plan/state.json` in mode `new`, lands on the chat view, and shows the project on the overview.
+  `make check` is green.
 
 #### T8.16 — Add and remove projects
 - **Depends on:** T8.5, T7.10
