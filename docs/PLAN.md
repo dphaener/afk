@@ -8,6 +8,8 @@
 **How to use this document.** This is the master plan. Each task (`T<milestone>.<n>`) is sized for one
 autonomous plan → execute → review cycle. Read **§1–§7 in full** before planning any task: they are the
 shared contract every task builds against. Never start a task whose dependencies are not merged.
+Where this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design system
+wins on looks. That design system covers the web page only (M8); the terminal dashboard has none.
 
 **How afk gets built (bootstrap).** As autonomously as possible, on the VM (§2, T0.0):
 
