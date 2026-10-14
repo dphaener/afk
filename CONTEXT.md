@@ -203,3 +203,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Confirm field**: the `confirm=yes` form field (or `{"confirm": true}` in JSON) a pause or resume POST must carry; without it the POST changes nothing.
 - **Sessions screen**: the web page's list of a project's sessions, `GET /p/<project>/sessions`, with each session's phase, progress, review verdict and whether it waits for you, and a badge for the rows that are not ordinary sessions.
 - **Session screen**: the web page's read-only overview of one session, `GET /p/<project>/sessions/<name>`; its terminal is opened from `afk dash` or `afk attach`.
+- **Session actions**: Clean, Restart and Label on a session's screen of the web page, and Start a new autonomous session… on the sessions screen; each asks first, and the page starts only autonomous sessions.

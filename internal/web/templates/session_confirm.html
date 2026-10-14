@@ -1,0 +1,28 @@
+{{define "title"}}{{.Sheet.Title}}{{end}}
+{{define "content"}}
+<div class="stack">
+<h1>{{.Sheet.Title}}</h1>
+{{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+{{if .Form}}
+{{template "new-session-form" .Form}}
+<div class="btn-row"><a class="btn btn--secondary" href="{{.Back}}">Back</a></div>
+{{else if .Offered}}
+<div>{{range .Sheet.Body}}<p>{{.Text}}</p>{{end}}{{with .Sheet.Quote}}<p class="session-quote">{{.}}</p>{{end}}</div>
+<form method="post" action="{{.Sheet.Path}}" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  {{range .Sheet.Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+  {{end}}{{if .Sheet.LabelInput}}<div class="field">
+    <label class="field__label" for="label-input">Label</label>
+    <input class="input" type="text" id="label-input" name="label" value="{{.Sheet.LabelValue}}" maxlength="128" autocomplete="off" aria-describedby="label-hint">
+    <span class="field__hint" id="label-hint">{{.Sheet.Hint}}</span>
+  </div>{{end}}
+  <div class="btn-row">
+    <button type="submit" class="btn {{if .Sheet.Danger}}btn--danger{{else}}btn--primary{{end}}">{{.Sheet.Button}}</button>
+    <a class="btn btn--secondary" href="{{.Back}}" autofocus>{{.Sheet.Safe}}</a>
+  </div>
+</form>
+{{else}}
+<div class="btn-row"><a class="btn btn--secondary" href="{{.Back}}">Back</a></div>
+{{end}}
+</div>
+{{end}}

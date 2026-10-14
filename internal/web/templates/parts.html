@@ -57,3 +57,51 @@
   </div>
 </dialog>
 {{end}}
+
+{{/* session-sheet is a session action's confirm (sessions_actions.go): the
+     question, what happens one sentence to a paragraph, what the owner typed
+     when there is any, and for Label the field itself. The action button
+     sits outside its form (form=), as the status sheet's does, so the safe
+     button can stay a method="dialog" form. A data-fill-* attribute holds
+     the server's words with {name} and {description} where the new-session
+     form's values go; confirm.js fills them in when it opens the sheet. */}}
+{{define "session-sheet"}}
+<dialog class="confirm-sheet" id="{{.ID}}" aria-labelledby="{{.ID}}-title" aria-describedby="{{.ID}}-body">
+  <h2 class="confirm-sheet__title" id="{{.ID}}-title"{{with .TitleFill}} data-fill-text="{{.}}"{{end}}>{{.Title}}</h2>
+  <div class="confirm-sheet__body" id="{{.ID}}-body">{{range .Body}}<p{{with .Fill}} data-fill-text="{{.}}"{{end}}>{{.Text}}</p>{{end}}{{if or .Quote .QuoteFill}}<p class="session-quote"{{if .QuoteFill}} data-fill-text="{description}"{{end}}>{{.Quote}}</p>{{end}}</div>
+  <form method="post" action="{{.Path}}" id="{{.ID}}-form" class="stack" data-enhance>
+    <input type="hidden" name="confirm" value="yes">
+    {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}"{{if .Fill}} data-fill-field="{{.Name}}"{{end}}>
+    {{end}}{{if .LabelInput}}<div class="field">
+      <input class="input" type="text" id="{{.ID}}-input" name="label" value="{{.LabelValue}}" maxlength="128" autocomplete="off" aria-labelledby="{{.ID}}-title" aria-describedby="{{.ID}}-hint">
+      <span class="field__hint" id="{{.ID}}-hint">{{.Hint}}</span>
+    </div>{{end}}
+  </form>
+  <div class="btn-row">
+    <button type="submit" form="{{.ID}}-form" class="btn {{if .Danger}}btn--danger{{else}}btn--primary{{end}}" data-loading-label="{{.Loading}}">{{.Button}}</button>
+    <form method="dialog">
+      <button type="submit" class="btn btn--secondary" autofocus>{{.Safe}}</button>
+    </form>
+  </div>
+</dialog>
+{{end}}
+
+{{/* new-session-form is the Name and "What should it do?" form. It GETs the
+     no-JS confirm page; with the script, data-confirm-form makes confirm.js
+     open the sheet instead, holding the typed values. The browser checks
+     required and pattern before either happens; the server checks again. */}}
+{{define "new-session-form"}}
+<form method="get" action="{{.Page}}" class="stack"{{with .SheetID}} data-confirm-form="{{.}}"{{end}}>
+  <div class="field">
+    <label class="field__label" for="new-session-name">Name</label>
+    <input class="input input--mono" type="text" id="new-session-name" name="name" value="{{.Name}}" required pattern="[a-z0-9][a-z0-9\-]*" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="new-session-name-hint">
+    <span class="field__hint" id="new-session-name-hint">Lower-case letters, digits and dashes, like fix-login. It is also its branch's name.</span>
+  </div>
+  <div class="field">
+    <label class="field__label" for="new-session-description">What should it do?</label>
+    <textarea class="textarea" id="new-session-description" name="description" required maxlength="5000" rows="4" aria-describedby="new-session-description-hint">{{.Description}}</textarea>
+    <span class="field__hint" id="new-session-description-hint">It plans its work from this and then runs on its own.</span>
+  </div>
+  <div class="btn-row"><button type="submit" class="btn btn--primary">Start session</button></div>
+</form>
+{{end}}

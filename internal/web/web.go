@@ -134,6 +134,13 @@ type SessionView struct {
 	VerdictError  string
 	// Wedged is true while the host has marked the agent as gone quiet.
 	Wedged bool
+	// Stranded marks a status-backed .afk/{name}/ found in a checkout that
+	// is not the session's own worktree (discovery's
+	// KindStatusWithoutWorktree). Cleaning it archives and removes that
+	// directory and leaves the checkout alone, so the Clean confirm must say
+	// "worktree kept" for it, and Restart is not offered: there is no
+	// worktree of its own for a host to start in.
+	Stranded bool
 }
 
 // SessionCheck is one check of a session's review verdict, as the verdict
@@ -234,6 +241,23 @@ type Deps struct {
 	// reading at a time" to each caller), so the guard is the refresher's.
 	// Nil means the page offers no way to refresh usage.
 	RefreshUsage func() UsageRefreshResult
+	// CleanSession, RestartSession, SetSessionLabel and NewSession are the
+	// session actions of the Sessions screens (sessions_actions.go): what
+	// `afk clean`, the dashboard's restart, its label editor and `afk new
+	// --autonomous` do, through the root package's print-free entry points,
+	// which this package cannot import. Each says what happened in a
+	// SessionActionResult. Nil means the page offers no such action: no
+	// button is drawn and its POST is not found.
+	//
+	// Every one takes the session's name and never a folder: the worktree is
+	// found again by discovery behind the seam, so a request cannot point an
+	// action at a folder of its choosing. phaseSeen is the phase the page
+	// showed when the owner pressed Clean; the clean is refused when a fresh
+	// read says otherwise, as the dashboard refuses it.
+	CleanSession    func(root, name, phaseSeen string) SessionActionResult
+	RestartSession  func(root, name string) SessionActionResult
+	SetSessionLabel func(root, name, label string) SessionActionResult
+	NewSession      func(root, name, description string) SessionActionResult
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -309,6 +333,25 @@ type UsageRefreshResult struct {
 	Outcome string `json:"outcome"`
 	Text    string `json:"text"`
 }
+
+// SessionActionResult is what each session action seam reports: one of the
+// SessionAction outcomes and a plain sentence for the owner. It is this
+// package's own type because the root's result types cannot be imported.
+type SessionActionResult struct {
+	Outcome string `json:"outcome"`
+	Text    string `json:"text"`
+}
+
+// The outcomes a SessionActionResult takes.
+const (
+	// SessionActionDone: the action happened.
+	SessionActionDone = "done"
+	// SessionActionRefused: nothing was done, because the request could not
+	// work as it stands (the session changed, a name is taken, ...).
+	SessionActionRefused = "refused"
+	// SessionActionFailed: the action was tried and went wrong.
+	SessionActionFailed = "failed"
+)
 
 // The outcomes a UsageRefreshResult takes. A save that failed after a good
 // reading is UsageRefreshFailed: the owner's next step is the same, and the
@@ -399,10 +442,17 @@ var routes = []route{
 	// Setting a task's status: what `afk ledger set` does, behind the
 	// confirm, through Deps.SetTaskStatus and nothing else.
 	{http.MethodPost, "/p/{project}/tasks/{id}/status", (*server).setTaskStatus},
-	// The sessions list and one session's overview. Read only: the page
-	// cannot open a session's terminal, and acts on none (see sessions.go).
+	// The sessions list and one session's overview. The page cannot open a
+	// session's terminal (see sessions.go).
 	{http.MethodGet, "/p/{project}/sessions", (*server).sessionsList},
 	{http.MethodGet, "/p/{project}/sessions/{name}", (*server).session},
+	// The session actions, each behind the confirm and through its Deps seam
+	// and nothing else (see sessions_actions.go). POST on the list starts a
+	// new autonomous session.
+	{http.MethodPost, "/p/{project}/sessions", (*server).newSession},
+	{http.MethodPost, "/p/{project}/sessions/{name}/clean", (*server).cleanSession},
+	{http.MethodPost, "/p/{project}/sessions/{name}/restart", (*server).restartSession},
+	{http.MethodPost, "/p/{project}/sessions/{name}/label", (*server).labelSession},
 	{http.MethodPost, "/p/{project}/pause", (*server).pause},
 	{http.MethodPost, "/p/{project}/resume", (*server).resume},
 }
@@ -477,6 +527,11 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("GET /p/{project}/confirm/{action}", s.confirm)
 	// The no-JS page behind a task's Set status… is HTML only too.
 	mux.HandleFunc("GET /p/{project}/tasks/{id}/status", s.taskStatusPage)
+	// The no-JS pages behind the session actions are HTML only too. The new
+	// session's page is more specific than /sessions/{name}, so it wins for
+	// the address /sessions/new (see sessionNewPage).
+	mux.HandleFunc("GET /p/{project}/sessions/{name}/confirm/{action}", s.sessionConfirmPage)
+	mux.HandleFunc("GET /p/{project}/sessions/new", s.sessionNewPage)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong

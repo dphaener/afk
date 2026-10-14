@@ -19,8 +19,26 @@
   {{end}}</div>
 </div>
 </section>
+{{/* The Actions sit outside both live regions, and their sheets at the end
+     of the page, so a live swap never takes a sheet away while it is open.
+     Without the script each row goes to its no-JS confirm page. */}}
+{{with .Page.Actions.Rows}}
+<section class="section session__actions" aria-labelledby="actions-title">
+  <div class="section-head"><h2 class="section-head__title" id="actions-title">Actions</h2></div>
+  <ul class="list">
+  {{range .}}<li><a class="row" href="{{.Href}}" data-confirm="{{.Sheet}}">
+    <span class="row__main">
+      <span class="row__title{{if .Danger}} action--danger{{end}}">{{.Label}}</span>
+      <span class="row__meta">{{.Meta}}</span>
+    </span>
+    <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+  </a></li>
+  {{end}}</ul>
+</section>
+{{end}}
 <div class="notice notice--info">
   <div class="notice__body">This page shows the session but cannot open its terminal. Open it from <code>afk dash</code> or with <code>afk attach {{.Name}}</code>.{{if .Planning}} Its chat view on this page comes with a later update.{{end}}</div>
 </div>
 </div>
+{{range .Page.Actions.Sheets}}{{template "session-sheet" .}}{{end}}
 {{end}}

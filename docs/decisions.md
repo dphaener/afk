@@ -3130,3 +3130,24 @@ Decided while building (T8.9):
 - **Two live regions.** The state card and the badges beside the title are separate live regions, so a change to either swaps only that part, as the project page does. The Summary heading sits inside the state card, so the whole overview is one region.
 
 Verification for the owner (T8.9): open `/p/<project>/sessions` for a project with a running session, change that session's `status.json` phase, and see the list and its screen change without a reload. Then open a one-off and a worktree problem row and read what each says it is.
+
+## T8.10
+
+T8.10 adds the dashboard's session actions to the web page: Clean, Restart and Label on a session's screen, and Start a new autonomous session… on the sessions list, each behind a confirm, with `/api` twins. These are the decisions the master plan left open, numbered as in the work plan's assumptions (2026-10-14).
+
+- **Clean keeps `afk clean`'s gate (A1).** The page refuses to clean a session that is not done or failed, the way `afk clean` does without `--force`. It offers no force: removing a working session's copy of the project from a phone is the destructive case, so the refusal tells the owner to use `afk clean --force` or the dashboard. (Decided without asking; this would have been put to the owner.)
+- **The branch always stays (A2).** The page never deletes a branch. Clean archives the session's folder and removes its worktree, as `afk clean` does by default.
+- **A page-started session is autonomous, not unattended (A3).** It is started exactly as `afk new --autonomous` starts one, which is also what the dashboard's form does. It does not run in the agent's unattended permission mode, so a permission prompt waits until someone opens the session from `afk dash`. Running with permissions bypassed from a web page is the owner's call to make, so this change does not make it. (Decided without asking; this would have been put to the owner.)
+- **Which sessions can be restarted (A4).** Only a planned session whose host has stopped (its host is started again) or whose agent has gone quiet (the host replaces the agent, which resumes its conversation). A one-off session, the planning session, a worktree problem and a healthy running session are refused, because restarting a one-off or the planning session would start a session the owner has to talk to.
+- **A clean that went stale is refused (A5).** The confirm carries the phase the page showed. If the session has moved on since, nothing is cleaned, as in the dashboard.
+- **A description is required (A6).** The page refuses a blank description and one over 5000 characters (the dashboard's limit). An autonomous session with no request stops at once, so starting one is never useful.
+- **Addresses (A7, A8).** `POST /p/{project}/sessions` starts a session, and `POST /p/{project}/sessions/{name}/clean`, `/restart` and `/label` act on one. Each has an `/api` twin, so there are nineteen routes, and each needs the confirm in its body. The worktree is always found by the server, never taken from the request. Without JavaScript, each action has a confirm page of its own.
+- **Tests (A9).** Table tests are written with each piece; `make check` runs once in review.
+- **Prerequisites (A10).** None. T8.9 was merged first.
+
+Decided while building (T8.10):
+
+- **Clean words on the page.** A refused clean says the page does not force and names `afk clean --force` and `afk dash`, rather than the command's "pass --force" sentence. A done clean says what was archived and that the branch was kept.
+- **A session named `new`.** `GET /p/{project}/sessions/new` is the new-session confirm page, so a session literally named `new` cannot be opened by its page address; its `/api` address still works.
+
+Verification for the owner (T8.10): on a phone, open a session's screen and press Label, Restart and Clean, checking that each sheet opens with the safe button focused; then fill in Start a new autonomous session… and check that its confirm shows the name and description before it starts.

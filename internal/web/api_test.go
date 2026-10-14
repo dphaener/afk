@@ -118,6 +118,13 @@ type rig struct {
 	// answers statusResult. Nothing in the tasks pages may call it.
 	statusCalls  [][]string
 	statusResult TaskStatusResult
+	// cleanCalls, restartCalls, labelCalls and newCalls record every call of
+	// the four session action fakes, as (root, name, and the value posted:
+	// the phase seen, the label or the description). Each fake answers its
+	// result, which starts as done; a test sets another to see a refusal or
+	// a failure through.
+	cleanCalls, restartCalls, labelCalls, newCalls     [][]string
+	cleanResult, restartResult, labelResult, newResult SessionActionResult
 	// onStatus, when set, runs inside the fake SetTaskStatus before it
 	// answers, so a test can change rg.ledger as the real write would and
 	// prove the answer was read after the call.
@@ -270,6 +277,8 @@ func newRig(t *testing.T, cfg Config) *rig {
 		cfg.Token = testToken
 	}
 	rg.refreshResult = UsageRefreshResult{Outcome: UsageRefreshed, Text: "Usage read: 41% of the session used."}
+	done := SessionActionResult{Outcome: SessionActionDone, Text: "Done."}
+	rg.cleanResult, rg.restartResult, rg.labelResult, rg.newResult = done, done, done, done
 	srv, h, err := build(cfg, Deps{
 		Projects: func() []Project { return rg.projects },
 		Reviews:  func() []Project { return rg.reviews },
@@ -347,6 +356,22 @@ func newRig(t *testing.T, cfg Config) *rig {
 			}
 			return rg.statusResult
 		},
+		CleanSession: func(root, name, phaseSeen string) SessionActionResult {
+			rg.cleanCalls = append(rg.cleanCalls, []string{root, name, phaseSeen})
+			return rg.cleanResult
+		},
+		RestartSession: func(root, name string) SessionActionResult {
+			rg.restartCalls = append(rg.restartCalls, []string{root, name})
+			return rg.restartResult
+		},
+		SetSessionLabel: func(root, name, label string) SessionActionResult {
+			rg.labelCalls = append(rg.labelCalls, []string{root, name, label})
+			return rg.labelResult
+		},
+		NewSession: func(root, name, description string) SessionActionResult {
+			rg.newCalls = append(rg.newCalls, []string{root, name, description})
+			return rg.newResult
+		},
 		RefreshUsage: func() UsageRefreshResult {
 			rg.refreshCalls.Add(1)
 			if rg.refreshGate != nil {
@@ -380,6 +405,11 @@ func newRig(t *testing.T, cfg Config) *rig {
 // before the reading starts.
 func (rg *rig) blockRefresh() {
 	rg.refreshGate = make(chan struct{})
+}
+
+// sessionCalls is how many times any of the four session action fakes ran.
+func (rg *rig) sessionCalls() int {
+	return len(rg.cleanCalls) + len(rg.restartCalls) + len(rg.labelCalls) + len(rg.newCalls)
 }
 
 // releaseRefresh lets a blocked fake reading finish. Safe to call more than

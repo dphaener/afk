@@ -173,6 +173,14 @@ dialog.confirm-sheet::backdrop { background: var(--scrim); }
 .session__badges { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .session__state .card { display: flex; flex-direction: column; gap: var(--space-3); }
 .session__state .card h2 { overflow-wrap: anywhere; }
+/* Clean is the one destructive Actions row: its title in danger text, as
+   the design draws it, while the row stays a plain row. */
+.session__actions .action--danger { color: var(--danger); }
+/* Start a new autonomous session… opens its card form in place. */
+.sessions__new > summary { cursor: pointer; font-weight: var(--weight-semibold); min-height: var(--target); display: flex; align-items: center; }
+/* What the owner typed for a new session, shown in the confirm as typed:
+   line breaks kept, a long word wrapped. */
+.session-quote { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: var(--space-3); border-left: 2px solid var(--border); color: var(--text-2); }
 
 /* The Open / Done / All filter is three links, not radios, so it works
    without JavaScript and a live swap of the list never resets it. These

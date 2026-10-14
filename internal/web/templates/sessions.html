@@ -2,6 +2,13 @@
 {{define "content"}}
 <div class="sessions">
 <h1>Sessions</h1>
+{{/* Outside the live list, so a live swap never empties a half-typed form. */}}
+{{with .Page.New}}
+<details class="card sessions__new">
+  <summary>Start a new autonomous session&hellip;</summary>
+  {{template "new-session-form" .Form}}
+</details>
+{{end}}
 <div class="sessions__list" id="sessions-list" data-live="sessions" data-project="{{.Project}}" aria-live="polite">
 {{with .Sessions}}
   <ul class="list">
@@ -26,4 +33,5 @@
 {{end}}
 </div>
 </div>
+{{with .Page.New}}{{template "session-sheet" .Sheet}}{{end}}
 {{end}}
