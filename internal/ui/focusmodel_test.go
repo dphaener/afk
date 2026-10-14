@@ -86,9 +86,12 @@ func (h *scenarioHarness) owner() string {
 // Update the way the runtime would; steps that leave a Cmd unsettled (a cursor
 // move arming a preview timer) leave it false on purpose.
 type scenarioStep struct {
-	name   string
-	msg    tea.Msg
-	act    func(h *scenarioHarness)
+	name string
+	msg  tea.Msg
+	act  func(h *scenarioHarness)
+	// leader presses ctrl+space first, so msg is the key after the leader: how
+	// every dashboard action is reached now that no bare letter acts.
+	leader bool
 	settle bool
 	want   scenarioState
 }
@@ -107,6 +110,12 @@ func (h *scenarioHarness) run(step scenarioStep) scenarioState {
 	case step.act != nil:
 		step.act(h)
 	default:
+		if step.leader {
+			h.m, _ = update(h.t, h.m, leaderKeyPress)
+			if !h.m.leaderOpen {
+				h.t.Fatalf("step %q: ctrl+space did not open the actions dialog", step.name)
+			}
+		}
 		h.m, cmd = update(h.t, h.m, step.msg)
 		if step.settle {
 			h.m = settleConnect(h.t, h.m, cmd)
@@ -125,6 +134,18 @@ func (h *scenarioHarness) run(step scenarioStep) scenarioState {
 		cmd:       cmd != nil,
 		leaked:    h.m.quitting || h.m.formOpen || h.m.modal != inputNormal,
 	}
+}
+
+// pressDimmedToggle presses ctrl+space t where the toggle is dimmed (a stopped
+// row has no agent to flip to). The dialog refuses the key and stays up, so
+// the step closes it with esc, leaving the model as it found it.
+func pressDimmedToggle(h *scenarioHarness) {
+	h.t.Helper()
+	h.m = pressLeader(h.t, h.m, keyRune('t'))
+	if !h.m.leaderOpen {
+		h.t.Fatalf("the dimmed toggle row closed the actions dialog")
+	}
+	h.m, _ = update(h.t, h.m, keyEscMsg())
 }
 
 // stealPane delivers the host's Stolen exit for the installed pane.
@@ -147,15 +168,13 @@ func (h *scenarioHarness) selectedName() string {
 }
 
 var (
-	scenarioCtrlT  = chord('t')
-	scenarioCtrlBS = chord('\\')
-	scenarioJ      = keyRune('j')
-	scenarioK      = keyRune('k')
-	scenarioX      = keyRune('x')
-	scenarioQ      = keyRune('q')
-	scenarioR      = keyRune('r')
-	scenarioB      = keyRune('b')
-	scenarioI      = keyRune('i')
+	scenarioJ = keyRune('j')
+	scenarioK = keyRune('k')
+	scenarioX = keyRune('x')
+	scenarioQ = keyRune('q')
+	scenarioR = keyRune('r')
+	scenarioB = keyRune('b')
+	scenarioI = keyRune('i')
 )
 
 // loadScenarioBuild hands the model a build with one task, so `b` has a tab to
@@ -288,8 +307,8 @@ func TestFocusScenario(t *testing.T) {
 				{name: "the tab did not move", act: assertNotOnBuildTab, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
 				})},
-				{name: "ctrl+backslash", msg: scenarioCtrlBS, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
-				{name: "b from the list hides the agent behind the build tasks", msg: scenarioB, want: scenarioState{
+				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "b from the list hides the agent behind the build tasks", leader: true, msg: scenarioB, want: scenarioState{
 					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
 				}},
 			},
@@ -310,8 +329,8 @@ func TestFocusScenario(t *testing.T) {
 				{name: "the overlay did not open", act: assertInboxClosed, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
 				})},
-				{name: "ctrl+backslash", msg: scenarioCtrlBS, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
-				{name: "i from the list opens the overlay over the agent", msg: scenarioI, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "i from the list opens the overlay over the agent", leader: true, msg: scenarioI, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "the overlay opened, and esc closes it", act: assertInboxOpen, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
@@ -322,10 +341,10 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+t to overview", msg: scenarioCtrlT, want: scenarioState{
+				{name: "ctrl+t to overview", msg: keyRune('t'), leader: true, want: scenarioState{
 					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+t back to agent", msg: scenarioCtrlT, want: scenarioState{
+				{name: "ctrl+t back to agent", msg: keyRune('t'), leader: true, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "agent", selected: "alpha",
 				}},
 				{name: "the agent is live again", msg: scenarioX, want: scenarioState{
@@ -340,8 +359,8 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+backslash", msg: scenarioCtrlBS, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
-				{name: "ctrl+t from the list", msg: scenarioCtrlT, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+t from the list", msg: keyRune('t'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "typing hits the list only", msg: scenarioJ, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
@@ -352,17 +371,17 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+t is inert", msg: scenarioCtrlT, want: scenarioState{
+				{name: "ctrl+space t is inert", act: pressDimmedToggle, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+backslash releases", msg: scenarioCtrlBS, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+backslash releases", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
 		{
 			name: "r restarts a stopped row from the list",
 			rows: []Session{stoppedSess("alpha")},
 			steps: []scenarioStep{
-				{name: "r", msg: scenarioR, settle: true, want: with(list, func(s *scenarioState) {
+				{name: "r", leader: true, msg: scenarioR, settle: true, want: with(list, func(s *scenarioState) {
 					s.selected, s.spawns, s.dials, s.cmd = "alpha", 1, 1, true
 				})},
 			},
@@ -374,7 +393,7 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
 				}},
-				{name: "r", msg: scenarioR, settle: true, want: scenarioState{
+				{name: "r", leader: true, msg: scenarioR, settle: true, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "agent", selected: "alpha", spawns: 1, dials: 1, cmd: true,
 				}},
 			},
@@ -427,10 +446,10 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+t to overview", msg: scenarioCtrlT, want: scenarioState{
+				{name: "ctrl+t to overview", msg: keyRune('t'), leader: true, want: scenarioState{
 					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+backslash", msg: scenarioCtrlBS, want: scenarioState{
+				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: scenarioState{
 					focus: focusList, view: viewOverview, owner: "list", selected: "alpha",
 				}},
 				{name: "j arms no preview", msg: scenarioJ, want: scenarioState{
@@ -448,7 +467,7 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+backslash", msg: scenarioCtrlBS, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "j arms a preview", msg: scenarioJ, want: with(list, func(s *scenarioState) { s.selected = "beta"; s.cmd = true })},
 				{name: "the preview settles", act: settlePreview, want: with(list, func(s *scenarioState) { s.selected = "beta"; s.dials = 1 })},
 			},
@@ -498,9 +517,9 @@ func TestPassivePreviewNeverChangesTheView(t *testing.T) {
 			h.m, cmd = update(t, h.m, keyEnter)
 			h.m = settleConnect(t, h.m, cmd)
 			if tc.overview {
-				h.m, _ = update(t, h.m, scenarioCtrlT)
+				h.m = pressLeader(t, h.m, keyRune('t'))
 			}
-			h.m, _ = update(t, h.m, scenarioCtrlBS)
+			h.m = pressLeader(t, h.m, keyRune('\\'))
 			before := h.opens
 
 			h.m, cmd = update(t, h.m, scenarioJ)
@@ -670,7 +689,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		var cmd tea.Cmd
 		h.m, cmd = update(h.t, h.m, keyEnter)
 		h.m = settleConnect(h.t, h.m, cmd)
-		h.m, _ = update(h.t, h.m, scenarioCtrlT)
+		h.m, _ = pressAction(h.t, h.m, keyRune('t'))
 		if h.owner() != "overview" {
 			h.t.Fatalf("precondition: owner = %q, want the focused overview", h.owner())
 		}
@@ -693,6 +712,9 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		msg   func(h *scenarioHarness) tea.Msg
 		want  string
 		wrong string
+		// viaLeader sends msg as ctrl+space then the key, the only way a
+		// dashboard action is reached since T7.2.
+		viaLeader bool
 	}{
 		{
 			name: "restart done, list focused",
@@ -700,7 +722,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha", restarted: true}
 			},
-			want: "enter/f to reopen the agent", wrong: "ctrl+t",
+			want: "enter to reopen the agent", wrong: "ctrl+space t",
 		},
 		{
 			name:  "restart done, overview focused",
@@ -709,7 +731,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha", restarted: true}
 			},
-			want: "ctrl+t to reopen the agent", wrong: "enter/f",
+			want: "ctrl+space t to reopen the agent", wrong: "enter",
 		},
 		{
 			name:  "restart with no outcome, overview focused",
@@ -718,34 +740,34 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha"}
 			},
-			want: "ctrl+t to reconnect the agent", wrong: "enter/f",
+			want: "ctrl+space t to reconnect the agent", wrong: "enter",
 		},
 		{
 			name: "one-off restart refused, list focused",
 			row:  wedgedScratch(),
 			msg:  func(*scenarioHarness) tea.Msg { return scenarioR },
-			want: "enter/f to show the agent", wrong: "ctrl+t",
+			want: "enter to show the agent", wrong: "ctrl+space t", viaLeader: true,
 		},
 		{
 			name:  "one-off restart refused, overview focused",
 			row:   wedgedScratch(),
 			setup: focusOverview,
 			msg:   func(*scenarioHarness) tea.Msg { return scenarioR },
-			want:  "ctrl+t to show the agent", wrong: "enter/f",
+			want:  "ctrl+space t to show the agent", wrong: "enter", viaLeader: true,
 		},
 		{
 			name:  "connection dropped behind the focused overview",
 			row:   runningSess("alpha"),
 			setup: focusOverview,
 			msg:   dropPane,
-			want:  "ctrl+t to reopen the agent", wrong: "enter/f",
+			want:  "ctrl+space t to reopen the agent", wrong: "enter",
 		},
 		{
 			name:  "connection dropped under the focused agent pane",
 			row:   runningSess("alpha"),
 			setup: focusAgent,
 			msg:   dropPane,
-			want:  "enter/f to reopen the agent", wrong: "ctrl+t",
+			want:  "enter to reopen the agent", wrong: "ctrl+space t",
 		},
 	}
 	for _, tc := range cases {
@@ -754,7 +776,11 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			if tc.setup != nil {
 				tc.setup(h)
 			}
-			h.m, _ = update(t, h.m, tc.msg(h))
+			if tc.viaLeader {
+				h.m, _ = pressAction(t, h.m, tc.msg(h))
+			} else {
+				h.m, _ = update(t, h.m, tc.msg(h))
+			}
 			if !strings.Contains(h.m.status, tc.want) {
 				t.Errorf("status = %q, want it to contain %q", h.m.status, tc.want)
 			}
@@ -771,7 +797,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		if got := h.owner(); got != "overview" {
 			t.Fatalf("after enter: owner = %q, want the overview still (enter is not bound there)", got)
 		}
-		h.m, _ = update(t, h.m, scenarioCtrlT)
+		h.m, _ = pressAction(t, h.m, keyRune('t'))
 		if got := h.owner(); got != "agent" {
 			t.Fatalf("after ctrl+t: owner = %q, want the agent", got)
 		}

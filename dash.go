@@ -135,18 +135,32 @@ Usage:
 
 Keys:
   ↑/k, ↓/j   move selection, preview running session in agent pane
-  enter/f    focus the right side (connects a running session in agent view)
-  ctrl+t     switch the right side between agent and overview (right side focused only)
-  r          restart a stopped session; confirm to restart a wedged one
-  esc        back to the list from the overview
-  ctrl-\     back to the list from the right side; close the pane from the list
-  ctrl-g     hand the mouse to the terminal (native selection), again to return it
-  n          create a session (in-TUI form)
-  p          open the project switcher (filterable list of discovered projects)
-  b          show the Build tab: the master plan's tasks and their status (needs a master plan)
-  i          open the inbox: read an item, answer it by typing or by number (enter sends)
-  c          confirm clean in the dashboard (runs in-process)
-  q          quit
+  pgup/pgdn  page through the list; home/end jump to the first or last session
+  enter      focus the right side (connects a running session in agent view)
+  tab        next tab on the right side (shift+tab goes back)
+  esc        back to the list from the right side; clears the filter on the list
+  ctrl+c     quit from the list and the overview (in the agent pane it goes to the agent)
+
+Actions: press ctrl+space, then the letter. The actions dialog lists them too.
+  ctrl+space n    create a session (in-TUI form)
+  ctrl+space o    create a one-off session
+  ctrl+space p    open the project switcher (filterable list of discovered projects)
+  ctrl+space c    confirm clean in the dashboard (runs in-process)
+  ctrl+space r    restart a stopped session; confirm to restart a wedged one
+  ctrl+space l    edit the session's label
+  ctrl+space /    filter sessions by name
+  ctrl+space x    clear the filter
+  ctrl+space b    show the Build tab: the master plan's tasks and their status (needs a master plan)
+  ctrl+space i    open the inbox: read an item, answer it by typing or by number (enter sends)
+  ctrl+space P    pause the build
+  ctrl+space U    resume the build
+  ctrl+space f    focus the right side
+  ctrl+space t    switch the right side between agent and overview
+  ctrl+space \    close the pane from the list; back to the list from the right side
+  ctrl+space g    hand the mouse to the terminal (native selection), again to return it
+  ctrl+space w    resize the panes
+  ctrl+space ?    show the full key help
+  ctrl+space q    quit
 
 Options:
 `)

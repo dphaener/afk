@@ -26,7 +26,7 @@ var paneCursorFixture = termpane.CursorState{X: 2, Y: 1, Visible: true, Shape: t
 //     session would be pointing at a window the user's typing does not reach.
 //     "footer modal" is the row m.paneOwnsKeyboard() alone gets wrong, which is why
 //     the gate is activeInputMode and not that field.
-//   - the three overlay rows (switcher/palette/form) prevent a cursor drawn
+//   - the three overlay rows (switcher/actions dialog/form) prevent a cursor drawn
 //     over a component that replaced the pane in the frame entirely.
 //   - "short terminal" pins the no-crop arithmetic: at height 5 the frame is
 //     taller than the terminal, v2 clips it from the BOTTOM, so the origin is
@@ -72,11 +72,11 @@ func TestViewCursorFollowsFocusedPane(t *testing.T) {
 			mutate: func(m *Model) { m.switcherOpen = true },
 		},
 		{
-			name:   "palette open",
+			name:   "actions dialog open",
 			width:  80,
 			height: 24,
 			cursor: paneCursorFixture,
-			mutate: func(m *Model) { m.paletteOpen = true },
+			mutate: func(m *Model) { m.leaderOpen = true },
 		},
 		{
 			name:   "form open",

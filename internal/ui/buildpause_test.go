@@ -12,6 +12,27 @@ import (
 	"github.com/dphaener/afk/internal/buildview"
 )
 
+// pressAction runs a dashboard action the way a person does since T7.2:
+// ctrl+space, then the action's key. It returns what the action's key
+// returned, so a test can still read the command it produced, and it fails the
+// test if the dialog did not open, so a later assertion is about the action.
+func pressAction(t *testing.T, m Model, k tea.Msg) (Model, tea.Cmd) {
+	t.Helper()
+	m, _ = update(t, m, leaderKeyPress)
+	if !m.leaderOpen {
+		t.Fatal("setup: ctrl+space did not open the actions dialog")
+	}
+	return update(t, m, k)
+}
+
+// runAction applies action a as it runs from the session list, without the
+// dialog. It is for a handler's own refusal, which the dialog never lets a
+// person reach for a dimmed row.
+func runAction(m Model, a modeAction) (Model, tea.Cmd) {
+	next, cmd := m.applyKeyAction(inputNormal, a, tea.KeyPressMsg{})
+	return next.(Model), cmd
+}
+
 var (
 	keyPause  = keyRune('P')
 	keyResume = keyRune('U')
@@ -85,13 +106,13 @@ func TestBuildPauseNotices(t *testing.T) {
 			name:     "fresh pause",
 			got:      func() (notificationKind, string) { return pauseNotice(false) },
 			wantKind: notifySuccess,
-			wantText: "Build paused. A task that is running finishes; nothing new starts. Press U to resume.",
+			wantText: "Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume.",
 		},
 		{
 			name:     "already paused",
 			got:      func() (notificationKind, string) { return pauseNotice(true) },
 			wantKind: notifyInfo,
-			wantText: "The build was already paused. Press U to resume.",
+			wantText: "The build was already paused. Press ctrl+space U to resume.",
 		},
 		{
 			name:     "resumed",
@@ -203,8 +224,8 @@ func TestBuildPauseKeysCallTheSeam(t *testing.T) {
 		wantResume int
 		wantNotice string
 	}{
-		{"P from the list", keyPause, false, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press U to resume."},
-		{"P from a focused overview", keyPause, true, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press U to resume."},
+		{"P from the list", keyPause, false, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume."},
+		{"P from a focused overview", keyPause, true, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume."},
 		{"U from the list", keyResume, false, 0, 1, "Build resumed. The daemon may start new tasks again."},
 		{"U from a focused overview", keyResume, true, 0, 1, "Build resumed. The daemon may start new tasks again."},
 	}
@@ -215,7 +236,7 @@ func TestBuildPauseKeysCallTheSeam(t *testing.T) {
 			m = withBuild(t, m, buildPauseSnap())
 			wantMode := inputNormal
 			if tc.fromDetail {
-				m, _ = update(t, m, keyB)
+				m, _ = pressAction(t, m, keyB)
 				wantMode = inputDetail
 			}
 			if got := activeInputMode(m.modeSnapshot()); got != wantMode {
@@ -223,7 +244,7 @@ func TestBuildPauseKeysCallTheSeam(t *testing.T) {
 			}
 			focus, view, tab := m.focus, m.view, m.detailTab
 
-			m, cmd := update(t, m, tc.key)
+			m, cmd := pressAction(t, m, tc.key)
 			if cmd == nil {
 				t.Fatal("the key returned no command")
 			}
@@ -277,9 +298,9 @@ func TestBuildPauseOutcomes(t *testing.T) {
 		wantText string
 	}{
 		{"pause, fresh", keyPause, func(*pauseSeams) {}, notifySuccess,
-			"Build paused. A task that is running finishes; nothing new starts. Press U to resume."},
+			"Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume."},
 		{"pause, already paused", keyPause, func(r *pauseSeams) { r.already = true }, notifyInfo,
-			"The build was already paused. Press U to resume."},
+			"The build was already paused. Press ctrl+space U to resume."},
 		{"pause, seam error", keyPause, func(r *pauseSeams) { r.pauseErr = errors.New("permission denied") }, notifyError,
 			"Pausing the build did not work: permission denied"},
 		{"pause, seam error after the flag was written", keyPause,
@@ -310,7 +331,7 @@ func TestBuildPauseOutcomes(t *testing.T) {
 			m, rec := buildPauseModel(t, sess("alpha"))
 			tc.set(rec)
 			m = withBuild(t, m, buildPauseSnap())
-			m, cmd := update(t, m, tc.key)
+			m, cmd := pressAction(t, m, tc.key)
 			msgs := collectMsgs(t, cmd)
 			if len(msgs) != 1 {
 				t.Fatalf("the key produced %d messages, want one", len(msgs))
@@ -388,10 +409,11 @@ func TestBuildPauseRefusals(t *testing.T) {
 	keys := []struct {
 		name        string
 		key         tea.Msg
+		action      modeAction
 		noBuildText string
 	}{
-		{"P", keyPause, noBuildToPauseNotice},
-		{"U", keyResume, noBuildToResumeNotice},
+		{"P", keyPause, actionPauseBuild, noBuildToPauseNotice},
+		{"U", keyResume, actionResumeBuild, noBuildToResumeNotice},
 	}
 	for _, k := range keys {
 		noBuild := []struct {
@@ -408,7 +430,11 @@ func TestBuildPauseRefusals(t *testing.T) {
 				m, rec := buildPauseModel(t, sess("alpha"))
 				m = tc.prep(t, m)
 				focus, view := m.focus, m.view
-				m, cmd := update(t, m, k.key)
+				// Through the action, not the dialog: with no build the
+				// dialog dims these rows and runs nothing, so the handler's
+				// own refusal is reachable only by calling it, and it is the
+				// guard that still has to answer in words.
+				m, cmd := runAction(m, k.action)
 				if cmd != nil {
 					t.Fatalf("the key returned a command (%T)", cmd())
 				}
@@ -429,7 +455,7 @@ func TestBuildPauseRefusals(t *testing.T) {
 			if m.deps.PauseBuild != nil || m.deps.ResumeBuild != nil {
 				t.Fatal("precondition: testDeps must leave the two seams nil")
 			}
-			m, cmd := update(t, m, k.key)
+			m, cmd := pressAction(t, m, k.key)
 			if cmd != nil {
 				t.Fatalf("the key returned a command (%T)", cmd())
 			}
@@ -455,7 +481,7 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 		m, rec := buildPauseModel(t, sess("a"))
 		m = withBuild(t, m, buildPauseSnap())
 		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
-		m, _ = update(t, m, keyRune('f'))
+		m, _ = update(t, m, keyEnter)
 		if !m.paneOwnsKeyboard() {
 			t.Fatal("fixture broken: the pane does not have the keyboard")
 		}
@@ -480,7 +506,7 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 	t.Run("inbox list screen ignores the letters", func(t *testing.T) {
 		m, rec := buildPauseModel(t, sess("alpha"))
 		m = withBuild(t, m, inboxSnap())
-		m, _ = update(t, m, keyI)
+		m, _ = pressAction(t, m, keyI)
 		if !m.inboxOpen || m.inbox.screen != inboxScreenList {
 			t.Fatal("fixture broken: the inbox list is not open")
 		}
@@ -519,14 +545,14 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 	})
 }
 
-// TestBuildPauseKeysAreListedInHelpAndThePalette is the proof that `?` and `:`
-// list both keys. Both surfaces read the mode's rules, so nothing was added
-// to either by hand; this fails if a rule or its help text is removed. The
-// short footer line must NOT grow: it is at its measured-width cap. The last
-// check is the one that makes a palette row safe to choose: re-pressing its
-// key routes to the same action, which for a capital letter depends on the
-// palette being able to rebuild an upper-case key press.
-func TestBuildPauseKeysAreListedInHelpAndThePalette(t *testing.T) {
+// TestBuildPauseKeysAreInTheLeaderTable is the proof that the actions dialog
+// lists both actions and that their key runs them. Since T7.2 the dialog's
+// rows come from the leader table, so nothing was added to it by hand; this
+// fails if a table row or its help line is removed. The short footer line
+// must NOT grow: it is at its measured-width cap. The last check is the one
+// that makes the key safe to press: P and U are capitals, and the dialog's
+// key decision must tell them from p (switch project) and u.
+func TestBuildPauseKeysAreInTheLeaderTable(t *testing.T) {
 	cases := []struct {
 		desc   string
 		label  string
@@ -537,72 +563,49 @@ func TestBuildPauseKeysAreListedInHelpAndThePalette(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {
-			m := testModel(sess("alpha"))
+			m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 			short := xansi.Strip(m.renderHelp())
 			if strings.Contains(short, tc.desc) {
 				t.Errorf("the short footer line grew: %q", short)
 			}
-			m.helpShowAll = true
-			if full := xansi.Strip(m.renderHelp()); !strings.Contains(full, tc.desc) {
-				t.Errorf("the full help (?) does not list the key:\n%s", full)
+			rows := leaderRows(m.leaderConditions())
+			row, ok := leaderRowFor(rows, tc.action)
+			if !ok {
+				t.Fatalf("the dialog does not list %v", tc.action)
 			}
-			reg := m.modes()
-			for _, mode := range []inputMode{inputNormal, inputDetail} {
-				entries := paletteEntries(reg.spec(mode), m.routeConditions(), nil)
-				var found *paletteItem
-				for i := range entries {
-					if entries[i].desc == tc.desc {
-						found = &entries[i]
-					}
-				}
-				if found == nil {
-					t.Fatalf("mode %v: the rules do not list the key: %q", mode, entryDescs(entries))
-				}
-				if found.keyLabel != tc.label {
-					t.Errorf("mode %v: key label = %q, want %s", mode, found.keyLabel, tc.label)
-				}
-				if got := reg.route(mode, m.routeConditions(), found.press); got.kind != routeAction || got.action != tc.action {
-					t.Errorf("mode %v: the row routes to %v/%v, want %v", mode, got.kind, got.action, tc.action)
-				}
+			if row.name != tc.desc || row.keyLabel != tc.label {
+				t.Errorf("row = %q under %q, want %q under %q", row.name, row.keyLabel, tc.desc, tc.label)
 			}
-			// The palette as the owner opens it, with the live-state gate `:` uses.
-			live := paletteEntries(reg.spec(inputNormal), m.routeConditions(), m.normalBindingEnabled)
-			listed := false
-			for _, e := range live {
-				listed = listed || e.desc == tc.desc
+			if row.blocked != "" {
+				t.Errorf("the row is dimmed (%q) on a project with a build", row.blocked)
 			}
-			if !listed {
-				t.Errorf("the palette (:) does not list the key: %q", entryDescs(live))
+			got := leaderKeyDecision(leaderPress(tc.label), "", rows, 0, false)
+			if got.kind != leaderRun || got.row.action != tc.action {
+				t.Errorf("ctrl+space %s = %v %v, want it to run %v", tc.label, got.kind, got.row.action, tc.action)
 			}
 		})
 	}
 }
 
-// TestBuildPauseKeysSitAfterTheInboxKey pins where the two keys are in the
-// help order, which is also the palette's order. They go straight after the
-// inbox key so that every row above them stays where it was: the palette
-// shows one screenful without scrolling, and a row that moved up would push a
-// key people already know off it.
+// TestBuildPauseKeysSitAfterTheInboxKey pins where the two actions are in the
+// leader table, which is the dialog's order. They go straight after the
+// inbox so the three build actions read together, as the decided key table
+// lists them.
 func TestBuildPauseKeysSitAfterTheInboxKey(t *testing.T) {
-	reg := newModeRegistry(defaultKeyMap())
-	for _, mode := range []inputMode{inputNormal, inputDetail} {
-		t.Run(mode.String(), func(t *testing.T) {
-			var order []string
-			for _, b := range reg.spec(mode).keys.bindings {
-				order = append(order, b.Help().Key)
-			}
-			at := -1
-			for i, k := range order {
-				if k == "i" {
-					at = i
-				}
-			}
-			if at < 0 || at+2 >= len(order) {
-				t.Fatalf("no room after the inbox key in %q", order)
-			}
-			if order[at+1] != "P" || order[at+2] != "U" {
-				t.Errorf("after i come %q and %q, want P and U (order %q)", order[at+1], order[at+2], order)
-			}
-		})
+	var order []string
+	for _, e := range leaderTable {
+		order = append(order, e.key)
+	}
+	at := -1
+	for i, k := range order {
+		if k == "i" {
+			at = i
+		}
+	}
+	if at < 0 || at+2 >= len(order) {
+		t.Fatalf("no room after the inbox key in %q", order)
+	}
+	if order[at+1] != "P" || order[at+2] != "U" {
+		t.Errorf("after i come %q and %q, want P and U (order %q)", order[at+1], order[at+2], order)
 	}
 }

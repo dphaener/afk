@@ -1,4 +1,4 @@
- afk Dashboard  ● 2 awaiting in beta · 1 in gamma                                                     p: switch projects
+ afk Dashboard  ● 2 awaiting in beta · 1 in gamma                                                 ctrl+space p: projects
 ╭─ alpha ───────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
@@ -36,5 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────────────────── enter/f: focus view · c: clean · l: label ─╯
-↑/k preview↑ · ↓/j preview↓ · enter/f focus view · ctrl+\ close pane · n new session · c clean (confirm) · q quit …     
+╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
+↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+space actions                                                     

@@ -98,42 +98,82 @@ func waitForEntry(t *testing.T, gitCommonDir string) (dashmeta.Entry, bool) {
 	}
 }
 
-// quitKey is the dashboard's own quit keypress (keyMap.Quit binds q). Driving
-// Update with it is how this package reaches the Model's removal path, which
-// lives in an unexported method it cannot call.
+// quitDash drives the dashboard's quit: ctrl+space then q. A bare q only raises
+// a notice now that every action runs behind the leader key, so a single
+// keypress would leave the Model (and its dashmeta entry) alive. Driving Update
+// is how this package reaches the Model's removal path, which lives in an
+// unexported method it cannot call.
 //
-// Text is set alongside Code because that is how a real printable press
-// arrives under Bubble Tea v2, and because it is what Key.String() returns —
-// which is what bubbles' key.Matches compares against the "q" binding. A
-// literal with Code alone would stringify as "q" too, but only by falling back
-// to the keystroke form, so setting both keeps the fixture honest to the wire.
-func quitKey() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'q', Text: "q"} }
+// The leader's armed state lives in the returned model, so the second press
+// goes to that model, not the original.
+//
+// Text is set on q because that is how a real printable press arrives under
+// Bubble Tea v2 and what Key.String() returns for key.Matches.
+func quitDash(m tea.Model) {
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl})
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+}
 
-// TestDashUsageDocumentsTheUnifiedFocusContract pins the help text to the
-// two-axis focus model in internal/ui.
-func TestDashUsageDocumentsTheUnifiedFocusContract(t *testing.T) {
+// TestDashUsageNamesTheLeader pins the dashboard's key help to the leader
+// model in internal/ui: every action runs after ctrl+space, and the list keys
+// are the ones that still act without it. The stale rows are the old action
+// keys — a user who reads `ctrl+t` or `n new` here presses a key that now
+// does nothing. The leader rows are checked one by one, not as a block, so a
+// reworded line still fails if its key is missing.
+func TestDashUsageNamesTheLeader(t *testing.T) {
 	fs := flag.NewFlagSet("dash", flag.ContinueOnError)
 	var out bytes.Buffer
 	dashUsage(&out, fs)
 	got := out.String()
 
 	for _, want := range []string{
-		"enter/f    focus the right side (connects a running session in agent view)",
-		"ctrl+t     switch the right side between agent and overview (right side focused only)",
 		"preview running session in agent pane",
+		"enter      focus the right side",
+		"tab        next tab on the right side",
+		"esc        back to the list from the right side",
+		"ctrl+c     quit from the list and the overview",
+		"ctrl+space n    create a session",
+		"ctrl+space o    create a one-off session",
+		"ctrl+space p    open the project switcher",
+		"ctrl+space c    confirm clean",
+		"ctrl+space r    restart a stopped session",
+		"ctrl+space l    edit the session's label",
+		"ctrl+space /    filter sessions by name",
+		"ctrl+space x    clear the filter",
+		"ctrl+space b    show the Build tab",
+		"ctrl+space i    open the inbox",
+		"ctrl+space P    pause the build",
+		"ctrl+space U    resume the build",
+		"ctrl+space f    focus the right side",
+		"ctrl+space t    switch the right side between agent and overview",
+		"ctrl+space \\    close the pane from the list",
+		"ctrl+space g    hand the mouse to the terminal",
+		"ctrl+space w    resize the panes",
+		"ctrl+space ?    show the full key help",
+		"ctrl+space q    quit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dash usage missing %q:\n%s", want, got)
 		}
 	}
+	// The old keys must not appear as ways to run an action. The bare letters
+	// are checked with their column padding so a leader row cannot match them.
 	for _, stale := range []string{
-		"enter      focus the selected session's pane",
-		"f          focus what's drawn",
-		"enter/f    focus view currently drawn on the right",
-		"ctrl+t     agent/view toggle; attach or restart without moving keyboard focus",
+		"ctrl+t ",
+		"ctrl-\\",
+		"ctrl-g",
+		"enter/f",
+		"n new",
+		"c clean",
+		"q quit",
+		"p open the project switcher",
+		"  r          restart",
+		"  n          create",
+		"  c          confirm",
+		"  q          quit",
 	} {
 		if strings.Contains(got, stale) {
-			t.Errorf("dash usage retains stale focus contract %q:\n%s", stale, got)
+			t.Errorf("dash usage retains old key %q:\n%s", stale, got)
 		}
 	}
 }
@@ -242,7 +282,7 @@ func TestModelWritesTheEntryReadEntryScans(t *testing.T) {
 			// dashboard. Removal is synchronous inside requestQuit (a Cmd
 			// returned beside tea.Quit may never run), so there is nothing to
 			// wait for here.
-			_, _ = m.Update(quitKey())
+			quitDash(m)
 			if _, still := dashmeta.ReadEntry(gitCommonDir); still {
 				t.Errorf("entry still present after the dashboard quit")
 			}
@@ -275,7 +315,7 @@ func TestModelEntryLandsAtTheDocumentedPath(t *testing.T) {
 	if _, found := waitForEntry(t, gitCommonDir); !found {
 		t.Fatal("no entry was written while the dashboard was up")
 	}
-	defer func() { _, _ = m.Update(quitKey()) }()
+	defer quitDash(m)
 
 	matches, err := filepath.Glob(filepath.Join(gitCommonDir, "afk-dash", "*.json"))
 	if err != nil {

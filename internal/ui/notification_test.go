@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	tea "charm.land/bubbletea/v2"
 )
 
 // advancingClock returns a Deps.Now stub and the knob that moves it. Model's
@@ -201,7 +199,9 @@ func TestRepeatedRefusalToastsAgain(t *testing.T) {
 	m.deps.Now = now
 	m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "a"})
 
-	m, _ = update(t, m, keyRune('c'))
+	// The dialog dims clean while a pane is open, so the handler's own refusal
+	// is reached by calling it (see runAction).
+	m, _ = runAction(m, actionClean)
 	if !strings.Contains(m.status, "close the pane first") {
 		t.Fatalf("status = %q, want the clean-blocked refusal", m.status)
 	}
@@ -211,7 +211,7 @@ func TestRepeatedRefusalToastsAgain(t *testing.T) {
 	if m.toastVisible() {
 		t.Fatalf("setup: the first refusal's toast should have expired")
 	}
-	m, _ = update(t, m, keyRune('c'))
+	m, _ = runAction(m, actionClean)
 	if m.statusChangedAt == first || !m.toastVisible() {
 		t.Fatalf("second `c` left the stamp at %v with toastVisible=%v, want a fresh toast at %v", m.statusChangedAt, m.toastVisible(), now())
 	}
@@ -225,7 +225,8 @@ func TestRepeatedRefusalToastsAgain(t *testing.T) {
 // Update has done anything with it.
 func TestNotifyStampsBeforeHandleReturns(t *testing.T) {
 	m := testModel(sess("a"))
-	next, _ := m.handle(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}) // toggles mouse capture
+	m, _ = update(t, m, leaderKeyPress)
+	next, _ := m.handle(keyRune('g')) // ctrl+space g toggles mouse capture
 	got, ok := next.(Model)
 	if !ok {
 		t.Fatalf("handle returned %T, want ui.Model", next)

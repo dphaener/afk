@@ -111,9 +111,9 @@ func (m Model) View() tea.View {
 	// The overlays float over the finished frame (modal.go) rather than
 	// replacing a region of it, so the list and the pane a person was reading
 	// stay on screen behind the box. The order matches modePrecedence — the
-	// actions dialog outranks the palette, which outranks the switcher, which
-	// outranks the inbox, which outranks the form — so the frame and the key
-	// routing agree on which surface is on top. The five are mutually
+	// actions dialog outranks the switcher, which outranks the inbox, which
+	// outranks the form — so the frame and the key routing agree on which
+	// surface is on top. The four are mutually
 	// exclusive in practice (each owns every key while it is up), so this is
 	// fidelity to the precedence table, not a state a user can reach. Whatever
 	// owns the keyboard must be ON SCREEN, and that holds in the empty state
@@ -121,13 +121,11 @@ func (m Model) View() tea.View {
 	// component that still routes `q` while invisible would be a keyboard trap.
 	switch {
 	case m.leaderOpen:
-		// The actions dialog outranks the palette in modePrecedence. Its view
-		// takes the terminal size and sizes its own box (leader.go), from a
+		// The actions dialog outranks every overlay in modePrecedence. Its
+		// view takes the terminal size and sizes its own box (leader.go), from a
 		// snapshot of rows taken at open, so drawing it reads no file and
 		// runs nothing.
 		frame = composeModal(frame, m.leader.view(m.width, m.height), m.width, m.height)
-	case m.paletteOpen:
-		frame = composeModal(frame, m.renderPaletteModal(), m.width, m.height)
 	case m.switcherOpen:
 		frame = composeModal(frame, m.renderSwitcherModal(), m.width, m.height)
 	case m.inboxOpen:
@@ -342,8 +340,8 @@ func (m Model) renderAgentPlaceholder(outerW, outerH int) string {
 	hint := focusBindingHint(m.keys.Focus)
 	style := theme.paneBox
 	if m.focus == focusRight {
-		hint = "[" + m.keys.Toggle.Help().Key + " " + m.keys.Toggle.Help().Desc +
-			" · " + unfocusPaneKey.Help().Key + " " + unfocusPaneKey.Help().Desc + "]"
+		hint = "[" + leaderChord(actionPaneToggle) + " agent/overview" +
+			" · " + leaderChord(actionDetailUnfocus) + " return to dashboard]"
 		style = theme.paneBoxFocused
 	}
 	lines := []string{paneTitleBlock(title, hint, contentW), "", truncate(line, contentW)}
@@ -484,15 +482,19 @@ func paneTitleBlock(name, hint string, contentW int) string {
 // attachMouseReleasedHint when it does not), and
 // TestPaneTitleBlockReproducesLegacyTitles pins all three strings
 // byte-for-byte against the pre-refactor inline titles.
-const (
-	paneFocusHint    = "[focused · ctrl+\\ detach]"
-	attachDetachHint = "[ctrl+\\ detach]"
-)
+//
+// paneFocusHint is a var because it reads its key from the leader table
+// (leaderChord): since T7.2 a focused pane is left with ctrl+space \, and
+// ctrl+\ belongs to the agent. attachDetachHint stays a const and stays
+// ctrl+\, because afk attach has no leader.
+var paneFocusHint = "[focused · " + leaderChord(actionDetailUnfocus) + " back to list]"
+
+const attachDetachHint = "[ctrl+\\ detach]"
 
 // paneTitleHint picks the pane title's hint for the current focus state. The
 // title doubles as the focus indicator and reserved-chord hint: focused panes
 // show how to detach (ctrl+\), while unfocused panes use the same combined
-// binding the footer, full help, palette, and detail edge expose.
+// binding the footer, full help, and detail edge expose.
 func (m Model) paneTitleHint() string {
 	if m.paneOwnsKeyboard() {
 		return paneFocusHint
@@ -501,7 +503,7 @@ func (m Model) paneTitleHint() string {
 }
 
 // focusBindingHint is the one display form for the normal-mode focus binding
-// outside help.Model. The footer, full help, and palette render Binding.Help
+// outside help.Model. The footer and full help render Binding.Help
 // directly; the pane title and detail edge need their own punctuation, so they
 // call this helper or the same Help value instead of spelling a second key
 // contract by hand.
@@ -730,24 +732,6 @@ func (m Model) renderSwitcherModal() string {
 	return renderModalBox("Projects", "", m.switcher.View(), contentW, listH+switcherChromeRows)
 }
 
-// renderPalette draws the `:` command palette into the MAIN region — the same
-// region renderSwitcher, renderNewForm and renderPane take over, inside the
-// existing two-region split, with no layout math of its own. The components
-// were sized by paletteListSize (View cannot size them: its value receiver
-// would throw the mutation away), so all that happens here is composition, and
-// paletteChromeRows must keep matching the non-list lines written below.
-// sizedBox gets contentW+2, not contentW: its argument includes detailBox's
-// Padding(0, 1), and paletteListSize told the list its width is contentW, so a
-// bare contentW puts the wrap point 2 columns inside the rows' padded width —
-// see renderSwitcher's doc for the full arithmetic.
-func (m Model) renderPaletteModal() string {
-	contentW, listH := m.paletteListSize()
-
-	// The palette's keys are on the footer's help line, which stays on screen
-	// under the modal and already follows the active mode.
-	return renderModalBox("Commands", "", m.palette.View(), contentW, listH+paletteChromeRows)
-}
-
 // emptyStateConfigExample is the TOML the empty state shows the user to add to
 // their config file, one entry per line. It names search_roots — the only key
 // a first-time user needs — rather than the whole `[dash]` table
@@ -810,7 +794,7 @@ func (m Model) renderEmptyState(outerW, outerH int) string {
 		"",
 		theme.dim.Render(truncate("Running afk from inside a repo also works.", contentW)),
 		"",
-		theme.helpLine.Render("q: quit"),
+		theme.helpLine.Render(leaderChord(actionQuit) + ": quit"),
 	}
 	block := lipgloss.JoinVertical(lipgloss.Center, lines...)
 
@@ -862,11 +846,14 @@ const headerBadgeText = "afk Dashboard"
 // headerSwitchHint is the header's one affordance, in theme.dim — the
 // register the box-edge hints already use, because this is something the
 // user can press, not something that happened.
-const headerSwitchHint = "p: switch projects"
+//
+// It names the leader chord because since T7.2 a bare p does nothing on the
+// session list; a var because the chord is read from the leader table.
+var headerSwitchHint = leaderChord(actionProjects) + ": projects"
 
 // headerInboxHint is the inbox segment's affordance, styled and named the way
 // headerSwitchHint is, for the same reason: it is a key the reader can press.
-const headerInboxHint = "i: inbox"
+var headerInboxHint = leaderChord(actionInbox) + ": inbox"
 
 // headerPieces are the header's parts before headerLine's width ladder
 // decides which survive. Each is independently zeroable to "" and headerLine
@@ -910,7 +897,7 @@ type headerPieces struct {
 	// inboxShort is the blocking part alone, "2 blocking", or "" when nothing
 	// blocks. The ladder trades the first for the second, so items that only
 	// wait to be read leave the row before items that stop the build do.
-	// inboxHint is "i: inbox". All three are "" when no item is open or no
+	// inboxHint is "ctrl+space i: inbox". All three are "" when no item is open or no
 	// build snapshot has arrived, which keeps a quiet project's header exactly
 	// as it was before the inbox existed.
 	inbox      string
@@ -1681,7 +1668,7 @@ func (m Model) renderLabelFormBar() string { return m.renderDialog(m.labelDialog
 
 // mouseCaptureHint reports where mouse events are currently going, in the two
 // shortest strings that still name the chord and the destination. "pane" is the
-// dashboard's own word for where a hosted session is drawn (`f focus pane` sits
+// dashboard's own word for where a hosted session is drawn (`enter focus view` sits
 // on the same line), and "term" is the user's own terminal, where releasing
 // capture makes native click-drag selection work again.
 //
@@ -1691,26 +1678,19 @@ func (m Model) renderLabelFormBar() string { return m.renderDialog(m.labelDialog
 // measurement covers both states only because the two strings measure equal.
 func (m Model) mouseCaptureHint() string {
 	if m.mouseCapture {
-		return "ctrl+g mouse: pane"
+		return leaderChord(actionMouseToggle) + " mouse: pane"
 	}
-	return "ctrl+g mouse: term"
+	return leaderChord(actionMouseToggle) + " mouse: term"
 }
-
-// helpToggleKey is `?`, matched in dispatchKey (model.go) and rendered here —
-// the one binding that is not part of any mode.go modeSpec, because it does
-// not answer a mode's business logic: it flips m.helpShowAll, a purely
-// presentational flag. dispatchKey only honors it in inputNormal (see its own
-// doc), so it is declared once here for both the live chord and the two
-// display labels renderNormalHelpKeyMap builds from it.
-var helpToggleKey = key.NewBinding(key.WithKeys("?"))
 
 // normalBindingEnabled reports whether an inputNormal binding is currently
 // worth offering: three of them are no-ops in some states, and this is the
 // SINGLE definition of which three and when. Both surfaces that present the
 // mode's action set read it — help.Model omits any !Enabled() binding from
-// both Short and Full help, and the `:` palette filters its rows on the same
-// answer (palette.go) — so the two cannot advertise different sets, which is
-// exactly the drift a second copy of this policy would eventually produce.
+// both Short and Full help, and the actions dialog's focus row is dimmed on
+// the same answer (leaderConds.canFocus) — so the two cannot advertise
+// different sets, which is exactly the drift a second copy of this policy
+// would eventually produce.
 //
 // Every other binding keeps whatever enabled bit it arrived with, so callers
 // can apply this uniformly across a whole keymap.
@@ -1733,7 +1713,7 @@ func (m Model) normalBindingEnabled(b key.Binding) bool {
 }
 
 // restartKeyLive is whether `r` acts on the selected row right now — the
-// same gates restartSelected (model.go) applies, so help and the palette name
+// same gates restartSelected (model.go) applies, so help and the dialog name
 // the key exactly where it does something: a stopped row it would restart
 // straight away, or a running row the dashboard already shows as WEDGED, where
 // it asks for confirmation first.
@@ -1819,23 +1799,19 @@ func renderModeHelp(km help.KeyMap, showAll bool, width int) string {
 	return rendered
 }
 
-// renderNormalHelpKeyMap builds inputNormal's help.KeyMap. Full is the mode's
-// whole registered set (mode.go), with Focus/Restart's enabled bit set from
-// live state so `?`'s full-help view never advertises a key that is currently
-// a no-op. Short is a curated subset — movement, restart, focus, pane close,
-// new, clean, quit. ctrl+t is in neither: it is not a list key (the list
-// controls nothing on the right side), so normal mode has no rule for it.
-// Everything else the mode carries (paging, the project switcher, labels, the
-// filter prompt, the mouse-release chord) is absent from Short — the line is
-// oversubscribed — and reachable only through `?`.
+// renderNormalHelpKeyMap builds inputNormal's help.KeyMap. Since T7.2 every
+// dashboard action is a leader entry, so Short is the movement keys, enter to
+// focus the right side, and "ctrl+space actions"; restart joins it as
+// "ctrl+space r restart" only while it acts on the selected row (help never
+// offers a key that would do nothing, and a stopped or stuck agent is the
+// state a person comes to the footer to find a key for). Full is the mode's
+// registered keys (paging, esc to clear a filter) followed by one
+// "ctrl+space X" entry per leader action, from the leader table, and how the
+// help closes.
 //
-// State-conditional items (Restart, Focus) are placed right after movement,
-// ahead of New/Clean/close-pane. help.Model's ellipsis truncation is part of
-// THIS function's output, so a key that only matters in the current state (a
-// stopped or wedged selection's Restart) has to outrank the always-available
-// New/Clean to still be legible at the widths
-// TestHelpAdvertisesRestartWhereItActs exercises (m.width 120, the suite
-// default) — ordering is the whole mechanism.
+// Short stays this short on purpose: the actions dialog lists everything with
+// its help, so the footer's job is to say it exists. The item order still
+// matters, since help.Model truncates from the right.
 func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 	reg := m.modes()
 	full := append([]key.Binding(nil), reg.spec(inputNormal).keys.bindings...)
@@ -1846,48 +1822,46 @@ func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 
 	up := findBinding(full, m.keys.Up.Keys())
 	down := findBinding(full, m.keys.Down.Keys())
-	closePane := findBinding(full, []string{"ctrl+\\"})
-	newSession := findBinding(full, m.keys.New.Keys())
-	clean := findBinding(full, m.keys.Clean.Keys())
-	restart := findBinding(full, m.keys.Restart.Keys())
 	focus := findBinding(full, m.keys.Focus.Keys())
-	quit := findBinding(full, m.keys.Quit.Keys())
+	leader := findBinding(full, m.keys.Leader.Keys())
 
-	short := []key.Binding{up, down, restart, focus, closePane, newSession, clean, quit}
+	// Every action is a leader entry now, so the line keeps the movement keys
+	// and points at the dialog. Restart is the one action worth a place of its
+	// own, and only where it acts: a stopped or stuck agent is the state a
+	// person comes to the footer to find a key for.
+	short := []key.Binding{up, down, focus, leader}
+	if m.restartKeyLive() {
+		short = append(short, leaderHelpBinding(actionRestart, "restart", true))
+	}
 
-	// `?` documents itself on both views, mirroring bubbles/list's own
-	// ShowFullHelp/CloseFullHelp convention (same chord, a label naming
-	// whichever transition is live).
-	short = append(short, key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more")))
-	full = append(full, key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "close help")))
+	// The full help lists each leader action as "ctrl+space X", dimmed out of
+	// the list when it cannot run, and ends with how it closes: esc, since a
+	// bare ? is no longer a list key.
+	for _, row := range leaderRows(m.leaderConditions()) {
+		full = append(full, leaderHelpBinding(row.action, row.name, row.blocked == ""))
+	}
+	full = append(full, key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close help")))
 
 	return curatedKeyMap{short: short, full: full}
 }
 
 // renderPaneHelpKeyMap builds inputPane's (a focused pane's) help.KeyMap, plus
 // the literal "input → session · " prefix the retired ladder prepended (not a
-// keybinding, so it is not modeled as one). Full is mode.go's whole inputPane
-// keymap; Short deliberately omits Toggle, matching the retired ladder — ctrl+t
-// is documented via `afk dash --help` and this line is already the one
-// budgeted for the mouse-capture hint (see mouseCaptureHint's doc), so it
-// keeps main's arrangement rather than growing to fit a third item.
+// keybinding, so it is not modeled as one). Since T7.2 the leader is the one
+// key the dashboard owns in a focused pane, so the line is "ctrl+space
+// actions" and the mouse state. The line is budgeted to the column for that
+// state (see mouseCaptureHint's doc), so it does not grow a third item.
 //
-// The mouse binding's help text is overwritten with the LIVE capture state
-// (mouseCaptureHint, minus its own "ctrl+g " prefix) rather than its static
-// "release mouse" — this is the one line where that state is worth reading,
-// because it is what the user is looking at while typing into the session.
+// The mouse entry reads the LIVE capture state (mouseCaptureHint, minus its
+// own chord prefix) rather than a static "release mouse" — this is the one
+// line where that state is worth reading, because it is what the user is
+// looking at while typing into the session. It is a leader entry
+// (ctrl+space g), not ctrl+g, which the agent owns in a pane.
 func (m Model) renderPaneHelpKeyMap() (curatedKeyMap, string) {
-	reg := m.modes()
-	full := append([]key.Binding(nil), reg.spec(inputPane).keys.bindings...)
-	desc := strings.TrimPrefix(m.mouseCaptureHint(), m.keys.Mouse.Help().Key+" ")
-	for i := range full {
-		if slices.Equal(full[i].Keys(), m.keys.Mouse.Keys()) {
-			full[i].SetHelp(full[i].Help().Key, desc)
-		}
-	}
-	unfocus := findBinding(full, []string{"ctrl+\\"})
-	mouse := findBinding(full, m.keys.Mouse.Keys())
-	short := []key.Binding{unfocus, mouse}
+	desc := strings.TrimPrefix(m.mouseCaptureHint(), leaderChord(actionMouseToggle)+" ")
+	mouse := leaderHelpBinding(actionMouseToggle, desc, true)
+	full := []key.Binding{m.keys.Leader, mouse}
+	short := []key.Binding{m.keys.Leader, mouse}
 
 	return curatedKeyMap{short: short, full: full}, "input → session · "
 }
@@ -1920,9 +1894,9 @@ func (m Model) renderHelp() string {
 		if m.placeholderConnectLive() {
 			short = append(short, m.keys.Focus)
 		}
-		short = append(short, m.keys.Toggle, unfocusPaneKey)
+		short = append(short, m.keys.Leader)
 		if m.restartKeyLive() {
-			short = append(short, m.keys.Restart)
+			short = append(short, leaderHelpBinding(actionRestart, "restart", true))
 		}
 		return theme.helpLine.Render(spin + renderModeHelp(curatedKeyMap{short: short}, false, width))
 	case mode == inputPane:
@@ -1931,15 +1905,17 @@ func (m Model) renderHelp() string {
 	case mode == inputNormal:
 		return theme.helpLine.Render(spin + renderModeHelp(m.renderNormalHelpKeyMap(), m.helpShowAll, width))
 	case mode == inputDetail:
-		// `r` is in detail mode's keymap but acts only on a stopped or wedged
-		// row; disabling it elsewhere drops it from the line, on normal mode's
-		// never-advertise-a-no-op rule.
+		// Restart is a leader entry that acts only on a stopped or wedged
+		// row, so it joins the line only there, on normal mode's
+		// never-advertise-a-no-op rule. It follows the leader, which is the
+		// binding it belongs to.
 		reg := m.modes()
 		bindings := append([]key.Binding(nil), reg.spec(inputDetail).keys.bindings...)
-		for i := range bindings {
-			if slices.Equal(bindings[i].Keys(), m.keys.Restart.Keys()) {
-				bindings[i].SetEnabled(m.restartKeyLive())
-			}
+		if m.restartKeyLive() {
+			at := slices.IndexFunc(bindings, func(b key.Binding) bool {
+				return slices.Equal(b.Keys(), m.keys.Leader.Keys())
+			})
+			bindings = slices.Insert(bindings, at+1, leaderHelpBinding(actionRestart, "restart", true))
 		}
 		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: bindings}, false, width))
 	case mode == inputInbox:
@@ -2127,7 +2103,7 @@ func (m Model) renderRowsBody(contentW, contentH int) string {
 		var b strings.Builder
 		b.WriteString(theme.dim.Render("No afk sessions found."))
 		b.WriteString("\n")
-		b.WriteString(theme.dim.Render("Press n to start one."))
+		b.WriteString(theme.dim.Render("Press " + leaderChord(actionNewSession) + " to start one."))
 		return b.String()
 	}
 	l := m.list
@@ -2641,11 +2617,11 @@ func (m Model) detailBoxLabels() (title, hint string) {
 	case isWorktreeFault(s.Kind):
 		focus := m.keys.Focus.Help()
 		return title, fmt.Sprintf("%s: %s · %s: clean",
-			focus.Key, focus.Desc, m.keys.Clean.Help().Key)
+			focus.Key, focus.Desc, leaderChord(actionClean))
 	}
 	focus := m.keys.Focus.Help()
 	return title, fmt.Sprintf("%s: %s · %s: clean · %s: label",
-		focus.Key, focus.Desc, m.keys.Clean.Help().Key, m.keys.Label.Help().Key)
+		focus.Key, focus.Desc, leaderChord(actionClean), leaderChord(actionEditLabel))
 }
 
 // detailReleaseHint is detailBoxLabels' focused-mode hint: the one live way
@@ -2654,7 +2630,7 @@ func (m Model) detailBoxLabels() (title, hint string) {
 // this edge cannot say two different things about the same key.
 func (m Model) detailReleaseHint() string {
 	reg := m.modes()
-	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc", "ctrl+\\"})
+	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc"})
 	return fmt.Sprintf("%s: %s", release.Help().Key, release.Help().Desc)
 }
 
@@ -2839,7 +2815,7 @@ func rowNotice(s Session, ok bool) string {
 		b.WriteString("\n")
 		b.WriteString(theme.dim.Render("branch: " + s.Branch))
 		b.WriteString("\n\n")
-		b.WriteString(theme.dim.Render("No session state to show. Press c to clean it up."))
+		b.WriteString(theme.dim.Render("No session state to show. Press " + leaderChord(actionClean) + " to clean it up."))
 		return b.String()
 	}
 	return ""

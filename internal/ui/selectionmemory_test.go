@@ -286,7 +286,7 @@ func TestSelectionMemoryIgnoresFilterDrivenMoves(t *testing.T) {
 	m := testModel(runningSess("a"), runningSess("b"))
 	m.deps.OpenHostPane = refusingOpen(t, "filtering must not dial")
 
-	m, _ = update(t, m, keyRune('/'))
+	m, _ = pressAction(t, m, keyRune('/'))
 	if !m.list.SettingFilter() {
 		t.Fatal("setup: `/` did not open the filter prompt")
 	}

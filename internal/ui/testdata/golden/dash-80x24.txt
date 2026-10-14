@@ -20,5 +20,5 @@
 │                            ││ Stack     main › feat-auth                     │
 │                            ││                                                │
 │                            ││                                             0% │
-╰────────────────────────────╯╰──── enter/f: focus view · c: clean · l: label ─╯
-↑/k preview↑ · ↓/j preview↓ · enter/f focus view · ctrl+\ close pane …          
+╰────────────────────────────╯╰─ enter: focus view · ctrl+space c: clean · c… ─╯
+↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+space actions             

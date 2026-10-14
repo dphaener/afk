@@ -801,7 +801,7 @@ func TestRestartOutstandingAcrossAProjectSwitchIsDropped(t *testing.T) {
 	stopped := sess("same")
 	stopped.WorktreePath = "/roots/a/wt/same"
 	m.setSessions([]Session{stopped})
-	m, restartCmd := update(t, m, keyRune('r'))
+	m, restartCmd := pressAction(t, m, keyRune('r'))
 	if restartCmd == nil {
 		t.Fatal("precondition: r on a stopped session must dispatch the restart")
 	}
@@ -882,7 +882,7 @@ func TestRestartInSwitchedToProjectChainsIntoThePaneOpen(t *testing.T) {
 		return fp, nil
 	}
 
-	m, restartCmd := update(t, m, keyRune('r'))
+	m, restartCmd := pressAction(t, m, keyRune('r'))
 	if restartCmd == nil {
 		t.Fatal("precondition: r on a stopped session must dispatch the restart")
 	}

@@ -61,7 +61,7 @@ func TestSidebarRenderedWidthMatchesRenderedList(t *testing.T) {
 // The rawWidth field pins the measurement each variant's truncation behaviour
 // follows from, with a 33-character session name. Note that the three variants
 // have three different lengths, so they start truncating at three different
-// widths — the widest (focused, 62 cells) is cut at all five widths below,
+// widths — the widest (focused, 74 cells) is cut at all five widths below,
 // attach's 52-cell title only at the narrowest three. That is why the
 // truncation-actually-happened check is conditional on rawWidth rather than
 // asserted for every pair: a case where the title already fits still has to
@@ -74,8 +74,8 @@ func TestPaneTitleBlockIsAlwaysOneLine(t *testing.T) {
 		hint     string
 		rawWidth int
 	}{
-		{"dashboard focused", paneFocusHint, 62},
-		{"dashboard unfocused", "[enter/f focus view]", 57},
+		{"dashboard focused", paneFocusHint, 74},
+		{"dashboard unfocused", "[enter focus view]", 55},
 		{"attach", attachDetachHint, 52},
 	}
 
@@ -123,8 +123,8 @@ func TestPaneTitleBlockReproducesLegacyTitles(t *testing.T) {
 		hint   string
 		legacy string
 	}{
-		{paneFocusHint, theme.paneTitle.Render("▶ mysession" + "  [focused · ctrl+\\ detach]")},
-		{"[enter/f focus view]", theme.paneTitle.Render("▶ mysession" + "  [enter/f focus view]")},
+		{paneFocusHint, theme.paneTitle.Render("▶ mysession" + "  [focused · ctrl+space \\ back to list]")},
+		{"[enter focus view]", theme.paneTitle.Render("▶ mysession" + "  [enter focus view]")},
 		{attachDetachHint, theme.paneTitle.Render("▶ mysession" + "  [ctrl+\\ detach]")},
 	}
 	for _, c := range cases {
@@ -153,9 +153,9 @@ func TestRenderPaneOutputUnchangedForFittingTitle(t *testing.T) {
 		contentW, _ := paneContentDims(mainOuter, bodyHeight)
 		legacyTitleText := "▶ " + m.paneName
 		if focused {
-			legacyTitleText += "  [focused · ctrl+\\ detach]"
+			legacyTitleText += "  [focused · ctrl+space \\ back to list]"
 		} else {
-			legacyTitleText += "  [enter/f focus view]"
+			legacyTitleText += "  [enter focus view]"
 		}
 		legacy := sizedBox(m.paneBoxStyle(), contentW+2, bodyHeight-boxBorderCells).
 			MaxHeight(bodyHeight).
@@ -173,7 +173,7 @@ func TestRenderPaneOutputUnchangedForFittingTitle(t *testing.T) {
 // lipgloss.Height rather than assuming a constant, so the helper stays correct if
 // the title block ever legitimately grows a row.
 func TestPaneContentOriginTracksBlockHeight(t *testing.T) {
-	block := paneTitleBlock("session", "[enter/f focus view]", 40)
+	block := paneTitleBlock("session", "[enter focus view]", 40)
 	if h := lipgloss.Height(block); h != 1 {
 		t.Fatalf("precondition: title block is %d lines, want 1", h)
 	}
@@ -789,7 +789,6 @@ func TestMouseIsDroppedWhenTheDashboardOwnsInput(t *testing.T) {
 // over a terminal still reporting mouse events, which is the exact regression
 // this test exists to catch.
 func TestMouseChordTogglesRealCaptureFromBothBranches(t *testing.T) {
-	chord := tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}
 
 	for _, focused := range []bool{false, true} {
 		m, fp, _, _, _, _ := mouseModel(t)
@@ -800,7 +799,7 @@ func TestMouseChordTogglesRealCaptureFromBothBranches(t *testing.T) {
 			t.Fatalf("focused=%v: precondition — capture starts on", focused)
 		}
 
-		m, _ = update(t, m, chord)
+		m = pressLeader(t, m, keyRune('g'))
 		if m.mouseCapture {
 			t.Errorf("focused=%v: the first chord should release capture", focused)
 		}
@@ -817,7 +816,7 @@ func TestMouseChordTogglesRealCaptureFromBothBranches(t *testing.T) {
 				focused, fp.keys, fp.texts)
 		}
 
-		m, _ = update(t, m, chord)
+		m = pressLeader(t, m, keyRune('g'))
 		if !m.mouseCapture {
 			t.Errorf("focused=%v: the second chord should take capture back", focused)
 		}
@@ -2241,9 +2240,9 @@ func TestMouseIsDroppedWhileTheTerminalOwnsIt(t *testing.T) {
 		}
 		// Released through the real chord, not by setting the field: that is what
 		// makes this the state a user can actually be in.
-		m, _ = update(t, m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+		m = pressLeader(t, m, keyRune('g'))
 		if m.mouseCapture {
-			t.Fatalf("precondition: ctrl+g must release capture")
+			t.Fatalf("precondition: ctrl+space g must release capture")
 		}
 		if got := m.View().MouseMode; got != tea.MouseModeNone {
 			t.Fatalf("precondition: the chord must leave View declaring MouseMode %v, got %v",
@@ -2258,7 +2257,7 @@ func TestMouseIsDroppedWhileTheTerminalOwnsIt(t *testing.T) {
 
 		// And taking it back restores forwarding, so the guard is a gate and not a
 		// one-way door.
-		m, _ = update(t, m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+		m = pressLeader(t, m, keyRune('g'))
 		if !m.mouseCapture {
 			t.Fatalf("the second chord must retake capture")
 		}
@@ -2572,14 +2571,13 @@ func TestMouseCaptureStateIsVisibleInTheRenderedFrame(t *testing.T) {
 // (TestMouseIsDroppedWhileTheTerminalOwnsIt). Both of this test's original claims
 // are made; only the state each is made in is now right.
 func TestDashboardMouseChordDoesNotDisturbTheGeometry(t *testing.T) {
-	chord := tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}
 	for _, focused := range []bool{false, true} {
 		t.Run(fmt.Sprintf("focused=%v", focused), func(t *testing.T) {
 			m, fp := frameModel("live", 80, 24, focused)
 			beforeX, beforeY := findSentinel(render(m), paneSentinel)
 
 			for press := 1; press <= 2; press++ {
-				m, _ = update(t, m, chord)
+				m = pressLeader(t, m, keyRune('g'))
 				// The chord writes a status whose toast floats over the pane's
 				// first rows (toast.go); age it out so the sentinel search reads
 				// the pane. The claim here is geometry, not the toast.
@@ -2746,7 +2744,7 @@ func TestMouseChordIsReachableFromEveryStateThatOwnsInput(t *testing.T) {
 				s := sess("active-session")
 				s.Phase = state.PhaseExecuting
 				m := testModel(s)
-				m, _ = update(t, m, keyRune('c'))
+				m = pressLeader(t, m, keyRune('c'))
 				if m.modal != inputConfirmClean {
 					t.Fatalf("setup: expected the confirm modal, got %v", m.modal)
 				}
@@ -2792,7 +2790,7 @@ func TestMouseChordIsReachableFromEveryStateThatOwnsInput(t *testing.T) {
 			name: "creation form",
 			setUp: func(t *testing.T) Model {
 				m := testModel(sess("a"))
-				m, _ = update(t, m, keyRune('n'))
+				m = pressLeader(t, m, keyRune('n'))
 				m = typeRunes(t, m, "my-session")
 				if !m.formOpen || m.form.nameInput.Value() != "my-session" {
 					t.Fatalf("setup: form active=%v name=%q", m.formOpen, m.form.nameInput.Value())
@@ -2855,7 +2853,7 @@ func TestMouseChordDoesNotDisturbTheModalHandlersOwnKeys(t *testing.T) {
 		s := sess("active-session")
 		s.Phase = state.PhaseExecuting
 		m := testModel(s)
-		m, _ = update(t, m, keyRune('c'))
+		m = pressLeader(t, m, keyRune('c'))
 		return m
 	}
 	spawnErr := func(t *testing.T) Model {
@@ -2902,7 +2900,7 @@ func TestMouseChordDoesNotDisturbTheModalHandlersOwnKeys(t *testing.T) {
 	})
 	t.Run("form esc is still the only exit", func(t *testing.T) {
 		m := testModel(sess("a"))
-		m, _ = update(t, m, keyRune('n'))
+		m = pressLeader(t, m, keyRune('n'))
 		got, _ := update(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 		if got.formOpen {
 			t.Errorf("esc should close the form")
@@ -2910,7 +2908,7 @@ func TestMouseChordDoesNotDisturbTheModalHandlersOwnKeys(t *testing.T) {
 	})
 	t.Run("form still types an ordinary rune", func(t *testing.T) {
 		m := testModel(sess("a"))
-		m, _ = update(t, m, keyRune('n'))
+		m = pressLeader(t, m, keyRune('n'))
 		m = typeRunes(t, m, "abc")
 		if got := m.form.nameInput.Value(); got != "abc" {
 			t.Errorf("the name buffer is %q, want %q", got, "abc")
@@ -3124,14 +3122,18 @@ func TestAttachProgramOptionsAskTheTerminalForMouseReports(t *testing.T) {
 // this asserts the constant itself rather than a transformation of it — a
 // transformation would have absorbed the very drift being tested for.
 func TestMouseCaptureTextNamesTheRealChord(t *testing.T) {
+	// The dashboard's hint names the leader chord (ctrl+space g); the bare
+	// ctrl+g survives only inside overlays and in afk attach, so the hint is
+	// pinned to the leader table and the key binding to mouseChordKey.
+	hintChord := leaderChord(actionMouseToggle)
 	chord := mouseChordKey
 
 	var m Model
 	for _, capture := range []bool{true, false} {
 		m.mouseCapture = capture
-		if hint := m.mouseCaptureHint(); !strings.Contains(hint, chord) {
+		if hint := m.mouseCaptureHint(); !strings.Contains(hint, hintChord) {
 			t.Errorf("mouseCaptureHint() = %q with mouseCapture=%v — does not name %q, so the "+
-				"dashboard advertises a key that is not the one bound", hint, capture, chord)
+				"dashboard advertises a key that is not the one bound", hint, capture, hintChord)
 		}
 	}
 
@@ -3154,8 +3156,8 @@ func TestMouseCaptureHintStatesAreTheSameWidth(t *testing.T) {
 		t.Errorf("the two hint states measure %d (%q) and %d (%q) cells — toggling ctrl+g "+
 			"would shift the rest of the focused help line", cw, captured, rw, released)
 	}
-	if cw != 18 {
-		t.Errorf("the hint is %d cells (%q), want 18 — renderHelp's 80-column budget is "+
+	if cw != 24 {
+		t.Errorf("the hint is %d cells (%q), want 24 — renderHelp's 80-column budget is "+
 			"measured against that width", cw, captured)
 	}
 }

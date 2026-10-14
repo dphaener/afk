@@ -36,5 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────────────────── enter/f: focus view · c: clean · l: label ─╯
+╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
 enter save (blank clears it) · esc cancel · ctrl+g release mouse · ctrl+c quit

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/vt"
 
@@ -34,6 +35,32 @@ func leaderPlaceholderModel(t *testing.T) Model {
 
 // sentToPane is everything a fake pane has been given: keys, text and pastes.
 func sentToPane(fp *fakePane) int { return len(fp.keys) + len(fp.texts) + len(fp.pastes) }
+
+// pressLeader is ctrl+space then k, the way every dashboard action is run
+// since T7.2. It fails the test if the dialog did not open, so a caller's
+// later assertion is about k and never about a leader that went nowhere.
+func pressLeader(t *testing.T, m Model, k tea.Msg) Model {
+	t.Helper()
+	m, _ = update(t, m, leaderKeyPress)
+	if !m.leaderOpen {
+		t.Fatal("setup: ctrl+space did not open the actions dialog")
+	}
+	m, _ = update(t, m, k)
+	return m
+}
+
+// leaderFocusedPane is a pane hosting "a", focused with enter from the list
+// (the one key left that moves the keyboard right without the leader).
+func leaderFocusedPane(t *testing.T, fp *fakePane) Model {
+	t.Helper()
+	m := testModel(sess("a"))
+	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
+	m, _ = update(t, m, keyEnter)
+	if !m.paneOwnsKeyboard() {
+		t.Fatal("setup: enter did not focus the pane")
+	}
+	return m
+}
 
 // TestLeaderOpensTheDialog drives ctrl+space through Update from each place
 // it is a rule. Load-bearing rows:
@@ -82,7 +109,7 @@ func TestLeaderOpensTheDialog(t *testing.T) {
 			name: "from a focused agent pane",
 			model: func(t *testing.T) (Model, *fakePane) {
 				fp := newFakePane("X")
-				return focusedModel(t, fp), fp
+				return leaderFocusedPane(t, fp), fp
 			},
 			from:     inputPane,
 			fromPane: true,
@@ -136,17 +163,11 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 		text func(m Model) string
 	}{
 		{
-			name: "palette",
-			open: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune(':')); return m },
-			mode: inputPalette,
-			text: func(m Model) string { return m.palette.input.Value() },
-		},
-		{
 			name: "switcher",
 			open: func(t *testing.T, m Model) Model {
 				m.projects = []project.Project{{Path: "/repo", Name: "api"}, {Path: "/repos/afk", Name: "afk"}}
 				m.activeProject = 0
-				return openSwitcherOverlay(t, m)
+				return pressLeader(t, m, keyRune('p'))
 			},
 			mode: inputSwitcher,
 		},
@@ -154,30 +175,29 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 			name: "inbox",
 			open: func(t *testing.T, m Model) Model {
 				m.buildKnown = true
-				m, _ = update(t, m, keyRune('i'))
-				return m
+				return pressLeader(t, m, keyRune('i'))
 			},
 			mode: inputInbox,
 		},
 		{
 			name: "new-session form",
-			open: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('n')); return m },
+			open: func(t *testing.T, m Model) Model { return pressLeader(t, m, keyRune('n')) },
 			mode: inputForm,
 			text: func(m Model) string { return m.form.nameInput.Value() },
 		},
 		{
 			name: "label edit",
-			open: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('l')); return m },
+			open: func(t *testing.T, m Model) Model { return pressLeader(t, m, keyRune('l')) },
 			mode: inputEditLabel,
 			text: func(m Model) string { return m.labelInput.Value() },
 		},
 		{
 			name: "clean confirm",
-			open: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('c')); return m },
+			open: func(t *testing.T, m Model) Model { return pressLeader(t, m, keyRune('c')) },
 			mode: inputConfirmClean,
 		},
 		{
-			// Reaching it through `r` needs a wedged row; the modal field is
+			// Reaching it through restart needs a wedged row; the modal field is
 			// the whole of the state its mode is derived from.
 			name: "restart confirm",
 			open: func(t *testing.T, m Model) Model { m.modal = inputConfirmRestart; return m },
@@ -185,13 +205,13 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 		},
 		{
 			name: "filter prompt",
-			open: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('/')); return m },
+			open: func(t *testing.T, m Model) Model { return pressLeader(t, m, keyRune('/')) },
 			mode: inputFilter,
 			text: func(m Model) string { return m.list.FilterInput.Value() },
 		},
 		{
 			name: "resize",
-			open: func(t *testing.T, m Model) Model { m, _ = update(t, m, chord('w')); return m },
+			open: func(t *testing.T, m Model) Model { return pressLeader(t, m, keyRune('w')) },
 			mode: inputResize,
 		},
 	}
@@ -223,7 +243,7 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 
 // TestLeaderRunsAnActionOnce pins that a key in the dialog runs its action
 // exactly once and closes the dialog. Load-bearing rows:
-//   - "ctrl+g toggles the mouse once" is the "once" proof: run twice, the
+//   - "g toggles the mouse once" is the "once" proof: run twice, the
 //     toggle would land back where it started and the test could not tell
 //     it from not running at all, so it checks the flip itself.
 //   - "b shows the Build tab": a list key that moves the keyboard right on
@@ -231,8 +251,10 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 //   - "n from the agent pane opens the form": a list action picked while
 //     the agent had the keyboard runs as from the list — the keyboard goes
 //     to the list — and nothing at all is typed to the agent.
-//   - "ctrl+t from the agent pane": the pane has its own rule for it, so it
-//     runs as the pane's key does and the keyboard stays on the right.
+//   - "t from the agent pane": a right-side action, so it runs where the
+//     leader was pressed and the keyboard stays on the right.
+//   - "b from the agent pane": an overview action, so from the agent it runs
+//     by way of the list, as its old letter could not be pressed there.
 func TestLeaderRunsAnActionOnce(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -241,9 +263,9 @@ func TestLeaderRunsAnActionOnce(t *testing.T) {
 		check func(t *testing.T, before, after Model)
 	}{
 		{
-			name:  "ctrl+g toggles the mouse once",
+			name:  "g toggles the mouse once",
 			model: func(t *testing.T) (Model, *fakePane) { return testModel(sess("a")), nil },
-			key:   chord('g'),
+			key:   keyRune('g').(tea.KeyPressMsg),
 			check: func(t *testing.T, before, after Model) {
 				if after.mouseCapture == before.mouseCapture {
 					t.Fatalf("mouseCapture = %v, want it flipped once", after.mouseCapture)
@@ -276,7 +298,7 @@ func TestLeaderRunsAnActionOnce(t *testing.T) {
 			name: "n from the agent pane opens the form with the list focused",
 			model: func(t *testing.T) (Model, *fakePane) {
 				fp := newFakePane("X")
-				return focusedModel(t, fp), fp
+				return leaderFocusedPane(t, fp), fp
 			},
 			key: keyRune('n').(tea.KeyPressMsg),
 			check: func(t *testing.T, _, after Model) {
@@ -292,15 +314,45 @@ func TestLeaderRunsAnActionOnce(t *testing.T) {
 			},
 		},
 		{
-			name: "ctrl+t from the agent pane switches to the overview and keeps the right side",
+			name: "t from the agent pane switches to the overview and keeps the right side",
 			model: func(t *testing.T) (Model, *fakePane) {
 				fp := newFakePane("X")
-				return focusedModel(t, fp), fp
+				return leaderFocusedPane(t, fp), fp
 			},
-			key: chord('t'),
+			key: keyRune('t').(tea.KeyPressMsg),
 			check: func(t *testing.T, _, after Model) {
 				if after.view != viewOverview || after.focus != focusRight {
 					t.Fatalf("view %v, focus %v; want the overview with the right side focused", after.view, after.focus)
+				}
+			},
+		},
+		{
+			name: "b from the agent pane shows the Build tab by way of the list",
+			model: func(t *testing.T) (Model, *fakePane) {
+				fp := newFakePane("X")
+				m := withBuild(t, leaderFocusedPane(t, fp), buildTabSnap())
+				return m, fp
+			},
+			key: keyB.(tea.KeyPressMsg),
+			check: func(t *testing.T, _, after Model) {
+				if after.detailTab != tabBuild || after.view != viewOverview || after.focus != focusRight {
+					t.Fatalf("tab %v, view %v, focus %v; want the Build tab focused", after.detailTab, after.view, after.focus)
+				}
+				if after.pane == nil {
+					t.Fatal("the pane was closed; it belongs behind the overview")
+				}
+			},
+		},
+		{
+			name: "\\ from the agent pane gives the keyboard back and keeps the pane",
+			model: func(t *testing.T) (Model, *fakePane) {
+				fp := newFakePane("X")
+				return leaderFocusedPane(t, fp), fp
+			},
+			key: keyRune('\\').(tea.KeyPressMsg),
+			check: func(t *testing.T, _, after Model) {
+				if after.focus != focusList || after.pane == nil {
+					t.Fatalf("focus %v, pane %v; want the list focused and the pane still open", after.focus, after.pane != nil)
 				}
 			},
 		},
@@ -421,7 +473,7 @@ func TestLeaderPassThrough(t *testing.T) {
 			fp := newFakePane("X")
 			var m Model
 			if tc.focused {
-				m = focusedModel(t, fp)
+				m = leaderFocusedPane(t, fp)
 			} else {
 				m = testModel(sess("a"))
 				m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
@@ -447,5 +499,295 @@ func TestLeaderPassThrough(t *testing.T) {
 				t.Fatalf("paneOwnsKeyboard = %v, want %v", m.paneOwnsKeyboard(), tc.wantPane)
 			}
 		})
+	}
+}
+
+// leaderActionCase is one row of TestLeaderRunsEveryAction: a model in the
+// mode the action lives in, the key that used to run it there, and how to
+// tell that it ran.
+type leaderActionCase struct {
+	setup func(t *testing.T) Model
+	// mode is where the action lives: the list (inputNormal) or the
+	// overview (inputDetail) for the right-side actions.
+	mode inputMode
+	// old is the key that ran the action before T7.2.
+	old tea.KeyPressMsg
+	// ran reports whether the action happened, from the model before and
+	// after and the command the key returned.
+	ran func(before, after Model, cmd tea.Cmd) bool
+}
+
+// leaderApplyFilter applies a session-list filter the way a user does now:
+// ctrl+space /, the query, enter.
+func leaderApplyFilter(t *testing.T, m Model, q string) Model {
+	t.Helper()
+	m, _ = update(t, m, leaderKeyPress)
+	m, cmd := update(t, m, keySlash())
+	m = deliverFilterMatches(t, m, cmd)
+	for _, r := range q {
+		m, cmd = update(t, m, keyRune(r))
+		m = deliverFilterMatches(t, m, cmd)
+	}
+	m, _ = update(t, m, keyEnter)
+	if m.list.FilterState() != list.FilterApplied {
+		t.Fatalf("setup: filter state = %v, want applied", m.list.FilterState())
+	}
+	return m
+}
+
+// leaderActionCases has one case per leader-table action, keyed by action;
+// TestLeaderRunsEveryAction fails if the table gains an action this map
+// lacks. Each setup puts the model where the action lives and where it can
+// run, so "did not run" can only mean the key did not reach it.
+func leaderActionCases() map[modeAction]leaderActionCase {
+	press := func(r rune) tea.KeyPressMsg { return keyRune(r).(tea.KeyPressMsg) }
+	list1 := func(t *testing.T) Model { return testModel(sess("a")) }
+	withPane := func(t *testing.T) Model {
+		m := testModel(sess("a"))
+		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "a"})
+		return m
+	}
+	overview := func(t *testing.T) Model { return focusOverview(t, detailFocusFixture(t, "alpha", "alpha")) }
+	pauseList := func(t *testing.T) Model {
+		m, rec := buildPauseModel(t, sess("alpha"))
+		rec.resumed = ResumeResult{WasPaused: true}
+		return withBuild(t, m, buildPauseSnap())
+	}
+	cmdIs := func(cmd tea.Cmd, want func(tea.Msg) bool) bool { return cmd != nil && want(cmd()) }
+	return map[modeAction]leaderActionCase{
+		actionNewSession: {setup: list1, mode: inputNormal, old: press('n'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.formOpen }},
+		actionScratch: {setup: list1, mode: inputNormal, old: press('o'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputPickProvider }},
+		actionProjects: {setup: func(t *testing.T) Model {
+			m := testModel(sess("a"))
+			m.projects = []project.Project{{Path: "/repo", Name: "api"}, {Path: "/repos/afk", Name: "afk"}}
+			m.activeProject = 0
+			return m
+		}, mode: inputNormal, old: press('p'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.switcherOpen }},
+		actionClean: {setup: list1, mode: inputNormal, old: press('c'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputConfirmClean }},
+		actionRestart: {setup: func(t *testing.T) Model { return testModel(stoppedSess("alpha")) }, mode: inputNormal, old: press('r'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.restartInFlight.name == "alpha" }},
+		actionEditLabel: {setup: list1, mode: inputNormal, old: press('l'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputEditLabel }},
+		actionFilterStart: {setup: list1, mode: inputNormal, old: press('/'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.list.SettingFilter() }},
+		// Clear filter's old key was esc, which still clears (it is kept
+		// without the leader); the old-key row is the bare x, which was
+		// never an action and must not become one.
+		actionFilterClear: {setup: func(t *testing.T) Model {
+			return leaderApplyFilter(t, testModel(sess("alpha"), sess("beta")), "b")
+		}, mode: inputNormal, old: press('x'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.list.FilterState() == list.Unfiltered }},
+		actionBuild: {setup: func(t *testing.T) Model { return withBuild(t, testModel(sess("alpha")), buildTabSnap()) }, mode: inputNormal, old: press('b'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.detailTab == tabBuild && a.focus == focusRight }},
+		actionInbox: {setup: func(t *testing.T) Model { m := testModel(sess("a")); m.buildKnown = true; return m }, mode: inputNormal, old: press('i'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.inboxOpen }},
+		actionPauseBuild: {setup: pauseList, mode: inputNormal, old: press('P'),
+			ran: func(_, _ Model, cmd tea.Cmd) bool {
+				return cmdIs(cmd, func(msg tea.Msg) bool { _, ok := msg.(buildPausedMsg); return ok })
+			}},
+		actionResumeBuild: {setup: pauseList, mode: inputNormal, old: press('U'),
+			ran: func(_, _ Model, cmd tea.Cmd) bool {
+				return cmdIs(cmd, func(msg tea.Msg) bool { _, ok := msg.(buildResumedMsg); return ok })
+			}},
+		actionFocusPane: {setup: func(t *testing.T) Model { m := testModel(runningSess("alpha")); m.view = viewOverview; return m }, mode: inputNormal, old: press('f'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.focus == focusRight }},
+		actionPaneToggle: {setup: overview, mode: inputDetail, old: chord('t'),
+			ran: func(b, a Model, _ tea.Cmd) bool { return a.view != b.view }},
+		actionDetailUnfocus: {setup: overview, mode: inputDetail, old: chord('\\'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.focus == focusList }},
+		actionPaneClose: {setup: withPane, mode: inputNormal, old: chord('\\'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.pane == nil }},
+		actionMouseToggle: {setup: list1, mode: inputNormal, old: chord('g'),
+			ran: func(b, a Model, _ tea.Cmd) bool { return a.mouseCapture != b.mouseCapture }},
+		actionEnterResize: {setup: list1, mode: inputNormal, old: chord('w'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.resizing }},
+		actionHelp: {setup: list1, mode: inputNormal, old: press('?'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.helpShowAll }},
+		actionQuit: {setup: list1, mode: inputNormal, old: press('q'),
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.quitting }},
+	}
+}
+
+// TestLeaderRunsEveryAction is the per-action table T7.2 is built on: one
+// subtest per leader-table action, each asserting that ctrl+space then its
+// key runs it and that the key it used to answer to (a bare letter or a
+// chord) no longer does, in the mode the action lives in. Every row is
+// load-bearing — the old key half is what proves the bare rule, the chord or
+// the palette is really gone, and the leader half that nothing was lost on
+// the way. The map is checked against leaderTable, so an action added to the
+// table without a row here fails.
+func TestLeaderRunsEveryAction(t *testing.T) {
+	cases := leaderActionCases()
+	for _, e := range leaderTable {
+		tc, ok := cases[e.action]
+		if !ok {
+			t.Errorf("leader action %v (%q) has no row in leaderActionCases", e.action, e.key)
+			continue
+		}
+		t.Run(leaderNames[e.action], func(t *testing.T) {
+			t.Run("the old key does not run it", func(t *testing.T) {
+				m := tc.setup(t)
+				if got := activeInputMode(m.modeSnapshot()); got != tc.mode {
+					t.Fatalf("setup: mode = %v, want %v", got, tc.mode)
+				}
+				after, cmd := update(t, m, tc.old)
+				if tc.ran(m, after, cmd) {
+					t.Fatalf("%q still runs %v without the leader", tc.old.String(), e.action)
+				}
+				if after.leaderOpen {
+					t.Fatalf("%q opened the actions dialog", tc.old.String())
+				}
+			})
+			t.Run("ctrl+space then its key runs it", func(t *testing.T) {
+				m := tc.setup(t)
+				if got := activeInputMode(m.modeSnapshot()); got != tc.mode {
+					t.Fatalf("setup: mode = %v, want %v", got, tc.mode)
+				}
+				m, _ = update(t, m, leaderKeyPress)
+				if !m.leaderOpen {
+					t.Fatal("ctrl+space did not open the dialog")
+				}
+				row, ok := leaderRowFor(m.leader.rows, e.action)
+				if !ok || row.blocked != "" {
+					t.Fatalf("setup: the %v row is missing or dimmed (%q)", e.action, row.blocked)
+				}
+				k, ok := leaderPressFor(e.key)
+				if !ok {
+					t.Fatalf("key %q does not round-trip", e.key)
+				}
+				after, cmd := update(t, m, k)
+				if after.leaderOpen {
+					t.Fatal("the dialog stayed open")
+				}
+				if !tc.ran(m, after, cmd) {
+					t.Fatalf("ctrl+space %s did not run %v", e.key, e.action)
+				}
+			})
+		})
+	}
+}
+
+// TestRemovedListKeyOnlyRaisesItsNotice presses every removed key on the
+// session list and checks it did nothing but put up its notice. The rows are
+// load-bearing as a set: each is a key that used to act here, and the notice
+// is the only trace a press may leave. `:` is the palette's old key and
+// names the dialog's filter instead of a key.
+func TestRemovedListKeyOnlyRaisesItsNotice(t *testing.T) {
+	for _, k := range removedListKeys {
+		t.Run(k, func(t *testing.T) {
+			m := testModel(sess("a"))
+			m.buildKnown = true
+			press, ok := leaderPressFor(k)
+			if !ok {
+				t.Fatalf("key %q does not round-trip", k)
+			}
+			got, cmd := update(t, m, press)
+			want, _ := removedKeyNotice(k)
+			if got.status != want || got.statusKind != notifyInfo {
+				t.Fatalf("status = %q (%v), want the info notice %q", got.status, got.statusKind, want)
+			}
+			if cmd != nil {
+				t.Errorf("%q returned a command; it must only raise the notice", k)
+			}
+			t.Logf("%q on the list: notice %q, nothing else", k, got.status)
+			if got.formOpen || got.switcherOpen || got.inboxOpen || got.leaderOpen || got.modal != inputNormal ||
+				got.quitting || got.helpShowAll || got.list.SettingFilter() || got.focus != focusList || got.resizing {
+				t.Fatalf("%q acted on the dashboard: form=%v switcher=%v inbox=%v leader=%v modal=%v quit=%v help=%v filter=%v focus=%v resize=%v",
+					k, got.formOpen, got.switcherOpen, got.inboxOpen, got.leaderOpen, got.modal, got.quitting,
+					got.helpShowAll, got.list.SettingFilter(), got.focus, got.resizing)
+			}
+		})
+	}
+	t.Run("a kept key raises no notice", func(t *testing.T) {
+		m := testModel(sess("a"), sess("b"))
+		for _, k := range []tea.KeyPressMsg{keyRune('j').(tea.KeyPressMsg), keyRune('x').(tea.KeyPressMsg), chord('t')} {
+			got, _ := update(t, m, k)
+			if got.status != "" {
+				t.Errorf("%q raised %q, want no notice", k.String(), got.status)
+			}
+		}
+	})
+	t.Run("the overview raises no notice", func(t *testing.T) {
+		m := focusOverview(t, detailFocusFixture(t, "alpha", "alpha"))
+		m.clearStatus()
+		got, _ := update(t, m, keyRune('n'))
+		if got.status != "" || got.formOpen {
+			t.Errorf("n on the overview: status %q, form %v; want it ignored", got.status, got.formOpen)
+		}
+	})
+}
+
+// TestRemovedChordsReachTheAgent pins that the chords the agent pane used to keep
+// are the agent's since T7.2: each arrives at the pane as its ctrl key event
+// and the dashboard's focus, view and mouse are untouched. Every row is
+// load-bearing — any one of them still claimed would take a key from every
+// agent the dashboard hosts.
+func TestRemovedChordsReachTheAgent(t *testing.T) {
+	for _, code := range []rune{'t', 'g', '\\', 'w', 'c'} {
+		k := chord(code)
+		t.Run(k.String(), func(t *testing.T) {
+			fp := newFakePane("X")
+			m := leaderFocusedPane(t, fp)
+			got, _ := update(t, m, k)
+			want := termpane.KeyEvent{Code: code, Mod: vt.ModCtrl}
+			if len(fp.keys) != 1 || fp.keys[0] != want {
+				t.Fatalf("the pane got %+v, want exactly %+v", fp.keys, want)
+			}
+			if !got.paneOwnsKeyboard() || got.view != viewAgent || got.mouseCapture != m.mouseCapture || got.quitting {
+				t.Fatalf("%s acted on the dashboard: pane focused %v, view %v, mouse %v, quit %v",
+					k.String(), got.paneOwnsKeyboard(), got.view, got.mouseCapture, got.quitting)
+			}
+		})
+	}
+}
+
+// TestCtrlCStillQuits pins A3: ctrl+c leaves the dashboard from the list and
+// from the overview without the leader, so a stuck dashboard can always be
+// left. Both rows are load-bearing; the agent pane's ctrl+c is the agent's
+// (TestRemovedChordsReachTheAgent).
+func TestCtrlCStillQuits(t *testing.T) {
+	cases := []struct {
+		name  string
+		model func(t *testing.T) Model
+	}{
+		{"from the list", func(t *testing.T) Model { return testModel(sess("a")) }},
+		{"from the overview", func(t *testing.T) Model { return focusOverview(t, detailFocusFixture(t, "alpha", "alpha")) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, cmd := update(t, tc.model(t), chord('c'))
+			if !got.quitting || cmd == nil {
+				t.Fatalf("ctrl+c: quitting %v, cmd %v; want the dashboard to quit", got.quitting, cmd != nil)
+			}
+		})
+	}
+}
+
+// TestHelpOpensFromTheLeaderAndEscClosesIt pins A5: ctrl+space ? shows the
+// full help, and esc on the list closes it before it would clear a filter.
+// The filtered row is the load-bearing one: with both up, one esc must take
+// the help away and leave the filter, or the owner loses the filter they
+// were reading the help to use.
+func TestHelpOpensFromTheLeaderAndEscClosesIt(t *testing.T) {
+	m := testModel(sess("alpha"), sess("beta"))
+	m = leaderApplyFilter(t, m, "b")
+	m = pressLeader(t, m, keyRune('?'))
+	if !m.helpShowAll {
+		t.Fatal("ctrl+space ? did not show the full help")
+	}
+	m, _ = update(t, m, keyEscMsg())
+	if m.helpShowAll {
+		t.Fatal("esc did not close the full help")
+	}
+	if m.list.FilterState() != list.FilterApplied {
+		t.Fatalf("esc closing the help also changed the filter to %v", m.list.FilterState())
+	}
+	m, _ = update(t, m, keyEscMsg())
+	if m.list.FilterState() != list.Unfiltered {
+		t.Fatalf("the second esc left the filter %v, want it cleared", m.list.FilterState())
 	}
 }

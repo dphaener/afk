@@ -2,27 +2,29 @@
 // dashboard action with its key and one line of help, from the session list,
 // the overview and the agent pane alike (T7.1).
 //
-// Like the `:` palette (palette.go) its rows are DERIVED from mode.go's
-// dispatch table, so an action appears here because the dispatch can perform
-// it. It differs from the palette in three ways, each for a reason:
+// Since T7.2 the leader is the ONE way to run a dashboard action. The owner
+// chose that the session list keeps only the keys that move around (PLAN
+// T7.2, docs/decisions.md "## T7.2"): the bare letters, the dashboard chords
+// and the `:` palette are gone, and an action is a key pressed after
+// ctrl+space. So the dialog's rows no longer come from mode.go's rules —
+// there are no rules for these actions left to derive them from — but from
+// leaderTable below, which holds the key after the leader for each action and
+// the side of the screen it runs on.
 //
-//   - It merges inputNormal's and inputDetail's rules, because it is opened
-//     from both sides of the screen and from the agent pane, and the owner
-//     should see one list wherever they are, not a list that changes shape
-//     with the focus.
-//   - It shows actions that cannot run right now, dimmed with the reason,
-//     where the palette hides them. A person who opens the dialog to find a
-//     key learns the key and why it is not doing anything, which a missing
-//     row cannot tell them.
+// Two properties of the T7.1 dialog are kept, each for its reason:
+//
+//   - It shows actions that cannot run right now, dimmed with the reason. A
+//     person who opens the dialog to find a key learns the key and why it is
+//     not doing anything, which a missing row cannot tell them.
 //   - Its rows carry the modeAction itself, not a keypress to re-press. The
 //     dialog is opened from the agent pane too, where re-pressing a key would
-//     type it to the agent; the Model (W2.T1) runs the row's action through
-//     applyKeyAction instead, the same function the key reaches.
+//     type it to the agent; the Model runs the row's action through
+//     applyKeyAction instead, the function every key reaches.
 //
-// Nothing here touches the Model. The row builder, the blocked reasons and the
-// key decision are pure functions of plain data, so every branch is a table
-// row (leader_test.go); the Model fills leaderConds from its live state and
-// applies the leaderOutcome it gets back.
+// Nothing here touches the Model. The row builder, the blocked reasons, the
+// removed-key notice and the key decision are pure functions of plain data,
+// so every branch is a table row (leader_test.go); the Model fills
+// leaderConds from its live state and applies the leaderOutcome it gets back.
 package ui
 
 import (
@@ -41,13 +43,13 @@ import (
 // {Code: KeySpace, Mod: ModCtrl}, which TestLeaderKeyDecision exercises.
 const leaderKey = "ctrl+space"
 
-// The dialog's own gestures, declared HELP-ONLY on the palette's precedent
-// (palette.go): leaderKeyDecision stages them, and declaring them as parent
-// rules in the registry would implement them twice. They exist so the footer
-// says what the keys do while the dialog is up. leaderFilterKey is bound to
-// backspace because a binding needs a key to be shown at all (help.Model
-// skips a binding with none), and backspace is the one filter key that has a
-// name; its label says what a person actually does, which is type.
+// The dialog's own gestures, declared HELP-ONLY: leaderKeyDecision stages
+// them, and declaring them as parent rules in the registry would implement
+// them twice. They exist so the footer says what the keys do while the dialog
+// is up. leaderFilterKey is bound to backspace because a binding needs a key
+// to be shown at all (help.Model skips a binding with none), and backspace is
+// the one filter key that has a name; its label says what a person actually
+// does, which is type.
 var (
 	leaderRunKey = key.NewBinding(
 		key.WithKeys("enter"),
@@ -71,60 +73,142 @@ var (
 	)
 )
 
-// leaderRow is one action in the dialog.
-type leaderRow struct {
+// leaderReach is where a leader action runs from, which decides whether the
+// keyboard moves to the session list before it runs. It reproduces where
+// each action's old key was a rule (T7.1's runLeaderRow ran a row in place
+// exactly when the opening mode had a rule for it), so moving every action
+// under the leader changes how it is reached and nothing about what it does.
+type leaderReach int
+
+const (
+	// reachList is a session-list action (new, one-off, switch project,
+	// clean, label, filter, clear filter, focus, close pane, help). From the
+	// right side the keyboard goes to the list first and the action runs as
+	// from the list, as it did when it was a list key: an overlay it opens is
+	// then over the list, and closing it leaves the list with the keyboard.
+	reachList leaderReach = iota
+	// reachOverview runs where it was opened on the list and the overview
+	// (and the agent placeholder, which stands in the overview's mode), and
+	// from the agent pane goes through the list first. These were rules in
+	// normal and detail mode and never in the pane, whose keys were the
+	// agent's: build tasks, inbox, pause, resume, restart, resize.
+	reachOverview
+	// reachAnywhere runs where it was opened, the agent pane included: quit
+	// and the mouse, which do not care where the keyboard is.
+	reachAnywhere
+	// reachRight is a right-side action (agent or overview, back to list):
+	// it runs where it was opened, as inputDetail, and is dimmed from the
+	// list, where nothing on the right is under control.
+	reachRight
+)
+
+// leaderEntry is one action in the leader table.
+type leaderEntry struct {
+	// key is what is pressed after ctrl+space. It is a key.Matches string
+	// ("n", "P", "\\", "?"), so a dialog key is compared with KeyPressMsg's
+	// String() exactly as a binding would be.
+	key    string
 	action modeAction
-	// mode is the mode the action runs as: inputNormal, unless the action is
-	// a rule only in inputDetail. applyKeyAction is called with it, so an
-	// action runs exactly as its own key does in that mode.
-	mode inputMode
-	// name is what the row is called, and what the filter matches first.
-	name string
-	// keyLabel is the binding's help key ("enter/f", "esc/ctrl+\\").
-	keyLabel string
-	// keys are every key the binding answers to; keys[0] is the binding's
-	// first key, the one a press is synthesized from when the action needs
-	// the key itself (the filter's `/` is handed on to the list).
-	keys []string
-	// help is one line of plain language from leaderHelp.
-	help string
-	// blocked is why the action cannot run right now, or "" when it can.
-	blocked string
+	reach  leaderReach
+	// also is any key the row answers to in the dialog besides key, and is
+	// not shown. Only quit has one: ctrl+c still leaves the dashboard from
+	// inside the dialog, so a stuck dashboard can always be left (A3).
+	also []string
 }
 
-// leaderExcluded is every action the dialog leaves out: movement and
-// navigation, which are things you hold a key down for rather than look up,
-// and the leader itself, which would open the dialog it is listed in. The
-// list is of exclusions, not inclusions, so an action added to inputNormal or
-// inputDetail later appears in the dialog without anyone touching this file —
-// and fails TestLeaderRowsFromTheRealRegistry until its help line is written.
-var leaderExcluded = []modeAction{
-	actionCursorUp, actionCursorDown,
-	actionPageUp, actionPageDown, actionListTop, actionListBottom,
-	actionDetailScrollUp, actionDetailScrollDown,
-	actionDetailHalfPageUp, actionDetailHalfPageDown,
-	actionDetailPageUp, actionDetailPageDown,
-	actionDetailGotoTop, actionDetailGotoBottom,
-	actionDetailTabNext, actionDetailTabPrev, actionDetailTabJump,
-	actionOpenLeader,
+// leaderTable is every dashboard action and its key after the leader, in the
+// order the dialog lists them. It is the table in docs/decisions.md "## T7.2"
+// row for row; TestLeaderTableIsTheDecidedTable holds the two together.
+//
+// Back to list comes before close pane on purpose: both answer `\`, and among
+// rows sharing a key the first one that can run wins (leaderKeyDecision). On
+// the right side back to list can run, so `\` gives the keyboard back as
+// ctrl+\ did there; on the list it is dimmed, so `\` closes the pane as
+// ctrl+\ did there. The other order would close the agent pane from inside it.
+var leaderTable = []leaderEntry{
+	{key: "n", action: actionNewSession, reach: reachList},
+	{key: "o", action: actionScratch, reach: reachList},
+	{key: "p", action: actionProjects, reach: reachList},
+	{key: "c", action: actionClean, reach: reachList},
+	{key: "r", action: actionRestart, reach: reachOverview},
+	{key: "l", action: actionEditLabel, reach: reachList},
+	{key: "/", action: actionFilterStart, reach: reachList},
+	{key: "x", action: actionFilterClear, reach: reachList},
+	{key: "b", action: actionBuild, reach: reachOverview},
+	{key: "i", action: actionInbox, reach: reachOverview},
+	{key: "P", action: actionPauseBuild, reach: reachOverview},
+	{key: "U", action: actionResumeBuild, reach: reachOverview},
+	{key: "f", action: actionFocusPane, reach: reachList},
+	{key: "t", action: actionPaneToggle, reach: reachRight},
+	{key: "\\", action: actionDetailUnfocus, reach: reachRight},
+	{key: "\\", action: actionPaneClose, reach: reachList},
+	{key: "g", action: actionMouseToggle, reach: reachAnywhere},
+	{key: "w", action: actionEnterResize, reach: reachOverview},
+	{key: "?", action: actionHelp, reach: reachList},
+	{key: "q", action: actionQuit, reach: reachAnywhere, also: []string{"ctrl+c"}},
 }
 
-// leaderNames renames the few actions whose help description is too terse
-// to read as a name in a list of every action ("label", "projects"). The
-// footer and `?` keep the short words; they sit next to context the dialog
-// does not have. An action with no entry here uses its binding's description.
+// mode is the mode a reach's action runs as through applyKeyAction:
+// inputDetail for the right side's own actions, inputNormal for the rest.
+// Only the modal answers read the mode there, so for every action in the
+// table this records the side, not a branch.
+func (r leaderReach) mode() inputMode {
+	if r == reachRight {
+		return inputDetail
+	}
+	return inputNormal
+}
+
+// leaderMovesToList reports whether running an action of reach r from mode
+// `from` first gives the keyboard to the session list. from is the mode the
+// leader was pressed in: inputNormal, inputDetail (the overview or the agent
+// placeholder) or inputPane.
+//
+// A list action from the right side moves the keyboard, as its old list key
+// could only be pressed there; an overview action moves it only from the
+// agent pane, where its old letter was typed to the agent instead. Running a
+// list action with the agent still focused would be worse than odd: an
+// overlay it opens would close back onto the agent, and keys meant for the
+// dashboard would be typed into the session.
+func leaderMovesToList(r leaderReach, from inputMode) bool {
+	switch r {
+	case reachList:
+		return from != inputNormal
+	case reachOverview:
+		return from == inputPane
+	}
+	return false
+}
+
+// leaderNames is each listed action's row name, which is also what the
+// filter matches first. The names are the plain words of the T7.2 key table
+// rather than the old bindings' terse help ("label", "projects"), which sat
+// next to context the dialog does not have.
 var leaderNames = map[modeAction]string{
-	actionClean:       "clean session",
-	actionRestart:     "restart agent",
-	actionEditLabel:   "edit label",
-	actionScratch:     "one-off session",
-	actionProjects:    "switch project",
-	actionFilterStart: "filter sessions",
-	actionPaneToggle:  "agent or overview",
+	actionNewSession:    "new session",
+	actionScratch:       "one-off session",
+	actionProjects:      "switch project",
+	actionClean:         "clean session",
+	actionRestart:       "restart agent",
+	actionEditLabel:     "edit label",
+	actionFilterStart:   "filter sessions",
+	actionFilterClear:   "clear filter",
+	actionBuild:         "build tasks",
+	actionInbox:         "inbox",
+	actionPauseBuild:    "pause the build",
+	actionResumeBuild:   "resume the build",
+	actionFocusPane:     "focus the right side",
+	actionPaneToggle:    "agent or overview",
+	actionDetailUnfocus: "back to list",
+	actionPaneClose:     "close pane",
+	actionMouseToggle:   "mouse",
+	actionEnterResize:   "resize panes",
+	actionHelp:          "help",
+	actionQuit:          "quit",
 }
 
 // leaderHelp is the one line of help each listed action shows. Every action
-// the dialog lists must have a line; the test that checks it is what makes a
+// the table lists must have a line; the test that checks it is what makes a
 // later action's missing line a failure rather than a blank row.
 var leaderHelp = map[modeAction]string{
 	actionPaneClose:     "Close the agent pane; the session keeps running",
@@ -139,7 +223,6 @@ var leaderHelp = map[modeAction]string{
 	actionEditLabel:     "Give the selected session a display label",
 	actionFilterStart:   "Filter the session list by name",
 	actionFilterClear:   "Show every session again",
-	actionPalette:       "Open the command palette",
 	actionBuild:         "Show the build's tasks",
 	actionInbox:         "Read and answer the inbox",
 	actionPauseBuild:    "Hold the build so no new task starts",
@@ -147,67 +230,129 @@ var leaderHelp = map[modeAction]string{
 	actionEnterResize:   "Move the divider between the list and the right side",
 	actionDetailUnfocus: "Hand the keyboard back to the session list",
 	actionPaneToggle:    "Switch the right side between the agent and the overview",
+	actionHelp:          "Show every key on the session list, or hide them again",
 }
 
-// leaderRows builds the dialog's rows from the registry: one per action of
-// inputNormal and inputDetail, in each mode's help order, inputNormal first.
-//
-// Help order, not rule order, for the palette's reason (paletteEntries):
-// rules are ordered for match fidelity and read like nothing a person would
-// scan. An action that is a rule in both modes (build, restart, quit and
-// others) is listed once, from inputNormal, which is the mode a person
-// thinks of it in; only an action that exists solely in inputDetail runs as
-// inputDetail. The blocked reason is filled from conds here so the rows the
-// dialog holds already say what cannot run.
-func leaderRows(reg modeRegistry, conds leaderConds) []leaderRow {
-	var rows []leaderRow
-	seen := map[modeAction]bool{}
-	for _, mode := range []inputMode{inputNormal, inputDetail} {
-		spec := reg.spec(mode)
-		position := func(b key.Binding) int {
-			for i, kb := range spec.keys.bindings {
-				if slices.Equal(kb.Keys(), b.Keys()) {
-					return i
-				}
-			}
-			return len(spec.keys.bindings)
-		}
-		rules := slices.Clone(spec.rules)
-		slices.SortStableFunc(rules, func(a, b modeRule) int {
-			return position(a.binding) - position(b.binding)
+// leaderRow is one action in the dialog.
+type leaderRow struct {
+	action modeAction
+	// mode is the mode the action runs as (leaderReach.mode).
+	mode inputMode
+	// reach is where it runs from (leaderMovesToList).
+	reach leaderReach
+	// name is what the row is called, and what the filter matches first.
+	name string
+	// keyLabel is the key after the leader, as the row shows it.
+	keyLabel string
+	// keys are every key the row answers to in the dialog; keys[0] is
+	// keyLabel's key, the one a press is synthesized from when the action
+	// needs the key itself (the filter's `/` is handed on to the list).
+	keys []string
+	// help is one line of plain language from leaderHelp.
+	help string
+	// blocked is why the action cannot run right now, or "" when it can.
+	blocked string
+}
+
+// leaderRows builds the dialog's rows from leaderTable, in its order, with
+// each row's blocked reason filled from conds so the rows the dialog holds
+// already say what cannot run.
+func leaderRows(conds leaderConds) []leaderRow {
+	rows := make([]leaderRow, 0, len(leaderTable))
+	for _, e := range leaderTable {
+		rows = append(rows, leaderRow{
+			action:   e.action,
+			mode:     e.reach.mode(),
+			reach:    e.reach,
+			name:     leaderNames[e.action],
+			keyLabel: e.key,
+			keys:     append([]string{e.key}, e.also...),
+			help:     leaderHelp[e.action],
+			blocked:  leaderBlockedReason(e.action, conds),
 		})
-		for _, rule := range rules {
-			if seen[rule.action] || slices.Contains(leaderExcluded, rule.action) {
-				continue
-			}
-			keys := rule.binding.Keys()
-			if len(keys) == 0 {
-				continue
-			}
-			seen[rule.action] = true
-			h := rule.binding.Help()
-			name := h.Desc
-			if n, ok := leaderNames[rule.action]; ok {
-				name = n
-			}
-			rows = append(rows, leaderRow{
-				action:   rule.action,
-				mode:     mode,
-				name:     name,
-				keyLabel: h.Key,
-				keys:     slices.Clone(keys),
-				help:     leaderHelp[rule.action],
-				blocked:  leaderBlockedReason(rule.action, conds),
-			})
-		}
 	}
 	return rows
+}
+
+// leaderKeyFor is the key after the leader that runs action a, or "" when
+// the table has none.
+func leaderKeyFor(a modeAction) string {
+	for _, e := range leaderTable {
+		if e.action == a {
+			return e.key
+		}
+	}
+	return ""
+}
+
+// removedListKeys are the keys the session list used to answer with an
+// action before T7.2: every bare letter that moved under the leader, and `:`,
+// the palette's key. Pressing one now does nothing but raise a notice naming
+// the new key (removedKeyNotice), so a hand that still remembers the old key
+// learns the new one instead of seeing nothing happen. Only the list gets
+// these: on the overview a stray letter was always ignored, and the old
+// chords now belong to the agent in the agent pane, so a notice for them
+// would be wrong in the one place they are pressed most.
+var removedListKeys = []string{"n", "o", "p", "c", "r", "l", "/", "b", "i", "q", "f", "?", "P", "U", ":"}
+
+// removedKeyNotice is the notice for key s pressed on the session list, and
+// whether s is one of removedListKeys. Every removed letter kept its letter
+// under the leader; the table is still asked, so a letter that ever left the
+// table would lose its notice rather than name a key that does nothing.
+func removedKeyNotice(s string) (string, bool) {
+	if !slices.Contains(removedListKeys, s) {
+		return "", false
+	}
+	if s == ":" {
+		return ": moved: press " + leaderKey + ", then type to filter the actions", true
+	}
+	if leaderActionForKey(s) == actionNone {
+		return "", false
+	}
+	return s + " moved: press " + leaderKey + " then " + s, true
+}
+
+// leaderChord is how a hint or a notice names the key that runs action a:
+// "ctrl+space n". It reads the key from leaderTable, so a hint cannot name a
+// key the dialog does not answer to. An action the table does not list gives
+// the leader alone, which still tells the reader where to look.
+func leaderChord(a modeAction) string {
+	if k := leaderKeyFor(a); k != "" {
+		return leaderKey + " " + k
+	}
+	return leaderKey
+}
+
+// leaderHelpBinding is a help entry that shows "ctrl+space X" for action a
+// with the given short description, for the footer and the full help. Its
+// match key is the plain key after the leader: nothing dispatches on it (the
+// dialog does, from leaderTable), it only has to be non-empty because
+// help.Model skips a binding that has no key. enabled false drops it from the
+// line, on the rule that help never offers a key that would do nothing.
+func leaderHelpBinding(a modeAction, desc string, enabled bool) key.Binding {
+	b := key.NewBinding(
+		key.WithKeys(leaderKeyFor(a)),
+		key.WithHelp(leaderChord(a), desc),
+	)
+	b.SetEnabled(enabled)
+	return b
+}
+
+// leaderActionForKey is the first table action whose key is s, or
+// actionNone.
+func leaderActionForKey(s string) modeAction {
+	for _, e := range leaderTable {
+		if e.key == s {
+			return e.action
+		}
+	}
+	return actionNone
 }
 
 // leaderConds is the live state the blocked reasons are decided from, as
 // plain booleans the Model fills when the dialog opens. Each one mirrors a
 // guard an action's own handler applies, so the dialog dims exactly the rows
-// whose key would do nothing (or only say why it did nothing).
+// that would do nothing (or only say why it did nothing).
 type leaderConds struct {
 	// hasActiveProject is Model.hasActiveProject: the new-session form, the
 	// one-off picker and the switcher are inert without one.
@@ -234,7 +379,7 @@ type leaderConds struct {
 	// buildKnown is Model.buildKnown: the build files have been read once,
 	// which openInbox needs before it has anything to show.
 	buildKnown bool
-	// restartLive is Model.restartKeyLive, the gate `?` and the palette use.
+	// restartLive is Model.restartKeyLive, the gate the help uses.
 	restartLive bool
 	// canFocus is normalBindingEnabled's answer for the Focus binding: a pane,
 	// an overview or the agent placeholder is drawn on the right.
@@ -248,12 +393,13 @@ type leaderConds struct {
 // words, or "" when it can. The checks copy the handlers' own guards
 // (cleanRequested and cleanSelected, restartKeyLive, openLabelForm,
 // showBuildTab, pauseBuild, resumeBuild, openInbox, openSwitcher,
-// openNewForm, focusRightSide, toggleView) and the rule guards needsPane and
-// needsFilter. A reason here that a handler does not enforce would dim a row
-// whose key works, so nothing is added that the handlers do not check — with
-// two exceptions, both about where the keyboard is: agent/overview and back
-// to list are overview keys, and from the list (where neither is a rule) the
-// dialog must not let them reach across to the right side.
+// openNewForm, focusRightSide, toggleView) and the two guards the old rules
+// carried — close pane needed a pane, clear filter needed a filter — which
+// went with the rules and live here now. A reason here that a handler does
+// not enforce would dim a row that works, so nothing is added that the
+// handlers do not check — with two exceptions, both about where the keyboard
+// is: agent/overview and back to list are right-side actions, and from the
+// list the dialog must not let them reach across to the right side.
 func leaderBlockedReason(a modeAction, c leaderConds) string {
 	const noSession = "no session selected"
 	switch a {
@@ -283,7 +429,7 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		case !c.selected:
 			return noSession
 		case c.paneOpen:
-			return "close the pane first (ctrl+\\)"
+			return "close the pane first (" + leaderKey + " \\)"
 		case c.selectedPending:
 			return "this session is still being created"
 		case c.selectedCleaning:
@@ -330,6 +476,80 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		}
 	}
 	return ""
+}
+
+// leaderNamedKeys maps the bubbles/key name of every non-printable key a
+// leader-table row or a test could carry to its tea key code. Only keys this
+// package could plausibly carry are listed; anything else fails the
+// round-trip in leaderPressFor rather than being guessed at.
+var leaderNamedKeys = map[string]rune{
+	"enter":     tea.KeyEnter,
+	"esc":       tea.KeyEsc,
+	"tab":       tea.KeyTab,
+	"space":     tea.KeySpace,
+	"backspace": tea.KeyBackspace,
+	"delete":    tea.KeyDelete,
+	"insert":    tea.KeyInsert,
+	"up":        tea.KeyUp,
+	"down":      tea.KeyDown,
+	"left":      tea.KeyLeft,
+	"right":     tea.KeyRight,
+	"pgup":      tea.KeyPgUp,
+	"pgdown":    tea.KeyPgDown,
+	"home":      tea.KeyHome,
+	"end":       tea.KeyEnd,
+}
+
+// leaderPressFor builds the tea.KeyPressMsg that a key.Binding key string
+// names, so a row whose handler reads the key (startSessionFilter hands `/`
+// on to the list) gets the key a press of it would have delivered.
+//
+// The reported ok is a ROUND-TRIP assertion, not a parse-succeeded flag: the
+// constructed message is accepted only when its String() reproduces the exact
+// string it was built from — the same String() key.Matches compares against
+// (bubbles/v2@v2.2.1 key.go:Matches). That is what makes a wrong parse fail
+// closed: a mis-decoded key would otherwise reach a handler as some OTHER key.
+//
+// Text is set for an unmodified printable rune and left empty otherwise,
+// mirroring how the terminal's own decoding arrives: Key.String returns Text
+// when it is non-empty (ultraviolet key.go:391), and Keystroke's
+// modifier-qualified form otherwise.
+func leaderPressFor(name string) (tea.KeyPressMsg, bool) {
+	rest := name
+	var mod tea.KeyMod
+	for parsing := true; parsing; {
+		switch {
+		case strings.HasPrefix(rest, "ctrl+"):
+			mod |= tea.ModCtrl
+			rest = strings.TrimPrefix(rest, "ctrl+")
+		case strings.HasPrefix(rest, "alt+"):
+			mod |= tea.ModAlt
+			rest = strings.TrimPrefix(rest, "alt+")
+		case strings.HasPrefix(rest, "shift+"):
+			mod |= tea.ModShift
+			rest = strings.TrimPrefix(rest, "shift+")
+		default:
+			parsing = false
+		}
+	}
+
+	var k tea.KeyPressMsg
+	if code, ok := leaderNamedKeys[rest]; ok {
+		k = tea.KeyPressMsg{Code: code, Mod: mod}
+	} else {
+		runes := []rune(rest)
+		if len(runes) != 1 {
+			return tea.KeyPressMsg{}, false
+		}
+		k = tea.KeyPressMsg{Code: runes[0], Mod: mod}
+		if mod == 0 {
+			k.Text = rest
+		}
+	}
+	if k.String() != name {
+		return tea.KeyPressMsg{}, false
+	}
+	return k, true
 }
 
 // leaderOutcomeKind is what one key in the dialog does.
@@ -393,11 +613,11 @@ type leaderOutcome struct {
 //  2. ctrl+space closes; from the agent pane it also passes ctrl+space on.
 //  3. up and down move the highlight.
 //  4. enter runs the highlighted row. enter and esc are checked before any
-//     row's keys, so Focus (enter/f) and back-to-list (esc/ctrl+\) answer
-//     only to their other key here.
+//     row's keys; no row carries either (rows carry the key after the
+//     leader), and the order keeps it so if one ever did.
 //  5. backspace edits the query.
 //  6. With nothing typed, a key that is a row's key runs that row. Among
-//     rows sharing a key (ctrl+\ is both close-pane and back-to-list) the
+//     rows sharing a key (`\` is both back-to-list and close-pane) the
 //     first one that can run wins, so a dimmed row cannot swallow the key
 //     from the runnable one.
 //  7. A printable key filters: one that is nobody's key starts the query, and
@@ -458,9 +678,9 @@ func leaderRunOutcome(r leaderRow) leaderOutcome {
 }
 
 // leaderDialog is the dialog's state. It holds a snapshot of the rows taken
-// when it opened and never refreshes itself, for the palette's reason
-// (newPalette): the discovery tick fires every two seconds, and rebuilding
-// under the user's hands would move the highlight they are aiming with.
+// when it opened and never refreshes itself: the discovery tick fires every
+// two seconds, and rebuilding under the user's hands would move the
+// highlight they are aiming with.
 type leaderDialog struct {
 	rows      []leaderRow
 	query     string
@@ -476,8 +696,8 @@ func newLeaderDialog(rows []leaderRow, openedFromPane bool) leaderDialog {
 }
 
 // visible is the rows the query keeps: a case-insensitive substring match on
-// the name, the help line and the key label. A substring rather than the
-// palette's fuzzy match, because the dialog's list is short and a person
+// the name, the help line and the key label. A substring rather than a
+// fuzzy match, because the dialog's list is short and a person
 // typing a word expects rows containing that word, not rows that happen to
 // contain its letters in order.
 func (d leaderDialog) visible() []leaderRow {
@@ -502,8 +722,8 @@ func (d leaderDialog) decide(k tea.KeyPressMsg) leaderOutcome {
 
 // apply carries out the two outcomes that change the dialog itself, filter
 // and move; the others are the Model's to act on. A query edit puts the
-// highlight back on the first row, as the palette's SetFilterText does, so
-// the highlight can never index past a list the filter just shortened.
+// highlight back on the first row, so the highlight can never index past a
+// list the filter just shortened.
 func (d *leaderDialog) apply(o leaderOutcome) {
 	switch o.kind {
 	case leaderFilter:
@@ -522,7 +742,7 @@ func (d *leaderDialog) apply(o leaderOutcome) {
 			d.highlight = 0
 			return
 		}
-		// Wraps at both ends, like the palette's list (InfiniteScrolling).
+		// Wraps at both ends, so the last row is one up-arrow away.
 		d.highlight = ((d.highlight+o.delta)%n + n) % n
 	}
 }
@@ -592,8 +812,8 @@ func leaderRowLine(r leaderRow, keyW, nameW, width int, selected bool) string {
 		return theme.dim.Render(line)
 	default:
 		// The key column in the help key's colour so the eye can run down the
-		// keys, as the palette's rows do. The cut above is measured on the
-		// plain text, so styling the key cannot change where it falls.
+		// keys. The cut above is measured on the plain text, so styling the
+		// key cannot change where it falls.
 		if lipgloss.Width(r.keyLabel) <= width && strings.HasPrefix(line, r.keyLabel) {
 			return theme.helpStyles.ShortKey.Render(r.keyLabel) + strings.TrimPrefix(line, r.keyLabel)
 		}

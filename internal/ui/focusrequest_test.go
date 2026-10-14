@@ -387,9 +387,9 @@ func TestFocusRequestSwitchingPanesClosesTheOutgoingOne(t *testing.T) {
 		t.Fatalf("precondition: enter must install pane A focused (pane==A: %v, name=%q, focused=%v)",
 			m.pane == paneA, m.paneName, m.paneOwnsKeyboard())
 	}
-	m, _ = update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+	m = pressLeader(t, m, keyRune('\\'))
 	if m.paneOwnsKeyboard() || !m.shouldRenderPane() {
-		t.Fatal("precondition: ctrl+\\ must leave pane A drawn with keyboard ownership on the list")
+		t.Fatal("precondition: ctrl+space \\ must leave pane A drawn with keyboard ownership on the list")
 	}
 
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return paneB, nil }
@@ -743,7 +743,7 @@ func TestFocusRequestOnAStoppedHostFocusesItsOverview(t *testing.T) {
 			m.detailDrawn(), m.agentPlaceholderDrawn())
 	}
 
-	m, restart := update(t, m, keyRune('r'))
+	m, restart := pressAction(t, m, keyRune('r'))
 	if restart == nil {
 		t.Fatal("r on the focused overview must dispatch the restart")
 	}
@@ -789,7 +789,7 @@ func TestFocusRequestOnAStoppedHostDetachesAnotherRowsPane(t *testing.T) {
 				t.Fatalf("precondition: enter must install pane A (name=%q)", m.paneName)
 			}
 			if tc.releaseFn {
-				m, _ = update(t, m, tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+				m = pressLeader(t, m, keyRune('\\'))
 			}
 
 			m, _ = update(t, m, freshRequestMsg("target"))
@@ -813,7 +813,7 @@ func TestFocusRequestOnAStoppedHostDetachesAnotherRowsPane(t *testing.T) {
 			}
 
 			m, _ = update(t, m, keyEsc)
-			m, _ = update(t, m, tea.KeyPressMsg{Code: 'c', Text: "c"})
+			m = pressLeader(t, m, keyRune('c'))
 			if strings.Contains(m.status, "close the pane first") {
 				t.Fatalf("c on target refused for an invisible pane: %q", m.status)
 			}
@@ -882,7 +882,7 @@ func TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview(t *testing.T) {
 		t.Errorf("opens = %d (%+v), want 0 — the stale timer dialed after the click", len(opened), opened)
 	}
 
-	m, restart := update(t, m, keyRune('r'))
+	m, restart := pressAction(t, m, keyRune('r'))
 	if restart == nil {
 		t.Fatal("r on the clicked stopped session must dispatch the restart")
 	}
@@ -970,7 +970,7 @@ func TestStoppedRestartWaitsForMetadataBeforeOpening(t *testing.T) {
 	if m.focus != focusRight || !m.detailDrawn() {
 		t.Fatalf("setup: enter on a stopped row must focus its overview (focus=%v detail=%v)", m.focus, m.detailDrawn())
 	}
-	m, restart := update(t, m, keyRune('r'))
+	m, restart := pressAction(t, m, keyRune('r'))
 	if restart == nil {
 		t.Fatal("r did not dispatch the stopped-host restart")
 	}
@@ -1169,7 +1169,7 @@ func TestQuitClosesTheFocusWatcher(t *testing.T) {
 	w := newFakeFocusWatcher()
 	m, _ := focusRequestModel(t, w, runningSess("target"))
 
-	m, _ = update(t, m, keyRune('q'))
+	m = pressLeader(t, m, keyRune('q'))
 	if w.closed != 1 {
 		t.Errorf("watcher Close called %d times on quit, want 1", w.closed)
 	}
@@ -2081,7 +2081,7 @@ func TestQuitClearsEveryProjectsRendezvous(t *testing.T) {
 		}
 	}
 
-	m, _ = update(t, m, keyRune('q'))
+	m = pressLeader(t, m, keyRune('q'))
 
 	for dir, w := range f.watchers {
 		if w.closed != 1 {

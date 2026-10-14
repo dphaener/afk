@@ -26,16 +26,17 @@
 //
 // The rules that shape holds to:
 //
-//   - No "→" arrows, and no parenthesised hints. "opened x · enter/f to focus",
+//   - No "→" arrows, and no parenthesised hints. "opened x · enter to focus",
 //     never "opened x (press enter to focus)".
-//   - "r to restart", not "press r to restart it": the hint names the key
+//   - "ctrl+space r to restart", not "press ctrl+space r to restart it": the hint names the key
 //     and the verb it performs, nothing more.
-//   - Key names are spelled the way bubbles/key spells a chord — "ctrl+g",
-//     not "ctrl-g". The help row an inch below the toast carries the same
+//   - Key names are spelled the way bubbles/key spells a chord — "ctrl+space",
+//     not "ctrl-space". An action key is always named with the leader
+//     (leaderChord), since a bare letter does nothing on the dashboard. The help row an inch below the toast carries the same
 //     spelling (defaultKeyMap's WithHelp in model.go, mouseCaptureHint in
 //     views.go), so the two surfaces never disagree about a chord.
 //   - At most ONE em-dash clause of qualification inside the outcome, never
-//     two: "x isn't running — its host record was stale · r to restart".
+//     two: "x isn't running — its host record was stale · ctrl+space r to restart".
 //   - The in-flight family ("creating x…", "opening x…") keeps its shape. A
 //     trailing ellipsis already reads as "in progress", and there is no
 //     outcome yet to lead with.
@@ -996,7 +997,7 @@ func paneAttachFailedStatus(msg paneAttachedMsg) string {
 				msg.name, hostLogPath(msg.worktree, msg.name))
 		}
 		return fmt.Sprintf("%s isn't running — its host record was stale · %s to restart",
-			msg.name, wedgeRecoveryKey)
+			msg.name, leaderChord(actionRestart))
 	}
 	return fmt.Sprintf("opening %s failed: %v — see %s",
 		msg.name, msg.err, hostLogPath(msg.worktree, msg.name))
@@ -1354,13 +1355,13 @@ func specialKeyEvent(k tea.KeyPressMsg) (termpane.KeyEvent, bool) {
 // Ctrl+[ is likewise absent because the decoder resolves it to KeyEscape before
 // it can reach here (see specialKeyEvent's doc), which is where v1 sent it too.
 //
-// Two chords in this range never reach here, because the pane mode's own rules
-// claim both before forwarding: ctrl+\ (the focus-detach chord) and ctrl+g
-// (mouseChordKey,
-// which hands mouse capture back to the host terminal and takes it again). Their
-// cases below are therefore unreachable from BOTH front ends — afk attach
-// (attachpane.go) reserves exactly the same two — and they stay only because this
-// function is a total mapping of the C0 range.
+// ctrl+\ and ctrl+g reach here from the dashboard's agent pane. Until T7.2 the
+// pane's own rules claimed both before forwarding (the keyboard-back chord and
+// mouseChordKey); since then the dashboard's ways to do those are ctrl+space \
+// and ctrl+space g, and the pane's only rule is the leader, so the agent gets
+// the chords like any other key, ctrl+t included. afk attach (attachpane.go)
+// still reserves ctrl+\ and ctrl+g, so from there their cases below stay
+// unreachable.
 func ctrlChordEvent(code rune) (termpane.KeyEvent, bool) {
 	switch {
 	case code == tea.KeySpace: // ctrl+space / ctrl+@ → NUL
