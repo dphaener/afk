@@ -97,14 +97,14 @@ func switcherWiringDiscoverFixture(repo string) []discover.SessionState {
 	return nil
 }
 
-// openSwitcherOverlay presses `p` and asserts it opened, so every test below
+// openSwitcherOverlay presses ctrl+space then `p` and asserts it opened, so every test below
 // starts from an overlay opened through the real key path rather than from a
 // hand-set flag.
 func openSwitcherOverlay(t *testing.T, m Model) Model {
 	t.Helper()
-	m, _ = update(t, m, keyP)
+	m = pressLeader(t, m, keyP)
 	if !m.switcherOpen {
-		t.Fatal("`p` did not open the project switcher")
+		t.Fatal("ctrl+space then `p` did not open the project switcher")
 	}
 	return m
 }

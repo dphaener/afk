@@ -118,15 +118,15 @@ func buildSummaryLines(snap buildview.Snapshot, width int) []string {
 		lines = append(lines, theme.errorText.Render(truncate(stop, width)))
 	}
 	if open, blocking := buildview.OpenCounts(snap.Items); blocking > 0 {
-		text := fmt.Sprintf("%d items need you · i: inbox", blocking)
+		text := fmt.Sprintf("%d items need you · %s: inbox", blocking, leaderChord(actionInbox))
 		if blocking == 1 {
-			text = "1 item needs you · i: inbox"
+			text = "1 item needs you · " + leaderChord(actionInbox) + ": inbox"
 		}
 		lines = append(lines, theme.awaitingFlag.Render(truncate(text, width)))
 	} else if open > 0 {
-		text := fmt.Sprintf("%d open items · i: inbox", open)
+		text := fmt.Sprintf("%d open items · %s: inbox", open, leaderChord(actionInbox))
 		if open == 1 {
-			text = "1 open item · i: inbox"
+			text = "1 open item · " + leaderChord(actionInbox) + ": inbox"
 		}
 		lines = append(lines, truncate(text, width))
 	}

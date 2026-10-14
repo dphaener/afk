@@ -48,13 +48,16 @@ func drainCmd(cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
-func TestCtrlWEntersResizeModeFromNormal(t *testing.T) {
+// TestLeaderWEntersResizeModeFromNormal is ctrl+space w from the list, the
+// way into resize mode since T7.2 (ctrl+w on the list is nothing now).
+func TestLeaderWEntersResizeModeFromNormal(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 
-	m, cmd := update(t, m, keyCtrlW)
+	m, _ = update(t, m, leaderKeyPress)
+	m, cmd := update(t, m, keyRune('w'))
 
 	if !m.resizing {
-		t.Fatal("ctrl+w did not enter resize mode")
+		t.Fatal("ctrl+space w did not enter resize mode")
 	}
 	if got := activeInputMode(m.modeSnapshot()); got != inputResize {
 		t.Fatalf("active mode = %v, want %v", got, inputResize)
@@ -70,18 +73,22 @@ func TestCtrlWEntersResizeModeFromNormal(t *testing.T) {
 	}
 }
 
-func TestCtrlWEntersResizeModeFromDetailAndResumesDetailFocus(t *testing.T) {
-	// f on a RUNNING row in the agent view connects (the dial state is the
-	// agent placeholder, which swallows ctrl+w); focusOverview focuses the
-	// overview itself.
+// TestLeaderWEntersResizeModeFromDetailAndResumesDetailFocus is ctrl+space w
+// from the focused overview: an overview action, so it runs in place and the
+// overview has the keyboard again when the resize ends. Inside resize mode
+// ctrl+w still commits and esc still cancels (T7.2 left resize mode's keys
+// alone).
+func TestLeaderWEntersResizeModeFromDetailAndResumesDetailFocus(t *testing.T) {
+	// enter on a RUNNING row in the agent view connects (the dial state is
+	// the agent placeholder); focusOverview focuses the overview itself.
 	m := focusOverview(t, testModel(runningSess("alpha")))
 	if activeInputMode(m.modeSnapshot()) != inputDetail {
 		t.Fatal("precondition: the overview should be focused")
 	}
 
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	if !m.resizing {
-		t.Fatal("ctrl+w did not enter resize mode from detail focus")
+		t.Fatal("ctrl+space w did not enter resize mode from detail focus")
 	}
 	if !m.detailOwnsKeyboard() {
 		t.Fatal("entering resize mode dropped detail focus")
@@ -98,7 +105,7 @@ func TestCtrlWEntersResizeModeFromDetailAndResumesDetailFocus(t *testing.T) {
 		t.Fatalf("after exit the active mode = %v, want detail focus to resume", got)
 	}
 
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	m, _ = update(t, m, keyEsc)
 	if got := activeInputMode(m.modeSnapshot()); got != inputDetail {
 		t.Fatalf("after cancel the active mode = %v, want detail focus to resume", got)
@@ -142,7 +149,7 @@ func TestResizeNudgesMoveTheDividerLive(t *testing.T) {
 			if !m.shouldRenderPane() {
 				t.Fatal("precondition: the pane should be on screen")
 			}
-			m, _ = update(t, m, keyCtrlW)
+			m = pressLeader(t, m, keyRune('w'))
 			beforeList, _, _ := m.layoutDims()
 			fp.resizes = nil
 
@@ -178,7 +185,7 @@ func TestResizeNudgesMoveTheDividerLive(t *testing.T) {
 
 func TestResizeClampsAtTheExtremes(t *testing.T) {
 	m, _ := frameModel("live", 400, 40, false)
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 
 	for range 30 {
 		m, _ = update(t, m, keyRune('L'))
@@ -213,7 +220,7 @@ func TestResizeCommitPersistsTheFinalPctOnce(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	calls := recordSidebarPct(&m, nil)
 
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	m, _ = update(t, m, keyRune('l'))
 	m, _ = update(t, m, keyRune('L'))
 	m, _ = update(t, m, keyRune('h'))
@@ -245,7 +252,7 @@ func TestResizeCommitPersistsTheFinalPctOnce(t *testing.T) {
 
 func TestResizeCommitWithoutASeamDispatchesNothing(t *testing.T) {
 	m := testModel(runningSess("alpha"))
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	m, _ = update(t, m, keyRune('l'))
 	m, cmd := update(t, m, keyCtrlW)
 	if cmd != nil {
@@ -260,7 +267,7 @@ func TestResizeSaveErrorRaisesAnErrorToast(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	recordSidebarPct(&m, errors.New("disk full"))
 
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	m, cmd := update(t, m, keyCtrlW)
 	for _, msg := range drainCmd(cmd) {
 		m, _ = update(t, m, msg)
@@ -276,7 +283,7 @@ func TestResizeEscRestoresTheStartWidthWithoutPersisting(t *testing.T) {
 	m.setSidebarPct(50)
 	startList, _, _ := m.layoutDims()
 
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	m, _ = update(t, m, keyRune('L'))
 	m, _ = update(t, m, keyRune('L'))
 	if m.sidebarPct != 60 {
@@ -307,7 +314,7 @@ func TestResizeEscRestoresTheStartWidthWithoutPersisting(t *testing.T) {
 func TestResizeEscFromTheDefaultRestoresTheDefault(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	before, _, _ := m.layoutDims()
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	m, _ = update(t, m, keyRune('H'))
 	m, _ = update(t, m, keyEsc)
 	if after, _, _ := m.layoutDims(); after != before {
@@ -318,7 +325,7 @@ func TestResizeEscFromTheDefaultRestoresTheDefault(t *testing.T) {
 func TestResizeQuitDoesNotPersist(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	calls := recordSidebarPct(&m, nil)
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 	m, _ = update(t, m, keyRune('L'))
 
 	m, cmd := update(t, m, keyRune('q'))
@@ -350,7 +357,7 @@ func TestResizeModeIgnoresUnlistedKeys(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := testModel(runningSess("alpha"), runningSess("beta"))
-			m, _ = update(t, m, keyCtrlW)
+			m = pressLeader(t, m, keyRune('w'))
 			cursor := m.list.Index()
 
 			m, cmd := update(t, m, tc.key)
@@ -361,9 +368,9 @@ func TestResizeModeIgnoresUnlistedKeys(t *testing.T) {
 			if !m.resizing {
 				t.Errorf("%s left resize mode", tc.name)
 			}
-			if m.formOpen || m.paletteOpen || m.switcherOpen || m.modal != inputNormal || m.list.SettingFilter() || m.helpShowAll {
-				t.Errorf("%s acted: form=%v palette=%v switcher=%v modal=%v filter=%v help=%v",
-					tc.name, m.formOpen, m.paletteOpen, m.switcherOpen, m.modal, m.list.SettingFilter(), m.helpShowAll)
+			if m.formOpen || m.leaderOpen || m.switcherOpen || m.modal != inputNormal || m.list.SettingFilter() || m.helpShowAll {
+				t.Errorf("%s acted: form=%v leader=%v switcher=%v modal=%v filter=%v help=%v",
+					tc.name, m.formOpen, m.leaderOpen, m.switcherOpen, m.modal, m.list.SettingFilter(), m.helpShowAll)
 			}
 			if m.list.Index() != cursor {
 				t.Errorf("%s moved the session cursor from %d to %d", tc.name, cursor, m.list.Index())
@@ -378,7 +385,7 @@ func TestResizeModeIgnoresUnlistedKeys(t *testing.T) {
 func TestResizeFooterShowsTheResizeHints(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	m.width = 80
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 
 	footer := xansi.Strip(m.renderHelp())
 	if got := lipgloss.Width(footer); got > m.width {
@@ -407,7 +414,7 @@ func TestResizeFooterShowsTheResizeHints(t *testing.T) {
 
 func TestResizeDetailBoxEdgeNamesTheResizeKeys(t *testing.T) {
 	m := focusOverview(t, testModel(runningSess("alpha")))
-	m, _ = update(t, m, keyCtrlW)
+	m = pressLeader(t, m, keyRune('w'))
 
 	_, hint := m.detailBoxLabels()
 	if !strings.Contains(hint, "ctrl+w: save split") || !strings.Contains(hint, "esc: cancel") {
@@ -418,18 +425,25 @@ func TestResizeDetailBoxEdgeNamesTheResizeKeys(t *testing.T) {
 	}
 }
 
-func TestResizeIsRunnableFromThePalette(t *testing.T) {
+// TestResizeIsRunnableFromTheLeader finds the resize row by typing in the
+// dialog's filter, the way the `:` palette used to reach it, and runs it with
+// enter. The query starts with `d`, a key no row has, so the typing filters
+// rather than running an action at its first letter.
+func TestResizeIsRunnableFromTheLeader(t *testing.T) {
 	m := testModel(runningSess("alpha"))
-	m, _ = update(t, m, keyRune(':'))
-	for _, r := range "resize panes" {
+	m, _ = update(t, m, leaderKeyPress)
+	for _, r := range "divider" {
 		m, _ = update(t, m, keyRune(r))
 	}
+	if vis := m.leader.visible(); len(vis) != 1 || vis[0].action != actionEnterResize {
+		t.Fatalf("filtering for \"divider\" left %d rows, want only resize", len(vis))
+	}
 	m, _ = update(t, m, keyEnter)
-	if m.paletteOpen {
-		t.Fatal("running the palette row left the palette open")
+	if m.leaderOpen {
+		t.Fatal("running the resize row left the dialog open")
 	}
 	if !m.resizing {
-		t.Fatal("the palette's resize row did not enter resize mode")
+		t.Fatal("the dialog's resize row did not enter resize mode")
 	}
 }
 

@@ -666,7 +666,7 @@ func TestHeaderInboxSegment(t *testing.T) {
 			m.build = buildview.Snapshot{Items: []inbox.Item{blocking("a")}}
 			m.buildKnown = true
 			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
-			m, _ = update(t, m, keyRune('f'))
+			m, _ = update(t, m, keyEnter)
 			if !m.paneOwnsKeyboard() {
 				t.Fatal("the fixture did not give the agent pane the keyboard")
 			}
@@ -904,7 +904,7 @@ func TestRenderHeaderReportsOnlyOtherProjectsAwaiting(t *testing.T) {
 // TestRenderHeaderSwitchHintVisibleAtEightyColumns keeps the original
 // contract this test was written for, which the redesign makes literal
 // again: at a REAL 80-column terminal, with the attention line populated,
-// the `p: switch projects` hint must still be on screen. 80 columns is the
+// the `ctrl+space p: projects` hint must still be on screen. 80 columns is the
 // width the ladder's first two rungs are tuned against, and the rung that
 // drops the hint must not be reached there.
 func TestRenderHeaderSwitchHintVisibleAtEightyColumns(t *testing.T) {
@@ -1618,7 +1618,7 @@ func TestQuitsFromEmptyState(t *testing.T) {
 	m.projects = nil
 	m.activeProject = -1
 
-	nm, _ := update(t, m, keyRune('q'))
+	nm := pressLeader(t, m, keyRune('q'))
 	if !nm.quitting {
 		t.Fatalf("q did not quit from the empty state")
 	}
@@ -1671,15 +1671,24 @@ func TestOverlayKeysAreInertInTheEmptyState(t *testing.T) {
 			m.projects = nil
 			m.activeProject = -1
 
-			m, _ = update(t, m, keyRune(tt.key))
+			m = pressLeader(t, m, keyRune(tt.key))
 			if m.switcherOpen || m.formOpen {
 				t.Fatalf("switcherOpen=%v formOpen=%v after %q — an overlay opened in the empty state", m.switcherOpen, m.formOpen, tt.key)
+			}
+			// The row is dimmed with no project, so the dialog refuses the key
+			// and stays up; closing it must leave the empty state on screen.
+			if !m.leaderOpen {
+				t.Fatalf("the actions dialog closed after the dimmed %q row", tt.key)
+			}
+			m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+			if m.leaderOpen {
+				t.Fatalf("esc did not close the actions dialog")
 			}
 			if out := render(m); !strings.Contains(out, "No projects found") {
 				t.Fatalf("the empty state left the screen after %q:\n%s", tt.key, out)
 			}
 
-			m, _ = update(t, m, keyRune('q'))
+			m = pressLeader(t, m, keyRune('q'))
 			if !m.quitting {
 				t.Fatalf("q did not quit after %q — the empty-state keyboard trap is back", tt.key)
 			}
@@ -1698,7 +1707,7 @@ func TestEmptyStateKeepsAnOpenOverlayVisibleAndQuittable(t *testing.T) {
 	m := testModel()
 	m.projects = scannedProjects("/p/a", "/p/b")
 	m.activeProject = 0
-	m, _ = update(t, m, keyRune('p'))
+	m = pressLeader(t, m, keyRune('p'))
 	if !m.switcherOpen {
 		t.Fatal("precondition: the switcher must open over a real project list")
 	}
@@ -1722,7 +1731,7 @@ func TestEmptyStateKeepsAnOpenOverlayVisibleAndQuittable(t *testing.T) {
 	if out := render(m); !strings.Contains(out, "No projects found") {
 		t.Fatalf("dismissing the overlay did not reveal the empty state:\n%s", out)
 	}
-	m, _ = update(t, m, keyRune('q'))
+	m = pressLeader(t, m, keyRune('q'))
 	if !m.quitting {
 		t.Fatal("q did not quit from the empty state after the overlay closed")
 	}

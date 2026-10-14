@@ -1970,6 +1970,7 @@ set a task's status, see a task's tokens and refresh the usage reading.
   screens for the footer and header are updated. `/usr/bin/grep -n` over README.md finds no old key
   named as a way to run an action. Against a scratch build through tmux: start a session, open its
   pane, go back to the list, switch project and quit, all through the leader. `make check` is green.
+- Amended 2026-10-13 (T7.2 done): later tasks may assume the following. (1) Dialog rows come from `leaderTable` in `internal/ui/leader.go` (the key after the leader, the action, and where it reaches), not from the list's rules. A new action is one table row plus a line in `leaderNames`, `leaderHelp` and `leaderBlockedReason`, and needs no key rule in `mode.go`. (2) `leaderChord(action)` names a key as `ctrl+space X` and `leaderHelpBinding` makes a help entry from it. Every hint and notice goes through them. (3) The `:` palette, `inputPalette`, `actionPalette` and `actionPaneUnfocus` are gone. The agent pane's only rule is the leader, so every other key reaches the agent. (4) The session list's rules are movement, `enter`, `esc` (close help, then clear filter), `ctrl+c` and the leader. A removed letter shows the notice from `removedKeyNotice`. T7.3–T7.7 add their actions as leader rows. See `## T7.2` in `docs/decisions.md`.
 
 #### T7.3 — Start extend, amend and reconcile from the dashboard
 - **Depends on:** T7.1

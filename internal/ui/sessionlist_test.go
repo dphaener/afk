@@ -55,7 +55,7 @@ func deliverFilterMatches(t *testing.T, m Model, cmd tea.Cmd) Model {
 // cursor-blink Cmd shares the batch with the filter Cmd and is a 500ms Tick.
 func typeFilter(t *testing.T, m Model, query string) Model {
 	t.Helper()
-	m, cmd := update(t, m, keySlash())
+	m, cmd := leaderThen(t, m, '/')
 	m = deliverFilterMatches(t, m, cmd)
 	for _, r := range query {
 		m, cmd = update(t, m, keyRune(r))
@@ -232,7 +232,7 @@ func TestSessionListRowMatchesRenderRow(t *testing.T) {
 func TestSessionListDoesNotStealQuitOrHelp(t *testing.T) {
 	t.Run("q quits the dashboard", func(t *testing.T) {
 		m := testModel(runningSess("a"), runningSess("b"))
-		got, cmd := update(t, m, keyRune('q'))
+		got, cmd := pressAction(t, m, keyRune('q'))
 		if !got.quitting {
 			t.Error("q must reach the dashboard's own quit handler")
 		}
@@ -269,7 +269,7 @@ func TestSessionListDoesNotStealQuitOrHelp(t *testing.T) {
 
 	t.Run("? types into the filter prompt", func(t *testing.T) {
 		m := testModel(runningSess("a"), runningSess("b"))
-		m, _ = update(t, m, keySlash())
+		m = pressLeader(t, m, keySlash())
 		got, _ := update(t, m, keyRune('?'))
 		if got.list.FilterInput.Value() != "?" {
 			t.Errorf("filter value = %q, want %q — ? must be query text while filtering",
@@ -410,17 +410,17 @@ func TestEverySelectionMoveInvalidatesThePreviewGen(t *testing.T) {
 		{name: "end", move: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyEnd); return m }},
 		{
 			name: "filter opened",
-			move: func(t *testing.T, m Model) Model { m, _ = update(t, m, keySlash()); return m },
+			move: func(t *testing.T, m Model) Model { m, _ = pressAction(t, m, keySlash()); return m },
 		},
 		{
 			name:    "filter query typed",
-			arrange: func(t *testing.T, m Model) Model { m, _ = update(t, m, keySlash()); return m },
+			arrange: func(t *testing.T, m Model) Model { m, _ = pressAction(t, m, keySlash()); return m },
 			move:    func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('b')); return m },
 		},
 		{
 			name: "filter matches delivered",
 			arrange: func(t *testing.T, m Model) Model {
-				m, _ = update(t, m, keySlash())
+				m, _ = pressAction(t, m, keySlash())
 				m, pendingFilterCmd = update(t, m, keyRune('b'))
 				return m
 			},
@@ -444,7 +444,7 @@ func TestEverySelectionMoveInvalidatesThePreviewGen(t *testing.T) {
 		},
 		{
 			name:    "enter on an empty query",
-			arrange: func(t *testing.T, m Model) Model { m, _ = update(t, m, keySlash()); return m },
+			arrange: func(t *testing.T, m Model) Model { m, _ = pressAction(t, m, keySlash()); return m },
 			move:    func(t *testing.T, m Model) Model { m, _ = update(t, m, keyEnter); return m },
 		},
 	}
@@ -482,7 +482,7 @@ func TestFilterPromptArmsNoPreview(t *testing.T) {
 	t.Run("no timer while the prompt is open", func(t *testing.T) {
 		m := testModel(live...)
 		before := m.previewGen
-		m, _ = update(t, m, keySlash())
+		m, _ = pressAction(t, m, keySlash())
 		if m.previewGen <= before {
 			t.Fatalf("previewGen = %d, want it advanced past %d even on this refusal", m.previewGen, before)
 		}
@@ -496,7 +496,7 @@ func TestFilterPromptArmsNoPreview(t *testing.T) {
 
 	t.Run("accepting the filter arms again", func(t *testing.T) {
 		m := testModel(live...)
-		m, _ = update(t, m, keySlash())
+		m, _ = pressAction(t, m, keySlash())
 		m, _ = update(t, m, keyRune('b'))
 		m, _ = update(t, m, keyEnter)
 		if m.list.SettingFilter() {
@@ -509,7 +509,7 @@ func TestFilterPromptArmsNoPreview(t *testing.T) {
 
 	t.Run("cancelling the filter arms again", func(t *testing.T) {
 		m := testModel(live...)
-		m, _ = update(t, m, keySlash())
+		m, _ = pressAction(t, m, keySlash())
 		m, _ = update(t, m, keyEscMsg())
 		if m.list.SettingFilter() {
 			t.Fatal("precondition: esc must close the prompt")

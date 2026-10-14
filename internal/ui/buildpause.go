@@ -56,9 +56,9 @@ const buildPauseUnavailableNotice = "Pause and resume are not available in this 
 // nothing, so it is told as a fact and not as a success.
 func pauseNotice(already bool) (notificationKind, string) {
 	if already {
-		return notifyInfo, "The build was already paused. Press U to resume."
+		return notifyInfo, "The build was already paused. Press " + leaderChord(actionResumeBuild) + " to resume."
 	}
-	return notifySuccess, "Build paused. A task that is running finishes; nothing new starts. Press U to resume."
+	return notifySuccess, "Build paused. A task that is running finishes; nothing new starts. Press " + leaderChord(actionResumeBuild) + " to resume."
 }
 
 // resumeNotice words a resume that worked, one sentence per combination of

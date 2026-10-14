@@ -36,5 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────────────────── enter/f: focus view · c: clean · l: label ─╯
-↑/k preview↑ · ↓/j preview↓ · enter/f focus view · ctrl+\ close pane · n new session · c clean (confirm) · q quit …
+╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
+↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+space actions

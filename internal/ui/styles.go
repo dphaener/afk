@@ -570,8 +570,8 @@ func (s styleSet) faultText(label string, abbrev bool) string {
 //
 // This is labelBordersStyled with titleStyle fixed to theme.boxTitle, which
 // is what every caller but renderList's session box wants. Delegating rather
-// than duplicating keeps those callers (the detail pane, the switcher,
-// palette and form modals) rendering byte-identically to before renderList
+// than duplicating keeps those callers (the detail pane, the switcher and
+// form modals) rendering byte-identically to before renderList
 // grew its own, stronger title style.
 func labelBorders(box string, s lipgloss.Style, title, hint string) string {
 	return labelBordersStyled(box, s, title, hint, theme.boxTitle)

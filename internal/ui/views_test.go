@@ -265,7 +265,7 @@ func TestNormalSessionDetailHeaderUnaffected(t *testing.T) {
 func TestConfirmCleanBarScratchStatesTheTrueConsequence(t *testing.T) {
 	m := testModel(scratchSess("scratch-1"))
 	m.width = 80
-	m, _ = update(t, m, keyRune('c'))
+	m, _ = pressAction(t, m, keyRune('c'))
 
 	if m.modal != inputConfirmClean {
 		t.Fatal("`c` on a scratch session should still confirm before cleaning")
@@ -315,7 +315,7 @@ func TestConfirmCleanBarScratchStatesTheTrueConsequence(t *testing.T) {
 func TestConfirmCleanBarStatusWithoutWorktreeStatesTheTrueConsequence(t *testing.T) {
 	m := testModel(strandedSess("standalone"))
 	m.width = 80
-	m, _ = update(t, m, keyRune('c'))
+	m, _ = pressAction(t, m, keyRune('c'))
 
 	if m.confirmKind != session.KindStatusWithoutWorktree {
 		t.Fatalf("setup: confirmKind = %q, want the stranded kind", m.confirmKind)
@@ -365,7 +365,7 @@ func TestConfirmCleanScratchStateClearsOnEveryExit(t *testing.T) {
 	} {
 		t.Run(exit.name, func(t *testing.T) {
 			m := testModel(scratchSess("scratch-1"))
-			m, _ = update(t, m, keyRune('c'))
+			m, _ = pressAction(t, m, keyRune('c'))
 			if !m.confirmScratch {
 				t.Fatal("entering the modal on a scratch session should set confirmScratch")
 			}
@@ -1199,7 +1199,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 
 	t.Run("open", func(t *testing.T) {
 		m, _ := update(t, newModel(), paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
-		if want := "opened alpha · enter/x to focus, ctrl+\\ to return"; m.status != want {
+		if want := "opened alpha · enter/x to focus, ctrl+space \\ to return"; m.status != want {
 			t.Fatalf("open status = %q, want %q", m.status, want)
 		}
 	})
@@ -1207,7 +1207,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 		m := newModel()
 		m.focus = focusRight // connect moves the focus at request time
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha", focusOnArrival: true})
-		m, _ = update(t, m, chord('\\'))
+		m = pressLeader(t, m, keyRune('\\'))
 		if want := "input goes to the dashboard — alpha still running in the pane · enter/x to focus"; m.status != want {
 			t.Fatalf("release status = %q, want %q", m.status, want)
 		}
@@ -1219,9 +1219,9 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 		m := newModel()
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
 		m, _ = update(t, m, keyEnter)
-		m, _ = update(t, m, chord('t'))
-		m, _ = update(t, m, chord('t'))
-		if want := "input goes to alpha · ctrl+\\ to return"; m.status != want {
+		m = pressLeader(t, m, keyRune('t'))
+		m = pressLeader(t, m, keyRune('t'))
+		if want := "input goes to alpha · ctrl+space \\ to return"; m.status != want {
 			t.Fatalf("round-trip status = %q, want %q", m.status, want)
 		}
 	})
@@ -1303,9 +1303,9 @@ func TestDetailBoxFocusChangesDimensionsNotAtAll(t *testing.T) {
 
 	blurred := m.renderDetail(mainOuter, bodyHeight)
 
-	focused, _ := update(t, m, keyRune('f'))
+	focused, _ := update(t, m, keyEnter)
 	if !focused.detailOwnsKeyboard() {
-		t.Fatalf("precondition: f should focus the detail pane")
+		t.Fatalf("precondition: enter should focus the detail pane")
 	}
 	focusedFrame := focused.renderDetail(mainOuter, bodyHeight)
 
@@ -1341,7 +1341,7 @@ func TestDetailFocusedFooterFitsWidth80KeepsReleaseKeys(t *testing.T) {
 	if got := lipgloss.Width(footer); got > m.width {
 		t.Fatalf("focused footer is %d cells wide, want at most %d", got, m.width)
 	}
-	if !strings.Contains(footer, "esc/ctrl+\\") {
+	if !strings.Contains(xansi.Strip(footer), "esc back to list") {
 		t.Errorf("focused footer at width 80 dropped the release key, got: %q", footer)
 	}
 	if !strings.Contains(footer, "back to list") {
@@ -1363,9 +1363,9 @@ func TestDetailBoxLabelsShowsReleaseHintWhileFocused(t *testing.T) {
 		t.Fatalf("precondition: blurred hint should advertise the combined focus binding, got %q", blurredHint)
 	}
 
-	m, _ = update(t, m, keyRune('f'))
+	m, _ = update(t, m, keyEnter)
 	if !m.detailOwnsKeyboard() {
-		t.Fatalf("precondition: f should focus the detail pane")
+		t.Fatalf("precondition: enter should focus the detail pane")
 	}
 
 	title, hint := m.detailBoxLabels()
@@ -1376,7 +1376,7 @@ func TestDetailBoxLabelsShowsReleaseHintWhileFocused(t *testing.T) {
 		t.Errorf("focused hint = %q, must not advertise the dead normal-mode keys", hint)
 	}
 	reg := m.modes()
-	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc", "ctrl+\\"})
+	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc"})
 	if !strings.Contains(hint, release.Help().Key) || !strings.Contains(hint, release.Help().Desc) {
 		t.Errorf("focused hint = %q, want it to name the release binding %q: %q", hint, release.Help().Key, release.Help().Desc)
 	}
@@ -1463,11 +1463,123 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 			if _, _, action := m.agentPlaceholderText(); (action != "") != tc.wantEnter {
 				t.Errorf("box action = %q, want an action = %v", action, tc.wantEnter)
 			}
-			for _, b := range []key.Binding{m.keys.Toggle, unfocusPaneKey} {
-				if !strings.Contains(footer, b.Help().Key) {
-					t.Errorf("footer dropped %q: %q", b.Help().Key, footer)
+			// The toggle and back-to-list chords moved into the actions
+			// dialog; the footer keeps the one entry that opens it.
+			if want := leaderKey; !strings.Contains(footer, want) {
+				t.Errorf("footer dropped %q: %q", want, footer)
+			}
+		})
+	}
+}
+
+// TestLeaderChordNamesEveryTableKey holds leaderChord to the leader table: one
+// row per action, so a hint can never name a key the dialog does not answer
+// to. Load-bearing rows: back to list and close pane share `\`, and the chord
+// for both must still read "ctrl+space \" (the table lookup takes the first,
+// which has the same key); an action missing from the table falls back to the
+// leader alone rather than inventing a key.
+func TestLeaderChordNamesEveryTableKey(t *testing.T) {
+	for _, e := range leaderTable {
+		t.Run(leaderNames[e.action], func(t *testing.T) {
+			if got, want := leaderChord(e.action), leaderKey+" "+e.key; got != want {
+				t.Errorf("leaderChord = %q, want %q", got, want)
+			}
+		})
+	}
+	t.Run("an action the table lacks names the leader alone", func(t *testing.T) {
+		if got := leaderChord(actionNone); got != leaderKey {
+			t.Errorf("leaderChord(actionNone) = %q, want %q", got, leaderKey)
+		}
+	})
+}
+
+// TestHintsNameTheLeaderKey pins every hint and notice W2.T1 rewrote to the
+// chord, and forbids the old key as a way to run an action. Load-bearing
+// rows:
+//   - the footer rows: each input mode's line must show "ctrl+space actions";
+//     the pane row keeps its "input → session" prefix.
+//   - full help: one "ctrl+space X" entry per leader action that can run.
+//   - wedge banner hint: shown over a focused pane, where a bare r is the
+//     agent's, so only the chord is true there.
+//   - the notice rows: a bare letter or ctrl+t / ctrl+\ / ctrl+g in a notice
+//     names a key that does nothing.
+func TestHintsNameTheLeaderKey(t *testing.T) {
+	strip := func(m Model) string { return xansi.Strip(m.renderHelp()) }
+
+	list := testModel(runningSess("alpha"))
+	list.width = 120
+
+	pane := testModel(runningSess("alpha"))
+	pane.width = 120
+	pane, _ = update(t, pane, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
+	pane, _ = update(t, pane, keyEnter)
+	if !pane.paneOwnsKeyboard() {
+		t.Fatal("fixture broken: the pane does not have the keyboard")
+	}
+
+	detail := testModel(runningSess("alpha"))
+	detail.width = 120
+	detail, _ = update(t, detail, keyEnter)
+	if !detail.detailOwnsKeyboard() {
+		t.Fatal("fixture broken: the detail pane does not have the keyboard")
+	}
+
+	footers := []struct {
+		name string
+		got  string
+		want []string
+	}{
+		{"session list", strip(list), []string{"enter focus view", "ctrl+space actions"}},
+		{"focused agent pane", strip(pane), []string{"input → session · ", "ctrl+space actions", "ctrl+space g mouse:"}},
+		{"focused detail pane", strip(detail), []string{"ctrl+space actions"}},
+	}
+	for _, tc := range footers {
+		t.Run("footer: "+tc.name, func(t *testing.T) {
+			for _, want := range tc.want {
+				if !strings.Contains(tc.got, want) {
+					t.Errorf("footer = %q, want it to contain %q", tc.got, want)
 				}
 			}
 		})
 	}
+
+	t.Run("full help lists the leader entries", func(t *testing.T) {
+		full := xansi.Strip(renderModeHelp(list.renderNormalHelpKeyMap(), true, 100000))
+		for _, e := range leaderTable {
+			blocked := leaderBlockedReason(e.action, list.leaderConditions())
+			if got := fullHelpHasItem(full, leaderChord(e.action), leaderNames[e.action]); got == (blocked != "") {
+				t.Errorf("%s: listed=%v with blocked reason %q; a row is listed exactly when it can run", leaderNames[e.action], got, blocked)
+			}
+		}
+	})
+
+	t.Run("texts name the chord", func(t *testing.T) {
+		for _, tc := range []struct{ name, got, want string }{
+			{"header switch hint", headerSwitchHint, "ctrl+space p"},
+			{"header inbox hint", headerInboxHint, "ctrl+space i"},
+			{"wedge banner hint", wedgeHintDashboard, "ctrl+space r"},
+			{"pane focus hint", paneFocusHint, "ctrl+space \\"},
+			{"pause notice", func() string { _, s := pauseNotice(false); return s }(), "ctrl+space U"},
+			{"mouse hint", list.mouseCaptureHint(), "ctrl+space g"},
+		} {
+			if !strings.Contains(tc.got, tc.want) {
+				t.Errorf("%s = %q, want it to name %q", tc.name, tc.got, tc.want)
+			}
+		}
+	})
+
+	t.Run("no hint names an old key as an action key", func(t *testing.T) {
+		for name, text := range map[string]string{
+			"switch hint": headerSwitchHint, "inbox hint": headerInboxHint,
+			"wedge hint": wedgeHintDashboard, "pane focus hint": paneFocusHint,
+			"list footer": strip(list), "pane footer": strip(pane),
+			"empty state": xansi.Strip(testModel().renderRowsBody(60, 10)),
+		} {
+			for _, old := range []string{"ctrl+t", "ctrl+g", "ctrl+\\ ", "enter/f", "Press n "} {
+				if strings.Contains(text, old) {
+					t.Errorf("%s = %q, names the old key %q", name, text, old)
+				}
+			}
+		}
+	})
 }

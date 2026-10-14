@@ -84,14 +84,9 @@ const (
 	inputSwitcher
 	// inputForm is the session-creation form (Model.formOpen).
 	inputForm
-	// inputPane is a focused pane: every unclaimed key forwards to the child.
+	// inputPane is a focused pane: every key but the leader forwards to the
+	// child.
 	inputPane
-	// inputPalette is the `:` command palette (Model.paletteOpen). Its rows are
-	// derived from inputNormal's rules (palette.go), which is also why it is the
-	// only mode a user can reach ONLY from normal mode: every other mode either
-	// has free text to type, where `:` is a legitimate character, or a child
-	// session that owns the key.
-	inputPalette
 	// inputDetail is a FOCUSED detail pane: the summary/diff view in the main
 	// region owns the keyboard so its viewport can be scrolled with the keys a
 	// user reaches for. It is a second, distinct focus concept from inputPane
@@ -99,17 +94,16 @@ const (
 	// this process owns — and the two are mutually exclusive by construction
 	// (see modeSnapshot's two conjunctions).
 	inputDetail
-	// inputResize is the ctrl+w pane-resize mode (Model.resizing): h/l and the
-	// arrows move the sidebar/main divider live, ctrl+w commits and persists
-	// the split, esc restores the width at entry. It is entered only from
-	// inputNormal and inputDetail — a focused pane keeps ctrl+w for its child
-	// — and swallows every key it does not bind, so a stray letter cannot
-	// open, clean or steal a session mid-resize.
+	// inputResize is the pane-resize mode (Model.resizing), entered with
+	// ctrl+space w: h/l and the arrows move the sidebar/main divider live,
+	// ctrl+w commits and persists the split, esc restores the width at entry.
+	// It swallows every key it does not bind, so a stray letter cannot open,
+	// clean or steal a session mid-resize.
 	inputResize
 	// inputInbox is the inbox overlay (Model.inboxOpen): a list of the
 	// project's inbox items and, one level in, an item with a field to answer
-	// it. Every key is the component's, as in the switcher and the palette,
-	// and it has no parent rule at all — see its spec in newModeRegistry for
+	// it. Every key is the component's, as in the switcher, and it has no
+	// parent rule at all — see its spec in newModeRegistry for
 	// why not even the quit chord.
 	inputInbox
 	// inputLeader is the actions dialog the leader key (ctrl+space) opens
@@ -120,8 +114,8 @@ const (
 	// modePrecedence is above all three.
 	inputLeader
 
-	// inputModeCount bounds the enum for exhaustive iteration (registry
-	// completeness tests, and Wave 6 enumerating modes for the palette).
+	// inputModeCount bounds the enum for exhaustive iteration (the registry
+	// completeness tests).
 	inputModeCount
 )
 
@@ -148,8 +142,6 @@ func (m inputMode) String() string {
 		return "form"
 	case inputPane:
 		return "pane"
-	case inputPalette:
-		return "palette"
 	case inputDetail:
 		return "detail"
 	case inputResize:
@@ -213,8 +205,6 @@ type modeState struct {
 	// has left reports false, so the keyboard cannot route into a session
 	// that is not the one on screen.
 	pane bool
-	// paletteOpen mirrors Model.paletteOpen.
-	paletteOpen bool
 	// inboxOpen mirrors Model.inboxOpen.
 	inboxOpen bool
 	// leaderOpen mirrors Model.leaderOpen.
@@ -238,7 +228,6 @@ func (m Model) modeSnapshot() modeState {
 		focus:         m.focus,
 		view:          m.view,
 		pane:          m.paneForSelection(),
-		paletteOpen:   m.paletteOpen,
 		inboxOpen:     m.inboxOpen,
 		leaderOpen:    m.leaderOpen,
 		resizing:      m.resizing,
@@ -298,32 +287,24 @@ type modeLayer struct {
 //     spawnFinishedMsg raises the modal asynchronously under an open overlay
 //     or form. Their relative order is immaterial (one enum field holds them).
 //   - The actions dialog (the leader key's) sits directly below the modals
-//     and above the palette. Below the modals for the switcher's reason: a
-//     create can fail underneath and its report must get the keyboard. Above
-//     everything else because it is opened from the list, the overview and a
-//     FOCUSED AGENT PANE, and its mode has to outrank the pane's or the keys
-//     typed into the dialog would reach the agent behind it. Nothing else is
-//     open when it appears (the leader is a rule only in normal, detail and
-//     pane mode), so its rank against the other overlays only matters for an
-//     attach that lands focused underneath — and the dialog is what is on
-//     screen then.
-//   - The palette sits directly below the modals and above every other
-//     overlay. Below the modals for the switcher's reason verbatim: a
-//     background create can fail asynchronously and raise a modal over it, and
-//     the modal is the only place that output is readable. Above the rest
-//     because it can only be OPENED from normal mode, so nothing else is up
-//     when it appears — and if something arrives underneath (a focusOnArrival
-//     attach), the palette is what is on screen.
+//     and above every other overlay. Below the modals for the switcher's
+//     reason: a create can fail underneath and its report must get the
+//     keyboard. Above everything else because it is opened from the list, the
+//     overview and a FOCUSED AGENT PANE, and its mode has to outrank the
+//     pane's or the keys typed into the dialog would reach the agent behind
+//     it. Nothing else is open when it appears (the leader is a rule only in
+//     normal, detail and pane mode), so its rank against the other overlays
+//     only matters for an attach that lands focused underneath — and the
+//     dialog is what is on screen then.
 //   - The switcher outranks the form (unreachable in practice, but views.go
 //     orders the frame this way so frame and keys agree) and outranks a
 //     focused pane (reachable: a focusOnArrival attach landing under the
 //     overlay — "keys go to the overlay, because the overlay is what is on
 //     screen").
-//   - The inbox overlay sits beside the switcher, directly below it. Like the
-//     palette it is opened only from the dashboard's own keyboard (normal and
-//     detail mode), so no other overlay is up when it appears and its place
-//     among them is declared for the frame's sake: views.go composes the
-//     overlays in this order. Below the modals for the switcher's reason (a
+//   - The inbox overlay sits beside the switcher, directly below it. It is
+//     opened only through the actions dialog, so no other overlay is up
+//     when it appears and its place among them is declared for the frame's
+//     sake: views.go composes the overlays in this order. Below the modals for the switcher's reason (a
 //     create can fail underneath and its report must get the keyboard), and
 //     above the form, the filter prompt, resize mode and both right-side
 //     focuses, so a pane that arrives focused under it cannot take keys
@@ -339,7 +320,7 @@ type modeLayer struct {
 //     resumes. It becomes live behavior only when W4.T2 wires the dispatch.
 //   - A focused DETAIL pane sits directly above normal mode and below
 //     everything else: it is the weakest claim on the keyboard there is, so
-//     every modal, the palette, the switcher, the form, the filter prompt and
+//     every modal, the dialog, the switcher, the form, the filter prompt and
 //     a focused pane all outrank it. Its position relative to inputPane is
 //     declared rather than relied on — the two predicates are exclusive by
 //     construction (one focus value; the pane either is or is not the drawn
@@ -375,7 +356,6 @@ var modePrecedence = []modeLayer{
 	{inputEditLabel, func(s modeState) bool { return s.modal == inputEditLabel }},
 	{inputPickProvider, func(s modeState) bool { return s.modal == inputPickProvider }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
-	{inputPalette, func(s modeState) bool { return s.paletteOpen }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
 	{inputForm, func(s modeState) bool { return s.formOpen }},
@@ -412,21 +392,22 @@ const (
 
 	// Cross-cutting actions.
 	actionQuit        // requestQuit
-	actionMouseToggle // toggleMouseCapture (ctrl+g)
+	actionMouseToggle // toggleMouseCapture (ctrl+g in overlays; ctrl+space g)
 
 	// Pane actions.
-	actionPaneToggle  // toggleView (ctrl+t, right focus only)
-	actionPaneUnfocus // focused pane: ctrl+\ returns input to the dashboard
-	actionPaneClose   // unfocused open pane: ctrl+\ closes (detaches)
+	actionPaneToggle // toggleView (ctrl+space t, right focus only)
+	actionPaneClose  // an open pane from the list: ctrl+space \ closes (detaches)
 
-	// actionDetailUnfocus is the focused DETAIL pane's release (esc or
-	// ctrl+\): releaseDetailFocus, which hands the keyboard back to the
-	// session list. It is its own action rather than a second meaning for
-	// actionPaneUnfocus because the two clear different fields and say
-	// different things to the user.
+	// actionDetailUnfocus is "back to list": esc on the focused overview, and
+	// ctrl+space \ from anywhere on the right side. From the overview it is
+	// releaseDetailFocus; from the agent pane and its placeholder the
+	// dialog runs those surfaces' own releases instead (runLeaderRow),
+	// because each clears different state and says different things.
 	actionDetailUnfocus
 
-	// Normal-mode actions, one per global binding.
+	// Session-list and overview actions. Since T7.2 the list and the
+	// overview keep rules only for moving about, enter and esc; every other
+	// action here runs from the leader table (leader.go).
 	actionCursorUp
 	actionCursorDown
 	actionFocusPane
@@ -459,18 +440,20 @@ const (
 	actionDetailTabJump
 	actionFilterStart
 	actionFilterClear
-	actionPalette
-	actionBuild       // b in normal and detail: showBuildTab
-	actionInbox       // i in normal and detail: openInbox
-	actionPauseBuild  // P in normal and detail: pauseBuild
-	actionResumeBuild // U in normal and detail: resumeBuild
-	actionEnterResize // ctrl+w in normal and detail: enterResize
+	actionBuild       // ctrl+space b: showBuildTab
+	actionInbox       // ctrl+space i: openInbox
+	actionPauseBuild  // ctrl+space P: pauseBuild
+	actionResumeBuild // ctrl+space U: resumeBuild
+	actionEnterResize // ctrl+space w: enterResize
 	// actionOpenLeader is ctrl+space, the leader key: it opens the actions
 	// dialog (leader.go, openLeader in model.go). It is a rule in normal,
-	// detail and pane mode and nowhere else, and the dialog's row builder
-	// names it in its exclusion set — the dialog must never list the key
-	// that opened it.
+	// detail and pane mode and nowhere else, and it is not in the leader
+	// table — the dialog must never list the key that opened it.
 	actionOpenLeader
+	// actionHelp shows or hides the full help on the session list
+	// (toggleFullHelp): ctrl+space ? from anywhere, and esc on the list while
+	// the full help is shown (guarded on routeConds.helpShown).
+	actionHelp
 
 	// Resize-mode actions. Exit commits (and persists) the split; cancel
 	// restores the width resize mode was entered at. The four nudges move the
@@ -517,8 +500,6 @@ func (a modeAction) String() string {
 		return "mouse-toggle"
 	case actionPaneToggle:
 		return "pane-toggle"
-	case actionPaneUnfocus:
-		return "pane-unfocus"
 	case actionPaneClose:
 		return "pane-close"
 	case actionDetailUnfocus:
@@ -569,8 +550,6 @@ func (a modeAction) String() string {
 		return "filter-start"
 	case actionFilterClear:
 		return "filter-clear"
-	case actionPalette:
-		return "palette"
 	case actionBuild:
 		return "build"
 	case actionInbox:
@@ -583,6 +562,8 @@ func (a modeAction) String() string {
 		return "enter-resize"
 	case actionOpenLeader:
 		return "open-leader"
+	case actionHelp:
+		return "help"
 	case actionExitResize:
 		return "exit-resize"
 	case actionCancelResize:
@@ -665,15 +646,22 @@ type keyDecision struct {
 
 // routeConds are the ambient facts a routing rule may be guarded on, evaluated
 // by the caller and passed as plain data so routing stays a pure function.
-// There is exactly one today: normal mode's ctrl+\ closes a pane only when one
-// exists (with no pane the chord falls through to ignored, as it does now).
+// Both guards are on normal mode's esc, which does one of two things or
+// nothing.
 type routeConds struct {
+	// paneOpen is "an agent pane is installed". No rule is guarded on it
+	// since T7.2 moved close-pane under the leader; the dialog's blocked
+	// reason reads it (leaderConds.paneOpen).
 	paneOpen bool
 	// listFiltered is "the session list has a filter applied". Esc clears one,
 	// and must fall through to ignored when there is nothing to clear: bound
-	// unconditionally it would cancel a pending preview on every stray Esc,
-	// which normal mode does not do today.
+	// unconditionally it would cancel a pending preview on every stray Esc.
 	listFiltered bool
+	// helpShown is "the full help is on screen" (Model.helpShowAll). Esc
+	// closes it before it clears a filter: the help covers the footer, and
+	// the gesture that put it there was ctrl+space ?, so esc is the one key
+	// out that needs no lookup.
+	helpShown bool
 }
 
 // modeRule is one row of a mode's routing table: a binding, the action it
@@ -686,10 +674,12 @@ type modeRule struct {
 	needsPane bool
 	// needsFilter gates the rule on routeConds.listFiltered.
 	needsFilter bool
+	// needsHelp gates the rule on routeConds.helpShown.
+	needsHelp bool
 }
 
-// modeKeyMap is one mode's action surface for Wave 6's help.Model and command
-// palette: the bindings available in that mode, in a stable order, with the
+// modeKeyMap is one mode's action surface for Wave 6's help.Model: the
+// bindings available in that mode, in a stable order, with the
 // help text the current UI already renders (confirmCleanHint, labelFormHint,
 // switcherHelp, formHelp) so reading actions off mode state never duplicates
 // — or contradicts — what the footer says. It implements bubbles' help.KeyMap.
@@ -719,7 +709,7 @@ type modeSpec struct {
 	rules []modeRule
 	// fall is what happens to a key no rule claims.
 	fall routeKind
-	// keys is the mode's help/palette surface. It is a superset of the rule
+	// keys is the mode's help surface. It is a superset of the rule
 	// bindings for modes whose component owns part of the interaction (the
 	// switcher's enter/esc/R live in switcher.Update but must still be
 	// advertisable).
@@ -747,24 +737,22 @@ var (
 	)
 )
 
-// resizeToggleKey is ctrl+w, the way into resize mode from inputNormal and
-// inputDetail. It is package-level so tests and the resize-mode notifications
-// name the one binding the dispatch matches. It is deliberately NOT a rule in
-// inputPane: a focused session owns ctrl+w (delete-word in a shell or an
-// editor), so there it falls through to the child like every other key.
-// Inside resize mode the same chord commits; that is a separate binding with
-// its own help text (see newModeRegistry), because the footer must say "save"
-// there rather than "resize panes".
+// resizeToggleKey is ctrl+w, resize mode's commit chord, named by the keys
+// resizeHints looks the commit binding up by. Since T7.2 it is no longer a
+// rule outside resize mode: the way in is ctrl+space w (leader.go), and in a
+// focused agent pane ctrl+w is the agent's (delete-word in a shell or an
+// editor). Inside resize mode the commit is a separate binding with its own
+// help text (see newModeRegistry), because the footer must say "save" there.
 var resizeToggleKey = key.NewBinding(
 	key.WithKeys("ctrl+w"),
 	key.WithHelp("ctrl+w", "resize panes"),
 )
 
-// unfocusPaneKey is ctrl+\ in the agent view: the keyboard goes back to the
-// list. It is package-level because two surfaces answer it — a focused pane
-// (inputPane's rule) and the agent placeholder that stands in for one
-// (placeholderKey, model.go) — and one declaration is what keeps their key
-// and help text from drifting apart.
+// unfocusPaneKey is the agent view's "back to the list" as the placeholder's
+// footer line names it (renderHelp, views.go). It is help-only: since T7.2
+// no surface answers ctrl+\ — the agent pane types it to the agent, and back
+// to the list is ctrl+space \ (leader.go) — so nothing matches it; it is
+// declared once so the footer lines that name it read the same binding.
 var unfocusPaneKey = key.NewBinding(
 	key.WithKeys("ctrl+\\"),
 	key.WithHelp("ctrl+\\", "return to dashboard"),
@@ -793,6 +781,9 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 		if rule.needsFilter && !conds.listFiltered {
 			continue
 		}
+		if rule.needsHelp && !conds.helpShown {
+			continue
+		}
 		if key.Matches(k, rule.binding) {
 			return keyDecision{kind: routeAction, action: rule.action}
 		}
@@ -807,21 +798,26 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 // component-owned keys — are declared here, once, with help text mirroring
 // the strings views.go renders today.
 //
-// The rule tables transcribe the old handlers exactly; each mode's comment
-// names its source. Two cross-cutting facts the tables encode, both verified
-// against every handler (see decisions.md for the audit):
+// The rule tables transcribe the old handlers; each mode's comment names its
+// source. Since T7.2 the list, the overview and the agent pane carry no
+// action rules: every action runs from the leader table (leader.go), the
+// owner's choice recorded in docs/decisions.md "## T7.2". Two cross-cutting
+// facts the tables encode, both verified against every handler (see
+// decisions.md for the audit):
 //
-//   - ctrl+g (keys.Mouse) is a rule in EVERY mode except the switcher, the
-//     palette and the inbox overlay. The switcher's omission is documented
-//     intent (model.go:2161-2165): the overlay replaces the pane in the main
-//     region, so there is no session output behind it worth selecting, and
-//     one Esc away the chord works. In the inbox overlay the chord closes
-//     the overlay (see its spec below).
-//   - ctrl+c quits from the modals and the switcher, is deliberately
-//     component fall-through in the form (the name buffer is worth protecting
-//     from a stray chord — TestFormSwallowsQuitKeysEscIsOnlyExit), forwards
-//     to the child in a focused pane (the session owns SIGINT semantics), and
-//     quits in normal via keys.Quit.
+//   - ctrl+g (keys.Mouse) is a rule in every overlay, form, prompt, confirm
+//     and in resize mode, except the switcher and the inbox overlay. The
+//     switcher's omission is documented intent (model.go:2161-2165): the
+//     overlay replaces the pane in the main region, so there is no session
+//     output behind it worth selecting, and one Esc away the leader's `g`
+//     works. In the inbox overlay the chord closes the overlay (see its spec
+//     below). On the list, the overview and the agent pane it is ctrl+space g;
+//     in the pane ctrl+g itself is the agent's.
+//   - ctrl+c quits from the modals, the switcher, the list and the overview,
+//     is deliberately component fall-through in the form (the name buffer is
+//     worth protecting from a stray chord —
+//     TestFormSwallowsQuitKeysEscIsOnlyExit), and forwards to the child in a
+//     focused pane (the session owns SIGINT semantics).
 func newModeRegistry(keys keyMap) modeRegistry {
 	// quitChord is ctrl+c ALONE, not keys.Quit: the modals and the switcher
 	// must let `q` through as an ordinary character (it answers nothing in a
@@ -831,24 +827,14 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("ctrl+c", "quit"),
 	)
-	// unfocusPaneKey (package-level) and closePane are both ctrl+\ — the
-	// chord escalates rather than changing meaning (focused: keyboard back;
-	// unfocused: pane away), which is why they are two rules in two modes,
-	// not one binding.
-	closePane := key.NewBinding(
-		key.WithKeys("ctrl+\\"),
-		key.WithHelp("ctrl+\\", "close pane"),
-	)
-	// releaseDetail is the focused detail pane's way out. It carries BOTH
-	// keys on one binding rather than two rules, because unlike unfocusPaneKey /
-	// closePane above there is no escalation here — esc and ctrl+\ are the
-	// same gesture, and one binding is one footer item saying so. esc is safe
-	// to bind unguarded in this mode for the reason it is NOT in normal mode:
+	// releaseDetail is the focused detail pane's way out. esc is safe to
+	// bind unguarded in this mode for the reason it is NOT in normal mode:
 	// inputNormal's filterClear owns esc there, and mode precedence — not rule
 	// order — keeps an applied filter intact while the detail pane is focused.
+	// It was esc/ctrl+\ before T7.2; ctrl+\ is ctrl+space \ now.
 	releaseDetail := key.NewBinding(
-		key.WithKeys("esc", "ctrl+\\"),
-		key.WithHelp("esc/ctrl+\\", "back to list"),
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "back to list"),
 	)
 	// Modal answers. y/n carry per-modal help ("clean" vs "restart") so Wave 6
 	// renders the same words the confirm bars use today.
@@ -1074,76 +1060,56 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithHelp("L/shift+→", "widen list ×5"),
 	)
 
+	// helpClose is esc closing the full help on the list (docs/decisions.md
+	// T7.2, A5). It is a rule but not in the keymap below: the full help's
+	// own line says how it closes (renderNormalHelpKeyMap appends that), and
+	// a second esc row beside clear-filter would read as a duplicate.
+	helpClose := key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "close help"),
+	)
+
 	var r modeRegistry
 
-	// Normal mode is list focus. Its rules are the list's own bindings plus the
-	// ctrl+\ close (guarded on an open pane), in the old modeless switch's
-	// order. Enter and f deliberately live on ONE binding and ONE rule: they
-	// are two physical gestures for the one move "focus the right side"
-	// (focusRightSide, model.go), not separate lifecycle and focus operations.
-	// The overview's scroll and tab keys are deliberately absent for the same
-	// reason ctrl+t is (below): they would drive the right pane.
+	// Normal mode is list focus. Since T7.2 it keeps only the keys that move
+	// around (the owner's choice, PLAN T7.2): the cursor, paging, enter to
+	// focus the right side, esc to close the full help or clear a filter,
+	// ctrl+c to quit, and the leader, through which every other action runs
+	// (leader.go). Every other key falls through to routeIgnored, and
+	// dispatchKey turns a removed letter into a notice naming its new key
+	// (removedKeyNotice) — after routing, so no rule here could be shadowed
+	// by it.
 	//
-	// ctrl+t is deliberately ABSENT, so it falls through to routeIgnored. It
-	// switches the right side's view, and with the list focused the user's
-	// model is that nothing on the right is under control — "When on the left
-	// pane, you can't control anything in the right pane" (plan Context). A
-	// rule here, even one mapped to a no-op, would also put ctrl+t in `?` and
-	// the palette as a list action, advertising a key that does nothing.
+	// The overview's scroll and tab keys are deliberately absent: with the
+	// list focused the user's model is that nothing on the right is under
+	// control — "When on the left pane, you can't control anything in the
+	// right pane" (plan Context).
+	//
+	// Esc closes the full help before it clears a filter: the help is the
+	// thing on top, and both are guarded, so with neither shown esc is
+	// ignored and cancels no pending preview.
 	r[inputNormal] = modeSpec{
 		mode: inputNormal,
 		rules: []modeRule{
-			{binding: closePane, action: actionPaneClose, needsPane: true},
-			{binding: keys.Quit, action: actionQuit},
+			{binding: quitChord, action: actionQuit},
 			{binding: keys.Up, action: actionCursorUp},
 			{binding: keys.Down, action: actionCursorDown},
 			{binding: keys.Focus, action: actionFocusPane},
-			{binding: keys.Mouse, action: actionMouseToggle},
-			{binding: keys.New, action: actionNewSession},
-			{binding: keys.Scratch, action: actionScratch},
-			{binding: keys.Project, action: actionProjects},
-			{binding: keys.Clean, action: actionClean},
-			{binding: keys.Restart, action: actionRestart},
-			{binding: keys.Label, action: actionEditLabel},
-			{binding: keys.Filter, action: actionFilterStart},
+			{binding: helpClose, action: actionHelp, needsHelp: true},
 			{binding: filterClear, action: actionFilterClear, needsFilter: true},
-			{binding: keys.Palette, action: actionPalette},
-			{binding: keys.Build, action: actionBuild},
-			{binding: keys.Inbox, action: actionInbox},
-			{binding: keys.PauseBuild, action: actionPauseBuild},
-			{binding: keys.ResumeBuild, action: actionResumeBuild},
 			{binding: pageUp, action: actionPageUp},
 			{binding: pageDown, action: actionPageDown},
 			{binding: listTop, action: actionListTop},
 			{binding: listBottom, action: actionListBottom},
-			{binding: resizeToggleKey, action: actionEnterResize},
 			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeIgnored,
-		// Help/palette order is intentionally independent of routing-rule order.
-		// The command palette shows only its first viewport without scrolling,
-		// so Focus, the one way to the right side, follows movement
-		// immediately. Every unrelated binding retains its prior relative order
-		// after it, with resizeToggleKey last because the curated short help
-		// omits it and full help/palette should rank it behind the more common
-		// actions. keys.Build follows the palette and precedes the housekeeping
-		// chords: it is a view, not a per-session action, and that slot is past
-		// the palette's first viewport, so the rows a person already knows keep
-		// their places. keys.Inbox follows it for the same reason, and
-		// keys.PauseBuild and keys.ResumeBuild follow that: they act on the
-		// build the two keys before them show, and going after the inbox key
-		// leaves every row above them where it was.
+		// Help order is independent of rule order: Focus, the one way to the
+		// right side, follows movement immediately.
 		keys: modeKeyMap{bindings: []key.Binding{
 			keys.Up, keys.Down, keys.Focus,
 			pageUp, pageDown, listTop, listBottom,
-			keys.New, keys.Scratch,
-			keys.Project, keys.Clean, keys.Restart, keys.Label,
-			keys.Filter, filterClear, keys.Palette, keys.Build, keys.Inbox,
-			keys.PauseBuild, keys.ResumeBuild,
-			// The leader sits just ahead of ctrl+w, which stays last for the
-			// reason above, so `?` lists it while the palette's first viewport
-			// and the curated short line stay as they were.
-			closePane, keys.Mouse, keys.Quit, keys.Leader, resizeToggleKey,
+			filterClear, keys.Leader, quitChord,
 		}},
 	}
 
@@ -1165,86 +1131,55 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	}
 
 	// Pane mode is right focus in agent view with the selected row's pane
-	// installed. Exactly two keys are the dashboard's — ctrl+t (switch to the
-	// overview; focus stays right) and ctrl+\ (focus back to the list) — plus
-	// the ctrl+g mouse chord, which forwards nothing either way. Everything
-	// else forwards to the child: esc, q, tab, ctrl+w, and ctrl+c (the session
-	// owns SIGINT) included. Adding a rule here takes a key away from every
-	// agent the dashboard hosts, which is why the plan pins this set.
+	// installed. Since T7.2 exactly one key is the dashboard's: the leader
+	// (ctrl+space). Everything else forwards to the child — esc, q, tab,
+	// ctrl+c (the session owns SIGINT), and the chords the dashboard used to
+	// keep here, ctrl+t, ctrl+\ and ctrl+g, which are ctrl+space t, \ and g
+	// now. Adding a rule here takes a key away from every agent the
+	// dashboard hosts, which is why the plan pins this set.
 	//
-	// The leader (ctrl+space) is the fourth and last (T7.1). The agent does
-	// not lose the key: pressed twice, the dialog closes and sends ctrl+space
-	// on (leaderComponentKey, model.go). It is deliberately not in this
-	// mode's help keymap: the pane footer is a curated short line
-	// (renderPaneHelpKeyMap) with no room to give.
+	// The agent does not lose the leader either: pressed twice, the dialog
+	// closes and sends ctrl+space on (leaderComponentKey, model.go).
 	r[inputPane] = modeSpec{
 		mode: inputPane,
 		rules: []modeRule{
-			{binding: keys.Toggle, action: actionPaneToggle},
-			{binding: unfocusPaneKey, action: actionPaneUnfocus},
-			{binding: keys.Mouse, action: actionMouseToggle},
 			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeChild,
-		keys: modeKeyMap{bindings: []key.Binding{
-			unfocusPaneKey, keys.Mouse, keys.Toggle,
-		}},
+		keys: modeKeyMap{bindings: []key.Binding{keys.Leader}},
 	}
 
 	// Detail mode is a focused detail pane. Its key set is ENUMERATED rather
-	// than inherited: the fall-through is routeIgnored, so everything normal
-	// mode binds and this table omits — enter, n, c, l, p, /, o, : — is
-	// swallowed, which is the point. A scroll gesture must never open, clean
-	// or steal a session, and "ignored" is the only disposition that
-	// guarantees it for keys nobody has thought of yet.
+	// than inherited: the fall-through is routeIgnored, so everything this
+	// table omits — enter and every letter — is swallowed, which is the
+	// point. A scroll gesture must never open, clean or steal a session, and
+	// "ignored" is the only disposition that guarantees it for keys nobody
+	// has thought of yet.
 	//
-	// What survives, and why: the release chords (or the state is a trap), the
-	// universal q/ctrl+c/ctrl+g, ctrl+t (switch the right side to the agent
-	// view, connecting the selected session if it has no pane — the same
-	// connect enter performs from the list; inert on a row with no live agent,
-	// which draws this overview in either view), `r` (restartSelected — the
-	// one restart key works from the overview as it does from the list, and
-	// the user asked for exactly that), the three tab keys, because switching
-	// tabs is reading — the same gesture as scrolling — and, finally, the ten
-	// scroll keys: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end —
-	// plus ctrl+w into resize mode, which leaves the focus on the right so it
-	// resumes when the resize ends. These scroll and tab keys are bound in
-	// this mode only: from the list they would drive the right pane. `b`
-	// (showBuildTab) is the one tab key that is ALSO a normal-mode rule: from
-	// the list it moves the keyboard to the right side itself, so it controls
-	// nothing behind the user's back, and here it is a jump to one tab. It
-	// sorts last in the help order, where it costs the truncated line nothing.
-	// `i` (openInbox) is beside it on the same terms: it opens an overlay over
-	// the screen and moves nothing on it, and the owner reading the Build tab's
-	// "items need you" line is exactly who presses it. `P` and `U`
-	// (pauseBuild, resumeBuild) are the last two: they move nothing on the
-	// screen and open nothing, they act on the build this pane's Build tab is
-	// showing, and neither can open, clean or steal a session. They are
-	// rules here and in normal mode ONLY. Pane mode has none, so a capital P
-	// typed to an agent reaches the agent, and the inbox overlay has none, so
-	// it is a letter of the answer.
+	// What survives, and why: esc, the release (or the state is a trap);
+	// ctrl+c, so the dashboard can always be left (A3); the three tab keys,
+	// because switching tabs is reading — the same gesture as scrolling; the
+	// ten scroll keys: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end;
+	// and the leader, through which the overview's actions run since T7.2
+	// (agent or overview, back to list, restart, build tasks, inbox, pause,
+	// resume, resize, the mouse and quit — leader.go). These scroll and tab
+	// keys are bound in this mode only: from the list they would drive the
+	// right pane.
 	//
 	// The bindings are ordered for TRUNCATION SURVIVAL, not for rule fidelity:
 	// renderHelp's default branch renders this whole keymap through one hard
 	// truncate (views.go), so position here is the only thing deciding what a
 	// narrow terminal still shows. Release first, always; the scroll keys —
 	// the least likely to need rescuing from a stray keystroke, and the most
-	// numerous — sort last. W3.T1 asserts the truncated result at width 80.
+	// numerous — sort last.
 	r[inputDetail] = modeSpec{
 		mode: inputDetail,
 		rules: []modeRule{
 			{binding: releaseDetail, action: actionDetailUnfocus},
-			{binding: keys.Quit, action: actionQuit},
-			{binding: keys.Mouse, action: actionMouseToggle},
-			{binding: keys.Toggle, action: actionPaneToggle},
-			{binding: keys.Restart, action: actionRestart},
+			{binding: quitChord, action: actionQuit},
 			{binding: detailTabNextKey, action: actionDetailTabNext},
 			{binding: detailTabPrevKey, action: actionDetailTabPrev},
 			{binding: detailTabJumpKey, action: actionDetailTabJump},
-			{binding: keys.Build, action: actionBuild},
-			{binding: keys.Inbox, action: actionInbox},
-			{binding: keys.PauseBuild, action: actionPauseBuild},
-			{binding: keys.ResumeBuild, action: actionResumeBuild},
 			{binding: detailFocusUp, action: actionDetailScrollUp},
 			{binding: detailFocusDown, action: actionDetailScrollDown},
 			{binding: detailHalfPageUp, action: actionDetailHalfPageUp},
@@ -1253,30 +1188,24 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: detailPageDown, action: actionDetailPageDown},
 			{binding: detailGotoTop, action: actionDetailGotoTop},
 			{binding: detailGotoBottom, action: actionDetailGotoBottom},
-			{binding: resizeToggleKey, action: actionEnterResize},
-			// The leader opens the actions dialog from the overview too. It
-			// is not in the help keymap below: renderHelp draws that whole
-			// keymap through one truncate, so a binding added there would
-			// change the focused overview's footer line.
 			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
-			releaseDetail, keys.Quit, keys.Mouse, keys.Toggle, keys.Restart,
+			releaseDetail, keys.Leader, quitChord,
 			detailTabNextKey, detailTabPrevKey, detailTabJumpKey,
 			detailFocusUp, detailFocusDown, detailHalfPageUp, detailHalfPageDown,
 			detailPageUp, detailPageDown, detailGotoTop, detailGotoBottom,
-			resizeToggleKey, keys.Build, keys.Inbox,
-			keys.PauseBuild, keys.ResumeBuild,
 		}},
 	}
 
 	// Resize mode moves the sidebar/main divider. Like detail mode its key set
 	// is ENUMERATED with an ignored fall-through: everything else is swallowed,
 	// so no letter can open, clean or steal a session while the user is
-	// tapping h/l. q/ctrl+c quit and ctrl+g toggles the mouse, as in detail
-	// mode. ctrl+t is deliberately absent: swapping the pane and the summary
-	// mid-resize changes what the user is sizing, and one ctrl+w away it works.
+	// tapping h/l. q/ctrl+c quit and ctrl+g toggles the mouse; T7.2 left
+	// every key here as it was (A4). The leader is deliberately absent:
+	// switching the right side or opening anything mid-resize changes what
+	// the user is sizing, and one ctrl+w away it works.
 	//
 	// The bindings are ordered for truncation survival, as detail mode's are:
 	// renderHelp's default branch hard-truncates this keymap at the terminal
@@ -1321,29 +1250,11 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		}},
 	}
 
-	// Palette mode follows the switcher's shape exactly: ctrl+c is the only
-	// parent rule, and every other key — the query text, enter, the two-stage
-	// esc, up/down — is the component's, staged in palette.Update (palette.go)
-	// so the gestures are implemented once. ctrl+g is deliberately absent for
-	// the switcher's documented reason: the overlay replaces the pane in the
-	// main region, so there is no session output behind it worth selecting.
-	r[inputPalette] = modeSpec{
-		mode: inputPalette,
-		rules: []modeRule{
-			{binding: quitChord, action: actionQuit},
-		},
-		fall: routeComponent,
-		keys: modeKeyMap{bindings: []key.Binding{
-			paletteRunKey, paletteMoveKey, paletteCloseKey, quitChord,
-		}},
-	}
-
 	// Leader mode is the actions dialog (leader.go). It has NO parent rule:
 	// every key is the dialog's, decided by leaderKeyDecision, because every
 	// key worth asking about is either one of the dialog's own gestures or
-	// the key of an action it lists — ctrl+c and q run the quit row, ctrl+g
-	// the mouse row. A parent rule would answer a key before the dialog
-	// could. The bindings are help-only, for the footer while it is up.
+	// the key of an action it lists — q and ctrl+c run the quit row, g the
+	// mouse row. A parent rule would answer a key before the dialog could. The bindings are help-only, for the footer while it is up.
 	r[inputLeader] = modeSpec{
 		mode: inputLeader,
 		fall: routeComponent,
@@ -1368,8 +1279,8 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	}
 
 	// Inbox mode has NO parent rule: every key is the component's, staged in
-	// inboxOverlay.Update (inboxoverlay.go). The switcher and the palette keep
-	// one, the ctrl+c quit, because what they hold is a throwaway query. This
+	// inboxOverlay.Update (inboxoverlay.go). The switcher keeps one, the ctrl+c
+	// quit, because what they hold is a throwaway query. This
 	// overlay holds an answer being written, on a screen where every letter is
 	// text, so nothing quits the dashboard from inside it; esc and ctrl+g are
 	// the ways out. ctrl+g closes the overlay here and is not the mouse chord,

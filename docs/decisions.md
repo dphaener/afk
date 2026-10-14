@@ -2575,3 +2575,61 @@ Read in the module cache (ultraviolet `v0.0.0-20260811164956-006e29f97886`, x/vt
 ### Scope ideas
 
 - Three rows show a key the dialog keeps for itself: `clear filter` (`esc`), `back to list` (`esc/ctrl+\`) and focus (`enter/f`). In the dialog `esc` closes and `enter` runs the highlighted row, so `clear filter` can only be run by highlighting it and pressing `enter`. T7.2 could relabel these rows.
+
+## T7.2
+
+T7.2 makes the leader key (ctrl+space) the one way to run a dashboard action. These are the decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **Where the dialog's rows come from (A1).** A leader table of its own, listing each action, its key after the leader and the side it runs on. The session list's and the overview's own key rules no longer carry the actions, so the dialog cannot read its rows from them any more; it runs a picked row through the same code the old key reached.
+- **The keys (A2).** Each action keeps its letter where it is free; a chord becomes its letter. The whole table:
+
+  | After ctrl+space | Action | Was |
+  |---|---|---|
+  | `n` | new session | `n` |
+  | `o` | one-off session | `o` |
+  | `p` | switch project | `p` |
+  | `c` | clean session | `c` |
+  | `r` | restart agent | `r` |
+  | `l` | edit label | `l` |
+  | `/` | filter sessions | `/` |
+  | `x` | clear filter | `esc` (still works) |
+  | `b` | build tasks | `b` |
+  | `i` | inbox | `i` |
+  | `P` | pause the build | `P` |
+  | `U` | resume the build | `U` |
+  | `f` | focus the right side | `f` (`enter` still works) |
+  | `t` | agent or overview | `ctrl+t` |
+  | `\` | close the pane (list); back to the list (right side, agent pane) | `ctrl+\` |
+  | `g` | mouse to the terminal or back | `ctrl+g` |
+  | `w` | resize the panes | `ctrl+w` |
+  | `?` | help | `?` |
+  | `q` | quit | `q` |
+
+  The `:` palette is gone; the dialog's name filter does its job. Kept without the leader: up/k, down/j, pgup, pgdn, home, end, `enter`, `esc`, `tab`, `shift+tab`, the number keys, the overview's scrolling keys, and `ctrl+c`.
+- **ctrl+c (A3).** Still quits from the session list and from the overview, so a stuck dashboard can always be left. In the agent pane it goes to the agent, as before.
+- **Overlays and resizing (A4).** Keys inside an overlay, a form, a confirm or the resize mode do not change, ctrl+g included where those had it.
+- **Help (A5).** `?` is ctrl+space `?`; `esc` also closes the full help on the list.
+- **The notice for an old key (A6).** On the session list, each removed letter (`n o p c r l / b i q f ? P U`) and `:` does nothing but show one short notice naming its new key. Chords and keys on the overview get no notice: a chord in the agent pane now belongs to the agent.
+- **How hints name a key (A7).** As `ctrl+space X`, for example `ctrl+space i: inbox`, from one helper so the hints cannot drift from the table.
+- **Tests (A8)** are table tests for the leader table first, then the existing tests moved onto the leader; the saved screens are regenerated. **Nothing had to be in place first (A9):** T7.1 is merged.
+
+### Decided while building
+
+- **Each action runs where its old key ran it.** The leader table records whether an action belongs to the list, the right side or both. A list action picked from the overview or the agent pane moves the keyboard to the list first, as before. `b`, `i`, `P`, `U`, `r` and `w` run in place on the overview.
+- **`\` means back to the list on the right side and close the pane on the list.** Back to the list comes first in the table, and the first row that can run wins. So from inside the agent pane, `\` never closes that pane.
+- **`f` is no longer a bare alias of `enter`.** Focus is `enter` alone, and ctrl+space `f` is in the dialog.
+- **ctrl+c still quits from inside the dialog**, as an unlisted second key on the quit row.
+- **`esc` on the list closes the full help before it clears a filter.** The full help is drawn only on the list, so ctrl+space `?` from the right side moves to the list first.
+- **The notices read** `n moved: press ctrl+space then n` for each removed letter, and `: moved: press ctrl+space, then type to filter the actions` for `:`.
+- **The footer** shows the movement keys, `enter` and `ctrl+space actions`. While restart works on the selected row it also shows `ctrl+space r restart`, because a stuck agent is when someone reads the footer for a key. The full help lists the keys that still work without the leader, then one `ctrl+space X` entry per action that can run, then `esc close help`.
+- **The header's switch hint is `ctrl+space p: projects`**, shorter than before. The longer wording pushed another header piece out at 80 columns, and the T6.4 drop order had to stay.
+- **The agent placeholder** answers to `enter` and the leader only. Its toggle, back-to-list, restart and mouse actions run from the dialog, as they do over a live agent.
+- **Overlay footers still say `ctrl+g release mouse`.** That key belongs to the overlays, which keep their keys (A4).
+
+### For the owner to check
+
+- Run `afk dash` in your own terminal against a real session with a real agent. Press ctrl+space then `n`, `enter`, ctrl+space `\`, ctrl+space `p`, ctrl+space `q`. Also check that ctrl+t in a focused pane does what you expect in Claude Code. The stand-in agent only showed that the byte arrives.
+
+### Follow-ups
+
+- Some doc comments in `internal/ui/model.go` still call ctrl+t the agent/overview toggle. It is ctrl+space `t` now.

@@ -198,7 +198,7 @@ func goldenStack() []spice.Branch {
 }
 
 // goldenModel is a dashboard sized to w×h through the same tea.WindowSizeMsg
-// the program receives, so every sizer (list, form, switcher, palette, detail
+// the program receives, so every sizer (list, form, switcher, detail
 // viewport) is in the state a real resize leaves it in — not the shortcut
 // testModel takes.
 //
@@ -240,11 +240,13 @@ func TestGoldenDashboardFrames(t *testing.T) {
 	}
 }
 
-// TestGoldenModals pins the three floating overlays at 120×40 over the fixture
-// dashboard: the project switcher, the command palette and the creation form.
-// Each is opened through its own key so the frame is the one a user sees.
+// TestGoldenModals pins two floating overlays at 120×40 over the fixture
+// dashboard: the project switcher and the creation form. Each is opened
+// through its own key after the leader (ctrl+space p, ctrl+space n) so the
+// frame is the one a user sees.
 func TestGoldenModals(t *testing.T) {
 	open := func(t *testing.T, m Model, k tea.KeyPressMsg) Model {
+		m, _ = update(t, m, leaderKeyPress)
 		m, cmd := update(t, m, k)
 		return pumpForm(t, m, cmd, 0)
 	}
@@ -257,13 +259,6 @@ func TestGoldenModals(t *testing.T) {
 			t.Fatal("p did not open the switcher")
 		}
 		assertGolden(t, "dash-120x40-switcher", render(m))
-	})
-	t.Run("dash-120x40-palette", func(t *testing.T) {
-		m := open(t, goldenModel(t, 120, 40), keyRune(':').(tea.KeyPressMsg))
-		if !m.paletteOpen {
-			t.Fatal(": did not open the palette")
-		}
-		assertGolden(t, "dash-120x40-palette", render(m))
 	})
 	t.Run("dash-120x40-form", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
@@ -286,7 +281,7 @@ func TestGoldenModals(t *testing.T) {
 		{"dash-120x40-leader", 120, 40},
 	} {
 		t.Run(size.name, func(t *testing.T) {
-			m := open(t, goldenModel(t, size.w, size.h), tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl})
+			m, _ := update(t, goldenModel(t, size.w, size.h), leaderKeyPress)
 			if !m.leaderOpen {
 				t.Fatal("ctrl+space did not open the actions dialog")
 			}
@@ -298,11 +293,12 @@ func TestGoldenModals(t *testing.T) {
 // TestGoldenDialogs pins the five confirmation/prompt dialogs at 120×40 over
 // the fixture dashboard: the clean confirmation (on the selected feat-auth),
 // the restart confirmation (on a wedged fixture), the label editor, the
-// failed-create report, and the one-off provider picker (fresh from `o`, so on
-// its default row).
+// failed-create report, and the one-off provider picker (fresh from ctrl+space o, so
+// on its default row).
 func TestGoldenDialogs(t *testing.T) {
 	t.Run("dash-120x40-clean", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
+		m, _ = update(t, m, leaderKeyPress)
 		m, cmd := update(t, m, keyRune('c'))
 		m = pumpForm(t, m, cmd, 0)
 		if m.modal != inputConfirmClean {
@@ -315,7 +311,7 @@ func TestGoldenDialogs(t *testing.T) {
 		sessions := goldenSessions()
 		sessions[0].WedgedSince = goldenNow.Add(-12 * time.Minute).UTC().Format(time.RFC3339)
 		m.setSessions(sessions)
-		m, _ = update(t, m, keyRune('r'))
+		m = pressLeader(t, m, keyRune('r'))
 		if m.modal != inputConfirmRestart {
 			t.Fatal("r did not open the restart confirmation")
 		}
@@ -323,7 +319,7 @@ func TestGoldenDialogs(t *testing.T) {
 	})
 	t.Run("dash-120x40-label", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
-		m, _ = update(t, m, keyRune('l'))
+		m = pressLeader(t, m, keyRune('l'))
 		if m.modal != inputEditLabel {
 			t.Fatal("l did not open the label editor")
 		}
@@ -342,7 +338,7 @@ func TestGoldenDialogs(t *testing.T) {
 	})
 	t.Run("dash-120x40-provider-picker", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
-		m, _ = update(t, m, keyRune('o'))
+		m = pressLeader(t, m, keyRune('o'))
 		if m.modal != inputPickProvider {
 			t.Fatal("o did not open the provider picker")
 		}
@@ -518,7 +514,7 @@ func goldenInbox() buildview.Snapshot {
 func TestGoldenInbox(t *testing.T) {
 	m := goldenModel(t, 120, 40)
 	m, _ = update(t, m, buildLoadedMsg{snap: goldenInbox(), gen: m.projectGen})
-	m, _ = update(t, m, keyRune('i'))
+	m = pressLeader(t, m, keyRune('i'))
 	if !m.inboxOpen {
 		t.Fatal("i did not open the inbox")
 	}
@@ -543,7 +539,7 @@ func TestGoldenInbox(t *testing.T) {
 func TestGoldenBuildTab(t *testing.T) {
 	m := goldenModel(t, 120, 40)
 	m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
-	m, _ = update(t, m, keyRune('b'))
+	m = pressLeader(t, m, keyRune('b'))
 	if m.activeDetailTab() != tabBuild || m.focus != focusRight {
 		t.Fatalf("b did not open the Build tab (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
 	}

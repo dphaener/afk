@@ -24,7 +24,7 @@ func TestStatusChangeStampsTheToast(t *testing.T) {
 	if !m.statusChangedAt.IsZero() {
 		t.Fatalf("a fresh model must not be stamped")
 	}
-	m, _ = update(t, m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}) // "mouse → session"
+	m = pressLeader(t, m, keyRune('g')) // "mouse → session"
 	if m.statusChangedAt != m.deps.Now() {
 		t.Fatalf("statusChangedAt = %v, want the clock's %v after a status change", m.statusChangedAt, m.deps.Now())
 	}

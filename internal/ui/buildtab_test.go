@@ -196,7 +196,7 @@ func TestBuildTabSummary(t *testing.T) {
 				Problem: "The master plan at /repo/docs/PLAN.md could not be read.",
 				Items:   []inbox.Item{item("q-1", true, false)},
 			},
-			want:    []string{"The master plan at /repo/docs/PLAN.md could not be read.", "1 item needs you · i: inbox"},
+			want:    []string{"The master plan at /repo/docs/PLAN.md could not be read.", "1 item needs you · ctrl+space i: inbox"},
 			wantNot: []string{"done", "no tasks", "T1.1"},
 		},
 		{
@@ -204,7 +204,7 @@ func TestBuildTabSummary(t *testing.T) {
 			snap: base(func(s *buildview.Snapshot) {
 				s.Items = []inbox.Item{item("q-1", true, false), item("q-2", true, false), item("n-1", false, false)}
 			}),
-			want:    []string{"2 items need you · i: inbox"},
+			want:    []string{"2 items need you · ctrl+space i: inbox"},
 			wantNot: []string{"open items"},
 		},
 		{
@@ -212,13 +212,13 @@ func TestBuildTabSummary(t *testing.T) {
 			snap: base(func(s *buildview.Snapshot) {
 				s.Items = []inbox.Item{item("n-1", false, false), item("n-2", false, false), item("q-1", true, true)}
 			}),
-			want:    []string{"2 open items · i: inbox"},
+			want:    []string{"2 open items · ctrl+space i: inbox"},
 			wantNot: []string{"need you"},
 		},
 		{
 			name: "one open item",
 			snap: base(func(s *buildview.Snapshot) { s.Items = []inbox.Item{item("n-1", false, false)} }),
-			want: []string{"1 open item · i: inbox"},
+			want: []string{"1 open item · ctrl+space i: inbox"},
 		},
 		{
 			name:    "every item answered",
@@ -304,7 +304,7 @@ var keyB = keyRune('b')
 func TestBuildKey(t *testing.T) {
 	t.Run("from the list focuses the right side on Build", func(t *testing.T) {
 		m := withBuild(t, testModel(sess("alpha"), sess("beta")), buildTabSnap())
-		m, cmd := update(t, m, keyB)
+		m, cmd := pressAction(t, m, keyB)
 		if cmd != nil {
 			t.Fatalf("b returned a command (%T); it must only change what is shown", cmd())
 		}
@@ -339,7 +339,7 @@ func TestBuildKey(t *testing.T) {
 
 	t.Run("reads the same on every row", func(t *testing.T) {
 		m := withBuild(t, testModel(sess("alpha"), sess("beta")), buildTabSnap())
-		m, _ = update(t, m, keyB)
+		m, _ = pressAction(t, m, keyB)
 		first := m.detailBody(70)
 		m, _ = update(t, m, keyEsc)
 		m, _ = update(t, m, keyRune('j'))
@@ -356,7 +356,7 @@ func TestBuildKey(t *testing.T) {
 		if _, ok := m.selected(); ok {
 			t.Fatal("fixture broken: a session is selected")
 		}
-		m, _ = update(t, m, keyB)
+		m, _ = pressAction(t, m, keyB)
 		if m.focus != focusRight || m.activeDetailTab() != tabBuild {
 			t.Fatalf("focus=%v tab=%v, want the right side on Build", m.focus, m.activeDetailTab())
 		}
@@ -375,7 +375,7 @@ func TestBuildKey(t *testing.T) {
 		pending := Session{Pending: true}
 		pending.Name = "being-made"
 		m := withBuild(t, testModel(pending), buildTabSnap())
-		m, _ = update(t, m, keyB)
+		m, _ = pressAction(t, m, keyB)
 		body := xansi.Strip(m.detailBody(70))
 		if !strings.Contains(body, "1/7 done") || strings.Contains(body, "creating session") {
 			t.Errorf("a placeholder row hid the Build tab:\n%s", body)
@@ -399,7 +399,9 @@ func TestBuildKey(t *testing.T) {
 			m := tc.prep(t, testModel(sess("alpha")))
 			m.detailTab = tabWaves
 			before := render(m)
-			m, cmd := update(t, m, keyB)
+			// The handler directly: the dialog dims the build row with no build
+			// and runs nothing, so only this call reaches the refusal.
+			m, cmd := runAction(m, actionBuild)
 			if cmd != nil {
 				t.Fatalf("b returned a command (%T)", cmd())
 			}
@@ -418,7 +420,7 @@ func TestBuildKey(t *testing.T) {
 	t.Run("a plan that cannot be read shows the reason and no rows", func(t *testing.T) {
 		problem := "The master plan at /repo/docs/PLAN.md could not be read."
 		m := withBuild(t, testModel(sess("alpha")), buildview.Snapshot{Root: "/repo", HasBuild: true, Problem: problem})
-		m, _ = update(t, m, keyB)
+		m, _ = pressAction(t, m, keyB)
 		if m.activeDetailTab() != tabBuild {
 			t.Fatalf("active tab = %v, want Build", m.activeDetailTab())
 		}
@@ -440,7 +442,7 @@ func TestBuildKey(t *testing.T) {
 		if !m.shouldRenderPane() || m.focus != focusList {
 			t.Fatal("fixture broken: the pane must be drawn with the list focused")
 		}
-		m, _ = update(t, m, keyB)
+		m, _ = pressAction(t, m, keyB)
 		if m.pane == nil || pane.closed != 0 {
 			t.Fatalf("b closed the pane (closed=%d)", pane.closed)
 		}
@@ -457,7 +459,7 @@ func TestBuildKey(t *testing.T) {
 
 	t.Run("from a focused overview jumps to Build", func(t *testing.T) {
 		m := focusOverview(t, withBuild(t, testModel(sess("alpha")), buildTabSnap()))
-		m, _ = update(t, m, keyB)
+		m, _ = pressAction(t, m, keyB)
 		if m.activeDetailTab() != tabBuild || m.focus != focusRight {
 			t.Fatalf("tab=%v focus=%v, want Build with the right side still focused", m.activeDetailTab(), m.focus)
 		}
@@ -505,7 +507,7 @@ func TestBuildTabReachedAndLeftByTheTabKeys(t *testing.T) {
 		{"shift+tab from the Overview wraps to Build", false, []tea.Msg{backtab}, tabBuild},
 		{"tab from Build wraps to the Overview", false, []tea.Msg{keyRune('5'), tab}, tabOverview},
 		{"shift+tab from Build is Diff", false, []tea.Msg{keyRune('5'), backtab}, tabDiff},
-		{"a digit leaves Build", true, []tea.Msg{keyB, keyRune('2')}, tabWaves},
+		{"a digit leaves Build", true, []tea.Msg{leaderKeyPress, keyB, keyRune('2')}, tabWaves},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -525,7 +527,7 @@ func TestBuildTabDropsOnAProjectSwitch(t *testing.T) {
 	m := buildModel(t, nil)
 	m.sizeSessionList()
 	m = withBuild(t, m, buildTabSnap())
-	m, _ = update(t, m, keyB)
+	m, _ = pressAction(t, m, keyB)
 	if m.activeDetailTab() != tabBuild {
 		t.Fatalf("fixture broken: active tab = %v", m.activeDetailTab())
 	}
@@ -659,35 +661,26 @@ func TestPausedForUsageNeverReadsAsStopped(t *testing.T) {
 	})
 }
 
-// TestBuildKeyIsListedInHelpAndThePalette is the proof that `?` and `:` list
-// the key. Both read the mode's rules, so nothing was added to either by
-// hand; this fails if the rule or its help text is ever removed. The short
-// footer line must NOT grow: it is at its measured-width cap.
-func TestBuildKeyIsListedInHelpAndThePalette(t *testing.T) {
-	m := testModel(sess("alpha"))
+// TestBuildKeyIsInTheLeaderTable is the proof that the actions dialog lists
+// the build tasks under ctrl+space b and that the key runs it. The dialog's
+// rows come from the leader table, so this fails if the row or its help line
+// is ever removed. The short footer line must NOT grow: it is at its
+// measured-width cap.
+func TestBuildKeyIsInTheLeaderTable(t *testing.T) {
+	m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 	short := xansi.Strip(m.renderHelp())
 	if strings.Contains(short, "build tasks") {
 		t.Errorf("the short footer line grew: %q", short)
 	}
-	m.helpShowAll = true
-	if full := xansi.Strip(m.renderHelp()); !strings.Contains(full, "build tasks") {
-		t.Errorf("the full help (?) does not list the key:\n%s", full)
+	rows := leaderRows(m.leaderConditions())
+	row, ok := leaderRowFor(rows, actionBuild)
+	if !ok {
+		t.Fatal("the dialog does not list the build tasks")
 	}
-	reg := m.modes()
-	entries := paletteEntries(reg.spec(inputNormal), m.routeConditions(), m.normalBindingEnabled)
-	var found *paletteItem
-	for i := range entries {
-		if entries[i].desc == "build tasks" {
-			found = &entries[i]
-		}
+	if row.keyLabel != "b" || row.name != "build tasks" || row.blocked != "" {
+		t.Errorf("row = %+v, want a runnable \"build tasks\" under b", row)
 	}
-	if found == nil {
-		t.Fatalf("the palette (:) does not list the key: %q", entryDescs(entries))
-	}
-	if found.keyLabel != "b" {
-		t.Errorf("palette key label = %q, want b", found.keyLabel)
-	}
-	if got := reg.route(inputNormal, m.routeConditions(), found.press); got.kind != routeAction || got.action != actionBuild {
-		t.Errorf("the palette row routes to %v/%v, want the build action", got.kind, got.action)
+	if got := leaderKeyDecision(leaderPress("b"), "", rows, 0, false); got.kind != leaderRun || got.row.action != actionBuild {
+		t.Errorf("ctrl+space b = %v %v, want the build action", got.kind, got.row.action)
 	}
 }
