@@ -150,6 +150,7 @@ func TestLeaderBlockedReason(t *testing.T) {
 		canFocus:         true,
 		canToggleView:    true,
 		canStartPlan:     true,
+		canCheckPlan:     true,
 	}
 	with := func(f func(*leaderConds)) leaderConds {
 		c := ready
@@ -193,6 +194,11 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"new plan runs with no project", actionPlanNew, leaderConds{canStartPlan: true}, ""},
 		{"new plan needs the seam", actionPlanNew, with(func(c *leaderConds) { c.canStartPlan = false }), "not available"},
 		{"new plan with everything", actionPlanNew, ready, ""},
+		// "check the plan" (T7.7) is dimmed only without the seam: no project
+		// and a status not read yet are said by the action in a sentence.
+		{"check the plan runs with only the seam", actionPlanCheck, leaderConds{canCheckPlan: true}, ""},
+		{"check the plan needs the seam", actionPlanCheck, with(func(c *leaderConds) { c.canCheckPlan = false }), "not available"},
+		{"check the plan with everything", actionPlanCheck, ready, ""},
 		{"projects needs a project", actionProjects, with(func(c *leaderConds) { c.hasActiveProject = false }), "no projects"},
 		{"projects with a project", actionProjects, ready, ""},
 
@@ -284,6 +290,8 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"", actionPlanReconcile},
 		// T7.4: by name only, no key after the leader.
 		{"", actionPlanNew},
+		// T7.7: by name only, no key after the leader.
+		{"", actionPlanCheck},
 	}
 	if len(leaderTable) != len(want) {
 		t.Fatalf("leaderTable has %d rows, the decided table %d", len(leaderTable), len(want))

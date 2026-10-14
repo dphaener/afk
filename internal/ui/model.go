@@ -339,6 +339,17 @@ type Deps struct {
 	// filesystem and the machine's usage file, so only `afk dash` wires it. A
 	// nil LoadBuild means no build data, ever, and no command is issued.
 	LoadBuild func(repo string, sessions []BuildSession) buildview.Snapshot
+	// LoadPlanStatus reads the planning session's state and the plan checker's
+	// result for the project whose folder is repo (a linked worktree is
+	// resolved to its main checkout by the loader, because .afk/plan and the
+	// master plan live there). It exists so the Build tab and the master-plan
+	// overview can say what `afk plan status` and `afk plan lint` would, and so
+	// the approve action can tell a new plan at review from anything else. It
+	// is called only from inside a tea.Cmd, never from Update or View.
+	//
+	// It has NO default, like LoadBuild: it reads the real filesystem. A nil
+	// LoadPlanStatus means no plan status, ever, and no command is issued.
+	LoadPlanStatus func(repo string) PlanStatus
 	// AnswerInbox records the owner's answer to the inbox item id in the
 	// project whose main checkout is root (the Root of the snapshot LoadBuild
 	// returned), and returns the item as stored. It is the dashboard's only
@@ -1231,6 +1242,13 @@ type Model struct {
 	// copied by value, and the Cmd goroutine reads it.
 	buildRefreshing *atomic.Bool
 
+	// planStatus is the last plan status Deps.LoadPlanStatus returned for the
+	// active project; its Known field says whether one has arrived since the
+	// project became active. planStatusRefreshing is the in-flight guard, a
+	// pointer for the same reason buildRefreshing is.
+	planStatus           PlanStatus
+	planStatusRefreshing *atomic.Bool
+
 	plainBranches []string
 	plainTrunk    string
 	// notifiedBranchesErr is the plainBranchesLoadedMsg listing-failure text a
@@ -1866,6 +1884,14 @@ type Model struct {
 	inbox     inboxOverlay
 	inboxOpen bool
 
+	// planCheck is the check-the-plan overlay (plancheckoverlay.go) and
+	// planCheckOpen its "is it open" flag, beside inboxOpen for the same
+	// reason. The struct holds the status copied at open and is not zeroed
+	// on close, so a stray render draws the last box rather than panicking
+	// on an unbuilt viewport.
+	planCheck     planCheckOverlay
+	planCheckOpen bool
+
 	// leader is the actions dialog the leader key opens (leader.go);
 	// leaderOpen is its "is it open" flag, beside the other overlays' for
 	// their reason. leaderFrom is the mode the leader was pressed in
@@ -1950,26 +1976,27 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		}
 	}
 	m := Model{
-		repo:                repo,
-		interval:            interval,
-		deps:                d,
-		keys:                keys,
-		stackRefreshing:     new(atomic.Bool),
-		buildRefreshing:     new(atomic.Bool),
-		list:                newSessionList(keys, d.Now),
-		detailViewport:      viewport.New(),
-		initialSession:      deps.InitialSessionName,
-		gitCommonDir:        deps.GitCommonDir,
-		projects:            deps.Projects,
-		found:               unpinnedProjects(deps.Projects),
-		activeProject:       deps.ActiveProjectIndex,
-		rememberedSelection: remembered,
-		projectOpens:        opens,
-		dirtyOpens:          dirtyOpens,
-		previewOnNextLoad:   previewOnNextLoad,
-		scanInterval:        defaultScanInterval,
-		pid:                 d.Pid(),
-		focusWatch:          d.StartFocusWatcher(deps.GitCommonDir),
+		repo:                 repo,
+		interval:             interval,
+		deps:                 d,
+		keys:                 keys,
+		stackRefreshing:      new(atomic.Bool),
+		buildRefreshing:      new(atomic.Bool),
+		planStatusRefreshing: new(atomic.Bool),
+		list:                 newSessionList(keys, d.Now),
+		detailViewport:       viewport.New(),
+		initialSession:       deps.InitialSessionName,
+		gitCommonDir:         deps.GitCommonDir,
+		projects:             deps.Projects,
+		found:                unpinnedProjects(deps.Projects),
+		activeProject:        deps.ActiveProjectIndex,
+		rememberedSelection:  remembered,
+		projectOpens:         opens,
+		dirtyOpens:           dirtyOpens,
+		previewOnNextLoad:    previewOnNextLoad,
+		scanInterval:         defaultScanInterval,
+		pid:                  d.Pid(),
+		focusWatch:           d.StartFocusWatcher(deps.GitCommonDir),
 		dashEntry: dashEntryMeta{
 			tmux:      deps.Tmux,
 			paneID:    deps.PaneID,
@@ -2367,6 +2394,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case buildLoadedMsg:
 		return m.applyBuildLoaded(msg), nil
+
+	case planStatusLoadedMsg:
+		return m.applyPlanStatusLoaded(msg), nil
 
 	case inboxAnsweredMsg:
 		return m.applyInboxAnswered(msg)
@@ -3454,6 +3484,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openPlanTextForm(PlanModeReconcile)
 	case actionPlanNew:
 		return m.openPlanNewForm()
+	case actionPlanCheck:
+		return m.openPlanCheck()
 
 	case actionEnterResize:
 		return m.enterResize()
@@ -3582,6 +3614,8 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 		return m.leaderComponentKey(k)
 	case inputInbox:
 		return m.inboxComponentKey(k)
+	case inputPlanCheck:
+		return m.planCheckComponentKey(k)
 	case inputFilter:
 		return m.sessionFilterKey(k)
 	case inputEditLabel:
@@ -3654,6 +3688,7 @@ func (m *Model) relayout() {
 	m.sizeFormComponents()
 	m.sizeSwitcher()
 	m.sizeInbox()
+	m.sizePlanCheck()
 	m.sizeSessionList()
 	m.syncDetailViewport()
 	if m.pane != nil {
@@ -4673,6 +4708,7 @@ func (m Model) leaderConditions() leaderConds {
 		hasBuild:         m.hasBuild(),
 		buildKnown:       m.buildKnown,
 		canStartPlan:     m.deps.StartPlan != nil,
+		canCheckPlan:     m.deps.LoadPlanStatus != nil,
 		restartLive:      m.restartKeyLive(),
 		canFocus:         m.normalBindingEnabled(m.keys.Focus),
 		// toggleView is inert only on a selected row that has neither a
@@ -6981,6 +7017,9 @@ func (m Model) projectCmds() []tea.Cmd {
 	if build := m.buildCmd(); build != nil {
 		cmds = append(cmds, build)
 	}
+	if ps := m.planStatusCmd(); ps != nil {
+		cmds = append(cmds, ps)
+	}
 	return cmds
 }
 
@@ -7617,11 +7656,15 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// The build snapshot is the outgoing project's tasks and inbox. It must go
 	// before projectCmds below issues the incoming project's first read.
 	m.forgetBuild()
+	m.forgetPlanStatus()
 	// The inbox overlay shows the outgoing project's items, and an answer
 	// typed into it would be sent against a snapshot that has just been
 	// dropped. It closes with the switch; an answer already on its way to
 	// disk still lands, and its outcome is dropped by the generation stamp.
 	m.inboxOpen = false
+	// The plan-check overlay shows the outgoing project's plan. It holds
+	// nothing typed, so closing it loses nothing.
+	m.planCheckOpen = false
 	m.deadHostPIDs = nil
 	m.pendingSpawns = nil
 	// A preview timer armed on the outgoing project's rows is inert from here (see

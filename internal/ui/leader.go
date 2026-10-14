@@ -120,8 +120,9 @@ type leaderEntry struct {
 
 // leaderTable is every dashboard action and its key after the leader, in the
 // order the dialog lists them. It is the table in docs/decisions.md "## T7.2"
-// row for row, followed by the three by-name plan actions of "## T7.3" and
-// the by-name "start a new plan" of "## T7.4";
+// row for row, followed by the three by-name plan actions of "## T7.3",
+// the by-name "start a new plan" of "## T7.4" and the by-name "check the
+// plan" of "## T7.7";
 // TestLeaderTableIsTheDecidedTable holds the two together.
 //
 // Back to list comes before close pane on purpose: both answer `\`, and among
@@ -161,6 +162,11 @@ var leaderTable = []leaderEntry{
 	// action because it opens a form, and a start moves the dashboard to the
 	// folder's project and the keyboard to its planning pane.
 	{key: "", action: actionPlanNew, reach: reachList},
+	// "check the plan" (T7.7) is by name for the same reasons. It is a list
+	// action because its overlay floats over the list, as the inbox's does;
+	// it changes nothing, so where the keyboard was matters only for where
+	// esc returns it.
+	{key: "", action: actionPlanCheck, reach: reachList},
 }
 
 // mode is the mode a reach's action runs as through applyKeyAction:
@@ -224,6 +230,7 @@ var leaderNames = map[modeAction]string{
 	actionPlanAmend:     "amend the plan",
 	actionPlanReconcile: "reconcile the plan with a document",
 	actionPlanNew:       "start a new plan",
+	actionPlanCheck:     "check the plan",
 }
 
 // leaderHelp is the one line of help each listed action shows. Every action
@@ -254,6 +261,14 @@ var leaderHelp = map[modeAction]string{
 	actionPlanAmend:     "Change the plan; asks what to change in a sentence",
 	actionPlanReconcile: "Fit the plan to a document; asks for its path",
 	actionPlanNew:       "Plan a project that has no plan; asks for its folder or a new name",
+	// "errors" is the word this row is found by. Its name cannot be typed:
+	// c is clean's key and runs it from an empty query, and "plan" starts
+	// with p, the switcher's. The help line's other leading words are no
+	// better — "warnings" starts with w (resize, which always runs) and
+	// "list" with l (the label, which a dimmed row still swallows). No other
+	// row's name or help says "errors" or "warnings"
+	// (TestLeaderPlanCheckWordsAreUnique).
+	actionPlanCheck: "Show the plan's errors and warnings, as afk plan lint does",
 }
 
 // leaderRow is one action in the dialog.
@@ -417,6 +432,10 @@ type leaderConds struct {
 	// canStartPlan is "the StartPlan seam is wired", openPlanNewForm's only
 	// guard.
 	canStartPlan bool
+	// canCheckPlan is "the LoadPlanStatus seam is wired": without it no
+	// plan status ever arrives, and openPlanCheck could only ever say the
+	// plan has not been read yet.
+	canCheckPlan bool
 	// restartLive is Model.restartKeyLive, the gate the help uses.
 	restartLive bool
 	// canFocus is normalBindingEnabled's answer for the Focus binding: a pane,
@@ -469,6 +488,13 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		// it, and openPlanNewForm says so in a sentence if it is run anyway.
 		if !c.canStartPlan {
 			return "starting a plan is not available here"
+		}
+	case actionPlanCheck:
+		// Not dimmed for "no project is open" or "not read yet": both are
+		// said in a sentence by openPlanCheck, which is more use than a
+		// dimmed row. Only a missing seam stops it for good.
+		if !c.canCheckPlan {
+			return "checking the plan is not available here"
 		}
 	case actionProjects:
 		if !c.hasActiveProject {

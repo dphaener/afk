@@ -593,3 +593,27 @@ func TestGoldenPlanStart(t *testing.T) {
 		assertGolden(t, "dash-120x40-plan-open", render(m))
 	})
 }
+
+// TestGoldenPlanCheck pins the check-the-plan overlay (T7.7) at both sizes,
+// reached the way a person reaches it: the plan status read lands, then
+// ctrl+space, "errors", enter. The fixture lists a warning before the errors
+// in plan order, so the frame shows the errors-first order, and at 80x24 its
+// findings wrap inside the box.
+func TestGoldenPlanCheck(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-plancheck-80x24", 80, 24},
+		{"dash-plancheck-120x40", 120, 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m := withPlanStatus(t, goldenModel(t, size.w, size.h), planCheckStatusErrors())
+			m, _ = runPlanAction(t, m, "errors")
+			if !m.planCheckOpen {
+				t.Fatal("the action did not open the overlay")
+			}
+			assertGolden(t, size.name, render(m))
+		})
+	}
+}

@@ -186,3 +186,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Resume key**: `U` in the dashboard, which resumes the active project's build as `afk resume` does, and clears a stopped line.
 - **Inbox segment**: the part of the `afk dash` header that counts the active project's open inbox items and how many of them are blocking a task.
 - **Project location**: the owner profile entry naming the folder under which the dashboard creates a new project typed by name.
+- **Plan line**: the one line in `afk dash` (on the `master-plan` session's overview and the Build tab) that says the planning session's mode, phase and what it waits for.
