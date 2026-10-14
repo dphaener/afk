@@ -2,12 +2,14 @@ package web
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/projectrows"
 )
 
 // The words shown as a task's phase when they do not come from a file.
@@ -288,4 +290,208 @@ func plural(n int, unit string) string {
 		return "1 " + unit + " ago"
 	}
 	return fmt.Sprintf("%d %ss ago", n, unit)
+}
+
+// RowView is one row of the all-projects screen as the JSON API gives it:
+// projectrows.Row with snake_case keys. The folder, the config order and
+// whether the project is listed are left out, as ProjectSummary leaves them
+// out: the API names projects, it does not say where they are.
+type RowView struct {
+	Name string `json:"name"`
+	// State is the row's projectrows.State word, Label its short word and
+	// Detail the one sentence projectrows wrote for it (T7.9's words).
+	State  string `json:"state"`
+	Label  string `json:"label"`
+	Detail string `json:"detail"`
+	// Task, Title and Phase are the current task, empty when none.
+	Task  string `json:"task"`
+	Title string `json:"title"`
+	Phase string `json:"phase"`
+	Done  int    `json:"done"`
+	Total int    `json:"total"`
+	// Open and Blocking are the inbox counts.
+	Open        int  `json:"open"`
+	Blocking    int  `json:"blocking"`
+	PlanWaiting bool `json:"plan_waiting"`
+	NeedsOwner  bool `json:"needs_owner"`
+}
+
+func rowView(r projectrows.Row) RowView {
+	return RowView{
+		Name: r.Name, State: string(r.State), Label: r.Label, Detail: r.Detail,
+		Task: r.Task, Title: r.Title, Phase: r.Phase,
+		Done: r.Done, Total: r.Total, Open: r.Open, Blocking: r.Blocking,
+		PlanWaiting: r.PlanWaiting, NeedsOwner: r.NeedsOwner,
+	}
+}
+
+// badgeView is a state badge: the design's variant class and its word. The
+// word is always drawn, so the state never rests on colour alone.
+type badgeView struct {
+	Class, Word string
+}
+
+// planWaitingBadge marks a plan on the review list, for a project that has
+// one besides its build and for a plan that has no project yet.
+var planWaitingBadge = badgeView{Class: "badge--needs-you", Word: "Plan waiting for approval"}
+
+// stateBadge maps a row's state to the design system's project-state badge
+// (docs/design-system.md, badge). The design names seven states; gone, can't
+// read and no plan are projectrows' own and have no variant there, so they
+// borrow the nearest one's colour (the danger colour for the two the owner
+// must fix, the idle one for a project with nothing to build) and say their
+// own word. A state this binary does not know is shown as it is, plain, so
+// a newer projectrows still reads.
+func stateBadge(s projectrows.State) badgeView {
+	switch s {
+	case projectrows.StateRunning:
+		return badgeView{"badge--running", "Building"}
+	case projectrows.StateWaiting:
+		return badgeView{"badge--needs-you", "Waiting on you"}
+	case projectrows.StatePaused:
+		return badgeView{"badge--paused", "Paused"}
+	case projectrows.StateStopped:
+		return badgeView{"badge--stopped", "Line stopped"}
+	case projectrows.StateHeld:
+		return badgeView{"badge--held", "Held for usage"}
+	case projectrows.StateNothingReady:
+		return badgeView{"badge--idle", "Nothing ready"}
+	case projectrows.StateFinished:
+		return badgeView{"badge--finished", "Finished"}
+	case projectrows.StateGone:
+		return badgeView{"badge--error", "Gone"}
+	case projectrows.StateUnreadable:
+		return badgeView{"badge--error", "Can't read"}
+	case projectrows.StateNoPlan:
+		return badgeView{"badge--idle", "No plan"}
+	}
+	return badgeView{"badge--plain", string(s)}
+}
+
+// inboxLine is a row's inbox counts in words, or "" when the inbox has
+// nothing open: a row that says "0 in inbox" is noise on a screen whose job
+// is to show what needs the owner.
+func inboxLine(open, blocking int) string {
+	if open <= 0 {
+		return ""
+	}
+	s := fmt.Sprintf("%d in inbox", open)
+	switch {
+	case blocking == 1:
+		s += ", 1 holds a task up"
+	case blocking > 1:
+		s += fmt.Sprintf(", %d hold a task up", blocking)
+	}
+	return s
+}
+
+// overviewRow is one row as the home page draws it.
+type overviewRow struct {
+	Name string
+	// Href is where the row goes: the project page, or the plan for a plan
+	// waiting for approval that has no project yet.
+	Href string
+	// Live is true for a project's row, which carries the live markup; a
+	// plan waiting alone has no part the change stream names (there is no
+	// live part for plan-reviews.json), so it has none.
+	Live     bool
+	NeedsYou bool
+	Selected bool
+	// Working marks a running build, for the live indicator's Working.
+	Working bool
+	Badge   badgeView
+	// Extra is a second badge, drawn when its Word is set: a configured
+	// project whose amended plan waits for approval.
+	Extra badgeView
+	// Task, Title and Phase are set for a running build, whose sub-line is
+	// its task id and phase; Detail is the sub-line otherwise.
+	Task, Title, Phase string
+	Detail             string
+	Done, Total        int
+	Inbox              string
+}
+
+// overviewPage is what overview.html draws besides the usage reading. It is
+// built by the pure overviewPageFor so every branch of the home page is a
+// table row.
+type overviewPage struct {
+	Heading  string
+	NeedsYou []overviewRow
+	Others   []overviewRow
+	// Selected is the row shown on the right of the desktop split: the
+	// first row, needs-you first. Nil when there are no rows.
+	Selected *overviewRow
+	// Empty is true when there is nothing at all to list.
+	Empty bool
+}
+
+// reviewOnlyDetail is the sub-line of a plan waiting for approval that has
+// no project yet: what the owner does about it.
+const reviewOnlyDetail = "Read it, then run afk plan approve in the project folder."
+
+// overviewPageFor lays out the home page from the rows (already in
+// projectrows.Sort's order) and the plans waiting for approval that are not
+// configured projects.
+//
+// A review that a row already names is left out: the row is that project,
+// and two rows for one name would link the plan twice. The others are
+// needs-you rows placed after the project rows that need the owner, since
+// projectrows.Sort orders by config.toml and a plan waiting alone has no
+// place there.
+func overviewPageFor(rows []RowView, reviews []ReviewView) overviewPage {
+	var p overviewPage
+	named := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		named[r.Name] = true
+		or := overviewRow{
+			Name: r.Name, Href: "/p/" + url.PathEscape(r.Name), Live: true,
+			NeedsYou: r.NeedsOwner, Badge: stateBadge(projectrows.State(r.State)),
+			Detail: r.Detail, Done: r.Done, Total: r.Total, Inbox: inboxLine(r.Open, r.Blocking),
+		}
+		if r.PlanWaiting {
+			or.Extra = planWaitingBadge
+		}
+		if projectrows.State(r.State) == projectrows.StateRunning {
+			or.Working = true
+			or.Task, or.Title, or.Phase = r.Task, r.Title, r.Phase
+			if or.Phase == "" {
+				or.Phase = PhaseUnknown
+			}
+		}
+		if or.NeedsYou {
+			p.NeedsYou = append(p.NeedsYou, or)
+		} else {
+			p.Others = append(p.Others, or)
+		}
+	}
+	for _, rv := range reviews {
+		if named[rv.Name] {
+			continue
+		}
+		named[rv.Name] = true
+		p.NeedsYou = append(p.NeedsYou, overviewRow{
+			Name: rv.Name, Href: "/p/" + url.PathEscape(rv.Name) + "/plan",
+			NeedsYou: true, Badge: planWaitingBadge, Detail: reviewOnlyDetail,
+		})
+	}
+
+	switch n := len(p.NeedsYou); n {
+	case 0:
+		p.Heading = "Nothing needs you"
+	case 1:
+		p.Heading = "1 project needs you"
+	default:
+		p.Heading = fmt.Sprintf("%d projects need you", n)
+	}
+	switch {
+	case len(p.NeedsYou) > 0:
+		p.NeedsYou[0].Selected = true
+		p.Selected = &p.NeedsYou[0]
+	case len(p.Others) > 0:
+		p.Others[0].Selected = true
+		p.Selected = &p.Others[0]
+	default:
+		p.Empty = true
+	}
+	return p
 }

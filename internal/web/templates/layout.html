@@ -3,37 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{template "title" .}} - afk</title>
-<style>
-:root { color-scheme: light dark; --bg: #fafafa; --fg: #1b1b1b; --muted: #5c5c5c; --card: #fff; --line: #d6d6d6; --accent: #0b5cad; --warn: #8a4b00; }
-@media (prefers-color-scheme: dark) { :root { --bg: #121212; --fg: #ececec; --muted: #a3a3a3; --card: #1c1c1c; --line: #3a3a3a; --accent: #7db7f0; --warn: #f0b36b; } }
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-main, .bar { max-width: 40rem; margin: 0 auto; padding: 0 1rem; }
-.bar { display: flex; gap: 1.25rem; align-items: center; min-height: 48px; border-bottom: 1px solid var(--line); }
-.bar a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
-a { color: var(--accent); }
-h1 { font-size: 1.4rem; margin: 1rem 0 .5rem; }
-h2 { font-size: 1.1rem; margin: 1.5rem 0 .5rem; }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .75rem 1rem; margin: .75rem 0; }
-.muted { color: var(--muted); }
-.warn { color: var(--warn); font-weight: 600; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: .5rem 0; }
-ul { list-style: none; padding: 0; margin: 0; }
-li { margin: .5rem 0; }
-button { min-height: 44px; padding: 0 1.25rem; font: inherit; font-weight: 600; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: var(--bg); cursor: pointer; }
-button.quiet { background: transparent; color: var(--accent); }
-textarea, input[type=text] { width: 100%; min-height: 44px; font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
-label.choice { display: flex; align-items: center; gap: .75rem; min-height: 44px; }
-label.choice input { width: 1.25rem; height: 1.25rem; }
-form { margin: .75rem 0; }
-</style>
-<script src="{{asset "live.js"}}" defer></script>
-</head>
-<body>
-<div class="bar"><a href="/">Overview</a><a href="/usage">Usage</a><span class="live" data-live-status hidden>Live</span></div>
-<main>
-{{template "content" .}}
+<title>{{template "title" .View}} - afk</title>
+<link rel="stylesheet" href="{{asset "afk.css"}}">
+<link rel="stylesheet" href="{{asset "page.css"}}">
+{{if not .Chrome.Bare}}<script src="{{asset "live.js"}}" defer></script>
+<script src="{{asset "confirm.js"}}" defer></script>
+{{end}}</head>
+<body class="afk">
+<div class="shell">
+{{with .Chrome}}{{if not .Bare}}
+<header class="app-bar{{if not .Overview}} app-bar--back{{end}}">
+{{if .Overview}}
+  <span class="app-bar__title wordmark">afk</span>
+{{else}}
+  <a class="icon-btn" href="{{.Back}}" aria-label="{{.BackLabel}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6"/></svg></a>
+  <span class="app-bar__title">{{.Title}}</span>
+{{end}}
+  <span class="live" data-live-status hidden>Live</span>
+</header>
+<header class="topnav">
+  <a class="wordmark topnav__brand" href="/">afk</a>
+  <nav class="topnav__links" aria-label="Main">
+    <a class="topnav__link" href="/"{{if eq .Nav "projects"}} aria-current="{{.Current}}"{{end}}>Projects <span class="count count--quiet">{{.Projects}}</span></a>
+    <a class="topnav__link" href="/usage"{{if eq .Nav "usage"}} aria-current="{{.Current}}"{{end}}>Usage</a>
+  </nav>
+  <span class="live topnav__live" data-live-mirror hidden>Live</span>
+</header>
+{{end}}{{end}}
+<main class="page{{if .Chrome.Bare}} page--alone{{end}}">
+{{template "content" .View}}
+{{block "foot" .Chrome}}{{end}}
 </main>
+{{with .Chrome.Toast}}<div class="toast-region"><div class="toast" role="status" data-toast>{{.}}</div></div>
+{{end}}
+</div>
 </body>
 </html>

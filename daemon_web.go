@@ -19,6 +19,7 @@ import (
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/projectconfig"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
@@ -90,9 +91,51 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 			_, err := resumeProject(root, now())
 			return webPauseError(root, err)
 		},
-		PlanChat:  webPlanChat(now),
-		PlanReply: webPlanReply(now),
-		Now:       now,
+		ProjectRows: webProjectRows(projects, stateDir, now),
+		PlanChat:    webPlanChat(now),
+		PlanReply:   webPlanReply(now),
+		Now:         now,
+	}
+}
+
+// webProjectRows is the real version of web.Deps.ProjectRows: the
+// all-projects rows for the daemon's last good project list, sorted the way
+// the dashboard sorts them (needs-you first, then list order).
+//
+// It never reads config.toml: the daemon owns that list and hands it over
+// through projects. Each entry is already a main checkout with duplicates
+// dropped, so no git is run to find it again (gitCommonDir answers "", which
+// mainCheckout takes as "use the folder as given"); a listed folder that has
+// gone since the list was read still shows as gone, because isDir is checked
+// on every call. There is no unlisted active project here: the daemon has no
+// project it was started in. Nothing dials; the one discovery call is made
+// only for a project with a running task, as the dashboard does.
+func webProjectRows(projects func() []daemon.Project, stateDir string, now func() time.Time) func() []projectrows.Row {
+	parts := dashAllProjectsParts{
+		isDir: func(path string) bool {
+			fi, err := os.Stat(path)
+			return err == nil && fi.IsDir()
+		},
+		gitCommonDir: func(string) string { return "" },
+		evalSymlinks: filepath.EvalSymlinks,
+		sessions: func(root string) []web.SessionView {
+			found, err := discover.Discover(root, discover.DefaultDeps())
+			if err != nil {
+				return nil
+			}
+			return webSessionViews(found)
+		},
+		now: now,
+	}
+	return func() []projectrows.Row {
+		got := projects()
+		listed := make([]rowProject, 0, len(got))
+		for _, p := range got {
+			listed = append(listed, rowProject{Name: p.Name, Path: p.Root})
+		}
+		rows, _ := buildListedRows(parts, listed, reviewRoots(daemonstate.ReadReviews(stateDir)))
+		projectrows.Sort(rows)
+		return rows
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -332,6 +333,14 @@ func TestAuthPlanReplyRouteNeedsTheToken(t *testing.T) {
 // TestAuthUnauthorizedOutsideAPI: away from /api the refusal is a small page a
 // person can act on. It must hold for addresses that do not exist too, so a
 // stranger cannot map the site by telling 401 from 404.
+//
+// The page wears the design (class="afk", the hashed afk.css and page.css)
+// and is otherwise fixed: every row gets byte-for-byte the same page, so it
+// cannot echo the path, the query or a token. Load-bearing: "an address that
+// does not exist" and "wrong token in query" (the two rows whose request
+// text a page that echoed anything would show), and the banned list: no Sign
+// in button (afk has no sign-in), no link, form or script, and no inline
+// style, since the only things it may reference are its two stylesheets.
 func TestAuthUnauthorizedOutsideAPI(t *testing.T) {
 	tests := []struct {
 		name string
@@ -345,6 +354,8 @@ func TestAuthUnauthorizedOutsideAPI(t *testing.T) {
 		{"a POST", authReq{method: "POST", target: "/p/app/pause"}},
 		{"a path that only starts like the API", authReq{target: "/apiary"}},
 	}
+	stylesheet := regexp.MustCompile(`<link rel="stylesheet" href="/static/[0-9a-f]{12}/(afk|page)\.css">`)
+	var first string
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
@@ -356,15 +367,27 @@ func TestAuthUnauthorizedOutsideAPI(t *testing.T) {
 				t.Errorf("Content-Type = %q, want HTML", ct)
 			}
 			body := rec.Body.String()
-			for _, want := range []string{"?token=", "config.toml", "<meta name=\"viewport\""} {
+			if first == "" {
+				first = body
+			} else if body != first {
+				t.Errorf("the refusal page differs between requests, so it holds something from the request:\n%s", body)
+			}
+			for _, want := range []string{"?token=", "config.toml", "<meta name=\"viewport\"", `<body class="afk">`, "This page is private", `class="wordmark"`} {
 				if !strings.Contains(body, want) {
-					t.Errorf("the page does not mention %q:\n%s", want, body)
+					t.Errorf("the page does not hold %q:\n%s", want, body)
 				}
 			}
-			for _, banned := range []string{"<script", "http://", "https://", " src=", " href="} {
-				if strings.Contains(body, banned) {
-					t.Errorf("the page must be self-contained, but holds %q", banned)
+			if n := len(stylesheet.FindAllString(body, -1)); n != 2 {
+				t.Errorf("the page links %d of its two stylesheets:\n%s", n, body)
+			}
+			rest := stylesheet.ReplaceAllString(body, "")
+			for _, banned := range []string{"<script", "http://", "https://", " src=", " href=", "<a ", "<form", "<button", "<style", "style=", "Sign in", "project", otherToken} {
+				if strings.Contains(rest, banned) {
+					t.Errorf("the page holds %q", banned)
 				}
+			}
+			if target := strings.SplitN(tc.req.target, "?", 2)[0]; target != "/" && strings.Contains(body, target) {
+				t.Errorf("the page echoes the path %q", target)
 			}
 			wantSecurityHeaders(t, rec)
 			noSecrets(t, rec)

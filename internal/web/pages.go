@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -18,7 +19,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "item", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "item", "confirm", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -38,10 +39,11 @@ func parsePages(asset func(name string) string) (map[string]*template.Template, 
 		"asset": asset,
 		"pe":    url.PathEscape,
 		"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
+		"sheet": confirmSheetFor,
 	}
 	out := make(map[string]*template.Template, len(pageNames))
 	for _, name := range pageNames {
-		t, err := template.New("layout.html").Funcs(funcs).ParseFS(pageFiles, "templates/layout.html", "templates/"+name+".html")
+		t, err := template.New("layout.html").Funcs(funcs).ParseFS(pageFiles, "templates/layout.html", "templates/parts.html", "templates/"+name+".html")
 		if err != nil {
 			return nil, fmt.Errorf("the web page templates are damaged (%s): %w", name, err)
 		}
@@ -79,18 +81,122 @@ func whenUTC(v any) string {
 	return ""
 }
 
+// pageData is what every page template set is executed with. The layout
+// reads Chrome for the bars and hands View to the page's own blocks
+// ({{template "content" .View}}), so a page template sees exactly the view
+// respond was given, the same value the JSON API encodes. Wrapping here,
+// rather than adding bar fields to each view type, is what keeps the API's
+// answers unchanged by the page's looks.
+type pageData struct {
+	View   any
+	Chrome chrome
+}
+
+// chrome is what the layout's bars need to know about the page they sit on.
+// None of it is read from a project's files except Projects, which counts the
+// daemon's project list on each request like every other read here.
+type chrome struct {
+	// Bare drops the bars and the live script: the error page stands alone,
+	// as the design's Error screen does, because the request that failed may
+	// be the very one that would have drawn the bars' data.
+	Bare bool
+	// Overview is true on the home page, where the phone bar shows the
+	// wordmark instead of a back button and a title.
+	Overview bool
+	// Title is the phone bar's title; Back and BackLabel are its back
+	// button's address and its spoken name (the button is an icon only).
+	Title, Back, BackLabel string
+	// Nav is the top bar's current item, "projects" or "usage", and Current
+	// is the aria-current value to give it: "page" when the page is that
+	// item's own address, "true" when it is a page under it (a project, a
+	// plan, an item), because aria-current="page" on a link to / would tell
+	// a screen reader the owner is on / when they are not.
+	Nav, Current string
+	// Projects is the number beside Projects in the top bar.
+	Projects int
+	// Status, Path and Retry are for the error page: the status and the
+	// address that failed, shown in mono, and where Try again goes.
+	Status      int
+	Path, Retry string
+	// Toast is the sentence the layout shows after a pause or resume, or ""
+	// for none. It is only ever one of toastTexts (see toastFor).
+	Toast string
+}
+
+// chromeFor works out the bars for a page from its name and view, the
+// request's method and path and the number of projects. It is pure so every
+// page's bar is a table row in the tests.
+func chromeFor(name string, view any, method, path string, projects int) chrome {
+	c := chrome{Nav: "projects", Current: "true", Projects: projects, Back: "/", BackLabel: "Back to all projects"}
+	switch v := view.(type) {
+	case OverviewView:
+		c.Overview, c.Title, c.Current = true, "All projects", "page"
+	case UsageView:
+		c.Title, c.Nav, c.Current = "Usage", "usage", "page"
+	case ProjectView:
+		c.Title = v.Name
+	case PlanView:
+		c.Title = "Plan: " + v.Project
+		// A plan waiting for approval has no project page to go back to:
+		// findProject answers 404 for it.
+		if !v.WaitingForApproval {
+			c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
+		}
+	case ItemView:
+		c.Title = v.Title
+		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project)+"#inbox", "Back to the inbox of "+v.Project
+	case ConfirmView:
+		c.Title = v.Sheet.Action
+		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
+	case ErrorView:
+		return chrome{Bare: true, Status: v.Status, Path: path, Retry: retryPath(method, path)}
+	default:
+		c.Title = name
+	}
+	return c
+}
+
+// retryPath is where the error page's Try again goes. A failed GET is asked
+// for again. A failed POST is not, because a link cannot post and a GET of a
+// POST address is a 404: it goes to the page the form was on, which for every
+// POST route (an answer, a pause, a resume) is the address with its last
+// part taken off. The leading slashes are collapsed as in withoutToken, so an
+// address that reached here oddly can never become a link to another site.
+func retryPath(method, path string) string {
+	p := "/" + strings.TrimLeft(path, `/\`)
+	if method != http.MethodGet && method != http.MethodHead {
+		if i := strings.LastIndex(p, "/"); i > 0 {
+			p = p[:i]
+		} else {
+			p = "/"
+		}
+	}
+	return (&url.URL{Path: p}).EscapedPath()
+}
+
 // renderPage writes the page for a view. The page is built in memory first
 // so a template fault becomes a clean 500 and not half a page after a 200.
-func (s *server) renderPage(w http.ResponseWriter, status int, name string, view any) {
+func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, name string, view any) {
 	t, ok := s.pages[name]
 	var buf bytes.Buffer
 	if !ok {
 		status = http.StatusInternalServerError
 		buf.WriteString("<!doctype html><title>afk</title><p>This page is missing. This is a fault in afk; please report it.</p>")
-	} else if err := t.Execute(&buf, view); err != nil {
-		status = http.StatusInternalServerError
-		buf.Reset()
-		buf.WriteString("<!doctype html><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>afk</title><p>The page could not be drawn. This is a fault in afk; please report it.</p>")
+	} else {
+		projects := 0
+		if _, isErr := view.(ErrorView); !isErr {
+			projects = len(s.projects())
+		}
+		ch := chromeFor(name, view, r.Method, r.URL.Path, projects)
+		if pv, isProject := view.(ProjectView); isProject && r.Method == http.MethodGet {
+			ch.Toast = toastFor(r.URL.Query().Get("done"), pv.Name)
+		}
+		data := pageData{View: view, Chrome: ch}
+		if err := t.Execute(&buf, data); err != nil {
+			status = http.StatusInternalServerError
+			buf.Reset()
+			buf.WriteString("<!doctype html><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>afk</title><p>The page could not be drawn. This is a fault in afk; please report it.</p>")
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -109,9 +215,80 @@ func redirectAfter(r *http.Request, status int, name string, view any) string {
 			return project + "/inbox/" + url.PathEscape(iv.ID)
 		}
 	case r.Method == http.MethodPost && status == http.StatusOK && name == "project":
+		// The code is fixed text chosen from the address, never anything the
+		// request carried, so the toast it leads to echoes nothing.
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pause"):
+			return project + "?done=paused"
+		case strings.HasSuffix(r.URL.Path, "/resume"):
+			return project + "?done=resumed"
+		}
 		return project
 	case r.Method == http.MethodGet && status == http.StatusOK && name == "inbox":
 		return project + "#inbox"
 	}
 	return ""
+}
+
+// toastTexts maps the codes redirectAfter appends to the sentence the toast
+// shows. {project} is replaced with the project's name from the server's own
+// list. The layout draws a toast only for a key here, so a hostile or stale
+// ?done= value shows nothing and is never printed.
+var toastTexts = map[string]string{
+	"paused":  "Paused {project}. Nothing new will start.",
+	"resumed": "Resumed {project}.",
+}
+
+// toastFor is the toast sentence for a ?done= code, or "" when the code is
+// not in toastTexts. The name comes from the project list and not from the
+// query; html/template escapes it when drawn.
+func toastFor(code, project string) string {
+	text, ok := toastTexts[code]
+	if !ok {
+		return ""
+	}
+	return strings.ReplaceAll(text, "{project}", project)
+}
+
+// ConfirmSheet is what the shared confirm-sheet partial draws and what the
+// no-JS confirm page repeats, so the two always say the same thing.
+type ConfirmSheet struct {
+	// ID is the dialog's id, which a link's data-confirm names.
+	ID string
+	// Title is the question naming the thing; Body is one sentence on what
+	// happens and what is not touched.
+	Title, Body string
+	// Action is the action button's label and Loading its "-ing" form shown
+	// while the form is sent.
+	Action, Loading string
+	Danger          bool
+	// Method and Path are the form's; Safe is the harmless button's label.
+	Method, Path, Safe string
+}
+
+// ConfirmView is the no-JS confirm page. It has no JSON form: the page is
+// the same question the sheet asks, for a browser that cannot open a dialog.
+type ConfirmView struct {
+	Project string
+	Sheet   ConfirmSheet
+}
+
+// confirmSheetFor builds the sheet for pausing a project, or for resuming it
+// when resume is true. It is the one place the wording lives.
+func confirmSheetFor(project string, resume bool) ConfirmSheet {
+	base := "/p/" + url.PathEscape(project)
+	if resume {
+		return ConfirmSheet{
+			ID: "confirm-resume", Title: "Resume " + project + "?",
+			Body:   "afk starts the next ready task.",
+			Action: "Resume project", Loading: "Resuming",
+			Method: "post", Path: base + "/resume", Safe: "Keep it paused",
+		}
+	}
+	return ConfirmSheet{
+		ID: "confirm-pause", Title: "Pause " + project + "?",
+		Body:   "The running task finishes; nothing new starts. Nothing is deleted.",
+		Action: "Pause project", Loading: "Pausing",
+		Method: "post", Path: base + "/pause", Safe: "Keep it running",
+	}
 }

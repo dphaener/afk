@@ -1,6 +1,7 @@
-{{define "title"}}Something went wrong{{end}}
+{{define "title"}}That didn't load{{end}}
 {{define "content"}}
-<h1>Something went wrong ({{.Status}})</h1>
+<p class="wordmark">afk</p>
+<h1>That didn't load</h1>
 <p>{{.Error}}</p>
 {{with .Item}}
 <div class="card">
@@ -9,5 +10,11 @@
   <span class="muted">Answered {{when .AnsweredAt}}{{if .AnsweredVia}} through {{.AnsweredVia}}{{end}}.</span>
 </div>
 {{end}}
-<p><a href="/">Back to the overview</a></p>
+{{end}}
+{{define "foot"}}
+<p class="mono meta">{{.Status}} {{.Path}}</p>
+<div class="btn-row">
+  <a class="btn btn--primary" href="/">Go to all projects</a>
+  <a class="btn btn--secondary" href="{{.Retry}}">Try again</a>
+</div>
 {{end}}

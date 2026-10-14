@@ -14,22 +14,52 @@
   var BACKOFF_START_MS = 3000;
   var BACKOFF_MAX_MS = 30000;
 
-  var status = document.querySelector('[data-live-status]');
+  // The indicator is in each bar (the phone bar and the desktop bar, one
+  // shown per width). The phone bar's carries data-live-status, the desktop
+  // bar's data-live-mirror, and both are given the same class and words.
+  var indicators = Array.prototype.slice.call(document.querySelectorAll('[data-live-status], [data-live-mirror]'));
   var source = null;
   var backoff = BACKOFF_START_MS;
   var reconnectTimer = null;
   var fetchTimer = null;
+  // online is null until the stream first opens or fails, so the indicator
+  // stays hidden (as it is without JavaScript) until there is something true
+  // to say.
+  var online = null;
   // pending holds the regions to refresh, by element; everything means all.
   var pending = [];
   var everything = false;
 
-  function setStatus(online) {
-    if (!status) {
+  function setStatus(isOnline) {
+    online = isOnline;
+    render();
+  }
+
+  // working reports whether anything on the page says afk is busy on it. A
+  // region marks that with data-working="true", so it changes with the
+  // swapped-in regions and is looked at again after every swap.
+  function working() {
+    return document.querySelector('[data-working="true"]') !== null;
+  }
+
+  function render() {
+    if (online === null) {
       return;
     }
-    status.hidden = false;
-    status.className = online ? 'live' : 'live live--offline';
-    status.textContent = online ? 'Live' : "Can't reach afk, retrying";
+    var cls = 'live live--offline';
+    var text = "Can't reach afk, retrying";
+    if (online && working()) {
+      cls = 'live live--working';
+      text = 'Working';
+    } else if (online) {
+      cls = 'live';
+      text = 'Live';
+    }
+    indicators.forEach(function (el) {
+      el.hidden = false;
+      el.className = el.hasAttribute('data-live-mirror') ? cls + ' topnav__live' : cls;
+      el.textContent = text;
+    });
   }
 
   function regions() {
@@ -75,6 +105,7 @@
         wanted.forEach(function (old) {
           swap(old, doc);
         });
+        render();
       })
       .catch(function () {
         // A failed fetch changes nothing on screen and never navigates; the
