@@ -1768,6 +1768,7 @@ Both this plan and nebari's must pass the checker with no errors, unchanged.
   the prompts are fixed here; faults in code are filed in the inbox.
 - **Acceptance:** both plans pass the checker with zero errors; the throwaway project has one task
   merged by the daemon; the write-up names every place the owner had to correct the session.
+- Amended 2026-10-13 (T5.8 done): both real runs happened (`afk plan extend` added M6 here; `afk plan` planned `~/code/todo`, whose T1.1 the daemon merged) and the account is in `docs/decisions.md` under `## T5.8`; nine prompt faults they showed are fixed in the planning skill (plugin 5.7.3) but not yet proven by another session; the critic's prompt now takes a third slot, `{request-changes}`, for the owner's later words, and `brief.md` still is never edited; four code gaps were filed and not fixed (inbox `9pxewe` no tokens recorded for a planning session, `yrww8c` a task's inbox items stay open after it merges, `taa7na` the GitHub login park text, `8szxye` no command records a planning answer), so a later task should not assume `afk tokens` covers planning sessions; plan changes through a pull request (`[planning] via_pr`), a reconcile against a real design system and `afk plan amend --yes` have still not been run for real.
 
 ---
 

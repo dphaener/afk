@@ -38,7 +38,7 @@ Every plan has, whatever the project:
 - **A Decisions table** with one row per settled choice, and **every row that came from the owner profile says so** ("From the owner profile" in the row, with the entry's strength). A row the owner overrode says what the profile said and what was decided instead.
 - **An owner task for anything only the owner can set up**: an account, a secret, a domain name, a machine. Its title carries `(owner)`, its Scope says exactly what to do and where the result goes, and the tasks that need it depend on it. An agent never does these and never waits on them silently. The one owner task not written here is the design task: the `design` phase adds it, with its dependencies, after the critic has read the plan.
 - **When the interface answer is yes, the rule on which document wins**, in the "How to use this document" paragraph, from this first write: "Where this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design system wins on looks." Keep the file's path and the words "wins on behaviour" and "wins on looks" as they are; the gate of the `design` phase looks for them. When the answer is no, the plan does not have the sentence and never mentions a design system.
-- **An early task that gives the repository a CI workflow** that runs the project's tests on every pull request. afk never merges a pull request with no checks, so without this task nothing after it can ship. It is usually `T1.1` or `T1.2`, and every task that opens a pull request depends on it.
+- **An early task that gives the repository a CI workflow** that runs the project's tests on every pull request. afk never merges a pull request with no checks, so without this task nothing after it can ship. It is usually `T1.1` or `T1.2`, and every task that opens a pull request depends on it. Its Acceptance names the commands the workflow runs and says they pass in a fresh clone of the repository; it does not ask the build session to see the workflow pass on a pull request, because afk checks that when it ships the task.
 - **Open questions keyed to the task that needs them.** Anything the owner could not settle, or chose to settle later, is a row in the Open questions table with the ids of the tasks that need the answer in "Needed by". Not a guess written into a task.
 - **A Definition of done** that names the project's own test command and the check the CI task adds.
 
@@ -60,10 +60,10 @@ The file: `.afk/plan/critic.md`. The gate is that `afk plan lint` reports zero e
 **Then the critic.** One Agent call, once the checker is clean:
 
 ```
-Agent(description: "Critic: the draft plan", subagent_type: "afk:reviewer", model: "{the reasoning alias from the model registry}", prompt: "{the critic prompt loaded in this session, with {plan-path} replaced by the plan's path and {brief-path} by .afk/plan/brief.md}")
+Agent(description: "Critic: the draft plan", subagent_type: "afk:reviewer", model: "{the reasoning alias from the model registry}", prompt: "{the critic prompt loaded in this session, with {plan-path} replaced by the plan's path, {brief-path} by .afk/plan/brief.md and {request-changes} as described below}")
 ```
 
-The prompt holds those two paths and nothing else about this session: not the answers, not the glossary, not this conversation. The critic reads the plan and the brief as a stranger would, which is the point; a critic that knows what you meant cannot see what you wrote.
+Before the call, fill `{request-changes}` from `questions.jsonl`: the owner's own later words, quoted exactly, from the answers in which they replaced or widened the request; the word `none` when no answer did. The prompt holds those three things and nothing else about this session: not the other answers, not the glossary, not this conversation. The critic reads the plan and the brief as a stranger would, which is the point; a critic that knows what you meant cannot see what you wrote.
 
 **Each finding is dealt with**, one of two ways:
 
