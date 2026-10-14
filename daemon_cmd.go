@@ -27,6 +27,7 @@ import (
 	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/planpatch"
 	"github.com/dphaener/afk/internal/projectconfig"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
@@ -1203,75 +1204,7 @@ func runDaemonStatus(stdout, stderr io.Writer, env daemonEnv) int {
 // daemonKindText says in plain words what a state kind means. The kinds are
 // the loop's own vocabulary (internal/daemon); an unknown one is shown as it
 // is, so a newer daemon's state still reads under an older binary.
-func daemonKindText(kind string) string {
-	switch kind {
-	case string(daemon.ActLaunch):
-		return "started a task"
-	case string(daemon.ActCreate):
-		return "started the session for a running task again"
-	case string(daemon.ActWait):
-		return "waiting"
-	case string(daemon.ActIdle):
-		return "nothing to start"
-	case string(daemon.ActShip):
-		return "a task is finished and waiting to be shipped"
-	case string(daemon.ActFail):
-		return "a task failed"
-	case string(daemon.ActPark):
-		return "a task is parked until you answer its inbox items"
-	case string(daemon.ActUnpark):
-		return "a parked task is running again"
-	case string(daemon.ActStall):
-		return "a session is asking something at its terminal"
-	case string(daemon.ActHostGone):
-		return "a session has stopped running"
-	case string(daemon.ActStop):
-		return "stopped, because the project cannot be run"
-	case daemon.KindStopped:
-		return "stopped, because the project folder was not found"
-	case daemon.KindBlocked:
-		return "a task is ready, but this machine cannot start agents"
-	case string(daemon.ActShipStep):
-		return "shipping a finished task"
-	case string(daemon.ActOwner):
-		return "the next task is yours to do, and is waiting in your inbox"
-	case string(daemon.ActOwnerDone):
-		return "you confirmed your task, so it is marked done"
-	case string(daemon.ActQuestionHold):
-		return "a task is waiting for you to answer an open question from the plan"
-	case string(daemon.ActQuestionAnswered):
-		return "an open question was answered, so the task it held can start"
-	case string(daemon.ActNoLedger):
-		return "nothing is started, because this project has no task ledger yet"
-	case daemon.KindLineStopped:
-		return "the line is stopped, so no new task will start"
-	case string(daemon.ActRestart):
-		return "restarting a session that stopped answering"
-	case string(daemon.ActRelaunch):
-		return "starting a stopped session again"
-	case string(daemon.ActContinue):
-		return "telling a restarted session to carry on"
-	case string(daemon.ActGiveUp):
-		return "a session could not be recovered; waiting for you"
-	case string(daemon.ActUsageWait):
-		return "nothing new is started, because of the usage limits"
-	case string(daemon.ActLoginWait):
-		return "nothing new is started, because the agent is logged out"
-	case string(daemon.ActUsagePause):
-		return "stopping a session because of the usage limits"
-	case string(daemon.ActUsagePaused):
-		return "a session is paused because of the usage limits"
-	case string(daemon.ActUsageStuck):
-		return "a session that had to pause for usage would not stop; waiting for you"
-	case string(daemon.ActUsageResume):
-		return "starting a session that was paused for usage again"
-	case string(daemon.ActWake):
-		return "waking a session whose agent stopped working"
-	case string(daemon.ActWakeGiveUp):
-		return "a session kept failing after being woken; waiting for you"
-	}
-	return kind
-}
+func daemonKindText(kind string) string { return projectrows.KindText(kind) }
 
 // daemonTaskRunning reports whether a state describes a task whose session is
 // at work, which is when "how long has it been like this" is worth a line.
@@ -1352,14 +1285,7 @@ func agoText(d time.Duration) string {
 // A marker that cannot be read still stops the line (existence is the
 // signal), so it gets the same line without the two things it could not say.
 func stoppedLineText(p daemonProjectStatus) string {
-	s := "Stopped: the line is stopped"
-	if p.StopTask != "" {
-		s += " after " + p.StopTask
-	}
-	if why := strings.TrimRight(strings.TrimSpace(p.StopReason), "."); why != "" {
-		s += ": " + why
-	}
-	return s + fmt.Sprintf(". No new task will start until you run \"afk resume %s\", which clears the stop.", p.Name)
+	return projectrows.StoppedText(p.StopTask, p.StopReason, p.Name)
 }
 
 // renderDaemonStatus builds the whole report. Pure: every time, path and

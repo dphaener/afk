@@ -2,13 +2,13 @@
 ╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
-│   ● Bill╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮ng       │
-│   ● fix-│ type to filter, or press an action's key                                                         │         │
-│   ○ feat│                                                                                                  │         │
-│   ● scra│ n  new session                         — Start a new session from a plan or a branch             │         │
-│   ○ old-│ o  one-off session                     — Start a one-off session with no plan                    │         │
-│         │ p  switch project                      — Switch to another project                               │         │
+│ ▌ ● feat╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
+│   ● Bill│ type to filter, or press an action's key                                                         │ng       │
+│   ● fix-│                                                                                                  │         │
+│   ○ feat│ n  new session                         — Start a new session from a plan or a branch             │         │
+│   ● scra│ o  one-off session                     — Start a one-off session with no plan                    │         │
+│   ○ old-│ p  switch project                      — Switch to another project                               │         │
+│         │ A  all projects                        — this dashboard was started without the project reader   │         │
 │         │ c  clean session                       — Clean the selected session and its worktree             │         │
 │         │ r  restart agent                       — only a stopped or stuck agent can be restarted          │         │
 │         │ l  edit label                          — Give the selected session a display label               │         │

@@ -267,6 +267,42 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputSpawnError,
 		},
 		{
+			name:  "all projects alone",
+			state: modeState{allProjectsOpen: true},
+			want:  inputAllProjects,
+		},
+		{
+			// Reachable: a click on a notification can attach a pane focused
+			// for this project while the screen is open. The screen is what
+			// is on screen, so the rows keep the keyboard.
+			name:  "all projects over focused pane",
+			state: modeState{allProjectsOpen: true, focus: focusRight, view: viewAgent, pane: true},
+			want:  inputAllProjects,
+		},
+		{
+			name:  "all projects over focused detail",
+			state: modeState{allProjectsOpen: true, focus: focusRight, view: viewOverview},
+			want:  inputAllProjects,
+		},
+		{
+			// Load-bearing: the dialog over the screen is how pause and
+			// resume reach its rows.
+			name:  "leader over all projects",
+			state: modeState{leaderOpen: true, allProjectsOpen: true},
+			want:  inputLeader,
+		},
+		{
+			name:  "plan check over all projects",
+			state: modeState{planCheckOpen: true, allProjectsOpen: true},
+			want:  inputPlanCheck,
+		},
+		{
+			// Reachable: a background create can fail while the screen is up.
+			name:  "spawn error over all projects: modal wins",
+			state: modeState{modal: inputSpawnError, allProjectsOpen: true},
+			want:  inputSpawnError,
+		},
+		{
 			name:  "leader over inbox",
 			state: modeState{leaderOpen: true, inboxOpen: true},
 			want:  inputLeader,
@@ -562,6 +598,11 @@ func TestModeSnapshot(t *testing.T) {
 			name: "plan check open",
 			mut:  func(m *Model) { m.planCheckOpen = true },
 			want: modeState{planCheckOpen: true},
+		},
+		{
+			name: "all projects open",
+			mut:  func(m *Model) { m.allProjectsOpen = true },
+			want: modeState{allProjectsOpen: true},
 		},
 		{
 			name: "inbox open over a focused overview",
@@ -953,6 +994,19 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"q in plan check goes to the component", inputPlanCheck, routeConds{}, q, keyDecision{kind: routeComponent}},
 		{"ctrl+space in plan check goes to the component", inputPlanCheck, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
 		{"pgdown in plan check goes to the component", inputPlanCheck, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgDown}, keyDecision{kind: routeComponent}},
+		// The all-projects screen enumerates its keys and ignores the rest,
+		// as detail mode does; the leader is a rule there (pause and resume
+		// act on its rows through the dialog), unlike in the overlays.
+		{"ctrl+space in all projects opens the leader", inputAllProjects, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+c in all projects quits", inputAllProjects, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
+		{"esc in all projects closes", inputAllProjects, routeConds{}, esc, keyDecision{routeAction, actionAllProjectsClose}},
+		{"enter in all projects switches", inputAllProjects, routeConds{}, enter, keyDecision{routeAction, actionAllProjectsSwitch}},
+		{"k in all projects moves up", inputAllProjects, routeConds{}, press('k', "k"), keyDecision{routeAction, actionAllProjectsUp}},
+		{"j in all projects moves down", inputAllProjects, routeConds{}, press('j', "j"), keyDecision{routeAction, actionAllProjectsDown}},
+		{"pgdown in all projects pages", inputAllProjects, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgDown}, keyDecision{routeAction, actionAllProjectsPageDown}},
+		{"home in all projects goes to the top", inputAllProjects, routeConds{}, tea.KeyPressMsg{Code: tea.KeyHome}, keyDecision{routeAction, actionAllProjectsTop}},
+		{"q in all projects is ignored", inputAllProjects, routeConds{}, q, keyDecision{kind: routeIgnored}},
+		{"P in all projects is ignored (pause is under the leader)", inputAllProjects, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
 		{"b in inbox is text (component)", inputInbox, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
 		{"ctrl+t in inbox goes to the component", inputInbox, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
 		{"ctrl+backslash in inbox goes to the component", inputInbox, routeConds{paneOpen: true}, ctrlBackslash, keyDecision{kind: routeComponent}},
@@ -1330,6 +1384,15 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"plan check advertises home", inputPlanCheck, "home"},
 		{"plan check advertises end", inputPlanCheck, "end"},
 		{"plan check advertises ctrl+c", inputPlanCheck, "ctrl+c"},
+		// The all-projects footer names enter, esc, the movement keys and
+		// the leader chords for pause and resume (help-only bindings).
+		{"all projects advertises enter", inputAllProjects, "enter"},
+		{"all projects advertises esc", inputAllProjects, "esc"},
+		{"all projects advertises up", inputAllProjects, "up"},
+		{"all projects advertises down", inputAllProjects, "down"},
+		{"all projects advertises pause", inputAllProjects, "P"},
+		{"all projects advertises resume", inputAllProjects, "U"},
+		{"all projects advertises ctrl+space", inputAllProjects, "ctrl+space"},
 		// The leader is listed by `?` (normal mode's full help), and the
 		// dialog's own gestures are the component's, so this keymap is their
 		// only structured record.

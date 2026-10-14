@@ -187,3 +187,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Inbox segment**: the part of the `afk dash` header that counts the active project's open inbox items and how many of them are blocking a task.
 - **Project location**: the owner profile entry naming the folder under which the dashboard creates a new project typed by name.
 - **Plan line**: the one line in `afk dash` (on the `master-plan` session's overview and the Build tab) that says the planning session's mode, phase and what it waits for.
+- **All-projects screen**: the `afk dash` screen (leader, then `A`) that lists every project the daemon builds, one row each, the ones needing the owner first.
+- **Project row**: one line of the all-projects screen for one project: its name, tasks done of the total, its state, its inbox counts and whether its plan waits for approval; built by `internal/projectrows`.

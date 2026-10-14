@@ -80,7 +80,14 @@ func (m Model) View() tea.View {
 	// "m.pane != nil" is not the same question — a hidden pane leaves the handle
 	// live while the detail view is drawn.
 	var paneShown bool
-	if !m.hasActiveProject() {
+	if m.allProjectsOpen {
+		// The all-projects screen takes the whole body, the list's and the
+		// detail side's place alike, whether or not a project is active: it
+		// lists the projects in config.toml, which a dashboard started
+		// outside any project can still show. A pane stays connected behind
+		// it and is simply not drawn, so no cursor is placed.
+		body = m.renderAllProjects()
+	} else if !m.hasActiveProject() {
 		// hasActiveProject is false only for a launch outside any repo with no
 		// scan result yet — zero known projects, nothing to list or show detail
 		// for — so the whole two-region split is replaced by one explanatory
