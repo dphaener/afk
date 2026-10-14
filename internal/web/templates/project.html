@@ -1,35 +1,74 @@
 {{define "title"}}{{.Name}}{{end}}
 {{define "content"}}
-<h1>{{.Name}}</h1>
-<div id="summary" data-live="ledger pause sessions planning" data-project="{{.Name}}">
-{{if .Problem}}<p class="warn">Problem: {{.Problem}}</p>{{end}}
-{{if .Paused}}<p class="warn">Paused. Nothing new will start until you resume.</p>{{end}}
-{{with .Stopped}}<p class="warn">Stopped{{if .Task}} at {{.Task}}{{end}}{{if .Reason}}: {{.Reason}}{{end}}</p>{{end}}
-{{with .Current}}
-<p>Working on <strong>{{.Task}}</strong>{{if .Title}}: {{.Title}}{{end}}<br>
-<span class="muted">{{.Phase}}{{if .WaitingOn}} (waiting for {{range $i, $w := .WaitingOn}}{{if $i}}, {{end}}{{$w}}{{end}}){{end}}</span></p>
-{{else}}<p class="muted">No task is running right now.</p>{{end}}
-<p>{{.Done}} of {{.Total}} tasks done.<br><span class="muted">Last ship: {{.LastShip.Text}}</span></p>
-<p><a href="/p/{{pe .Name}}/plan">Read the plan</a></p>
-{{with .State}}<p class="muted">Daemon: {{.Kind}}{{if .Reason}} - {{.Reason}}{{end}}{{if .At}} ({{when .At}}){{end}}</p>{{end}}
+{{- $name := .Name}}{{with .Page}}
+<div class="project">
+<div class="project__head">
+  <h1>{{$name}}</h1>
+  <span class="project__head-badge" id="project-badge" data-live="ledger pause sessions planning inbox" data-project="{{$name}}"><span class="badge {{.Badge.Class}}">{{.Badge.Word}}</span></span>
 </div>
 
-{{$resume := false}}{{if or .Paused .Stopped}}{{$resume = true}}{{end}}
-<p><a class="btn btn--secondary" href="/p/{{pe .Name}}/confirm/{{if $resume}}resume{{else}}pause{{end}}" data-confirm="{{if $resume}}confirm-resume{{else}}confirm-pause{{end}}">{{if $resume}}Resume project&hellip;{{else}}Pause project&hellip;{{end}}</a></p>
-{{template "confirm-sheet" (sheet .Name $resume)}}
+<section class="project__state" aria-live="polite" aria-label="State of {{$name}}">
+<div class="card" id="project-state" data-live="ledger pause sessions planning inbox" data-project="{{$name}}"{{if .Working}} data-working="true"{{end}}>
+  <div class="row__top"><span class="badge {{.Badge.Class}} project__card-badge">{{.Badge.Word}}</span> <time class="meta" data-updated datetime="{{.Updated}}">Updated just now</time></div>
+  <h2>{{.Headline}}</h2>
+  {{with .Detail}}<p>{{.}}</p>{{end}}
+  {{with .Problem}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+  {{with $.Inbox.Problem}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+  {{with $.Inbox.Unreadable}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}} inbox file{{if ne . 1}}s{{end}} could not be read and {{if eq . 1}}is{{else}}are{{end}} not counted.</div></div>{{end}}
+  {{template "progress" .}}
+  {{with .Action}}<div class="btn-row"><a class="btn btn--primary" href="{{.Href}}"{{with .Confirm}} data-confirm="{{.}}"{{end}}>{{.Label}}</a></div>{{end}}
+</div>
+</section>
 
-<h2 id="inbox">Inbox</h2>
-<div id="inbox-list" data-live="inbox" data-project="{{.Name}}" aria-live="polite">
-{{if .Inbox.Problem}}<p class="warn">{{.Inbox.Problem}}</p>{{end}}
-{{if .Inbox.Unreadable}}<p class="warn">{{.Inbox.Unreadable}} inbox file{{if ne .Inbox.Unreadable 1}}s{{end}} could not be read and {{if eq .Inbox.Unreadable 1}}is{{else}}are{{end}} not listed.</p>{{end}}
-<ul class="stack">
-{{range .Inbox.Items}}
-  <li class="card"><a href="/p/{{pe $.Name}}/inbox/{{pe .ID}}">{{.Title}}</a><br>
-  <span class="muted">{{.Kind}}{{if .Task}}, {{.Task}}{{end}}:
-  {{if .Open}}{{if .Blocking}}<span class="warn">open, blocking</span>{{else}}open{{end}}{{else}}answered{{end}}</span></li>
-{{else}}
-  <li class="muted">The inbox is empty.</li>
+<div class="project__running" id="project-running" data-live="sessions ledger" data-project="{{$name}}">
+{{- with .Running}}
+<section class="section" aria-labelledby="running-title">
+  <div class="section-head"><h2 class="section-head__title" id="running-title">Running now</h2></div>
+  <ul class="list">
+  {{range .}}<li><div class="row">
+    <span class="row__main">
+      <span class="row__top">{{if .Task}}<span class="tid">{{.Task}}</span> <span class="row__title">{{.Title}}</span>{{else}}<span class="tid">{{.Session}}</span>{{end}}</span>
+      <span class="row__meta">{{if .Task}}Session {{.Session}} · {{end}}{{.Phase}}</span>
+    </span>
+  </div></li>
+  {{end}}</ul>
+</section>
+{{- end -}}
+</div>
+
+<div class="project__pause" id="project-pause" data-live="pause" data-project="{{$name}}">
+  <a class="btn btn--secondary" href="/p/{{pe $name}}/confirm/{{if .Resume}}resume{{else}}pause{{end}}" data-confirm="{{if .Resume}}confirm-resume{{else}}confirm-pause{{end}}">{{if .Resume}}Resume project&hellip;{{else}}Pause project&hellip;{{end}}</a>
+</div>
+
+<div class="project__side">
+<div id="project-plan" data-live="planning" data-project="{{$name}}">
+  <ul class="list">
+  <li>{{with .Plan}}<a class="row" href="{{.Href}}">
+    <span class="row__main">
+      <span class="row__top"><span class="row__title">{{.Label}}</span>{{if .Badge.Word}} <span class="badge {{.Badge.Class}}">{{.Badge.Word}}</span>{{end}}</span>
+      {{with .Meta}}<span class="row__meta">{{.}}</span>{{end}}
+    </span>
+    <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+  </a>{{end}}</li>
+  </ul>
+</div>
+
+<nav aria-label="Pages of {{$name}}">
+<div class="nav-list" id="project-nav" data-live="inbox ledger" data-project="{{$name}}">
+{{range .Nav}}  <a class="nav-item" href="{{.Href}}"><span>{{.Label}}</span>{{if .CountSet}}<span class="count{{if .Quiet}} count--quiet{{end}}">{{.Count}}</span>{{else if .Hint}}<span class="meta">{{.Hint}}</span>{{end}}</a>
+{{end}}</div>
+</nav>
+
+<dl class="kv">
+  <dt>Folder</dt><dd class="path">{{.Folder}}</dd>
+  <dt>Repository</dt><dd>{{.Repository}}</dd>
+</dl>
+</div>
+</div>
+
+{{/* Both sheets, outside every live region: the Pause/Resume link swaps with
+     the pause part, and the sheet it opens must already be on the page. */}}
+{{template "confirm-sheet" (sheet $name false)}}
+{{template "confirm-sheet" (sheet $name true)}}
 {{end}}
-</ul>
-</div>
 {{end}}

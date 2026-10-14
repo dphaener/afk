@@ -3,7 +3,8 @@
   <h2 class="confirm-sheet__title" id="{{.ID}}-title">{{.Title}}</h2>
   <p class="confirm-sheet__body" id="{{.ID}}-body">{{.Body}}</p>
   <div class="btn-row">
-    <form method="{{.Method}}" action="{{.Path}}">
+    <form method="{{.Method}}" action="{{.Path}}" data-enhance>
+      <input type="hidden" name="confirm" value="yes">
       <button type="submit" class="btn {{if .Danger}}btn--danger{{else}}btn--primary{{end}}" data-loading-label="{{.Loading}}">{{.Action}}</button>
     </form>
     <form method="dialog">
@@ -12,3 +13,8 @@
   </div>
 </dialog>
 {{end}}
+
+{{/* progress is tasks done of total, for any view with Done and Total. It is
+     a native <progress> so the fill needs no style attribute and the browser
+     gives it the progressbar role; drawn only when there is a total. */}}
+{{define "progress"}}{{if .Total}}<span class="progress"><progress class="progress__track" max="{{.Total}}" value="{{.Done}}" aria-label="{{.Done}} of {{.Total}} tasks done"></progress><span class="progress__label" aria-hidden="true">{{.Done}} of {{.Total}}</span></span>{{end}}{{end}}

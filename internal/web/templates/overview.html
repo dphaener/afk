@@ -44,7 +44,7 @@
   <div class="card"{{if .Live}} id="selected-{{pe .Name}}" data-live="inbox ledger pause sessions planning" data-project="{{.Name}}"{{if .Working}} data-working="true"{{end}}{{end}}>
     <div class="row__top"><h2>{{.Name}}</h2> <span class="badge {{.Badge.Class}}">{{.Badge.Word}}</span>{{if .Extra.Word}} <span class="badge {{.Extra.Class}}">{{.Extra.Word}}</span>{{end}}</div>
     {{if .Task}}<p><span class="tid">{{.Task}}</span> {{.Title}}<br><span class="muted">{{.Phase}}</span></p>{{else}}<p>{{.Detail}}</p>{{end}}
-    {{template "overview-progress" .}}
+    {{template "progress" .}}
     {{with .Inbox}}<p class="meta">{{.}}</p>{{end}}
     <div class="btn-row"><a class="btn btn--secondary" href="{{.Href}}">Open {{.Name}}</a></div>
   </div>
@@ -57,10 +57,8 @@
     <span class="row__main">
       <span class="row__top"><span class="row__title">{{.Name}}</span> <span class="badge {{.Badge.Class}}">{{.Badge.Word}}</span>{{if .Extra.Word}} <span class="badge {{.Extra.Class}}">{{.Extra.Word}}</span>{{end}}</span>
       <span class="row__sub">{{if .Task}}<span class="tid">{{.Task}}</span> {{.Phase}}{{else}}{{.Detail}}{{end}}</span>
-      {{template "overview-progress" .}}
+      {{template "progress" .}}
       {{with .Inbox}}<span class="row__meta">{{.}}</span>{{end}}
     </span>
     <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
   </a>{{end}}
-
-{{define "overview-progress"}}{{if .Total}}<span class="progress"><progress class="progress__track" max="{{.Total}}" value="{{.Done}}" aria-label="{{.Done}} of {{.Total}} tasks done"></progress><span class="progress__label" aria-hidden="true">{{.Done}} of {{.Total}}</span></span>{{end}}{{end}}

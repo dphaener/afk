@@ -199,3 +199,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Confirm sheet**: the native dialog the web page opens before Pause or Resume, with a safe choice that changes nothing; its no-JavaScript twin is the page `GET /p/<project>/confirm/{pause|resume}`.
 - **Toast**: the short notice on a project's page after a change, read from a whitelisted `?done=` code and gone after five seconds.
 - **Live indicator**: the bar's word for the page's stream: Live, Working (the stream is up and a part says afk is busy on a task) or "Can't reach afk, retrying".
+- **Inbox screen**: the web page's own page for a project's inbox, `GET /p/<project>/inbox`, listing open items blocking first; an answer returns to it.
+- **Confirm field**: the `confirm=yes` form field (or `{"confirm": true}` in JSON) a pause or resume POST must carry; without it the POST changes nothing.

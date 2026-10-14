@@ -1,34 +1,40 @@
 {{define "title"}}{{.Title}}{{end}}
 {{define "content"}}
-<p><a href="/p/{{pe .Project}}#inbox">Back to {{.Project}}</a></p>
-<h1>{{.Title}}</h1>
-<p class="muted">{{.Kind}}{{if .Task}}, task {{.Task}}{{end}}{{if .Blocking}}, <span class="warn">blocking work</span>{{end}}{{if .CreatedAt}}. Raised {{when .CreatedAt}}{{end}}.</p>
-{{if .Body}}<pre>{{.Body}}</pre>{{end}}
-{{if .Assumed}}<p><strong>If you do not answer, afk assumes:</strong></p><pre>{{.Assumed}}</pre>{{end}}
+<div class="stack">
+<div class="row__top">{{if .Blocking}}{{if .Open}}<span class="badge badge--blocking">Blocking</span> {{end}}{{end}}{{if .Task}}<span class="tid">{{.Task}}</span>{{end}}</div>
+<h2>{{.Title}}</h2>
+{{if .Body}}<p class="prose item-body">{{.Body}}</p>{{end}}
+{{if .Assumed}}<p><strong>If you do not answer, afk assumes:</strong></p><p class="prose item-body">{{.Assumed}}</p>{{end}}
+<p class="meta">{{.Page.Meta}}</p>
+<div aria-live="polite"><p class="meta" id="item-status" data-live="inbox" data-project="{{.Project}}">{{if .Open}}Waiting for your answer{{else}}Answered{{end}}</p></div>
 {{if .Open}}
-<form method="post" action="/p/{{pe .Project}}/inbox/{{pe .ID}}/answer" class="stack">
-  {{if .Options}}
-  <fieldset>
-  <legend class="field__label">Choose one, or write your own answer below.</legend>
-  <div class="choice-list">
-  {{$rec := .Recommended}}
-  {{range $i, $o := .Options}}
-  <label class="choice"><input type="radio" name="choice" value="{{$o}}"{{if eq $o $rec}} checked{{end}}> <span class="choice__label">{{$o}}{{if eq $o $rec}} (recommended){{end}}</span></label>
+<form method="post" action="/p/{{pe .Project}}/inbox/{{pe .ID}}/answer" class="stack" data-enhance data-answer-form>
+  {{if .Page.OwnerTask}}
+  <input type="hidden" name="answer" value="done">
+  <div class="btn-row"><button type="submit" class="btn btn--primary">Mark as done</button></div>
+  {{else}}
+  {{if .Page.Options}}
+  <h3>Your answer</h3>
+  <div class="item-options">
+  {{range .Page.Options}}
+  <button type="submit" class="option{{if .Recommended}} option--recommended{{end}}" name="choice" value="{{.Value}}" aria-pressed="false" data-option><span class="option__top">{{.Value}}{{if .Recommended}}<span class="option__mark">Recommended</span>{{end}}</span></button>
   {{end}}
   </div>
-  </fieldset>
-  <div class="field"><label class="field__label" for="answer">Or write your own</label><input class="input" type="text" id="answer" name="answer" autocomplete="off"></div>
+  <div class="field"><label class="field__label" for="answer">Or write your own</label>
+  <textarea class="textarea" id="answer" name="answer" rows="4"></textarea></div>
   {{else}}
   <div class="field"><label class="field__label" for="answer">Your answer</label>
   <textarea class="textarea" id="answer" name="answer" rows="5" required></textarea></div>
   {{end}}
-  <div class="btn-row"><button type="submit" class="btn btn--primary">Send answer</button></div>
+  <div class="btn-row"><button type="submit" class="btn btn--primary" data-send>Send answer</button></div>
+  {{end}}
 </form>
 {{else}}
 <div class="card">
-  <strong>Answer:</strong>
-  <pre>{{.Answer}}</pre>
+  <strong>Answer</strong>
+  <p class="prose item-body">{{.Answer}}</p>
   <span class="muted">Given {{when .AnsweredAt}}{{if .AnsweredVia}} through {{.AnsweredVia}}{{end}}.</span>
 </div>
 {{end}}
+</div>
 {{end}}

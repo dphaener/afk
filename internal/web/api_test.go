@@ -6,12 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
@@ -30,6 +32,8 @@ const (
 	idBlocking = "abc234"
 	idOptions  = "def567"
 	idAnswered = "ghj892"
+	// idOwner is the owner-task item seedOwnerTask adds.
+	idOwner = "uvw789"
 )
 
 var testNow = time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
@@ -85,6 +89,9 @@ type rig struct {
 	// would: already built and sorted. The rig starts with one row per
 	// project (rigRows); a test that wants other rows replaces it.
 	rows []projectrows.Row
+	// repository is what the fake Repository says for project "app"; every
+	// other folder has none.
+	repository string
 }
 
 // rigRows is the rows the daemon's seam would build for the rig's two
@@ -237,7 +244,13 @@ func newRig(t *testing.T, cfg Config) *rig {
 			return err
 		},
 		ProjectRows: func() []projectrows.Row { return rg.rows },
-		Now:         func() time.Time { return testNow },
+		Repository: func(root string) string {
+			if root != rg.root {
+				return ""
+			}
+			return rg.repository
+		},
+		Now: func() time.Time { return testNow },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -267,6 +280,17 @@ func (rg *rig) seedInbox() {
 	}
 	if _, err := st.Answer(idAnswered, "seen", inbox.ViaCLI); err != nil {
 		rg.t.Fatalf("answering the seeded item: %v", err)
+	}
+}
+
+// seedOwnerTask adds the blocking item afk raises for a task only the owner
+// can do. It is separate from seedInbox so the counts the other tests assert
+// (open, blocking, answered) stay what they are.
+func (rg *rig) seedOwnerTask() {
+	rg.t.Helper()
+	st := inbox.Store{Dir: inbox.Dir(rg.root), Now: func() time.Time { return testNow.Add(-time.Hour) }, NewID: func() string { return idOwner }}
+	if _, err := st.Add(inbox.NewItem{Task: "T1.2", Session: "t1-2", Kind: "external_action", Blocking: true, Title: daemon.OwnerTitlePrefix + "T1.2", Body: "Create the account.\nThen come back."}); err != nil {
+		rg.t.Fatalf("seeding the owner task: %v", err)
 	}
 }
 
@@ -440,6 +464,11 @@ func TestAPIGets(t *testing.T) {
 				wantKeys(t, m, append(summaryKeys, "inbox")...)
 				if m["name"] != "app" {
 					t.Errorf("name = %v", m["name"])
+				}
+				// The project screen's layout is page-only: the JSON has
+				// exactly the summary's keys and the inbox, as before it.
+				if len(m) != len(summaryKeys)+1 {
+					t.Errorf("project has %d keys, want %d: %s", len(m), len(summaryKeys)+1, dump(m))
 				}
 				box := m["inbox"].(map[string]any)
 				wantKeys(t, box, "items", "unreadable", "problem")
@@ -803,7 +832,7 @@ func TestPauseResume(t *testing.T) {
 			if tc.setup != nil {
 				tc.setup(rg)
 			}
-			rec := rg.do(http.MethodPost, tc.path, "", "")
+			rec := rg.do(http.MethodPost, tc.path, "application/json", `{"confirm":true}`)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d\n%s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
@@ -1188,5 +1217,70 @@ func TestPlanWithoutAReader(t *testing.T) {
 	// With no review list either, the overview has an empty one, not null.
 	if rv, ok := decode(t, authReq{target: "/api/", bearer: testToken}.send(h))["reviews"].([]any); !ok || len(rv) != 0 {
 		t.Errorf("reviews is not an empty list")
+	}
+}
+
+// TestPauseResumeNeedsConfirm: load-bearing rows are the empty body and
+// {"confirm":false}, which used to pause the project. None may call Pause or
+// Resume or change the paused flag, and each answers 400 with the sentence.
+func TestPauseResumeNeedsConfirm(t *testing.T) {
+	tests := []struct {
+		name, path, contentType, body string
+		startPaused                   bool
+	}{
+		{name: "pause with no body", path: "/api/p/app/pause"},
+		{name: "pause with confirm false", path: "/api/p/app/pause", contentType: "application/json", body: `{"confirm":false}`},
+		{name: "pause with confirm as text", path: "/api/p/app/pause", contentType: "application/json", body: `{"confirm":"yes"}`},
+		{name: "pause with a form confirm=no", path: "/api/p/app/pause", contentType: "application/x-www-form-urlencoded", body: "confirm=no"},
+		{name: "resume with no body", path: "/api/p/app/resume", startPaused: true},
+		{name: "resume with confirm false", path: "/api/p/app/resume", contentType: "application/json", body: `{"confirm":false}`, startPaused: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tc.startPaused {
+				must(t, daemonstate.Pause(rg.root, testNow))
+			}
+			rec := rg.do(http.MethodPost, tc.path, tc.contentType, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400\n%s", rec.Code, rec.Body.String())
+			}
+			if msg, _ := decode(t, rec)["error"].(string); !strings.Contains(msg, "Nothing changed") {
+				t.Errorf("error = %q", msg)
+			}
+			if len(rg.paused)+len(rg.resumed) != 0 || daemonstate.Paused(rg.root) != tc.startPaused {
+				t.Errorf("pause calls %v, resume calls %v, paused = %v", rg.paused, rg.resumed, daemonstate.Paused(rg.root))
+			}
+		})
+	}
+}
+
+// TestConfirmed is the pure decision. Load-bearing rows: a JSON body is read
+// only as JSON (a form-looking value does not count), and a form needs the
+// exact value yes.
+func TestConfirmed(t *testing.T) {
+	tests := []struct {
+		name, ct, json string
+		form           url.Values
+		want           bool
+	}{
+		{name: "form yes", form: url.Values{"confirm": {"yes"}}, want: true},
+		{name: "form no", form: url.Values{"confirm": {"no"}}},
+		{name: "form true is not yes", form: url.Values{"confirm": {"true"}}},
+		{name: "form empty", form: url.Values{}},
+		{name: "nil form", form: nil},
+		{name: "json true", ct: "application/json", json: `{"confirm":true}`, want: true},
+		{name: "json false", ct: "application/json", json: `{"confirm":false}`},
+		{name: "json string", ct: "application/json", json: `{"confirm":"yes"}`},
+		{name: "json broken", ct: "application/json", json: `{`},
+		{name: "json empty", ct: "application/json"},
+		{name: "json ignores the form", ct: "application/json", json: `{}`, form: url.Values{"confirm": {"yes"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := confirmed(tc.ct, tc.form, []byte(tc.json)); got != tc.want {
+				t.Errorf("confirmed = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

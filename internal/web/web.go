@@ -135,6 +135,14 @@ type Deps struct {
 	// pure part), and the page must never read config.toml itself: the
 	// daemon owns that list. Nil means no rows, like Projects.
 	ProjectRows func() []projectrows.Row
+	// Repository says where the project at root is pushed: its origin's
+	// address with any user name and password taken out, or "" when there
+	// is none or it cannot be read. The page shows it under Repository on
+	// the project screen. It is a seam because finding it runs git, which
+	// this package never does itself; the daemon's version is bounded by a
+	// short timeout so a stuck git cannot hold a page request. Nil means
+	// the page says "None set".
+	Repository func(root string) string
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see

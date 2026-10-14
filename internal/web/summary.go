@@ -3,12 +3,15 @@ package web
 import (
 	"fmt"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectrows"
 )
 
@@ -494,4 +497,379 @@ func overviewPageFor(rows []RowView, reviews []ReviewView) overviewPage {
 		p.Empty = true
 	}
 	return p
+}
+
+// inboxPage is the inbox screen laid out: the open items as rows (blocking
+// first, as the store lists them), the answered ones for the fold, and the
+// count behind the "hold a task up" notice.
+type inboxPage struct {
+	Open     []inboxRow
+	Answered []inboxRow
+	// Blocking is how many open items hold a task up.
+	Blocking int
+	// Notice is the sentence for the attention notice, or "" for none.
+	Notice string
+}
+
+// inboxRow is one item as a row of the list.
+type inboxRow struct {
+	Href     string
+	Title    string
+	Task     string
+	Blocking bool
+	// Meta is the source (kind in words, plus the session when set) and the
+	// age, joined with a middle dot.
+	Meta string
+}
+
+// kindWords says an item's kind in words for a row; a kind this does not
+// know is shown as it is stored, so nothing is hidden.
+func kindWords(kind string) string {
+	switch kind {
+	case "question":
+		return "Question"
+	case "env_var":
+		return "Setting needed"
+	case "external_action":
+		return "Your task"
+	case "verification":
+		return "Check needed"
+	case "failure":
+		return "Failure"
+	case "notice":
+		return "Notice"
+	}
+	return kind
+}
+
+// inboxPageFor lays out a project's items for the inbox screen. now is
+// passed in so the ages are table-testable.
+func inboxPageFor(project string, items []inbox.Item, now time.Time) inboxPage {
+	var pg inboxPage
+	open := 0
+	for _, it := range items {
+		meta := itemMeta(it, now)
+		row := inboxRow{Href: "/p/" + url.PathEscape(project) + "/inbox/" + url.PathEscape(it.ID), Title: it.Title, Task: it.Task, Blocking: it.Blocking && it.Open(), Meta: meta}
+		if it.Open() {
+			open++
+			if it.Blocking {
+				pg.Blocking++
+			}
+			pg.Open = append(pg.Open, row)
+		} else {
+			pg.Answered = append(pg.Answered, row)
+		}
+	}
+	if pg.Blocking > 0 {
+		pg.Notice = fmt.Sprintf("%d of %d hold a task up", pg.Blocking, open)
+	}
+	return pg
+}
+
+// itemMeta is the source (kind in words, plus the session when set) and the
+// age of an item, joined with a middle dot. The age counts from when the
+// item was raised while it is open and from its answer once it is answered.
+func itemMeta(it inbox.Item, now time.Time) string {
+	at := it.CreatedAt
+	if !it.Open() {
+		at = it.AnsweredAt
+	}
+	meta := kindWords(it.Kind)
+	if it.Session != "" {
+		meta += " from " + it.Session
+	}
+	if t, err := time.Parse(time.RFC3339, at); err == nil {
+		if ago := since(t, now); ago != "" {
+			meta += " · " + ago
+		}
+	}
+	return meta
+}
+
+// itemPage is the item screen laid out. It is page-only (ItemView.Page is
+// left out of the JSON).
+type itemPage struct {
+	// Meta is the source and age line.
+	Meta string
+	// OwnerTask is true for the task only the owner can do: the page shows
+	// the body as the instruction and a Mark as done button, not options.
+	OwnerTask bool
+	// Options is the options with the recommended one first and Recommended
+	// saying which one that is. A recommended value that is not one of the
+	// options is ignored, so no button is marked that does not exist.
+	Options []itemOption
+}
+
+// itemOption is one answer button.
+type itemOption struct {
+	Value       string
+	Recommended bool
+}
+
+// itemPageFor lays out one item. now is passed in so the age is
+// table-testable.
+func itemPageFor(it inbox.Item, now time.Time) itemPage {
+	pg := itemPage{Meta: itemMeta(it, now), OwnerTask: isOwnerTask(it)}
+	if pg.OwnerTask {
+		return pg
+	}
+	for _, o := range it.Options {
+		if o == it.Recommended {
+			pg.Options = append([]itemOption{{Value: o, Recommended: true}}, pg.Options...)
+			continue
+		}
+		pg.Options = append(pg.Options, itemOption{Value: o})
+	}
+	return pg
+}
+
+// projectPage is the project screen laid out (docs/design-system.md §3
+// "Project"). It is page-only: ProjectView.Page is left out of the JSON, so
+// GET /api/p/{project} answers exactly as it did before the screen existed.
+type projectPage struct {
+	Name string
+	// Badge is the state badge. Headline is the card's h2 in words and
+	// Detail its one line under it.
+	Badge    badgeView
+	Headline string
+	Detail   string
+	// Problem is the summary's problem in full, shown as an error notice
+	// when the detail line does not already say it.
+	Problem string
+	// Updated is the time of this read in RFC 3339, for <time datetime>.
+	Updated     string
+	Done, Total int
+	// Action is the one next action, or nil when there is none.
+	Action *projectAction
+	// Working marks a running build, for the live indicator's Working.
+	Working bool
+	// Running is one row per session whose host runs.
+	Running []runningRow
+	// Resume is true when the Pause/Resume button resumes.
+	Resume bool
+	Plan   planRow
+	Nav    []navItem
+	// Folder and Repository are the kv; Repository is "None set" when the
+	// project has no origin.
+	Folder, Repository string
+}
+
+// projectAction is the state card's primary button. Confirm names the
+// confirm sheet the link opens when the script runs; Href is where it goes
+// without it (the no-JS confirm page for Resume).
+type projectAction struct {
+	Label, Href, Confirm string
+}
+
+// runningRow is one running session under Running now. Task and Title are
+// set when the session is the one the current task runs in.
+type runningRow struct {
+	Session, Task, Title, Phase string
+}
+
+// planRow is the Plan row: what the plan is doing and where it leads.
+// Badge is drawn when its Word is set.
+type planRow struct {
+	Label, Meta, Href string
+	Badge             badgeView
+}
+
+// navItem is one nav-list link. Count is drawn as a count pill (Quiet for
+// zero) when CountSet; Hint is plain text otherwise.
+type navItem struct {
+	Label, Href string
+	Hint        string
+	Count       int
+	CountSet    bool
+	Quiet       bool
+}
+
+// projectPageInput is everything projectPageFor reads. The handler does the
+// reading and passes the results in, so every branch is a table row.
+type projectPageInput struct {
+	Summary ProjectSummary
+	// Row is the project's all-projects row from Deps.ProjectRows, or nil
+	// when there is no seam or no row for it; the words then come from the
+	// summary alone (summaryRow).
+	Row *projectrows.Row
+	// PlanWaiting is whether the project's plan waits for approval.
+	PlanWaiting bool
+	// Planning is state.json of the planning session as ReadState gave it:
+	// the state, whether the file exists, and why it could not be read.
+	Planning    plansession.State
+	PlanningOK  bool
+	PlanningErr error
+	Sessions    []SessionView
+	// Items is the project's inbox, for the headline's words.
+	Items              []inbox.Item
+	Folder, Repository string
+	Now                time.Time
+}
+
+// noRepository is what the kv says for a project with no origin.
+const noRepository = "None set"
+
+// projectPageFor lays out the project screen. Pure.
+//
+// The state, its badge and its detail line come from the project's
+// all-projects row, so the screen says what the home page's row says. With no
+// row (no seam, or a project the seam has not listed yet) the same row is
+// built from the summary with projectrows.Build, so the words are still
+// projectrows' own and never a second set kept here.
+func projectPageFor(in projectPageInput) projectPage {
+	sum := in.Summary
+	row := summaryRow(sum, in.PlanWaiting)
+	if in.Row != nil {
+		row = *in.Row
+	}
+	base := "/p/" + url.PathEscape(sum.Name)
+	pg := projectPage{
+		Name:   sum.Name,
+		Badge:  stateBadge(row.State),
+		Detail: row.Detail,
+		Done:   sum.Done, Total: sum.Total,
+		Working: row.State == projectrows.StateRunning,
+		Resume:  sum.Paused || sum.Stopped != nil,
+		Folder:  in.Folder, Repository: in.Repository,
+	}
+	if sum.Problem != "" && sum.Problem != row.Detail {
+		pg.Problem = sum.Problem
+	}
+	if !in.Now.IsZero() {
+		pg.Updated = in.Now.UTC().Format(time.RFC3339)
+	}
+	if pg.Repository == "" {
+		pg.Repository = noRepository
+	}
+
+	// The headline names what needs the owner first: a task held up by the
+	// inbox is the one thing on this screen they can unblock.
+	switch {
+	case sum.OpenBlocking > 0:
+		pg.Headline = blockingHeadline(in.Items)
+	case row.State == projectrows.StateRunning && row.Task != "":
+		pg.Headline = "Building " + row.Task
+	case row.State == projectrows.StatePaused:
+		pg.Headline = "Paused by you"
+	default:
+		pg.Headline = pg.Badge.Word
+	}
+
+	// The one next action, in the order the task list gives them: answering
+	// unblocks a task now, resuming restarts the line, approving starts a
+	// plan. A paused project with a blocking item is asked to answer first;
+	// the Resume project button below the card is still there.
+	switch {
+	case sum.OpenBlocking > 0:
+		pg.Action = &projectAction{Label: "Answer in the inbox", Href: base + "/inbox"}
+	case pg.Resume:
+		pg.Action = &projectAction{Label: "Resume", Href: base + "/confirm/resume", Confirm: "confirm-resume"}
+	case in.PlanWaiting:
+		pg.Action = &projectAction{Label: "Read and approve the plan", Href: base + "/plan"}
+	}
+
+	for _, sv := range in.Sessions {
+		if !sv.HostRunning {
+			continue
+		}
+		rr := runningRow{Session: sv.Name, Phase: sv.Phase}
+		if sv.Stale || rr.Phase == "" {
+			rr.Phase = PhaseUnknown
+		}
+		if c := sum.Current; c != nil && c.Session != "" && c.Session == sv.Name {
+			rr.Task, rr.Title = c.Task, c.Title
+		}
+		pg.Running = append(pg.Running, rr)
+	}
+
+	pg.Plan = planRow{Label: "Read the plan", Href: base + "/plan"}
+	switch {
+	case in.PlanningErr != nil:
+		pg.Plan.Meta = "The planning session's state could not be read."
+	case in.PlanningOK && !plansession.Finished(in.Planning):
+		pg.Plan.Label = "Planning: " + in.Planning.Mode
+		pg.Plan.Badge = badgeView{Class: "badge--running", Word: in.Planning.Phase}
+	case in.PlanWaiting:
+		pg.Plan.Label = "Plan waiting for your approval"
+	}
+
+	inboxItem := navItem{Label: "Inbox", Href: base + "/inbox", Count: sum.OpenItems, CountSet: true, Quiet: sum.OpenItems == 0}
+	planItem := navItem{Label: "Plan", Href: base + "/plan"}
+	if sum.Total > 0 {
+		planItem.Hint = fmt.Sprintf("%d of %d", sum.Done, sum.Total)
+	}
+	pg.Nav = []navItem{inboxItem, planItem, {Label: "Usage", Href: "/usage"}}
+	return pg
+}
+
+// summaryRow builds the project's row from its summary alone, the way the
+// dashboard builds it from the same files (readDashProjectRow in the root
+// package), for when Deps.ProjectRows has no row to give.
+func summaryRow(sum ProjectSummary, planWaiting bool) projectrows.Row {
+	in := projectrows.Input{
+		Name: sum.Name, HasPlan: true,
+		Done: sum.Done, Total: sum.Total,
+		Paused: sum.Paused, Stopped: sum.Stopped != nil,
+		Open: sum.OpenItems, Blocking: sum.OpenBlocking,
+		PlanWaiting: planWaiting,
+		ReadErr:     sum.Problem,
+	}
+	if sum.Stopped != nil {
+		in.StopTask, in.StopReason = sum.Stopped.Task, sum.Stopped.Reason
+	}
+	if sum.State != nil {
+		in.Kind, in.Reason, in.StateKnown = sum.State.Kind, sum.State.Reason, true
+	}
+	if c := sum.Current; c != nil {
+		in.Task, in.Title = c.Task, c.Title
+		in.Phase = strings.ReplaceAll(c.Phase, "_", " ")
+	}
+	return projectrows.Build(in)
+}
+
+// blockingHeadline is the card's headline when open blocking items hold the
+// build up: "2 questions hold up T3.4". It says "question" only when every
+// one is a question, since a setting or a task of the owner's is not one,
+// and names the task when they all hold up the same one.
+func blockingHeadline(items []inbox.Item) string {
+	n := 0
+	allQuestions := true
+	var tasks []string
+	for _, it := range items {
+		if !it.Open() || !it.Blocking {
+			continue
+		}
+		n++
+		if it.Kind != "question" {
+			allQuestions = false
+		}
+		if it.Task != "" && !slices.Contains(tasks, it.Task) {
+			tasks = append(tasks, it.Task)
+		}
+	}
+	noun := "inbox item"
+	if allQuestions {
+		noun = "question"
+	}
+	subject := "1 " + noun
+	one := n == 1
+	if !one {
+		subject = fmt.Sprintf("%d %ss", n, noun)
+	}
+	switch {
+	case n == 0:
+		// The summary counted a blocking item the list no longer holds
+		// (they are read at the same moment, so this is a race at most).
+		return "Something in the inbox holds a task up"
+	case len(tasks) == 1 && one:
+		return subject + " holds up " + tasks[0]
+	case len(tasks) == 1:
+		return subject + " hold up " + tasks[0]
+	case len(tasks) > 1:
+		return fmt.Sprintf("%s hold up %d tasks", subject, len(tasks))
+	case one:
+		return subject + " needs you"
+	default:
+		return subject + " need you"
+	}
 }

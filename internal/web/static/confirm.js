@@ -55,11 +55,25 @@
     btn.appendChild(document.createTextNode(label));
   });
 
-  var toast = document.querySelector('[data-toast]');
-  if (toast) {
-    setTimeout(function () {
+  var toastTimer = null;
+
+  function armToast() {
+    if (toastTimer !== null) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    var toast = document.querySelector('[data-toast]');
+    if (!toast) {
+      return;
+    }
+    toastTimer = setTimeout(function () {
+      toastTimer = null;
       var region = toast.parentNode;
       (region && region.classList.contains('toast-region') ? region : toast).hidden = true;
     }, TOAST_MS);
   }
+
+  armToast();
+  // A page swapped in by submit.js brings its own toast, timed afresh.
+  document.addEventListener('afk:swapped', armToast);
 })();

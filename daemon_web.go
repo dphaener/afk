@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemon"
@@ -92,6 +95,7 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 			return webPauseError(root, err)
 		},
 		ProjectRows: webProjectRows(projects, stateDir, now),
+		Repository:  webRepository(runGitOutput),
 		PlanChat:    webPlanChat(now),
 		PlanReply:   webPlanReply(now),
 		Now:         now,
@@ -137,6 +141,75 @@ func webProjectRows(projects func() []daemon.Project, stateDir string, now func(
 		projectrows.Sort(rows)
 		return rows
 	}
+}
+
+// repositoryWait bounds the one git call the project page makes per request.
+// git config only reads a file, so it answers in milliseconds; the bound is
+// there for a repository on a hung network mount, which must not hold the
+// page.
+const repositoryWait = 2 * time.Second
+
+// runGitOutput runs git with args and returns what it printed. It is the
+// only part of webRepository that touches the machine.
+func runGitOutput(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "git", args...).Output()
+}
+
+// webRepository is the real version of web.Deps.Repository: the project's
+// origin address, from `git config --get remote.origin.url`, with any user
+// name and password taken out (webRepositoryURL). Any failure (no origin, not
+// a repository, git missing, the timeout) is "", which the page shows as
+// "None set". run is the git call, injected so the test needs no repository.
+func webRepository(run func(ctx context.Context, args ...string) ([]byte, error)) func(root string) string {
+	return func(root string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), repositoryWait)
+		defer cancel()
+		out, err := run(ctx, "-C", root, "config", "--get", "remote.origin.url")
+		if err != nil {
+			return ""
+		}
+		return webRepositoryURL(strings.TrimSpace(string(out)))
+	}
+}
+
+// webRepositoryURL takes the secrets out of a remote's address. Pure.
+//
+// An address with a scheme ("https://user:token@host/x") loses its whole
+// user part, not just a password: on https a lone user name is very often a
+// token (GitHub's "https://<token>@github.com/..." form), and the page has no
+// use for it. An scp-like address ("git@host:owner/repo") keeps a plain user,
+// which is the ssh login and never a secret, but loses one that holds a
+// colon. An address that will not parse is cut at its last "@" rather than
+// shown as it is, so a damaged URL cannot leak its password.
+func webRepositoryURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if i := strings.Index(raw, "://"); i >= 0 {
+		if u, err := url.Parse(raw); err == nil {
+			u.User = nil
+			return u.String()
+		}
+		// A password may hold a "/" (which is what made the parse fail), so
+		// the cut is at the last "@" anywhere after the scheme: a path with
+		// an "@" of its own loses its start, which is the safe way to be
+		// wrong.
+		rest := raw[i+3:]
+		if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+			rest = rest[at+1:]
+		}
+		return raw[:i+3] + rest
+	}
+	// scp-like: [user@]host:path. The user part ends at the last "@" before
+	// the first "/" (a path may hold an "@" of its own).
+	head := raw
+	if j := strings.IndexByte(raw, '/'); j >= 0 {
+		head = raw[:j]
+	}
+	if at := strings.LastIndexByte(head, '@'); at >= 0 && strings.Contains(head[:at], ":") {
+		return raw[at+1:]
+	}
+	return raw
 }
 
 // webPlanChat is the real read behind GET /api/p/{project}/plan/chat.

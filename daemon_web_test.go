@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/state"
+	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
 )
 
@@ -372,7 +374,7 @@ func TestDaemonWebPauseAndResume(t *testing.T) {
 	}
 	for _, st := range steps {
 		t.Run(st.name, func(t *testing.T) {
-			rec := w.post(st.path, st.token, "")
+			rec := w.post(st.path, st.token, "confirm=yes")
 			if rec.Code != st.wantCode {
 				t.Fatalf("POST %s got %d, want %d: %s", st.path, rec.Code, st.wantCode, rec.Body.String())
 			}
@@ -1178,5 +1180,86 @@ func TestWebDepsProjectRowsFromRig(t *testing.T) {
 	rows := deps.ProjectRows()
 	if len(rows) != 1 || rows[0].Name != "demo" {
 		t.Fatalf("rows = %+v, want one row named demo", rows)
+	}
+}
+
+// TestWebRepositoryURL takes the secrets out of a remote's address before the
+// project page shows it. Load-bearing rows: "https with a password" and
+// "https with a token as the user" (both are secrets), "address that will not
+// parse" (a damaged URL still loses its password) and "scp-like with a plain
+// user" (the ssh login is kept: it is not a secret, and dropping it would
+// show an address that does not work).
+func TestWebRepositoryURL(t *testing.T) {
+	tests := []struct{ name, raw, want string }{
+		{"empty", "", ""},
+		{"https", "https://github.com/o/app.git", "https://github.com/o/app.git"},
+		{"https with a password", "https://darin:hunter2@github.com/o/app.git", "https://github.com/o/app.git"},
+		{"https with a token as the user", "https://ghp_secret@github.com/o/app.git", "https://github.com/o/app.git"},
+		{"ssh scheme with a user", "ssh://git@github.com/o/app.git", "ssh://github.com/o/app.git"},
+		{"address that will not parse", "https://u:pa ss/x@host/o/app.git", "https://host/o/app.git"},
+		{"scp-like with a plain user", "git@github.com:o/app.git", "git@github.com:o/app.git"},
+		{"scp-like with a password", "u:hunter2@github.com:o/app.git", "github.com:o/app.git"},
+		{"local path", "/srv/git/app.git", "/srv/git/app.git"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := webRepositoryURL(tc.raw)
+			if got != tc.want {
+				t.Errorf("webRepositoryURL(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+			for _, secret := range []string{"hunter2", "ghp_secret", "pa ss"} {
+				if strings.Contains(got, secret) {
+					t.Errorf("%q leaks %q", got, secret)
+				}
+			}
+		})
+	}
+}
+
+// TestWebRepository is the git call behind web.Deps.Repository, with git
+// faked. Load-bearing rows: "git fails" (no origin is "", which the page
+// shows as None set, never an error) and the deadline check (the call is
+// bounded, so a stuck git cannot hold a page request).
+func TestWebRepository(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		err  error
+		want string
+	}{
+		{name: "origin with a password", out: "https://darin:hunter2@github.com/o/app.git\n", want: "https://github.com/o/app.git"},
+		{name: "plain origin", out: "git@github.com:o/app.git\n", want: "git@github.com:o/app.git"},
+		{name: "git fails", err: errors.New("exit status 1"), want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotArgs []string
+			var deadline time.Duration
+			repo := webRepository(func(ctx context.Context, args ...string) ([]byte, error) {
+				gotArgs = args
+				if d, ok := ctx.Deadline(); ok {
+					deadline = time.Until(d)
+				}
+				return []byte(tc.out), tc.err
+			})
+			if got := repo("/code/app"); got != tc.want {
+				t.Errorf("repository = %q, want %q", got, tc.want)
+			}
+			if want := []string{"-C", "/code/app", "config", "--get", "remote.origin.url"}; !slices.Equal(gotArgs, want) {
+				t.Errorf("git args = %q, want %q", gotArgs, want)
+			}
+			if deadline <= 0 || deadline > repositoryWait {
+				t.Errorf("the git call's deadline is %v away, want at most %v", deadline, repositoryWait)
+			}
+		})
+	}
+}
+
+// TestWebDepsRepositoryWired checks daemonWebDeps fills the Repository seam,
+// so the project page shows an origin and not always "None set".
+func TestWebDepsRepositoryWired(t *testing.T) {
+	deps := daemonWebDeps(func() []daemon.Project { return nil }, t.TempDir(), usagestate.Deps{}, time.Now)
+	if deps.Repository == nil {
+		t.Fatal("daemonWebDeps left Repository nil")
 	}
 }
