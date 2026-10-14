@@ -2849,8 +2849,10 @@ and anyone who wants another key sets it in `config.toml`.
   refuses with a reason: a name bubbles/key would never report, a key with no modifier (a plain letter,
   digit or symbol), and the keys the dashboard keeps for itself without the leader (`enter`, `esc`,
   `ctrl+c`, the movement keys, `tab`). A refused key falls back to ctrl+] and the header shows one line
-  saying what is wrong and what to put in `config.toml`, through the same path as other `[dash]`
-  mistakes. `leaderKey` becomes a value the model holds, so every hint, help line, the dialog's title
+  saying what is wrong and what to put in `config.toml`. The line stays while the dashboard runs; it
+  is not the toast the folder search raises for its own `[dash]` mistakes (§4.6), because a leader
+  that silently differs from the one configured would leave the owner pressing a key that does nothing.
+  `leaderKey` becomes a value the model holds, so every hint, help line, the dialog's title
   and the pass-through name and use the configured key; the pass-through types to the agent what x/vt
   encodes for that key. README: the `[dash]` settings, the leader section, and a note that a key sharing
   a byte with another (ctrl+m with Enter, ctrl+i with Tab, ctrl+h with Backspace, ctrl+[ with Esc) works
