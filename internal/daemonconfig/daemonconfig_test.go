@@ -3,6 +3,7 @@ package daemonconfig
 import (
 	"errors"
 	"io/fs"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -26,9 +27,10 @@ func deps(env map[string]string, files map[string]string) Deps {
 
 const home = "/home/u/.config/afk/config.toml"
 
-// TestPath: the relative-XDG row is load-bearing. It is where this reader
-// (spec rule, shared with usagestate) differs from internal/config, so a
-// regression would silently split the two files across folders.
+// TestPath: the relative-XDG row is load-bearing. The XDG spec says a relative
+// value must be ignored, and internal/usagestate follows the same rule, so a
+// regression here would silently put config.toml and usage.json in different
+// folders.
 func TestPath(t *testing.T) {
 	cases := []struct {
 		name string
@@ -183,10 +185,156 @@ name = "bee"
 			if want.Web == (Web{}) {
 				want.Web = Web{Bind: DefaultWebBind}
 			}
+			if reflect.DeepEqual(want.Dash, Dash{}) {
+				want.Dash = defaultDash()
+			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+// TestLoadDash: every row's file also holds a [daemon] tick and one
+// [[project]], and every row checks that Load's error is nil and that both
+// were read. That is the load-bearing part: the daemon and `afk project`,
+// `afk usage`, `afk pause` and `afk inbox` share this load, so the rows with
+// a bad value ("below the floor", "zero", "negative", "not a duration", the
+// max_depth rows, the wrong-type rows, "dash is a number", "dash is a list of
+// tables", "home unknown") are what stop a typo in a dashboard setting from
+// stopping the build loop. Each of them must give a nil error, the defaults
+// in Dash, and a DashErr naming the file and the key.
+//
+// The wrong-type rows are load-bearing for a second reason: a typed decode of
+// the table would fail the whole file on them, with an error that never
+// reaches loadDash. "at the floor" pins that the limit is inclusive.
+// "max_depth zero" pins that a written 0 is refused and not passed on as
+// "not set" (see Dash.MaxDepth). "relative root" pins that a relative folder
+// stays allowed, unlike a [[project]] path.
+func TestLoadDash(t *testing.T) {
+	rel, err := filepath.Abs("code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := defaultDash()
+	cases := []struct {
+		name   string
+		toml   string
+		noHome bool
+		want   Dash
+		errHas []string // non-empty: DashErr must contain each, Dash is the defaults
+	}{
+		{name: "absent table", toml: "", want: def},
+		{name: "empty table", toml: "[dash]\n", want: def},
+		{name: "search_roots alone", toml: "[dash]\nsearch_roots = [\"/srv/code\"]\n",
+			want: Dash{SearchRoots: []string{"/srv/code"}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth}},
+		{name: "scan_interval alone", toml: "[dash]\nscan_interval = \"30s\"\n",
+			want: Dash{ScanInterval: 30 * time.Second, MaxDepth: DefaultMaxDepth}},
+		{name: "max_depth alone", toml: "[dash]\nmax_depth = 5\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: 5}},
+		{name: "all three", toml: "[dash]\nsearch_roots = [\"/srv/code\", \"/srv/work\"]\nscan_interval = \"2m\"\nmax_depth = 1\n",
+			want: Dash{SearchRoots: []string{"/srv/code", "/srv/work"}, ScanInterval: 2 * time.Minute, MaxDepth: 1}},
+		{name: "empty search_roots", toml: "[dash]\nsearch_roots = []\n", want: def},
+		{name: "unknown key ignored", toml: "[dash]\nfuture = true\nmax_depth = 2\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: 2}},
+		{name: "scan_interval at the floor", toml: "[dash]\nscan_interval = \"1s\"\n",
+			want: Dash{ScanInterval: time.Second, MaxDepth: DefaultMaxDepth}},
+		{name: "scan_interval below the floor", toml: "[dash]\nscan_interval = \"999ms\"\n",
+			errHas: []string{home, "dash.scan_interval", "1s"}},
+		{name: "scan_interval zero", toml: "[dash]\nscan_interval = \"0s\"\n",
+			errHas: []string{home, "dash.scan_interval", "1s"}},
+		{name: "scan_interval negative", toml: "[dash]\nscan_interval = \"-5s\"\n",
+			errHas: []string{home, "dash.scan_interval", "1s"}},
+		{name: "scan_interval not a duration", toml: "[dash]\nscan_interval = \"soon\"\n",
+			errHas: []string{home, "dash.scan_interval", "soon", "not a duration"}},
+		{name: "scan_interval of the wrong type", toml: "[dash]\nscan_interval = 60\n",
+			errHas: []string{home, "dash.scan_interval", "60s"}},
+		{name: "max_depth zero", toml: "[dash]\nmax_depth = 0\n",
+			errHas: []string{home, "dash.max_depth", "1 or more"}},
+		{name: "max_depth negative", toml: "[dash]\nmax_depth = -2\n",
+			errHas: []string{home, "dash.max_depth", "1 or more"}},
+		{name: "max_depth of the wrong type", toml: "[dash]\nmax_depth = \"three\"\n",
+			errHas: []string{home, "dash.max_depth", "three", "whole number"}},
+		{name: "max_depth with a fraction", toml: "[dash]\nmax_depth = 2.5\n",
+			errHas: []string{home, "dash.max_depth", "whole number"}},
+		{name: "a bad key beside good ones gives the defaults", toml: "[dash]\nsearch_roots = [\"/srv/code\"]\nscan_interval = \"30s\"\nmax_depth = 0\n",
+			errHas: []string{home, "dash.max_depth"}},
+		{name: "tilde slash expanded", toml: "[dash]\nsearch_roots = [\"~/code\"]\n",
+			want: Dash{SearchRoots: []string{"/home/u/code"}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth}},
+		{name: "bare tilde expanded", toml: "[dash]\nsearch_roots = [\"~\"]\n",
+			want: Dash{SearchRoots: []string{"/home/u"}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth}},
+		{name: "absolute root cleaned", toml: "[dash]\nsearch_roots = [\"/srv//code/\"]\n",
+			want: Dash{SearchRoots: []string{"/srv/code"}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth}},
+		{name: "relative root made absolute", toml: "[dash]\nsearch_roots = [\"code\"]\n",
+			want: Dash{SearchRoots: []string{rel}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth}},
+		{name: "home unknown with a tilde root", toml: "[dash]\nsearch_roots = [\"/srv/code\", \"~/code\"]\n", noHome: true,
+			errHas: []string{"/x/afk/config.toml", "dash.search_roots[1]", "home"}},
+		{name: "home unknown without a tilde root", toml: "[dash]\nsearch_roots = [\"/srv/code\"]\n", noHome: true,
+			want: Dash{SearchRoots: []string{"/srv/code"}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth}},
+		{name: "search_roots not a list", toml: "[dash]\nsearch_roots = \"/srv/code\"\n",
+			errHas: []string{home, "dash.search_roots", "list"}},
+		{name: "search_roots holds a number", toml: "[dash]\nsearch_roots = [\"/srv/code\", 7]\n",
+			errHas: []string{home, "dash.search_roots[1]"}},
+		{name: "dash is a number", toml: "dash = 5\n",
+			errHas: []string{home, "dash", "[dash]"}},
+		{name: "dash is a list of tables", toml: "[[dash]]\nmax_depth = 2\n",
+			errHas: []string{home, "dash", "[dash]"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// The top-level key of the "dash is a number" row has to come
+			// before any table, so the shared tables go after the row's text.
+			text := c.toml + "\n[daemon]\ntick = \"2s\"\n\n[[project]]\npath = \"/srv/b\"\n"
+			d := deps(nil, map[string]string{home: text})
+			if c.noHome {
+				// With no home the file is found through an absolute
+				// XDG_CONFIG_HOME, the only way Load can still find it.
+				d = deps(map[string]string{"XDG_CONFIG_HOME": "/x"}, map[string]string{"/x/afk/config.toml": text})
+				d.HomeDir = func() (string, error) { return "", errors.New("no home") }
+			}
+			got, err := Load(d)
+			if err != nil {
+				t.Fatalf("Load returned an error over a [dash] value: %v", err)
+			}
+			if got.Tick != 2*time.Second || !reflect.DeepEqual(got.Projects, []Project{{"b", "/srv/b"}}) {
+				t.Errorf("the rest of the file was not read: tick %s, projects %v", got.Tick, got.Projects)
+			}
+			if len(c.errHas) > 0 {
+				if got.DashErr == nil {
+					t.Fatalf("want DashErr containing %v, got none (Dash %+v)", c.errHas, got.Dash)
+				}
+				for _, s := range c.errHas {
+					if !strings.Contains(got.DashErr.Error(), s) {
+						t.Errorf("DashErr %q lacks %q", got.DashErr, s)
+					}
+				}
+				if !strings.HasPrefix(got.DashErr.Error(), Path(d)+": ") {
+					t.Errorf("DashErr %q does not start with the file's path", got.DashErr)
+				}
+				if !reflect.DeepEqual(got.Dash, def) {
+					t.Errorf("Dash = %+v on a bad value, want the defaults %+v", got.Dash, def)
+				}
+				return
+			}
+			if got.DashErr != nil {
+				t.Fatalf("DashErr = %v, want none", got.DashErr)
+			}
+			if !reflect.DeepEqual(got.Dash, c.want) {
+				t.Errorf("Dash = %+v, want %+v", got.Dash, c.want)
+			}
+		})
+	}
+}
+
+// TestLoadDashMissingFile: a machine with no config.toml still gets the [dash]
+// defaults, so the dashboard has an interval and a depth to work with.
+func TestLoadDashMissingFile(t *testing.T) {
+	got, err := Load(deps(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DashErr != nil || !reflect.DeepEqual(got.Dash, defaultDash()) {
+		t.Errorf("Dash = %+v, DashErr = %v; want the defaults and no error", got.Dash, got.DashErr)
 	}
 }
 

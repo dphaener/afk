@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // loadText runs text through Load, the reader the daemon uses, so every edit
@@ -174,6 +175,86 @@ func TestRemoveProject(t *testing.T) {
 			t.Errorf("got removed=%v err=%v", removed, err)
 		}
 	})
+}
+
+const dashBlock = `# where the dashboard looks for projects
+[dash]
+# my code folders
+search_roots = ["~/code", "/srv/work"] # two of them
+scan_interval = "30s"
+# not too deep
+max_depth = 2
+`
+
+// TestProjectEditsKeepDashTable: `afk project add` and `afk project remove`
+// rewrite config.toml, and the [dash] table is the dashboard's, so an edit
+// must leave it byte for byte as it was, comments included. The three
+// placements are each load-bearing: "before" and "between" pin that the new
+// block goes at the end and nothing above moves, and "after" is the hard one
+// for remove, because the block to cut is the last thing in the file and sits
+// right under the table. "a bad value" pins that the edits do not refuse a
+// file whose [dash] table the loader would complain about: only the dashboard
+// may care about that. All rows also pin that edit.go's "nothing but the
+// projects changed" check accepts a file with a [dash] table at all, which
+// depends on how rawFile holds the table.
+func TestProjectEditsKeepDashTable(t *testing.T) {
+	const block = "\n[[project]]\npath = \"/x/app\"\n"
+	goodDash := Dash{SearchRoots: []string{"/home/u/code", "/srv/work"}, ScanInterval: 30 * time.Second, MaxDepth: 2}
+	cases := []struct {
+		name    string
+		text    string
+		badDash bool
+	}{
+		{name: "before the projects", text: "provider = \"x\"\n\n" + dashBlock + "\n[[project]]\npath = \"/a/one\"\n\n[[project]]\npath = \"/a/two\"\n"},
+		{name: "between the projects", text: "[[project]]\npath = \"/a/one\"\n\n" + dashBlock + "\n[[project]]\npath = \"/a/two\"\n"},
+		{name: "after the last project", text: "[[project]]\npath = \"/a/one\"\n\n[[project]]\npath = \"/a/two\"\n\n" + dashBlock},
+		{name: "alone in the file", text: dashBlock},
+		{name: "a bad value", badDash: true,
+			text: "[[project]]\npath = \"/a/one\"\n\n# broken on purpose\n[dash]\nscan_interval = \"1ms\" # too short\nmax_depth = \"three\"\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			added, ok, err := AddProject(c.text, Project{Path: "/x/app"})
+			if err != nil || !ok {
+				t.Fatalf("add: ok=%v err=%v", ok, err)
+			}
+			// Cutting the added block out must leave the original text, so
+			// every [dash] line and comment is where it was.
+			if !strings.HasSuffix(added, block) {
+				t.Fatalf("the new block is not at the end: %q", added)
+			}
+			if cut := strings.TrimSuffix(added, block); cut != c.text {
+				t.Errorf("text with the added block cut out = %q, want %q", cut, c.text)
+			}
+			for _, line := range strings.SplitAfter(c.text, "\n") {
+				if !strings.Contains(added, line) {
+					t.Errorf("line %q is gone after the add", line)
+				}
+			}
+			cfg, err := Load(deps(nil, map[string]string{home: added}))
+			if err != nil {
+				t.Fatalf("Load of the edited text: %v", err)
+			}
+			if c.badDash {
+				if cfg.DashErr == nil {
+					t.Errorf("DashErr is nil, want the bad [dash] value still reported")
+				}
+			} else if cfg.DashErr != nil || !reflect.DeepEqual(cfg.Dash, goodDash) {
+				t.Errorf("after the add Dash = %+v, DashErr = %v; want %+v", cfg.Dash, cfg.DashErr, goodDash)
+			}
+			if n := len(cfg.Projects); n == 0 || cfg.Projects[n-1] != (Project{"app", "/x/app"}) {
+				t.Errorf("projects after the add = %v, want app last", cfg.Projects)
+			}
+
+			back, removed, err := RemoveProject(added, "app")
+			if err != nil || !removed {
+				t.Fatalf("remove: removed=%v err=%v", removed, err)
+			}
+			if back != c.text {
+				t.Errorf("round trip = %q, want %q", back, c.text)
+			}
+		})
+	}
 }
 
 // TestProjectRoundTrip: add then remove gets back the original text for a

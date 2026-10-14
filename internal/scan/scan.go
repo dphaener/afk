@@ -1,4 +1,5 @@
-// Package scan turns configured search roots (internal/config's SearchRoots)
+// Package scan turns configured search roots (the `[dash]` table's
+// search_roots, read by internal/daemonconfig)
 // into the afk projects beneath them: git repo roots that contain a `.afk`
 // directory, returned as internal/project.Project values with their display
 // labels already assigned.
@@ -43,15 +44,17 @@ import (
 )
 
 // DefaultMaxDepth is the per-root depth cap applied when Deps carries no
-// positive MaxDepth. It matches internal/config's own `max_depth` default, so
-// a caller that forwards a zero-value config and a caller that forwards no
-// config at all walk identically.
+// positive MaxDepth. It matches internal/daemonconfig's DefaultMaxDepth (the
+// `[dash]` table's `max_depth` default), so a caller that forwards a
+// zero-value config and a caller that forwards no config at all walk
+// identically.
 const DefaultMaxDepth = 3
 
 // Deps is the injectable seam for everything Scan needs from outside its own
 // logic: the shared git runner used by every other package in this repo, and
 // the depth cap. MaxDepth rides along here rather than in Scan's parameter
-// list because it is configuration the caller supplies (config.MaxDepth), and
+// list because it is configuration the caller supplies (the `[dash]` table's
+// max_depth), and
 // Deps is already the one place callers assemble that supply.
 type Deps struct {
 	// Run executes name+args in dir and returns stdout, matching the seam
@@ -64,11 +67,12 @@ type Deps struct {
 	// A plain int rather than a pointer, so it doubles as its own "unset"
 	// sentinel: a zero-value Deps built by a hermetic test or by a caller
 	// that never touched this field means "use the default," identically to
-	// an explicit 0. That is safe only because internal/config.Load rejects
-	// an explicit max_depth of 0 (or negative) as invalid rather than ever
-	// forwarding one — see rawConfig's MaxDepth doc in that package. If this
-	// field ever needs to carry a real, deliberate 0 from some other caller,
-	// it will need config's *int treatment; don't reuse the sentinel for both.
+	// an explicit 0. That is safe only because internal/daemonconfig's loader
+	// refuses an explicit dash.max_depth of 0 (or negative) rather than ever
+	// forwarding one — see the MaxDepth doc on that package's Dash type. If
+	// this field ever needs to carry a real, deliberate 0 from some other
+	// caller, it will need a pointer (absent and 0 told apart); don't reuse
+	// the sentinel for both.
 	MaxDepth int
 }
 

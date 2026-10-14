@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/dphaener/afk/internal/config"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/project"
@@ -136,12 +135,12 @@ func switcherSelectByPath(t *testing.T, m Model, target string) Model {
 // is inert without both (see scanEnabled), and the rescan assertion needs a real
 // Cmd to collect.
 func scanSeams(d Deps, found ...string) Deps {
-	d.LoadConfig = func() (config.Config, string, error) {
-		return config.Config{
-			SearchRoots:  []string{"/roots"},
-			ScanInterval: time.Minute,
-			MaxDepth:     3,
-		}, "/cfg/config.json", nil
+	d.LoadConfig = func() (SearchSettings, string, error) {
+		return SearchSettings{
+			Roots:    []string{"/roots"},
+			Interval: time.Minute,
+			MaxDepth: 3,
+		}, "/cfg/config.toml", nil
 	}
 	d.Scan = func([]string, int) []project.Project { return scannedProjects(found...) }
 	return d

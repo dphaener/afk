@@ -9,7 +9,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dphaener/afk/internal/config"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/project"
 )
@@ -48,12 +47,12 @@ func (c *listedCalls) count() int {
 	return c.n
 }
 
-// noSearchFolders wires the two scan seams the way a machine with no
-// config.json behaves: the read succeeds, names no folder, and the walk finds
-// nothing.
+// noSearchFolders wires the two scan seams the way a machine whose config.toml
+// has no [dash] search folders behaves: the read succeeds, names no folder,
+// and the walk finds nothing.
 func noSearchFolders(d Deps) Deps {
-	d.LoadConfig = func() (config.Config, string, error) {
-		return config.Config{ScanInterval: time.Minute, MaxDepth: 3}, "/cfg/afk/config.json", nil
+	d.LoadConfig = func() (SearchSettings, string, error) {
+		return SearchSettings{Interval: time.Minute, MaxDepth: 3}, "/cfg/afk/config.toml", nil
 	}
 	d.Scan = func([]string, int) []project.Project { return nil }
 	return d

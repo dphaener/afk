@@ -44,7 +44,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dphaener/afk/internal/buildview"
-	"github.com/dphaener/afk/internal/config"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/host"
@@ -278,6 +277,24 @@ func isWorktreeFault(k session.Kind) bool {
 	return k.WorktreeFault()
 }
 
+// SearchSettings is the dashboard's folder-search settings (the `[dash]` table
+// of config.toml) as the dashboard needs them. Like ListedProject it is this
+// package's own type rather than the settings reader's (internal/daemonconfig),
+// because the dashboard must not read that file itself: the read is the
+// injected Deps.LoadConfig seam, and `afk dash` converts the reader's result
+// into this. The reader has already applied the defaults and limits, so a
+// value that arrives here is one the search can use as it stands.
+type SearchSettings struct {
+	// Roots are the folders to search, already absolute.
+	Roots []string
+	// Interval is how often the search runs again.
+	Interval time.Duration
+	// MaxDepth is how many folder levels below each root the search goes, at
+	// least 1 (the reader refuses anything lower; see Deps.Scan and
+	// internal/scan on why a 0 must never reach the walk).
+	MaxDepth int
+}
+
 // Deps is the injectable seam for every environment-touching operation the
 // dashboard performs. DefaultDeps (via withDefaults) wires the real
 // implementations; tests substitute fakes so Update can be exercised with
@@ -497,7 +514,7 @@ type Deps struct {
 	ActiveProjectIndex int
 	// Scan walks the configured search roots and returns every afk project
 	// under them. maxDepth is a PARAMETER rather than something the seam closes
-	// over because it lives on config.Config, while dash.go's wrapper is built
+	// over because it lives on SearchSettings, while dash.go's wrapper is built
 	// before any config load has happened — a wrapper that had to supply the
 	// depth itself would either hardcode it, silently ignoring the user's
 	// max_depth, or read the config a second time.
@@ -507,16 +524,19 @@ type Deps struct {
 	// what keeps this package's own tests, and any Model that has not opted in,
 	// off the developer's real disk. The production wiring lives in dash.go.
 	Scan func(roots []string, maxDepth int) []project.Project
-	// LoadConfig reads afk's user-level config and returns it alongside the
-	// PATH it resolved. The path is part of the result because the empty state
+	// LoadConfig reads the folder-search settings (the `[dash]` table of
+	// config.toml) and returns them alongside the PATH of that file. The path is part of the result because the empty state
 	// has to name that file and views.go performs no I/O of its own (its package
 	// contract: every value it renders was placed on the Model by Update), so
 	// this is the only way it can get there.
 	//
-	// A missing config file is not an error — config.Load answers it with
-	// defaults — so a non-nil error means a file that exists and could not be
-	// parsed. Like Scan it has no default, and nil means the pipeline is inert.
-	LoadConfig func() (config.Config, string, error)
+	// A missing config file is not an error — the production reader
+	// (internal/daemonconfig, wired by `afk dash`) answers it with defaults —
+	// so a non-nil error means a file that exists and could not be read, is not
+	// valid, or has a `[dash]` value the reader refuses. The path comes back on
+	// an error too. Like Scan it has no default, and nil means the pipeline is
+	// inert.
+	LoadConfig func() (SearchSettings, string, error)
 	// LoadListed reads the machine's project list (the `[[project]]` tables in
 	// config.toml, what `afk project list` prints) and returns one entry per
 	// listed project, the PATH of that file, and the error for a file that
@@ -525,10 +545,11 @@ type Deps struct {
 	// an error: it is an empty list.
 	//
 	// It is a separate seam from LoadConfig, with its own command and message,
-	// because the two files fail independently and arrive at different speeds:
-	// this read is one small file, while a scan answers only after its whole
-	// folder walk. Listed projects must not wait for that walk, and a broken
-	// config.json must not hide them.
+	// though both now read config.toml, because the two reads fail
+	// independently and arrive at different speeds: this read is one small
+	// file, while a scan answers only after its whole folder walk. Listed
+	// projects must not wait for that walk, and a bad `[dash]` value (which
+	// fails LoadConfig but not this read) must not hide them.
 	//
 	// Like Scan and LoadConfig it has NO default: withDefaults leaves it nil,
 	// and nil means no listed read is ever issued (listedCmd), which keeps a
@@ -536,6 +557,16 @@ type Deps struct {
 	// never reads that file itself; the production reader is wired by
 	// `afk dash`.
 	LoadListed func() (entries []ListedProject, path string, err error)
+	// StartupNotice is one line the caller wants said once, as a toast, when
+	// the dashboard starts. Empty means there is nothing to say.
+	//
+	// It is a plain string and not a reader like LoadConfig or LoadListed
+	// because it is decided once per start, by the caller, before the program
+	// runs: there is nothing to read again, and a function here would invite a
+	// call on every tick, which is the one thing a once-per-start notice must
+	// not do. This package does not know what the text is about; `afk dash`
+	// writes it.
+	StartupNotice string
 	// LaunchMainCheckout is the main checkout of the start-up project (the
 	// pinned entry in Projects). It differs from that entry's path only when
 	// the dashboard was started inside a linked worktree; empty means "same as
@@ -719,7 +750,7 @@ func (d Deps) withDefaults() Deps {
 	// Scan and LoadConfig are absent from this list deliberately, and it is the
 	// one omission here that is load-bearing. Wiring them would make every
 	// zero-Deps Model — the whole of this package's test suite included — read
-	// the developer's real ~/.config/afk/config.json and walk whatever search
+	// the developer's real ~/.config/afk/config.toml and walk whatever search
 	// roots it names. The scan pipeline is inert without them (scanCmd,
 	// scanTickCmd), so opting in is `afk dash`'s decision alone.
 	//
@@ -1746,7 +1777,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 			previewOnNextLoad = true
 		}
 	}
-	return Model{
+	m := Model{
 		repo:                repo,
 		interval:            interval,
 		deps:                d,
@@ -1777,6 +1808,8 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		sidebarPct:   sidebarPct,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(theme.spinner)),
 	}
+	m.raiseStartupNotice(deps.StartupNotice)
+	return m
 }
 
 // Init kicks off the first discovery pass immediately, starts the refresh

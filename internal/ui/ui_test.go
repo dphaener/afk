@@ -482,26 +482,26 @@ func TestScanErrorNotifiesOncePerFailure(t *testing.T) {
 		return nm
 	}
 
-	m = fail(m, "config.json: invalid character '}'")
-	if !strings.Contains(m.status, "invalid character") || m.statusKind != notifyError {
+	m = fail(m, "config.toml: dash.max_depth is 0; use 1 or more")
+	if !strings.Contains(m.status, "dash.max_depth") || m.statusKind != notifyError {
 		t.Fatalf("status = %q kind = %v, want the scan failure raised as an error", m.status, m.statusKind)
 	}
 
 	m.clearStatus()
-	m = fail(m, "config.json: invalid character '}'")
+	m = fail(m, "config.toml: dash.max_depth is 0; use 1 or more")
 	if m.status != "" {
 		t.Fatalf("status = %q, want silence on a repeat of the same failing pass", m.status)
 	}
 
-	m = fail(m, "config.json: unexpected end of JSON input")
-	if !strings.Contains(m.status, "unexpected end of JSON input") {
+	m = fail(m, "config.toml: dash.scan_interval is 1ms, which is too short")
+	if !strings.Contains(m.status, "dash.scan_interval") {
 		t.Fatalf("status = %q, want a changed error text reported", m.status)
 	}
 
 	m, _ = update(t, m, projectScanMsg{})
 	m.clearStatus()
-	m = fail(m, "config.json: unexpected end of JSON input")
-	if !strings.Contains(m.status, "unexpected end of JSON input") {
+	m = fail(m, "config.toml: dash.scan_interval is 1ms, which is too short")
+	if !strings.Contains(m.status, "dash.scan_interval") {
 		t.Fatalf("status = %q, want the same error reported again after a successful scan", m.status)
 	}
 }

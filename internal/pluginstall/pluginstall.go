@@ -122,8 +122,8 @@ func Detect(lookPath func(string) (string, error)) []Target {
 }
 
 // MarketplaceDir is $XDG_DATA_HOME/afk/marketplace, else
-// ~/.local/share/afk/marketplace. XDG is read by hand for the same reason
-// internal/config does: os.UserConfigDir ignores XDG on macOS.
+// ~/.local/share/afk/marketplace. XDG is read by hand, as internal/daemonconfig
+// reads XDG_CONFIG_HOME, because os.UserConfigDir ignores XDG on macOS.
 func MarketplaceDir(d Deps) (string, error) {
 	base, err := xdgDir(d, "XDG_DATA_HOME", ".local/share")
 	if err != nil {

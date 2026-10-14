@@ -13,7 +13,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/dphaener/afk/internal/config"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/host"
@@ -1730,8 +1729,8 @@ func (f *rendezvousFixture) deps() Deps {
 		f.watchers[dir] = w
 		return w
 	}
-	d.LoadConfig = func() (config.Config, string, error) {
-		return config.Config{SearchRoots: []string{"/roots"}, ScanInterval: time.Minute, MaxDepth: 3}, "/cfg/config.json", nil
+	d.LoadConfig = func() (SearchSettings, string, error) {
+		return SearchSettings{Roots: []string{"/roots"}, Interval: time.Minute, MaxDepth: 3}, "/cfg/config.toml", nil
 	}
 	d.Scan = func([]string, int) []project.Project { return scannedProjects(f.scanned...) }
 	return d

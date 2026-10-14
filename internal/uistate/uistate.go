@@ -2,10 +2,11 @@
 // scratch data, not user configuration: today, the session last selected per
 // project so a project switch (or a dashboard restart) can restore the
 // previous pane instead of defaulting to the first row. It is a leaf
-// package — no internal/ imports — deliberately kept separate from
-// internal/config (user-authored, read-only) so a corrupt or concurrently
-// written state file can never take down config loading, and so internal/ui
-// only ever reaches this through the function-typed seams it is given.
+// package — no internal/ imports — deliberately kept separate from the
+// settings file internal/daemonconfig reads (config.toml, written by its
+// owner) so a corrupt or concurrently written state file can never take down
+// config loading, and so internal/ui only ever reaches this through the
+// function-typed seams it is given.
 package uistate
 
 import (
@@ -31,8 +32,8 @@ type State struct {
 }
 
 // Deps is the injectable seam for uistate's environment-touching operations,
-// mirroring internal/config's Deps so both packages are hermetic and
-// table-testable without a real home directory or filesystem.
+// in the style of internal/daemonconfig's Deps so both packages are hermetic
+// and table-testable without a real home directory or filesystem.
 type Deps struct {
 	// Getenv looks up an environment variable, empty string if unset.
 	Getenv func(string) string
@@ -99,8 +100,8 @@ func (d Deps) withDefaults() Deps {
 //
 // This deliberately does not call an os.UserConfigDir-style platform helper:
 // on darwin that resolves to a Library path under the home directory and
-// ignores XDG_STATE_HOME entirely (see internal/config.Path, which hits the
-// same problem for XDG_CONFIG_HOME), so it would pick the wrong path on this
+// ignores XDG_STATE_HOME entirely (internal/daemonconfig.Path reads
+// XDG_CONFIG_HOME by hand too), so it would pick the wrong path on this
 // project's primary platform. Checking XDG_STATE_HOME explicitly through the
 // Getenv seam is the only way to get XDG-compliant behavior on darwin.
 func Path(d Deps) (string, error) {

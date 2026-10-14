@@ -2431,3 +2431,37 @@ What it does not show:
 
 - Watch the next real `afk plan` session for the nine prompt fixes (inbox `wnr9uy`). None of them has been run by a real session yet.
 - `make install` was not run by this session: the daemon's `after_merge` command installs the new afk and refreshes the plugin when this merges. Until then the installed afk still carries the old prompts.
+
+## T6.2
+
+Search folders move into `config.toml` and `config.json` is retired. Decisions the master plan left open, made while planning the task (2026-10-13), numbered as in the work plan's assumptions.
+
+- **A bad `[dash]` value never fails the load (A1).** The machine config has one loader, and the daemon, `afk project`, `afk usage`, `afk pause` and `afk inbox` all use it. The task says the daemon must not fail over a `[dash]` value, so the loader checks the table but hands a bad value back beside the settings (the dashboard's values fall back to their defaults) and does not refuse the file. A value of the wrong kind, such as a word where a number belongs, is handled the same way. A second loader just for the dashboard was the other way; it would read the file twice with two sets of rules.
+- **The dashboard's reader keeps its place (A2).** The screen code still reads no file. It is handed the three search settings by the dashboard command, which now gets them from the machine config's loader.
+- **What a bad `[dash]` value does in the dashboard (A3).** The folder search reports it in the notice it already uses for a search that failed, naming the key and the file, and the listed projects still show. The T6.1 amendment expected a bad `[dash]` value to hold the listed rows as a broken file does; that would need the load to fail, which A1 rules out.
+- **A relative search folder (A4)** is still taken from the folder `afk dash` was started in, as before. The task says the keys keep their meanings.
+- **How the notice is shown (A5).** The full text, with the lines to add, is printed in the terminal before the dashboard opens, so it can be copied after quitting. One short notice inside the dashboard says the old file is no longer read and where the lines are. A notice inside the dashboard cannot hold lines to copy, and text in the terminal alone is not seen until the dashboard is closed.
+- **Where the old file is looked for (A6).** Only in the folder `config.toml` lives in. The old reader also accepted a relative `XDG_CONFIG_HOME`, which the machine config never did; a `config.json` reached only that way is not looked for.
+- **What the lines to add hold (A7).** The keys the old file had, with folders as they were written. A value the new loader would refuse is left out and named. An old file that cannot be read still gets the notice, with an example of the three keys.
+- **The search for `config.json` in the code (A8)** finds one line besides the notice and its tests: the plugin installer looks for OpenCode's own `config.json`. That is another program's file and stays.
+- **Tests (A9)** are written with the code, as table tests. **Nothing had to be in place first (A10).**
+
+### As built
+
+- **A bad `[dash]` value resets the whole table to the defaults**, not only the bad key, so the dashboard never runs a search the owner did not write. `Config.DashErr` names the file, then the key (`dash.scan_interval`, `dash.max_depth`, `dash.search_roots[1]`), then what to write instead.
+- **The `[dash]` table is decoded loosely** (an `any` field), so a value of the wrong kind, or `dash` not being a table, is a `DashErr` and not a failed load. Invalid TOML syntax still fails the load, as for the rest of the file.
+- **The dashboard gets zero settings, not the defaults, when `DashErr` is set**, so no search can start; the empty state names `config.toml`. The scan ticker stays on its 60 second fallback, so a fixed file is picked up within a minute.
+- **The notice is shown on every start of the dashboard**, including the hand-off after `afk new`. The terminal text tells the owner to put the keys under an existing `[dash]` line and not add a second one, because a second header would stop every command that reads the file.
+- **The in-dashboard toast names the two files by name, not by path**, and is raised alone at start. The full path is in the terminal text. A failed look into the folder counts as no old file, so the notice is never shown without it.
+- **The notice echoes only the three keys.** A JSON syntax error is reported as "not valid JSON" without the parser's message, which quotes part of the file.
+- **A relative `XDG_CONFIG_HOME` is no longer honoured.** The old reader accepted it; the machine config follows the XDG rule (absolute paths only), so such a setup now uses `~/.config/afk`.
+
+### Scope ideas
+
+- A comment in `internal/uistate/uistate_test.go` (line 93) still says "config.Path's test", naming the package this task removed. It wants a one-line reword.
+- The notice inside the dashboard borrows the folder search's notice category. It is always shown alone, so the borrowed label never appears, but a category of its own would be tidier.
+
+### For the owner to check
+
+- On the always-on machine, add a `[dash]` table with a real search folder to `config.toml`, open `afk dash` and press `p`: projects under that folder should be listed. If a `config.json` is still in afk's config folder, the notice should show once, and the lines it prints should load. The check here used a scratch config folder and throwaway projects.
+- `make install` was not run by this session: the daemon's `after_merge` command installs the new afk when this merges.
