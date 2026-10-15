@@ -143,6 +143,15 @@ func dashGitHubOffer(path string) ui.GitHubOffer {
 // sees the missing later answers as nil, which it never reaches because it
 // checks in the same order.
 func dashGitHubOfferWith(look func(string) (string, error), gh ghrepo.GH, path string) ui.GitHubOffer {
+	d := gitHubDecisionWith(look, gh, path)
+	return ui.GitHubOffer{Ask: d.Ask, Repo: d.Repo, Notice: d.Notice}
+}
+
+// gitHubDecisionWith runs the checks in ghrepo.Offer's order and stops at the
+// first that fails, so the dashboard and the web page ask the same questions
+// of gh in the same order: nothing asks a logged-out gh for its account, and
+// a gh that is not installed is never run.
+func gitHubDecisionWith(look func(string) (string, error), gh ghrepo.GH, path string) ghrepo.Decision {
 	var authErr, loginErr error
 	login := ""
 	_, lookErr := look("gh")
@@ -152,8 +161,7 @@ func dashGitHubOfferWith(look func(string) (string, error), gh ghrepo.GH, path s
 			login, loginErr = gh.Login()
 		}
 	}
-	d := ghrepo.Offer(lookErr, authErr, login, loginErr, path)
-	return ui.GitHubOffer{Ask: d.Ask, Repo: d.Repo, Notice: d.Notice}
+	return ghrepo.Offer(lookErr, authErr, login, loginErr, path)
 }
 
 // dashCreateGitHubRepo makes the private repository and sets it as path's

@@ -882,12 +882,13 @@ func TestPlanPageApproveArea(t *testing.T) {
 	}
 
 	// The routes about a plan that take anything but GET are the approve POST,
-	// the change POST (T8.14) and the new-plan POST (T8.15), which all need
-	// the confirm (TestPlanApproveNeedsTheConfirm, TestPlanChangeNeedsTheConfirm,
-	// TestPlanNewNeedsTheConfirm).
+	// the change POST (T8.14), the new-plan POST (T8.15) and its GitHub
+	// answer (T8.15b), which all need the confirm (TestPlanApproveNeedsTheConfirm,
+	// TestPlanChangeNeedsTheConfirm, TestPlanNewNeedsTheConfirm,
+	// TestPlanNewGitHubRefusals).
 	for _, rt := range routes {
 		if strings.Contains(rt.path, "plan") && rt.method != http.MethodGet &&
-			(rt.method != http.MethodPost || (rt.path != "/p/{project}/plan/approve" && rt.path != "/p/{project}/plan/change" && rt.path != "/plan/new")) {
+			(rt.method != http.MethodPost || (rt.path != "/p/{project}/plan/approve" && rt.path != "/p/{project}/plan/change" && rt.path != "/plan/new" && rt.path != "/plan/new/github")) {
 			t.Errorf("the route %s %s can change something about a plan", rt.method, rt.path)
 		}
 	}

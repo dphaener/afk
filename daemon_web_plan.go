@@ -5,15 +5,18 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemonstate"
+	"github.com/dphaener/afk/internal/ghrepo"
 	"github.com/dphaener/afk/internal/planfolder"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/profile"
 	"github.com/dphaener/afk/internal/session"
+	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/web"
 )
 
@@ -281,6 +284,38 @@ func webCreatePlanFolderWith(location func() planfolder.Location, stat func(stri
 		return "", err
 	}
 	return d.Path, err
+}
+
+// webGitHubOffer is web.Deps.GitHubOffer: whether the page should ask about a
+// GitHub repository for the folder it has just made (T8.15b). It runs gh up
+// to twice, each bounded by ship.DefaultTimeout with stdin on the null device,
+// and changes nothing.
+func webGitHubOffer(path string) web.GitHubOffer {
+	return webGitHubOfferWith(exec.LookPath, ghrepo.NewGH(ship.NewRun(ship.DefaultTimeout)), path)
+}
+
+// webGitHubOfferWith is webGitHubOffer with the PATH lookup and gh passed in.
+// It shares the dashboard's check order (gitHubDecisionWith), so the two
+// surfaces cannot disagree about when to ask.
+func webGitHubOfferWith(look func(string) (string, error), gh ghrepo.GH, path string) web.GitHubOffer {
+	d := gitHubDecisionWith(look, gh, path)
+	return web.GitHubOffer{Ask: d.Ask, Repo: d.Repo, Reason: string(d.Reason), Notice: d.Notice}
+}
+
+// webCreateGitHubRepo is web.Deps.CreateGitHubRepo: after the owner's yes,
+// make the private repository and set it as path's origin. gh only creates
+// (no push, no source), so nothing leaves the machine but the empty
+// repository's name.
+func webCreateGitHubRepo(path, repo string) web.GitHubOutcome {
+	run := ship.NewRun(ship.DefaultTimeout)
+	return webCreateGitHubRepoWith(ghrepo.NewGH(run), ghrepo.NewGit(run), path, repo)
+}
+
+// webCreateGitHubRepoWith is webCreateGitHubRepo with gh and git passed in.
+// The kind is ghrepo's word as it is, so the page's styles follow it.
+func webCreateGitHubRepoWith(gh ghrepo.GH, git ghrepo.Git, path, repo string) web.GitHubOutcome {
+	o := ghrepo.Create(gh, git, path, repo)
+	return web.GitHubOutcome{Kind: string(o.Kind), Repo: o.Repo, Text: ghrepo.OutcomeText(o)}
 }
 
 // webPlanLocation is web.Deps.PlanLocation: the profile's project location

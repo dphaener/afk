@@ -23,7 +23,29 @@
 <div class="notice notice--error" role="alert"><div class="notice__body">{{.Message}}</div></div>
 {{with .Path}}<p class="path">{{.}}</p>{{end}}
 <div class="btn-row">{{if .ProjectHref}}<a class="btn btn--primary" href="{{.ProjectHref}}">Open {{.ProjectName}}</a> {{end}}<a class="btn btn--secondary" href="/plan/new">Choose another folder</a></div>
+{{else if eq .Kind "github"}}
+<section class="card" aria-labelledby="plan-new-card-title">
+  <h2 id="plan-new-card-title">afk made the folder</h2>
+  <p class="path">{{.Path}}</p>
+  <p>It is a new, empty git repository. Planning starts when you answer.</p>
+</section>
+<form method="post" action="/plan/new/github" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  <input type="hidden" name="path" value="{{.Path}}">
+  <fieldset>
+    <legend class="field__label">{{.Question}}</legend>
+    <div class="choice-list">
+    <label class="choice"><input type="radio" name="github" value="yes"><span class="choice__label">Yes, create {{.Repo}}</span><span class="choice__meta">private</span></label>
+    <label class="choice"><input type="radio" name="github" value="no" checked><span class="choice__label">No, I'll add one later</span></label>
+    </div>
+  </fieldset>
+  <p>Nothing is pushed: a yes makes the empty repository and sets it as the folder's origin, nothing more.</p>
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary" data-loading-label="{{.LoadingLabel}}">Continue</button>
+  </div>
+</form>
 {{else if eq .Kind "started"}}
+{{with .GitHubText}}<div class="notice {{$.GitHubClass}}" role="{{$.GitHubRole}}"><div class="notice__body">{{.}}</div></div>{{end}}
 <p>{{.Message}}</p>
 <div class="btn-row">{{with .Chat}}<a class="btn btn--primary" href="{{.}}">Open its chat</a> {{end}}<a class="btn btn--secondary" href="/">Back to all projects</a></div>
 {{else}}
