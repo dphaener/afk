@@ -272,8 +272,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 20 {
-		t.Fatalf("the route table has %d routes; the plan lists 20", len(routes))
+	if len(routes) != 21 {
+		t.Fatalf("the route table has %d routes; the plan lists 21", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -301,6 +301,9 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 				}
 				if n := rg.sessionCalls(); n != 0 {
 					t.Errorf("a session action ran %d times without the token", n)
+				}
+				if len(rg.startCalls) != 0 {
+					t.Errorf("a planning session was started without the token: %v", rg.startCalls)
 				}
 				if len(rg.approveCalls) != 0 {
 					t.Errorf("a plan was approved without the token: %v", rg.approveCalls)
@@ -334,7 +337,7 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 			// None is the catch-all's 404.
 			want := http.StatusOK
 			if strings.HasSuffix(rt.path, "/answer") || strings.HasSuffix(rt.path, "/status") ||
-				strings.HasSuffix(rt.path, "/restart") || (rt.method == http.MethodPost && rt.path == "/p/{project}/sessions") {
+				strings.HasSuffix(rt.path, "/restart") || strings.HasSuffix(rt.path, "/plan/change") || (rt.method == http.MethodPost && rt.path == "/p/{project}/sessions") {
 				want = http.StatusBadRequest
 			}
 			if rt.path == "/usage/refresh" {
@@ -678,6 +681,34 @@ func TestNew(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), testToken) {
 				t.Errorf("error repeats the token: %q", err)
+			}
+		})
+	}
+}
+
+// TestAuthPlanChangePageNeedsTheToken covers the change page's GET, which is
+// not in the route table. Load-bearing: the seam must stay untouched, since a
+// stranger who could reach the page could otherwise learn whether a planning
+// session is open, and the confirm card is one request from starting one.
+func TestAuthPlanChangePageNeedsTheToken(t *testing.T) {
+	for name, a := range map[string]authReq{
+		"no token":     {},
+		"wrong query":  {target: "/p/app/plan/change?mode=extend&token=" + otherToken},
+		"wrong cookie": {cookie: goodCookie(otherToken)},
+		"wrong bearer": {bearer: otherToken},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			a.method = http.MethodGet
+			if a.target == "" {
+				a.target = "/p/app/plan/change?mode=extend"
+			}
+			rec := a.send(rg.h)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401\n%s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "Extend the plan") || len(rg.startCalls) != 0 {
+				t.Errorf("the page was drawn or the seam called without the token")
 			}
 		})
 	}

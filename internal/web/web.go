@@ -273,6 +273,13 @@ type Deps struct {
 	// minutes (it pushes; see planApproveWriteLimit). Nil means no approve
 	// button and the approve POST is not found.
 	ApprovePlan func(root string) PlanApproveResult
+	// StartPlan starts a planning session that changes the plan of the
+	// project at root: mode is extend, amend or reconcile, and text the amend
+	// sentence or the reconcile path (empty for extend). It is the root's
+	// print-free entry point beside `afk plan extend|amend|reconcile`, and it
+	// refuses in the command's own words. Nil means this page cannot start
+	// one, and the change address is not found.
+	StartPlan func(root, mode, text string) PlanStartResult
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -451,6 +458,10 @@ var routes = []route{
 	// Approving the plan: what `afk plan approve` does, behind the confirm,
 	// through Deps.ApprovePlan and nothing else (see plan_approve.go).
 	{http.MethodPost, "/p/{project}/plan/approve", (*server).planApprove},
+	// Changing the plan: what `afk plan extend|amend|reconcile` does, behind
+	// the confirm, through Deps.StartPlan and nothing else (see
+	// plan_change.go).
+	{http.MethodPost, "/p/{project}/plan/change", (*server).planChange},
 	{http.MethodGet, "/p/{project}/inbox", (*server).inboxList},
 	{http.MethodGet, "/p/{project}/inbox/{id}", (*server).item},
 	{http.MethodPost, "/p/{project}/inbox/{id}/answer", (*server).answer},
@@ -555,6 +566,8 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("GET /p/{project}/sessions/new", s.sessionNewPage)
 	// The no-JS page behind Approve the plan… is HTML only too.
 	mux.HandleFunc("GET /p/{project}/plan/approve", s.planApprovePage)
+	// So is the page behind the Change the plan rows.
+	mux.HandleFunc("GET /p/{project}/plan/change", s.planChangePage)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong

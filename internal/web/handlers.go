@@ -497,6 +497,7 @@ func (s *server) projectPage(p Project, v ProjectView, sessions []SessionView) p
 		in.PlanWaiting = in.Row.PlanWaiting
 	}
 	in.Planning, in.PlanningOK, in.PlanningErr = plansession.ReadState(p.Root)
+	in.HasPlan = s.changeState(p).HasPlan
 	if s.d.PlanStatus != nil {
 		in.PlanStatus = s.planStatusFor(p.Root)
 	}

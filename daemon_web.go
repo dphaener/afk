@@ -105,6 +105,7 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		Repository:      webRepository(runGitOutput),
 		PlanStatus:      webPlanStatus,
 		ApprovePlan:     webApprovePlan,
+		StartPlan:       webStartPlan,
 		PlanChat:        webPlanChat(now),
 		PlanReply:       webPlanReply(now),
 		Now:             now,

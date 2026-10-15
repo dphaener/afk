@@ -38,7 +38,9 @@
 {{end}}
 {{- if eq $p.State "none"}}<div class="empty">
   <p class="empty__title">No planning session</p>
-  <p>Start one with afk dash; this page will be able to start one later.</p>
+  {{if $p.HasPlan}}<p>Start one to change the plan:</p>
+  <div class="btn-row">{{range $p.Start}}<a class="btn btn--secondary" href="{{.Href}}">{{.Label}}</a>
+  {{end}}</div>{{else}}<p>There is no plan to change yet.</p>{{end}}
 </div>
 {{end}}
 {{- if eq $p.State "unknown"}}<div class="notice notice--error"><div class="notice__body">{{$p.Problem}}</div></div>

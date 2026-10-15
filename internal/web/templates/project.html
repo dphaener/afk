@@ -60,6 +60,27 @@
 {{end}}</div>
 </nav>
 
+{{/* Only links here, so a live swap can always take the section whole. */}}
+<div id="project-change" data-live="planning" data-project="{{$name}}">
+<section class="section" aria-labelledby="change-title">
+  <div class="section-head"><h2 class="section-head__title" id="change-title">Change the plan</h2></div>
+{{- with .Change.Message}}
+  <p>{{.}}</p>
+  {{with $.Page.Change.Chat}}<div class="btn-row"><a class="btn btn--secondary" href="{{.}}">Open its chat</a></div>{{end}}
+{{- else}}
+  <ul class="list">
+  {{range .Change.Rows}}<li><a class="row" href="{{.Href}}">
+    <span class="row__main">
+      <span class="row__top"><span class="row__title">{{.Label}}</span></span>
+      <span class="row__meta">{{.Meta}}</span>
+    </span>
+    <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
+  </a></li>
+  {{end}}</ul>
+{{- end}}
+</section>
+</div>
+
 <dl class="kv">
   <dt>Folder</dt><dd class="path">{{.Folder}}</dd>
   <dt>Repository</dt><dd>{{.Repository}}</dd>

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -126,7 +127,63 @@ func TestWebPlanStatusRunsNoGit(t *testing.T) {
 // TestDaemonWebPlanSeams: the daemon's deps offer both plan seams.
 func TestDaemonWebPlanSeams(t *testing.T) {
 	d := daemonWebDeps(nil, t.TempDir(), usagestate.Deps{}, nil)
-	if d.PlanStatus == nil || d.ApprovePlan == nil {
+	if d.PlanStatus == nil || d.ApprovePlan == nil || d.StartPlan == nil {
 		t.Fatalf("a plan seam is nil: %+v", d)
+	}
+}
+
+// TestWebStartPlanWith: one row per outcome. Load-bearing rows: "unknown
+// outcome" (must read as refused, never started), "wait fails on started"
+// (the owner is sent to a chat whose host record is missing, so it must be a
+// refusal with the shared sentence), "refused does not wait" (a refusal has no
+// host to wait for), and the request check on every row (mode, root and text
+// pass through exactly, and the provider stays empty).
+func TestWebStartPlanWith(t *testing.T) {
+	waitErr := errors.New("no host.json")
+	tests := []struct {
+		name     string
+		res      planSurfaceResult
+		waitErr  error
+		wantWait bool
+		want     web.PlanStartResult
+	}{
+		{"started", planSurfaceResult{Outcome: planSurfaceStarted}, nil, true,
+			web.PlanStartResult{Outcome: web.PlanStartStarted}},
+		{"resumed", planSurfaceResult{Outcome: planSurfaceResumed}, nil, true,
+			web.PlanStartResult{Outcome: web.PlanStartResumed}},
+		{"refused", planSurfaceResult{Outcome: planSurfaceRefused, Reason: "nope"}, nil, false,
+			web.PlanStartResult{Outcome: web.PlanStartRefused, Reason: "nope"}},
+		{"session open", planSurfaceResult{Outcome: planSurfaceRefused, Reason: "open", SessionOpen: true, OpenMode: "extend", OpenPhase: "interview"}, nil, false,
+			web.PlanStartResult{Outcome: web.PlanStartRefused, Reason: "open", Open: true, OpenMode: "extend", OpenPhase: "interview"}},
+		{"unknown outcome", planSurfaceResult{Outcome: "later"}, nil, false,
+			web.PlanStartResult{Outcome: web.PlanStartRefused}},
+		{"wait fails on started", planSurfaceResult{Outcome: planSurfaceStarted}, waitErr, true,
+			web.PlanStartResult{Outcome: web.PlanStartRefused, Reason: planHostNotReadyReason(waitErr)}},
+		{"wait fails on resumed", planSurfaceResult{Outcome: planSurfaceResumed}, waitErr, true,
+			web.PlanStartResult{Outcome: web.PlanStartRefused, Reason: planHostNotReadyReason(waitErr)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotReq planSurfaceRequest
+			start := func(r planSurfaceRequest, _ planDeps) planSurfaceResult {
+				gotReq = r
+				return tt.res
+			}
+			var waited []string
+			wait := func(root string) error {
+				waited = append(waited, root)
+				return tt.waitErr
+			}
+			got := webStartPlanWith(start, planDeps{}, wait, "/proj", "amend", "say it")
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("result = %+v, want %+v", got, tt.want)
+			}
+			if gotReq != (planSurfaceRequest{Mode: "amend", Project: "/proj", Text: "say it"}) {
+				t.Errorf("request = %+v", gotReq)
+			}
+			if tt.wantWait != (len(waited) == 1) || (tt.wantWait && waited[0] != "/proj") {
+				t.Errorf("waited = %v, want wait %v", waited, tt.wantWait)
+			}
+		})
 	}
 }

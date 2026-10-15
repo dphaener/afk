@@ -1,0 +1,43 @@
+{{define "title"}}Change the plan{{end}}
+{{define "content"}}
+<div class="stack">
+<h1>{{.Title}}</h1>
+{{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+{{if eq .Kind "none"}}
+<p>{{.Message}}</p>
+<div class="btn-row"><a class="btn btn--secondary" href="{{.Back}}">Back to {{.Project}}</a></div>
+{{else if eq .Kind "open"}}
+<p>{{.Message}}</p>
+<div class="btn-row"><a class="btn btn--primary" href="{{.Chat}}">Open its chat</a> <a class="btn btn--secondary" href="{{.Back}}">Back to {{.Project}}</a></div>
+{{else if eq .Kind "unknown"}}
+<div class="notice notice--error" role="alert"><div class="notice__body">{{.Message}}</div></div>
+<div class="btn-row"><a class="btn btn--secondary" href="{{.Back}}">Back to {{.Project}}</a></div>
+{{else if eq .Kind "form"}}
+<form method="get" action="{{.Action}}" class="stack">
+  <input type="hidden" name="mode" value="{{.Mode}}">
+  <div class="field">
+    <label class="field__label" for="change-text">{{.Label}}</label>
+    {{if .Textarea}}<textarea class="textarea" id="change-text" name="text" rows="4"{{if .FieldError}} aria-invalid="true" aria-describedby="change-error"{{end}}>{{.Text}}</textarea>{{else}}<input class="input input--mono" type="text" id="change-text" name="text" value="{{.Text}}" autocomplete="off" spellcheck="false" aria-describedby="{{if .FieldError}}change-error {{end}}change-hint"{{if .FieldError}} aria-invalid="true"{{end}}>{{end}}
+    {{with .Hint}}<span class="field__hint" id="change-hint">{{.}}</span>{{end}}
+    {{with .FieldError}}<p class="field__error" id="change-error" role="alert">{{.}}</p>{{end}}
+  </div>
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary">Continue</button>
+    <a class="btn btn--secondary" href="{{.Back}}">Cancel</a>
+  </div>
+</form>
+{{else}}
+<p>{{.Lede}}</p>
+{{if .Text}}<p class="session-quote">{{.Text}}</p>{{end}}
+<form method="post" action="{{.Action}}" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  <input type="hidden" name="mode" value="{{.Mode}}">
+  {{if .Text}}<input type="hidden" name="text" value="{{.Text}}">
+  {{end}}<div class="btn-row">
+    <button type="submit" class="btn btn--primary">Start planning</button>
+    <a class="btn btn--quiet" href="{{.Back}}" autofocus>Cancel</a>
+  </div>
+</form>
+{{end}}
+</div>
+{{end}}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/web"
 )
 
@@ -64,4 +65,44 @@ func webApprovePlanWith(approve func(string, approveDeps) approveResult, deps ap
 		out = web.PlanApproveRefused
 	}
 	return web.PlanApproveResult{Outcome: out, Text: approveResultText(res)}
+}
+
+// webStartPlan is web.Deps.StartPlan: afk plan extend, amend or reconcile for
+// the project at root, minus the terminal. It never sets a provider (the
+// default agent runs) and never writes amend's yes marker, so the page cannot
+// skip the owner's read of the sentence.
+func webStartPlan(root, mode, text string) web.PlanStartResult {
+	return webStartPlanWith(startPlanForSurface, realPlanDeps(), func(root string) error {
+		_, err := readMetaWithRetry(root, session.PlanSessionName, attachWait)
+		return err
+	}, root, mode, text)
+}
+
+// webStartPlanWith is webStartPlan with the entry point, its dependencies and
+// the host wait passed in. A started or resumed result is held until the host
+// has written host.json, because the page sends the owner to the chat view at
+// once and the chat reads that record. An outcome it does not know is a
+// refusal, so nothing reads as started that the entry point did not say.
+func webStartPlanWith(start func(planSurfaceRequest, planDeps) planSurfaceResult, deps planDeps, wait func(root string) error, root, mode, text string) web.PlanStartResult {
+	res := start(planSurfaceRequest{Mode: mode, Project: root, Text: text}, deps)
+	out := web.PlanStartResult{
+		Outcome:   web.PlanStartRefused,
+		Reason:    res.Reason,
+		Open:      res.SessionOpen,
+		OpenMode:  res.OpenMode,
+		OpenPhase: res.OpenPhase,
+	}
+	switch res.Outcome {
+	case planSurfaceStarted:
+		out.Outcome = web.PlanStartStarted
+	case planSurfaceResumed:
+		out.Outcome = web.PlanStartResumed
+	}
+	if out.Outcome == web.PlanStartRefused {
+		return out
+	}
+	if err := wait(root); err != nil {
+		return web.PlanStartResult{Outcome: web.PlanStartRefused, Reason: planHostNotReadyReason(err)}
+	}
+	return out
 }

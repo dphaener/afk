@@ -648,6 +648,8 @@ type projectPage struct {
 	// Resume is true when the Pause/Resume button resumes.
 	Resume bool
 	Plan   planRow
+	// Change is the Change the plan section.
+	Change changeSection
 	Nav    []navItem
 	// Folder and Repository are the kv; Repository is "None set" when the
 	// project has no origin.
@@ -707,6 +709,9 @@ type projectPageInput struct {
 	Items              []inbox.Item
 	Folder, Repository string
 	Now                time.Time
+	// HasPlan is whether the project has a plan to change, for the Change
+	// the plan section.
+	HasPlan bool
 }
 
 // noRepository is what the kv says for a project with no origin.
@@ -802,6 +807,8 @@ func projectPageFor(in projectPageInput) projectPage {
 		pg.Plan.Meta = st.Line
 	}
 
+	pg.Change = changeSectionFor(sum.Name, in.HasPlan, in.PlanningOK && in.PlanningErr == nil && !plansession.Finished(in.Planning), in.Planning)
+
 	inboxItem := navItem{Label: "Inbox", Href: base + "/inbox", Count: sum.OpenItems, CountSet: true, Quiet: sum.OpenItems == 0}
 	planItem := navItem{Label: "Plan", Href: base + "/plan"}
 	if sum.Total > 0 {
@@ -888,4 +895,38 @@ func blockingHeadline(items []inbox.Item) string {
 	default:
 		return subject + " need you"
 	}
+}
+
+// changeSection is the project page's Change the plan section: either the
+// three action rows, or the one sentence that says why there are none.
+type changeSection struct {
+	// Message is set when there are no rows: no plan, or a session open.
+	Message string
+	// Chat is the chat's address, set when a session is open.
+	Chat string
+	Rows []changeRow
+}
+
+// changeRow is one action row: a word, its one line and where it leads.
+type changeRow struct {
+	Label, Meta, Href string
+}
+
+// changeSectionFor decides the Change the plan section. Pure. A project with
+// no plan has nothing to change, so it gets the sentence and no rows; an open
+// session gets its mode and phase and the way into its chat, because a
+// second session cannot start. Each branch is a test row.
+func changeSectionFor(project string, hasPlan, open bool, st plansession.State) changeSection {
+	switch {
+	case !hasPlan:
+		return changeSection{Message: "There is no plan to change yet."}
+	case open:
+		return changeSection{Message: "A planning session is open (" + st.Mode + ", " + st.Phase + ").", Chat: chatPath(project)}
+	}
+	href := planBase(project) + "/change?mode="
+	return changeSection{Rows: []changeRow{
+		{"Extend", "Add new work to the plan.", href + changeExtend},
+		{"Amend", "Change one thing in the plan, in your words.", href + changeAmend},
+		{"Reconcile", "Bring the plan in line with a document, such as a design system.", href + changeReconcile},
+	}}
 }

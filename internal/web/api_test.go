@@ -133,6 +133,11 @@ type rig struct {
 	planStatus    map[string]PlanStatus
 	approveCalls  []string
 	approveResult PlanApproveResult
+	// startCalls records every call of the fake StartPlan as (root, mode,
+	// text); startResult is what it answers (started, until a test says
+	// otherwise).
+	startCalls  [][]string
+	startResult PlanStartResult
 	// onStatus, when set, runs inside the fake SetTaskStatus before it
 	// answers, so a test can change rg.ledger as the real write would and
 	// prove the answer was read after the call.
@@ -289,6 +294,7 @@ func newRig(t *testing.T, cfg Config) *rig {
 	rg.cleanResult, rg.restartResult, rg.labelResult, rg.newResult = done, done, done, done
 	rg.planStatus = map[string]PlanStatus{}
 	rg.approveResult = PlanApproveResult{Outcome: PlanApproved, Text: "Approved the plan. afk starts building it."}
+	rg.startResult = PlanStartResult{Outcome: PlanStartStarted}
 	srv, h, err := build(cfg, Deps{
 		Projects: func() []Project { return rg.projects },
 		Reviews:  func() []Project { return rg.reviews },
@@ -391,6 +397,10 @@ func newRig(t *testing.T, cfg Config) *rig {
 		ApprovePlan: func(root string) PlanApproveResult {
 			rg.approveCalls = append(rg.approveCalls, root)
 			return rg.approveResult
+		},
+		StartPlan: func(root, mode, text string) PlanStartResult {
+			rg.startCalls = append(rg.startCalls, []string{root, mode, text})
+			return rg.startResult
 		},
 		RefreshUsage: func() UsageRefreshResult {
 			rg.refreshCalls.Add(1)
