@@ -192,7 +192,7 @@ func TestStartPlanForSurface(t *testing.T) {
 			name: "new, a folder with a plan is refused", setup: plan,
 			req:         planSurfaceRequest{Mode: planSurfaceNew},
 			wantOutcome: planSurfaceRefused,
-			wantReason:  "this folder already has a plan (" + filepath.Join("{dir}", "docs", "PLAN.md") + "). To change it, use the dashboard's extend, amend or document actions: press ctrl+space, then type the name. Nothing was started.",
+			wantReason:  "this folder already has a plan (" + filepath.Join("{dir}", "docs", "PLAN.md") + "). To change it, use the dashboard's extend, amend or document actions: press ctrl+], then type the name. Nothing was started.",
 			unchanged:   true,
 		},
 		{

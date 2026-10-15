@@ -496,7 +496,7 @@ func paneTitleBlock(name, hint string, contentW int) string {
 // byte-for-byte against the pre-refactor inline titles.
 //
 // paneFocusHint is a var because it reads its key from the leader table
-// (leaderChord): since T7.2 a focused pane is left with ctrl+space \, and
+// (leaderChord): since T7.2 a focused pane is left with ctrl+] \, and
 // ctrl+\ belongs to the agent. attachDetachHint stays a const and stays
 // ctrl+\, because afk attach has no leader.
 var paneFocusHint = "[focused · " + leaderChord(actionDetailUnfocus) + " back to list]"
@@ -909,7 +909,7 @@ type headerPieces struct {
 	// inboxShort is the blocking part alone, "2 blocking", or "" when nothing
 	// blocks. The ladder trades the first for the second, so items that only
 	// wait to be read leave the row before items that stop the build do.
-	// inboxHint is "ctrl+space i: inbox". All three are "" when no item is open or no
+	// inboxHint is "ctrl+] i: inbox". All three are "" when no item is open or no
 	// build snapshot has arrived, which keeps a quiet project's header exactly
 	// as it was before the inbox existed.
 	inbox      string
@@ -1684,7 +1684,7 @@ func (m Model) renderLabelFormBar() string { return m.renderDialog(m.labelDialog
 // on the same line), and "term" is the user's own terminal, where releasing
 // capture makes native click-drag selection work again.
 //
-// Both states are deliberately the SAME width (18 cells). The focused help line
+// Both states are deliberately the SAME width (20 cells). The focused help line
 // is budgeted to the column (see renderHelp), and a hint that changed length
 // between states would move every item after it as the user toggled — so one
 // measurement covers both states only because the two strings measure equal.
@@ -1813,12 +1813,12 @@ func renderModeHelp(km help.KeyMap, showAll bool, width int) string {
 
 // renderNormalHelpKeyMap builds inputNormal's help.KeyMap. Since T7.2 every
 // dashboard action is a leader entry, so Short is the movement keys, enter to
-// focus the right side, and "ctrl+space actions"; restart joins it as
-// "ctrl+space r restart" only while it acts on the selected row (help never
+// focus the right side, and "ctrl+] actions"; restart joins it as
+// "ctrl+] r restart" only while it acts on the selected row (help never
 // offers a key that would do nothing, and a stopped or stuck agent is the
 // state a person comes to the footer to find a key for). Full is the mode's
 // registered keys (paging, esc to clear a filter) followed by one
-// "ctrl+space X" entry per leader action, from the leader table, and how the
+// "ctrl+] X" entry per leader action, from the leader table, and how the
 // help closes.
 //
 // Short stays this short on purpose: the actions dialog lists everything with
@@ -1846,7 +1846,7 @@ func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 		short = append(short, leaderHelpBinding(actionRestart, "restart", true))
 	}
 
-	// The full help lists each leader action as "ctrl+space X", dimmed out of
+	// The full help lists each leader action as "ctrl+] X", dimmed out of
 	// the list when it cannot run, and ends with how it closes: esc, since a
 	// bare ? is no longer a list key.
 	for _, row := range leaderRows(m.leaderConditions()) {
@@ -1860,7 +1860,7 @@ func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 // renderPaneHelpKeyMap builds inputPane's (a focused pane's) help.KeyMap, plus
 // the literal "input → session · " prefix the retired ladder prepended (not a
 // keybinding, so it is not modeled as one). Since T7.2 the leader is the one
-// key the dashboard owns in a focused pane, so the line is "ctrl+space
+// key the dashboard owns in a focused pane, so the line is "ctrl+]
 // actions" and the mouse state. The line is budgeted to the column for that
 // state (see mouseCaptureHint's doc), so it does not grow a third item.
 //
@@ -1868,7 +1868,7 @@ func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 // own chord prefix) rather than a static "release mouse" — this is the one
 // line where that state is worth reading, because it is what the user is
 // looking at while typing into the session. It is a leader entry
-// (ctrl+space g), not ctrl+g, which the agent owns in a pane.
+// (ctrl+] g), not ctrl+g, which the agent owns in a pane.
 func (m Model) renderPaneHelpKeyMap() (curatedKeyMap, string) {
 	desc := strings.TrimPrefix(m.mouseCaptureHint(), leaderChord(actionMouseToggle)+" ")
 	mouse := leaderHelpBinding(actionMouseToggle, desc, true)

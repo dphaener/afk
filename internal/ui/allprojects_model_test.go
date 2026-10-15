@@ -34,7 +34,7 @@ func openAllProjects(t *testing.T, m Model) Model {
 	t.Helper()
 	m, cmd := pressAction(t, m, keyRune('A'))
 	if !m.allProjectsOpen {
-		t.Fatal("setup: ctrl+space A did not open the all-projects screen")
+		t.Fatal("setup: ctrl+] A did not open the all-projects screen")
 	}
 	for _, msg := range collectMsgs(t, cmd) {
 		m, _ = update(t, m, msg)
@@ -103,7 +103,7 @@ func TestAllProjectsOpenAndClose(t *testing.T) {
 		m = openAllProjects(t, m)
 		m, _ = pressAction(t, m, keyRune('A'))
 		if m.allProjectsOpen {
-			t.Fatal("ctrl+space A over the screen did not close it")
+			t.Fatal("ctrl+] A over the screen did not close it")
 		}
 	})
 	t.Run("unwired says so", func(t *testing.T) {

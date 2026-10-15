@@ -1,10 +1,10 @@
- afk Dashboard                         inbox 1 · 1 blocking  ctrl+space i: inbox
+ afk Dashboard                             inbox 1 · 1 blocking  ctrl+] i: inbox
 ╭─ Sessions ─────────────────╮╭─ Build ────────────────────────────────────────╮
 │     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff   B… │
 │                            ││ ────────────────────────────────────────────── │
 │ ▌ ● feat-auth      EXEC  ● ││ 1/7 done · T1.2: executing                     │
 │   ● Billing v2     REVW    ││ paused: U or afk resume starts it again        │
-│   ● fix-╭─ Tokens ────────────────────────────────────────────────╮x         │
+│   ● fix-╭─ Tokens ────────────────────────────────────────────────╮          │
 │   ○ feat│ Task T1.2                                               │          │
 │   ● scra│     phase        role    model  calls  weighted   share │          │
 │   ○ old-│      plan     planner  model-a      4     71840    2.5% │          │

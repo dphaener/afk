@@ -70,13 +70,13 @@ func typeText(t *testing.T, m Model, s string) Model {
 	return m
 }
 
-// runPlanAction is ctrl+space, the query, enter: the way the plan actions
+// runPlanAction is ctrl+], the query, enter: the way the plan actions
 // are reached, since they have no key after the leader.
 func runPlanAction(t *testing.T, m Model, query string) (Model, tea.Cmd) {
 	t.Helper()
 	m, _ = update(t, m, leaderKeyPress)
 	if !m.leaderOpen {
-		t.Fatal("setup: ctrl+space did not open the actions dialog")
+		t.Fatal("setup: ctrl+] did not open the actions dialog")
 	}
 	m = typeText(t, m, query)
 	return update(t, m, keyEnter)
@@ -753,7 +753,7 @@ func TestPlanStartNewResults(t *testing.T) {
 // TestPlanStartNewEndToEnd is the action through the dialog, the form and
 // the result, then the switcher: the started folder is the project on
 // screen, the master-plan row is selected once discovery lists it, and the
-// switcher (ctrl+space p) shows a row for it.
+// switcher (ctrl+] p) shows a row for it.
 func TestPlanStartNewEndToEnd(t *testing.T) {
 	m, rec := planModel(t, sess("a"))
 	rec.reply = PlanStartResult{Outcome: PlanStarted, Root: newPlanRoot}
@@ -782,7 +782,7 @@ func TestPlanStartNewEndToEnd(t *testing.T) {
 	m, _ = update(t, m, leaderKeyPress)
 	m, _ = update(t, m, keyRune('p'))
 	if !m.switcherOpen {
-		t.Fatal("ctrl+space p did not open the switcher")
+		t.Fatal("ctrl+] p did not open the switcher")
 	}
 	if frame := render(m); !strings.Contains(frame, "fresh") || !strings.Contains(frame, "api") {
 		t.Errorf("the switcher does not list both projects:\n%s", frame)
@@ -1265,6 +1265,7 @@ func TestPlanFolderConfirmKeys(t *testing.T) {
 		{"enter is swallowed", tea.KeyPressMsg{Code: tea.KeyEnter}, keyDecision{kind: routeIgnored}},
 		{"q is swallowed", press('q', "q"), keyDecision{kind: routeIgnored}},
 		{"ctrl+space is swallowed", tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}, keyDecision{kind: routeIgnored}},
+		{"ctrl+] (the leader) is swallowed", tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl}, keyDecision{kind: routeIgnored}},
 		{"ctrl+c quits", chord('c'), keyDecision{routeAction, actionQuit}},
 	}
 	for _, tc := range cases {
@@ -1779,6 +1780,7 @@ func TestGitHubRepoConfirmKeys(t *testing.T) {
 		{"enter is swallowed", tea.KeyPressMsg{Code: tea.KeyEnter}, keyDecision{kind: routeIgnored}},
 		{"q is swallowed", press('q', "q"), keyDecision{kind: routeIgnored}},
 		{"ctrl+space is swallowed", tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}, keyDecision{kind: routeIgnored}},
+		{"ctrl+] (the leader) is swallowed", tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl}, keyDecision{kind: routeIgnored}},
 		{"ctrl+c quits", chord('c'), keyDecision{routeAction, actionQuit}},
 	}
 	for _, tc := range cases {

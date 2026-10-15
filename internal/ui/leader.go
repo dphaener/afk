@@ -1,12 +1,19 @@
-// leader.go holds the actions dialog the leader key (ctrl+space) opens: every
+// leader.go holds the actions dialog the leader key (ctrl+]) opens: every
 // dashboard action with its key and one line of help, from the session list,
 // the overview and the agent pane alike (T7.1).
+//
+// The leader was Ctrl+Space until T9.1 and is ctrl+] since (docs/decisions.md
+// "## T9.1"). ctrl+] is a byte of its own, 0x1D, that neither tmux's default
+// prefix (ctrl+b) nor a common custom one (ctrl+a) takes. Ctrl+Space is not:
+// a terminal sends Ctrl+Space, ctrl+@ and ctrl+2 all as the one NUL byte, and
+// on macOS Raycast takes Ctrl+Space before the terminal sees it at all. Now
+// Ctrl+Space is an ordinary key, which the agent pane forwards as NUL.
 //
 // Since T7.2 the leader is the ONE way to run a dashboard action. The owner
 // chose that the session list keeps only the keys that move around (PLAN
 // T7.2, docs/decisions.md "## T7.2"): the bare letters, the dashboard chords
 // and the `:` palette are gone, and an action is a key pressed after
-// ctrl+space. So the dialog's rows no longer come from mode.go's rules —
+// the leader. So the dialog's rows no longer come from mode.go's rules —
 // there are no rules for these actions left to derive them from — but from
 // leaderTable below, which holds the key after the leader for each action and
 // the side of the screen it runs on.
@@ -38,10 +45,14 @@ import (
 )
 
 // leaderKey is the leader key's string as key.Matches and KeyPressMsg.String
-// see it. Its arrival from the terminal is recorded in docs/decisions.md
-// (T7.1); here it only has to equal what String() prints for
-// {Code: KeySpace, Mod: ModCtrl}, which TestLeaderKeyDecision exercises.
-const leaderKey = "ctrl+space"
+// see it. How it arrives from the terminal is recorded in docs/decisions.md
+// (T9.1, "How ctrl+] arrives"): ultraviolet decodes the legacy byte 0x1D and
+// the kitty-protocol CSI 93;5u alike to {Code: ']', Mod: ModCtrl}, whose
+// String() is "ctrl+]", so this one string matches both. It is not
+// Ctrl+Space because that key is the NUL byte ctrl+@ and ctrl+2 also send,
+// and Raycast takes it on macOS (see the file comment). TestLeaderKeyDecision
+// exercises the match.
+const leaderKey = "ctrl+]"
 
 // The dialog's own gestures, declared HELP-ONLY: leaderKeyDecision stages
 // them, and declaring them as parent rules in the registry would implement
@@ -104,7 +115,7 @@ const (
 
 // leaderEntry is one action in the leader table.
 type leaderEntry struct {
-	// key is what is pressed after ctrl+space. It is a key.Matches string
+	// key is what is pressed after the leader. It is a key.Matches string
 	// ("n", "P", "\\", "?"), so a dialog key is compared with KeyPressMsg's
 	// String() exactly as a binding would be. It is "" for an action reached
 	// by name only (the plan actions): such a row shows no key, answers to no
@@ -421,7 +432,7 @@ func removedKeyNotice(s string) (string, bool) {
 }
 
 // leaderChord is how a hint or a notice names the key that runs action a:
-// "ctrl+space n". It reads the key from leaderTable, so a hint cannot name a
+// "ctrl+] n". It reads the key from leaderTable, so a hint cannot name a
 // key the dialog does not answer to. An action the table does not list gives
 // the leader alone, which still tells the reader where to look.
 func leaderChord(a modeAction) string {
@@ -431,7 +442,7 @@ func leaderChord(a modeAction) string {
 	return leaderKey
 }
 
-// leaderHelpBinding is a help entry that shows "ctrl+space X" for action a
+// leaderHelpBinding is a help entry that shows "ctrl+] X" for action a
 // with the given short description, for the footer and the full help. Its
 // match key is the plain key after the leader: nothing dispatches on it (the
 // dialog does, from leaderTable), it only has to be non-empty because
@@ -820,7 +831,7 @@ const (
 	leaderFilter
 	// leaderClose closes the dialog and does nothing else.
 	leaderClose
-	// leaderPassThrough closes the dialog and types ctrl+space to the agent:
+	// leaderPassThrough closes the dialog and types ctrl+] to the agent:
 	// the leader pressed twice from the agent pane is how the agent still gets
 	// the key the dashboard took for itself.
 	leaderPassThrough
@@ -863,7 +874,7 @@ type leaderOutcome struct {
 // The rules run in a fixed order, and the order is the design:
 //
 //  1. esc closes, whatever is typed — one key out, always.
-//  2. ctrl+space closes; from the agent pane it also passes ctrl+space on.
+//  2. The leader closes; from the agent pane it also passes the leader on.
 //  3. up and down move the highlight.
 //  4. enter runs the highlighted row. enter and esc are checked before any
 //     row's keys; no row carries either (rows carry the key after the

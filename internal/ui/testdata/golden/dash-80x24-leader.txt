@@ -20,5 +20,5 @@
 │ │ U  resume the build                    — this project has no build       │ │
 │ │ R  refresh usage                       — this dashboard cannot read usa… │ │
 │ ╰──────────────────── key runs · enter runs · type to filter · esc closes ─╯ │
-╰────────────────────────────╯╰─ enter: focus view · ctrl+space c: clean · c… ─╯
+╰────────────────────────────╯╰─ enter: focus view · ctrl+] c: clean · ctrl+… ─╯
 enter run · ↑/↓ move · type filter · esc close …

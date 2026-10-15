@@ -1,4 +1,4 @@
- afk Dashboard                                                                 inbox 3 · 2 blocking  ctrl+space i: inbox
+ afk Dashboard                                                                     inbox 3 · 2 blocking  ctrl+] i: inbox
 ╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff   Build       tab/1-6: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
@@ -36,5 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
+╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
 enter read · ↑/k up · ↓/j down · esc close

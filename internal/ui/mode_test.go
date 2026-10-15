@@ -756,7 +756,7 @@ func press(code rune, text string) tea.KeyPressMsg {
 //   - ctrl+g rows: the mouse chord is still claimable from every overlay,
 //     form, prompt, confirm and resize mode (T7.2 left their keys alone, A4),
 //     the switcher and the inbox overlay excepted as before. On the list and
-//     the overview it is ignored (ctrl+space g), and in the pane it is the
+//     the overview it is ignored (ctrl+] g), and in the pane it is the
 //     agent's.
 //   - ctrl+c rows: quits from modals, the switcher, the list and the
 //     overview (A3: a stuck dashboard can always be left), component
@@ -767,7 +767,7 @@ func press(code rune, text string) tea.KeyPressMsg {
 //     the key from every agent the dashboard hosts.
 //   - "q" and "y" rows: q quits nowhere but resize mode now (it is filter
 //     text in the switcher, prompt text in the label editor, the child's own
-//     byte in a pane, and ctrl+space q on the list); y must confirm ONLY in
+//     byte in a pane, and ctrl+] q on the list); y must confirm ONLY in
 //     the two y/n modals.
 //   - esc rows: in normal mode esc closes the full help first, then clears a
 //     filter, and with neither does nothing; on the overview it releases.
@@ -778,7 +778,7 @@ func press(code rune, text string) tea.KeyPressMsg {
 //   - the overview keys in normal mode (shift+arrows, ctrl+u/ctrl+d, tab,
 //     shift+tab, 1-6) are ignored: with the list focused nothing on the right
 //     is under control.
-//   - ctrl+space rows: the leader is a rule in normal, detail and pane mode and
+//   - ctrl+] rows: the leader is a rule in normal, detail and pane mode and
 //     in no other, so under every overlay, form and confirm it is that
 //     surface's key (or swallowed) and the dialog cannot open over it.
 //   - inputInbox rows: the overlay has no parent rule, so EVERY key is the
@@ -808,6 +808,11 @@ func TestRouteKeyMatrix(t *testing.T) {
 	nLower := press('n', "n")
 	q := press('q', "q")
 	plainX := press('x', "x")
+	// ctrlBracket is the leader, ctrl+], as ultraviolet decodes 0x1D.
+	// ctrlSpace was the leader before T9.1 and is an ordinary key now: the
+	// rows that press it pin that it opens nothing and, in the pane, goes to
+	// the agent.
+	ctrlBracket := tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl}
 	ctrlSpace := tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
 
 	cases := []struct {
@@ -818,7 +823,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		want  keyDecision
 	}{
 		// ctrl+g: everywhere but the switcher.
-		{"ctrl+g in normal is ignored (ctrl+space g)", inputNormal, routeConds{}, ctrlG, keyDecision{kind: routeIgnored}},
+		{"ctrl+g in normal is ignored (ctrl+] g)", inputNormal, routeConds{}, ctrlG, keyDecision{kind: routeIgnored}},
 		{"ctrl+g in pane forwards to the child", inputPane, routeConds{}, ctrlG, keyDecision{kind: routeChild}},
 		{"ctrl+g in form", inputForm, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in confirm clean", inputConfirmClean, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
@@ -827,7 +832,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+g in edit label", inputEditLabel, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in plan form", inputPlanText, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in plan open offer", inputConfirmPlanOpen, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
-		{"ctrl+g in detail is ignored (ctrl+space g)", inputDetail, routeConds{}, ctrlG, keyDecision{kind: routeIgnored}},
+		{"ctrl+g in detail is ignored (ctrl+] g)", inputDetail, routeConds{}, ctrlG, keyDecision{kind: routeIgnored}},
 		{"ctrl+g in switcher goes to the list", inputSwitcher, routeConds{}, ctrlG, keyDecision{kind: routeComponent}},
 
 		// ctrl+c: the universal escape hatch, except where documented.
@@ -843,7 +848,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"enter in plan form submits", inputPlanText, routeConds{}, enter, keyDecision{routeAction, actionSubmit}},
 		{"y in plan form goes to the textinput", inputPlanText, routeConds{}, yLower, keyDecision{kind: routeComponent}},
 		{"q in plan form goes to the textinput", inputPlanText, routeConds{}, q, keyDecision{kind: routeComponent}},
-		{"ctrl+space in plan form goes to the textinput", inputPlanText, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+] in plan form goes to the textinput", inputPlanText, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
 		// The open-it offer is a y/n confirmation: a stray key neither opens
 		// the session nor dismisses the question.
 		{"y in plan open offer confirms", inputConfirmPlanOpen, routeConds{}, yLower, keyDecision{routeAction, actionConfirm}},
@@ -861,16 +866,16 @@ func TestRouteKeyMatrix(t *testing.T) {
 		// ctrl+t: the old intercept position, as per-mode data.
 		{"ctrl+t in pane forwards to the child", inputPane, routeConds{}, ctrlT, keyDecision{kind: routeChild}},
 		{"ctrl+t in normal is ignored", inputNormal, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
-		{"ctrl+t in detail is ignored (ctrl+space t)", inputDetail, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
+		{"ctrl+t in detail is ignored (ctrl+] t)", inputDetail, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
 		{"ctrl+t in form goes to the component", inputForm, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
 		{"ctrl+t in switcher goes to the list", inputSwitcher, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
 		{"ctrl+t in confirm clean is swallowed", inputConfirmClean, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
 
 		// ctrl+\: the escalating chord and its pane guard.
 		{"ctrl+backslash in pane forwards to the child", inputPane, routeConds{}, ctrlBackslash, keyDecision{kind: routeChild}},
-		{"ctrl+backslash in normal with a pane is ignored (ctrl+space \\)", inputNormal, routeConds{paneOpen: true}, ctrlBackslash, keyDecision{kind: routeIgnored}},
+		{"ctrl+backslash in normal with a pane is ignored (ctrl+] \\)", inputNormal, routeConds{paneOpen: true}, ctrlBackslash, keyDecision{kind: routeIgnored}},
 		{"ctrl+backslash in normal without a pane is ignored", inputNormal, routeConds{}, ctrlBackslash, keyDecision{kind: routeIgnored}},
-		{"ctrl+backslash in detail is ignored (ctrl+space \\)", inputDetail, routeConds{}, ctrlBackslash, keyDecision{kind: routeIgnored}},
+		{"ctrl+backslash in detail is ignored (ctrl+] \\)", inputDetail, routeConds{}, ctrlBackslash, keyDecision{kind: routeIgnored}},
 		{"ctrl+backslash in form goes to the component", inputForm, routeConds{}, ctrlBackslash, keyDecision{kind: routeComponent}},
 		{"ctrl+backslash in confirm clean is swallowed", inputConfirmClean, routeConds{}, ctrlBackslash, keyDecision{kind: routeIgnored}},
 
@@ -915,12 +920,12 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"d in confirm clean is the delete-branch offer", inputConfirmClean, routeConds{}, press('d', "d"), keyDecision{routeAction, actionDeleteBranch}},
 		{"D in confirm clean is the delete-branch offer", inputConfirmClean, routeConds{}, press('d', "D"), keyDecision{routeAction, actionDeleteBranch}},
 		{"d in confirm restart is swallowed", inputConfirmRestart, routeConds{}, press('d', "d"), keyDecision{kind: routeIgnored}},
-		{"n in normal is ignored (ctrl+space n)", inputNormal, routeConds{}, press('n', "n"), keyDecision{kind: routeIgnored}},
+		{"n in normal is ignored (ctrl+] n)", inputNormal, routeConds{}, press('n', "n"), keyDecision{kind: routeIgnored}},
 		{"y in normal is ignored", inputNormal, routeConds{}, yLower, keyDecision{kind: routeIgnored}},
 		{"y in edit label goes to the textinput", inputEditLabel, routeConds{}, yLower, keyDecision{kind: routeComponent}},
 
 		// q: quit only in normal and detail.
-		{"q in normal is ignored (ctrl+space q)", inputNormal, routeConds{}, q, keyDecision{kind: routeIgnored}},
+		{"q in normal is ignored (ctrl+] q)", inputNormal, routeConds{}, q, keyDecision{kind: routeIgnored}},
 		{"q in detail is ignored", inputDetail, routeConds{}, q, keyDecision{kind: routeIgnored}},
 		{"q in switcher filters (component)", inputSwitcher, routeConds{}, q, keyDecision{kind: routeComponent}},
 		{"q in form types (component)", inputForm, routeConds{}, q, keyDecision{kind: routeComponent}},
@@ -968,7 +973,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		// letter the agent is being sent, and a rule here would take it away
 		// from every session the dashboard hosts. Everywhere else it is text
 		// for a component or is swallowed, like any other letter.
-		{"b in normal is ignored (ctrl+space b)", inputNormal, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
+		{"b in normal is ignored (ctrl+] b)", inputNormal, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
 		{"b in detail is ignored", inputDetail, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
 		{"b in pane forwards to the child", inputPane, routeConds{}, press('b', "b"), keyDecision{kind: routeChild}},
 		{"b in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('b', "b"), keyDecision{kind: routeChild}},
@@ -979,7 +984,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"b in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
 		{"b in resize is swallowed", inputResize, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
 		// i: the inbox overlay, on the same terms as b.
-		{"i in normal is ignored (ctrl+space i)", inputNormal, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
+		{"i in normal is ignored (ctrl+] i)", inputNormal, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
 		{"i in detail is ignored", inputDetail, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
 		{"i in pane forwards to the child", inputPane, routeConds{}, press('i', "i"), keyDecision{kind: routeChild}},
 		{"i in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('i', "i"), keyDecision{kind: routeChild}},
@@ -993,7 +998,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		// lower-case letters keep their own meanings, which the last four rows
 		// pin: a rule matching without regard to case would turn the project
 		// switcher's key into a pause.
-		{"P in normal is ignored (ctrl+space P)", inputNormal, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
+		{"P in normal is ignored (ctrl+] P)", inputNormal, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
 		{"P in detail is ignored", inputDetail, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
 		{"P in pane forwards to the child", inputPane, routeConds{}, press('P', "P"), keyDecision{kind: routeChild}},
 		{"P in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('P', "P"), keyDecision{kind: routeChild}},
@@ -1004,7 +1009,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"P in edit label goes to the textinput", inputEditLabel, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
 		{"P in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
 		{"P in resize is swallowed", inputResize, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
-		{"U in normal is ignored (ctrl+space U)", inputNormal, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
+		{"U in normal is ignored (ctrl+] U)", inputNormal, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
 		{"U in detail is ignored", inputDetail, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
 		{"U in pane forwards to the child", inputPane, routeConds{}, press('U', "U"), keyDecision{kind: routeChild}},
 		{"U in pane forwards to the child even with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, press('U', "U"), keyDecision{kind: routeChild}},
@@ -1015,7 +1020,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"U in edit label goes to the textinput", inputEditLabel, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
 		{"U in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
 		{"U in resize is swallowed", inputResize, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
-		{"p in normal is ignored (ctrl+space p)", inputNormal, routeConds{}, press('p', "p"), keyDecision{kind: routeIgnored}},
+		{"p in normal is ignored (ctrl+] p)", inputNormal, routeConds{}, press('p', "p"), keyDecision{kind: routeIgnored}},
 		{"u in normal is still ignored", inputNormal, routeConds{}, press('u', "u"), keyDecision{kind: routeIgnored}},
 		{"p in detail is still swallowed", inputDetail, routeConds{}, press('p', "p"), keyDecision{kind: routeIgnored}},
 		{"u in pane forwards to the child", inputPane, routeConds{}, press('u', "u"), keyDecision{kind: routeChild}},
@@ -1033,18 +1038,18 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+c in plan check quits", inputPlanCheck, routeConds{}, ctrlC, keyDecision{kind: routeAction, action: actionQuit}},
 		{"esc in plan check goes to the component", inputPlanCheck, routeConds{}, esc, keyDecision{kind: routeComponent}},
 		{"q in plan check goes to the component", inputPlanCheck, routeConds{}, q, keyDecision{kind: routeComponent}},
-		{"ctrl+space in plan check goes to the component", inputPlanCheck, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+] in plan check goes to the component", inputPlanCheck, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
 		{"pgdown in plan check goes to the component", inputPlanCheck, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgDown}, keyDecision{kind: routeComponent}},
 		// The tokens overlay is the plan check's shape (T7.12).
 		{"ctrl+c in task tokens quits", inputTaskTokens, routeConds{}, ctrlC, keyDecision{kind: routeAction, action: actionQuit}},
 		{"esc in task tokens goes to the component", inputTaskTokens, routeConds{}, esc, keyDecision{kind: routeComponent}},
 		{"q in task tokens goes to the component", inputTaskTokens, routeConds{}, q, keyDecision{kind: routeComponent}},
-		{"ctrl+space in task tokens goes to the component", inputTaskTokens, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
+		{"ctrl+] in task tokens goes to the component", inputTaskTokens, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
 		{"pgdown in task tokens goes to the component", inputTaskTokens, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgDown}, keyDecision{kind: routeComponent}},
 		// The all-projects screen enumerates its keys and ignores the rest,
 		// as detail mode does; the leader is a rule there (pause and resume
 		// act on its rows through the dialog), unlike in the overlays.
-		{"ctrl+space in all projects opens the leader", inputAllProjects, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+] in all projects opens the leader", inputAllProjects, routeConds{}, ctrlBracket, keyDecision{routeAction, actionOpenLeader}},
 		{"ctrl+c in all projects quits", inputAllProjects, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"esc in all projects closes", inputAllProjects, routeConds{}, esc, keyDecision{routeAction, actionAllProjectsClose}},
 		{"enter in all projects switches", inputAllProjects, routeConds{}, enter, keyDecision{routeAction, actionAllProjectsSwitch}},
@@ -1065,7 +1070,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		// ctrl+w: enters resize mode from normal and detail only; a focused
 		// pane forwards it to the child (delete-word in a shell), and inside
 		// resize mode the same chord commits.
-		{"ctrl+w in normal is ignored (ctrl+space w)", inputNormal, routeConds{}, ctrlW, keyDecision{kind: routeIgnored}},
+		{"ctrl+w in normal is ignored (ctrl+] w)", inputNormal, routeConds{}, ctrlW, keyDecision{kind: routeIgnored}},
 		{"ctrl+w in detail is ignored", inputDetail, routeConds{}, ctrlW, keyDecision{kind: routeIgnored}},
 		{"ctrl+w in pane forwards to the child", inputPane, routeConds{}, ctrlW, keyDecision{kind: routeChild}},
 		{"ctrl+w in form goes to the component", inputForm, routeConds{}, ctrlW, keyDecision{kind: routeComponent}},
@@ -1095,22 +1100,28 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"plain text in resize is ignored", inputResize, routeConds{}, plainX, keyDecision{kind: routeIgnored}},
 		{"h in normal is ignored", inputNormal, routeConds{}, press('h', "h"), keyDecision{kind: routeIgnored}},
 
-		// ctrl+space, the leader: a rule in normal, detail and pane mode only.
-		{"ctrl+space in normal opens the leader", inputNormal, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
-		{"ctrl+space in detail opens the leader", inputDetail, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
-		{"ctrl+space in pane opens the leader", inputPane, routeConds{}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
-		{"ctrl+space in pane opens the leader with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, ctrlSpace, keyDecision{routeAction, actionOpenLeader}},
-		{"ctrl+space in leader goes to the dialog", inputLeader, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
-		{"ctrl+space in switcher goes to the component", inputSwitcher, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
-		{"ctrl+space in inbox goes to the component", inputInbox, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
-		{"ctrl+space in form goes to the component", inputForm, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
-		{"ctrl+space in filter goes to the prompt", inputFilter, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
-		{"ctrl+space in edit label goes to the textinput", inputEditLabel, routeConds{}, ctrlSpace, keyDecision{kind: routeComponent}},
-		{"ctrl+space in confirm clean is swallowed", inputConfirmClean, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
-		{"ctrl+space in confirm restart is swallowed", inputConfirmRestart, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
-		{"ctrl+space in spawn error is swallowed", inputSpawnError, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
-		{"ctrl+space in provider picker is swallowed", inputPickProvider, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
-		{"ctrl+space in resize is swallowed", inputResize, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		// ctrl+], the leader: a rule in normal, detail and pane mode only.
+		{"ctrl+] in normal opens the leader", inputNormal, routeConds{}, ctrlBracket, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+] in detail opens the leader", inputDetail, routeConds{}, ctrlBracket, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+] in pane opens the leader", inputPane, routeConds{}, ctrlBracket, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+] in pane opens the leader with a pane open and a filter applied", inputPane, routeConds{paneOpen: true, listFiltered: true}, ctrlBracket, keyDecision{routeAction, actionOpenLeader}},
+		{"ctrl+] in leader goes to the dialog", inputLeader, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
+		{"ctrl+] in switcher goes to the component", inputSwitcher, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
+		{"ctrl+] in inbox goes to the component", inputInbox, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
+		{"ctrl+] in form goes to the component", inputForm, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
+		{"ctrl+] in filter goes to the prompt", inputFilter, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
+		{"ctrl+] in edit label goes to the textinput", inputEditLabel, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
+		{"ctrl+] in confirm clean is swallowed", inputConfirmClean, routeConds{}, ctrlBracket, keyDecision{kind: routeIgnored}},
+		{"ctrl+] in confirm restart is swallowed", inputConfirmRestart, routeConds{}, ctrlBracket, keyDecision{kind: routeIgnored}},
+		{"ctrl+] in spawn error is swallowed", inputSpawnError, routeConds{}, ctrlBracket, keyDecision{kind: routeIgnored}},
+		{"ctrl+] in provider picker is swallowed", inputPickProvider, routeConds{}, ctrlBracket, keyDecision{kind: routeIgnored}},
+		{"ctrl+] in resize is swallowed", inputResize, routeConds{}, ctrlBracket, keyDecision{kind: routeIgnored}},
+		// ctrl+space, the leader before T9.1, is an ordinary key: it opens
+		// the leader nowhere, and the pane hands it to the agent.
+		{"ctrl+space in normal opens nothing", inputNormal, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		{"ctrl+space in detail opens nothing", inputDetail, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
+		{"ctrl+space in pane forwards to the child", inputPane, routeConds{}, ctrlSpace, keyDecision{kind: routeChild}},
+		{"ctrl+space in all projects opens nothing", inputAllProjects, routeConds{}, ctrlSpace, keyDecision{kind: routeIgnored}},
 		// Leader mode has no parent rule: q and ctrl+c are the dialog's (they
 		// run its quit row), esc closes it there.
 		{"q in leader goes to the dialog", inputLeader, routeConds{}, q, keyDecision{kind: routeComponent}},
@@ -1121,15 +1132,15 @@ func TestRouteKeyMatrix(t *testing.T) {
 		// The rest of the removed list keys: every one ignored by the rule
 		// table (dispatchKey turns them into a notice afterwards), and the
 		// one-letter keys the leader table gained are nothing on the list.
-		{"? in normal is ignored (ctrl+space ?)", inputNormal, routeConds{}, press('?', "?"), keyDecision{kind: routeIgnored}},
-		{"/ in normal is ignored (ctrl+space /)", inputNormal, routeConds{}, press('/', "/"), keyDecision{kind: routeIgnored}},
+		{"? in normal is ignored (ctrl+] ?)", inputNormal, routeConds{}, press('?', "?"), keyDecision{kind: routeIgnored}},
+		{"/ in normal is ignored (ctrl+] /)", inputNormal, routeConds{}, press('/', "/"), keyDecision{kind: routeIgnored}},
 		{": in normal is ignored (the palette is gone)", inputNormal, routeConds{}, press(':', ":"), keyDecision{kind: routeIgnored}},
-		{"f in normal is ignored (ctrl+space f)", inputNormal, routeConds{}, press('f', "f"), keyDecision{kind: routeIgnored}},
-		{"c in normal is ignored (ctrl+space c)", inputNormal, routeConds{}, press('c', "c"), keyDecision{kind: routeIgnored}},
-		{"r in normal is ignored (ctrl+space r)", inputNormal, routeConds{}, press('r', "r"), keyDecision{kind: routeIgnored}},
-		{"r in detail is ignored (ctrl+space r)", inputDetail, routeConds{}, press('r', "r"), keyDecision{kind: routeIgnored}},
-		{"l in normal is ignored (ctrl+space l)", inputNormal, routeConds{}, press('l', "l"), keyDecision{kind: routeIgnored}},
-		{"o in normal is ignored (ctrl+space o)", inputNormal, routeConds{}, press('o', "o"), keyDecision{kind: routeIgnored}},
+		{"f in normal is ignored (ctrl+] f)", inputNormal, routeConds{}, press('f', "f"), keyDecision{kind: routeIgnored}},
+		{"c in normal is ignored (ctrl+] c)", inputNormal, routeConds{}, press('c', "c"), keyDecision{kind: routeIgnored}},
+		{"r in normal is ignored (ctrl+] r)", inputNormal, routeConds{}, press('r', "r"), keyDecision{kind: routeIgnored}},
+		{"r in detail is ignored (ctrl+] r)", inputDetail, routeConds{}, press('r', "r"), keyDecision{kind: routeIgnored}},
+		{"l in normal is ignored (ctrl+] l)", inputNormal, routeConds{}, press('l', "l"), keyDecision{kind: routeIgnored}},
+		{"o in normal is ignored (ctrl+] o)", inputNormal, routeConds{}, press('o', "o"), keyDecision{kind: routeIgnored}},
 		{"t in normal is ignored", inputNormal, routeConds{}, press('t', "t"), keyDecision{kind: routeIgnored}},
 		{"j in normal still moves the cursor", inputNormal, routeConds{}, press('j', "j"), keyDecision{routeAction, actionCursorDown}},
 		{"k in normal still moves the cursor", inputNormal, routeConds{}, press('k', "k"), keyDecision{routeAction, actionCursorUp}},
@@ -1446,23 +1457,23 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"all projects advertises down", inputAllProjects, "down"},
 		{"all projects advertises pause", inputAllProjects, "P"},
 		{"all projects advertises resume", inputAllProjects, "U"},
-		{"all projects advertises ctrl+space", inputAllProjects, "ctrl+space"},
+		{"all projects advertises ctrl+]", inputAllProjects, "ctrl+]"},
 		// The leader is listed by `?` (normal mode's full help), and the
 		// dialog's own gestures are the component's, so this keymap is their
 		// only structured record.
-		{"normal advertises ctrl+space", inputNormal, "ctrl+space"},
+		{"normal advertises ctrl+]", inputNormal, "ctrl+]"},
 		// Since T7.2 the leader is the one dashboard key the list, the
 		// overview and the agent pane advertise beyond moving about; ctrl+c is
 		// the list's and the overview's quit without it.
-		{"detail advertises ctrl+space", inputDetail, "ctrl+space"},
-		{"pane advertises ctrl+space", inputPane, "ctrl+space"},
+		{"detail advertises ctrl+]", inputDetail, "ctrl+]"},
+		{"pane advertises ctrl+]", inputPane, "ctrl+]"},
 		{"normal advertises ctrl+c", inputNormal, "ctrl+c"},
 		{"detail advertises ctrl+c", inputDetail, "ctrl+c"},
 		{"detail advertises esc", inputDetail, "esc"},
 		{"leader advertises enter", inputLeader, "enter"},
 		{"leader advertises esc", inputLeader, "esc"},
 		{"leader advertises up", inputLeader, "up"},
-		{"leader advertises ctrl+space", inputLeader, "ctrl+space"},
+		{"leader advertises ctrl+]", inputLeader, "ctrl+]"},
 	}
 
 	for _, tc := range wantKeys {
@@ -1523,13 +1534,13 @@ func TestListOwnedKeysAreRepresentedInTheKeymap(t *testing.T) {
 		"u":     "PrevPage narrowed to pgup-only",
 		"right": "NextPage narrowed to pgdown-only",
 		"d":     "NextPage narrowed to pgdown-only",
-		"l":     "NextPage narrowed to pgdown-only; bare l no longer acts on the list (label is ctrl+space l)",
+		"l":     "NextPage narrowed to pgdown-only; bare l no longer acts on the list (label is ctrl+] l)",
 		"f":     "NextPage narrowed to pgdown-only; bare f no longer acts on the list (focus is enter)",
 		"g":     "GoToStart narrowed to home-only",
 		"G":     "GoToEnd narrowed to end-only",
-		"?":     "ShowFullHelp/CloseFullHelp key set cleared; help is ctrl+space ? (T7.2)",
-		"/":     "the list's Filter key is only ever handed on by ctrl+space / (T7.2), never pressed on the list",
-		"q":     "quit is ctrl+space q on the list since T7.2; ctrl+c still quits",
+		"?":     "ShowFullHelp/CloseFullHelp key set cleared; help is ctrl+] ? (T7.2)",
+		"/":     "the list's Filter key is only ever handed on by ctrl+] / (T7.2), never pressed on the list",
+		"q":     "quit is ctrl+] q on the list since T7.2; ctrl+c still quits",
 		"v":     "Quit disabled via DisableQuitKeybindings",
 	}
 

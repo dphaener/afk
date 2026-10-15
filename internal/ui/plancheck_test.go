@@ -86,7 +86,7 @@ func TestLeaderPlanCheckWordsAreUnique(t *testing.T) {
 	}
 }
 
-// TestPlanCheckDialogOpensTheOverlay walks the gesture: ctrl+space, "errors",
+// TestPlanCheckDialogOpensTheOverlay walks the gesture: ctrl+], "errors",
 // enter. Typing the word must leave exactly the one row, and enter must open
 // the overlay with the keyboard on it.
 func TestPlanCheckDialogOpensTheOverlay(t *testing.T) {
@@ -308,7 +308,7 @@ func TestPlanCheckUnwired(t *testing.T) {
 	}
 }
 
-// TestPlanCheckIgnoresTheLeader pins that ctrl+space opens nothing while the
+// TestPlanCheckIgnoresTheLeader pins that ctrl+] opens nothing while the
 // overlay is up, as over the inbox: the overlay is not a surface the leader
 // is a rule on.
 func TestPlanCheckIgnoresTheLeader(t *testing.T) {

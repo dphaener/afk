@@ -90,7 +90,7 @@ func TestUsageRefreshBlockedReason(t *testing.T) {
 }
 
 // TestUsageRefreshNilSeam is the zero-Deps guarantee: a dashboard not wired
-// to the reading dims the row, and neither ctrl+space R nor the action run
+// to the reading dims the row, and neither ctrl+] R nor the action run
 // directly calls anything or reads usage. Both rows are load-bearing: the
 // first is what the owner can press, the second the action's own refusal.
 func TestUsageRefreshNilSeam(t *testing.T) {
@@ -121,7 +121,7 @@ func TestUsageRefreshNilSeam(t *testing.T) {
 	})
 }
 
-// TestUsageRefreshRunsOnce drives ctrl+space R through Update. Load-bearing
+// TestUsageRefreshRunsOnce drives ctrl+] R through Update. Load-bearing
 // rows: "the seam runs in the command, not in Update" (the agent's CLI can
 // take a minute, and the screen must not wait), "a second press calls
 // nothing" (one reading at a time) and "the flag is cleared after" (a flag

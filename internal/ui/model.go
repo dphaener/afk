@@ -1000,7 +1000,7 @@ type keyMap struct {
 	PauseBuild  key.Binding
 	ResumeBuild key.Binding
 	Quit        key.Binding
-	// Leader is ctrl+space, the leader key that opens the actions dialog
+	// Leader is ctrl+], the leader key that opens the actions dialog
 	// (leader.go). See its comment in defaultKeyMap for how the key arrives.
 	Leader key.Binding
 }
@@ -1075,7 +1075,7 @@ func defaultKeyMap() keyMap {
 		// focuses its overview. The compact description is width-sensitive
 		// because it shares the oversubscribed 80-column list footer; the
 		// focused presentation tests pin that budget. Its second key, f,
-		// moved under the leader in T7.2 (ctrl+space f).
+		// moved under the leader in T7.2 (ctrl+] f).
 		Focus: key.NewBinding(
 			key.WithKeys("enter"),
 			key.WithHelp("enter", "focus view"),
@@ -1116,14 +1116,14 @@ func defaultKeyMap() keyMap {
 			key.WithHelp("/", "filter"),
 		),
 		// `b` goes straight to the Build tab (showBuildTab). Since T7.2 it is
-		// ctrl+space b (leader.go), not a rule in any mode: with the agent pane
+		// ctrl+] b (leader.go), not a rule in any mode: with the agent pane
 		// focused every key but the leader belongs to the agent, `b` included.
 		Build: key.NewBinding(
 			key.WithKeys("b"),
 			key.WithHelp("b", "build tasks"),
 		),
 		// `i` opens the inbox overlay (openInbox, inboxoverlay.go), as
-		// ctrl+space i since T7.2. With the agent pane focused `i` is a letter
+		// ctrl+] i since T7.2. With the agent pane focused `i` is a letter
 		// the agent is being sent.
 		Inbox: key.NewBinding(
 			key.WithKeys("i"),
@@ -1136,8 +1136,8 @@ func defaultKeyMap() keyMap {
 		// scrolls the overview), and a pause should be hard to press by
 		// accident: it holds the whole project's build until someone notices.
 		//
-		// Like `b` and `i` they run from the leader since T7.2 (ctrl+space P,
-		// ctrl+space U), so with the agent pane focused each is a letter the
+		// Like `b` and `i` they run from the leader since T7.2 (ctrl+] P,
+		// ctrl+] U), so with the agent pane focused each is a letter the
 		// agent is being sent, and in the inbox overlay a letter of the answer.
 		PauseBuild: key.NewBinding(
 			key.WithKeys("P"),
@@ -1149,23 +1149,24 @@ func defaultKeyMap() keyMap {
 		),
 		// Quit with q and ctrl+c is a rule in resize mode only, whose keys
 		// T7.2 left alone. The list and the overview quit with ctrl+c alone
-		// (mode.go's quitChord) and with ctrl+space q.
+		// (mode.go's quitChord) and with ctrl+] q.
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
 			key.WithHelp("q", "quit"),
 		),
-		// ctrl+space opens the actions dialog (T7.1). A terminal sends it as
-		// a NUL byte, and ultraviolet's decoder turns NUL into
-		// {Code: KeySpace, Mod: ModCtrl} (decoder.go parseControl, and the
-		// same entry in its kitty key map) unless the LegacyKeyEncoding
-		// CtrlAt flag is set, which bubbletea v2 never sets — so String()
-		// is "ctrl+space", the string this binding matches. ctrl+@ is the
-		// same byte and cannot be told apart, so it opens the dialog too.
+		// ctrl+] opens the actions dialog (T7.1; ctrl+] since T9.1). A
+		// terminal sends it as the byte 0x1D, and ultraviolet's decoder turns
+		// 0x1D into {Code: ']', Mod: ModCtrl} (decoder.go parseControl, which
+		// maps 0x1C–0x1F to code+0x40); a kitty-protocol CSI 93;5u decodes to
+		// the same key (parseKittyKeyboard). Either way String() is "ctrl+]",
+		// the string this binding matches (docs/decisions.md "## T9.1").
+		// Unlike the old Ctrl+Space, which shares the NUL byte with ctrl+@
+		// and ctrl+2, no other chord sends 0x1D.
 		//
 		// It is a rule in normal, detail and pane mode only (mode.go). In
 		// the agent pane that takes a key from the agent, which is why the
-		// dialog gives it back: ctrl+space pressed twice sends ctrl+space on,
-		// and the pane encodes it to NUL again (ctrlChordEvent, messages.go).
+		// dialog gives it back: ctrl+] pressed twice sends ctrl+] on, and
+		// the pane encodes it to 0x1D again (ctrlChordEvent, messages.go).
 		Leader: key.NewBinding(
 			key.WithKeys(leaderKey),
 			key.WithHelp(leaderKey, "actions"),
@@ -2107,7 +2108,7 @@ type Model struct {
 	leaderFromPlaceholder bool
 
 	// helpShowAll is renderHelp's ShowAll flag (views.go), toggled by
-	// ctrl+space ? (actionHelp) and closed by esc on the list. It is
+	// ctrl+] ? (actionHelp) and closed by esc on the list. It is
 	// presentational — no mode is derived from it, only normal mode's esc
 	// guard reads it (routeConds.helpShown) — which is why it lives beside the
 	// other footer-only state rather than in modeState/modePrecedence.
@@ -3510,7 +3511,7 @@ func (m Model) toggleMouseCapture() (tea.Model, tea.Cmd) {
 }
 
 // toggleFullHelp flips m.helpShowAll — the help action's whole effect
-// (ctrl+space ?, and esc while it is shown). It is presentational
+// (ctrl+] ?, and esc while it is shown). It is presentational
 // only (renderHelp reads the flag; no mode or dispatch decision does), so
 // unlike every other action in this file it has no status write and no Cmd.
 func (m Model) toggleFullHelp() (tea.Model, tea.Cmd) {
@@ -3611,7 +3612,7 @@ func (m Model) switchDetailTab(a modeAction, k tea.KeyPressMsg) (tea.Model, tea.
 // semantics while focused, so the dashboard's quit binding does NOT apply
 // there), forwarded through termpane's mode-aware input API. Since T7.2 that
 // includes ctrl+t, ctrl+g and ctrl+\: the dashboard's way back to the list is
-// ctrl+space \, so the chords the agent pane used to keep are the agent's.
+// ctrl+] \, so the chords the agent pane used to keep are the agent's.
 func (m Model) dispatchKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	mode := activeInputMode(m.modeSnapshot())
 	// The right side focused on the agent placeholder (connecting, restarting,
@@ -3778,7 +3779,7 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionResizeRightBig:
 		return m.nudgeSidebar(resizeBigStep)
 
-	// enter on the list and ctrl+space f are ONE action: focus the right
+	// enter on the list and ctrl+] f are ONE action: focus the right
 	// side. What "the right side" means — the overview, the installed agent,
 	// or a connect — is focusRightSide's to decide from the view, never the
 	// rule table's or the leader table's.
@@ -4062,7 +4063,7 @@ func (m Model) resizeHints() (commit, cancel string) {
 		findBinding(bindings, []string{"esc"}).Help().Key
 }
 
-// enterResize is ctrl+space w (leader.go), from the list or the overview,
+// enterResize is ctrl+] w (leader.go), from the list or the overview,
 // and from the agent pane by way of the list. It records the effective
 // split (clampSidebarPct, so 38 when nothing was ever set) for esc to restore
 // and leaves the focus alone, so a resize begun from a focused detail pane
@@ -4236,7 +4237,7 @@ func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// releasePaneFocus is the focused pane's back to list (ctrl+space \ there,
+// releasePaneFocus is the focused pane's back to list (ctrl+] \ there,
 // runLeaderRow; ctrl+\ before T7.2): the keyboard comes back to the
 // dashboard and the session is left completely alone — still attached, still
 // rendering in the pane.
@@ -4319,7 +4320,7 @@ func (m Model) showBuildTab() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// releaseDetailFocus is the focused detail pane's esc or ctrl+space \: the
+// releaseDetailFocus is the focused detail pane's esc or ctrl+] \: the
 // keyboard goes back to the session list and the viewport keeps its offset,
 // so a release and a re-focus resume where the reading left off.
 func (m Model) releaseDetailFocus() (tea.Model, tea.Cmd) {
@@ -4328,10 +4329,10 @@ func (m Model) releaseDetailFocus() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cleanRequested is the clean action (ctrl+space c). Clean can remove the
+// cleanRequested is the clean action (ctrl+] c). Clean can remove the
 // worktree out from under a running session, so it is blocked while a pane is
 // open on one (visible or behind the overview) and the status names the way
-// out. Clean is a list action, and from the list ctrl+space \ closes an
+// out. Clean is a list action, and from the list ctrl+] \ closes an
 // installed pane whichever view is showing (actionPaneClose), so the way out
 // is the one key in both cases. The dialog dims the row on the same rule
 // (leaderBlockedReason), so this guard is reached only by a caller that
@@ -4624,13 +4625,13 @@ func (m Model) formComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.form.baseList, cmd = m.form.baseList.Update(k)
 	case formFocusAutonomous:
 		// Space is the toggle only here; every other key on the checkbox is
-		// inert. Mod is checked so ctrl+space (NUL) does not toggle.
+		// inert. Mod is checked so Ctrl+Space (NUL) does not toggle.
 		if k.Code == tea.KeySpace && k.Mod == 0 {
 			m.form.toggleAutonomous()
 		}
 	case formFocusProvider:
 		// Space and → cycle forward, ← back; everything else is inert. Same
-		// Mod guard as the checkbox, so ctrl+space and modified arrows do
+		// Mod guard as the checkbox, so Ctrl+Space and modified arrows do
 		// nothing. ← and → are free here: only the name and description use
 		// them as cursor keys, and those arms above are untouched.
 		if k.Mod != 0 {
@@ -5033,7 +5034,7 @@ func (m Model) switcherSessions() map[string][]discover.SessionState {
 	return merged
 }
 
-// openLeader is the leader key (ctrl+space) from mode `from`: inputNormal,
+// openLeader is the leader key (ctrl+]) from mode `from`: inputNormal,
 // inputDetail (the overview or the agent placeholder) or inputPane. It opens
 // the actions dialog with a snapshot of every action and whether it can run
 // right now, and records where it was opened, which runLeaderRow and the
@@ -5118,10 +5119,13 @@ func (m Model) leaderComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case leaderPassThrough:
 		m.leaderOpen = false
 		// The leader pressed twice from the agent: the agent gets the key the
-		// dashboard took. forwardKeyToPane encodes it back to NUL through
-		// ctrlChordEvent, as it would have done with no rule in the way.
+		// dashboard took. The key is built here rather than parsed from
+		// leaderKey because forwardKeyToPane needs the decoded form; it is
+		// what the terminal's ctrl+] decodes to (see Leader in
+		// defaultKeyMap), and ctrlChordEvent encodes it back to 0x1D, as it
+		// would have done with no rule in the way.
 		if m.pane != nil {
-			forwardKeyToPane(m.pane, tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl})
+			forwardKeyToPane(m.pane, tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl})
 		}
 	case leaderRun:
 		m.leaderOpen = false
@@ -5367,11 +5371,11 @@ func (m *Model) startRestart(req paneOpenRequest) tea.Cmd {
 
 // placeholderKey answers a key while the agent placeholder owns the keyboard:
 // enter connects (or reconnects) the selected row through connectSelected,
-// and the leader (ctrl+space) opens the actions dialog as it does over a live
+// and the leader (ctrl+]) opens the actions dialog as it does over a live
 // agent. Every other key is swallowed, so nothing typed at a lost or
 // still-connecting agent reaches a list binding. Since T7.2 the
 // placeholder's other keys — agent or overview, back to the list, restart
-// and the mouse — are ctrl+space t, \, r and g, as they are over the agent
+// and the mouse — are ctrl+] t, \, r and g, as they are over the agent
 // it stands in for (runLeaderRow runs them).
 //
 // It matches the keyMap's own bindings rather than declaring placeholder
@@ -5391,7 +5395,7 @@ func (m Model) placeholderKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // releasePlaceholderFocus is "back to list" from the agent placeholder
-// (ctrl+space \ there): the keyboard goes to the list, and the placeholder
+// (ctrl+] \ there): the keyboard goes to the list, and the placeholder
 // stays drawn for the connect or restart still under way.
 func (m Model) releasePlaceholderFocus() (tea.Model, tea.Cmd) {
 	m.focus = focusList
@@ -5437,7 +5441,7 @@ func (m *Model) handBackUnansweredFocus() {
 }
 
 // closePane detaches from the session in the pane and takes it off screen. It is
-// ctrl+space \ from the list (actionPaneClose), dimmed in the dialog with no
+// ctrl+] \ from the list (actionPaneClose), dimmed in the dialog with no
 // pane open (leaderBlockedReason).
 //
 // DETACHING is the whole point: the session's host is a separate process, so this
@@ -5477,7 +5481,7 @@ func (m *Model) forgetPane() {
 	m.paneName = ""
 }
 
-// toggleView is ctrl+space t (ctrl+t before T7.2). It is reachable only with
+// toggleView is ctrl+] t (ctrl+t before T7.2). It is reachable only with
 // the right side focused (the dialog dims it from the list), and it does one
 // thing: flip the right side between the agent and the overview. The focus
 // never moves — the user stays on the right, now looking at the other view.

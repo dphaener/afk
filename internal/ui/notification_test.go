@@ -226,7 +226,7 @@ func TestRepeatedRefusalToastsAgain(t *testing.T) {
 func TestNotifyStampsBeforeHandleReturns(t *testing.T) {
 	m := testModel(sess("a"))
 	m, _ = update(t, m, leaderKeyPress)
-	next, _ := m.handle(keyRune('g')) // ctrl+space g toggles mouse capture
+	next, _ := m.handle(keyRune('g')) // ctrl+] g toggles mouse capture
 	got, ok := next.(Model)
 	if !ok {
 		t.Fatalf("handle returned %T, want ui.Model", next)

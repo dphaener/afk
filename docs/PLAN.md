@@ -2869,6 +2869,7 @@ and anyone who wants another key sets it in `config.toml`.
   scratch build in a throwaway repo, inside tmux with the default prefix: `tmux send-keys C-]` opens the
   dialog from the list and from a focused agent pane, and twice leaves one `^]` at a stand-in agent.
   `make check` is green.
+- Amended 2026-10-14 (T9.1 done): the leader is `leaderKey = "ctrl+]"` in `internal/ui/leader.go`, but two places still name ctrl+] literally and T9.2 must derive them from the configured key: the pass-through in `leaderComponentKey` (`internal/ui/model.go`) forwards `{Code: ']', Mod: ModCtrl}`, and `projectEditOpenScreenFirst` in `internal/ui/projectedit.go` is a const naming `ctrl+] A`. Tests press the leader through `leaderKeyPress` (`leader_wiring_test.go`), and `TestLeaderIsCtrlBracket` checks the bytes the agent reads through a real x/vt emulator. Comments and the README write the old key as "Ctrl+Space" so the acceptance grep stays clean.
 
 #### T9.2 — Set the leader in config.toml
 - **Depends on:** T9.1

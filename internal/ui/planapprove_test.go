@@ -272,10 +272,10 @@ func TestPlanApproveWithErrorsHasNoYes(t *testing.T) {
 		wantOpen bool
 		wantText string
 	}{
-		{"two errors y does nothing", 2, keyRune('y'), true, "The plan has 2 errors. Fix them before approving (ctrl+space, type errors, to see them)."},
-		{"two errors Y does nothing", 2, keyRune('Y'), true, "The plan has 2 errors. Fix them before approving (ctrl+space, type errors, to see them)."},
-		{"two errors enter does nothing", 2, keyEnter, true, "The plan has 2 errors. Fix them before approving (ctrl+space, type errors, to see them)."},
-		{"one error y does nothing", 1, keyRune('y'), true, "The plan has 1 error. Fix it before approving (ctrl+space, type errors, to see it)."},
+		{"two errors y does nothing", 2, keyRune('y'), true, "The plan has 2 errors. Fix them before approving (ctrl+], type errors, to see them)."},
+		{"two errors Y does nothing", 2, keyRune('Y'), true, "The plan has 2 errors. Fix them before approving (ctrl+], type errors, to see them)."},
+		{"two errors enter does nothing", 2, keyEnter, true, "The plan has 2 errors. Fix them before approving (ctrl+], type errors, to see them)."},
+		{"one error y does nothing", 1, keyRune('y'), true, "The plan has 1 error. Fix it before approving (ctrl+], type errors, to see it)."},
 		{"errors n closes", 2, keyRune('n'), false, ""},
 		{"errors esc closes", 2, keyEscMsg(), false, ""},
 	}
@@ -288,7 +288,7 @@ func TestPlanApproveWithErrorsHasNoYes(t *testing.T) {
 				}
 			}
 			frame := render(m)
-			for _, want := range []string{"cannot be approved yet", "Fix", "before approving", "to see", "n/esc: cancel"} {
+			for _, want := range []string{"cannot be approved yet", "Fix", "before approving", "type errors", "n/esc: cancel"} {
 				if !strings.Contains(frame, want) {
 					t.Errorf("the confirm does not show %q:\n%s", want, frame)
 				}

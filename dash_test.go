@@ -98,7 +98,7 @@ func waitForEntry(t *testing.T, gitCommonDir string) (dashmeta.Entry, bool) {
 	}
 }
 
-// quitDash drives the dashboard's quit: ctrl+space then q. A bare q only raises
+// quitDash drives the dashboard's quit: ctrl+] then q. A bare q only raises
 // a notice now that every action runs behind the leader key, so a single
 // keypress would leave the Model (and its dashmeta entry) alive. Driving Update
 // is how this package reaches the Model's removal path, which lives in an
@@ -110,12 +110,12 @@ func waitForEntry(t *testing.T, gitCommonDir string) (dashmeta.Entry, bool) {
 // Text is set on q because that is how a real printable press arrives under
 // Bubble Tea v2 and what Key.String() returns for key.Matches.
 func quitDash(m tea.Model) {
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl})
+	m, _ = m.Update(tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl})
 	_, _ = m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 }
 
 // TestDashUsageNamesTheLeader pins the dashboard's key help to the leader
-// model in internal/ui: every action runs after ctrl+space, and the list keys
+// model in internal/ui: every action runs after ctrl+], and the list keys
 // are the ones that still act without it. The stale rows are the old action
 // keys — a user who reads `ctrl+t` or `n new` here presses a key that now
 // does nothing. The leader rows are checked one by one, not as a block, so a
@@ -132,25 +132,25 @@ func TestDashUsageNamesTheLeader(t *testing.T) {
 		"tab        next tab on the right side",
 		"esc        back to the list from the right side",
 		"ctrl+c     quit from the list and the overview",
-		"ctrl+space n    create a session",
-		"ctrl+space o    create a one-off session",
-		"ctrl+space p    open the project switcher",
-		"ctrl+space c    confirm clean",
-		"ctrl+space r    restart a stopped session",
-		"ctrl+space l    edit the session's label",
-		"ctrl+space /    filter sessions by name",
-		"ctrl+space x    clear the filter",
-		"ctrl+space b    show the Build tab",
-		"ctrl+space i    open the inbox",
-		"ctrl+space P    pause the build",
-		"ctrl+space U    resume the build",
-		"ctrl+space f    focus the right side",
-		"ctrl+space t    switch the right side between agent and overview",
-		"ctrl+space \\    close the pane from the list",
-		"ctrl+space g    hand the mouse to the terminal",
-		"ctrl+space w    resize the panes",
-		"ctrl+space ?    show the full key help",
-		"ctrl+space q    quit",
+		"ctrl+] n    create a session",
+		"ctrl+] o    create a one-off session",
+		"ctrl+] p    open the project switcher",
+		"ctrl+] c    confirm clean",
+		"ctrl+] r    restart a stopped session",
+		"ctrl+] l    edit the session's label",
+		"ctrl+] /    filter sessions by name",
+		"ctrl+] x    clear the filter",
+		"ctrl+] b    show the Build tab",
+		"ctrl+] i    open the inbox",
+		"ctrl+] P    pause the build",
+		"ctrl+] U    resume the build",
+		"ctrl+] f    focus the right side",
+		"ctrl+] t    switch the right side between agent and overview",
+		"ctrl+] \\    close the pane from the list",
+		"ctrl+] g    hand the mouse to the terminal",
+		"ctrl+] w    resize the panes",
+		"ctrl+] ?    show the full key help",
+		"ctrl+] q    quit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dash usage missing %q:\n%s", want, got)

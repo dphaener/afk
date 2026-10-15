@@ -1152,7 +1152,7 @@ func TestTogglePaneSummary(t *testing.T) {
 				return refuseAction(m, "c")
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
-				if !strings.Contains(m.status, "behind the overview") || !strings.Contains(m.status, "ctrl+space \\") {
+				if !strings.Contains(m.status, "behind the overview") || !strings.Contains(m.status, "ctrl+] \\") {
 					t.Fatalf("status = %q, want it to explain why clean is blocked and how to close the pane", m.status)
 				}
 				if m.modal != inputNormal {
@@ -1307,14 +1307,14 @@ func TestTogglePaneSummary(t *testing.T) {
 // TestRightFocusKeyTable is rows (b) and (c) of the W2.T1 key table, driven
 // through Update with the right side focused.
 //
-// Agent view, load-bearing in both directions: the leader (ctrl+space) is the
+// Agent view, load-bearing in both directions: the leader (ctrl+]) is the
 // ONLY key the dashboard takes, so esc, q, ctrl+c, tab, ctrl+w and the old
 // ctrl+t and ctrl+\ chords — every one of which the dashboard once bound —
 // must reach the child, and must neither quit nor move focus. A rule added
 // to inputPane for any of them takes the key away from every hosted agent.
 //
-// Overview view: ctrl+space t flips to the agent with focus kept right;
-// ctrl+space \ and esc return to the list; ctrl+c quits as detail mode always
+// Overview view: ctrl+] t flips to the agent with focus kept right;
+// ctrl+] \ and esc return to the list; ctrl+c quits as detail mode always
 // has; and a key with a list meaning or a removed one (q, n, c, enter) is
 // swallowed rather than acting.
 func TestRightFocusKeyTable(t *testing.T) {
@@ -1340,7 +1340,7 @@ func TestRightFocusKeyTable(t *testing.T) {
 		m, fp := agent(t)
 		m = pressLeader(t, m, keyRune('t'))
 		if !m.detailOwnsKeyboard() {
-			t.Fatalf("setup: ctrl+space t should have put the focused overview on the right")
+			t.Fatalf("setup: ctrl+] t should have put the focused overview on the right")
 		}
 		return m, fp
 	}
@@ -1348,7 +1348,7 @@ func TestRightFocusKeyTable(t *testing.T) {
 		name  string
 		setup func(t *testing.T) (Model, *fakePane)
 		key   tea.KeyPressMsg
-		// leader, when set, presses ctrl+space and then this rune instead of
+		// leader, when set, presses ctrl+] and then this rune instead of
 		// sending key: the way the pane's two right-side moves are reached now.
 		leader rune
 		want   want
@@ -1360,11 +1360,11 @@ func TestRightFocusKeyTable(t *testing.T) {
 		{"agent: ctrl+w reaches the child", agent, chord('w'), 0, want{forwarded: true, focus: focusRight, view: viewAgent}},
 		{"agent: ctrl+t reaches the child", agent, chord('t'), 0, want{forwarded: true, focus: focusRight, view: viewAgent}},
 		{"agent: ctrl+\\ reaches the child", agent, chord('\\'), 0, want{forwarded: true, focus: focusRight, view: viewAgent}},
-		{"agent: ctrl+space t flips to the overview", agent, tea.KeyPressMsg{}, 't', want{focus: focusRight, view: viewOverview}},
-		{"agent: ctrl+space backslash returns to the list", agent, tea.KeyPressMsg{}, '\\', want{focus: focusList, view: viewAgent}},
+		{"agent: ctrl+] t flips to the overview", agent, tea.KeyPressMsg{}, 't', want{focus: focusRight, view: viewOverview}},
+		{"agent: ctrl+] backslash returns to the list", agent, tea.KeyPressMsg{}, '\\', want{focus: focusList, view: viewAgent}},
 
-		{"overview: ctrl+space t flips to the agent", overview, tea.KeyPressMsg{}, 't', want{focus: focusRight, view: viewAgent}},
-		{"overview: ctrl+space backslash returns to the list", overview, tea.KeyPressMsg{}, '\\', want{focus: focusList, view: viewOverview}},
+		{"overview: ctrl+] t flips to the agent", overview, tea.KeyPressMsg{}, 't', want{focus: focusRight, view: viewAgent}},
+		{"overview: ctrl+] backslash returns to the list", overview, tea.KeyPressMsg{}, '\\', want{focus: focusList, view: viewOverview}},
 		{"overview: esc returns to the list", overview, tea.KeyPressMsg{Code: tea.KeyEsc}, 0, want{focus: focusList, view: viewOverview}},
 		{"overview: q is swallowed", overview, tea.KeyPressMsg{Code: 'q', Text: "q"}, 0, want{focus: focusRight, view: viewOverview}},
 		{"overview: ctrl+c quits", overview, chord('c'), 0, want{focus: focusRight, view: viewOverview, quit: true}},
@@ -1545,7 +1545,7 @@ func TestHiddenCleanRefusalFitsAnEightyColumnTerminal(t *testing.T) {
 	if w := lipgloss.Width(m.status); w > m.width {
 		t.Fatalf("hidden clean refusal exceeds width %d (got %d): %q", m.width, w, m.status)
 	}
-	for _, want := range []string{"behind the overview", "ctrl+space \\"} {
+	for _, want := range []string{"behind the overview", "ctrl+] \\"} {
 		if !strings.Contains(m.status, want) {
 			t.Fatalf("hidden clean refusal must name %q: %q", want, m.status)
 		}
@@ -2012,7 +2012,7 @@ func TestCleanEntersConfirmMode(t *testing.T) {
 			s.StatusStale = tt.stale
 			m := testModel(s)
 
-			// Clean runs from the leader (ctrl+space then c) since T7.2.
+			// Clean runs from the leader (ctrl+] then c) since T7.2.
 			got, cmd := pressAction(t, m, keyRune('c'))
 			if got.modal != inputConfirmClean {
 				t.Fatalf("c on a %s-phase session should enter confirm mode, got mode %v", tt.class, got.modal)
@@ -5123,7 +5123,7 @@ func pressQuitKey(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 	return update(t, m, k)
 }
 
-// leaderThen presses ctrl+space and then the one-rune key k, the way a person
+// leaderThen presses ctrl+] and then the one-rune key k, the way a person
 // runs a dashboard action now that no bare letter acts. It returns the Cmd the
 // action produced, so a test can still assert on the work it queued.
 func leaderThen(t *testing.T, m Model, k rune) (Model, tea.Cmd) {
@@ -5153,12 +5153,12 @@ func TestFocusKeyFocusesActivePane(t *testing.T) {
 	}
 	got, cmd := pressAction(t, m, keyRune('f'))
 	if !got.paneOwnsKeyboard() {
-		t.Fatalf("ctrl+space f should focus the active pane")
+		t.Fatalf("ctrl+] f should focus the active pane")
 	}
 	if cmd != nil {
 		t.Fatalf("focusing is pure state, expected nil cmd")
 	}
-	if !strings.Contains(got.status, "ctrl+space \\") {
+	if !strings.Contains(got.status, "ctrl+] \\") {
 		t.Fatalf("status = %q, want the detach-chord hint", got.status)
 	}
 }
@@ -5422,8 +5422,8 @@ func TestFocusStateReflectedInView(t *testing.T) {
 	// Focused: the help/title advertise the detach chord.
 	m, _ = update(t, m, keyEnter)
 	focused := render(m)
-	if !strings.Contains(focused, "ctrl+space \\") {
-		t.Fatalf("focused View should show the ctrl+space \\ back-to-list chord; out:\n%s", focused)
+	if !strings.Contains(focused, "ctrl+] \\") {
+		t.Fatalf("focused View should show the ctrl+] \\ back-to-list chord; out:\n%s", focused)
 	}
 }
 
@@ -9650,7 +9650,7 @@ func TestRestartKeyEntersConfirmModeOnWedgedSession(t *testing.T) {
 	wedged := wedgedSess("alpha", 12*time.Minute)
 	m := testModel(wedged)
 
-	// Restart runs from the leader (ctrl+space then r) since T7.2.
+	// Restart runs from the leader (ctrl+] then r) since T7.2.
 	got, cmd := pressAction(t, m, keyRune('r'))
 	if got.modal != inputConfirmRestart {
 		t.Fatalf("r on a wedged session should enter the restart confirmation, got mode %v", got.modal)
@@ -10063,7 +10063,7 @@ func TestHelpToggleShowsFullHelp(t *testing.T) {
 
 	m = pressLeader(t, m, keyRune('?'))
 	if !m.helpShowAll {
-		t.Fatal("`ctrl+space ?` did not set helpShowAll")
+		t.Fatal("`ctrl+] ?` did not set helpShowAll")
 	}
 	if got := xansi.Strip(m.renderHelp()); !strings.Contains(got, "pgup") {
 		t.Fatalf("full help should list pgup, got:\n%s", got)
@@ -10087,7 +10087,7 @@ func TestHelpToggleOnlyFiresInNormalMode(t *testing.T) {
 	m := testModel(sess("alpha"))
 	m = pressLeader(t, m, keyRune('/'))
 	if !m.list.SettingFilter() {
-		t.Fatal("precondition: ctrl+space then `/` should open the session-list filter")
+		t.Fatal("precondition: ctrl+] then `/` should open the session-list filter")
 	}
 
 	m, _ = update(t, m, keyRune('?'))
@@ -10148,7 +10148,7 @@ func TestFullHelpOmitsNoEnabledBinding(t *testing.T) {
 }
 
 // TestResizeKeyClosesNormalFullHelpAndStaysOffTheShortLine pins where resize
-// is advertised in normal mode: as "ctrl+space w" among the leader entries in
+// is advertised in normal mode: as "ctrl+] w" among the leader entries in
 // `?`'s full view, ahead of the line that says how the help closes, and never
 // on the curated short line, which is already at its width cap. A bare ctrl+w
 // is not offered: since T7.2 it is the agent's, and resize is a leader action.
@@ -10227,7 +10227,7 @@ func TestNormalModeFullHelpReflectsPaneAndWedgeState(t *testing.T) {
 			full, withPane.keys.Toggle.Help().Key, withPane.keys.Toggle.Help().Desc)
 	}
 
-	// Since T7.2 restart runs only from the leader (ctrl+space then r), so a
+	// Since T7.2 restart runs only from the leader (ctrl+] then r), so a
 	// bare `r` on the list does nothing even on a wedged selection, so the
 	// list's full help offers it only as the leader entry, and only where it
 	// acts (a healthy selection gets no restart entry at all).
@@ -11387,7 +11387,7 @@ func TestNonKeyMessagesFollowTheModeThatOwnsInput(t *testing.T) {
 		m := testModel(sess("a"))
 		m = pressLeader(t, m, keyRune('n'))
 		if !m.formOpen {
-			t.Fatal("setup: ctrl+space then n did not open the form")
+			t.Fatal("setup: ctrl+] then n did not open the form")
 		}
 		m.modal = inputSpawnError
 		if _, cmd := update(t, m, tea.FocusMsg{}); cmd != nil {
@@ -13595,7 +13595,7 @@ func TestRestartKeyMatrix(t *testing.T) {
 		name  string
 		row   Session
 		setup func(t *testing.T, m Model) Model
-		// bare sends a plain r instead of ctrl+space r: the pane row's point
+		// bare sends a plain r instead of ctrl+] r: the pane row's point
 		// is that the letter is still the child's.
 		bare bool
 		want outcome
