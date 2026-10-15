@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -136,7 +137,8 @@ func TestDaemonWebPlanSeams(t *testing.T) {
 	d := daemonWebDeps(nil, t.TempDir(), usagestate.Deps{}, nil)
 	if d.PlanStatus == nil || d.ApprovePlan == nil || d.StartPlan == nil ||
 		d.CheckPlanFolder == nil || d.CreatePlanFolder == nil || d.PlanLocation == nil ||
-		d.AddBeingPlanned == nil || d.BeingPlanned == nil {
+		d.AddBeingPlanned == nil || d.BeingPlanned == nil ||
+		d.GitHubOffer == nil || d.CreateGitHubRepo == nil {
 		t.Fatalf("a plan seam is nil: %+v", d)
 	}
 }
@@ -502,5 +504,152 @@ func TestWebCreatePlanFolder(t *testing.T) {
 				t.Errorf("a folder was made outside the location")
 			}
 		})
+	}
+}
+
+// TestWebGitHubOffer pins how the checks become the page's offer. Load-bearing
+// rows: "gh missing" (gh is never run, so a missing gh cannot be mistaken for a
+// logged-out one) and "logged out" (the account is never asked for); "ask"
+// carries the account/folder name the question shows and the reason word.
+func TestWebGitHubOffer(t *testing.T) {
+	tests := []struct {
+		name       string
+		lookErr    error
+		gh         *fakeDashGH
+		want       web.GitHubOffer
+		wantNotice string
+		wantAuth   int
+		wantLogin  int
+	}{
+		{"ask", nil, &fakeDashGH{login: "owner"},
+			web.GitHubOffer{Ask: true, Repo: "owner/demo", Reason: "ask"}, "", 1, 1},
+		{"gh missing", exec.ErrNotFound, &fakeDashGH{login: "owner"},
+			web.GitHubOffer{Reason: "missing"}, "not installed", 0, 0},
+		{"logged out", nil, &fakeDashGH{authErr: errors.New("exit status 1"), login: "owner"},
+			web.GitHubOffer{Reason: "logged_out"}, "gh auth login", 1, 0},
+		{"no account", nil, &fakeDashGH{loginErr: errors.New("HTTP 401")},
+			web.GitHubOffer{Reason: "no_account"}, "HTTP 401", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			look := func(string) (string, error) { return "/bin/gh", tt.lookErr }
+			got := webGitHubOfferWith(look, tt.gh, "/loc/demo")
+			notice := got.Notice
+			got.Notice = ""
+			if got != tt.want {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+			if (tt.wantNotice == "") != (notice == "") || !strings.Contains(notice, tt.wantNotice) {
+				t.Errorf("notice = %q, want it to contain %q", notice, tt.wantNotice)
+			}
+			if tt.gh.authCalls != tt.wantAuth || tt.gh.loginCalls != tt.wantLogin {
+				t.Errorf("auth calls %d, login calls %d; want %d, %d", tt.gh.authCalls, tt.gh.loginCalls, tt.wantAuth, tt.wantLogin)
+			}
+			if len(tt.gh.creates) != 0 {
+				t.Errorf("the offer created %v", tt.gh.creates)
+			}
+		})
+	}
+}
+
+// TestWebGitHubCreate pins the create seam. Load-bearing rows: "yes" (exactly
+// one private create and one origin add in the folder), "name taken" and
+// "network error" (no origin is added when nothing was made; kind failed for
+// the network) and "origin fails" (no_origin carries the remote to add).
+func TestWebGitHubCreate(t *testing.T) {
+	tests := []struct {
+		name     string
+		gh       *fakeDashGH
+		git      *fakeDashGit
+		wantKind string
+		wantAdds [][2]string
+		wantText string
+	}{
+		{"yes", &fakeDashGH{createdURL: "https://github.com/owner/demo\n"}, &fakeDashGit{},
+			"created", [][2]string{{"/loc/demo", "https://github.com/owner/demo.git"}}, "Made the private GitHub repository owner/demo"},
+		{"name taken", &fakeDashGH{createErr: errors.New("GraphQL: Name already exists on this account")}, &fakeDashGit{},
+			"name_taken", nil, "already has a repository named owner/demo"},
+		{"network error", &fakeDashGH{createErr: errors.New("error connecting to api.github.com")}, &fakeDashGit{},
+			"failed", nil, "Could not make the GitHub repository owner/demo"},
+		{"origin fails", &fakeDashGH{createdURL: "https://github.com/owner/demo"}, &fakeDashGit{err: errors.New("remote origin already exists")},
+			"no_origin", [][2]string{{"/loc/demo", "https://github.com/owner/demo.git"}}, "could not set it as origin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := webCreateGitHubRepoWith(tt.gh, tt.git, "/loc/demo", "owner/demo")
+			if got.Kind != tt.wantKind || got.Repo != "owner/demo" || !strings.Contains(got.Text, tt.wantText) {
+				t.Errorf("got %+v, want kind %q repo owner/demo text containing %q", got, tt.wantKind, tt.wantText)
+			}
+			if len(tt.gh.creates) != 1 || tt.gh.creates[0] != "owner/demo" {
+				t.Errorf("creates = %v, want exactly [owner/demo]", tt.gh.creates)
+			}
+			if !reflect.DeepEqual(tt.git.adds, tt.wantAdds) {
+				t.Errorf("origin adds = %v, want %v", tt.git.adds, tt.wantAdds)
+			}
+		})
+	}
+}
+
+// TestWebGitHubStandInGH runs the real adapters against a stand-in gh script
+// on a scratch PATH and a real git folder, so the argument lists are the ones
+// gh would get and the remote really lands in the folder. No GitHub is
+// reached: the script only records its arguments.
+func TestWebGitHubStandInGH(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not on PATH")
+	}
+	bin := t.TempDir()
+	record := filepath.Join(bin, "record.txt")
+	script := `#!/bin/sh
+echo "$*" >> "` + record + `"
+case "$1 $2" in
+"repo create") echo "https://github.com/octo/demo" ;;
+"auth status") exit 0 ;;
+"api user") echo "octo" ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := filepath.Join(t.TempDir(), "demo")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+
+	offer := webGitHubOffer(dir)
+	if !offer.Ask || offer.Repo != "octo/demo" {
+		t.Fatalf("offer = %+v, want ask for octo/demo", offer)
+	}
+	got := webCreateGitHubRepo(dir, offer.Repo)
+	if got.Kind != "created" {
+		t.Fatalf("outcome = %+v, want created", got)
+	}
+	rec, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creates := 0
+	for _, l := range strings.Split(string(rec), "\n") {
+		if strings.HasPrefix(l, "repo create") {
+			creates++
+			if l != "repo create octo/demo --private" {
+				t.Errorf("create line = %q", l)
+			}
+		}
+	}
+	if creates != 1 {
+		t.Errorf("recorded %d create lines in %q, want 1", creates, rec)
+	}
+	url, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		t.Fatalf("no origin: %v", err)
+	}
+	if got := strings.TrimSpace(string(url)); got != "https://github.com/octo/demo.git" {
+		t.Errorf("origin = %q", got)
 	}
 }

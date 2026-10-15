@@ -3315,3 +3315,21 @@ Decided while building (T8.15a):
 - **Tests that really create folders make them only under the temp location**, so a broken guard in a mutation run cannot make folders next to the test.
 
 Verification for the owner (T8.15a): on a phone, open **Plan a new project**, check that the hint names your project location, type a new name such as `demo`, check the card says "afk will create and plan in" with "New, empty folder", and press **Start planning**; the folder appears with a `.git` in it and the chat opens. Also worth one manual try: with a `git` that fails first on the daemon's PATH, a new name should leave the folder on disk, say so, and start nothing. The review checked this only in unit tests.
+
+## T8.15b
+
+Decisions the master plan left open, made while planning T8.15b (Offer a GitHub repository for the new folder), numbered as in the work plan's assumptions:
+
+- **How the question is carried (A1).** The create POST draws the question; the answer goes to a new `POST /plan/new/github` (with its `/api` twin, so there are 23 routes). The server keeps, in its own memory, the folders it has just made and the repository name it offered, for one hour and at most 32 at a time. The answer acts only on those, so no request can get a repository for a folder that was already there, and the name is never taken from the request. Memory rather than a file, because the list exists only to prove that the form made the folder moments ago; after a restart the answer is refused, which is the safe failure, and the folder can still be planned by typing its path.
+- **The seams (A2).** `Deps.GitHubOffer` (the read-only check of `gh`) and `Deps.CreateGitHubRepo` (the one create) are both optional. Both must be set for the question to be asked; with either missing, planning starts at once as in T8.15a. The root wires them over `internal/ghrepo`, with the same check order as the dashboard.
+- **Where the outcome is shown (A3).** A declined answer goes straight to the planning chat, as before. Every other outcome (made, failed, name taken, no origin, or gh not ready) shows the started page with its line and an **Open its chat** button, because a redirect cannot carry the sentence.
+- **The API shape (A4).** The create POST answers 200 with outcome `github_question` and starts nothing. The answer POST takes `{path, github, confirm}`; a missing `github`, or any value other than `true`, means no. Each answer carries a `github` object with `outcome`, `repo` and `text`, or with `outcome` `not_offered` and a `reason` when no question was asked.
+- **The tests (A5)** are table tests written with the code, using a fake `gh` and a fake `git`, plus one stand-in `gh` script on a scratch PATH. No test calls GitHub.
+- **Prerequisites (A6).** None: T8.15a and T7.6 were already merged.
+
+Why these choices, in plain words:
+
+- **Nothing is made on GitHub without an explicit yes.** No is the checked choice, and a missing or unreadable answer counts as no. The owner's profile says to ask before opening a new repository, so the question is asked every time and the answer is never remembered.
+- **Nothing is pushed.** The create makes the repository and sets `origin`; the first push belongs to the build, much later.
+
+Verification for the owner (T8.15b): on a phone, open **Plan a new project**, type a new name such as `demo`, press **Start planning**, and check that the question "Create a private GitHub repository for it?" shows your account and has **No** checked. Answer yes once with a throwaway name and check on GitHub that the repository is private and empty, and that `git remote -v` in the new folder shows `origin`. The review ran this against a scratch build with a stand-in `gh`, not against GitHub.

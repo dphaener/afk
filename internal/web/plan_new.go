@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -125,9 +126,13 @@ const (
 	newPlanKindForm    = "form"
 	newPlanKindConfirm = "confirm"
 	newPlanKindHasPlan = "has_plan"
-	// newPlanKindStarted is drawn only by the POST, when the session started
-	// but the page could not note the project (see planNew).
+	// newPlanKindStarted is drawn only by the POSTs, when the session
+	// started but there is a line a redirect cannot carry: the page could
+	// not note the project, or there is a GitHub line (see startPlanNew).
 	newPlanKindStarted = "started"
+	// newPlanKindGitHub is drawn only by the POST that made a folder, when
+	// gh is ready: the GitHub question (T8.15b, see plan_new_github.go).
+	newPlanKindGitHub = "github"
 )
 
 // NewPlanPageView is what plan_new.html draws. Every decision is made in
@@ -164,6 +169,13 @@ type NewPlanPageView struct {
 	ProjectName, ProjectHref string
 	// Chat is the started page's link to the chat, when it can be opened.
 	Chat string
+	// Repo is the repository the GitHub question offers (account/folder)
+	// and Question its legend.
+	Repo, Question string
+	// GitHubText is the started page's GitHub line, GitHubClass its notice
+	// style and GitHubRole its ARIA role (alert for a failure, status
+	// otherwise). Empty means no line.
+	GitHubText, GitHubClass, GitHubRole string
 }
 
 // The badges of the confirm card, by kind.
@@ -321,7 +333,9 @@ func (s *server) planNewPage(w http.ResponseWriter, r *http.Request) {
 // form does, through Deps.CreatePlanFolder for a name whose folder does not
 // exist yet and then Deps.StartPlan in mode new. Nothing reaches a seam
 // without the confirm in the body, and neither the create, the start nor the
-// list is reached for a folder the check refused.
+// list is reached for a folder the check refused. A folder made here, when gh
+// is ready, gets the GitHub question first and is started by its answer
+// (planNewGitHub) instead; a folder that existed is never offered one.
 func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 	if !s.canPlanNew() {
 		s.notFound(w, r)
@@ -388,6 +402,35 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 		}
 		created = true
 	}
+	var gh *planNewGitHubNote
+	if created && s.canAskGitHub() {
+		// gh may take up to 30 seconds per call and the offer runs up to
+		// three of them, past the server's 30-second write timeout. An error
+		// (no connection behind the writer, as in a test) is ignored, as in
+		// planApprove: the worst case is the limit we started with.
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(planNewGitHubWriteLimit))
+		offer := s.d.GitHubOffer(path)
+		if offer.Ask && strings.TrimSpace(offer.Repo) != "" {
+			// Nothing starts yet: the answer's POST (planNewGitHub) starts
+			// planning, whatever the answer, and only for a folder recorded
+			// here.
+			s.offered.add(path, strings.TrimSpace(offer.Repo), s.d.Now())
+			s.askGitHub(w, r, path, strings.TrimSpace(offer.Repo))
+			return
+		}
+		gh = notOfferedNote(offer)
+	}
+	s.startPlanNew(w, r, text, path, created, gh)
+}
+
+// startPlanNew is the tail both planNew and planNewGitHub end in: StartPlan
+// in mode new for path, then notePlanned, then the answer. It is one function
+// so the refusal wording, the created note and the being-planned note cannot
+// drift between the two. text is what a refused page's form is redrawn with.
+// gh, when not nil, is the GitHub line the answer carries (the API's github
+// key, the page's line on the started view); a quiet one (declined) still
+// lets the page go straight to the chat.
+func (s *server) startPlanNew(w http.ResponseWriter, r *http.Request, text, path string, created bool, gh *planNewGitHubNote) {
 	res := s.d.StartPlan(path, "new", "")
 	switch res.Outcome {
 	case PlanStartStarted, PlanStartResumed:
@@ -410,10 +453,20 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 			if res.Open {
 				reason = "session_open"
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": res.Reason, "reason": reason, "path": path, "created": created})
+			body := map[string]any{"error": res.Reason, "reason": reason, "path": path, "created": created}
+			if gh != nil {
+				body["github"] = gh.json
+			}
+			writeJSON(w, http.StatusBadRequest, body)
 			return
 		}
-		s.planNewRedraw(w, r, text, res.Reason)
+		why := res.Reason
+		if gh != nil && !gh.quiet && gh.text != "" {
+			// A repository may have been made a moment ago: the owner must
+			// read that too, or a refused start would hide it.
+			why += " " + gh.text
+		}
+		s.planNewRedraw(w, r, text, why)
 		return
 	}
 
@@ -427,16 +480,24 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 		chat = chatPath(project)
 	}
 	if isAPI(r.URL.Path) {
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"path": path, "root": root, "project": project, "outcome": res.Outcome, "chat": chat, "notice": notice, "created": created,
-		})
+		}
+		if gh != nil {
+			body["github"] = gh.json
+		}
+		writeJSON(w, http.StatusOK, body)
 		return
 	}
-	if notice != "" {
-		// A redirect cannot carry the warning, and the owner must read it:
-		// the session runs, but this page may not list it.
+	if notice != "" || (gh != nil && !gh.quiet && gh.text != "") {
+		// A redirect cannot carry the warning or the GitHub line, and the
+		// owner must read them: the session runs, but this page may not
+		// list it, or a repository was (or was not) made.
 		v := NewPlanPageView{Kind: newPlanKindStarted, Path: root, Chat: chat, Notice: notice,
 			Message: "Planning started in " + root + "."}
+		if gh != nil && !gh.quiet {
+			v.GitHubText, v.GitHubClass, v.GitHubRole = gh.text, gh.class, gh.role
+		}
 		s.renderPlanNew(w, r, http.StatusOK, v)
 		return
 	}

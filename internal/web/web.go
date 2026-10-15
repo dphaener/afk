@@ -330,6 +330,23 @@ type Deps struct {
 	// because the list lives in afk's state folder, which this package does
 	// not write. Nil means the page offers no Plan a new project.
 	AddBeingPlanned func(root string) (name string, err error)
+	// GitHubOffer says whether to ask the owner about a private GitHub
+	// repository for a folder Plan a new project has just made (T8.15b, see
+	// plan_new_github.go), and when not, why and what to run. It only reads:
+	// whether gh is installed, logged in and which account it uses, so it
+	// may run gh for up to about a minute but never changes anything. It is
+	// a seam because gh is the root's to run and the decision is
+	// internal/ghrepo's, which this package never imports. Nil (or
+	// CreateGitHubRepo nil) means the question is never asked and planning
+	// starts at once, as before T8.15b.
+	GitHubOffer func(path string) GitHubOffer
+	// CreateGitHubRepo makes the private repository repo and sets it as the
+	// folder's origin, after the owner answered yes, and says how it went.
+	// It never pushes. repo is always the name GitHubOffer gave when the
+	// question was asked, kept in this server's memory, never one from the
+	// answer's request. Nil (or GitHubOffer nil) means the question is never
+	// asked.
+	CreateGitHubRepo func(path, repo string) GitHubOutcome
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -480,6 +497,12 @@ type server struct {
 	// refusedPage is the page that refuses a request without the token,
 	// built once in New from the stylesheets' addresses (refusedPageFor).
 	refusedPage []byte
+	// offered is the folders this server has just made and asked the GitHub
+	// question about, still waiting for the answer (see plan_new_github.go).
+	// It is the third thing that changes after New, because "this form made
+	// this folder a moment ago" exists nowhere else; it holds no file's
+	// contents, so the "no cache" rule stands.
+	offered *gitHubOffered
 }
 
 // route is one address and the handler method behind it. The path carries no
@@ -517,6 +540,11 @@ var routes = []route{
 	// Deps.StartPlan and Deps.AddBeingPlanned and nothing else (see
 	// plan_new.go).
 	{http.MethodPost, "/plan/new", (*server).planNew},
+	// The answer to the GitHub question asked after Plan a new project made
+	// a folder: through Deps.CreateGitHubRepo only on yes, and only for a
+	// folder this server just made, then Deps.StartPlan whatever the answer
+	// (see plan_new_github.go).
+	{http.MethodPost, "/plan/new/github", (*server).planNewGitHub},
 	{http.MethodGet, "/p/{project}/inbox", (*server).inboxList},
 	{http.MethodGet, "/p/{project}/inbox/{id}", (*server).item},
 	{http.MethodPost, "/p/{project}/inbox/{id}/answer", (*server).answer},
@@ -590,6 +618,7 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	}
 	s.pages = pages
 	s.refresher = newUsageRefresher(d.Now)
+	s.offered = newGitHubOffered()
 	s.hub = newHub(d, s.refresher.generation)
 
 	mux := http.NewServeMux()
