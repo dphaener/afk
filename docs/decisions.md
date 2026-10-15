@@ -3151,3 +3151,32 @@ Decided while building (T8.10):
 - **A session named `new`.** `GET /p/{project}/sessions/new` is the new-session confirm page, so a session literally named `new` cannot be opened by its page address; its `/api` address still works.
 
 Verification for the owner (T8.10): on a phone, open a session's screen and press Label, Restart and Clean, checking that each sheet opens with the safe button focused; then fill in Start a new autonomous session… and check that its confirm shows the name and description before it starts.
+
+## T8.11
+
+T8.11 brings the plan's status and approving to the web page: a plan line on the project page and the plan page, a checker card with the findings (errors first), and **Approve the plan…**, shown only for a new plan at review with no checker errors, behind a confirm, with the same route under `/api`. A plan on the review list can be approved too. `afk plan approve` and the dashboard are unchanged. These are the decisions the master plan left open, numbered as in the work plan's assumptions (2026-10-14).
+
+- **The page gets the status through its own seam (A1).** `web.Deps.PlanStatus` carries the page's own plain type, filled by the root from the dashboard's status loader. The plan line is worded by the dashboard's own function (exported as `ui.PlanStatus.Line`), so the two surfaces say the same words, and `internal/web` never imports `internal/ui`.
+- **The status reads files only (A2).** The root is used as the main checkout, with no git lookup, because a configured or listed project's root already is its main checkout. The page runs no git and no network to draw the plan line.
+- **Approving has one entry point (A3).** `web.Deps.ApprovePlan(root)` answers approved, already approved, refused or failed, with the dashboard's wording from `approveResultText`. A plan with no project reads as refused, as it does on the dashboard.
+- **Addresses (A4).** `POST /p/{project}/plan/approve` has an `/api` twin, so there are twenty routes. An HTML-only `GET /p/{project}/plan/approve` is the no-JavaScript confirm page. The project is found among the configured projects first, then the plans on the review list. The root is never taken from the request.
+- **The answer is a page, not a toast (A5).** The result page carries the whole text with status 200, 400 or 500. A toast cannot say what the daemon does next or name a push problem, and the dashboard's toast cut those lines.
+- **When the action shows (A6).** Only with the seam present, a known status that is a new session at review by its effective phase, a readable plan and no checker errors. Otherwise a one-sentence reason stands in its place. With errors, the design's error notice reads "Fix N errors before approving. Ask the planning agent to fix them, or edit the plan and check it with afk plan lint.", because the chat it points to does not exist until T8.12. The POST does not check the plan again; it relies on the entry point's own refusal.
+- **A slow approve gets more time (A7).** The approve handler extends its own write deadline to three minutes with `http.ResponseController`, because the push inside approve may take up to two minutes and the server's write limit is thirty seconds.
+- **Live updates (A8).** The plan page has no live region and the `planning` fingerprint is unchanged. The project page's plan line updates on the existing `planning` part, and it can lag a plan edit until the page is reloaded.
+- **Finding links (A9).** A finding that names a task links to that task's heading in the plan (`#T5.7`). A finding that names no task shows its file and line as plain text, and the renderer gets no line anchors.
+- **Confirm words (A10).** The title is "Approve the plan for <project>?". The body names the task and milestone counts and the plan's path, and it lists the checker's errors and warnings. **Not yet** is focused, and **Approve and start** is the other button. The "beginning with T1.1" line is left out, because the next task is the daemon's choice, not the page's.
+- **Tests and prerequisites (A11, A12).** Table tests are written with each piece, and `make check` runs once in review. Nothing had to be in place first: T8.5 and T7.8 are merged.
+
+Decided while building (T8.11):
+
+- **A new plan at review whose status says it cannot be approved** is shown as "The planning status could not be read." The two answers disagree, and any other reason would send the owner to the wrong fix.
+- **The error notice shows only when the errors are what stop approving.** If the planning session is the reason (not at review, or already approved), its own reason sentence shows instead.
+- **An unknown outcome from the entry point** is answered as failed, with a sentence asking for a report, and an empty text gets a plain default sentence for its outcome.
+- **The no-JavaScript confirm page** draws its answer from the same plan view as the plan page, so the two never disagree about whether approving is possible.
+
+Closing T7.8's scope idea: the README sentence that said there was no button to approve on the web page is rewritten, so the "reads a little awkwardly" note no longer applies.
+
+Verification for the owner (T8.11): on a phone, open a plan at review, press Approve the plan…, and check that the sheet opens with Not yet focused and the counts shown; then open a plan with errors and check that it shows the red notice instead of the button.
+
+Scope ideas (T8.11): right after approving, the result page's "Back to the plan" link can answer "no project with that name" for a plan that was on the review list, because approving removes it from the review list and adds it to `config.toml`, but the page serves projects from the daemon's last good list until the daemon reads the config again. A later change could let the page find a just-approved project, or point the link at the overview. The glossary now has two **Plan line** entries in `CONTEXT.md` (the dashboard's and the page's), which a docs pass could merge.

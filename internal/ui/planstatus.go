@@ -59,6 +59,11 @@ type PlanFinding struct {
 	Task, Rule, Message string
 }
 
+// Line is the one-line wording of the planning session. The web page shows
+// the plan line with exactly the dashboard's words, so both surfaces call the
+// one function rather than keeping a second copy of the cases.
+func (s PlanStatus) Line() string { return planStatusLine(s) }
+
 // planStatusLine is the one-line wording of the planning session, shown in
 // the master-plan overview and the Build tab. It is pure so every case is a
 // table row. The order of the cases is load-bearing: a load error and a

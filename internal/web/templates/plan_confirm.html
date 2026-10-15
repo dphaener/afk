@@ -1,0 +1,20 @@
+{{define "title"}}{{if .Available}}{{.Sheet.Title}}{{else}}Approve the plan{{end}}{{end}}
+{{define "content"}}
+<div class="stack">
+{{if .Available}}
+<h1>{{.Sheet.Title}}</h1>
+<p>{{.Sheet.Body}}</p>
+<form method="{{.Sheet.Method}}" action="{{.Sheet.Path}}" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary">{{.Sheet.Action}}</button>
+    <a class="btn btn--secondary" href="{{.Back}}" autofocus>{{.Sheet.Safe}}</a>
+  </div>
+</form>
+{{else}}
+<h1>The plan cannot be approved</h1>
+<div class="notice notice--attention" role="status"><div class="notice__body">{{.Reason}}</div></div>
+<div class="btn-row"><a class="btn btn--secondary" href="{{.Back}}">Back to the plan</a></div>
+{{end}}
+</div>
+{{end}}

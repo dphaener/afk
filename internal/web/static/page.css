@@ -323,3 +323,13 @@ dialog.confirm-sheet[data-status-sheet] { max-height: 90vh; overflow-y: auto; }
 .confirm-sheet .stack + .confirm-sheet__body, .status-sentences { margin-top: var(--space-3); }
 .status-sentences p + p { margin-top: var(--space-1); }
 [data-ids-field][hidden], [data-sentence][hidden], [data-ids-empty][hidden] { display: none; }
+
+/* The plan page (T8.11). The checker's four counts sit two across on a
+   phone and four across above the design's 760 px breakpoint; the finding's
+   file-and-line link takes the .afk a.<component> colour the sheet lacks. */
+.plan-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 761px) { .plan-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.plan-checker { display: flex; flex-direction: column; gap: var(--space-3); }
+.plan-findings { border: 1px solid var(--border); border-radius: var(--radius-md); }
+.afk a.finding__where { color: var(--text-3); }
+.afk a.finding__where:hover { color: var(--accent-hover); }

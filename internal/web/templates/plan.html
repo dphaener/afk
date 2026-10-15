@@ -3,25 +3,50 @@
 <p>{{if .WaitingForApproval}}<a href="/">Back to the overview</a>{{else}}<a href="/p/{{pe .Project}}">Back to {{.Project}}</a>{{end}}</p>
 <h1>Plan: {{.Project}}</h1>
 {{if .Path}}<p class="muted">{{.Path}}</p>{{end}}
-{{if .WaitingForApproval}}<p class="warn">Waiting for approval. To approve it, run afk plan approve in the project folder.</p>{{end}}
 {{if .Problem}}
+{{if .Status.Known}}{{with .Status.Line}}<p class="muted">{{.}}</p>{{end}}{{end}}
 <p class="warn">Problem: {{.Problem}}</p>
 {{else}}
-<div class="card">
-  {{.Summary.Milestones}} milestone{{if ne .Summary.Milestones 1}}s{{end}},
-  {{.Summary.Tasks}} task{{if ne .Summary.Tasks 1}}s{{end}}
-  ({{.Summary.OwnerTasks}} for you to do yourself),
-  {{.Summary.OpenQuestions}} open question{{if ne .Summary.OpenQuestions 1}}s{{end}}.<br>
-  <span class="{{if .Summary.Errors}}warn{{else}}muted{{end}}">The checker found {{.Summary.Errors}} error{{if ne .Summary.Errors 1}}s{{end}} and {{.Summary.Warnings}} warning{{if ne .Summary.Warnings 1}}s{{end}}.{{if .Summary.Warnings}} Run afk plan lint in the project folder to read the warnings.{{end}}</span>
+<div class="split plan-page">
+<div class="split__list">
+<section class="card plan-checker" aria-label="The plan checker">
+  {{if .Status.Known}}{{with .Status.Line}}<p class="plan-line">{{.}}</p>{{end}}{{end}}
+  {{with .CheckerBadge}}<p><span class="badge {{.Class}}">{{.Word}}</span></p>{{end}}
+  <div class="stats plan-stats">
+    <div class="stat"><span class="stat__value">{{.Summary.Tasks}}</span><span class="stat__label">Tasks</span></div>
+    <div class="stat"><span class="stat__value">{{.Summary.Milestones}}</span><span class="stat__label">Milestones</span></div>
+    <div class="stat"><span class="stat__value">{{.Summary.Errors}}</span><span class="stat__label">Errors</span></div>
+    <div class="stat"><span class="stat__value">{{.Summary.Warnings}}</span><span class="stat__label">Warnings</span></div>
+  </div>
+  <p class="meta">
+    {{.Summary.Milestones}} milestone{{if ne .Summary.Milestones 1}}s{{end}},
+    {{.Summary.Tasks}} task{{if ne .Summary.Tasks 1}}s{{end}}
+    ({{.Summary.OwnerTasks}} for you to do yourself),
+    {{.Summary.OpenQuestions}} open question{{if ne .Summary.OpenQuestions 1}}s{{end}}.
+  </p>
+  {{with .FindingRows}}
+  <div class="plan-findings">
+  {{range .}}
+    <div class="finding">
+      <span class="badge {{.Class}}">{{.Word}}</span>
+      <div class="finding__body">
+        <span>{{.Text}}</span>
+        {{if .Anchor}}<a class="finding__where" href="{{.Anchor}}">{{.Where}}</a>{{else}}<span class="finding__where">{{.Where}}</span>{{end}}
+      </div>
+    </div>
+  {{end}}
+  </div>
+  {{end}}
+  {{if .Approve.Available}}
+  <div class="btn-row"><a class="btn btn--primary" href="{{planApprovePath .Project}}" data-confirm="plan-approve">Approve the plan&hellip;</a></div>
+  {{else if .ShowErrorNotice}}
+  <div class="notice notice--error" role="alert"><div class="notice__body">{{.ErrorNotice}}</div></div>
+  {{else}}
+  <p class="muted">{{.Approve.Reason}}</p>
+  {{end}}
+</section>
 </div>
-{{with .Errors}}
-<h2>Errors to fix before this plan can be built</h2>
-<ul class="stack">
-{{range .}}
-  <li class="card"><span class="warn">{{if .Line}}Line {{.Line}}{{else}}Whole plan{{end}}{{if .Task}}, {{.Task}}{{end}}</span><br>{{.Message}}</li>
-{{end}}
-</ul>
-{{end}}
+<div class="split__detail">
 <h2>Open questions</h2>
 <ul class="stack">
 {{range .Questions}}
@@ -32,8 +57,11 @@
 {{end}}
 </ul>
 <h2>The plan</h2>
-<div class="plan">
+<div class="prose plan">
 {{.Rendered}}
 </div>
+</div>
+</div>
+{{if .Approve.Available}}{{template "confirm-sheet" .ApproveSheet}}{{end}}
 {{end}}
 {{end}}

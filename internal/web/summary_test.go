@@ -593,3 +593,41 @@ func TestBlockingHeadline(t *testing.T) {
 		})
 	}
 }
+
+// TestProjectPageForPlanLine is load-bearing on two rows: a read error keeps
+// its own sentence even when a status is known (the line would hide that the
+// state could not be read), and an unknown status or one with no planning
+// session leaves the row as it was before the plan line existed.
+func TestProjectPageForPlanLine(t *testing.T) {
+	sum := ProjectSummary{Name: "app", Done: 1, Total: 3}
+	known := PlanStatus{Known: true, Session: true, Mode: "new", Phase: "review", Line: "Plan · new · review — waiting for your approval"}
+	tests := []struct {
+		name string
+		in   projectPageInput
+		want planRow
+	}{
+		{name: "line for a session in progress",
+			in: projectPageInput{Summary: sum, Planning: plansession.State{Mode: "extend", Phase: "round"}, PlanningOK: true,
+				PlanStatus: PlanStatus{Known: true, Session: true, Line: "Plan · extend · round"}},
+			want: planRow{Label: "Planning: extend", Href: "/p/app/plan", Badge: badgeView{Class: "badge--running", Word: "round"}, Meta: "Plan · extend · round"}},
+		{name: "line for a plan waiting for approval",
+			in:   projectPageInput{Summary: sum, PlanWaiting: true, PlanStatus: known},
+			want: planRow{Label: "Plan waiting for your approval", Href: "/p/app/plan", Meta: known.Line}},
+		{name: "unknown status leaves the row alone",
+			in:   projectPageInput{Summary: sum, PlanWaiting: true},
+			want: planRow{Label: "Plan waiting for your approval", Href: "/p/app/plan"}},
+		{name: "no session leaves the row alone",
+			in:   projectPageInput{Summary: sum, PlanStatus: PlanStatus{Known: true, Line: "x"}},
+			want: planRow{Label: "Read the plan", Href: "/p/app/plan"}},
+		{name: "a read error keeps its sentence",
+			in:   projectPageInput{Summary: sum, PlanningErr: errors.New("bad"), PlanStatus: known},
+			want: planRow{Label: "Read the plan", Href: "/p/app/plan", Meta: "The planning session's state could not be read."}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := projectPageFor(tc.in).Plan; got != tc.want {
+				t.Errorf("plan row = %+v\nwant %+v", got, tc.want)
+			}
+		})
+	}
+}

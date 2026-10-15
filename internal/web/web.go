@@ -258,6 +258,21 @@ type Deps struct {
 	RestartSession  func(root, name string) SessionActionResult
 	SetSessionLabel func(root, name, label string) SessionActionResult
 	NewSession      func(root, name, description string) SessionActionResult
+	// PlanStatus reads the planning status of the project at root from
+	// .afk/plan/ alone, with the plan line worded by the dashboard's own
+	// function (see plan_approve.go). It must not block: files only, no git
+	// and no dialing, because the plan page and the project page call it on
+	// every request. Nil means the page shows no plan line and offers no
+	// approve.
+	PlanStatus func(root string) PlanStatus
+	// ApprovePlan does what `afk plan approve` does for the project at root,
+	// through the root package's print-free entry point the dashboard's
+	// approve uses, and says what happened in plain words. It re-reads the
+	// planning session, the plan and the checker itself and refuses a plan
+	// that cannot be approved, so the handler never checks first. It may take
+	// minutes (it pushes; see planApproveWriteLimit). Nil means no approve
+	// button and the approve POST is not found.
+	ApprovePlan func(root string) PlanApproveResult
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -430,9 +445,12 @@ var routes = []route{
 	// can never start one, and POST /usage stays not found.
 	{http.MethodPost, "/usage/refresh", (*server).refreshUsage},
 	{http.MethodGet, "/p/{project}", (*server).project},
-	// The plan view is GET only, and that is deliberate: a plan is approved
-	// with `afk plan approve` in the project folder and never from here.
+	// The plan view. A plan on the review list, whose project is not a
+	// configured one yet, is served here too (findPlanProject).
 	{http.MethodGet, "/p/{project}/plan", (*server).plan},
+	// Approving the plan: what `afk plan approve` does, behind the confirm,
+	// through Deps.ApprovePlan and nothing else (see plan_approve.go).
+	{http.MethodPost, "/p/{project}/plan/approve", (*server).planApprove},
 	{http.MethodGet, "/p/{project}/inbox", (*server).inboxList},
 	{http.MethodGet, "/p/{project}/inbox/{id}", (*server).item},
 	{http.MethodPost, "/p/{project}/inbox/{id}/answer", (*server).answer},
@@ -532,6 +550,8 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	// the address /sessions/new (see sessionNewPage).
 	mux.HandleFunc("GET /p/{project}/sessions/{name}/confirm/{action}", s.sessionConfirmPage)
 	mux.HandleFunc("GET /p/{project}/sessions/new", s.sessionNewPage)
+	// The no-JS page behind Approve the plan… is HTML only too.
+	mux.HandleFunc("GET /p/{project}/plan/approve", s.planApprovePage)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong
