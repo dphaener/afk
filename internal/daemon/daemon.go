@@ -303,7 +303,7 @@ type RelaunchRequest struct {
 // LoadBuild, Sessions, Preflight, Launch and RecordTokens must be set; Notify,
 // NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt,
 // Restart, Relaunch, Clean, Usage, Login, StopSession, RateLimited,
-// TurnFailed, ReadPlan and PatchPlan may be nil.
+// TurnFailed, ReadPlan, PatchPlan and PlanWaits may be nil.
 //
 // ReadPlan is optional in the same way the usage fields below are. With no
 // ReadPlan the loop never reads the plan's Open questions table: no task is
@@ -441,6 +441,13 @@ type Deps struct {
 	// LoadBuild is one: where the list comes from is the caller's business.
 	// Once and Tick never ask it.
 	Projects func() ([]Project, error)
+	// PlanWaits is called once per pass, after every project has been
+	// ticked: in Run once per pass, in Once once at the end. It runs
+	// whatever the pause flag says, because a planning session is attended
+	// work with the owner in the loop, not building, so pausing the build
+	// must not silence the news that a question is waiting. Tick never calls
+	// it. Nil means the loop does nothing of the kind.
+	PlanWaits func(ctx context.Context)
 }
 
 // turnFailed is Deps.TurnFailed with its default.
@@ -542,6 +549,9 @@ func Once(projects []Project, s Settings, d Deps) []daemonstate.State {
 	for _, p := range projects {
 		out = append(out, Tick(p, s, d))
 	}
+	if d.PlanWaits != nil {
+		d.PlanWaits(context.Background())
+	}
 	return out
 }
 
@@ -617,6 +627,9 @@ func Run(ctx context.Context, projects []Project, s Settings, tick time.Duration
 				return nil
 			}
 			Tick(p, s, d)
+		}
+		if d.PlanWaits != nil && ctx.Err() == nil {
+			d.PlanWaits(ctx)
 		}
 		select {
 		case <-ctx.Done():

@@ -389,3 +389,33 @@ func TestPlanLink(t *testing.T) {
 		})
 	}
 }
+
+// TestChatLink pins the planning chat's address for the "waiting for you"
+// notification. The rows that matter most are the escaped project name (the
+// chat URL must reach the right project even with a space in its name) and the
+// empty rows (no public address or project means no Click header at all). The
+// query check guards against a token ever being appended to the link.
+func TestChatLink(t *testing.T) {
+	tests := []struct {
+		name, publicURL, project, want string
+	}{
+		{"plain", "https://afk.example", "myapp", "https://afk.example/p/myapp/plan/chat"},
+		{"trailing slash trimmed", "https://afk.example/", "myapp", "https://afk.example/p/myapp/plan/chat"},
+		{"project with a space is escaped", "https://afk.example", "my project", "https://afk.example/p/my%20project/plan/chat"},
+		{"project with a slash stays one segment", "https://afk.example", "a/b", "https://afk.example/p/a%2Fb/plan/chat"},
+		{"empty public address gives no link", "", "myapp", ""},
+		{"lone slash gives no link", "/", "myapp", ""},
+		{"empty project gives no link", "https://afk.example", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ChatLink(tt.publicURL, tt.project)
+			if got != tt.want {
+				t.Errorf("ChatLink(%q, %q) = %q, want %q", tt.publicURL, tt.project, got, tt.want)
+			}
+			if strings.Contains(got, "?") || strings.Contains(got, "#") || strings.Contains(got, "token") {
+				t.Errorf("ChatLink = %q; a link must carry no token, query or fragment", got)
+			}
+		})
+	}
+}

@@ -154,7 +154,7 @@ func (r *daemonRig) env() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: func(int) bool { return r.alive },
-		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, log func(string, ...any)) daemon.Deps {
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, _ func() []daemon.Project, log func(string, ...any)) daemon.Deps {
 			r.providers = append(r.providers, providerName)
 			r.governors = append(r.governors, gov)
 			r.publicURLs = append(r.publicURLs, publicURL)
@@ -1792,7 +1792,7 @@ func TestRealDaemonDeps(t *testing.T) {
 		}
 		return ""
 	}}
-	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), st, daemonconfig.Governor{}, "", func() time.Time { return daemonTestNow }, &log,
+	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), st, daemonconfig.Governor{}, "", func() []daemon.Project { return nil }, func() time.Time { return daemonTestNow }, &log,
 		daemonLogger(&log, func() time.Time { return daemonTestNow }))
 	for name, isNil := range map[string]bool{
 		"Now": d.Now == nil, "LoadBuild": d.LoadBuild == nil, "Sessions": d.Sessions == nil,
@@ -1804,6 +1804,9 @@ func TestRealDaemonDeps(t *testing.T) {
 		// session at its limit is left running: both would be silent.
 		"ReadPlan": d.ReadPlan == nil, "PatchPlan": d.PatchPlan == nil,
 		"Usage": d.Usage == nil, "Login": d.Login == nil, "StopSession": d.StopSession == nil,
+		// Without PlanWaits no planning session ever tells the owner it is
+		// waiting (T8.13).
+		"PlanWaits": d.PlanWaits == nil,
 	} {
 		if isNil {
 			t.Errorf("realDaemonDeps leaves %s nil", name)

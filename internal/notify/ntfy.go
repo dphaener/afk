@@ -174,6 +174,18 @@ func PlanLink(publicURL, project string) string {
 	return link + "/plan"
 }
 
+// ChatLink is the web address of one project's planning chat, for the "waiting
+// for you" notification's Click header. It is T8.12's /p/{project}/plan/chat.
+// The rules are PlanLink's: empty with no public address or no project name,
+// the name escaped as one path segment, and never a token or a query string.
+func ChatLink(publicURL, project string) string {
+	link := PlanLink(publicURL, project)
+	if link == "" {
+		return ""
+	}
+	return link + "/chat"
+}
+
 // trimBase drops one trailing slash so the link builders never produce a
 // double slash.
 func trimBase(publicURL string) string {

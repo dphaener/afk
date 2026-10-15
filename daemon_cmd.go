@@ -103,7 +103,11 @@ type daemonEnv struct {
 	// the page is off or has none. It is all of the [web] table the loop is
 	// given, and it is there for one thing: the link in a notification. The
 	// token is never handed over.
-	newDeps func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, log func(format string, args ...any)) daemon.Deps
+	//
+	// projects is the loop's current project list (projectList.get): the
+	// planning-wait check looks at the configured projects as the loop last
+	// read them, as the web page does.
+	newDeps func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, projects func() []daemon.Project, log func(format string, args ...any)) daemon.Deps
 	// signalContext returns a context that ends when the process is asked to
 	// stop.
 	signalContext func() (context.Context, context.CancelFunc)
@@ -145,8 +149,8 @@ func realDaemonEnv() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: host.Alive,
-		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, log func(string, ...any)) daemon.Deps {
-			return realDaemonDeps(p, providerName, home, st, gov, publicURL, now, os.Stderr, log)
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, projects func() []daemon.Project, log func(string, ...any)) daemon.Deps {
+			return realDaemonDeps(p, providerName, home, st, gov, publicURL, projects, now, os.Stderr, log)
 		},
 		signalContext: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -252,7 +256,13 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	for _, d := range dropped {
 		logf("%s", d)
 	}
-	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, webPublicURL(cfg.Web), logf)
+	// list is what the loop last read from config.toml. It is made here,
+	// before the loop's Deps, because the planning-wait check (run by --once
+	// too) reads the configured projects through it; from the reload below on
+	// it follows config.toml.
+	list := &projectList{}
+	list.set(projects)
+	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, webPublicURL(cfg.Web), list.get, logf)
 	settings := daemonSettings(cfg)
 
 	if *once {
@@ -296,8 +306,6 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	// config.toml. list is what the loop last read; the web page is handed
 	// copies of it, so the page and the loop always mean the same folder by a
 	// name and the page never reads the loop's own slice.
-	list := &projectList{}
-	list.set(projects)
 	deps.Projects = daemonReloadProjects(env, list, dropped, logf)
 
 	ctx, stop := env.signalContext()
@@ -693,9 +701,16 @@ func daemonPatchPlan(load func(root string) (projectconfig.Config, error), run s
 // [governor] table. Both go to the usage source and the login check only
 // (daemon_governor.go); the loop itself never sees a threshold.
 //
-// publicURL is the web page's public address, or "": it goes to the notifier
-// only, for the link in a notification.
-func realDaemonDeps(p provider.Provider, providerName, home string, st usagestate.Deps, gov daemonconfig.Governor, publicURL string, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
+// publicURL is the web page's public address, or "": it goes to the
+// notifiers only, for the link in a notification.
+//
+// projects is the loop's current project list, for the planning-wait check
+// (plan_wait_notify.go), which also reads the review and being-planned lists
+// from afk's state folder. If that folder cannot be found the check is left
+// out and said so once: runDaemon has already refused to start in that case,
+// so this is only the guard that keeps plan-waits.json out of the working
+// folder.
+func realDaemonDeps(p provider.Provider, providerName, home string, st usagestate.Deps, gov daemonconfig.Governor, publicURL string, projects func() []daemon.Project, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
 	n := daemonNotifier{
 		publicURL:  publicURL,
 		loadConfig: projectconfig.Load,
@@ -735,6 +750,12 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 	// asks the same two.
 	usage := realUsageSource(p, st, gov, now, logf)
 	login := realLoginSource(p, st, gov, now, logf)
+	var planWaits func(context.Context)
+	if stateDir, err := usagestate.Dir(st); err != nil {
+		logf("warning: afk's state folder cannot be found, so no \"planning session is waiting\" notification will be sent: %v", err)
+	} else {
+		planWaits = realPlanWaitNotifier(projects, stateDir, publicURL, now, logf).check
+	}
 	return daemon.Deps{
 		Now: now,
 		LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
@@ -781,6 +802,7 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		Usage:       usage.view,
 		Login:       login.view,
 		StopSession: daemonStopSession(realStopDeps()),
+		PlanWaits:   planWaits,
 	}
 }
 

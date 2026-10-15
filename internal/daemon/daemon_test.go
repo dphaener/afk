@@ -1901,6 +1901,92 @@ func TestOnceAndRun(t *testing.T) {
 	})
 }
 
+// TestPlanWaitsHook: the once-per-pass planning-wait hook. The load-bearing
+// rows are "run calls it once per pass" and "once calls it once" (removing
+// either call turns them red), "nil hook" (the old behaviour must not panic)
+// and "not after cancel" (a daemon that is stopping must not start a network
+// send). "tick never calls it" pins that the hook is a pass step, not a
+// project step.
+func TestPlanWaitsHook(t *testing.T) {
+	t.Run("once calls it once", func(t *testing.T) {
+		r := newRig(t, task("T1.1"))
+		d := r.deps()
+		n := 0
+		d.PlanWaits = func(context.Context) { n++ }
+		Once([]Project{r.project(), r.project()}, r.settings(), d)
+		if n != 1 {
+			t.Errorf("hook calls = %d, want 1", n)
+		}
+	})
+
+	t.Run("tick never calls it", func(t *testing.T) {
+		r := newRig(t, task("T1.1"))
+		d := r.deps()
+		n := 0
+		d.PlanWaits = func(context.Context) { n++ }
+		Tick(r.project(), r.settings(), d)
+		if n != 0 {
+			t.Errorf("hook calls = %d, want 0", n)
+		}
+	})
+
+	t.Run("run calls it once per pass", func(t *testing.T) {
+		r := newRig(t, task("T1.1"))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		d := r.deps()
+		n := 0
+		d.PlanWaits = func(context.Context) {
+			if n++; n >= 3 {
+				cancel()
+			}
+		}
+		if err := Run(ctx, []Project{r.project(), r.project()}, r.settings(), time.Millisecond, d); err != nil {
+			t.Fatalf("Run = %v, want nil", err)
+		}
+		if n != 3 {
+			t.Errorf("hook calls = %d, want 3 (one per pass, two projects each)", n)
+		}
+	})
+
+	t.Run("nil hook", func(t *testing.T) {
+		r := newRig(t, task("T1.1"))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		d := r.deps()
+		calls := 0
+		d.Now = func() time.Time {
+			if calls++; calls >= 3 {
+				cancel()
+			}
+			return *r.clock
+		}
+		Once([]Project{r.project()}, r.settings(), d)
+		if err := Run(ctx, []Project{r.project()}, r.settings(), time.Millisecond, d); err != nil {
+			t.Fatalf("Run = %v, want nil", err)
+		}
+	})
+
+	t.Run("not after cancel", func(t *testing.T) {
+		r := newRig(t, task("T1.1"))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		d := r.deps()
+		d.Now = func() time.Time {
+			cancel() // the context ends during the first pass's tick
+			return *r.clock
+		}
+		n := 0
+		d.PlanWaits = func(context.Context) { n++ }
+		if err := Run(ctx, []Project{r.project()}, r.settings(), time.Millisecond, d); err != nil {
+			t.Fatalf("Run = %v, want nil", err)
+		}
+		if n != 0 {
+			t.Errorf("hook calls = %d, want 0 after cancel", n)
+		}
+	})
+}
+
 // TestRunNewBinary: Run stops for a new program file only at the top of a
 // pass. The load-bearing rows are "changed on the second pass" (the first
 // pass ticks every project, the stopping pass ticks none, and each project's
