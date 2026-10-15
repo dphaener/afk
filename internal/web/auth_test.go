@@ -308,6 +308,9 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 				if len(rg.checkCalls)+len(rg.addedCalls) != 0 {
 					t.Errorf("a folder was checked or noted as being planned without the token: %v %v", rg.checkCalls, rg.addedCalls)
 				}
+				if rg.createCalls != 0 {
+					t.Errorf("a folder was made without the token: %q", rg.createText)
+				}
 				if len(rg.approveCalls) != 0 {
 					t.Errorf("a plan was approved without the token: %v", rg.approveCalls)
 				}

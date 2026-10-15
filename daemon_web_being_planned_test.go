@@ -33,7 +33,9 @@ import (
 //   - "has a plan": refused here as has_plan (the page words it and points at
 //     Change the plan), with no reason of its own.
 //   - "missing folder" and "relative path": refused, the first naming the
-//     folder, the second with no path at all, and nothing created.
+//     folder, the second with no path at all, and nothing created. "missing
+//     folder" and "a file" carry the page's own sentences, and no reason
+//     may name --project, which only the command line has.
 //   - "~/ is expanded": the card shows the full path, never the "~".
 //   - "subfolder of a repository": the path is the main checkout, where
 //     planning really runs.
@@ -68,10 +70,10 @@ func TestPlanFolderCheck(t *testing.T) {
 			want: web.PlanFolderRefused, wantReason: "by hand", wantStart: planSurfaceRefused},
 		{name: "missing folder", text: filepath.Join("{dir}", "gone"),
 			want: web.PlanFolderRefused, wantPath: filepath.Join("{dir}", "gone"),
-			wantReason: "the folder " + filepath.Join("{dir}", "gone") + " was not found", wantStart: planSurfaceRefused},
+			wantReason: "There is no folder at " + filepath.Join("{dir}", "gone") + ". Type the path of a folder that exists, or a plain name", wantStart: planSurfaceRefused},
 		{name: "a file", setup: func(t *testing.T, dir string) { writePlanFile(t, dir, "notes.txt", "x\n") },
 			text: filepath.Join("{dir}", "notes.txt"), want: web.PlanFolderRefused,
-			wantPath: filepath.Join("{dir}", "notes.txt"), wantReason: "is a file, not a folder", wantStart: planSurfaceRefused},
+			wantPath: filepath.Join("{dir}", "notes.txt"), wantReason: "is a file, not a folder. Type the path of a folder.", wantStart: planSurfaceRefused},
 		{name: "relative path", text: "shop", want: web.PlanFolderRefused, wantPath: "-",
 			wantReason: `the project folder "shop" is not a full path`, wantStart: planSurfaceRefused},
 		{name: "~/ is expanded", setup: func(t *testing.T, dir string) { writePlanFile(t, dir, "x/keep", "") },
@@ -117,6 +119,9 @@ func TestPlanFolderCheck(t *testing.T) {
 			}
 			if want := strings.ReplaceAll(tt.wantReason, "{dir}", dir); !strings.Contains(got.Reason, want) {
 				t.Errorf("reason missing %q:\n%s", want, got.Reason)
+			}
+			if strings.Contains(got.Reason, "--project") {
+				t.Errorf("reason names a command flag the page has no use for: %s", got.Reason)
 			}
 			if (got.Kind == web.PlanFolderRefused) != (got.Reason != "") {
 				t.Errorf("reason %q on kind %q: only a refusal has one", got.Reason, got.Kind)

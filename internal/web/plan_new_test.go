@@ -2,9 +2,11 @@ package web
 
 import (
 	"errors"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -21,7 +23,12 @@ import (
 // under the field with the text kept), and the three confirm rows, whose
 // badges say which kind of folder the owner is about to plan in. "repo
 // without a path" and "unknown kind" prove an answer the page cannot read is
-// a refusal and never a card that would start planning nowhere.
+// a refusal and never a card that would start planning nowhere. The create
+// rows (T8.15a) are load-bearing too: "create" posts the typed name and never
+// the full path, so the POST decides again from the name; "create without a
+// name" falls back to the typed text, never the path; "repo from a name"
+// tells the owner the folder was found, not made, and still posts the path;
+// "create without a path" is a refusal like "repo without a path".
 func TestNewPlanPageFor(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -33,16 +40,27 @@ func TestNewPlanPageFor(t *testing.T) {
 		path       string
 		badge      string
 		message    string
+		heading    string
+		postPath   string
+		note       string
 	}{
 		{name: "first visit", kind: "form"},
 		{name: "blank given", given: true, text: "   ", kind: "form", fieldError: planNewBlank},
 		{name: "too long", given: true, text: strings.Repeat("a", 4097), kind: "form", fieldError: planNewTooLong},
 		{name: "repo", given: true, text: "~/code/shop", chk: PlanFolderCheck{Path: "/home/me/code/shop", Kind: PlanFolderRepo},
-			kind: "confirm", path: "/home/me/code/shop", badge: "Existing folder"},
+			kind: "confirm", path: "/home/me/code/shop", badge: "Existing folder", heading: planNewHeading, postPath: "/home/me/code/shop"},
 		{name: "plain folder", given: true, text: "/srv/shop", chk: PlanFolderCheck{Path: "/srv/shop", Kind: PlanFolderFolder},
-			kind: "confirm", path: "/srv/shop", badge: "Existing folder, becomes a git repository"},
+			kind: "confirm", path: "/srv/shop", badge: "Existing folder, becomes a git repository", heading: planNewHeading, postPath: "/srv/shop"},
 		{name: "open session", given: true, text: "/srv/shop", chk: PlanFolderCheck{Path: "/srv/shop", Kind: PlanFolderOpen},
-			kind: "confirm", path: "/srv/shop", badge: "Planning already open"},
+			kind: "confirm", path: "/srv/shop", badge: "Planning already open", heading: planNewHeading, postPath: "/srv/shop"},
+		{name: "create", given: true, text: " demo ", chk: PlanFolderCheck{Path: "/home/me/code/demo", Kind: PlanFolderCreate, Name: "demo"},
+			kind: "confirm", path: "/home/me/code/demo", badge: "New, empty folder", heading: planNewCreateHeading, postPath: "demo"},
+		{name: "create without a name", given: true, text: "demo", chk: PlanFolderCheck{Path: "/home/me/code/demo", Kind: PlanFolderCreate},
+			kind: "confirm", path: "/home/me/code/demo", badge: "New, empty folder", heading: planNewCreateHeading, postPath: "demo"},
+		{name: "repo from a name", given: true, text: "shop", chk: PlanFolderCheck{Path: "/home/me/code/shop", Kind: PlanFolderRepo, Name: "shop"},
+			kind: "confirm", path: "/home/me/code/shop", badge: "Existing folder", heading: planNewHeading, postPath: "/home/me/code/shop",
+			note: "A folder named shop already exists in /home/me/code. afk will plan in it."},
+		{name: "create without a path", given: true, text: "demo", chk: PlanFolderCheck{Kind: PlanFolderCreate, Name: "demo"}, kind: "form", fieldError: planNewUnknown},
 		{name: "has plan", given: true, text: "/srv/shop", chk: PlanFolderCheck{Path: "/srv/shop", Kind: PlanFolderHasPlan},
 			kind: "has_plan", path: "/srv/shop", message: planNewHasPlan},
 		{name: "refused", given: true, text: "~/nope", chk: PlanFolderCheck{Kind: PlanFolderRefused, Reason: "There is no folder at /home/me/nope."},
@@ -55,7 +73,8 @@ func TestNewPlanPageFor(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			v := newPlanPageFor(tc.text, tc.given, tc.chk)
-			if v.Kind != tc.kind || v.FieldError != tc.fieldError || v.Path != tc.path || v.Badge.Word != tc.badge || v.Message != tc.message {
+			if v.Kind != tc.kind || v.FieldError != tc.fieldError || v.Path != tc.path || v.Badge.Word != tc.badge || v.Message != tc.message ||
+				v.Heading != tc.heading || v.PostPath != tc.postPath || v.Note != tc.note {
 				t.Errorf("newPlanPageFor = %+v", v)
 			}
 			if v.Text != strings.TrimSpace(tc.text) {
@@ -173,7 +192,7 @@ func TestPlanNewStarts(t *testing.T) {
 			}
 			project := strings.TrimSuffix(strings.TrimPrefix(tc.wantChat, "/p/"), "/plan/chat")
 			if m["path"] != rg.checkResult.Path || m["root"] != wantRoot || m["project"] != project ||
-				m["outcome"] != tc.outcome || m["chat"] != tc.wantChat || m["notice"] != "" {
+				m["outcome"] != tc.outcome || m["chat"] != tc.wantChat || m["notice"] != "" || m["created"] != false {
 				t.Errorf("body = %v", m)
 			}
 			check(t, rg)
@@ -197,10 +216,15 @@ func TestPlanNewNeedsTheConfirm(t *testing.T) {
 		{"api, confirm false", "/api/plan/new", jsonType, `{"confirm": false, "path": "~/code/shop"}`},
 		{"api, confirm as a word", "/api/plan/new", jsonType, `{"confirm": "yes", "path": "~/code/shop"}`},
 		{"api, confirm in the query", "/api/plan/new?confirm=yes", jsonType, `{"path": "~/code/shop"}`},
+		{"page, a name, no confirm", "/plan/new", formType, "path=demo"},
+		{"api, a name, no confirm", "/api/plan/new", jsonType, `{"path": "demo"}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
+			// A check that would say "create": even then, nothing is made
+			// without the confirm.
+			rg.checkResult = PlanFolderCheck{Path: filepath.Join(rg.fresh, "demo"), Kind: PlanFolderCreate, Name: "demo"}
 			var rec *httptest.ResponseRecorder
 			if isAPI(tc.path) {
 				rec = rg.do(http.MethodPost, tc.path, tc.ctype, tc.body)
@@ -224,6 +248,9 @@ func TestPlanNewNeedsTheConfirm(t *testing.T) {
 			rg.noPlanNewSeams()
 			if len(rg.checkCalls) != 0 {
 				t.Errorf("the folder was checked without the confirm: %q", rg.checkCalls)
+			}
+			if rg.createCalls != 0 {
+				t.Errorf("a folder was made without the confirm: %q", rg.createText)
 			}
 		})
 	}
@@ -457,12 +484,13 @@ func TestPlanNewPage(t *testing.T) {
 		wantCheck int
 	}{
 		{name: "form", path: "/plan/new",
-			want: []string{`<label class="field__label" for="plan-new-path">Where</label>`, `class="input input--mono"`, `name="path"`,
-				`<span class="field__hint" id="plan-new-hint">Folder path</span>`, `<form method="get" action="/plan/new"`, `href="/">Cancel</a>`},
+			want: []string{`<label class="field__label" for="plan-new-path">Folder path or project name</label>`, `class="input input--mono"`, `name="path"`,
+				`<span class="field__hint" id="plan-new-hint">` + html.EscapeString(planNewNoLocationHint) + `</span>`, `<form method="get" action="/plan/new"`, `href="/">Cancel</a>`},
 			notWant: []string{"field__error", "Start planning"}},
 		{name: "blank given", path: "/plan/new?path=+",
 			want: []string{`<p class="field__error" id="plan-new-error" role="alert">` + planNewBlank, `aria-invalid="true"`, `aria-describedby="plan-new-error plan-new-hint"`}},
 		{name: "confirm card", path: "/plan/new?path=%7E%2Fcode%2Fshop", wantCheck: 1,
+			notWant: []string{"New, empty folder", "afk will create"},
 			want: []string{`<h2 id="plan-new-card-title">afk will plan in</h2>`, `<p class="path">`, `<span class="badge badge--idle">Existing folder</span>`,
 				`<form method="post" action="/plan/new"`, `<input type="hidden" name="confirm" value="yes">`, `<input type="hidden" name="path" value="`,
 				`<button type="submit" class="btn btn--primary" data-loading-label="Starting planning">Start planning</button>`,
@@ -545,4 +573,277 @@ func TestPlanNewOverviewLinks(t *testing.T) {
 			t.Errorf("GET /plan/new = %d, want 404", rec.Code)
 		}
 	})
+}
+
+// TestPlanNewHint is the Where field's hint (T8.15a). Load-bearing: with a
+// location the hint names it, never a fixed folder; without one it says how
+// to set one; and a page that cannot make folders never offers names, since
+// a name would only be refused.
+func TestPlanNewHint(t *testing.T) {
+	tests := []struct {
+		name      string
+		canCreate bool
+		location  string
+		want      string
+	}{
+		{"location set", true, "/home/me/projects", "A name makes a new folder in /home/me/projects."},
+		{"no location", true, "", planNewNoLocationHint},
+		{"cannot create", false, "/home/me/projects", planNewPathOnlyHint},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := planNewHint(tc.canCreate, tc.location); got != tc.want {
+				t.Errorf("planNewHint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlanNewHintOnThePage: the form draws the hint from the PlanLocation
+// seam, and a refused POST that redraws the form keeps it. Load-bearing: the
+// location shown is the profile's, read through the seam.
+func TestPlanNewHintOnThePage(t *testing.T) {
+	const want = `<span class="field__hint" id="plan-new-hint">A name makes a new folder in /home/me/projects.</span>`
+	rg := newRig(t, Config{})
+	rg.location = "/home/me/projects"
+	if body := rg.pageDo(http.MethodGet, "/plan/new", "").Body.String(); !strings.Contains(body, want) {
+		t.Errorf("the form does not contain %q", want)
+	}
+	rg.checkResult = PlanFolderCheck{Kind: PlanFolderRefused, Reason: "nope"}
+	if body := rg.pageDo(http.MethodPost, "/plan/new", planNewForm("x")).Body.String(); !strings.Contains(body, want) {
+		t.Errorf("the redrawn form does not contain %q", want)
+	}
+}
+
+// createRig is a rig whose check says the typed name is a new folder, and
+// whose create seam answers that folder.
+func createRig(t *testing.T) *rig {
+	rg := newRig(t, Config{})
+	demo := filepath.Join(filepath.Dir(rg.fresh), "demo")
+	rg.checkResult = PlanFolderCheck{Path: demo, Kind: PlanFolderCreate, Name: "demo"}
+	rg.createPath = demo
+	rg.addedName = "demo"
+	return rg
+}
+
+// TestPlanNewCreateCard is the GET for a name (T8.15a). Load-bearing: the
+// card says afk will create, shows the full path and the New, empty folder
+// badge, posts the typed name (never the full path) and creates nothing; and
+// a page without the create seam refuses the name instead of drawing a card
+// its POST would refuse.
+func TestPlanNewCreateCard(t *testing.T) {
+	t.Run("card", func(t *testing.T) {
+		rg := createRig(t)
+		rec := rg.pageDo(http.MethodGet, "/plan/new?path=demo", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, w := range []string{
+			`<h2 id="plan-new-card-title">afk will create and plan in</h2>`,
+			`<p class="path">` + rg.createPath + `</p>`,
+			`<span class="badge badge--idle">New, empty folder</span>`,
+			`<input type="hidden" name="confirm" value="yes">`,
+			`<input type="hidden" name="path" value="demo">`,
+			`data-loading-label="Creating the folder and starting planning">Start planning</button>`,
+		} {
+			if !strings.Contains(body, w) {
+				t.Errorf("the page does not contain %q", w)
+			}
+		}
+		if strings.Contains(body, `name="path" value="`+rg.createPath+`"`) {
+			t.Errorf("the create card posts the full path")
+		}
+		if rg.createCalls != 0 {
+			t.Errorf("the GET made a folder: %q", rg.createText)
+		}
+		rg.noPlanNewSeams()
+	})
+	t.Run("existing folder from a name", func(t *testing.T) {
+		rg := newRig(t, Config{})
+		rg.checkResult = PlanFolderCheck{Path: rg.fresh, Kind: PlanFolderRepo, Name: "shop"}
+		body := rg.pageDo(http.MethodGet, "/plan/new?path=shop", "").Body.String()
+		for _, w := range []string{
+			`<h2 id="plan-new-card-title">afk will plan in</h2>`,
+			"A folder named shop already exists in " + filepath.Dir(rg.fresh) + ". afk will plan in it.",
+			`<input type="hidden" name="path" value="` + rg.fresh + `">`,
+		} {
+			if !strings.Contains(body, w) {
+				t.Errorf("the page does not contain %q", w)
+			}
+		}
+		if rg.createCalls != 0 {
+			t.Errorf("the GET made a folder")
+		}
+	})
+	t.Run("no create seam", func(t *testing.T) {
+		rg := createRig(t)
+		rg.srv.d.CreatePlanFolder = nil
+		body := rg.pageDo(http.MethodGet, "/plan/new?path=demo", "").Body.String()
+		if !strings.Contains(body, planNewGetNoCreate) || strings.Contains(body, "Start planning") {
+			t.Errorf("a name was offered a card the page cannot carry out:\n%s", body)
+		}
+		if !strings.Contains(body, planNewPathOnlyHint) {
+			t.Errorf("the hint offers names on a page that cannot make folders")
+		}
+	})
+}
+
+// TestPlanNewCreates is the confirmed POST for a name (T8.15a). Load-bearing:
+// the check is asked again, the create seam is given the typed text (never a
+// path), and StartPlan is asked once, in mode new, for the path the seam
+// made; then it lands on the chat like T8.15, and the API says created.
+// "existing folder from a name" proves a name whose folder is there starts
+// planning in it without making anything.
+func TestPlanNewCreates(t *testing.T) {
+	tests := []struct {
+		name        string
+		existing    bool
+		wantCreated bool
+	}{
+		{"new folder", false, true},
+		{"existing folder from a name", true, false},
+	}
+	for _, tc := range tests {
+		setup := func(t *testing.T) *rig {
+			rg := createRig(t)
+			if tc.existing {
+				rg.checkResult = PlanFolderCheck{Path: rg.createPath, Kind: PlanFolderRepo, Name: "demo"}
+			}
+			return rg
+		}
+		check := func(t *testing.T, rg *rig) {
+			t.Helper()
+			if len(rg.checkCalls) != 1 || rg.checkCalls[0] != "demo" {
+				t.Errorf("checkCalls = %q, want the typed name once", rg.checkCalls)
+			}
+			wantCreate := 0
+			if tc.wantCreated {
+				wantCreate = 1
+			}
+			if rg.createCalls != wantCreate || (wantCreate == 1 && rg.createText != "demo") {
+				t.Errorf("create calls = %d with %q, want %d with the typed name", rg.createCalls, rg.createText, wantCreate)
+			}
+			if len(rg.startCalls) != 1 || strings.Join(rg.startCalls[0], "|") != rg.createPath+"|new|" {
+				t.Errorf("startCalls = %q, want one call (%s, new, \"\")", rg.startCalls, rg.createPath)
+			}
+			if len(rg.addedCalls) != 1 || rg.addedCalls[0] != rg.createPath {
+				t.Errorf("addedCalls = %q, want [%s]", rg.addedCalls, rg.createPath)
+			}
+		}
+		t.Run("page "+tc.name, func(t *testing.T) {
+			rg := setup(t)
+			rec := rg.pageDo(http.MethodPost, "/plan/new", planNewForm(" demo "))
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("status = %d, want 303\n%s", rec.Code, rec.Body.String())
+			}
+			if got, want := rec.Header().Get("Location"), "/p/demo/plan/chat?done=started"; got != want {
+				t.Errorf("Location = %q, want %q", got, want)
+			}
+			check(t, rg)
+		})
+		t.Run("api "+tc.name, func(t *testing.T) {
+			rg := setup(t)
+			rec := rg.do(http.MethodPost, "/api/plan/new", jsonType, `{"confirm": true, "path": "demo"}`)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body.String())
+			}
+			m := decode(t, rec)
+			if m["path"] != rg.createPath || m["root"] != rg.createPath || m["project"] != "demo" || m["chat"] != "/p/demo/plan/chat" || m["created"] != tc.wantCreated {
+				t.Errorf("body = %v", m)
+			}
+			check(t, rg)
+		})
+	}
+}
+
+// TestPlanNewCreateRefusals: everything that stops a name before or at the
+// create (T8.15a). Load-bearing rows: "create failed" starts nothing, says
+// the seam's sentence (what was left on disk) and answers create_failed with
+// that path, at 400 like every refusal here; "bad name" and "no location"
+// are check refusals, so the create seam is never reached; "no create seam"
+// refuses a create the page cannot carry out without starting anything.
+func TestPlanNewCreateRefusals(t *testing.T) {
+	const failed = "afk made the folder /home/me/code/demo but could not make it a git repository (git init failed). The folder is still there; nothing was removed. Nothing was started."
+	tests := []struct {
+		name       string
+		setup      func(rg *rig)
+		wantError  string
+		wantReason string
+		wantPath   string
+		wantCreate int
+	}{
+		{name: "create failed", setup: func(rg *rig) { rg.createPath, rg.createErr = "/home/me/code/demo", errors.New(failed) },
+			wantError: failed, wantReason: "create_failed", wantPath: "/home/me/code/demo", wantCreate: 1},
+		{name: "create failed before making anything", setup: func(rg *rig) {
+			rg.createPath, rg.createErr = "", errors.New("afk could not make the folder. Nothing was started.")
+		},
+			wantError: "afk could not make the folder. Nothing was started.", wantReason: "create_failed", wantCreate: 1},
+		{name: "bad name", setup: func(rg *rig) {
+			rg.checkResult = PlanFolderCheck{Kind: PlanFolderRefused, Name: "bad name!", Reason: "A project name can use only letters, digits, ., _ and -."}
+		}, wantError: "A project name can use only letters, digits, ., _ and -.", wantReason: "refused"},
+		{name: "no location", setup: func(rg *rig) {
+			rg.checkResult = PlanFolderCheck{Kind: PlanFolderRefused, Name: "demo", Reason: `There is no project location. Set one with afk profile set "project location" ~/code, or type a full path.`}
+		}, wantError: `There is no project location. Set one with afk profile set "project location" ~/code, or type a full path.`, wantReason: "refused"},
+		{name: "no create seam", setup: func(rg *rig) { rg.srv.d.CreatePlanFolder = nil },
+			wantError: planNewNoCreate, wantReason: "refused"},
+	}
+	for _, tc := range tests {
+		t.Run("api "+tc.name, func(t *testing.T) {
+			rg := createRig(t)
+			tc.setup(rg)
+			rec := rg.do(http.MethodPost, "/api/plan/new", jsonType, `{"confirm": true, "path": "demo"}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400\n%s", rec.Code, rec.Body.String())
+			}
+			m := decode(t, rec)
+			if m["error"] != tc.wantError || m["reason"] != tc.wantReason {
+				t.Errorf("body = %v", m)
+			}
+			if tc.wantReason == "create_failed" && m["path"] != tc.wantPath {
+				t.Errorf("path = %v, want %q", m["path"], tc.wantPath)
+			}
+			if rg.createCalls != tc.wantCreate {
+				t.Errorf("createCalls = %d, want %d", rg.createCalls, tc.wantCreate)
+			}
+			rg.noPlanNewSeams()
+		})
+		t.Run("page "+tc.name, func(t *testing.T) {
+			rg := createRig(t)
+			tc.setup(rg)
+			rec := rg.pageDo(http.MethodPost, "/plan/new", planNewForm("demo"))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400\n%s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			for _, w := range []string{html.EscapeString(tc.wantError), `value="demo"`} {
+				if !strings.Contains(body, w) {
+					t.Errorf("the page does not contain %q", w)
+				}
+			}
+			if strings.Contains(body, "Start planning") {
+				t.Errorf("a refused name was offered Start planning")
+			}
+			if rg.createCalls != tc.wantCreate {
+				t.Errorf("createCalls = %d, want %d", rg.createCalls, tc.wantCreate)
+			}
+			rg.noPlanNewSeams()
+		})
+	}
+}
+
+// TestPlanNewCreatedThenRefused: the folder was made, then the entry point
+// refused to start. Load-bearing: the owner is told the new folder is left in
+// place (nothing is removed), the API says created, and nothing is noted.
+func TestPlanNewCreatedThenRefused(t *testing.T) {
+	rg := createRig(t)
+	rg.startResult = PlanStartResult{Outcome: PlanStartRefused, Reason: "A planning session is already open."}
+	m := decode(t, rg.do(http.MethodPost, "/api/plan/new", jsonType, `{"confirm": true, "path": "demo"}`))
+	want := "A planning session is already open. The new folder " + rg.createPath + " was made and is left in place."
+	if m["error"] != want || m["created"] != true || m["path"] != rg.createPath {
+		t.Errorf("body = %v", m)
+	}
+	if len(rg.addedCalls) != 0 {
+		t.Errorf("a refused start was noted as being planned: %q", rg.addedCalls)
+	}
 }
