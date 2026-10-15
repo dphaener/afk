@@ -1094,7 +1094,7 @@ func TestInboxKeyIsInTheLeaderTable(t *testing.T) {
 	if row.keyLabel != "i" || row.name != "inbox" || row.blocked != "" {
 		t.Errorf("row = %+v, want a runnable \"inbox\" under i", row)
 	}
-	if got := leaderKeyDecision(leaderPress("i"), "", rows, 0, false); got.kind != leaderRun || got.row.action != actionInbox {
+	if got := leaderKeyDecision(leaderPress("i"), defaultLeaderKey, "", rows, 0, false); got.kind != leaderRun || got.row.action != actionInbox {
 		t.Errorf("ctrl+] i = %v %v, want the inbox action", got.kind, got.row.action)
 	}
 

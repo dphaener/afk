@@ -153,12 +153,12 @@ func TestTaskTokensRowTotal(t *testing.T) {
 	const cursor = 1
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			lines := buildTabLinesWith(snap, PlanStatus{}, tc.width, cursor, tc.total)
-			without := buildTabLinesAt(snap, PlanStatus{}, tc.width, cursor)
+			lines := buildTabLinesWith(defaultLeaderKey, snap, PlanStatus{}, tc.width, cursor, tc.total)
+			without := buildTabLinesAt(defaultLeaderKey, snap, PlanStatus{}, tc.width, cursor)
 			if len(lines) != len(without) {
 				t.Fatalf("%d lines with the total, %d without; a row grew a line", len(lines), len(without))
 			}
-			top := buildRowsTop(snap, PlanStatus{}, tc.width)
+			top := buildRowsTop(defaultLeaderKey, snap, PlanStatus{}, tc.width)
 			for i, ln := range lines {
 				if w := lipgloss.Width(ln); w > tc.width {
 					t.Errorf("line %d is %d wide, max %d", i, w, tc.width)
@@ -428,7 +428,7 @@ func TestTaskTokensStale(t *testing.T) {
 // the owner to the Build tab would not help without it), and a blocked
 // action calls no seam and opens nothing.
 func TestTaskTokensBlocked(t *testing.T) {
-	ready := leaderConds{canLoadTaskTokens: true, buildTabFocused: true, buildTaskSelected: true}
+	ready := leaderConds{leader: defaultLeaderKey, canLoadTaskTokens: true, buildTabFocused: true, buildTaskSelected: true}
 	with := func(f func(*leaderConds)) leaderConds { c := ready; f(&c); return c }
 	cases := []struct {
 		name  string
@@ -437,7 +437,7 @@ func TestTaskTokensBlocked(t *testing.T) {
 	}{
 		{"runs", ready, ""},
 		{"no seam outranks everything", leaderConds{}, taskTokensNoSeam},
-		{"not on the Build tab", with(func(c *leaderConds) { c.buildTabFocused = false; c.buildTaskSelected = false }), taskStatusOpenBuildFirst()},
+		{"not on the Build tab", with(func(c *leaderConds) { c.buildTabFocused = false; c.buildTaskSelected = false }), taskStatusOpenBuildFirst(defaultLeaderKey)},
 		{"no task under the cursor", with(func(c *leaderConds) { c.buildTaskSelected = false }), taskTokensNoTask},
 	}
 	for _, tc := range cases {

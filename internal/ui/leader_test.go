@@ -74,11 +74,15 @@ var (
 //     be left from inside the dialog too.
 //   - "old chord is not a row key": a row shows the key after the leader, so
 //     the chord it replaced (ctrl+t) is nobody's key in the dialog.
+//   - the three "configured ctrl+o" rows: with config.toml's leader in use
+//     (T9.2), the configured key is the one that closes or passes through,
+//     and ctrl+] is then just an unbound chord, ignored like any other.
 func TestLeaderKeyDecision(t *testing.T) {
 	rows := leaderTestRows()
 	cases := []struct {
 		name      string
 		k         tea.KeyPressMsg
+		leader    string // "" means defaultLeaderKey
 		query     string
 		rows      []leaderRow
 		highlight int
@@ -116,10 +120,17 @@ func TestLeaderKeyDecision(t *testing.T) {
 		// starts the query, and enter on the highlighted row runs it.
 		{name: "a by-name row's letter filters", k: leaderPress("e"), rows: rows, want: leaderFilter, wantText: "e"},
 		{name: "enter runs a highlighted by-name row", k: leaderPress("enter"), rows: rows, highlight: 7, want: leaderRun, wantRun: actionPlanExtend},
+		{name: "configured ctrl+o from the pane passes through", k: leaderPress("ctrl+o"), leader: "ctrl+o", rows: rows, fromPane: true, want: leaderPassThrough},
+		{name: "configured ctrl+o not from the pane closes", k: leaderPress("ctrl+o"), leader: "ctrl+o", rows: rows, want: leaderClose},
+		{name: "configured ctrl+o leaves ctrl+] unbound", k: leaderTestCtrlBracket, leader: "ctrl+o", rows: rows, fromPane: true, want: leaderIgnore},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := leaderKeyDecision(tc.k, tc.query, tc.rows, tc.highlight, tc.fromPane)
+			leader := tc.leader
+			if leader == "" {
+				leader = defaultLeaderKey
+			}
+			got := leaderKeyDecision(tc.k, leader, tc.query, tc.rows, tc.highlight, tc.fromPane)
 			if got.kind != tc.want {
 				t.Fatalf("kind = %v, want %v", got.kind, tc.want)
 			}
@@ -148,6 +159,7 @@ func TestLeaderKeyDecision(t *testing.T) {
 // as the change actions are dimmed would hide it exactly when it is needed.
 func TestLeaderBlockedReason(t *testing.T) {
 	ready := leaderConds{
+		leader:           defaultLeaderKey,
 		hasActiveProject: true,
 		selected:         true,
 		paneOpen:         true,
@@ -550,9 +562,9 @@ func TestRemovedKeyNotice(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
-			got, ok := removedKeyNotice(tc.key)
+			got, ok := removedKeyNotice(defaultLeaderKey, tc.key)
 			if ok != (tc.want != "") {
-				t.Fatalf("removedKeyNotice(%q) ok = %v, want %v", tc.key, ok, tc.want != "")
+				t.Fatalf("removedKeyNotice(defaultLeaderKey, %q) ok = %v, want %v", tc.key, ok, tc.want != "")
 			}
 			if got != tc.want {
 				t.Fatalf("notice = %q, want %q", got, tc.want)
@@ -640,7 +652,7 @@ func TestLeaderDialogFilterAndMove(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := newLeaderDialog(rows, false)
+			d := newLeaderDialog(rows, defaultLeaderKey, false)
 			for _, o := range tc.steps {
 				d.apply(o)
 			}
@@ -675,7 +687,7 @@ func TestLeaderDialogView(t *testing.T) {
 		w, h int
 	}{{"80x24", 80, 24}, {"120x40", 120, 40}} {
 		t.Run(sz.name, func(t *testing.T) {
-			d := newLeaderDialog(rows, false)
+			d := newLeaderDialog(rows, defaultLeaderKey, false)
 			out := d.view(sz.w, sz.h)
 			lines := strings.Split(out, "\n")
 			if len(lines) > sz.h-2*modalMargin {
@@ -695,14 +707,14 @@ func TestLeaderDialogView(t *testing.T) {
 		})
 	}
 	t.Run("empty filter says so", func(t *testing.T) {
-		d := newLeaderDialog(rows, false)
+		d := newLeaderDialog(rows, defaultLeaderKey, false)
 		d.apply(leaderOutcome{kind: leaderFilter, text: "zzzz"})
 		if out := d.view(80, 24); !strings.Contains(out, "no action matches") {
 			t.Errorf("empty list does not say so:\n%s", out)
 		}
 	})
 	t.Run("highlight scrolls into view", func(t *testing.T) {
-		d := newLeaderDialog(rows, false)
+		d := newLeaderDialog(rows, defaultLeaderKey, false)
 		d.apply(leaderOutcome{kind: leaderMove, delta: -1}) // wraps to the last row
 		last := rows[len(rows)-1]
 		if out := d.view(80, 24); !strings.Contains(out, last.name) {

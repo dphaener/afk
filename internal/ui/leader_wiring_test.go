@@ -933,7 +933,7 @@ func TestRemovedListKeyOnlyRaisesItsNotice(t *testing.T) {
 				t.Fatalf("key %q does not round-trip", k)
 			}
 			got, cmd := update(t, m, press)
-			want, _ := removedKeyNotice(k)
+			want, _ := removedKeyNotice(defaultLeaderKey, k)
 			if got.status != want || got.statusKind != notifyInfo {
 				t.Fatalf("status = %q (%v), want the info notice %q", got.status, got.statusKind, want)
 			}

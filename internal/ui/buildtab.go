@@ -53,9 +53,9 @@ func (buildPanel) Title() string { return "Build" }
 
 func (buildPanel) Render(ctx panelContext, width int) []string {
 	if !ctx.BuildCursorShown {
-		return buildTabLinesAt(ctx.Build, ctx.PlanStatus, width, -1)
+		return buildTabLinesAt(ctx.Leader, ctx.Build, ctx.PlanStatus, width, -1)
 	}
-	return buildTabLinesWith(ctx.Build, ctx.PlanStatus, width, ctx.BuildCursor, ctx.BuildCursorTotal)
+	return buildTabLinesWith(ctx.Leader, ctx.Build, ctx.PlanStatus, width, ctx.BuildCursor, ctx.BuildCursorTotal)
 }
 
 // buildTabLines is the Build tab's content at the given width: the summary
@@ -66,8 +66,8 @@ func (buildPanel) Render(ctx panelContext, width int) []string {
 // It is a pure function of the snapshot so the whole layout is table-testable
 // without a Model. It is the tab with no cursor, as it is drawn while the
 // session list has the keyboard.
-func buildTabLines(snap buildview.Snapshot, plan PlanStatus, width int) []string {
-	return buildTabLinesAt(snap, plan, width, -1)
+func buildTabLines(leader string, snap buildview.Snapshot, plan PlanStatus, width int) []string {
+	return buildTabLinesAt(leader, snap, plan, width, -1)
 }
 
 // buildRowsTop is how many lines of buildTabLinesAt come before the first task
@@ -75,8 +75,8 @@ func buildTabLines(snap buildview.Snapshot, plan PlanStatus, width int) []string
 // buildSummaryLines, the function that writes those lines, so the model's
 // count of where the cursor's row is (revealBuildCursor) cannot drift from
 // what is drawn.
-func buildRowsTop(snap buildview.Snapshot, plan PlanStatus, width int) int {
-	return len(buildSummaryLines(snap, plan, max(width, 1))) + 1
+func buildRowsTop(leader string, snap buildview.Snapshot, plan PlanStatus, width int) int {
+	return len(buildSummaryLines(leader, snap, plan, max(width, 1))) + 1
 }
 
 // buildTabLinesAt is buildTabLines with the cursor on row cursor, or with no
@@ -84,19 +84,19 @@ func buildRowsTop(snap buildview.Snapshot, plan PlanStatus, width int) int {
 // two-cell gutter (buildRowGutter), so the rows do not shift sideways as the
 // cursor moves, and laid out two cells narrower so the columns keep their
 // trim order inside the same width.
-func buildTabLinesAt(snap buildview.Snapshot, plan PlanStatus, width, cursor int) []string {
-	return buildTabLinesWith(snap, plan, width, cursor, "")
+func buildTabLinesAt(leader string, snap buildview.Snapshot, plan PlanStatus, width, cursor int) []string {
+	return buildTabLinesWith(leader, snap, plan, width, cursor, "")
 }
 
 // buildTabLinesWith is buildTabLinesAt with the cursor's row ending in total,
 // the task's short token total, when the row has room for it
 // (buildCursorRowLines). An empty total, or no cursor, draws exactly what
 // buildTabLinesAt draws.
-func buildTabLinesWith(snap buildview.Snapshot, plan PlanStatus, width, cursor int, total string) []string {
+func buildTabLinesWith(leader string, snap buildview.Snapshot, plan PlanStatus, width, cursor int, total string) []string {
 	if width < 1 {
 		width = 1
 	}
-	lines := buildSummaryLines(snap, plan, width)
+	lines := buildSummaryLines(leader, snap, plan, width)
 	if snap.Problem != "" {
 		// The loader leaves the rows empty when the plan or the ledger cannot
 		// be read. Saying "no tasks" under the reason would be a second,
@@ -160,12 +160,13 @@ func buildCursorRowLines(rows []buildview.Row, width, cursor int, total string) 
 
 // buildSummaryLines is the block above the task rows. Each line is a separate
 // fact, and a line is left out when its fact does not hold, so a healthy
-// build with an empty inbox is one line.
+// build with an empty inbox is one line. leader is the leader key the inbox
+// line names (the Model's, which config.toml sets).
 //
 // The problem sentence is wrapped, not cut, and it replaces the count: it
 // holds an absolute path, the path is what the owner needs to go and fix the
 // file, and with a problem the loader has no count to give.
-func buildSummaryLines(snap buildview.Snapshot, plan PlanStatus, width int) []string {
+func buildSummaryLines(leader string, snap buildview.Snapshot, plan PlanStatus, width int) []string {
 	var lines []string
 	if snap.Problem != "" {
 		wrapped := lipgloss.Wrap(snap.Problem, width, "")
@@ -203,15 +204,15 @@ func buildSummaryLines(snap buildview.Snapshot, plan PlanStatus, width int) []st
 		lines = append(lines, theme.errorText.Render(truncate(stop, width)))
 	}
 	if open, blocking := buildview.OpenCounts(snap.Items); blocking > 0 {
-		text := fmt.Sprintf("%d items need you · %s: inbox", blocking, leaderChord(actionInbox))
+		text := fmt.Sprintf("%d items need you · %s: inbox", blocking, leaderChord(leader, actionInbox))
 		if blocking == 1 {
-			text = "1 item needs you · " + leaderChord(actionInbox) + ": inbox"
+			text = "1 item needs you · " + leaderChord(leader, actionInbox) + ": inbox"
 		}
 		lines = append(lines, theme.awaitingFlag.Render(truncate(text, width)))
 	} else if open > 0 {
-		text := fmt.Sprintf("%d open items · %s: inbox", open, leaderChord(actionInbox))
+		text := fmt.Sprintf("%d open items · %s: inbox", open, leaderChord(leader, actionInbox))
 		if open == 1 {
-			text = "1 open item · " + leaderChord(actionInbox) + ": inbox"
+			text = "1 open item · " + leaderChord(leader, actionInbox) + ": inbox"
 		}
 		lines = append(lines, truncate(text, width))
 	}

@@ -1962,7 +1962,7 @@ func TestPaneLeadIsSaidOnce(t *testing.T) {
 			t.Fatalf("pendingPaneLead = %q with no lead, want nothing armed", m.pendingPaneLead)
 		}
 		m, _ = update(t, m, planArrival(m))
-		if want := focusRequestHonoredStatus(session.PlanSessionName); m.status != want {
+		if want := focusRequestHonoredStatus(defaultLeaderKey, session.PlanSessionName); m.status != want {
 			t.Errorf("notice = %q, want the arrival worded as before (%q)", m.status, want)
 		}
 	})

@@ -132,7 +132,7 @@ func TestPlanStatusBuildTabLine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, w := range []int{40, 120} {
-				lines := plain(buildTabLines(buildSnap("/alpha"), tc.status, w))
+				lines := plain(buildTabLines(defaultLeaderKey, buildSnap("/alpha"), tc.status, w))
 				text := strings.Join(lines, "\n")
 				if tc.want == "" {
 					if strings.Contains(text, "plan:") {

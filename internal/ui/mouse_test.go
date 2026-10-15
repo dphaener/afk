@@ -74,7 +74,7 @@ func TestPaneTitleBlockIsAlwaysOneLine(t *testing.T) {
 		hint     string
 		rawWidth int
 	}{
-		{"dashboard focused", paneFocusHint, 70},
+		{"dashboard focused", paneFocusHint(defaultLeaderKey), 70},
 		{"dashboard unfocused", "[enter focus view]", 55},
 		{"attach", attachDetachHint, 52},
 	}
@@ -123,7 +123,7 @@ func TestPaneTitleBlockReproducesLegacyTitles(t *testing.T) {
 		hint   string
 		legacy string
 	}{
-		{paneFocusHint, theme.paneTitle.Render("▶ mysession" + "  [focused · ctrl+] \\ back to list]")},
+		{paneFocusHint(defaultLeaderKey), theme.paneTitle.Render("▶ mysession" + "  [focused · ctrl+] \\ back to list]")},
 		{"[enter focus view]", theme.paneTitle.Render("▶ mysession" + "  [enter focus view]")},
 		{attachDetachHint, theme.paneTitle.Render("▶ mysession" + "  [ctrl+\\ detach]")},
 	}
@@ -3125,10 +3125,11 @@ func TestMouseCaptureTextNamesTheRealChord(t *testing.T) {
 	// The dashboard's hint names the leader chord (ctrl+] g); the bare
 	// ctrl+g survives only inside overlays and in afk attach, so the hint is
 	// pinned to the leader table and the key binding to mouseChordKey.
-	hintChord := leaderChord(actionMouseToggle)
+	hintChord := leaderChord(defaultLeaderKey, actionMouseToggle)
 	chord := mouseChordKey
 
-	var m Model
+	// The leader New would set with no [dash] leader configured.
+	m := Model{leaderKey: checkLeader("")}
 	for _, capture := range []bool{true, false} {
 		m.mouseCapture = capture
 		if hint := m.mouseCaptureHint(); !strings.Contains(hint, hintChord) {
@@ -3144,7 +3145,8 @@ func TestMouseCaptureTextNamesTheRealChord(t *testing.T) {
 }
 
 func TestMouseCaptureHintStatesAreTheSameWidth(t *testing.T) {
-	var m Model
+	// The leader New would set with no [dash] leader configured.
+	m := Model{leaderKey: checkLeader("")}
 
 	m.mouseCapture = true
 	captured := m.mouseCaptureHint()

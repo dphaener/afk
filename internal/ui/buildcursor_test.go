@@ -272,7 +272,7 @@ func TestBuildCursorHiddenWithTheList(t *testing.T) {
 	if strings.Contains(body, buildCursorMarker) {
 		t.Errorf("the marker is drawn with the list focused:\n%s", body)
 	}
-	want := xansi.Strip(strings.Join(buildTabLines(m.build, m.planStatus, w), "\n"))
+	want := xansi.Strip(strings.Join(buildTabLines(defaultLeaderKey, m.build, m.planStatus, w), "\n"))
 	if !strings.HasSuffix(body, want) {
 		t.Errorf("the tab with the list focused is not the cursor-less layout:\n%s\n--- want suffix\n%s", body, want)
 	}
@@ -289,14 +289,14 @@ func TestBuildCursorRowsKeepTheirColumns(t *testing.T) {
 	snap := buildTabSnap()
 	for _, width := range []int{120, 80, 50, 30, 20} {
 		t.Run(fmt.Sprintf("width %d", width), func(t *testing.T) {
-			lines := buildTabLinesAt(snap, PlanStatus{}, width, 3)
-			text := plain(lines[buildRowsTop(snap, PlanStatus{}, width):])
+			lines := buildTabLinesAt(defaultLeaderKey, snap, PlanStatus{}, width, 3)
+			text := plain(lines[buildRowsTop(defaultLeaderKey, snap, PlanStatus{}, width):])
 			if len(text) != len(snap.Rows) {
 				t.Fatalf("%d row lines, want %d", len(text), len(snap.Rows))
 			}
 			marked := 0
 			for i, ln := range text {
-				if w := xansi.StringWidth(lines[buildRowsTop(snap, PlanStatus{}, width)+i]); w > width {
+				if w := xansi.StringWidth(lines[buildRowsTop(defaultLeaderKey, snap, PlanStatus{}, width)+i]); w > width {
 					t.Errorf("row %d is %d cells, over %d", i, w, width)
 				}
 				r := snap.Rows[i]

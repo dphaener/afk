@@ -820,7 +820,7 @@ func TestPaneAttachFailedStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status := paneAttachFailedStatus(paneAttachedMsg{
+			status := paneAttachFailedStatus(defaultLeaderKey, paneAttachedMsg{
 				name: "svc", worktree: "/wt/svc", restarted: tt.restarted, err: tt.err,
 			})
 			for _, want := range tt.wantContains {
@@ -847,7 +847,7 @@ func TestPaneAttachFailedStatusTextsAreDistinct(t *testing.T) {
 		{"unreachable after restart", paneAttachedMsg{name: "svc", worktree: "/wt/svc", restarted: true, err: unreachable}},
 		{"generic", paneAttachedMsg{name: "svc", worktree: "/wt/svc", err: errors.New("boom")}},
 	} {
-		status := paneAttachFailedStatus(tt.msg)
+		status := paneAttachFailedStatus(defaultLeaderKey, tt.msg)
 		if prev, dup := seen[status]; dup {
 			t.Fatalf("%s and %s produce the same status %q", tt.label, prev, status)
 		}
@@ -1445,8 +1445,8 @@ func TestToggleKeyAdvertisedOnlyWhereItActs(t *testing.T) {
 	if derivedMode(m) != inputDetail {
 		t.Fatalf("setup: enter in overview view should focus the overview, mode = %v", derivedMode(m))
 	}
-	if help := xansi.Strip(m.renderHelp()); !strings.Contains(help, leaderKey) || strings.Contains(help, "ctrl+t") {
-		t.Fatalf("focused overview footer should point at %q and not name ctrl+t:\n%s", leaderKey, help)
+	if help := xansi.Strip(m.renderHelp()); !strings.Contains(help, defaultLeaderKey) || strings.Contains(help, "ctrl+t") {
+		t.Fatalf("focused overview footer should point at %q and not name ctrl+t:\n%s", defaultLeaderKey, help)
 	}
 }
 
@@ -9501,7 +9501,7 @@ func TestWedgeBannerPaneShowsBannerWhenWedged(t *testing.T) {
 	since := now.Add(-12 * time.Minute)
 	p := &wedgeBannerPane{
 		paneHandle:  inner,
-		hint:        wedgeHintDashboard,
+		hint:        wedgeHintDashboard(defaultLeaderKey),
 		now:         func() time.Time { return now },
 		wedgedSince: since.Format(time.RFC3339),
 	}
@@ -9600,7 +9600,7 @@ func TestWedgeBannerPanePollOnceKeepsLastVerdictOnReadError(t *testing.T) {
 // a closed pane would leak a goroutine forever.
 func TestWedgeBannerPaneCloseStopsPollingAndClosesInner(t *testing.T) {
 	inner := newFakePane("x")
-	p := newWedgeBannerPane(inner, t.TempDir(), "does-not-exist", wedgeHintDashboard)
+	p := newWedgeBannerPane(inner, t.TempDir(), "does-not-exist", wedgeHintDashboard(defaultLeaderKey))
 
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close returned an error: %v", err)
@@ -10157,7 +10157,7 @@ func TestResizeKeyClosesNormalFullHelpAndStaysOffTheShortLine(t *testing.T) {
 	km := m.renderNormalHelpKeyMap()
 
 	for _, b := range km.short {
-		if b.Help().Key == leaderChord(actionEnterResize) || slices.Equal(b.Keys(), resizeToggleKey.Keys()) {
+		if b.Help().Key == leaderChord(defaultLeaderKey, actionEnterResize) || slices.Equal(b.Keys(), resizeToggleKey.Keys()) {
 			t.Fatalf("resize is on the short help line; it belongs to full help only")
 		}
 	}
@@ -10168,8 +10168,8 @@ func TestResizeKeyClosesNormalFullHelpAndStaysOffTheShortLine(t *testing.T) {
 		t.Fatalf("last full-help binding is %q %q, want the esc close-help label", got.Help().Key, got.Help().Desc)
 	}
 	full := xansi.Strip(renderModeHelp(km, true, 100000))
-	if !fullHelpHasItem(full, leaderChord(actionEnterResize), "resize panes") {
-		t.Errorf("full help = %q, missing %s resize panes", full, leaderChord(actionEnterResize))
+	if !fullHelpHasItem(full, leaderChord(defaultLeaderKey, actionEnterResize), "resize panes") {
+		t.Errorf("full help = %q, missing %s resize panes", full, leaderChord(defaultLeaderKey, actionEnterResize))
 	}
 	if fullHelpHasItem(full, "ctrl+w", "resize") {
 		t.Errorf("full help = %q, offers a bare ctrl+w, which the list no longer answers", full)
@@ -10233,8 +10233,8 @@ func TestNormalModeFullHelpReflectsPaneAndWedgeState(t *testing.T) {
 	// acts (a healthy selection gets no restart entry at all).
 	wedged := testModel(wedgedSess("alpha", 12*time.Minute))
 	full = xansi.Strip(renderModeHelp(wedged.renderNormalHelpKeyMap(), true, 100000))
-	if !fullHelpHasItem(full, leaderChord(actionRestart), "restart") {
-		t.Errorf("wedged selection: full help = %q, want the %s restart entry", full, leaderChord(actionRestart))
+	if !fullHelpHasItem(full, leaderChord(defaultLeaderKey, actionRestart), "restart") {
+		t.Errorf("wedged selection: full help = %q, want the %s restart entry", full, leaderChord(defaultLeaderKey, actionRestart))
 	}
 	for _, line := range strings.Split(full, "\n") {
 		if strings.HasPrefix(line, wedged.keys.Restart.Help().Key+" ") {
@@ -10242,7 +10242,7 @@ func TestNormalModeFullHelpReflectsPaneAndWedgeState(t *testing.T) {
 		}
 	}
 	healthy := xansi.Strip(renderModeHelp(testModel(runningSess("alpha")).renderNormalHelpKeyMap(), true, 100000))
-	if fullHelpHasItem(healthy, leaderChord(actionRestart), "restart") {
+	if fullHelpHasItem(healthy, leaderChord(defaultLeaderKey, actionRestart), "restart") {
 		t.Errorf("healthy selection: full help = %q, must not advertise a restart that does nothing", healthy)
 	}
 }

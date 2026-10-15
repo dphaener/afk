@@ -104,13 +104,13 @@ func TestBuildPauseNotices(t *testing.T) {
 	}{
 		{
 			name:     "fresh pause",
-			got:      func() (notificationKind, string) { return pauseNotice(false) },
+			got:      func() (notificationKind, string) { return pauseNotice(defaultLeaderKey, false) },
 			wantKind: notifySuccess,
 			wantText: "Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume.",
 		},
 		{
 			name:     "already paused",
-			got:      func() (notificationKind, string) { return pauseNotice(true) },
+			got:      func() (notificationKind, string) { return pauseNotice(defaultLeaderKey, true) },
 			wantKind: notifyInfo,
 			wantText: "The build was already paused. Press ctrl+] U to resume.",
 		},
@@ -579,7 +579,7 @@ func TestBuildPauseKeysAreInTheLeaderTable(t *testing.T) {
 			if row.blocked != "" {
 				t.Errorf("the row is dimmed (%q) on a project with a build", row.blocked)
 			}
-			got := leaderKeyDecision(leaderPress(tc.label), "", rows, 0, false)
+			got := leaderKeyDecision(leaderPress(tc.label), defaultLeaderKey, "", rows, 0, false)
 			if got.kind != leaderRun || got.row.action != tc.action {
 				t.Errorf("ctrl+] %s = %v %v, want it to run %v", tc.label, got.kind, got.row.action, tc.action)
 			}

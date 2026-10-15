@@ -283,7 +283,7 @@ func TestPlanApproveWithErrorsHasNoYes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, seam := openApprove(t, planApproveStatus(tc.errors))
 			if tc.wantText != "" {
-				if got := planApproveErrorsLine(tc.errors); got != tc.wantText {
+				if got := planApproveErrorsLine(defaultLeaderKey, tc.errors); got != tc.wantText {
 					t.Fatalf("errors line = %q, want %q", got, tc.wantText)
 				}
 			}

@@ -755,6 +755,14 @@ type Deps struct {
 	// not do. This package does not know what the text is about; `afk dash`
 	// writes it.
 	StartupNotice string
+	// Leader is the leader key as written in config.toml's [dash] table,
+	// read by the caller (`afk dash`) once at start; "" means the default,
+	// ctrl+]. New checks it with checkLeader and keeps what it decides, so a
+	// key the dashboard cannot use falls back to ctrl+] and the header says
+	// why. A plain string and not a reader, for StartupNotice's reason: the
+	// leader is decided once per start (no live reload on scan ticks), and
+	// this package still reads no file of its own.
+	Leader string
 	// LaunchMainCheckout is the main checkout of the start-up project (the
 	// pinned entry in Projects). It differs from that entry's path only when
 	// the dashboard was started inside a linked worktree; empty means "same as
@@ -1000,8 +1008,9 @@ type keyMap struct {
 	PauseBuild  key.Binding
 	ResumeBuild key.Binding
 	Quit        key.Binding
-	// Leader is ctrl+], the leader key that opens the actions dialog
-	// (leader.go). See its comment in defaultKeyMap for how the key arrives.
+	// Leader is the leader key that opens the actions dialog (leader.go):
+	// ctrl+] by default, or the key config.toml's [dash] leader sets, which
+	// New puts here. See its comment in defaultKeyMap for how ctrl+] arrives.
 	Leader key.Binding
 }
 
@@ -1166,11 +1175,12 @@ func defaultKeyMap() keyMap {
 		// It is a rule in normal, detail and pane mode only (mode.go). In
 		// the agent pane that takes a key from the agent, which is why the
 		// dialog gives it back: ctrl+] pressed twice sends ctrl+] on, and
-		// the pane encodes it to 0x1D again (ctrlChordEvent, messages.go).
-		Leader: key.NewBinding(
-			key.WithKeys(leaderKey),
-			key.WithHelp(leaderKey, "actions"),
-		),
+		// the pane encodes it to 0x1D again (leaderComponentKey).
+		//
+		// This is the default. New replaces it with the leader config.toml
+		// sets (Deps.Leader, checked by checkLeader), so the registry, the
+		// list's help and every hint name the key that is actually bound.
+		Leader: leaderBinding(defaultLeaderKey),
 	}
 }
 
@@ -2107,6 +2117,13 @@ type Model struct {
 	leaderFrom            inputMode
 	leaderFromPlaceholder bool
 
+	// leaderKey is the leader key this dashboard uses, decided once in New
+	// by checkLeader from Deps.Leader: its name is what every hint, help line
+	// and the dialog name and match, its key is what the pass-through sends,
+	// and a non-empty refused puts the leader line in the header. It never
+	// changes while the dashboard runs.
+	leaderKey leaderSetting
+
 	// helpShowAll is renderHelp's ShowAll flag (views.go), toggled by
 	// ctrl+] ? (actionHelp) and closed by esc on the list. It is
 	// presentational — no mode is derived from it, only normal mode's esc
@@ -2139,7 +2156,9 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		interval = 2 * time.Second
 	}
 	d := deps.withDefaults()
+	leader := checkLeader(d.Leader)
 	keys := defaultKeyMap()
+	keys.Leader = leaderBinding(leader.name)
 	var remembered map[string]string
 	if d.LoadSelections != nil {
 		remembered = d.LoadSelections()
@@ -2183,6 +2202,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		interval:              interval,
 		deps:                  d,
 		keys:                  keys,
+		leaderKey:             leader,
 		stackRefreshing:       new(atomic.Bool),
 		buildRefreshing:       new(atomic.Bool),
 		planStatusRefreshing:  new(atomic.Bool),
@@ -3131,7 +3151,7 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		if focusOnArrival {
 			m.handBackUnansweredFocus()
 		}
-		m.notify(notifyError, m.withPaneLead(msg.name, paneAttachFailedStatus(msg)))
+		m.notify(notifyError, m.withPaneLead(msg.name, paneAttachFailedStatus(m.leaderKey.name, msg)))
 		if errors.Is(msg.err, host.ErrHostNotReachable) {
 			m.markHostStopped(msg.name)
 		}
@@ -3264,14 +3284,14 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		var text string
 		switch {
 		case msg.focusRequest && honourFocus:
-			text = focusRequestHonoredStatus(msg.name)
+			text = focusRequestHonoredStatus(m.leaderKey.name, msg.name)
 		case previous != nil:
 			text = "switched to " + msg.name + " — " + previousName +
 				" still running in the background"
 		case honourFocus:
-			text = focusRequestHonoredStatus(msg.name)
+			text = focusRequestHonoredStatus(m.leaderKey.name, msg.name)
 		default:
-			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to focus, " + leaderChord(actionDetailUnfocus) + " to return"
+			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to focus, " + leaderChord(m.leaderKey.name, actionDetailUnfocus) + " to return"
 		}
 		m.notify(notifyInfo, m.withPaneLead(msg.name, text))
 	}
@@ -3503,10 +3523,10 @@ func (m Model) routeMouse(msg tea.MouseMsg) {
 func (m Model) toggleMouseCapture() (tea.Model, tea.Cmd) {
 	m.mouseCapture = !m.mouseCapture
 	if m.mouseCapture {
-		m.notify(notifyInfo, "mouse goes to the session · "+leaderChord(actionMouseToggle)+" releases it")
+		m.notify(notifyInfo, "mouse goes to the session · "+leaderChord(m.leaderKey.name, actionMouseToggle)+" releases it")
 		return m, nil
 	}
-	m.notify(notifyInfo, "mouse released to the terminal · "+leaderChord(actionMouseToggle)+" takes it back")
+	m.notify(notifyInfo, "mouse released to the terminal · "+leaderChord(m.leaderKey.name, actionMouseToggle)+" takes it back")
 	return m, nil
 }
 
@@ -3642,7 +3662,7 @@ func (m Model) dispatchKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// can be shadowed by a notice, and only in normal mode: on the overview a
 	// stray letter was always ignored.
 	if mode == inputNormal {
-		if text, ok := removedKeyNotice(k.String()); ok {
+		if text, ok := removedKeyNotice(m.leaderKey.name, k.String()); ok {
 			m.notify(notifyInfo, text)
 		}
 	}
@@ -4313,7 +4333,7 @@ func (m Model) showBuildTab() (tea.Model, tea.Cmd) {
 		next, cmd := m.focusDetail()
 		m = next.(Model)
 		if hidPane {
-			m.notify(notifyInfo, m.paneName+" still running behind the build tasks · "+leaderChord(actionPaneToggle)+" for the agent")
+			m.notify(notifyInfo, m.paneName+" still running behind the build tasks · "+leaderChord(m.leaderKey.name, actionPaneToggle)+" for the agent")
 		}
 		return m, cmd
 	}
@@ -4340,9 +4360,9 @@ func (m Model) releaseDetailFocus() (tea.Model, tea.Cmd) {
 func (m Model) cleanRequested() (tea.Model, tea.Cmd) {
 	if m.pane != nil {
 		if m.view == viewOverview {
-			m.notify(notifyWarn, "close the pane first — it's behind the overview · "+leaderChord(actionPaneClose))
+			m.notify(notifyWarn, "close the pane first — it's behind the overview · "+leaderChord(m.leaderKey.name, actionPaneClose))
 		} else {
-			m.notify(notifyWarn, "close the pane first · "+leaderChord(actionPaneClose))
+			m.notify(notifyWarn, "close the pane first · "+leaderChord(m.leaderKey.name, actionPaneClose))
 		}
 		return m, nil
 	}
@@ -5043,7 +5063,7 @@ func (m Model) switcherSessions() map[string][]discover.SessionState {
 func (m Model) openLeader(from inputMode) (tea.Model, tea.Cmd) {
 	m.leaderFrom = from
 	m.leaderFromPlaceholder = from == inputDetail && m.agentPlaceholderDrawn()
-	m.leader = newLeaderDialog(leaderRows(m.leaderConditions()), from == inputPane)
+	m.leader = newLeaderDialog(leaderRows(m.leaderConditions()), m.leaderKey.name, from == inputPane)
 	m.leaderOpen = true
 	m.clearStatus()
 	return m, nil
@@ -5055,6 +5075,7 @@ func (m Model) openLeader(from inputMode) (tea.Model, tea.Cmd) {
 func (m Model) leaderConditions() leaderConds {
 	conds := m.routeConditions()
 	c := leaderConds{
+		leader:            m.leaderKey.name,
 		hasActiveProject:  m.hasActiveProject(),
 		paneOpen:          conds.paneOpen,
 		rightFocused:      m.focus == focusRight,
@@ -5119,13 +5140,22 @@ func (m Model) leaderComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case leaderPassThrough:
 		m.leaderOpen = false
 		// The leader pressed twice from the agent: the agent gets the key the
-		// dashboard took. The key is built here rather than parsed from
-		// leaderKey because forwardKeyToPane needs the decoded form; it is
-		// what the terminal's ctrl+] decodes to (see Leader in
-		// defaultKeyMap), and ctrlChordEvent encodes it back to 0x1D, as it
-		// would have done with no rule in the way.
+		// dashboard took. m.leaderKey.key is the decoded form checkLeader
+		// built for the leader's name, so tea.KeyPressMsg(key).String() is the
+		// name the binding matched. It goes straight to SendKey rather than
+		// through forwardKeyToPane, whose specialKeyEvent table lists only
+		// the keys a person types into an agent and would drop a configured
+		// leader such as ctrl+shift+a or an F-key before the emulator saw it.
+		// x/vt's Emulator.SendKey (key.go) owns the encoding: ctrl+] is
+		// 0x1D, ctrl+o 0x0F, an alt chord gets its ESC prefix. A modified
+		// key it has no encoding for writes nothing, which is the same "drop
+		// rather than send garbage" forwardKeyToPane keeps; it cannot write a
+		// stray rune either, because x/vt's fallback writes the bare code
+		// only for an unmodified key and checkLeader refuses every leader
+		// without ctrl or alt.
 		if m.pane != nil {
-			forwardKeyToPane(m.pane, tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl})
+			k := m.leaderKey.key
+			m.pane.SendKey(termpane.KeyEvent{Code: k.Code, Mod: k.Mod})
 		}
 	case leaderRun:
 		m.leaderOpen = false
@@ -5300,7 +5330,7 @@ func (m Model) connectSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.rowHasAgent(s) {
-		m.notify(notifyInfo, s.Name+" "+stoppedText(s)+" · "+leaderChord(actionRestart)+" to restart")
+		m.notify(notifyInfo, s.Name+" "+stoppedText(s)+" · "+leaderChord(m.leaderKey.name, actionRestart)+" to restart")
 		return m, nil
 	}
 	return m, m.connect(paneOpenRequest{
@@ -5504,15 +5534,15 @@ func (m Model) toggleView() (tea.Model, tea.Cmd) {
 	if m.view == viewAgent {
 		m.view = viewOverview
 		if m.pane != nil {
-			m.notify(notifyInfo, m.paneName+" still running behind the overview · "+leaderChord(actionPaneToggle)+" for the agent")
+			m.notify(notifyInfo, m.paneName+" still running behind the overview · "+leaderChord(m.leaderKey.name, actionPaneToggle)+" for the agent")
 		} else {
-			m.notify(notifyInfo, "overview · "+leaderChord(actionPaneToggle)+" for the agent")
+			m.notify(notifyInfo, "overview · "+leaderChord(m.leaderKey.name, actionPaneToggle)+" for the agent")
 		}
 		return m, nil
 	}
 	m.view = viewAgent
 	if m.paneForSelection() {
-		m.notify(notifyInfo, "input goes to "+m.paneName+" · "+leaderChord(actionDetailUnfocus)+" to return")
+		m.notify(notifyInfo, "input goes to "+m.paneName+" · "+leaderChord(m.leaderKey.name, actionDetailUnfocus)+" to return")
 		return m, nil
 	}
 	return m.connectSelected()
@@ -5533,7 +5563,7 @@ func (m Model) toggleView() (tea.Model, tea.Cmd) {
 // fixes the focus (a ctrl+\ back to the list, for instance).
 func (m Model) agentKeyHint() string {
 	if m.focus == focusRight && m.view == viewOverview {
-		return leaderChord(actionPaneToggle)
+		return leaderChord(m.leaderKey.name, actionPaneToggle)
 	}
 	return m.keys.Focus.Help().Key
 }
@@ -5547,7 +5577,7 @@ func (m Model) focusPane() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showAndFocusPane()
-	m.notify(notifyInfo, "input goes to "+m.paneName+" · "+leaderChord(actionDetailUnfocus)+" to return")
+	m.notify(notifyInfo, "input goes to "+m.paneName+" · "+leaderChord(m.leaderKey.name, actionDetailUnfocus)+" to return")
 	return m, nil
 }
 
@@ -5663,7 +5693,7 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 	// they can see.
 	if m.pane != nil && target.name == m.paneName {
 		m.showAndFocusPane()
-		m.notify(notifyInfo, focusRequestHonoredStatus(target.name))
+		m.notify(notifyInfo, focusRequestHonoredStatus(m.leaderKey.name, target.name))
 		return m, tea.Batch(cmds...)
 	}
 
@@ -5693,7 +5723,7 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		m.notify(notifyInfo, target.name+" "+word+" · "+leaderChord(actionRestart)+" to restart")
+		m.notify(notifyInfo, target.name+" "+word+" · "+leaderChord(m.leaderKey.name, actionRestart)+" to restart")
 		return m, tea.Batch(cmds...)
 	}
 	// The same entrance enter uses (connect): the focus moves right and the
@@ -5713,8 +5743,8 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 // togglePane build inline — because the user has arrived in the session with
 // the keyboard live however they got there, and the one thing they need is the
 // chord that gives it back.
-func focusRequestHonoredStatus(name string) string {
-	return "input goes to " + name + " · " + leaderChord(actionDetailUnfocus) + " to return"
+func focusRequestHonoredStatus(leader, name string) string {
+	return "input goes to " + name + " · " + leaderChord(leader, actionDetailUnfocus) + " to return"
 }
 
 // maybeOpenInitialPane opens the startup pane requested via
@@ -6859,7 +6889,7 @@ func (m Model) restartWedgedSelected() (tea.Model, tea.Cmd) {
 	// above, this one explains itself: the WEDGED badge advertises `r` on this
 	// very row, so silence would read as a broken key.
 	if s.Scratch {
-		m.notify(notifyWarn, s.Name+" is a one-off session — restart can't resume it · "+m.agentKeyHint()+" to show the agent, "+leaderChord(actionClean)+" to clean")
+		m.notify(notifyWarn, s.Name+" is a one-off session — restart can't resume it · "+m.agentKeyHint()+" to show the agent, "+leaderChord(m.leaderKey.name, actionClean)+" to clean")
 		return m, nil
 	}
 	m.modal = inputConfirmRestart

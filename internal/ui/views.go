@@ -352,8 +352,8 @@ func (m Model) renderAgentPlaceholder(outerW, outerH int) string {
 	hint := focusBindingHint(m.keys.Focus)
 	style := theme.paneBox
 	if m.focus == focusRight {
-		hint = "[" + leaderChord(actionPaneToggle) + " agent/overview" +
-			" · " + leaderChord(actionDetailUnfocus) + " return to dashboard]"
+		hint = "[" + leaderChord(m.leaderKey.name, actionPaneToggle) + " agent/overview" +
+			" · " + leaderChord(m.leaderKey.name, actionDetailUnfocus) + " return to dashboard]"
 		style = theme.paneBoxFocused
 	}
 	lines := []string{paneTitleBlock(title, hint, contentW), "", truncate(line, contentW)}
@@ -495,11 +495,14 @@ func paneTitleBlock(name, hint string, contentW int) string {
 // TestPaneTitleBlockReproducesLegacyTitles pins all three strings
 // byte-for-byte against the pre-refactor inline titles.
 //
-// paneFocusHint is a var because it reads its key from the leader table
-// (leaderChord): since T7.2 a focused pane is left with ctrl+] \, and
+// paneFocusHint is a function of the leader because it reads its key from
+// the leader table (leaderChord) and the leader is set in config.toml
+// (T9.2): since T7.2 a focused pane is left with ctrl+] \ (by default), and
 // ctrl+\ belongs to the agent. attachDetachHint stays a const and stays
 // ctrl+\, because afk attach has no leader.
-var paneFocusHint = "[focused · " + leaderChord(actionDetailUnfocus) + " back to list]"
+func paneFocusHint(leader string) string {
+	return "[focused · " + leaderChord(leader, actionDetailUnfocus) + " back to list]"
+}
 
 const attachDetachHint = "[ctrl+\\ detach]"
 
@@ -509,7 +512,7 @@ const attachDetachHint = "[ctrl+\\ detach]"
 // binding the footer, full help, and detail edge expose.
 func (m Model) paneTitleHint() string {
 	if m.paneOwnsKeyboard() {
-		return paneFocusHint
+		return paneFocusHint(m.leaderKey.name)
 	}
 	return focusBindingHint(m.keys.Focus)
 }
@@ -806,7 +809,7 @@ func (m Model) renderEmptyState(outerW, outerH int) string {
 		"",
 		theme.dim.Render(truncate("Running afk from inside a repo also works.", contentW)),
 		"",
-		theme.helpLine.Render(leaderChord(actionQuit) + ": quit"),
+		theme.helpLine.Render(leaderChord(m.leaderKey.name, actionQuit) + ": quit"),
 	}
 	block := lipgloss.JoinVertical(lipgloss.Center, lines...)
 
@@ -860,12 +863,17 @@ const headerBadgeText = "afk Dashboard"
 // user can press, not something that happened.
 //
 // It names the leader chord because since T7.2 a bare p does nothing on the
-// session list; a var because the chord is read from the leader table.
-var headerSwitchHint = leaderChord(actionProjects) + ": projects"
+// session list; a function of the leader because the chord is read from the
+// leader table and the leader is set in config.toml (T9.2).
+func headerSwitchHint(leader string) string {
+	return leaderChord(leader, actionProjects) + ": projects"
+}
 
 // headerInboxHint is the inbox segment's affordance, styled and named the way
 // headerSwitchHint is, for the same reason: it is a key the reader can press.
-var headerInboxHint = leaderChord(actionInbox) + ": inbox"
+func headerInboxHint(leader string) string {
+	return leaderChord(leader, actionInbox) + ": inbox"
+}
 
 // headerPieces are the header's parts before headerLine's width ladder
 // decides which survive. Each is independently zeroable to "" and headerLine
@@ -916,6 +924,14 @@ type headerPieces struct {
 	inboxShort string
 	inboxHint  string
 	hint       string // "" with one or zero known projects
+	// leaderForms is the leader line, longest first, when config.toml's
+	// [dash] leader was refused (leaderHeaderForms); nil when the leader is
+	// fine, which is every dashboard whose owner never set one. It is not one
+	// more rung of the ladder: headerLine gives it the row first and lays
+	// everything else out in what is left, because it is the only place the
+	// owner learns their setting did nothing, and it stays for as long as the
+	// dashboard runs (the leader is read once, at start).
+	leaderForms []string
 }
 
 // headerPieces gathers the parts from the Model. Zero or one known project
@@ -924,8 +940,11 @@ type headerPieces struct {
 // no attention line either: just the badge.
 func (m Model) headerPieces() headerPieces {
 	p := headerPieces{badge: theme.header.Render(headerBadgeText)}
+	for _, f := range leaderHeaderForms(m.leaderKey) {
+		p.leaderForms = append(p.leaderForms, theme.awaitingFlag.Render(f))
+	}
 	if len(m.projects) > 1 {
-		p.hint = theme.dim.Render(headerSwitchHint)
+		p.hint = theme.dim.Render(headerSwitchHint(m.leaderKey.name))
 	}
 	// Measured from loadFailingSince (the FIRST failing pass of the current
 	// run), not from lastLoad, so the number says how long the screen has
@@ -1007,7 +1026,7 @@ func (m Model) inboxPieces() (long, short, hint string) {
 		long += theme.dim.Render(" · ") + short
 	}
 	if !m.paneOwnsKeyboard() {
-		hint = theme.dim.Render(headerInboxHint)
+		hint = theme.dim.Render(headerInboxHint(m.leaderKey.name))
 	}
 	return long, short, hint
 }
@@ -1133,6 +1152,9 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 // rendered frame's, and a reader measuring a fixture against this comment has
 // to know which of the two they are looking at.
 func headerLine(p headerPieces, width int) string {
+	if len(p.leaderForms) > 0 {
+		return headerLineWithLeader(p, width)
+	}
 	// alerts is the badgeless left half: the staleness signal, then the
 	// attention line. Two plain spaces between them, not the " · " the
 	// attention line joins its own clauses with, which would read as one more
@@ -1255,6 +1277,61 @@ func headerLine(p headerPieces, width int) string {
 	}
 	return truncate("", width)
 }
+
+// headerLeaderRestMin is the fewest cells headerLineWithLeader hands the
+// rest of the header beside the leader line. Below it the rest could show
+// only a piece cut to a letter or two and an ellipsis, which says nothing, so
+// the leader line takes the row alone instead.
+const headerLeaderRestMin = 16
+
+// headerLineWithLeader is headerLine when the leader line is up. The leader
+// line outranks every other piece, the staleness signal included: it is the
+// one standing statement that a setting the owner made is being ignored, and
+// no other part of the frame repeats it. So its longest form that fits goes
+// first on the left, and the usual ladder lays the other pieces out in the
+// cells that remain (two cells apart, the gap the halves keep). A form leaves
+// the row only when it does not fit even alone, and the shortest form is cut
+// as the last resort. The result is width cells wide, one row, like
+// headerLine's.
+func headerLineWithLeader(p headerPieces, width int) string {
+	rest := p
+	rest.leaderForms = nil
+	for _, f := range p.leaderForms {
+		fw := lipgloss.Width(f)
+		if restW := width - fw - headerMinGap; restW >= headerLeaderRestMin {
+			return f + strings.Repeat(" ", headerMinGap) + headerLine(rest, restW)
+		}
+		if fw <= width {
+			return f + strings.Repeat(" ", width-fw)
+		}
+	}
+	return truncate(p.leaderForms[len(p.leaderForms)-1], width)
+}
+
+// leaderHeaderForms is the header's leader line for a refused leader, in
+// three lengths, longest first, unstyled; nil when the leader was accepted or
+// never set. Every form names the value as written, config.toml and the key
+// in use, because those are what the owner needs: what was wrong, where to
+// fix it, and what to press meanwhile. The longest carries checkLeader's
+// whole sentence; the middle one its few words (leaderSetting.why) and an
+// example to copy; the shortest only the three facts. The value is quoted
+// with %q, so a value holding a newline cannot break the header's one row,
+// and cut to leaderHeaderValueMax so a long typo cannot crowd the row out.
+func leaderHeaderForms(l leaderSetting) []string {
+	if l.refused == "" {
+		return nil
+	}
+	value := fmt.Sprintf("%q", truncate(l.configured, leaderHeaderValueMax))
+	return []string{
+		fmt.Sprintf("leader not used: %s · set leader in [dash] of config.toml · using %s", l.refused, l.name),
+		fmt.Sprintf(`leader %s not used (%s): set e.g. leader = "ctrl+o" in [dash] of config.toml · using %s`, value, l.why, l.name),
+		fmt.Sprintf("leader %s not used: fix [dash] in config.toml · using %s", value, l.name),
+	}
+}
+
+// leaderHeaderValueMax is how many cells of the configured leader the
+// header's shorter forms quote.
+const leaderHeaderValueMax = 20
 
 // headerMinGap is the fewest cells headerLine leaves between the left and right
 // halves before it sheds a piece, so the two never read as one run of text.
@@ -1690,9 +1767,9 @@ func (m Model) renderLabelFormBar() string { return m.renderDialog(m.labelDialog
 // measurement covers both states only because the two strings measure equal.
 func (m Model) mouseCaptureHint() string {
 	if m.mouseCapture {
-		return leaderChord(actionMouseToggle) + " mouse: pane"
+		return leaderChord(m.leaderKey.name, actionMouseToggle) + " mouse: pane"
 	}
-	return leaderChord(actionMouseToggle) + " mouse: term"
+	return leaderChord(m.leaderKey.name, actionMouseToggle) + " mouse: term"
 }
 
 // normalBindingEnabled reports whether an inputNormal binding is currently
@@ -1843,14 +1920,14 @@ func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 	// person comes to the footer to find a key for.
 	short := []key.Binding{up, down, focus, leader}
 	if m.restartKeyLive() {
-		short = append(short, leaderHelpBinding(actionRestart, "restart", true))
+		short = append(short, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
 	}
 
 	// The full help lists each leader action as "ctrl+] X", dimmed out of
 	// the list when it cannot run, and ends with how it closes: esc, since a
 	// bare ? is no longer a list key.
 	for _, row := range leaderRows(m.leaderConditions()) {
-		full = append(full, leaderHelpBinding(row.action, row.name, row.blocked == ""))
+		full = append(full, leaderHelpBinding(m.leaderKey.name, row.action, row.name, row.blocked == ""))
 	}
 	full = append(full, key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close help")))
 
@@ -1870,8 +1947,8 @@ func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
 // looking at while typing into the session. It is a leader entry
 // (ctrl+] g), not ctrl+g, which the agent owns in a pane.
 func (m Model) renderPaneHelpKeyMap() (curatedKeyMap, string) {
-	desc := strings.TrimPrefix(m.mouseCaptureHint(), leaderChord(actionMouseToggle)+" ")
-	mouse := leaderHelpBinding(actionMouseToggle, desc, true)
+	desc := strings.TrimPrefix(m.mouseCaptureHint(), leaderChord(m.leaderKey.name, actionMouseToggle)+" ")
+	mouse := leaderHelpBinding(m.leaderKey.name, actionMouseToggle, desc, true)
 	full := []key.Binding{m.keys.Leader, mouse}
 	short := []key.Binding{m.keys.Leader, mouse}
 
@@ -1908,7 +1985,7 @@ func (m Model) renderHelp() string {
 		}
 		short = append(short, m.keys.Leader)
 		if m.restartKeyLive() {
-			short = append(short, leaderHelpBinding(actionRestart, "restart", true))
+			short = append(short, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
 		}
 		return theme.helpLine.Render(spin + renderModeHelp(curatedKeyMap{short: short}, false, width))
 	case mode == inputPane:
@@ -1927,7 +2004,7 @@ func (m Model) renderHelp() string {
 			at := slices.IndexFunc(bindings, func(b key.Binding) bool {
 				return slices.Equal(b.Keys(), m.keys.Leader.Keys())
 			})
-			bindings = slices.Insert(bindings, at+1, leaderHelpBinding(actionRestart, "restart", true))
+			bindings = slices.Insert(bindings, at+1, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
 		}
 		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: bindings}, false, width))
 	case mode == inputInbox:
@@ -2125,7 +2202,7 @@ func (m Model) renderRowsBody(contentW, contentH int) string {
 		var b strings.Builder
 		b.WriteString(theme.dim.Render("No afk sessions found."))
 		b.WriteString("\n")
-		b.WriteString(theme.dim.Render("Press " + leaderChord(actionNewSession) + " to start one."))
+		b.WriteString(theme.dim.Render("Press " + leaderChord(m.leaderKey.name, actionNewSession) + " to start one."))
 		return b.String()
 	}
 	l := m.list
@@ -2639,11 +2716,11 @@ func (m Model) detailBoxLabels() (title, hint string) {
 	case isWorktreeFault(s.Kind):
 		focus := m.keys.Focus.Help()
 		return title, fmt.Sprintf("%s: %s · %s: clean",
-			focus.Key, focus.Desc, leaderChord(actionClean))
+			focus.Key, focus.Desc, leaderChord(m.leaderKey.name, actionClean))
 	}
 	focus := m.keys.Focus.Help()
 	return title, fmt.Sprintf("%s: %s · %s: clean · %s: label",
-		focus.Key, focus.Desc, leaderChord(actionClean), leaderChord(actionEditLabel))
+		focus.Key, focus.Desc, leaderChord(m.leaderKey.name, actionClean), leaderChord(m.leaderKey.name, actionEditLabel))
 }
 
 // detailReleaseHint is detailBoxLabels' focused-mode hint: the one live way
@@ -2741,7 +2818,7 @@ func (m Model) composeDetailBody(contentW int) string {
 	var b strings.Builder
 	s, ok := m.selected()
 	hasBuild := m.hasBuild()
-	notice := rowNotice(s, ok)
+	notice := rowNotice(m.leaderKey.name, s, ok)
 	if notice != "" && !hasBuild {
 		return notice
 	}
@@ -2771,6 +2848,7 @@ func (m Model) composeDetailBody(contentW int) string {
 		Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build, PlanStatus: m.planStatus,
 		BuildCursorShown: m.buildCursorShown(), BuildCursor: m.buildCursorIndex,
 		BuildCursorTotal: m.buildCursorTotal(),
+		Leader:           m.leaderKey.name,
 	}
 	spec := detailTabSpecs()[active]
 	rendered := 0
@@ -2808,7 +2886,7 @@ func (m Model) composeDetailBody(contentW int) string {
 // selection has no session state to show: nothing selected, a placeholder for
 // a session still being created, or a worktree fault. It is "" for an ordinary
 // session row.
-func rowNotice(s Session, ok bool) string {
+func rowNotice(leader string, s Session, ok bool) string {
 	var b strings.Builder
 	if !ok {
 		b.WriteString(theme.dim.Render("Select a session to see details."))
@@ -2843,7 +2921,7 @@ func rowNotice(s Session, ok bool) string {
 		b.WriteString("\n")
 		b.WriteString(theme.dim.Render("branch: " + s.Branch))
 		b.WriteString("\n\n")
-		b.WriteString(theme.dim.Render("No session state to show. Press " + leaderChord(actionClean) + " to clean it up."))
+		b.WriteString(theme.dim.Render("No session state to show. Press " + leaderChord(leader, actionClean) + " to clean it up."))
 		return b.String()
 	}
 	return ""
@@ -3420,6 +3498,11 @@ type panelContext struct {
 	// string and not the record, so the tab is drawn from what is held and
 	// nothing here can read the ledger.
 	BuildCursorTotal string
+	// Leader is the leader key's name (Model.leaderKey.name), for the Build
+	// tab's inbox line, which names the inbox chord. The leader is set in
+	// config.toml (T9.2), so it is passed in like everything else a panel
+	// draws.
+	Leader string
 }
 
 // wavesPanel renders the plan's waves and tasks with their checkbox states.

@@ -60,12 +60,18 @@ const (
 	ProjectFailed = "failed"
 )
 
+// projectEditOpenScreenFirst is both rows' reason away from the all-projects
+// screen: they act on its rows, which are not on screen. A function and not
+// one of the constants below because it names the all-projects chord, whose
+// leader config.toml sets (T9.2); the chord is read from the leader table, so
+// it cannot name a key that does not open the screen.
+func projectEditOpenScreenFirst(leader string) string {
+	return "Open the all-projects screen first (" + leaderChord(leader, actionAllProjects) + ")."
+}
+
 // The add form's and the remove confirm's own words. Constants because the
 // tests and the README quote them.
 const (
-	// projectEditOpenScreenFirst is both rows' reason away from the
-	// all-projects screen: they act on its rows, which are not on screen.
-	projectEditOpenScreenFirst = "Open the all-projects screen first (ctrl+] A)."
 	// projectAddFolderQuestion and projectAddFolderNote are the form's first
 	// step.
 	projectAddFolderQuestion = "Which folder? Give its full path, or start it with ~/."
@@ -114,7 +120,7 @@ func projectEditBlockedReason(a modeAction, c leaderConds) string {
 	case a == actionProjectRemove && !c.canRemoveProject:
 		return "removing a project is not available here"
 	case !c.allProjectsOpen:
-		return projectEditOpenScreenFirst
+		return projectEditOpenScreenFirst(c.leader)
 	case a == actionProjectRemove && !c.projectRowSelected:
 		return "no project is selected"
 	case a == actionProjectRemove && !c.projectRowListed:

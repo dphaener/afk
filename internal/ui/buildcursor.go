@@ -132,7 +132,7 @@ func (m *Model) revealBuildCursor(contentW int) {
 	if !m.buildCursorShown() {
 		return
 	}
-	line := detailStripLines + buildRowsTop(m.build, m.planStatus, contentW) + m.buildCursorIndex
+	line := detailStripLines + buildRowsTop(m.leaderKey.name, m.build, m.planStatus, contentW) + m.buildCursorIndex
 	top := m.detailViewport.YOffset()
 	h := max(m.detailViewport.Height(), 1)
 	switch {

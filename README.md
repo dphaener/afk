@@ -154,6 +154,18 @@ afk dash [options]
 
 **The leader** (`ctrl+]`, then the key). `ctrl+]` is its own byte (0x1D), so no other key shares it. It replaced Ctrl+Space because Raycast on macOS takes Ctrl+Space, and because tmux's default prefix is `ctrl+b`, so `ctrl+]` passes through tmux untouched. Ctrl+Space, `ctrl+@` and `ctrl+2` all send the same NUL byte; they open nothing now, and in the agent pane they reach the agent as that one NUL like any other key.
 
+**Changing the leader.** `ctrl+]` is the default. To use another key, set `leader` in the `[dash]` table of `config.toml` (see [Config file](#config-file)), for example `leader = "ctrl+o"`. Every hint, help line and the actions dialog then names the key you chose, and the agent pane passes that key on when you press it twice. The setting is read when `afk dash` starts, so restart the dashboard after you change it. The rest of this README names `ctrl+]`, the default.
+
+A value the dashboard cannot use falls back to `ctrl+]`, and the header shows one line that says what is wrong and where to fix it, such as `leader "enter" not used (the dashboard uses it): set e.g. leader = "ctrl+o" in [dash] of config.toml · using ctrl+]`. A value is refused when it is:
+
+- a key the dashboard keeps for itself: `enter`, `esc`, `tab`, `shift+tab`, `ctrl+c`, the movement keys (`up`, `down`, `left`, `right`, `pgup`, `pgdown`, `home`, `end`, `k`, `j`, `ctrl+u`, `ctrl+d`);
+- a key with no ctrl or alt, such as `q` or `f5`, which would be typed rather than open the actions;
+- a name the dashboard would never see: a misspelling, `shift+a` (shift on a letter arrives as the capital letter, so use ctrl or alt with it, like `ctrl+shift+a`), an upper-case letter like `Q`, modifiers out of order (`shift+ctrl+a` is written `ctrl+shift+a`), or a keypad, media or volume key.
+
+A value that is not text in quotes, such as `leader = 5`, is a bad `[dash]` value (see [Config file](#config-file)): the folder search stops and the file is named in a toast, but the leader still falls back to `ctrl+]`.
+
+Some keys send the same byte as another key, so a terminal that does not report them apart cannot tell them from it: `ctrl+m` is Enter, `ctrl+i` is Tab, `ctrl+h` is Backspace and `ctrl+[` is Esc. A leader on one of these works only in a terminal that reports the keys apart (the kitty keyboard protocol, as Ghostty does). Under tmux it needs `set -s extended-keys on` in your tmux configuration as well. In any other terminal the leader never fires, so pick a key that has its own byte.
+
 | After `ctrl+]` | Action |
 |---|---|
 | `n` | New session |
@@ -238,6 +250,7 @@ A refused start shows the reason in the same words the command prints, and nothi
   - Type letters that are not an action's key to filter the list by name or help text, `↑`/`↓` move the highlight and `enter` runs the highlighted row.
   - `esc` closes the dialog and sends nothing to the agent.
   - `ctrl+]` a second time closes the dialog. If the agent pane had the keyboard, it also sends ctrl+] to the agent, so the chord is not lost to a program that uses it.
+  - `ctrl+]` is the default leader. If `leader` in `[dash]` of `config.toml` sets another key, that key does everything `ctrl+]` does here, and every `ctrl+]` in this list reads as that key. See **Changing the leader** under Keybindings above.
   - An action that cannot run where you are (for example `c` while a pane is open, or `b` in a project with no master plan) is dimmed and says why. Its key and `enter` do nothing and the dialog stays open.
 
 
@@ -1363,6 +1376,7 @@ The search folders are set in the `[dash]` table of `config.toml`, the same file
 | `search_roots` | array of strings | `[]` (none) | Folders to scan for other afk projects. `~/` expands to your home folder; a relative folder is taken from the folder `afk dash` was started in, not from the config file's location. |
 | `scan_interval` | duration string | `"60s"` | How often the dashboard scans `search_roots` again for new or removed projects, and reads this file again, so an edit to `search_roots` or `max_depth` takes effect within one interval, with no restart. A Go duration such as `"30s"` or `"2m"`, at least `"1s"`: a smaller number could only queue scans on top of each other. |
 | `max_depth` | integer | `3` | How many folder levels below a search root the scan goes down before giving up on that branch. At least 1. |
+| `leader` | string | `"ctrl+]"` | The key that opens the actions dialog (see **Changing the leader** under Keybindings in [`afk dash`](#afk-dash--launch-the-dashboard)). Read when `afk dash` starts, so a change needs a restart. A key the dashboard cannot use falls back to `ctrl+]` with a header line saying what to fix. |
 
 Example:
 
@@ -1371,6 +1385,7 @@ Example:
 search_roots = ["~/ontra", "~/code/side-projects"]
 scan_interval = "30s"
 max_depth = 4
+leader = "ctrl+o"
 ```
 
 A search root may itself be an afk repo — it registers as exactly that one project, so a single extra project doesn't need a parent directory invented for it just to be discoverable.

@@ -104,7 +104,7 @@ func taskStatusChoose(t *testing.T, m Model, status string) (Model, tea.Cmd) {
 // "over the all-projects screen" pins that the screen's own rule still
 // decides there.
 func TestTaskStatusBlockedReason(t *testing.T) {
-	ok := leaderConds{canSetTaskStatus: true, buildTabFocused: true, buildTaskSelected: true}
+	ok := leaderConds{leader: defaultLeaderKey, canSetTaskStatus: true, buildTabFocused: true, buildTaskSelected: true}
 	with := func(f func(*leaderConds)) leaderConds { c := ok; f(&c); return c }
 	tests := []struct {
 		name  string

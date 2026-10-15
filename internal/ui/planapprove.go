@@ -224,13 +224,13 @@ func planApproveCounts(c PlanSummary) []string {
 // planApproveErrorsLine is what the confirm says in place of a y when the
 // plan has errors: `afk plan approve` would refuse, and the way to see them
 // is the check-the-plan row, found by typing "errors".
-func planApproveErrorsLine(errors int) string {
+func planApproveErrorsLine(leader string, errors int) string {
 	them := "them"
 	if errors == 1 {
 		them = "it"
 	}
 	return "The plan has " + planCountNoun(errors, "error") + ". Fix " + them +
-		" before approving (" + leaderKey + ", type errors, to see " + them + ")."
+		" before approving (" + leader + ", type errors, to see " + them + ")."
 }
 
 // planApproveConsequence says what y does, since it commits and pushes, in
@@ -261,7 +261,7 @@ func (m Model) planApproveDialog() dialog {
 	}
 	lines = append(lines, "")
 	if s.Summary.Errors > 0 {
-		for _, ln := range strings.Split(xansi.Wrap(planApproveErrorsLine(s.Summary.Errors), width, ""), "\n") {
+		for _, ln := range strings.Split(xansi.Wrap(planApproveErrorsLine(m.leaderKey.name, s.Summary.Errors), width, ""), "\n") {
 			lines = append(lines, theme.errorText.Render(ln))
 		}
 	} else {

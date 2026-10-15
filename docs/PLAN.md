@@ -2903,6 +2903,7 @@ and anyone who wants another key sets it in `config.toml`.
   Against a scratch build with a scratch config folder: `leader = "ctrl+o"` opens the dialog on ctrl+o
   through tmux `send-keys C-o`, and `leader = "enter"` shows the header line and ctrl+] still works.
   `make check` is green.
+- Amended 2026-10-14 (T9.2 done): later tasks may assume the following. (1) `daemonconfig.Dash.Leader` is the trimmed raw string ("" when unset); only a non-string value becomes `DashErr`, and the key itself is checked by the pure `checkLeader` in `internal/ui/leaderconfig.go` (exported for other packages as `ui.LeaderName`). (2) `afk dash` reads it once at start through `startupLeader` in `dash.go` into `ui.Deps.Leader`, best effort (a load error or `DashErr` means the default); there is no live reload, so a change applies on restart. (3) The model holds the checked key as `Model.leaderKey` (a `leaderSetting`: name, decoded `tea.Key`, refusal); the old const is `defaultLeaderKey` and is used only as the fallback, so new hint text must take the leader from the model (free helpers take it as a parameter, panels through `panelContext.Leader`). (4) Pressed twice in the agent pane, the decoded key goes straight to the pane's `SendKey` for x/vt to encode. (5) A refused key shows a persistent header line (`leaderHeaderForms` in `views.go`, three lengths) ahead of every other header piece. See `## T9.2` in `docs/decisions.md`.
 
 ## 9. Deferred / later
 
