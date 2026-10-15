@@ -72,19 +72,79 @@ type PlanView struct {
 	// Problem is why the plan could not be read, and empty otherwise. The
 	// counts and lists are then empty and mean nothing.
 	Problem string `json:"problem"`
+	// Status is the planning status from Deps.PlanStatus, with known false
+	// when the daemon has no way to read it. Approve is whether the page
+	// offers Approve the plan…, and why not (planApproveFor). Both were added
+	// beside the keys above, which stay as they were.
+	Status  PlanStatus  `json:"status"`
+	Approve planApprove `json:"approve"`
 }
 
-// Errors is the checker's errors without its warnings. The page shows only
-// these: an error stops afk reading the plan correctly, a warning does not,
-// and a plan of any size has a screenful of warnings.
-func (v PlanView) Errors() []planlint.Finding {
-	var out []planlint.Finding
+// findingRow is one checker finding as the plan page draws it: the words
+// as afk plan lint words them, and where it points.
+type findingRow struct {
+	// Class and Word are the severity badge.
+	Class, Word string
+	// Text is "[task: ]message [rule]", afk plan lint's own wording.
+	Text string
+	// Where is "path:line", or the path alone for a finding about the whole
+	// plan. Anchor is "#<task>" when the finding names a task (the heading id
+	// renderPlan gives), and empty otherwise, when Where is plain text.
+	Where, Anchor string
+}
+
+// FindingRows is the checker's findings for the page, errors first and then
+// warnings, each in the order the checker gave them. Errors come first
+// because an error stops afk reading the plan correctly and a plan of any
+// size has a screenful of warnings above the one error that matters.
+func (v PlanView) FindingRows() []findingRow {
+	var errs, warns []findingRow
 	for _, f := range v.Findings {
+		row := findingRow{Class: "badge--warning", Word: "Warning", Where: v.Path}
+		if f.Line > 0 {
+			row.Where = fmt.Sprintf("%s:%d", v.Path, f.Line)
+		}
+		task := ""
+		if f.Task != "" {
+			task = f.Task + ": "
+			row.Anchor = "#" + f.Task
+		}
+		row.Text = fmt.Sprintf("%s%s [%s]", task, f.Message, f.Rule)
 		if f.Level == planlint.LevelError {
-			out = append(out, f)
+			row.Class, row.Word = "badge--error", "Error"
+			errs = append(errs, row)
+		} else {
+			warns = append(warns, row)
 		}
 	}
-	return out
+	return append(errs, warns...)
+}
+
+// CheckerBadge is the checker card's headline: errors win over warnings, and
+// a plan with neither says so in a plain badge.
+func (v PlanView) CheckerBadge() badgeView {
+	switch {
+	case v.Summary.Errors > 0:
+		return badgeView{Class: "badge--error", Word: counted(v.Summary.Errors, "error", "errors")}
+	case v.Summary.Warnings > 0:
+		return badgeView{Class: "badge--warning", Word: counted(v.Summary.Warnings, "warning", "warnings")}
+	}
+	return badgeView{Word: "No problems found"}
+}
+
+// ShowErrorNotice is whether the checker's errors are what stops the plan
+// being approved. When the planning session is the reason (not at review,
+// already approved), saying "fix the errors" would send the owner to the
+// wrong fix, so the reason is shown instead.
+func (v PlanView) ShowErrorNotice() bool {
+	return v.Summary.Errors > 0 && v.Approve.Reason == fmt.Sprintf("Fix %s before approving.", counted(v.Summary.Errors, "error", "errors"))
+}
+
+// ErrorNotice is the sentence that stands in for the approve action when the
+// checker found errors. It does not point at a chat: that does not exist yet.
+func (v PlanView) ErrorNotice() string {
+	return fmt.Sprintf("Fix %s before approving. Ask the planning agent to fix them, or edit the plan and check it with afk plan lint.",
+		counted(v.Summary.Errors, "error", "errors"))
 }
 
 // Rendered is the plan as HTML, for the page. It is a method and not a field
@@ -239,6 +299,15 @@ func (s *server) reviews(configured []Project) []Project {
 // between requests: the planning session rewrites the plan while the owner
 // reads it, and the counts must be the counts of the text shown.
 func (s *server) planView(p Project, waiting bool) PlanView {
+	v := s.readPlanView(p, waiting)
+	v.Status = s.planStatusFor(p.Root)
+	v.Approve = planApproveFor(v.Status, v.Problem == "", v.Summary, s.d.ApprovePlan != nil)
+	return v
+}
+
+// readPlanView is the plan and the checker's report on it, without the
+// planning status.
+func (s *server) readPlanView(p Project, waiting bool) PlanView {
 	v := PlanView{Project: p.Name, WaitingForApproval: waiting, Findings: []planlint.Finding{}, Questions: []PlanQuestion{}}
 	if s.d.ReadPlan == nil {
 		v.Problem = "This afk daemon was started without a way to read plans. This is a fault in afk; please report it."
@@ -428,6 +497,9 @@ func (s *server) projectPage(p Project, v ProjectView, sessions []SessionView) p
 		in.PlanWaiting = in.Row.PlanWaiting
 	}
 	in.Planning, in.PlanningOK, in.PlanningErr = plansession.ReadState(p.Root)
+	if s.d.PlanStatus != nil {
+		in.PlanStatus = s.planStatusFor(p.Root)
+	}
 	if s.d.Repository != nil {
 		in.Repository = s.d.Repository(p.Root)
 	}

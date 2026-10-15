@@ -272,8 +272,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 19 {
-		t.Fatalf("the route table has %d routes; the plan lists 19", len(routes))
+	if len(routes) != 20 {
+		t.Fatalf("the route table has %d routes; the plan lists 20", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -302,6 +302,9 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 				if n := rg.sessionCalls(); n != 0 {
 					t.Errorf("a session action ran %d times without the token", n)
 				}
+				if len(rg.approveCalls) != 0 {
+					t.Errorf("a plan was approved without the token: %v", rg.approveCalls)
+				}
 				rg.waitRefresh()
 				if n := rg.refreshCalls.Load(); n != 0 {
 					t.Errorf("a usage reading ran %d times without the token", n)
@@ -326,8 +329,9 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 			// (a reading started). Of the session actions, clean and label
 			// reach their seam (200, done); restart is refused, because the
 			// rig's t1-2 is a healthy running host (400), and starting a
-			// session is refused for its missing name (400). None is the
-			// catch-all's 404.
+			// session is refused for its missing name (400). Approving the
+			// plan reaches its seam, whose rig answer is approved (200).
+			// None is the catch-all's 404.
 			want := http.StatusOK
 			if strings.HasSuffix(rt.path, "/answer") || strings.HasSuffix(rt.path, "/status") ||
 				strings.HasSuffix(rt.path, "/restart") || (rt.method == http.MethodPost && rt.path == "/p/{project}/sessions") {

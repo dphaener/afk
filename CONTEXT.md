@@ -171,7 +171,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Planning documents**: the files a planning session writes and the approve commits: the master plan, `afk.toml`, `.gitignore`, `CONTEXT.md`, the design brief and the agent instruction files.
 - **Project list**: the `[[project]]` entries of the machine config, which are the projects the daemon builds; edited with `afk project` and read again by the daemon on every pass.
 - **Review list**: `plan-reviews.json` in afk's state folder, naming the projects whose plan is waiting for approval, so the web page can show a plan before its project is in the project list.
-- **Plan view**: the read-only web page for one project that shows its master plan rendered, the checker's summary and the open questions.
+- **Plan view**: the web page for one project's master plan. It shows the plan rendered, the checker's counts and findings and the open questions, and it can approve a new plan at review behind a confirm.
+- **Plan line**: the one-line planning status (the planning session's mode, phase and what it waits for) shown on the dashboard and on the web page, worded by the same function.
 - **Project switcher**: the dashboard's list of projects, opened with `p`; it shows the listed projects, the start-up project and any found under the search folders, one row each.
 - **Listed project**: a project in the machine config's project list, as `afk project list` prints it; the switcher shows it under the name given there.
 - **Start-up project**: the project `afk dash` was started in (or named with `--project`); it is always in the switcher, listed or not.

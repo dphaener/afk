@@ -699,7 +699,10 @@ type projectPageInput struct {
 	Planning    plansession.State
 	PlanningOK  bool
 	PlanningErr error
-	Sessions    []SessionView
+	// PlanStatus is the plan line's source (Deps.PlanStatus), left zero (not
+	// known) when the daemon has no seam.
+	PlanStatus PlanStatus
+	Sessions   []SessionView
 	// Items is the project's inbox, for the headline's words.
 	Items              []inbox.Item
 	Folder, Repository string
@@ -791,6 +794,12 @@ func projectPageFor(in projectPageInput) projectPage {
 		pg.Plan.Badge = badgeView{Class: "badge--running", Word: in.Planning.Phase}
 	case in.PlanWaiting:
 		pg.Plan.Label = "Plan waiting for your approval"
+	}
+	// The plan line, worded by the root as the dashboard words it, replaces
+	// the row's meta whenever there is a planning session to describe. A
+	// state that could not be read keeps its own sentence above.
+	if st := in.PlanStatus; in.PlanningErr == nil && st.Known && st.Session && st.Line != "" {
+		pg.Plan.Meta = st.Line
 	}
 
 	inboxItem := navItem{Label: "Inbox", Href: base + "/inbox", Count: sum.OpenItems, CountSet: true, Quiet: sum.OpenItems == 0}

@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -42,6 +42,9 @@ func parsePages(asset func(name string) string) (map[string]*template.Template, 
 		"pe":    url.PathEscape,
 		"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
 		"sheet": confirmSheetFor,
+		// planApprovePath is the Approve the plan… link's address, the no-JS
+		// confirm page, which the dialog's script replaces when it runs.
+		"planApprovePath": planApprovePath,
 	}
 	out := make(map[string]*template.Template, len(pageNames))
 	for _, name := range pageNames {
@@ -172,6 +175,14 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 		if v.Sheet.Action == actionNew || v.Sheet.Action == "" {
 			c.Title, c.BackLabel = sessionActionWords[actionNew], "Back to the sessions of "+v.Project
 		}
+	case PlanConfirmView:
+		// Back to the plan, not the project: a plan on the review list has no
+		// project page.
+		c.Title = "Approve the plan"
+		c.Back, c.BackLabel = v.Back, "Back to the plan of "+v.Project
+	case PlanResultView:
+		c.Title = v.Title
+		c.Back, c.BackLabel = v.Back, "Back to the plan of "+v.Project
 	case ConfirmView:
 		c.Title = v.Sheet.Action
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project

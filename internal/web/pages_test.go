@@ -614,7 +614,6 @@ const hostilePlan = `# Plan <script>alert(1)</script>
 // approve will refuse them), and "hostile plan" (plan text reaches the page
 // three ways, and none may be markup).
 func TestPlanPage(t *testing.T) {
-	const waiting = "Waiting for approval. To approve it, run afk plan approve in the project folder."
 	tests := []struct {
 		name    string
 		setup   func(*rig)
@@ -624,15 +623,15 @@ func TestPlanPage(t *testing.T) {
 		notWant []string
 	}{
 		{name: "configured project", path: "/p/app/plan", status: 200,
-			want: []string{"Plan: app", "docs/PLAN.md", "1 milestone,", "2 tasks", "(1 for you to do yourself)", "1 open question.", "0 errors and 0 warnings",
-				"Which colour?", "Needed by: T1.2", `<h4 id="T1.1">T1.1 — First</h4>`, "<strong>Goal:</strong> g", "<th>Topic</th>", `href="/p/app"`},
+			want: []string{"Plan: app", "docs/PLAN.md", "1 milestone,", "2 tasks", "(1 for you to do yourself)", "1 open question.", "No problems found", `<span class="stat__value">2</span><span class="stat__label">Tasks</span>`,
+				`<span class="stat__value">0</span><span class="stat__label">Errors</span>`, "Which colour?", "Needed by: T1.2", `<h4 id="T1.1">T1.1 — First</h4>`, "<strong>Goal:</strong> g", "<th>Topic</th>", `href="/p/app"`},
 			notWant: []string{"Waiting for approval", "Which font?</li>", "Errors to fix"}},
 		{name: "configured project is not waiting", path: "/p/app/plan", status: 200,
 			setup:   func(rg *rig) { rg.reviews = append(rg.reviews, Project{Name: "app-2", Root: rg.root}) },
 			notWant: []string{"Waiting for approval"}},
 		{name: "review-only project", path: "/p/draft/plan", status: 200,
-			want:    []string{"Plan: draft", waiting, `<h1 id="draft-plan">Draft plan</h1>`, "A plan nobody has approved yet.", "Errors to fix", `<a href="/">Back to the overview</a>`},
-			notWant: []string{`href="/p/draft"`}},
+			want:    []string{"Plan: draft", `<h1 id="draft-plan">Draft plan</h1>`, "A plan nobody has approved yet.", `badge--error">`, `<a href="/">Back to the overview</a>`},
+			notWant: []string{`href="/p/draft"`, "Waiting for approval", "run afk plan approve"}},
 		{name: "project name with a space", path: "/p/my%20app/plan", status: 200,
 			want: []string{"Plan: my app", `href="/p/my%20app"`, "Problem: The plan could not be read"}},
 		{name: "plan that cannot be read", path: "/p/app/plan", status: 200,
@@ -641,9 +640,10 @@ func TestPlanPage(t *testing.T) {
 			notWant: []string{"milestone", "Open questions", `class="plan"`}},
 		{name: "plan with errors", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) {
+				rg.planStatus[rg.root] = approvable()
 				rg.plans[rg.root] = strings.Replace(testPlan, "- **Depends on:** T1.1\n", "- **Depends on:** T7.7\n", 1)
 			},
-			want: []string{"Errors to fix before this plan can be built", "T7.7", "1 error and", `class="warn"`}},
+			want: []string{"T7.7", `badge--error">1 error<`, `<span class="badge badge--error">Error</span>`, `href="#T1.2"`, "Fix 1 error before approving.", `class="notice notice--error" role="alert"`}},
 		{name: "plan with no open question", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) { rg.plans[rg.root] = strings.Replace(testPlan, "| Which colour? | T1.2 |\n", "", 1) },
 			want:  []string{"No question in the plan is open.", "0 open questions."}},
@@ -652,6 +652,50 @@ func TestPlanPage(t *testing.T) {
 			want: []string{"&lt;script&gt;alert(1)&lt;/script&gt;", "&lt;script&gt;alert(5)&lt;/script&gt; or &lt;b&gt;this&lt;/b&gt;?",
 				"&lt;img src=x onerror=alert(4)&gt;", "onclick=&#34;alert(3)&#34;"},
 			notWant: []string{"<script", "<img", "<b>", `onclick="`, `href="javascript:`}},
+		{name: "no problems has no finding list", path: "/p/app/plan", status: 200,
+			notWant: []string{`class="finding"`, "plan-findings"}},
+		{name: "warnings only", path: "/p/app/plan", status: 200,
+			setup:   func(rg *rig) { rg.plans[rg.root] = strings.Replace(testPlan, "- **Scope:** s\n", "", 1) },
+			want:    []string{`badge--warning">`, `<span class="badge badge--warning">Warning</span>`, "[missing-task-field]"},
+			notWant: []string{"badge--error", "notice--error"}},
+		{name: "plan line for a new plan in a middle phase", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) {
+				rg.planStatus[rg.root] = planLine("new", "check", "Plan · new · check — the checker is running")
+			},
+			want:    []string{`<p class="plan-line">Plan · new · check — the checker is running</p>`, "The plan can be approved once the planning session reaches review; it is at check now."},
+			notWant: []string{"data-confirm", "<dialog"}},
+		{name: "plan line for a new plan at review", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) { rg.planStatus[rg.root] = approvable() },
+			want:  []string{`<p class="plan-line">Plan · new · review — waiting for your approval</p>`, `data-confirm="plan-approve"`}},
+		{name: "plan line for an extend session", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("extend", "review", "Plan · extend · review") },
+			want:  []string{`<p class="plan-line">Plan · extend · review</p>`, "changes a plan that is already being built"}, notWant: []string{"<dialog"}},
+		{name: "plan line for an amend session", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("amend", "round", "Plan · amend · round") },
+			want:  []string{`<p class="plan-line">Plan · amend · round</p>`}},
+		{name: "plan line for a reconcile session", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("reconcile", "round", "Plan · reconcile · round") },
+			want:  []string{`<p class="plan-line">Plan · reconcile · round</p>`}},
+		{name: "plan line for an approved plan", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("new", "approved", "Plan approved") },
+			want:  []string{`<p class="plan-line">Plan approved</p>`, "This plan is already approved."}, notWant: []string{"<dialog"}},
+		{name: "damaged planning state shows its line and the reason", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) {
+				rg.planStatus[rg.root] = PlanStatus{Known: true, Session: true, Damaged: true, Line: "Plan · damaged"}
+			},
+			want: []string{`<p class="plan-line">Plan · damaged</p>`, "state file is damaged"}},
+		{name: "no planning session has no plan line", path: "/p/app/plan", status: 200,
+			want:    []string{"There is no planning session, so there is nothing to approve."},
+			notWant: []string{"plan-line"}},
+		{name: "review-list plan shows its plan line and the approve action", path: "/p/draft/plan", status: 200,
+			setup: func(rg *rig) {
+				rg.plans[rg.draft] = testPlan
+				rg.planStatus[rg.draft] = approvable()
+			},
+			want: []string{`<p class="plan-line">`, `data-confirm="plan-approve"`, `href="/p/draft/plan/approve"`}},
+		{name: "project page carries the plan line", path: "/p/app", status: 200,
+			setup: func(rg *rig) { rg.planStatus[rg.root] = approvable() },
+			want:  []string{`<span class="row__meta">Plan · new · review — waiting for your approval</span>`}},
 		{name: "unknown project", path: "/p/nothing-here/plan", status: 404,
 			want: []string{"That didn't load", "waiting for approval"}},
 		{name: "overview lists the plans waiting", path: "/", status: 200,
@@ -707,55 +751,118 @@ func TestPlanPage(t *testing.T) {
 	}
 }
 
-// TestPlanPageCannotApprove is load-bearing: approving a plan from the web
-// page is forbidden. Approve commits and pushes in the owner's project and
-// starts a build that spends their usage, and that takes someone at the
-// project's own terminal, not whoever holds a phone with the cookie. So the
-// plan page, for a plan that is waiting and for one that is not, has nothing
-// that sends anything: no form, no button, no input. The template is checked
-// as well as the drawn page, so a form inside a branch no fixture reaches is
-// caught too, and the only links on the drawn page are plain GETs to pages
-// that exist.
-func TestPlanPageCannotApprove(t *testing.T) {
-	src, err := pageFiles.ReadFile("templates/plan.html")
-	must(t, err)
-	acting := []string{"<form", "<button", "<input", "<textarea", "<select", "method=", "action=", "formaction"}
-	for _, w := range acting {
-		if strings.Contains(strings.ToLower(string(src)), w) {
-			t.Errorf("templates/plan.html holds %q", w)
-		}
+// planLine is the planning status of a session in a mode and phase, with its
+// plan line already worded (the root words it; the page shows it as given).
+func planLine(mode, phase, line string) PlanStatus {
+	return PlanStatus{Known: true, Session: true, Mode: mode, Phase: phase, Line: line, Problems: []string{}}
+}
+
+// TestPlanPageFindingsErrorsFirst is load-bearing: the draft plan's findings
+// come from the checker with warnings and an error mixed, and the page must
+// list the errors before the warnings, whatever order the checker gave them.
+func TestPlanPageFindingsErrorsFirst(t *testing.T) {
+	rg := newRig(t, Config{})
+	body := rg.pageDo("GET", "/p/draft/plan", "").Body.String()
+	e := strings.Index(body, `<span class="badge badge--error">Error</span>`)
+	w := strings.Index(body, `<span class="badge badge--warning">Warning</span>`)
+	if e < 0 || w < 0 {
+		t.Fatalf("the draft plan should give an error and a warning (error at %d, warning at %d)\n%s", e, w, body)
+	}
+	if e > w {
+		t.Errorf("a warning is listed before the first error")
+	}
+}
+
+// TestPlanPageApproveArea is load-bearing for the confirm: Approve the plan…
+// is only an action behind data-confirm and a dialog whose safe button has
+// the focus, it is absent whenever the plan cannot be approved (each reason
+// shows its sentence), and with checker errors the red notice stands in its
+// place with no link, form or dialog. The drawn page's own links must start
+// with / and answer 200, so none is a dead end.
+func TestPlanPageApproveArea(t *testing.T) {
+	withErrors := func(rg *rig) {
+		rg.plans[rg.root] = strings.Replace(strings.Replace(testPlan, "- **Depends on:** T1.1\n", "- **Depends on:** T7.7\n", 1), "- **Scope:** s\n", "", -1)
+		rg.planStatus[rg.root] = approvable()
+	}
+	noAction := []string{"data-confirm", "<dialog", "<form", "/plan/approve"}
+	tests := []struct {
+		name    string
+		setup   func(*rig)
+		path    string
+		want    []string
+		notWant []string
+	}{
+		{name: "approvable", path: "/p/app/plan",
+			setup: func(rg *rig) { rg.planStatus[rg.root] = approvable() },
+			want: []string{`href="/p/app/plan/approve" data-confirm="plan-approve"`, `<dialog class="confirm-sheet" id="plan-approve"`,
+				"Approve the plan for app?", `autofocus>Not yet</button>`, "Approve and start", `action="/p/app/plan/approve"`, `name="confirm" value="yes"`},
+			notWant: []string{"notice--error"}},
+		{name: "errors", path: "/p/app/plan", setup: withErrors,
+			want:    []string{`<div class="notice notice--error" role="alert"><div class="notice__body">Fix 1 error before approving. Ask the planning agent to fix them, or edit the plan and check it with afk plan lint.</div></div>`},
+			notWant: noAction},
+		{name: "no session", path: "/p/app/plan",
+			want: []string{"There is no planning session, so there is nothing to approve."}, notWant: noAction},
+		{name: "damaged", path: "/p/app/plan",
+			setup: func(rg *rig) { rg.planStatus[rg.root] = PlanStatus{Known: true, Session: true, Damaged: true} },
+			want:  []string{"The planning session&#39;s state file is damaged, so the plan cannot be approved here."}, notWant: noAction},
+		{name: "status unknown", path: "/p/app/plan",
+			setup: func(rg *rig) { rg.planStatus[rg.root] = PlanStatus{} },
+			want:  []string{"The planning status could not be read."}, notWant: noAction},
+		{name: "already approved", path: "/p/app/plan",
+			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("new", "approved", "Plan approved") },
+			want:  []string{"This plan is already approved."}, notWant: noAction},
+		{name: "not new", path: "/p/app/plan",
+			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("amend", "review", "x") },
+			want:  []string{"changes a plan that is already being built"}, notWant: noAction},
+		{name: "not at review", path: "/p/app/plan",
+			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("new", "round", "x") },
+			want:  []string{"it is at round now."}, notWant: noAction},
+		{name: "errors in the plan of a session not at review show the session's reason", path: "/p/app/plan",
+			setup: func(rg *rig) { withErrors(rg); rg.planStatus[rg.root] = planLine("new", "round", "x") },
+			want:  []string{"it is at round now."}, notWant: append([]string{"notice--error"}, noAction...)},
+		{name: "no approve seam", path: "/p/app/plan",
+			setup: func(rg *rig) { rg.planStatus[rg.root] = approvable(); rg.srv.d.ApprovePlan = nil },
+			want:  []string{"Approving is not available on this page."}, notWant: noAction},
+	}
+	linkRE := regexp.MustCompile(`<a [^>]*href="([^"]*)"`)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tc.setup != nil {
+				tc.setup(rg)
+			}
+			body := rg.pageDo("GET", tc.path, "").Body.String()
+			for _, w := range tc.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("page does not contain %q\n%s", w, body)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(noOwnScript(body), w) {
+					t.Errorf("page contains %q, which it should not", w)
+				}
+			}
+			for _, m := range linkRE.FindAllStringSubmatch(body, -1) {
+				href := m[1]
+				if strings.HasPrefix(href, "#") || strings.HasPrefix(href, "https://example.com/") {
+					continue
+				}
+				if !strings.HasPrefix(href, "/") {
+					t.Errorf("unexpected link %q", href)
+					continue
+				}
+				if rec := rg.pageDo("GET", href, ""); rec.Code != 200 {
+					t.Errorf("the link %q answers %d", href, rec.Code)
+				}
+			}
+		})
 	}
 
-	linkRE := regexp.MustCompile(`<a href="([^"]*)"`)
-	for _, path := range []string{"/p/draft/plan", "/p/app/plan"} {
-		rg := newRig(t, Config{})
-		// A plan that mentions approving and holds a link, to make sure the
-		// only way either reaches the page is as text and as a plain link.
-		rg.plans[rg.draft] = draftPlan + "\nRun afk plan approve. See https://example.com/docs.\n"
-		body := rg.pageDo("GET", path, "").Body.String()
-		for _, w := range acting {
-			if strings.Contains(strings.ToLower(body), w) {
-				t.Errorf("%s: the page holds %q", path, w)
-			}
-		}
-		for _, m := range linkRE.FindAllStringSubmatch(body, -1) {
-			href := m[1]
-			if strings.HasPrefix(href, "https://example.com/") {
-				continue
-			}
-			if !strings.HasPrefix(href, "/") || strings.Contains(href, "approve") {
-				t.Errorf("%s: unexpected link %q", path, href)
-				continue
-			}
-			if rec := rg.pageDo("GET", href, ""); rec.Code != 200 {
-				t.Errorf("%s: the link %q answers %d", path, href, rec.Code)
-			}
-		}
-	}
-
-	// No route about a plan takes anything but GET.
+	// The one route about a plan that takes anything but GET is the approve
+	// POST, which needs the confirm (TestPlanApproveNeedsTheConfirm).
 	for _, rt := range routes {
-		if strings.Contains(rt.path, "plan") && rt.method != http.MethodGet {
+		if strings.Contains(rt.path, "plan") && rt.method != http.MethodGet &&
+			(rt.method != http.MethodPost || rt.path != "/p/{project}/plan/approve") {
 			t.Errorf("the route %s %s can change something about a plan", rt.method, rt.path)
 		}
 	}
@@ -803,8 +910,8 @@ func TestPlanPageRendersThisRepositorysPlan(t *testing.T) {
 			t.Errorf("the page does not contain %q", w)
 		}
 	}
-	if strings.Contains(strings.ToLower(noOwnScript(body)), "<script") || strings.Contains(body, "<form") {
-		t.Errorf("the page of the real plan holds a script tag or a form")
+	if strings.Contains(strings.ToLower(noOwnScript(body)), "<script") {
+		t.Errorf("the page of the real plan holds a script tag")
 	}
 }
 
@@ -820,10 +927,13 @@ func TestPlanPageRendersThisRepositorysPlan(t *testing.T) {
 // until it has a row.
 func TestPageLayout(t *testing.T) {
 	tests := []struct {
-		name     string
-		page     string
-		path     string
-		noToken  bool
+		name    string
+		page    string
+		path    string
+		noToken bool
+		// form, when set, makes the row a page POST with that body: the
+		// plan approve's result page is only ever the answer to one.
+		form     string
 		status   int
 		bars     bool
 		back     string
@@ -846,6 +956,8 @@ func TestPageLayout(t *testing.T) {
 		{name: "session action, no-JS", page: "session_confirm", path: "/p/app/sessions/t1-2/confirm/clean", status: 200, bars: true, back: `href="/p/app/sessions/t1-2" aria-label="Back to t1-2"`, current: `href="/" aria-current="true"`, navTitle: "Clean"},
 		{name: "new session, no-JS", page: "session_confirm", path: "/p/app/sessions/new?name=fix-login&description=Fix+it", status: 200, bars: true, back: `href="/p/app/sessions" aria-label="Back to the sessions of app"`, navTitle: "New session"},
 		{name: "confirm", page: "confirm", path: "/p/app/confirm/pause", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, navTitle: "Pause project"},
+		{name: "plan approve, no-JS", page: "plan_confirm", path: "/p/app/plan/approve", status: 400, bars: true, back: `href="/p/app/plan" aria-label="Back to the plan of app"`, navTitle: "Approve the plan"},
+		{name: "plan approve result", page: "plan_result", path: "/p/app/plan/approve", form: "confirm=yes", status: 200, bars: true, back: `href="/p/app/plan" aria-label="Back to the plan of app"`, navTitle: "Plan approved"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", path: "/p/app", noToken: true, status: 401},
 	}
@@ -869,6 +981,8 @@ func TestPageLayout(t *testing.T) {
 			if tc.noToken {
 				rec = httptest.NewRecorder()
 				rg.h.ServeHTTP(rec, httptest.NewRequest("GET", tc.path, nil))
+			} else if tc.form != "" {
+				rec = rg.pageDo("POST", tc.path, tc.form)
 			} else {
 				rec = rg.pageDo("GET", tc.path, "")
 			}

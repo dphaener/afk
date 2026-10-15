@@ -125,6 +125,14 @@ type rig struct {
 	// a failure through.
 	cleanCalls, restartCalls, labelCalls, newCalls     [][]string
 	cleanResult, restartResult, labelResult, newResult SessionActionResult
+	// planStatus is what the fake PlanStatus returns per root; a root with
+	// no entry gets a known status with no planning session. approveCalls
+	// records the roots the fake ApprovePlan was called with, and
+	// approveResult is what it answers (approved, until a test says
+	// otherwise).
+	planStatus    map[string]PlanStatus
+	approveCalls  []string
+	approveResult PlanApproveResult
 	// onStatus, when set, runs inside the fake SetTaskStatus before it
 	// answers, so a test can change rg.ledger as the real write would and
 	// prove the answer was read after the call.
@@ -279,6 +287,8 @@ func newRig(t *testing.T, cfg Config) *rig {
 	rg.refreshResult = UsageRefreshResult{Outcome: UsageRefreshed, Text: "Usage read: 41% of the session used."}
 	done := SessionActionResult{Outcome: SessionActionDone, Text: "Done."}
 	rg.cleanResult, rg.restartResult, rg.labelResult, rg.newResult = done, done, done, done
+	rg.planStatus = map[string]PlanStatus{}
+	rg.approveResult = PlanApproveResult{Outcome: PlanApproved, Text: "Approved the plan. afk starts building it."}
 	srv, h, err := build(cfg, Deps{
 		Projects: func() []Project { return rg.projects },
 		Reviews:  func() []Project { return rg.reviews },
@@ -371,6 +381,16 @@ func newRig(t *testing.T, cfg Config) *rig {
 		NewSession: func(root, name, description string) SessionActionResult {
 			rg.newCalls = append(rg.newCalls, []string{root, name, description})
 			return rg.newResult
+		},
+		PlanStatus: func(root string) PlanStatus {
+			if st, ok := rg.planStatus[root]; ok {
+				return st
+			}
+			return PlanStatus{Known: true, Problems: []string{}}
+		},
+		ApprovePlan: func(root string) PlanApproveResult {
+			rg.approveCalls = append(rg.approveCalls, root)
+			return rg.approveResult
 		},
 		RefreshUsage: func() UsageRefreshResult {
 			rg.refreshCalls.Add(1)
@@ -1347,7 +1367,12 @@ func TestAPIPlan(t *testing.T) {
 			setup: func(rg *rig) { rg.reviews = nil },
 		},
 		{name: "a plan cannot be posted to", method: http.MethodPost, path: "/api/p/app/plan", status: http.StatusNotFound},
-		{name: "there is no approve address", method: http.MethodPost, path: "/api/p/draft/plan/approve", status: http.StatusNotFound},
+		// T8.11 added the approve POST; a daemon without the approve seam
+		// still has no approve address.
+		{
+			name: "there is no approve address without the seam", method: http.MethodPost, path: "/api/p/draft/plan/approve", status: http.StatusNotFound,
+			setup: func(rg *rig) { rg.srv.d.ApprovePlan = nil },
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
