@@ -119,24 +119,15 @@ func startPlanForSurface(req planSurfaceRequest, deps planDeps) planSurfaceResul
 	default:
 		return refused(fmt.Sprintf("%q is not a way to change a plan. Nothing was started.", req.Mode))
 	}
-	if req.Mode == planSurfaceNew && (req.Project == "~" || strings.HasPrefix(req.Project, "~/")) {
-		// The form takes what the owner types, and the interface has no home
-		// folder to expand it with. Same helper the command's --project uses.
-		if expanded, err := resolveProject(req.Project, "", deps.home); err == nil {
-			req.Project = expanded
-		}
+	if req.Mode == planSurfaceNew {
+		return startNewPlanForSurface(req, deps)
 	}
-	// A relative folder would be taken from wherever the dashboard happened to
-	// be started, which is not something the owner chose.
-	if !filepath.IsAbs(req.Project) {
-		return refused(fmt.Sprintf("the project folder %q is not a full path. Nothing was started.", req.Project))
+	project, why := surfaceProjectPath(req.Mode, req.Project, deps)
+	if why != "" {
+		return refused(why)
 	}
 
-	lookMode := req.Mode
-	if lookMode == planSurfaceNew {
-		lookMode = planSurfaceResume // a bare start; see the comment above
-	}
-	look, stop := lookAtPlanProject(req.provider, req.Project, lookMode, false, func() bool { return true }, deps)
+	look, stop := lookAtPlanProject(req.provider, project, req.Mode, false, func() bool { return true }, deps)
 	if stop.code != 0 {
 		res := refused(stop.text)
 		res.Root = look.project.Root
@@ -169,28 +160,7 @@ func startPlanForSurface(req planSurfaceRequest, deps planDeps) planSurfaceResul
 		}
 		result.Outcome = planSurfaceResumed
 		return result
-	case req.Mode == planSurfaceNew && action.Kind == planAttach:
-		result.Outcome = planSurfaceResumed
-		return result
-	case req.Mode == planSurfaceNew && action.Kind == planStart && !action.SeedState:
-		// An open session whose host is gone: go on from the saved state.
-		if _, failed := startPlanSession(look.project, action, planSeed{}, spec, deps); failed != "" {
-			return refuse(failed)
-		}
-		result.Outcome = planSurfaceResumed
-		return result
-	case req.Mode == planSurfaceNew && action.Kind == planStart:
-		// The brief stays empty, as in runPlanRequest: the session asks for it.
-		archived, failed := startPlanSession(look.project, action, planSeed{Mode: plansession.ModeNew}, spec, deps)
-		result.Archived = archived
-		if failed != "" {
-			return refuse(failed)
-		}
-		result.Outcome = planSurfaceStarted
-		return result
-	case req.Mode == planSurfaceNew && action.Kind == planChooseMode:
-		return refuse(fmt.Sprintf("this folder already has a plan (%s). To change it, use the dashboard's extend, amend or document actions: press ctrl+space, then type the name. Nothing was started.", look.planPath))
-	case req.Mode != planSurfaceResume && req.Mode != planSurfaceNew && action.Kind == planStart:
+	case req.Mode != planSurfaceResume && action.Kind == planStart:
 		brief, err := planBrief(req.Mode, req.Text, req.Text, root, root)
 		if err != nil {
 			return refuse(fmt.Sprintf("%v\nNothing was started.", err))
@@ -209,4 +179,180 @@ func startPlanForSurface(req planSurfaceRequest, deps planDeps) planSurfaceResul
 	// Every refusal the decision makes, and any decision this caller does not
 	// act on, which planRefusal words as an internal error.
 	return refuse(planRefusal(action.Kind, look))
+}
+
+// surfaceProjectPath turns the folder a caller with no terminal sent into a
+// full path, or returns the refusal ("" when it may go on). A new-plan request
+// carries what the owner typed, so "~" and "~/..." are expanded with the home
+// folder first: the form has no home folder to expand it with, and this is the
+// same helper the command's --project uses. Every other mode is sent a
+// configured project's folder, which is already full.
+//
+// A relative folder is refused rather than taken from the current folder,
+// which for the dashboard or the daemon is wherever it happened to be started
+// and is not something the owner chose.
+func surfaceProjectPath(mode, project string, deps planDeps) (string, string) {
+	if mode == planSurfaceNew && (project == "~" || strings.HasPrefix(project, "~/")) {
+		if expanded, err := resolveProject(project, "", deps.home); err == nil {
+			project = expanded
+		}
+	}
+	if !filepath.IsAbs(project) {
+		return project, fmt.Sprintf("the project folder %q is not a full path. Nothing was started.", project)
+	}
+	return project, ""
+}
+
+// planFolderKind is what a folder typed for a new plan turns out to be, as
+// both the start (startNewPlanForSurface) and the web page's read-only folder
+// check (checkNewPlanFolder) read it. One kind for both is the point: the
+// confirm card the owner agrees to must describe what Start planning does.
+type planFolderKind string
+
+const (
+	// planFolderRepo: a git repository with no plan and no session open. A
+	// start seeds a new session there.
+	planFolderRepo planFolderKind = "repo"
+	// planFolderPlain: a folder that is not in a git repository. A start runs
+	// git init in it first.
+	planFolderPlain planFolderKind = "folder"
+	// planFolderOpen: a planning session is open there. A start resumes it
+	// (or restarts its host on the saved state) and seeds nothing.
+	planFolderOpen planFolderKind = "open"
+	// planFolderHasPlan: the folder has a plan and no session open. Refused:
+	// a plan that exists is changed, never planned anew.
+	planFolderHasPlan planFolderKind = "has_plan"
+	// planFolderRefused: anything else the decision refuses (a damaged state,
+	// the agent of a finished session still running, an agent that cannot
+	// plan), and every folder that could not be looked at.
+	planFolderRefused planFolderKind = "refused"
+)
+
+// newPlanFolderKind maps the decision for a new-plan request (looked at as a
+// bare start with a terminal, see startPlanForSurface) to its kind. Pure.
+//
+// "Open" is both shapes of an open session: its host running (attach) and
+// its host gone with the state kept (a start that seeds nothing). Any kind the
+// decision may add later falls to refused, so nothing is offered to start
+// that this mapping has not been taught.
+func newPlanFolderKind(action planStartAction) planFolderKind {
+	switch {
+	case action.Kind == planAttach:
+		return planFolderOpen
+	case action.Kind == planStart && !action.SeedState:
+		return planFolderOpen
+	case action.Kind == planStart && action.InitRepo:
+		return planFolderPlain
+	case action.Kind == planStart:
+		return planFolderRepo
+	case action.Kind == planChooseMode:
+		return planFolderHasPlan
+	}
+	return planFolderRefused
+}
+
+// newPlanLook is everything a new-plan request learns before anything is
+// started: the folder as a full path, what lookAtPlanProject found there, the
+// decision, its kind, and the refusal sentence for has_plan and refused.
+type newPlanLook struct {
+	// dir is the typed folder as a full path, "" when it could not be made
+	// one (a relative path).
+	dir    string
+	look   planLook
+	action planStartAction
+	kind   planFolderKind
+	reason string
+}
+
+// lookAtNewPlanFolder is the looking a new-plan request does, shared by the
+// start and the web page's folder check so the two cannot disagree. It only
+// reads: the folder, its git repository (deps.gitCommonDir), the planning
+// files and afk.toml, and whether a planning host runs (deps.hostAlive, a
+// file read and a signal-0). Nothing it calls creates a folder, runs git init
+// or writes a file; deps' writers are never reached from here.
+//
+// A new-plan request is looked at as a bare start (mode ""), not as a mode:
+// the decision's "asked" modes all need a plan to change, and a new plan is
+// what a bare `afk plan` does in a folder without one. Terminal is true for
+// the same reason the dashboard's entry point gives (startPlanForSurface).
+func lookAtNewPlanFolder(text, providerName string, deps planDeps) newPlanLook {
+	dir, why := surfaceProjectPath(planSurfaceNew, text, deps)
+	if why != "" {
+		return newPlanLook{kind: planFolderRefused, reason: why}
+	}
+	look, stop := lookAtPlanProject(providerName, dir, planSurfaceResume, false, func() bool { return true }, deps)
+	if stop.code != 0 {
+		return newPlanLook{dir: dir, look: look, kind: planFolderRefused, reason: stop.text}
+	}
+	n := newPlanLook{dir: dir, look: look, action: decidePlanStart(look.in)}
+	n.kind = newPlanFolderKind(n.action)
+	switch n.kind {
+	case planFolderHasPlan:
+		n.reason = fmt.Sprintf("this folder already has a plan (%s). To change it, use the dashboard's extend, amend or document actions: press ctrl+space, then type the name. Nothing was started.", look.planPath)
+	case planFolderRefused:
+		// Every refusal the decision makes, and any decision this caller does
+		// not act on, which planRefusal words as an internal error.
+		n.reason = planRefusal(n.action.Kind, look)
+	}
+	return n
+}
+
+// startNewPlanForSurface is startPlanForSurface for a new-plan request: the
+// shared looking, then the start the kind calls for.
+func startNewPlanForSurface(req planSurfaceRequest, deps planDeps) planSurfaceResult {
+	n := lookAtNewPlanFolder(req.Project, req.provider, deps)
+	root := n.look.project.Root
+	result := planSurfaceResult{Root: root}
+	refuse := func(reason string) planSurfaceResult {
+		result.Outcome, result.Reason = planSurfaceRefused, reason
+		return result
+	}
+	spec := planHostSpawn(root, req.provider)
+	switch n.kind {
+	case planFolderOpen:
+		if n.action.Kind == planStart {
+			// An open session whose host is gone: go on from the saved state.
+			if _, failed := startPlanSession(n.look.project, n.action, planSeed{}, spec, deps); failed != "" {
+				return refuse(failed)
+			}
+		}
+		result.Outcome = planSurfaceResumed
+		return result
+	case planFolderRepo, planFolderPlain:
+		// The brief stays empty, as in runPlanRequest: the session asks for it.
+		archived, failed := startPlanSession(n.look.project, n.action, planSeed{Mode: plansession.ModeNew}, spec, deps)
+		result.Archived = archived
+		if failed != "" {
+			return refuse(failed)
+		}
+		result.Outcome = planSurfaceStarted
+		return result
+	}
+	if n.action.Kind == planRefuseInProgress {
+		// Not reached by a bare start today (only an asked mode is refused
+		// for an open session); kept so the dashboard's offer to open the
+		// session survives a change to the decision.
+		result.SessionOpen = true
+		result.OpenMode, result.OpenPhase = n.look.files.State.Mode, planOpenPhase(n.look)
+	}
+	return refuse(n.reason)
+}
+
+// checkNewPlanFolder is the read-only answer to "what would Start planning do
+// with this folder": the full path planning would run in (the main checkout,
+// or the typed folder when it is not in a repository or could not be looked
+// at), the kind, and the refusal sentence when refused. It is the same
+// looking the start does (lookAtNewPlanFolder), so the confirm card and the
+// start agree on everything but what changes on disk in between, which the
+// start checks again.
+func checkNewPlanFolder(text string, deps planDeps) (path string, kind planFolderKind, reason string) {
+	n := lookAtNewPlanFolder(text, "", deps)
+	path = n.dir
+	if n.look.project.Root != "" {
+		path = n.look.project.Root
+	}
+	if n.kind == planFolderRefused {
+		reason = n.reason
+	}
+	return path, n.kind, reason
 }

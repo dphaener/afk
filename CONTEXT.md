@@ -206,3 +206,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Session screen**: the web page's read-only overview of one session, `GET /p/<project>/sessions/<name>`; its terminal is opened from `afk dash` or `afk attach`.
 - **Session actions**: Clean, Restart and Label on a session's screen of the web page, and Start a new autonomous session… on the sessions screen; each asks first, and the page starts only autonomous sessions.
 - **Own answer**: the owner's answer to a planning session's open question in their own words instead of one of the offered options, sent as `{"other": "..."}`; only for one single-select question, and only where the agent's dialog has keys afk has seen work.
+- **Being-planned list**: `being-planned.json` in afk's state folder, naming the projects whose new plan was started from the web page, so the page keeps them on the overview, marked as being planned, until the plan is approved or its planning session is gone.

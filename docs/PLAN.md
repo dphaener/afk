@@ -332,6 +332,19 @@ key always written. `root` is the project's main checkout, cleaned, and the key 
 two roots share a name, and it does not change when the plan is put up again; `at` is when it was last
 put up, RFC 3339 UTC. A missing or damaged file reads as an empty list.
 
+Amended 2026-10-14 (T8.15): `being-planned.json` is a file in afk's state folder (beside
+`plan-reviews.json`), the projects whose planning was started from the web page's Plan a new project
+action and are not approved yet. Writers: the page adds an entry after a started or resumed start
+(through `internal/daemonstate`, by atomic rename) and prunes entries whose planning session is gone
+when it starts one; `afk plan approve` removes the entry. Readers: the daemon's web page, which shows
+the project as being planned and serves its chat. Shape: `{"projects":[{"name","root","at"}]}`, the
+list always present and every key always written. `root` is the project's main checkout, cleaned, and
+the key an entry is matched by; `name` is the folder name the page serves the project under, with `-2`,
+`-3` added when a configured project, a review entry or another entry already has it, and it does not
+change when planning is resumed; `at` is when the start last succeeded, RFC 3339 UTC. A session is
+"gone" when the project has no `.afk/plan/state.json`, or the session is finished or approved; a damaged
+`state.json` is not gone. A missing or damaged file reads as an empty list.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -2721,6 +2734,7 @@ thing it does not do is attach to a session.
   stand-in agent: typing the path of an empty throwaway repository and confirming leaves
   `.afk/plan/state.json` in mode `new`, lands on the chat view, and shows the project on the overview.
   `make check` is green.
+- Amended 2026-10-14 (T8.15 done): later tasks may assume the following. (1) The page form is `GET /plan/new` (page-only, the Where field, then with `?path=` the confirm card from the read-only seam `web.Deps.CheckPlanFolder(text)` with kinds `repo`, `folder`, `open`, `has_plan` and `refused`), and the start is `POST /plan/new` with its `/api/plan/new` twin, so the shared route table has 22 routes; nothing starts without `confirm=yes`. The root package's check shares `startPlanForSurface`'s new-mode look at the folder (`lookAtPlanProject` with writers swapped for refusals), so its refusal sentences are the command's; T8.15a should give the page its own wording for the not-found case it now handles by creating. (2) `web.PlanStartResult` carries `Root` (symlinks resolved for `new`). (3) A started or resumed project is added to `being-planned.json` in afk's state folder (§4.2a) through `web.Deps.AddBeingPlanned`; the page lists entries through `Deps.BeingPlanned` (gone ones filtered), shows them on the overview with a "Being planned" badge and in `GET /api/` as `being_planned`, and the chat routes resolve them (configured projects first, then the review list, then this list); `plan/change` and approve still use their own finders. Approve removes the entry when the folder is on the review list; otherwise the approved phase hides it and the next start prunes it. (4) The overview footer and the desktop topnav carry **Plan a new project** linking `/plan/new`. The card says "afk will plan in"; T8.15a adds "afk will create and plan in" and the "New, empty folder" badge. See `## T8.15` in `docs/decisions.md`.
 
 #### T8.15a — Create the folder for a new plan
 - **Depends on:** T8.15, T7.5

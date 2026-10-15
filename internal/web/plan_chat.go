@@ -367,15 +367,16 @@ func (s *server) chatPageView(p Project, chat planchat.Chat, in chatPageInput) c
 // GET /p/{project}/plan/chat: the project's open planning session as
 // messages, its state and any pending question.
 //
-// Only configured projects are answered for (findProject). A plan waiting
-// for approval has no planning session to read; its plan view is the only
-// thing the page has for it.
+// Configured projects and projects being planned are answered for
+// (findChatProject). A plan waiting for approval that is not being planned
+// has no planning session to read; its plan view is the only thing the page
+// has for it.
 //
 // The answer is never cached, page or JSON. The conversation changes under
 // the reader as the agent works, and a stale "waiting" would tell the owner
 // to reply to a question that has already been answered.
 func (s *server) planChat(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.findProject(w, r)
+	p, ok := s.findChatProject(w, r)
 	if !ok {
 		return
 	}
@@ -420,7 +421,7 @@ func refusalStatus(reason planchat.RefusalReason) int {
 // well would let the two drift apart. The token, the Origin check and the
 // 64 KB limit are the guard's and are not repeated.
 func (s *server) planReply(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.findProject(w, r)
+	p, ok := s.findChatProject(w, r)
 	if !ok {
 		return
 	}
@@ -474,7 +475,7 @@ func (s *server) planReply(w http.ResponseWriter, r *http.Request) {
 // refusal's own sentence and the owner's typed words back in their box. A
 // host that cannot be reached is the error page at 502, as for the API.
 func (s *server) planChatReply(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.findProject(w, r)
+	p, ok := s.findChatProject(w, r)
 	if !ok {
 		return
 	}

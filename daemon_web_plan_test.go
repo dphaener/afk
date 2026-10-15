@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -124,10 +126,13 @@ func TestWebPlanStatusRunsNoGit(t *testing.T) {
 	}
 }
 
-// TestDaemonWebPlanSeams: the daemon's deps offer both plan seams.
+// TestDaemonWebPlanSeams: the daemon's deps offer every plan seam. The page
+// hides Plan a new project when any of its three seams is nil, so a missing
+// one would read as a feature that was never built.
 func TestDaemonWebPlanSeams(t *testing.T) {
 	d := daemonWebDeps(nil, t.TempDir(), usagestate.Deps{}, nil)
-	if d.PlanStatus == nil || d.ApprovePlan == nil || d.StartPlan == nil {
+	if d.PlanStatus == nil || d.ApprovePlan == nil || d.StartPlan == nil ||
+		d.CheckPlanFolder == nil || d.AddBeingPlanned == nil || d.BeingPlanned == nil {
 		t.Fatalf("a plan seam is nil: %+v", d)
 	}
 }
@@ -183,6 +188,63 @@ func TestWebStartPlanWith(t *testing.T) {
 			}
 			if tt.wantWait != (len(waited) == 1) || (tt.wantWait && waited[0] != "/proj") {
 				t.Errorf("waited = %v, want wait %v", waited, tt.wantWait)
+			}
+		})
+	}
+}
+
+// TestWebStartPlanWithRoot pins the folder the page is told planning runs in.
+//
+// Load-bearing rows:
+//   - "new through a link is resolved": the being-planned list and the page's
+//     project name are keyed by this folder, and the owner may have typed a
+//     path through a link. The dashboard resolves it the same way.
+//   - "amend keeps the root as given": a configured project's folder is the
+//     name the rest of the page knows it by, so it must not be rewritten.
+//   - "new from a subfolder waits in the main checkout": host.json is written
+//     where the host runs, so waiting in the typed folder would never see it.
+//   - "refused carries the root, no wait": a refusal has no host to wait for.
+func TestWebStartPlanWithRoot(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		mode     string
+		sent     string
+		res      planSurfaceResult
+		wantRoot string
+		wantWait []string
+	}{
+		{"new through a link is resolved", planSurfaceNew, link,
+			planSurfaceResult{Outcome: planSurfaceStarted, Root: link}, real, []string{real}},
+		{"new, root that cannot be resolved is kept", planSurfaceNew, "/gone/shop",
+			planSurfaceResult{Outcome: planSurfaceResumed, Root: "/gone/shop"}, "/gone/shop", []string{"/gone/shop"}},
+		{"amend keeps the root as given", "amend", link,
+			planSurfaceResult{Outcome: planSurfaceStarted, Root: link}, link, []string{link}},
+		{"new from a subfolder waits in the main checkout", planSurfaceNew, filepath.Join(real, "sub"),
+			planSurfaceResult{Outcome: planSurfaceStarted, Root: real}, real, []string{real}},
+		{"no root waits in the folder sent", planSurfaceNew, real,
+			planSurfaceResult{Outcome: planSurfaceStarted}, "", []string{real}},
+		{"refused carries the root, no wait", planSurfaceNew, real,
+			planSurfaceResult{Outcome: planSurfaceRefused, Reason: "no", Root: real}, real, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := func(planSurfaceRequest, planDeps) planSurfaceResult { return tt.res }
+			var waited []string
+			wait := func(root string) error {
+				waited = append(waited, root)
+				return nil
+			}
+			got := webStartPlanWith(start, planDeps{}, wait, tt.sent, tt.mode, "")
+			if got.Root != tt.wantRoot {
+				t.Errorf("root = %q, want %q", got.Root, tt.wantRoot)
+			}
+			if !reflect.DeepEqual(waited, tt.wantWait) {
+				t.Errorf("waited in %v, want %v", waited, tt.wantWait)
 			}
 		})
 	}

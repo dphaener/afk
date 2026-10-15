@@ -62,3 +62,12 @@
     </span>
     <svg class="row__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 18l6-6-6-6"/></svg>
   </a>{{end}}
+
+{{/* foot is drawn by the layout with the page's chrome, after the split, so
+     the footer can know whether the server offers Plan a new project. Add an
+     existing project and Remove a project join it in T8.16. */}}
+{{define "foot"}}{{if .PlanNew}}
+<div class="btn-stack overview-foot">
+  <a class="btn btn--primary" href="/plan/new">Plan a new project</a>
+</div>
+{{end}}{{end}}

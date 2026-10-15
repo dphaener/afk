@@ -881,12 +881,13 @@ func TestPlanPageApproveArea(t *testing.T) {
 		})
 	}
 
-	// The routes about a plan that take anything but GET are the approve POST
-	// and the change POST (T8.14), which both need the confirm
-	// (TestPlanApproveNeedsTheConfirm, TestPlanChangeNeedsTheConfirm).
+	// The routes about a plan that take anything but GET are the approve POST,
+	// the change POST (T8.14) and the new-plan POST (T8.15), which all need
+	// the confirm (TestPlanApproveNeedsTheConfirm, TestPlanChangeNeedsTheConfirm,
+	// TestPlanNewNeedsTheConfirm).
 	for _, rt := range routes {
 		if strings.Contains(rt.path, "plan") && rt.method != http.MethodGet &&
-			(rt.method != http.MethodPost || (rt.path != "/p/{project}/plan/approve" && rt.path != "/p/{project}/plan/change")) {
+			(rt.method != http.MethodPost || (rt.path != "/p/{project}/plan/approve" && rt.path != "/p/{project}/plan/change" && rt.path != "/plan/new")) {
 			t.Errorf("the route %s %s can change something about a plan", rt.method, rt.path)
 		}
 	}
@@ -984,6 +985,8 @@ func TestPageLayout(t *testing.T) {
 		{name: "plan approve result", page: "plan_result", path: "/p/app/plan/approve", form: "confirm=yes", status: 200, bars: true, back: `href="/p/app/plan" aria-label="Back to the plan of app"`, navTitle: "Plan approved"},
 		{name: "planning chat", page: "plan_chat", path: "/p/app/plan/chat", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Planning app"},
 		{name: "plan change, no-JS", page: "plan_change", path: "/p/app/plan/change?mode=extend", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Change the plan"},
+		{name: "plan a new project, no-JS", page: "plan_new", path: "/plan/new", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/" aria-current="true"`, navTitle: "Plan a new project"},
+		{name: "plan a new project, confirm", page: "plan_new", path: "/plan/new?path=~/code/shop", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, navTitle: "Plan a new project"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", path: "/p/app", noToken: true, status: 401},
 	}
@@ -1109,6 +1112,8 @@ func TestChromeFor(t *testing.T) {
 			want: chrome{Title: "New session", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/sessions", BackLabel: "Back to the sessions of my app"}},
 		{name: "planning chat", page: "plan_chat", view: ChatView{Chat: planchat.Chat{Project: "my app"}}, method: "GET", path: "/p/my app/plan/chat",
 			want: chrome{Title: "Planning my app", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
+		{name: "plan a new project", page: "plan_new", view: NewPlanPageView{Kind: "form"}, method: "GET", path: "/plan/new",
+			want: chrome{Title: "Plan a new project", Nav: "projects", Current: "true", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
 		{name: "error", page: "error", view: ErrorView{Status: 404}, method: "GET", path: "/p/nope",
 			want: chrome{Bare: true, Status: 404, Path: "/p/nope", Retry: "/p/nope"}},
 		{name: "error after a POST", page: "error", view: ErrorView{Status: 400}, method: "POST", path: "/p/app/inbox/x/answer",

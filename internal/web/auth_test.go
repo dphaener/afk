@@ -272,8 +272,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 21 {
-		t.Fatalf("the route table has %d routes; the plan lists 21", len(routes))
+	if len(routes) != 22 {
+		t.Fatalf("the route table has %d routes; the plan lists 22", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -305,6 +305,9 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 				if len(rg.startCalls) != 0 {
 					t.Errorf("a planning session was started without the token: %v", rg.startCalls)
 				}
+				if len(rg.checkCalls)+len(rg.addedCalls) != 0 {
+					t.Errorf("a folder was checked or noted as being planned without the token: %v %v", rg.checkCalls, rg.addedCalls)
+				}
 				if len(rg.approveCalls) != 0 {
 					t.Errorf("a plan was approved without the token: %v", rg.approveCalls)
 				}
@@ -334,10 +337,11 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 			// rig's t1-2 is a healthy running host (400), and starting a
 			// session is refused for its missing name (400). Approving the
 			// plan reaches its seam, whose rig answer is approved (200).
+			// Planning a new project is refused for its missing path (400).
 			// None is the catch-all's 404.
 			want := http.StatusOK
 			if strings.HasSuffix(rt.path, "/answer") || strings.HasSuffix(rt.path, "/status") ||
-				strings.HasSuffix(rt.path, "/restart") || strings.HasSuffix(rt.path, "/plan/change") || (rt.method == http.MethodPost && rt.path == "/p/{project}/sessions") {
+				strings.HasSuffix(rt.path, "/restart") || strings.HasSuffix(rt.path, "/plan/change") || rt.path == "/plan/new" || (rt.method == http.MethodPost && rt.path == "/p/{project}/sessions") {
 				want = http.StatusBadRequest
 			}
 			if rt.path == "/usage/refresh" {
