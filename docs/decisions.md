@@ -3214,6 +3214,33 @@ T8.12 shows a project's open planning session as a chat on the web page, `GET /p
 - The comment on `maxChoiceOptions` in `internal/provider/choice.go` still says a digit past the options does nothing, which is no longer true on claude 2.1.300.
 - The JSON reply body says `"sent": "text"` for an own answer; it could say `"other"`.
 
+## T8.13
+
+T8.13 makes the daemon send one ntfy notification when a planning session starts waiting for the owner, linking to its chat. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **What counts as one wait (A1).** A wait is known by a key made of the chat's state, its number of messages, and the time and text of its last message. The conversation only grows, so an answer followed by a new question always gives a new key, and reading the same wait again gives the same key.
+- **Which projects, and which link (A2).** Every project the page lists is checked: configured projects, plans waiting for approval and projects being planned, merged by folder in the page's own order. The link opens the planning chat where the page serves one; a plan waiting for approval that is not configured has no chat on the page, so its notification links to its plan page instead.
+- **When the record is cleared (A3).** A project's record goes when its planning session is gone. It stays while the session works or cannot be read, so a passing read failure does not send the same wait twice.
+- **A failed send (A4).** It is not recorded, and the next pass tries again. A delivered notification is recorded at once.
+- **When the check runs (A5).** Once per daemon pass, and once in `afk daemon --once`, even while the build is paused: planning is attended work, not building.
+- **No ntfy address (A6).** Nothing is sent or recorded, as with every other afk notification. A project being planned in a new folder needs its own `afk.local.toml` with `ntfy_url` to be notified.
+- **The message (A7).** Title "afk: <project> is waiting for you", the first line of the question as the body, priority 4 like a blocking inbox item.
+- **The record file (A8).** `plan-waits.json` in afk's state folder, written only by the daemon by atomic rename; docs/PLAN.md §4.2a describes it.
+- **Tests (A9).** Table tests are written with the code. The decision lives in its own pure package, `internal/planwait`.
+
+### Decided while building (T8.13)
+
+- **The check gets the configured projects through the wiring, not a new field.** `realDaemonDeps` takes the projects function that `runDaemon` already uses, so `Run` and `Once` both read the configured list. `TestRunDaemon` keeps a hermetic rig that never reads a real planning host.
+- **Targets are cleaned and de-duplicated across all earlier entries.** A project with an empty folder is skipped, because cleaning it would name the folder the daemon runs in. A later entry with a name or folder already taken by an earlier one is dropped, even inside one list, so two checks never share one record.
+- **Records for folders no longer listed are kept.** If the project comes back on the same wait, it is not announced twice. Only a chat that reads none clears a record (A3).
+- **A send is bounded by the pass.** Each send runs under 10 seconds, inside the pass context, so a daemon that is stopping cuts a send short and starts no new one.
+- **An unreadable project config means no address.** It is logged on each pass while the wait stays unannounced, the same as the other daemon notifications.
+
+### Scope ideas (T8.13)
+
+- `afk daemon --once` returns before `daemon.Once` when no project is configured, so the planning-wait check does not run then for a plan waiting for approval or a project being planned; the running daemon does run it. `--once` could call the check before it returns early.
+- A machine-wide ntfy address in `config.toml` would let a project being planned in a new folder be notified before it has its own `afk.local.toml`.
+
 ## T8.14
 
 T8.14 lets the web page start a planning session that changes the project's plan (extend, amend, reconcile) and opens its chat. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.

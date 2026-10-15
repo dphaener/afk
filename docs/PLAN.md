@@ -345,6 +345,8 @@ change when planning is resumed; `at` is when the start last succeeded, RFC 3339
 "gone" when the project has no `.afk/plan/state.json`, or the session is finished or approved; a damaged
 `state.json` is not gone. A missing or damaged file reads as an empty list.
 
+Amended 2026-10-14 (T8.13): `plan-waits.json` is a file in afk's state folder (beside `being-planned.json`), the planning waits the daemon has already sent a notification for. Writer: the daemon only, on each pass, through `internal/daemonstate` by atomic rename; it is written only after a send went out, so a failed send is tried again. Readers: the daemon, on each pass, which skips a wait it has recorded. Shape: `{"waits":[{"root","key","at"}]}`, the list always present and every key always written. `root` is the project's main checkout, cleaned, and the key an entry is matched by; `key` identifies the wait that was notified (the chat's state, its message count, and its last message's time and text, hashed); `at` is when the notification was sent, RFC 3339 UTC. An entry is removed when the project's planning chat reads none (its planning session is gone); it is kept while the session works or cannot be read, so a passing read failure does not notify the same wait twice. A missing or damaged file reads as an empty list.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -2682,6 +2684,7 @@ thing it does not do is attach to a session.
   simulated restart. Against a scratch build with a stand-in ntfy server and a stand-in planning host
   whose fixture transcript ends in a question: one notification with the chat link arrives, and none
   on the next pass. `make check` is green.
+- Amended 2026-10-14 (T8.13 done): later tasks may assume the following. (1) The daemon runs `daemon.Deps.PlanWaits` once per pass in `Run` and once in `Once` (paused or not); `plan_wait_notify.go` checks every project the page lists (configured, review list, being-planned, in the page's precedence) through `planchat.Read` and the pure `planwait.Decide`, and records sent waits in `plan-waits.json` in afk's state folder (§4.2a). (2) A wait is keyed by state, message count and the last message's time and text; a record is cleared only when the chat reads `none`, and a failed send is retried next pass. (3) The link is `notify.ChatLink` (`/p/{name}/plan/chat`) for configured and being-planned projects and `notify.PlanLink` for a review-only one, whose chat the page 404s; a page change to which projects serve a chat must change `planWaitTargets` too. (4) Only the project's own `ntfy_url` is used, so a project being planned in a new folder is not notified until it has one; `afk daemon --once` with no configured project skips the check. See `## T8.13` in `docs/decisions.md`.
 
 #### T8.14 — Start extend, amend or reconcile from the page
 - **Depends on:** T8.12, T7.3
