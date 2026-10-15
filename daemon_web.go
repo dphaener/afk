@@ -53,7 +53,8 @@ import (
 // copies) and must not wait on the loop.
 //
 // stateDir is afk's state folder on this machine, where the list of plans
-// waiting for approval is kept.
+// waiting for approval and the list of projects being planned from the page
+// are kept.
 func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagestate.Deps, now func() time.Time) web.Deps {
 	configured := func() []web.Project {
 		got := projects()
@@ -67,6 +68,9 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		Projects: configured,
 		Reviews: func() []web.Project {
 			return webReviews(daemonstate.ReadReviews(stateDir), configured())
+		},
+		BeingPlanned: func() []web.BeingPlannedView {
+			return webBeingPlanned(daemonstate.ReadBeingPlanned(stateDir), planSessionGone)
 		},
 		ReadPlan: webReadPlan,
 		LoadBuild: func(root string) ([]masterplan.Task, ledger.Ledger, error) {
@@ -106,6 +110,8 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		PlanStatus:      webPlanStatus,
 		ApprovePlan:     webApprovePlan,
 		StartPlan:       webStartPlan,
+		CheckPlanFolder: webCheckPlanFolder,
+		AddBeingPlanned: webAddBeingPlanned(stateDir, configured, now, planSessionGone),
 		PlanChat:        webPlanChat(now),
 		PlanReply:       webPlanReply(now),
 		Now:             now,

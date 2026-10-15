@@ -345,9 +345,17 @@ func (a *approveRun) do(step approveStep) error {
 		// leaves a stale line on the web page, so it is a note.
 		if err := daemonstate.RemoveReview(a.stateDir, a.root); err != nil {
 			a.res.warn("Note: the plan is approved, but it could not be taken off the list of plans waiting for approval (%s): %v", daemonstate.ReviewsPath(a.stateDir), err)
-			return nil
+		} else {
+			a.res.say("Took the plan off the list of plans waiting for approval.")
 		}
-		a.res.say("Took the plan off the list of plans waiting for approval.")
+		// A project started from the web page's Plan a new project is also on
+		// the being-planned list. Approved, it is a configured project, so the
+		// entry only tidies the list; a project that never reached the review
+		// list is dropped there anyway once its session reads as approved
+		// (beingPlannedGone). Nothing is said when the folder was not listed.
+		if err := daemonstate.RemoveBeingPlanned(a.stateDir, a.root); err != nil {
+			a.res.warn("Note: the plan is approved, but it could not be taken off the list of projects being planned (%s): %v", daemonstate.BeingPlannedPath(a.stateDir), err)
+		}
 		return nil
 	}
 	return fmt.Errorf("afk does not know approve step %d", int(step))

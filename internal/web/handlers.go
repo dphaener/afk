@@ -29,7 +29,11 @@ type OverviewView struct {
 	// Reviews are the plans waiting for approval that are not configured
 	// projects. Each has a plan view and nothing else.
 	Reviews []ReviewView `json:"reviews"`
-	Usage   UsageView    `json:"usage"`
+	// BeingPlanned are the projects whose planning session was started from
+	// the page and that are neither configured nor waiting for approval;
+	// never null.
+	BeingPlanned []BeingPlannedView `json:"being_planned"`
+	Usage        UsageView          `json:"usage"`
 	// Rows are the all-projects rows from Deps.ProjectRows, in
 	// projectrows.Sort's order (needs-you first). It was added beside the
 	// three keys above rather than in place of Projects, so a reader of the
@@ -252,6 +256,31 @@ func (s *server) findPlanProject(w http.ResponseWriter, r *http.Request) (p Proj
 	return Project{}, false, false
 }
 
+// findChatProject returns the project whose planning chat the address asks
+// for: a configured project, or a project being planned. Only the chat routes
+// use it: a project being planned has no build, inbox or plan to change yet
+// (the change routes stay on findProject and findPlanProject).
+//
+// A plan waiting for approval that is not configured stays a 404 here, as it
+// was before (it has no planning session to read), and it also wins its name
+// over a being-planned entry: beingPlanned drops such an entry, so
+// /p/{name}/plan/chat can never open a folder that /p/{name}/plan does not.
+// A configured name wins the same way. An unknown name is answered here.
+func (s *server) findChatProject(w http.ResponseWriter, r *http.Request) (Project, bool) {
+	name := r.PathValue("project")
+	configured := s.projects()
+	if p, ok := named(configured, name); ok {
+		return p, true
+	}
+	for _, bp := range s.beingPlanned(configured) {
+		if bp.Name == name {
+			return Project{Name: bp.Name, Root: bp.Root}, true
+		}
+	}
+	s.fail(w, r, http.StatusNotFound, "There is no project with that name in afk's config.toml, and none is being planned under it. Check the address, or go back to the overview.")
+	return Project{}, false
+}
+
 func named(ps []Project, name string) (Project, bool) {
 	for _, p := range ps {
 		if p.Name == name {
@@ -290,6 +319,33 @@ func (s *server) reviews(configured []Project) []Project {
 		}
 		if !taken {
 			out = append(out, rv)
+		}
+	}
+	return out
+}
+
+// beingPlanned asks for the projects being planned, now, and leaves out any
+// that a configured project or a plan waiting for approval already covers:
+// one with the same folder or the same name. The configured project or the
+// review is that project, and a second row or a second meaning for the name
+// would open the wrong folder's chat.
+func (s *server) beingPlanned(configured []Project) []BeingPlannedView {
+	if s.d.BeingPlanned == nil {
+		return nil
+	}
+	reviews := s.reviews(configured)
+	var out []BeingPlannedView
+	for _, bp := range s.d.BeingPlanned() {
+		taken := false
+		for _, list := range [][]Project{configured, reviews} {
+			for _, p := range list {
+				if p.Name == bp.Name || p.Root == bp.Root {
+					taken = true
+				}
+			}
+		}
+		if !taken {
+			out = append(out, bp)
 		}
 	}
 	return out
@@ -423,13 +479,14 @@ func (s *server) usageView() UsageView {
 
 func (s *server) overview(w http.ResponseWriter, r *http.Request) {
 	configured := s.projects()
-	v := OverviewView{Projects: make([]ProjectSummary, 0, len(configured)), Reviews: []ReviewView{}, Usage: s.usageView()}
+	v := OverviewView{Projects: make([]ProjectSummary, 0, len(configured)), Reviews: []ReviewView{}, BeingPlanned: []BeingPlannedView{}, Usage: s.usageView()}
 	for _, p := range configured {
 		v.Projects = append(v.Projects, s.projectView(p).ProjectSummary)
 	}
 	for _, rv := range s.reviews(configured) {
 		v.Reviews = append(v.Reviews, ReviewView{Name: rv.Name})
 	}
+	v.BeingPlanned = append(v.BeingPlanned, s.beingPlanned(configured)...)
 	// The rows come from the seam, already sorted, and never from a list
 	// this package read: the daemon owns the project list (see
 	// Deps.ProjectRows).
@@ -439,7 +496,7 @@ func (s *server) overview(w http.ResponseWriter, r *http.Request) {
 			v.Rows = append(v.Rows, rowView(row))
 		}
 	}
-	v.Page = overviewPageFor(v.Rows, v.Reviews)
+	v.Page = overviewPageFor(v.Rows, v.Reviews, v.BeingPlanned...)
 	s.respond(w, r, http.StatusOK, "overview", v)
 }
 

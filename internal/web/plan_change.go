@@ -39,6 +39,11 @@ type PlanStartResult struct {
 	Open      bool
 	OpenMode  string
 	OpenPhase string
+	// Root is the project folder the entry point resolved and started in
+	// (symlinks resolved for mode new), or "" when it did not say. Plan a
+	// new project records the project under it, so the being-planned list
+	// names the folder the session really runs in, not the text typed.
+	Root string `json:"root"`
 }
 
 // The outcomes a PlanStartResult takes.

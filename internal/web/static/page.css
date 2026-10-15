@@ -20,6 +20,11 @@ body.afk { margin: 0; }
 @media (max-width: 760px) { .topnav { display: none; } }
 .app-bar .live { margin-left: auto; }
 .topnav__live { margin-left: auto; }
+/* The top bar's Plan a new project sits at the right end. The live mirror
+   takes the free space when it shows; while it is hidden (no JavaScript
+   yet, or no stream), the action takes it instead. */
+.topnav__action { margin-left: auto; }
+.topnav__live:not([hidden]) + .topnav__action { margin-left: 0; }
 
 /* afk.css colours every link with ".afk a" and ".afk a:hover", which are
    more specific than its own component classes, so a component drawn on an
@@ -364,3 +369,8 @@ dialog.confirm-sheet[data-status-sheet] { max-height: 90vh; overflow-y: auto; }
 .option.is-chosen:disabled { color: var(--text); background: var(--accent-soft); border-color: var(--accent); cursor: default; }
 .chat-sent { font-size: var(--text-xs); color: var(--text-3); }
 .chat-reply .option:focus-visible, .chat-reply .textarea:focus-visible, .chat-reply .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Plan a new project (T8.15): the overview's footer actions, a column on
+   the phone (btn-stack) and buttons of their own width beside the split. */
+.overview-foot { margin-top: var(--space-6); }
+@media (min-width: 761px) { .overview-foot { align-items: flex-start; } }

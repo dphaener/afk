@@ -150,6 +150,13 @@ type SessionCheck struct {
 	Result string `json:"result"`
 }
 
+// BeingPlannedView is a project whose planning session was started from the
+// page and that is not configured or waiting for approval yet.
+type BeingPlannedView struct {
+	Name string `json:"name"`
+	Root string `json:"root"`
+}
+
 // Deps is everything the handlers reach outside the package for, as
 // functions, so tests can supply all of it. The inbox, the pause flag, the
 // stop marker and daemon.json are not here: they are read straight from the
@@ -165,6 +172,15 @@ type Deps struct {
 	// configured one yet. Only the plan view is served for them: there is no
 	// build to show, pause or answer for. Nil means none.
 	Reviews func() []Project
+	// BeingPlanned lists the projects a planning session was started for
+	// from this page (Plan a new project) that are neither configured nor
+	// waiting for approval yet. Without it such a project would vanish from
+	// the overview and its chat would answer 404 until it was approved. The
+	// entries arrive already filtered by the root package: those whose
+	// planning session is gone are dropped there, since deciding that needs
+	// the plan session's files and this package does not read them. Only the
+	// chat is served for them. Nil means none.
+	BeingPlanned func() []BeingPlannedView
 	// ReadPlan reads the master plan of the project at root and says where
 	// it is. An error is shown on the plan view as the page's problem; it
 	// does not fail the request. Nil means this page cannot show plans, and
@@ -280,6 +296,21 @@ type Deps struct {
 	// refuses in the command's own words. Nil means this page cannot start
 	// one, and the change address is not found.
 	StartPlan func(root, mode, text string) PlanStartResult
+	// CheckPlanFolder says what a folder path typed into Plan a new project
+	// means (see plan_new.go): its full path, with ~ expanded, and whether it
+	// is a git repository, a plain folder, a folder with a planning session
+	// open, a folder that already has a plan, or refused. It must only read:
+	// T8.15 must not create a folder (making one is T8.15a's), and the GET
+	// that draws the confirm card calls it. It is advisory, since the folder
+	// can change before Start planning is pressed; StartPlan re-checks. Nil
+	// means the page offers no Plan a new project.
+	CheckPlanFolder func(text string) PlanFolderCheck
+	// AddBeingPlanned notes, after a new-mode start, that the project at root
+	// is being planned, so the overview shows it and its chat resolves (see
+	// BeingPlanned), and returns the name its chat is under. It is a seam
+	// because the list lives in afk's state folder, which this package does
+	// not write. Nil means the page offers no Plan a new project.
+	AddBeingPlanned func(root string) (name string, err error)
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -462,6 +493,11 @@ var routes = []route{
 	// the confirm, through Deps.StartPlan and nothing else (see
 	// plan_change.go).
 	{http.MethodPost, "/p/{project}/plan/change", (*server).planChange},
+	// Planning a new project: what the dashboard's new-plan form does for a
+	// folder that exists, behind the confirm, through Deps.CheckPlanFolder,
+	// Deps.StartPlan and Deps.AddBeingPlanned and nothing else (see
+	// plan_new.go).
+	{http.MethodPost, "/plan/new", (*server).planNew},
 	{http.MethodGet, "/p/{project}/inbox", (*server).inboxList},
 	{http.MethodGet, "/p/{project}/inbox/{id}", (*server).item},
 	{http.MethodPost, "/p/{project}/inbox/{id}/answer", (*server).answer},
@@ -568,6 +604,8 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("GET /p/{project}/plan/approve", s.planApprovePage)
 	// So is the page behind the Change the plan rows.
 	mux.HandleFunc("GET /p/{project}/plan/change", s.planChangePage)
+	// And the Where form and confirm card of Plan a new project.
+	mux.HandleFunc("GET /plan/new", s.planNewPage)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong

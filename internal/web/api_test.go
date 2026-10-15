@@ -86,6 +86,8 @@ type rig struct {
 	// handler must ask again on every request.
 	projects []Project
 	reviews  []Project
+	// beingPlanned is what Deps.BeingPlanned returns.
+	beingPlanned []BeingPlannedView
 	// draft is the folder of "draft", a plan waiting for approval that is
 	// not a configured project.
 	draft string
@@ -138,6 +140,18 @@ type rig struct {
 	// otherwise).
 	startCalls  [][]string
 	startResult PlanStartResult
+	// checkCalls records every call of the fake CheckPlanFolder (the text
+	// it was given); checkResult is what it answers (an existing repository
+	// at rg.fresh, until a test says otherwise).
+	checkCalls  []string
+	checkResult PlanFolderCheck
+	// addedCalls records every call of the fake AddBeingPlanned (the root);
+	// addedName and addedErr are what it answers.
+	addedCalls []string
+	addedName  string
+	addedErr   error
+	// fresh is an empty folder the fake check calls a repository.
+	fresh string
 	// onStatus, when set, runs inside the fake SetTaskStatus before it
 	// answers, so a test can change rg.ledger as the real write would and
 	// prove the answer was read after the call.
@@ -295,9 +309,13 @@ func newRig(t *testing.T, cfg Config) *rig {
 	rg.planStatus = map[string]PlanStatus{}
 	rg.approveResult = PlanApproveResult{Outcome: PlanApproved, Text: "Approved the plan. afk starts building it."}
 	rg.startResult = PlanStartResult{Outcome: PlanStartStarted}
+	rg.fresh = filepath.Join(t.TempDir(), "shop")
+	rg.checkResult = PlanFolderCheck{Path: rg.fresh, Kind: PlanFolderRepo}
+	rg.addedName = "shop"
 	srv, h, err := build(cfg, Deps{
-		Projects: func() []Project { return rg.projects },
-		Reviews:  func() []Project { return rg.reviews },
+		Projects:     func() []Project { return rg.projects },
+		Reviews:      func() []Project { return rg.reviews },
+		BeingPlanned: func() []BeingPlannedView { return rg.beingPlanned },
 		ReadPlan: func(root string) (string, []byte, error) {
 			rg.planReads++
 			path := filepath.Join(root, "docs", "PLAN.md")
@@ -401,6 +419,14 @@ func newRig(t *testing.T, cfg Config) *rig {
 		StartPlan: func(root, mode, text string) PlanStartResult {
 			rg.startCalls = append(rg.startCalls, []string{root, mode, text})
 			return rg.startResult
+		},
+		CheckPlanFolder: func(text string) PlanFolderCheck {
+			rg.checkCalls = append(rg.checkCalls, text)
+			return rg.checkResult
+		},
+		AddBeingPlanned: func(root string) (string, error) {
+			rg.addedCalls = append(rg.addedCalls, root)
+			return rg.addedName, rg.addedErr
 		},
 		RefreshUsage: func() UsageRefreshResult {
 			rg.refreshCalls.Add(1)

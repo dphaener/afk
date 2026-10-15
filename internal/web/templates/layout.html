@@ -30,7 +30,8 @@
     <a class="topnav__link" href="/usage"{{if eq .Nav "usage"}} aria-current="{{.Current}}"{{end}}>Usage</a>
   </nav>
   <span class="live topnav__live" data-live-mirror hidden>Live</span>
-</header>
+  {{if .PlanNew}}<a class="btn btn--primary btn--sm topnav__action" href="/plan/new">Plan a new project</a>
+  {{end}}</header>
 {{end}}{{end}}
 <main class="page{{if .Chrome.Bare}} page--alone{{end}}">
 {{template "content" .View}}

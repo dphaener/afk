@@ -3242,3 +3242,27 @@ T8.14 lets the web page start a planning session that changes the project's plan
 Verification for the owner (T8.14): on a project with a plan, open `/p/<project>/plan/change?mode=reconcile&text=../../etc/passwd`, press **Start planning**, and check that the page refuses it in the command's own words and starts nothing. The review's hands-on check did not run this case against a live daemon.
 
 Scope ideas (T8.14): the amend sentence travels in the change page's address (`?text=`) until **Start planning** is pressed, so it stays in the browser's history. A form step that posts instead would keep it out.
+
+## T8.15
+
+Decisions the master plan left open, made while planning T8.15 (Plan a new project in an existing folder):
+
+- **The page learns the started folder from the start itself.** `web.PlanStartResult` gains `Root`, copied from the entry point's result, with symlinks resolved for a new plan as the dashboard does. Without it the page could not name the project it just started.
+- **The being-planned list is written through a seam.** `web.Deps.AddBeingPlanned` is wired in the root package to `internal/daemonstate`, and it is called only after a start that answered started or resumed. The web package never imports `daemonstate`.
+- **"Its planning session is gone" means:** there is no `.afk/plan/state.json` any more, or the session has finished (approved). A damaged `state.json` is not gone, and whether the planning host is alive is not looked at, because a session whose state is still open can be resumed. `afk plan approve` also removes the entry.
+- **The confirm card asks the same questions the start asks.** A read-only `Deps.CheckPlanFolder` shares the new-mode checks of `startPlanForSurface`, and it never creates a folder or runs `git init`.
+- **Routes.** The form is the page-only `GET /plan/new`. `POST /plan/new` is in the shared route table with its `/api/plan/new` twin, so the table has 22 routes.
+- **Names.** A being-planned project is named after its folder, with `-2`, `-3` added when a configured project, a plan waiting for approval or another entry already has that name. A folder already on the review list keeps the review list's name, so `/p/<name>/plan/chat` always means one folder.
+- **Card wording.** The card says "afk will plan in", with a badge "Existing folder" or "Existing folder, becomes a git repository". "afk will create and plan in" waits for T8.15a, which is the task that creates folders.
+
+Decided while building (T8.15):
+
+- **The folder check reuses the start's own look at the folder.** It takes the same `planDeps` as the start, with every writer swapped for a refusal, so the confirm card and the start can never disagree and the check never creates a folder, runs `git init` or writes a file.
+- **A folder that already has a plan is refused with the page's own sentence**, pointing at Change the plan. The other refusals (not a full path, not found, a file) keep the command's sentences unchanged.
+- **Approve removes the being-planned entry only when the folder is on the review list**, which is the normal path. A project that is approved without ever reaching the list is still hidden at once, because its phase reads approved, and it is pruned from the file at the next start from the page.
+- **A failure to prune gone entries is not reported.** The read already hides them, and the add's own write reports an unwritable folder.
+- **README.** The page's description sits with the other pages under "What each page shows"; the JSON paragraph names `POST /api/plan/new` and `being_planned`.
+
+Verification for the owner (T8.15): on a phone, open the overview, press **Plan a new project**, type the path of an empty repository and press **Start planning**; check that the chat opens and the overview shows the project as "Being planned". The review ran this with curl against a scratch build, not in a browser.
+
+Scope ideas (T8.15): **Start planning** has no loading state yet, because `confirm.js` only animates buttons inside its confirm dialog; letting it also handle a page form with `data-loading` would add one. The refusals for a folder that is not found or is a file mention `--project`, which a page user has no use for; T8.15a replaces the not-found case and could reword the file case.

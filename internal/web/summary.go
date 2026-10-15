@@ -432,6 +432,13 @@ type overviewPage struct {
 // no project yet: what the owner does about it.
 const reviewOnlyDetail = "Read it, then run afk plan approve in the project folder."
 
+// beingPlannedBadge and beingPlannedDetail mark a project whose first plan
+// is still being written. It is the idle colour: the agent has the turn, and
+// a question, when it asks one, shows on the chat.
+var beingPlannedBadge = badgeView{Class: "badge--idle", Word: "Being planned"}
+
+const beingPlannedDetail = "A new plan is being written. Open the chat to answer it."
+
 // overviewPageFor lays out the home page from the rows (already in
 // projectrows.Sort's order) and the plans waiting for approval that are not
 // configured projects.
@@ -441,7 +448,13 @@ const reviewOnlyDetail = "Read it, then run afk plan approve in the project fold
 // needs-you rows placed after the project rows that need the owner, since
 // projectrows.Sort orders by config.toml and a plan waiting alone has no
 // place there.
-func overviewPageFor(rows []RowView, reviews []ReviewView) overviewPage {
+//
+// planned are the projects being planned, placed after the review-only rows
+// as everything-else rows: nothing waits on the owner until the plan is
+// written, and the chat is where the agent's questions are answered. A name
+// a row or a review already has is skipped. They are variadic so the many
+// callers that have none stay as they are.
+func overviewPageFor(rows []RowView, reviews []ReviewView, planned ...BeingPlannedView) overviewPage {
 	var p overviewPage
 	named := make(map[string]bool, len(rows))
 	for _, r := range rows {
@@ -475,6 +488,16 @@ func overviewPageFor(rows []RowView, reviews []ReviewView) overviewPage {
 		p.NeedsYou = append(p.NeedsYou, overviewRow{
 			Name: rv.Name, Href: "/p/" + url.PathEscape(rv.Name) + "/plan",
 			NeedsYou: true, Badge: planWaitingBadge, Detail: reviewOnlyDetail,
+		})
+	}
+	for _, bp := range planned {
+		if named[bp.Name] {
+			continue
+		}
+		named[bp.Name] = true
+		p.Others = append(p.Others, overviewRow{
+			Name: bp.Name, Href: chatPath(bp.Name),
+			Badge: beingPlannedBadge, Detail: beingPlannedDetail,
 		})
 	}
 

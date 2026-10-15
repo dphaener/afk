@@ -154,6 +154,18 @@ func readSnapshot(projects []Project, d Deps, refreshGen uint64) snapshot {
 	return snap
 }
 
+// withBeingPlanned adds the projects being planned to the configured ones,
+// leaving out any whose name a configured project already has.
+func withBeingPlanned(projects []Project, planned []BeingPlannedView) []Project {
+	out := append([]Project(nil), projects...)
+	for _, bp := range planned {
+		if _, dup := named(projects, bp.Name); !dup {
+			out = append(out, Project{Name: bp.Name, Root: bp.Root})
+		}
+	}
+	return out
+}
+
 // readProject reads one project's parts, each from the same files the page
 // that shows it reads.
 func readProject(name, root string, d Deps) map[string]string {
@@ -378,6 +390,12 @@ func (h *hub) run(quit chan struct{}) {
 		var projects []Project
 		if h.d.Projects != nil {
 			projects = h.d.Projects()
+		}
+		// A project being planned has a live chat but no project row, so its
+		// planning part is read too. A configured name wins, as it does for
+		// the address (findChatProject).
+		if h.d.BeingPlanned != nil {
+			projects = withBeingPlanned(projects, h.d.BeingPlanned())
 		}
 		var gen uint64
 		if h.refreshGen != nil {

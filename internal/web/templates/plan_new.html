@@ -1,0 +1,43 @@
+{{define "title"}}Plan a new project{{end}}
+{{define "content"}}
+<div class="stack">
+<h1>Plan a new project</h1>
+{{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+{{if eq .Kind "confirm"}}
+<section class="card" aria-labelledby="plan-new-card-title">
+  <h2 id="plan-new-card-title">afk will plan in</h2>
+  <p class="path">{{.Path}}</p>
+  <p><span class="badge {{.Badge.Class}}">{{.Badge.Word}}</span></p>
+  <p>A planning agent asks you what to build and writes the plan with you. Its chat opens next.</p>
+</section>
+<form method="post" action="/plan/new" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  <input type="hidden" name="path" value="{{.Path}}">
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary" data-loading-label="Starting planning">Start planning</button>
+    <a class="btn btn--quiet" href="/" autofocus>Cancel</a>
+  </div>
+</form>
+{{else if eq .Kind "has_plan"}}
+<div class="notice notice--error" role="alert"><div class="notice__body">{{.Message}}</div></div>
+{{with .Path}}<p class="path">{{.}}</p>{{end}}
+<div class="btn-row">{{if .ProjectHref}}<a class="btn btn--primary" href="{{.ProjectHref}}">Open {{.ProjectName}}</a> {{end}}<a class="btn btn--secondary" href="/plan/new">Choose another folder</a></div>
+{{else if eq .Kind "started"}}
+<p>{{.Message}}</p>
+<div class="btn-row">{{with .Chat}}<a class="btn btn--primary" href="{{.}}">Open its chat</a> {{end}}<a class="btn btn--secondary" href="/">Back to all projects</a></div>
+{{else}}
+<form method="get" action="/plan/new" class="stack">
+  <div class="field">
+    <label class="field__label" for="plan-new-path">Where</label>
+    <input class="input input--mono" type="text" id="plan-new-path" name="path" value="{{.Text}}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="{{if .FieldError}}plan-new-error {{end}}plan-new-hint"{{if .FieldError}} aria-invalid="true"{{end}}>
+    <span class="field__hint" id="plan-new-hint">Folder path</span>
+    {{with .FieldError}}<p class="field__error" id="plan-new-error" role="alert">{{.}}</p>{{end}}
+  </div>
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary">Continue</button>
+    <a class="btn btn--quiet" href="/">Cancel</a>
+  </div>
+</form>
+{{end}}
+</div>
+{{end}}

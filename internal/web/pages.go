@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -134,6 +134,12 @@ type chrome struct {
 	// Toast is the sentence the layout shows after a pause or resume, or ""
 	// for none. It is only ever one of toastTexts (see toastFor).
 	Toast string
+	// PlanNew is whether the page offers Plan a new project (canPlanNew):
+	// the top bar's action and the overview's footer button are drawn only
+	// then, so neither can lead to an address that answers 404. It is set by
+	// renderPage, not chromeFor, because it is the server's seams and not
+	// the page's view that decide it.
+	PlanNew bool
 }
 
 // chromeFor works out the bars for a page from its name and view, the
@@ -194,6 +200,8 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 	case ChangePageView:
 		c.Title = "Change the plan"
 		c.Back, c.BackLabel = v.Back, "Back to "+v.Project
+	case NewPlanPageView:
+		c.Title = "Plan a new project"
 	case PlanResultView:
 		c.Title = v.Title
 		c.Back, c.BackLabel = v.Back, "Back to the plan of "+v.Project
@@ -240,6 +248,7 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 			projects = len(s.projects())
 		}
 		ch := chromeFor(name, view, r.Method, r.URL.Path, projects)
+		ch.PlanNew = !ch.Bare && s.canPlanNew()
 		if pv, isProject := view.(ProjectView); isProject && r.Method == http.MethodGet {
 			ch.Toast = toastFor(r.URL.Query().Get("done"), pv.Name, "")
 		}
