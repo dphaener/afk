@@ -254,3 +254,62 @@ func TestRenderPlanThisRepositorysPlan(t *testing.T) {
 		}
 	}
 }
+
+// chatTagRE matches every tag renderChat may write: the plan's tags, with
+// headings that carry no attribute at all.
+var chatTagRE = regexp.MustCompile(`</?(?:p|ul|ol|li|pre|code|strong|blockquote|table|thead|tbody|tr|th|td|div|a|h[3-6])>` +
+	`|<hr>` +
+	`|<ol start="[0-9]+">` +
+	`|<div class="scroll">` +
+	`|<a href="https?://[^"<>]*" rel="noopener noreferrer">`)
+
+// TestRenderChat is the chat mode of the renderer: one agent message.
+//
+// Load-bearing rows: "headings move two levels down" and "no heading ids"
+// (several messages on one page repeat their headings, so ids would clash,
+// and a message's "# Title" must not outrank the page's own h1 and h2s);
+// "h5 and h6 stop at h6" (there is no h7); and "script tag" (the chat mode
+// escapes exactly as the plan mode does: it is the same renderer, not a
+// second exception). The plan mode is unchanged ("plan mode keeps its ids").
+func TestRenderChat(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    []string
+		notWant []string
+	}{
+		{name: "headings move two levels down", in: "# One\n## Two\n### Three\n#### Four\n",
+			want:    []string{"<h3>One</h3>", "<h4>Two</h4>", "<h5>Three</h5>", "<h6>Four</h6>"},
+			notWant: []string{"<h1", "<h2"}},
+		{name: "h5 and h6 stop at h6", in: "##### Five\n###### Six\n", want: []string{"<h6>Five</h6>", "<h6>Six</h6>"}},
+		{name: "no heading ids", in: "## Notes\n## Notes\n#### T1.1 — A\n", want: []string{"<h4>Notes</h4>\n<h4>Notes</h4>", "<h6>T1.1 — A</h6>"}, notWant: []string{" id="}},
+		{name: "the rest is the plan's markdown", in: "Pick one:\n\n- **a** `x`\n- b\n\n| k | v |\n|---|---|\n| 1 | 2 |\n",
+			want: []string{"<p>Pick one:</p>", "<li><strong>a</strong> <code>x</code></li>", "<td>1</td><td>2</td>"}},
+		{name: "script tag", in: "# <script>alert(1)</script>\n<b>x</b>\n",
+			want: []string{"<h3>&lt;script&gt;alert(1)&lt;/script&gt;</h3>", "<p>&lt;b&gt;x&lt;/b&gt;</p>"}, notWant: []string{"<script", "<b>"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(renderChat(tc.in))
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("output does not contain %q\ngot:\n%s", w, got)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("output contains %q, which it should not\ngot:\n%s", w, got)
+				}
+			}
+			rest := chatTagRE.ReplaceAllString(got, "")
+			if i := strings.IndexAny(rest, "<>"); i >= 0 {
+				t.Errorf("the output holds markup the chat mode does not write: %q", rest)
+			}
+		})
+	}
+	t.Run("plan mode keeps its ids", func(t *testing.T) {
+		if got := string(renderPlan("# One\n")); got != "<h1 id=\"one\">One</h1>\n" {
+			t.Errorf("renderPlan = %q", got)
+		}
+	})
+}

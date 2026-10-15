@@ -130,8 +130,24 @@
     // focus, and focus is handed to the new copy of the button with the same
     // id so a keyboard user does not lose their place.
     var buttons = old.hasAttribute('data-live-buttons');
+    // A region that opts in with data-live-form holds the chat's reply area.
+    // It must follow the agent from working to asking (a composer turns into
+    // option buttons), so a form inside it does not keep it from being
+    // swapped. What does: a typed field with focus, or any text box holding
+    // words the owner typed. A half-written reply is never wiped.
+    var formRegion = old.hasAttribute('data-live-form');
     var active = document.activeElement;
-    if (buttons) {
+    if (formRegion) {
+      if (old.contains(active) && active.matches('input, textarea, select')) {
+        return;
+      }
+      var boxes = old.querySelectorAll('textarea, input:not([type]), input[type="text"]');
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].value.trim() !== '') {
+          return;
+        }
+      }
+    } else if (buttons) {
       if (old.contains(active) && active.matches('input, textarea, select')) {
         return;
       }

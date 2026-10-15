@@ -19,6 +19,7 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectrows"
@@ -27,8 +28,8 @@ import (
 
 const idScript = "kmn345"
 
-// ownScript is the script tags every page carries: the hashed live.js, confirm.js and submit.js.
-var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit)\.js" defer></script>`)
+// ownScript is the script tags every page carries: the hashed live.js, confirm.js, submit.js and chat.js.
+var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit|chat)\.js" defer></script>`)
 
 // noOwnScript removes that tag, so the tests that look for injected markup
 // still see any other script tag a hostile text managed to open.
@@ -518,7 +519,7 @@ var idAttr = regexp.MustCompile(` id="([^"]*)"`)
 // swapped), and "usage", whose project is empty (machine-wide). The page with
 // the space in its name proves the attribute is escaped, not path-escaped.
 func TestPageLiveMarkup(t *testing.T) {
-	scriptRe := regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm)\.js" defer></script>`)
+	scriptRe := regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|chat)\.js" defer></script>`)
 	tests := []struct {
 		name string
 		path string
@@ -546,6 +547,10 @@ func TestPageLiveMarkup(t *testing.T) {
 		}},
 		{name: "task", path: "/p/app/tasks/T1.2", want: []string{`<div class="card" id="task-status" data-live="ledger sessions" data-project="app">`}},
 		{name: "sessions", path: "/p/app/sessions", want: []string{`id="sessions-list" data-live="sessions" data-project="app" aria-live="polite"`}},
+		{name: "planning chat", path: "/p/my%20app/plan/chat", want: []string{
+			`<div id="chat-thread" class="thread" aria-live="polite" data-live="planning" data-project="my app"`,
+			`<div id="chat-reply" class="chat-reply" data-live="planning" data-project="my app" data-live-form>`,
+		}},
 		{name: "session", path: "/p/app/sessions/t1-2", want: []string{
 			`id="session-badges" data-live="sessions" data-project="app"`,
 			`aria-live="polite" aria-label="State of t1-2">` + "\n" + `<div class="card" id="session-state" data-live="sessions" data-project="app">`,
@@ -662,28 +667,28 @@ func TestPlanPage(t *testing.T) {
 			setup: func(rg *rig) {
 				rg.planStatus[rg.root] = planLine("new", "check", "Plan · new · check — the checker is running")
 			},
-			want:    []string{`<p class="plan-line">Plan · new · check — the checker is running</p>`, "The plan can be approved once the planning session reaches review; it is at check now."},
+			want:    []string{`<p class="plan-line"><a href="/p/app/plan/chat">Plan · new · check — the checker is running</a></p>`, "The plan can be approved once the planning session reaches review; it is at check now."},
 			notWant: []string{"data-confirm", "<dialog"}},
 		{name: "plan line for a new plan at review", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) { rg.planStatus[rg.root] = approvable() },
-			want:  []string{`<p class="plan-line">Plan · new · review — waiting for your approval</p>`, `data-confirm="plan-approve"`}},
+			want:  []string{`<p class="plan-line"><a href="/p/app/plan/chat">Plan · new · review — waiting for your approval</a></p>`, `data-confirm="plan-approve"`}},
 		{name: "plan line for an extend session", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("extend", "review", "Plan · extend · review") },
-			want:  []string{`<p class="plan-line">Plan · extend · review</p>`, "changes a plan that is already being built"}, notWant: []string{"<dialog"}},
+			want:  []string{`<p class="plan-line"><a href="/p/app/plan/chat">Plan · extend · review</a></p>`, "changes a plan that is already being built"}, notWant: []string{"<dialog"}},
 		{name: "plan line for an amend session", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("amend", "round", "Plan · amend · round") },
-			want:  []string{`<p class="plan-line">Plan · amend · round</p>`}},
+			want:  []string{`<p class="plan-line"><a href="/p/app/plan/chat">Plan · amend · round</a></p>`}},
 		{name: "plan line for a reconcile session", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("reconcile", "round", "Plan · reconcile · round") },
-			want:  []string{`<p class="plan-line">Plan · reconcile · round</p>`}},
+			want:  []string{`<p class="plan-line"><a href="/p/app/plan/chat">Plan · reconcile · round</a></p>`}},
 		{name: "plan line for an approved plan", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) { rg.planStatus[rg.root] = planLine("new", "approved", "Plan approved") },
-			want:  []string{`<p class="plan-line">Plan approved</p>`, "This plan is already approved."}, notWant: []string{"<dialog"}},
+			want:  []string{`<p class="plan-line"><a href="/p/app/plan/chat">Plan approved</a></p>`, "This plan is already approved."}, notWant: []string{"<dialog"}},
 		{name: "damaged planning state shows its line and the reason", path: "/p/app/plan", status: 200,
 			setup: func(rg *rig) {
 				rg.planStatus[rg.root] = PlanStatus{Known: true, Session: true, Damaged: true, Line: "Plan · damaged"}
 			},
-			want: []string{`<p class="plan-line">Plan · damaged</p>`, "state file is damaged"}},
+			want: []string{`<p class="plan-line"><a href="/p/app/plan/chat">Plan · damaged</a></p>`, "state file is damaged"}},
 		{name: "no planning session has no plan line", path: "/p/app/plan", status: 200,
 			want:    []string{"There is no planning session, so there is nothing to approve."},
 			notWant: []string{"plan-line"}},
@@ -696,6 +701,12 @@ func TestPlanPage(t *testing.T) {
 		{name: "project page carries the plan line", path: "/p/app", status: 200,
 			setup: func(rg *rig) { rg.planStatus[rg.root] = approvable() },
 			want:  []string{`<span class="row__meta">Plan · new · review — waiting for your approval</span>`}},
+		{name: "plan line is plain text without a session", path: "/p/app/plan", status: 200,
+			setup: func(rg *rig) {
+				rg.planStatus[rg.root] = PlanStatus{Known: true, Line: "Plan · no session"}
+			},
+			want:    []string{`<p class="plan-line">Plan · no session</p>`},
+			notWant: []string{"plan/chat"}},
 		{name: "unknown project", path: "/p/nothing-here/plan", status: 404,
 			want: []string{"That didn't load", "waiting for approval"}},
 		{name: "overview lists the plans waiting", path: "/", status: 200,
@@ -798,7 +809,7 @@ func TestPlanPageApproveArea(t *testing.T) {
 				"Approve the plan for app?", `autofocus>Not yet</button>`, "Approve and start", `action="/p/app/plan/approve"`, `name="confirm" value="yes"`},
 			notWant: []string{"notice--error"}},
 		{name: "errors", path: "/p/app/plan", setup: withErrors,
-			want:    []string{`<div class="notice notice--error" role="alert"><div class="notice__body">Fix 1 error before approving. Ask the planning agent to fix them, or edit the plan and check it with afk plan lint.</div></div>`},
+			want:    []string{`<div class="notice notice--error" role="alert"><div class="notice__body">Fix 1 error before approving. Ask the planning agent in the chat, or edit the plan.</div></div>`},
 			notWant: noAction},
 		{name: "no session", path: "/p/app/plan",
 			want: []string{"There is no planning session, so there is nothing to approve."}, notWant: noAction},
@@ -958,6 +969,7 @@ func TestPageLayout(t *testing.T) {
 		{name: "confirm", page: "confirm", path: "/p/app/confirm/pause", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, navTitle: "Pause project"},
 		{name: "plan approve, no-JS", page: "plan_confirm", path: "/p/app/plan/approve", status: 400, bars: true, back: `href="/p/app/plan" aria-label="Back to the plan of app"`, navTitle: "Approve the plan"},
 		{name: "plan approve result", page: "plan_result", path: "/p/app/plan/approve", form: "confirm=yes", status: 200, bars: true, back: `href="/p/app/plan" aria-label="Back to the plan of app"`, navTitle: "Plan approved"},
+		{name: "planning chat", page: "plan_chat", path: "/p/app/plan/chat", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Planning app"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", path: "/p/app", noToken: true, status: 401},
 	}
@@ -1081,6 +1093,8 @@ func TestChromeFor(t *testing.T) {
 			want: chrome{Title: "Restart", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/sessions/t1-2", BackLabel: "Back to t1-2"}},
 		{name: "new session, form step", page: "session_confirm", view: SessionConfirmView{Project: "my app", Back: "/p/my%20app/sessions"}, method: "GET", path: "/p/my app/sessions/new",
 			want: chrome{Title: "New session", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/sessions", BackLabel: "Back to the sessions of my app"}},
+		{name: "planning chat", page: "plan_chat", view: ChatView{Chat: planchat.Chat{Project: "my app"}}, method: "GET", path: "/p/my app/plan/chat",
+			want: chrome{Title: "Planning my app", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
 		{name: "error", page: "error", view: ErrorView{Status: 404}, method: "GET", path: "/p/nope",
 			want: chrome{Bare: true, Status: 404, Path: "/p/nope", Retry: "/p/nope"}},
 		{name: "error after a POST", page: "error", view: ErrorView{Status: 400}, method: "POST", path: "/p/app/inbox/x/answer",
@@ -1244,6 +1258,9 @@ func TestToast(t *testing.T) {
 		{name: "unknown code", path: "/p/app?done=zzqcode", wantNot: []string{"data-toast", "zzqcode"}},
 		{name: "no code", path: "/p/app", wantNot: []string{"data-toast"}},
 		{name: "toast text as a code", path: "/p/app?done=Paused+app.", wantNot: []string{"data-toast"}},
+		{name: "chat sent", path: "/p/app/plan/chat?done=sent", wantIn: `role="status" data-toast>Sent to the planning agent.</div>`},
+		{name: "chat code on the project", path: "/p/app?done=sent", wantNot: []string{"data-toast"}},
+		{name: "project code on the chat", path: "/p/app/plan/chat?done=paused", wantNot: []string{"data-toast"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1281,6 +1298,8 @@ func TestToastFor(t *testing.T) {
 		// any other page shows nothing rather than "{status}".
 		{"status", "app", "T1.2", ""},
 		{"already", "app", "T1.2", ""},
+		// The chat's code belongs to the chat screen (chatToast).
+		{"sent", "app", "", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.code+"_"+tc.task, func(t *testing.T) {

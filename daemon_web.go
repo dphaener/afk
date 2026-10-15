@@ -328,7 +328,13 @@ func sendPlanReply(project, root string, r planchat.Reply, d planReplyDeps) erro
 		if err != nil {
 			return fmt.Errorf("could not tell which agent runs the planning session: %w", err)
 		}
-		keys, err := p.PlanChoiceKeys(chat.Questions, r.Choices)
+		var keys [][]byte
+		if r.Other != "" {
+			// Check has made sure there is exactly one question.
+			keys, err = p.PlanOtherKeys(chat.Questions[0], r.Other)
+		} else {
+			keys, err = p.PlanChoiceKeys(chat.Questions, r.Choices)
+		}
 		switch {
 		case errors.Is(err, provider.ErrChoiceUnsupported), errors.Is(err, provider.ErrNoPlanSession):
 			return &planchat.Refusal{

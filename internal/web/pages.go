@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -34,7 +34,12 @@ var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item"
 // (PlanView.Rendered) is template.HTML, because a plan drawn as headings,
 // lists and tables has to carry tags. renderPlan in markdown.go builds it
 // and escapes every piece of the plan's text itself before joining it to a
-// tag; its doc comment has the argument. Do not add a second exception.
+// tag; its doc comment has the argument. The planning chat's agent messages
+// go through the same renderer in its chat mode (renderChat, the "renderChat"
+// function below): the same code and the same escaping, used in a second
+// place, so it is this exception and not another. The owner's own messages
+// are not rendered at all; they are plain text the template escapes. Do not
+// add a second exception.
 func parsePages(asset func(name string) string) (map[string]*template.Template, error) {
 	funcs := template.FuncMap{
 		"when":  whenUTC,
@@ -45,6 +50,9 @@ func parsePages(asset func(name string) string) (map[string]*template.Template, 
 		// planApprovePath is the Approve the plan… link's address, the no-JS
 		// confirm page, which the dialog's script replaces when it runs.
 		"planApprovePath": planApprovePath,
+		// renderChat draws one agent message of the planning chat (see the
+		// exception above).
+		"renderChat": renderChat,
 	}
 	out := make(map[string]*template.Template, len(pageNames))
 	for _, name := range pageNames {
@@ -180,6 +188,9 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 		// project page.
 		c.Title = "Approve the plan"
 		c.Back, c.BackLabel = v.Back, "Back to the plan of "+v.Project
+	case ChatView:
+		c.Title = "Planning " + v.Project
+		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
 	case PlanResultView:
 		c.Title = v.Title
 		c.Back, c.BackLabel = v.Back, "Back to the plan of "+v.Project
@@ -240,6 +251,9 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		}
 		if sv, isSession := view.(SessionScreenView); isSession && r.Method == http.MethodGet {
 			ch.Toast = sessionToast(sv, r.URL.Query().Get("done"))
+		}
+		if _, isChat := view.(ChatView); isChat && r.Method == http.MethodGet {
+			ch.Toast = chatToast(r.URL.Query().Get("done"))
 		}
 		if _, isUsage := view.(UsageView); isUsage && r.Method == http.MethodGet {
 			ch.Toast = usageToast(r.URL.Query().Get("done"))
@@ -316,6 +330,9 @@ var toastTexts = map[string]string{
 	"restarted": "Restarted {session}.",
 	"labelled":  "Label saved.",
 	"started":   "Started {session}. It works on its own; open its terminal from afk dash or afk attach.",
+	// The code a reply from the planning chat leads to, shown only on the
+	// chat screen (see chatToast).
+	"sent": "Sent to the planning agent.",
 }
 
 // toastFor is the toast sentence for a ?done= code, or "" when the code is
@@ -325,11 +342,11 @@ var toastTexts = map[string]string{
 // is no task to name, so a placeholder is never shown.
 func toastFor(code, project, task string) string {
 	text, ok := toastTexts[code]
-	if !ok || refreshToastCodes[code] || sessionToastCodes[code] {
+	if !ok || refreshToastCodes[code] || sessionToastCodes[code] || chatToastCodes[code] {
 		// A refresh code belongs to the usage screen (usageToast); on a
 		// project or the inbox it would say a reading started when none did.
-		// A session code belongs to the Sessions screens for the same
-		// reason.
+		// A session code belongs to the Sessions screens, and a chat code to
+		// the chat screen, for the same reason.
 		return ""
 	}
 	if strings.Contains(text, "{task}") && task == "" {

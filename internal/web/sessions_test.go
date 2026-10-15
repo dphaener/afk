@@ -155,7 +155,11 @@ func TestSessionsPageFor(t *testing.T) {
 			if r.ShortID != tc.short || r.Total != tc.total || r.Done != tc.s.PlanDone {
 				t.Errorf("short %q done %d total %d, want %q %d %d", r.ShortID, r.Done, r.Total, tc.short, tc.s.PlanDone, tc.total)
 			}
-			if want := "/p/my%20app/sessions/" + tc.s.Name; r.Href != want {
+			want := "/p/my%20app/sessions/" + tc.s.Name
+			if tc.kind == "planning" {
+				want = "/p/my%20app/plan/chat"
+			}
+			if r.Href != want {
 				t.Errorf("href = %q, want %q", r.Href, want)
 			}
 			if r.VerdictChecks == nil {
@@ -405,12 +409,12 @@ func TestSessionHandlers(t *testing.T) {
 		// outside them, so a live swap never takes an open sheet away.
 		state := body[strings.Index(body, `id="session-badges"`):]
 		state = state[:strings.Index(state, `</section>`)]
-		for _, w := range []string{"<form", "<button", "data-confirm", "chat view"} {
+		for _, w := range []string{"<form", "<button", "data-confirm", "chat view", "plan/chat"} {
 			if strings.Contains(state, w) {
 				t.Errorf("the session's live regions hold %q", w)
 			}
 		}
-		if strings.Contains(body, "chat view") {
+		if strings.Contains(body, "chat view") || strings.Contains(body, "plan/chat") {
 			t.Errorf("an ordinary session's page mentions a chat view")
 		}
 	})
@@ -418,8 +422,8 @@ func TestSessionHandlers(t *testing.T) {
 		rg := newRig(t, Config{})
 		rg.sessions = sessionRigRows()
 		body := rg.pageDo("GET", "/p/app/sessions/master-plan", "").Body.String()
-		if !strings.Contains(body, "Its chat view on this page comes with a later update.") {
-			t.Errorf("the planning session's page does not say its chat comes later")
+		if !strings.Contains(body, `<a href="/p/app/plan/chat">Open the planning chat</a>`) || strings.Contains(body, "later update") {
+			t.Errorf("the planning session's page does not link the chat")
 		}
 	})
 	t.Run("a name with markup is escaped", func(t *testing.T) {

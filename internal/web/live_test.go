@@ -17,6 +17,8 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planchat"
+	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -31,6 +33,8 @@ type liveFixture struct {
 	usage    usagestate.File
 	// refreshGen stands in for the usage refresher's generation.
 	refreshGen uint64
+	// chat, when set, is what the fake PlanChat returns; nil leaves Deps.PlanChat nil.
+	chat *planchat.Chat
 }
 
 func newLiveFixture(t *testing.T) *liveFixture {
@@ -43,7 +47,19 @@ func newLiveFixture(t *testing.T) *liveFixture {
 }
 
 func (fx *liveFixture) deps() Deps {
+	var chat func(project, root string) planchat.Chat
+	if fx.chat != nil {
+		chat = func(project, root string) planchat.Chat {
+			if root != fx.app {
+				return planchat.Chat{Project: project, State: planchat.StateNone, Messages: []planchat.Message{}, Questions: []provider.Question{}}
+			}
+			c := *fx.chat
+			c.Project = project
+			return c
+		}
+	}
 	return Deps{
+		PlanChat: chat,
 		Projects: func() []Project { return fx.projects },
 		Sessions: func(root string) []SessionView {
 			if root != fx.app {
@@ -103,6 +119,11 @@ const damagedLedger = "{this is not a ledger"
 //   - the damaged-ledger rows: a read error is part of the fingerprint, so
 //     damage then repair is a change, and the same damage twice is not (a
 //     project stuck with a bad file must not send every two seconds).
+//   - the "planning chat" rows: "a new agent message" and "working to waiting
+//     for a choice" are load-bearing, since no file in the planning list
+//     changes when the agent speaks, so without the fold an open chat screen
+//     never updates; "the same chat read twice" keeps it from swapping every
+//     tick; "no PlanChat" keeps a page built without the reader unchanged.
 //   - "sorted": the order is what lets a page and a test rely on it.
 func TestChangedParts(t *testing.T) {
 	cases := []struct {
@@ -205,6 +226,32 @@ func TestChangedParts(t *testing.T) {
 			want:  []change{{"app", partPlanning}},
 		},
 		{
+			name:  "planning chat: a new agent message",
+			setup: func(fx *liveFixture) { fx.chat = chatWith(planchat.StateWorking, "first") },
+			edit:  func(fx *liveFixture) { fx.chat = chatWith(planchat.StateWorking, "first", "second") },
+			want:  []change{{"app", partPlanning}},
+		},
+		{
+			name:    "planning chat: the same chat read twice",
+			setup:   func(fx *liveFixture) { fx.chat = chatWith(planchat.StateWorking, "first") },
+			edit:    func(fx *liveFixture) { fx.chat = chatWith(planchat.StateWorking, "first") },
+			wantNil: true,
+		},
+		{
+			name:  "planning chat: working to waiting for a choice",
+			setup: func(fx *liveFixture) { fx.chat = chatWith(planchat.StateWorking, "first") },
+			edit: func(fx *liveFixture) {
+				fx.chat = chatWith(planchat.StateWaitingForChoice, "first")
+				fx.chat.Questions = []provider.Question{{Header: "DB", Question: "Which?", Options: []provider.Option{{Label: "A"}}}}
+			},
+			want: []change{{"app", partPlanning}},
+		},
+		{
+			name:    "planning chat: no PlanChat behaves as before",
+			edit:    func(fx *liveFixture) { fx.chat = nil },
+			wantNil: true,
+		},
+		{
 			name: "usage: a new reading, machine-wide",
 			edit: func(fx *liveFixture) {
 				fx.usage.Windows = []usagestate.Window{{Kind: "session", UsedPct: 55}}
@@ -277,6 +324,15 @@ func TestChangedParts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// chatWith is a chat in the given state with one agent message per text.
+func chatWith(state planchat.State, texts ...string) *planchat.Chat {
+	c := &planchat.Chat{State: state, Messages: []planchat.Message{}, Questions: []provider.Question{}}
+	for _, x := range texts {
+		c.Messages = append(c.Messages, planchat.Message{Who: provider.WhoAgent, Text: x})
+	}
+	return c
 }
 
 // liveRig is a handler over the fixture's projects with a ticker the test

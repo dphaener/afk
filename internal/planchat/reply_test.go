@@ -49,6 +49,16 @@ func TestCheck(t *testing.T) {
 		{"duplicate", choice, Reply{Choices: [][]string{{"A"}, {"X", "X"}}}, ReasonBadReply},
 		{"not offered single", choice, Reply{Choices: [][]string{{"Z"}, {"X"}}}, ReasonNotOffered},
 		{"not offered multi", choice, Reply{Choices: [][]string{{"A"}, {"X", "Z"}}}, ReasonNotOffered},
+		{"other ok", Chat{State: StateWaitingForChoice, Questions: qs()[:1]}, Reply{Other: "my own"}, ""},
+		{"other to text", text, Reply{Other: "my own"}, ReasonWrongKind},
+		{"other several questions", choice, Reply{Other: "my own"}, ReasonUnsupported},
+		{"other multi-select", Chat{State: StateWaitingForChoice, Questions: qs()[1:]}, Reply{Other: "my own"}, ReasonUnsupported},
+		{"other no questions", Chat{State: StateWaitingForChoice}, Reply{Other: "my own"}, ReasonUnsupported},
+		{"other control char", Chat{State: StateWaitingForChoice, Questions: qs()[:1]}, Reply{Other: "a\x1bb"}, ReasonBadReply},
+		{"other blank", Chat{State: StateWaitingForChoice, Questions: qs()[:1]}, Reply{Other: " \n"}, ReasonBadReply},
+		{"other with text", text, Reply{Text: "hi", Other: "x"}, ReasonBadReply},
+		{"other with choices", choice, Reply{Choices: [][]string{{"A"}, {"X"}}, Other: "x"}, ReasonBadReply},
+		{"other not waiting", Chat{State: StateWorking}, Reply{Other: "x"}, ReasonNotWaiting},
 		{"recommended suffix dropped", choice, Reply{Choices: [][]string{{"B"}, {"X"}}}, ReasonNotOffered},
 	}
 	for _, c := range cases {

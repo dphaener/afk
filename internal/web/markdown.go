@@ -41,7 +41,27 @@ import (
 // which is always readable. It is our own because the module has no markdown
 // library and a plan needs so little of one.
 func renderPlan(text string) template.HTML {
-	r := &planRenderer{ids: map[string]int{}}
+	return renderMarkdown(text, false)
+}
+
+// renderChat is renderPlan for one agent message of the planning chat. It is
+// the same renderer, with the same escaping rule, so it is not a second
+// exception to the "nothing is marked safe" rule in pages.go but the same one
+// used in a second place. Two things differ, both for headings:
+//
+//   - no id: the chat shows many messages on one page and the agent repeats
+//     its headings ("## Questions" in every round), so ids would clash, and
+//     nothing links into a message;
+//   - two levels down (h1 becomes h3, capped at h6): the page's own h1 and
+//     the screen's h2s sit above the thread, and a message's "# Title" must
+//     not outrank them for a screen reader's heading list.
+func renderChat(text string) template.HTML {
+	return renderMarkdown(text, true)
+}
+
+// renderMarkdown is the one entry to the renderer for both modes.
+func renderMarkdown(text string, chat bool) template.HTML {
+	r := &planRenderer{ids: map[string]int{}, chat: chat}
 	lines := strings.Split(text, "\n")
 	for i, l := range lines {
 		lines[i] = strings.TrimRight(l, "\r")
@@ -50,11 +70,16 @@ func renderPlan(text string) template.HTML {
 	return template.HTML(r.b.String())
 }
 
+// chatHeadingShift is how many levels a chat message's headings go down.
+const chatHeadingShift = 2
+
 // planRenderer holds the output and the heading ids already given out, so a
-// second heading with the same words gets its own id.
+// second heading with the same words gets its own id. chat is renderChat's
+// mode: headings without ids, shifted down (see renderChat).
 type planRenderer struct {
-	b   strings.Builder
-	ids map[string]int
+	b    strings.Builder
+	ids  map[string]int
+	chat bool
 }
 
 // maxQuoteDepth is how many block quotes inside each other are drawn as
@@ -165,8 +190,15 @@ func (r *planRenderer) fence(lines []string, i int) int {
 
 func (r *planRenderer) heading(line string) {
 	m := mdHeadingRE.FindStringSubmatch(line)
-	level := strconv.Itoa(len(m[1]))
 	text := strings.TrimSpace(m[2])
+	if r.chat {
+		level := strconv.Itoa(min(len(m[1])+chatHeadingShift, 6))
+		r.b.WriteString("<h" + level + ">")
+		r.b.WriteString(inline(text))
+		r.b.WriteString("</h" + level + ">\n")
+		return
+	}
+	level := strconv.Itoa(len(m[1]))
 	r.b.WriteString("<h" + level + ` id="` + r.headingID(text) + `">`)
 	r.b.WriteString(inline(text))
 	r.b.WriteString("</h" + level + ">\n")

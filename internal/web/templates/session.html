@@ -37,7 +37,7 @@
 </section>
 {{end}}
 <div class="notice notice--info">
-  <div class="notice__body">This page shows the session but cannot open its terminal. Open it from <code>afk dash</code> or with <code>afk attach {{.Name}}</code>.{{if .Planning}} Its chat view on this page comes with a later update.{{end}}</div>
+  <div class="notice__body">This page shows the session but cannot open its terminal. Open it from <code>afk dash</code> or with <code>afk attach {{.Name}}</code>.{{if .Planning}} <a href="/p/{{pe .Project}}/plan/chat">Open the planning chat</a>.{{end}}</div>
 </div>
 </div>
 {{range .Page.Actions.Sheets}}{{template "session-sheet" .}}{{end}}

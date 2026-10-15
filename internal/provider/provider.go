@@ -69,6 +69,12 @@ type Provider interface {
 	// offered or a count mismatch is a plain error, and a provider that
 	// cannot run a planning session returns ErrNoPlanSession. See choice.go.
 	PlanChoiceKeys(qs []Question, choices [][]string) ([][]byte, error)
+	// PlanOtherKeys returns the keystrokes that answer the open question
+	// with the owner's own text instead of one of its options, each element
+	// one write. Like PlanChoiceKeys it returns only keys the provider has
+	// observed: ErrChoiceUnsupported when it cannot do this reliably, and
+	// ErrNoPlanSession when it cannot run a planning session. See choice.go.
+	PlanOtherKeys(q Question, text string) ([][]byte, error)
 	// ResumeArgv is the child argv that resumes an existing agent session
 	// by its id, used when the host restarts a wedged child.
 	ResumeArgv(sessionID string) []string

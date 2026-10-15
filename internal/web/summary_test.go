@@ -548,6 +548,7 @@ func TestProjectPageForParts(t *testing.T) {
 		{Label: "Tasks", Href: "/p/app/tasks", Hint: "2 of 5"},
 		{Label: "Sessions", Href: "/p/app/sessions", Count: 3, CountSet: true},
 		{Label: "Plan", Href: "/p/app/plan", Hint: "2 of 5"},
+		{Label: "Planning chat", Href: "/p/app/plan/chat"},
 		{Label: "Usage", Href: "/usage"},
 	}
 	if !reflect.DeepEqual(got.Nav, wantNav) {

@@ -97,7 +97,7 @@ func offersFor(s SessionView) sessionOffer {
 	case s.Problem != "":
 		o.RestartWhy = "This is a problem with a worktree, not a session, so there is nothing to restart. Clean can tidy it up."
 	case s.Planning:
-		o.RestartWhy = "The planning session is restarted from afk dash, not from this page."
+		o.RestartWhy = "The planning session is restarted from afk dash, not from this page. You can talk to it in the planning chat."
 	case s.Scratch:
 		o.RestartWhy = "A one-off session is restarted from afk dash, not from this page."
 	case s.Stranded:

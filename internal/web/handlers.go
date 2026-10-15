@@ -141,9 +141,9 @@ func (v PlanView) ShowErrorNotice() bool {
 }
 
 // ErrorNotice is the sentence that stands in for the approve action when the
-// checker found errors. It does not point at a chat: that does not exist yet.
+// checker found errors. It points at the planning chat, where the owner can ask the agent to fix them.
 func (v PlanView) ErrorNotice() string {
-	return fmt.Sprintf("Fix %s before approving. Ask the planning agent to fix them, or edit the plan and check it with afk plan lint.",
+	return fmt.Sprintf("Fix %s before approving. Ask the planning agent in the chat, or edit the plan.",
 		counted(v.Summary.Errors, "error", "errors"))
 }
 

@@ -42,6 +42,11 @@ func (f *fakeProvider) PlanConversation(provider.ConversationQuery) ([]provider.
 func (f *fakeProvider) PlanChoiceKeys([]provider.Question, [][]string) ([][]byte, error) {
 	return nil, provider.ErrNoPlanSession
 }
+
+// PlanOtherKeys is here only to satisfy provider.Provider.
+func (f *fakeProvider) PlanOtherKeys(provider.Question, string) ([][]byte, error) {
+	return nil, provider.ErrNoPlanSession
+}
 func (f *fakeProvider) Preflight(string, func(string, string, ...string) (string, error)) (bool, string) {
 	return true, ""
 }

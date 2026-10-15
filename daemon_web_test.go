@@ -1042,7 +1042,7 @@ func TestDaemonWebPlanChat(t *testing.T) {
 	}
 }
 
-// fakeChoiceProvider answers PlanChoiceKeys with canned values; the embedded
+// fakeChoiceProvider answers PlanChoiceKeys and PlanOtherKeys with canned values; the embedded
 // interface is nil, so any other method called by mistake panics.
 type fakeChoiceProvider struct {
 	provider.Provider
@@ -1051,6 +1051,10 @@ type fakeChoiceProvider struct {
 }
 
 func (f fakeChoiceProvider) PlanChoiceKeys([]provider.Question, [][]string) ([][]byte, error) {
+	return f.keys, f.err
+}
+
+func (f fakeChoiceProvider) PlanOtherKeys(provider.Question, string) ([][]byte, error) {
 	return f.keys, f.err
 }
 
@@ -1090,6 +1094,15 @@ func TestSendPlanReply(t *testing.T) {
 			prov: fakeChoiceProvider{err: provider.ErrChoiceUnsupported}, wantReason: planchat.ReasonUnsupported},
 		{name: "no plan session becomes refusal", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"A"}}},
 			prov: fakeChoiceProvider{err: provider.ErrNoPlanSession}, wantReason: planchat.ReasonUnsupported},
+		{name: "other sends provider keys", chat: choiceChat, reply: planchat.Reply{Other: "mine"},
+			prov: fakeChoiceProvider{keys: [][]byte{[]byte("t"), []byte("mine"), []byte("\r")}}, wantSent: [][]byte{[]byte("t"), []byte("mine"), []byte("\r")}},
+		{name: "other unsupported becomes refusal", chat: choiceChat, reply: planchat.Reply{Other: "mine"},
+			prov: fakeChoiceProvider{err: provider.ErrChoiceUnsupported}, wantReason: planchat.ReasonUnsupported},
+		{name: "other no plan session becomes refusal", chat: choiceChat, reply: planchat.Reply{Other: "mine"},
+			prov: fakeChoiceProvider{err: provider.ErrNoPlanSession}, wantReason: planchat.ReasonUnsupported},
+		{name: "other to text refuses", chat: textChat, reply: planchat.Reply{Other: "mine"}, wantReason: planchat.ReasonWrongKind},
+		{name: "other key build failure is plain error", chat: choiceChat, reply: planchat.Reply{Other: "mine"},
+			prov: fakeChoiceProvider{err: boom}, wantErr: true},
 		{name: "provider lookup failure is plain error", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"A"}}},
 			provErr: boom, wantErr: true},
 		{name: "key build failure is plain error", chat: choiceChat, reply: planchat.Reply{Choices: [][]string{{"A"}}},

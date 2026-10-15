@@ -532,14 +532,17 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	// The live-change stream is not in routes: it has no JSON form, so it
 	// must not get an /api twin. guard still wraps it like everything else.
 	mux.HandleFunc("GET /events", s.events)
-	// The planning chat is JSON only for now: the page that shows it comes
-	// with T8.12, which will register its twin. Until then /p/{project}/plan/chat
-	// must stay not found, so it is not in routes (that table gives every
-	// entry both forms).
+	// The planning chat and its reply are not in routes, because the page's
+	// POST is not the API's: the API takes JSON and answers JSON, the page
+	// takes its forms' fields and answers with a redirect or the screen
+	// again. One handler cannot serve both the way routes' entries do. The
+	// GET is one handler for both (planChat), registered here beside the
+	// POSTs so the four chat addresses are read together; auth_test.go
+	// checks each needs the token, since routes' own walk does not see them.
 	mux.HandleFunc("GET /api/p/{project}/plan/chat", s.planChat)
-	// The reply goes in the same place and for the same reason: only under
-	// /api, so /p/{project}/plan/chat stays not found until T8.12.
 	mux.HandleFunc("POST /api/p/{project}/plan/chat", s.planReply)
+	mux.HandleFunc("GET /p/{project}/plan/chat", s.planChat)
+	mux.HandleFunc("POST /p/{project}/plan/chat", s.planChatReply)
 	// The confirm page behind Pause and Resume is HTML only, so it stays out
 	// of routes for the same reason.
 	mux.HandleFunc("GET /p/{project}/confirm/{action}", s.confirm)
