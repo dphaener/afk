@@ -236,8 +236,11 @@ func TestPlanChatPage(t *testing.T) {
 		notWant []string
 	}{
 		{name: "none", chat: planchat.Chat{State: planchat.StateNone},
-			want:    []string{`<div class="empty">`, "No planning session", "Start one with afk dash; this page will be able to start one later."},
-			notWant: []string{"<form", "data-working", `class="working"`, "The planning session&rsquo;s overview"}},
+			want: []string{`<div class="empty">`, "No planning session", "Start one to change the plan:",
+				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=extend">Extend</a>`,
+				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=amend">Amend</a>`,
+				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=reconcile">Reconcile</a>`},
+			notWant: []string{"later", "afk dash", "<form", "data-working", `class="working"`, "The planning session&rsquo;s overview"}},
 		{name: "working", chat: chatFixture(planchat.StateWorking),
 			want: []string{`data-project="app" data-working="true">`, `<p class="working"><span class="working__dots" aria-hidden="true">`, "The agent is working</p>",
 				composerOff, `<p class="field__hint" id="chat-composer-hint">The agent is working. You can reply when it asks.</p>`,
@@ -482,5 +485,23 @@ func TestChatPageFor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.check(t, chatPageFor(tc.in))
 		})
+	}
+}
+
+// TestPlanChatEmptyStateWithoutAPlan is load-bearing: with no plan the three
+// buttons would lead to a page that can only say there is nothing to change,
+// so the empty state says that itself and offers none.
+func TestPlanChatEmptyStateWithoutAPlan(t *testing.T) {
+	rg := newRig(t, Config{})
+	delete(rg.plans, rg.root)
+	rg.chat = planchat.Chat{State: planchat.StateNone}
+	body := rg.pageDo(http.MethodGet, "/p/app/plan/chat", "").Body.String()
+	if !strings.Contains(body, "There is no plan to change yet.") {
+		t.Errorf("missing the no-plan sentence")
+	}
+	for _, w := range []string{"plan/change?mode=", "Start one to change the plan:", "later"} {
+		if strings.Contains(body, w) {
+			t.Errorf("must not contain %q", w)
+		}
 	}
 }

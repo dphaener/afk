@@ -3213,3 +3213,32 @@ T8.12 shows a project's open planning session as a chat on the web page, `GET /p
 - The no-session text says "this page will be able to start one later"; T8.14 and T8.15 should replace that clause with their buttons.
 - The comment on `maxChoiceOptions` in `internal/provider/choice.go` still says a digit past the options does nothing, which is no longer true on claude 2.1.300.
 - The JSON reply body says `"sent": "text"` for an own answer; it could say `"other"`.
+
+## T8.14
+
+T8.14 lets the web page start a planning session that changes the project's plan (extend, amend, reconcile) and opens its chat. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One address for the three actions (A1).** `POST /p/<project>/plan/change` takes the mode (`extend`, `amend` or `reconcile`), the text and the confirm, and has an `/api` twin, so the shared route table has 21 routes. A page-only `GET /p/<project>/plan/change` draws the form and the confirm.
+- **The confirm is a page, not a pop-up (A2).** Each row and each chat button opens the change page. Amend asks for its sentence and reconcile for a path inside the project there, then the page shows what will start and the text, with **Start planning** and **Cancel**. It works with JavaScript off, and nothing typed sits in a part of the page that updates by itself.
+- **Answers (A3).** A start goes straight to the chat view with a short notice. A refusal is shown on the change page in the command's own words; when a planning session is already open, it links to that session's chat. The JSON address answers the same with status 200 or 400.
+- **What the project page shows (A4).** The three actions when the project has a plan and no planning session is open; a line naming the open session and a link to its chat when one is; one sentence and no actions when there is no plan.
+- **No resume button (A5).** The page never asks only to reopen a session. If the start function reports a resumed session, the page treats it like a start.
+- **Which projects (A6).** Only projects afk builds. A plan on the review list is a new plan still being planned, so it has nothing to change yet.
+- **Tests and prerequisites (A7, A8).** Table tests are written with the code. Nothing had to be in place first: T8.12 and T7.3 are merged.
+
+### Decided while building (T8.14)
+
+- **Chat toasts have their own table.** "started" and "resumed" already meant other things on the project page (a session started, a project resumed), so the chat reads its own sentences from `chatToastTexts`. The project page's `toastFor` is unchanged, so "resumed" there still means a resumed project.
+- **The change page's view is `ChangePageView`.** The plan named it `PlanChangeView`, but that name is the API's answer (`PlanChangeView` in `plan_change.go`), so the page's view takes the other name. A first visit to the change page is not told that the field was left blank; only a submitted blank is.
+- **Refusals on the page.** Every page-side refusal of the change POST, including a missing confirm, redraws the change page at 400 with the sentence above the form. The notice is left out when the page already says the same sentence (an unknown mode, or an open session). A text longer than 5000 characters is refused before the seam is asked, as the new-session description is. The mode and the text are trimmed first, and extend always sends an empty text, so text that came with extend is never passed on.
+- **The API's refusal reasons.** A refusal the page makes itself (a bad mode, a blank sentence or path, a long text, a body that cannot be read, a missing confirm) answers `reason: bad_request`. A refusal from the seam answers `session_open` when a planning session is open and `refused` otherwise.
+- **Unknown seam outcomes are refused.** Any outcome that is neither started nor resumed is refused with a plain sentence, and no wait for the planning host runs for it.
+- **The host wait uses the root it was given.** `webStartPlanWith` waits on the project root the page passed in, not on the root the entry point returns, because the entry point may leave the root empty on a refusal. The wait sentence is shared with the dashboard as `planHostNotReadyReason`; the dashboard's words are unchanged.
+- **A nil plan reader counts as a plan.** When the page has no way to read the plan, it treats the project as having one, so the seam gets the last word on whether a change may start.
+- **Chat empty state and project page share the rows.** The chat's buttons come from the same function as the project page's Change the plan section (`changeSectionFor`), so both surfaces say the same words. The section has its own `data-live="planning"` region, so a live swap replaces it whole.
+- **Test-only edits outside the Files list.** `pages_test.go` got one allow-list line for the new POST route and one row for the no-JS change page, because the route-table guard and the page-name guard both fail without them. No other behaviour is changed there.
+- **No `CONTEXT.md` line.** "Change the plan" is the name of a page section, and extend, amend and reconcile already have their meaning in the README, so no new term was needed.
+
+Verification for the owner (T8.14): on a project with a plan, open `/p/<project>/plan/change?mode=reconcile&text=../../etc/passwd`, press **Start planning**, and check that the page refuses it in the command's own words and starts nothing. The review's hands-on check did not run this case against a live daemon.
+
+Scope ideas (T8.14): the amend sentence travels in the change page's address (`?text=`) until **Start planning** is pressed, so it stays in the browser's history. A form step that posts instead would keep it out.

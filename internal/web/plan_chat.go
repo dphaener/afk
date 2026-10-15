@@ -73,6 +73,11 @@ type chatPage struct {
 	// their boxes so a refusal never costs them their words.
 	Error       string
 	Text, Other string
+	// HasPlan is whether the empty state offers the three buttons; Start
+	// holds them, the same rows the project page's Change the plan section
+	// draws.
+	HasPlan bool
+	Start   []changeRow
 }
 
 // chatStep is one phase in the steps column.
@@ -111,6 +116,9 @@ type chatPageInput struct {
 	Folder, Repository string
 	// Error, Text and Other come from a refused form post (see chatPage).
 	Error, Text, Other string
+	// HasPlan is whether the project has a plan to change; the empty state
+	// offers the three ways to start a session only then.
+	HasPlan bool
 }
 
 // planningSessionName is the planning session's name, whose overview the
@@ -151,6 +159,8 @@ func chatPageFor(in chatPageInput) chatPage {
 		Error:      in.Error,
 		Text:       in.Text,
 		Other:      in.Other,
+		HasPlan:    in.HasPlan,
+		Start:      changeSectionFor(in.Project, in.HasPlan, false, plansession.State{}).Rows,
 	}
 	if pg.Repository == "" {
 		pg.Repository = noRepository
@@ -286,16 +296,26 @@ func chatPath(project string) string {
 	return planBase(project) + "/chat"
 }
 
-// chatToastCodes are the toast codes that belong to the chat screen. toastFor
-// leaves them out so another screen's address cannot show them.
+// chatToastCodes are the toast codes that belong to the chat screen alone.
+// toastFor leaves them out so another screen's address cannot show them.
+// "started" and "resumed" are not here: other screens use those words for
+// their own toasts (a session started, a project resumed), which toastFor
+// and sessionToast already keep apart, so the chat reads its own sentences
+// from chatToastTexts instead of from the shared table.
 var chatToastCodes = map[string]bool{"sent": true}
 
-// chatToast is the toast on the chat screen after a reply was sent.
+// chatToastTexts are the chat screen's toasts by code: after a reply, and
+// after the change POST started or resumed a planning session (T8.14).
+var chatToastTexts = map[string]string{
+	"sent":    "Sent to the planning agent.",
+	"started": "The planning session started. Its first message appears here when the agent has read the plan.",
+	"resumed": "The planning session was already open; here it is.",
+}
+
+// chatToast is the toast on the chat screen after a reply was sent or a
+// planning session was started.
 func chatToast(code string) string {
-	if !chatToastCodes[code] {
-		return ""
-	}
-	return toastTexts[code]
+	return chatToastTexts[code]
 }
 
 // readChat asks Deps.PlanChat for the project's planning session, or says in
@@ -330,6 +350,7 @@ func (s *server) readChat(p Project) planchat.Chat {
 // block. Repository runs git behind its seam, bounded there.
 func (s *server) chatPageView(p Project, chat planchat.Chat, in chatPageInput) chatPage {
 	in.Project, in.Chat, in.Folder = p.Name, chat, p.Root
+	in.HasPlan = s.changeState(p).HasPlan
 	if s.d.PlanStatus != nil {
 		in.Status = s.planStatusFor(p.Root)
 	} else {

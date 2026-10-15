@@ -96,7 +96,19 @@ func TestPages(t *testing.T) {
 			`<a class="row" href="/p/app/sessions/t1-2">`,
 			`<a class="nav-item" href="/usage"><span>Usage</span></a>`,
 			`<dt>Folder</dt><dd class="path">`, "<dt>Repository</dt><dd>None set</dd>",
-		}, notWant: []string{"Which database?", ">Chat<", "Change the plan", "Extend", "Reconcile"}},
+		}, notWant: []string{"Which database?", ">Chat<", "A planning session is open", "There is no plan to change yet."}},
+		{name: "project offers the three plan changes", path: "/p/app", want: []string{
+			`<h2 class="section-head__title" id="change-title">Change the plan</h2>`, `id="project-change" data-live="planning" data-project="app"`,
+			`<a class="row" href="/p/app/plan/change?mode=extend">`, `<span class="row__title">Extend</span>`, "Add new work to the plan.",
+			`<a class="row" href="/p/app/plan/change?mode=amend">`, `<span class="row__title">Amend</span>`, "Change one thing in the plan, in your words.",
+			`<a class="row" href="/p/app/plan/change?mode=reconcile">`, `<span class="row__title">Reconcile</span>`, "Bring the plan in line with a document, such as a design system.",
+		}, notWant: []string{"Open its chat", "<textarea"}},
+		{name: "project with a session open says so instead", setup: func(rg *rig) {
+			must(rg.t, plansession.WriteState(rg.root, plansession.State{Mode: "amend", Phase: "draft", UpdatedAt: "2026-10-12T11:00:00Z"}))
+		}, path: "/p/app", want: []string{"A planning session is open (amend, draft).", `<a class="btn btn--secondary" href="/p/app/plan/chat">Open its chat</a>`},
+			notWant: []string{"plan/change?mode=", "Add new work to the plan."}},
+		{name: "project with no plan has no change rows", setup: func(rg *rig) { delete(rg.plans, rg.root) }, path: "/p/app", want: []string{"Change the plan", "There is no plan to change yet."},
+			notWant: []string{"plan/change?mode=", "Open its chat"}},
 		{name: "project with nothing open has a quiet inbox count", path: "/p/app", want: []string{`<span>Inbox</span><span class="count count--quiet">0</span>`, "<h2>Building T1.2</h2>"}, notWant: []string{"Answer in the inbox"}},
 		{name: "project paused shows Resume", setup: func(rg *rig) {
 			_ = daemonstate.Pause(rg.root, testNow)
@@ -869,11 +881,12 @@ func TestPlanPageApproveArea(t *testing.T) {
 		})
 	}
 
-	// The one route about a plan that takes anything but GET is the approve
-	// POST, which needs the confirm (TestPlanApproveNeedsTheConfirm).
+	// The routes about a plan that take anything but GET are the approve POST
+	// and the change POST (T8.14), which both need the confirm
+	// (TestPlanApproveNeedsTheConfirm, TestPlanChangeNeedsTheConfirm).
 	for _, rt := range routes {
 		if strings.Contains(rt.path, "plan") && rt.method != http.MethodGet &&
-			(rt.method != http.MethodPost || rt.path != "/p/{project}/plan/approve") {
+			(rt.method != http.MethodPost || (rt.path != "/p/{project}/plan/approve" && rt.path != "/p/{project}/plan/change")) {
 			t.Errorf("the route %s %s can change something about a plan", rt.method, rt.path)
 		}
 	}
@@ -970,6 +983,7 @@ func TestPageLayout(t *testing.T) {
 		{name: "plan approve, no-JS", page: "plan_confirm", path: "/p/app/plan/approve", status: 400, bars: true, back: `href="/p/app/plan" aria-label="Back to the plan of app"`, navTitle: "Approve the plan"},
 		{name: "plan approve result", page: "plan_result", path: "/p/app/plan/approve", form: "confirm=yes", status: 200, bars: true, back: `href="/p/app/plan" aria-label="Back to the plan of app"`, navTitle: "Plan approved"},
 		{name: "planning chat", page: "plan_chat", path: "/p/app/plan/chat", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Planning app"},
+		{name: "plan change, no-JS", page: "plan_change", path: "/p/app/plan/change?mode=extend", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Change the plan"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", path: "/p/app", noToken: true, status: 401},
 	}

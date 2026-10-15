@@ -45,10 +45,17 @@ func waitPlanHostReady(out ui.PlanStartResult, wait func(root string) error) ui.
 		return ui.PlanStartResult{
 			Outcome: ui.PlanRefused,
 			Root:    out.Root,
-			Reason:  "The planning session started but did not write its host record (" + err.Error() + "). Try again; if it keeps happening, look at .afk/master-plan/host.log.",
+			Reason:  planHostNotReadyReason(err),
 		}
 	}
 	return out
+}
+
+// planHostNotReadyReason is the sentence for a planning host that never wrote
+// host.json. The dashboard and the web page both use it, so the two surfaces
+// say the same words.
+func planHostNotReadyReason(err error) string {
+	return "The planning session started but did not write its host record (" + err.Error() + "). Try again; if it keeps happening, look at .afk/master-plan/host.log."
 }
 
 // dashStartPlanWith is dashStartPlan with the entry point and its dependencies
