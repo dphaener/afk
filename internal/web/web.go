@@ -299,12 +299,31 @@ type Deps struct {
 	// CheckPlanFolder says what a folder path typed into Plan a new project
 	// means (see plan_new.go): its full path, with ~ expanded, and whether it
 	// is a git repository, a plain folder, a folder with a planning session
-	// open, a folder that already has a plan, or refused. It must only read:
-	// T8.15 must not create a folder (making one is T8.15a's), and the GET
-	// that draws the confirm card calls it. It is advisory, since the folder
+	// open, a folder that already has a plan, a bare name whose folder afk
+	// would create under the project location, or refused. It must only
+	// read: the GET that draws the confirm card calls it, and making the
+	// folder is CreatePlanFolder's, after the confirm. It is advisory, since the folder
 	// can change before Start planning is pressed; StartPlan re-checks. Nil
 	// means the page offers no Plan a new project.
 	CheckPlanFolder func(text string) PlanFolderCheck
+	// CreatePlanFolder makes the folder a bare project name means, after the
+	// owner confirmed it (T8.15a): it decides again from the text the owner
+	// typed and, only when that text is a bare name whose folder does not
+	// exist under the profile's project location, makes the folder and its
+	// git repository. It takes the typed text and never a full path, so a
+	// crafted POST can only ever make a folder directly under the project
+	// location: the decision of where is the root's, made from the profile,
+	// never the request's. It returns the path made (or the path left on
+	// disk when it failed part-way) and an error whose message is a plain
+	// sentence saying what was left; it removes nothing. Nil means the page
+	// cannot make folders, and a name is refused at the POST.
+	CreatePlanFolder func(text string) (path string, err error)
+	// PlanLocation is the profile's project location as a full path, or ""
+	// when none is set or it is unusable. The page only shows it, in the
+	// Where field's hint, so the owner knows where a name would land; it is
+	// a seam because the profile is the root's to read, and this package
+	// never imports it. Nil means "".
+	PlanLocation func() string
 	// AddBeingPlanned notes, after a new-mode start, that the project at root
 	// is being planned, so the overview shows it and its chat resolves (see
 	// BeingPlanned), and returns the name its chat is under. It is a seam

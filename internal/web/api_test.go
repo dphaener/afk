@@ -145,6 +145,16 @@ type rig struct {
 	// at rg.fresh, until a test says otherwise).
 	checkCalls  []string
 	checkResult PlanFolderCheck
+	// createCalls counts the calls of the fake CreatePlanFolder and
+	// createText is the text the last one was given; createPath and
+	// createErr are what it answers (no path and no error until a test says
+	// otherwise; the fake makes nothing on disk).
+	createCalls int
+	createText  string
+	createPath  string
+	createErr   error
+	// location is what the fake PlanLocation answers ("" means none set).
+	location string
 	// addedCalls records every call of the fake AddBeingPlanned (the root);
 	// addedName and addedErr are what it answers.
 	addedCalls []string
@@ -424,6 +434,12 @@ func newRig(t *testing.T, cfg Config) *rig {
 			rg.checkCalls = append(rg.checkCalls, text)
 			return rg.checkResult
 		},
+		CreatePlanFolder: func(text string) (string, error) {
+			rg.createCalls++
+			rg.createText = text
+			return rg.createPath, rg.createErr
+		},
+		PlanLocation: func() string { return rg.location },
 		AddBeingPlanned: func(root string) (string, error) {
 			rg.addedCalls = append(rg.addedCalls, root)
 			return rg.addedName, rg.addedErr

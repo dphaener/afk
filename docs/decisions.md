@@ -3293,3 +3293,25 @@ Decided while building (T8.15):
 Verification for the owner (T8.15): on a phone, open the overview, press **Plan a new project**, type the path of an empty repository and press **Start planning**; check that the chat opens and the overview shows the project as "Being planned". The review ran this with curl against a scratch build, not in a browser.
 
 Scope ideas (T8.15): **Start planning** has no loading state yet, because `confirm.js` only animates buttons inside its confirm dialog; letting it also handle a page form with `data-loading` would add one. The refusals for a folder that is not found or is a file mention `--project`, which a page user has no use for; T8.15a replaces the not-found case and could reword the file case.
+
+## T8.15a
+
+Decisions the master plan left open, made while planning T8.15a (Create the folder for a new plan), numbered as in the work plan's assumptions:
+
+- **Seams (A1).** The page's folder check keeps its shape and gains a `create` kind. Two new seams, `Deps.CreatePlanFolder` and `Deps.PlanLocation`, are wired in the root package to `internal/planfolder` and the owner profile, so the web package never reads the profile or touches the disk itself, as with the dashboard.
+- **What the confirm sends (A2).** For a new folder the confirm sends the name the owner typed, not the full path, and the create step decides again from that name. A request can therefore only ever make a folder directly under the project location, never one at a path it names.
+- **A name that already exists (A3).** The page shows that folder's own card ("Existing folder", and so on) with a note saying a folder of that name is already there, and plans in it on the confirm.
+- **The JSON answer (A4).** A successful start says `created: true` or `false`. A create that fails answers 400 with reason `create_failed` and the path left on disk, and no planning session is started.
+- **The hint (A5)** names the profile's project location; with none set it says how to set one with `afk profile set`, or to type a full path.
+- **Wording (A6).** The page has its own sentences for a typed path that is not found or is a file, without the command's `--project`.
+- **No loading animation (A7)**, as in T8.15; only the button's loading label changes.
+- **Tests (A8)** are table tests written with the code. **Nothing had to be in place first (A9).**
+
+Decided while building (T8.15a):
+
+- **The name check wraps the path check.** `webCheckPlanFolderWith` stays the T8.15 path-only check; a new `webCheckPlanFolderNamesWith` handles bare names and hands a name whose folder exists to the path check on its full path, with `Name` set so the card can say a folder of that name is already there.
+- **The page's own words for a missing path or a file** are chosen only on a refusal for a full path, from a look at that path, because those are the only two refusals about a folder that is not a folder.
+- **A create whose `mkdir` failed reports no path**, so the page never names a folder that is not on disk; after a failed `git init` it names the folder left there and says nothing was removed.
+- **Tests that really create folders make them only under the temp location**, so a broken guard in a mutation run cannot make folders next to the test.
+
+Verification for the owner (T8.15a): on a phone, open **Plan a new project**, check that the hint names your project location, type a new name such as `demo`, check the card says "afk will create and plan in" with "New, empty folder", and press **Start planning**; the folder appears with a `.git` in it and the chat opens. Also worth one manual try: with a `git` that fails first on the daemon's PATH, a new name should leave the folder on disk, say so, and start nothing. The review checked this only in unit tests.

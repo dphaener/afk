@@ -5,16 +5,17 @@
 {{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
 {{if eq .Kind "confirm"}}
 <section class="card" aria-labelledby="plan-new-card-title">
-  <h2 id="plan-new-card-title">afk will plan in</h2>
+  <h2 id="plan-new-card-title">{{.Heading}}</h2>
   <p class="path">{{.Path}}</p>
   <p><span class="badge {{.Badge.Class}}">{{.Badge.Word}}</span></p>
+  {{with .Note}}<p>{{.}}</p>{{end}}
   <p>A planning agent asks you what to build and writes the plan with you. Its chat opens next.</p>
 </section>
 <form method="post" action="/plan/new" class="stack">
   <input type="hidden" name="confirm" value="yes">
-  <input type="hidden" name="path" value="{{.Path}}">
+  <input type="hidden" name="path" value="{{.PostPath}}">
   <div class="btn-row">
-    <button type="submit" class="btn btn--primary" data-loading-label="Starting planning">Start planning</button>
+    <button type="submit" class="btn btn--primary" data-loading-label="{{.LoadingLabel}}">Start planning</button>
     <a class="btn btn--quiet" href="/" autofocus>Cancel</a>
   </div>
 </form>
@@ -28,9 +29,9 @@
 {{else}}
 <form method="get" action="/plan/new" class="stack">
   <div class="field">
-    <label class="field__label" for="plan-new-path">Where</label>
+    <label class="field__label" for="plan-new-path">Folder path or project name</label>
     <input class="input input--mono" type="text" id="plan-new-path" name="path" value="{{.Text}}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="{{if .FieldError}}plan-new-error {{end}}plan-new-hint"{{if .FieldError}} aria-invalid="true"{{end}}>
-    <span class="field__hint" id="plan-new-hint">Folder path</span>
+    <span class="field__hint" id="plan-new-hint">{{.Hint}}</span>
     {{with .FieldError}}<p class="field__error" id="plan-new-error" role="alert">{{.}}</p>{{end}}
   </div>
   <div class="btn-row">

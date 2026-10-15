@@ -9,22 +9,33 @@ import (
 	"unicode/utf8"
 )
 
-// This file is the page's Plan a new project (T8.15): the owner types the
-// path of a folder that already exists, sees a confirm card naming the full
-// path and what kind of folder it is, and only then starts a new-mode
-// planning session through Deps.StartPlan, the same entry point the change
-// page (plan_change.go) and the dashboard's new-plan form use.
+// This file is the page's Plan a new project (T8.15, T8.15a): the owner
+// types the path of a folder that already exists, or a bare project name,
+// sees a confirm card naming the full path and what kind of folder it is,
+// and only then starts a new-mode planning session through Deps.StartPlan,
+// the same entry point the change page (plan_change.go) and the dashboard's
+// new-plan form use. A name means a new folder under the profile's project
+// location, made (with its git repository) by Deps.CreatePlanFolder after
+// the confirm.
 //
-// Three rules hold here.
+// Four rules hold here.
 //
 // Nothing starts without the confirm. The GET draws the form and the card and
 // never reaches StartPlan; the POST reaches it only with confirm=yes in the
 // body (never the query), after the folder check.
 //
-// Nothing is created. The folder check (Deps.CheckPlanFolder) only reads, and
-// the GET calls nothing else. Making a folder that does not exist is T8.15a's
-// and is deliberately absent: a mistyped path must be a refusal, never a new
-// folder somewhere the owner did not mean.
+// Nothing is created before the confirm. The folder check
+// (Deps.CheckPlanFolder) only reads, and the GET calls nothing else; the
+// POST reaches Deps.CreatePlanFolder only with the confirm, and only when the
+// check, asked again, still says the folder is to be created.
+//
+// Only a name makes a folder, and only where the profile says. The confirm
+// card for a new folder posts the typed name, never the full path it showed,
+// and the create seam decides again from that name, so a crafted POST cannot
+// make a folder anywhere but directly under the project location. A mistyped
+// path stays a refusal, never a new folder somewhere the owner did not mean.
+// A create that fails part-way removes nothing: the owner is told what was
+// left on disk.
 //
 // The page decides nothing about whether planning may start. The check is
 // read-only and can be out of date by the time the owner presses Start
@@ -45,6 +56,11 @@ type PlanFolderCheck struct {
 	// Reason is the refusal as a plain sentence when Kind is refused; empty
 	// otherwise.
 	Reason string `json:"reason"`
+	// Name is the typed name when the text was a bare project name (no / and
+	// no ~), set whatever the kind; empty for a path. The create card posts it
+	// back instead of Path, and an existing folder reached from a name gets a
+	// note saying the name was found rather than made.
+	Name string `json:"name,omitempty"`
 }
 
 // The kinds a PlanFolderCheck takes.
@@ -54,13 +70,18 @@ const (
 	// PlanFolderFolder: an existing folder that is not a git repository;
 	// planning makes it one.
 	PlanFolderFolder = "folder"
+	// PlanFolderCreate: the text is a bare name and its folder does not
+	// exist yet; afk makes it under the project location, and makes it a git
+	// repository, only after the confirm.
+	PlanFolderCreate = "create"
 	// PlanFolderOpen: a planning session is already open there; starting
 	// resumes it.
 	PlanFolderOpen = "open"
 	// PlanFolderHasPlan: the folder already has a plan. Refused here: a plan
 	// that exists is changed (extend, amend), never planned anew.
 	PlanFolderHasPlan = "has_plan"
-	// PlanFolderRefused: anything else (not a full path, not found, a file).
+	// PlanFolderRefused: anything else (not found, a file, a name with
+	// characters a folder name may not have, no project location).
 	PlanFolderRefused = "refused"
 )
 
@@ -72,12 +93,31 @@ const planNewPathLimit = 4096
 // The sentences the page itself says. They are constants so the tests and
 // the handler cannot drift apart.
 const (
-	planNewBlank      = "Type the full path of a folder, for example ~/code/shop."
+	planNewBlank      = "Type the full path of a folder, for example ~/code/shop, or a name for a new project."
 	planNewHasPlan    = "This folder already has a plan. Open the project and use Change the plan to extend or amend it."
 	planNewNoConfirm  = "Nothing started: planning a new project needs the confirm."
 	planNewTooLong    = "That path is too long to be a folder. Type the full path of a folder, for example ~/code/shop."
 	planNewUnknown    = "afk could not check this folder: the check gave an answer this page does not know. This is a fault in afk; please report it."
 	planNewUnreadable = `Nothing started: the request could not be read. Send it as JSON like {"path": "~/code/shop", "confirm": true}.`
+	planNewNoCreate   = "Nothing started: this page cannot make folders."
+	// planNewGetNoCreate is the same refusal on the GET, where nothing was
+	// asked to start yet.
+	planNewGetNoCreate = "This page cannot make folders. Type the full path of a folder that exists."
+	// The confirm card's headings: a create says so, since a folder will be
+	// made on disk, while every other card plans in what is already there.
+	planNewHeading       = "afk will plan in"
+	planNewCreateHeading = "afk will create and plan in"
+	// The Start planning button's label while the request runs.
+	planNewLoading       = "Starting planning"
+	planNewCreateLoading = "Creating the folder and starting planning"
+	// planNewNoLocationHint is the Where field's hint when the profile names
+	// no usable project location: a name would be refused, so it says how
+	// to set one rather than naming a folder that is not there.
+	planNewNoLocationHint = `Type a full path. To make new folders by name, set a project location: afk profile set "project location" ~/code`
+	// planNewPathOnlyHint is the hint when the page cannot make folders at
+	// all (no create seam), where offering names would only lead to a
+	// refusal.
+	planNewPathOnlyHint = "Type the full path of a folder."
 )
 
 // The kinds of page newPlanPageFor draws.
@@ -105,6 +145,18 @@ type NewPlanPageView struct {
 	// on the confirm card.
 	Path  string
 	Badge badgeView
+	// Heading is the confirm card's heading, LoadingLabel its button's
+	// label while the request runs, and Note a line under the path (an
+	// existing folder reached from a name).
+	Heading, LoadingLabel, Note string
+	// PostPath is what the confirm form posts as path: the typed name for a
+	// folder still to be created (so the POST decides again from the name,
+	// never from a posted full path), the full path for every other card.
+	PostPath string
+	// Hint is the Where field's hint, naming the project location a name
+	// lands in. Set by renderPlanNew, never by newPlanPageFor, so the pure
+	// decision needs no profile.
+	Hint string
 	// Message is the has_plan and started pages' statement.
 	Message string
 	// ProjectName and ProjectHref link the has_plan page to the configured
@@ -119,6 +171,7 @@ var newPlanBadges = map[string]badgeView{
 	PlanFolderRepo:   {Class: "badge--idle", Word: "Existing folder"},
 	PlanFolderFolder: {Class: "badge--idle", Word: "Existing folder, becomes a git repository"},
 	PlanFolderOpen:   {Class: "badge--running", Word: "Planning already open"},
+	PlanFolderCreate: {Class: "badge--idle", Word: "New, empty folder"},
 }
 
 // newPlanPageFor decides what the Plan a new project page says. Pure. given
@@ -140,7 +193,7 @@ func newPlanPageFor(text string, given bool, chk PlanFolderCheck) NewPlanPageVie
 		return v
 	}
 	switch chk.Kind {
-	case PlanFolderRepo, PlanFolderFolder, PlanFolderOpen:
+	case PlanFolderRepo, PlanFolderFolder, PlanFolderOpen, PlanFolderCreate:
 		if chk.Path == "" {
 			// A check that names no folder cannot be confirmed: the card
 			// would ask the owner to start planning nowhere.
@@ -148,6 +201,22 @@ func newPlanPageFor(text string, given bool, chk PlanFolderCheck) NewPlanPageVie
 			return v
 		}
 		v.Kind, v.Path, v.Badge = newPlanKindConfirm, chk.Path, newPlanBadges[chk.Kind]
+		v.Heading, v.LoadingLabel, v.PostPath = planNewHeading, planNewLoading, chk.Path
+		switch {
+		case chk.Kind == PlanFolderCreate:
+			// The name, not the path: the POST must decide again from what
+			// the owner typed, so the path on the card is never what makes
+			// a folder.
+			name := chk.Name
+			if name == "" {
+				name = text
+			}
+			v.Heading, v.LoadingLabel, v.PostPath = planNewCreateHeading, planNewCreateLoading, name
+		case chk.Name != "":
+			// The owner typed a name meaning a new project, and its folder
+			// was already there: say so, or they would think it was made.
+			v.Note = "A folder named " + chk.Name + " already exists in " + filepath.Dir(chk.Path) + ". afk will plan in it."
+		}
 	case PlanFolderHasPlan:
 		v.Kind, v.Path, v.Message = newPlanKindHasPlan, chk.Path, planNewHasPlan
 	case PlanFolderRefused:
@@ -191,9 +260,37 @@ func projectWithRoot(ps []Project, root string) (Project, bool) {
 // three seams are needed: without the check there is no confirm card to draw,
 // without the start nothing can be planned, and without the being-planned
 // list a project started here would vanish from the page with its chat
-// answering 404 until it was approved.
+// answering 404 until it was approved. CreatePlanFolder is deliberately not
+// among them: without it the page still plans in folders that exist, and a
+// name is refused at the POST.
 func (s *server) canPlanNew() bool {
 	return s.d.StartPlan != nil && s.d.CheckPlanFolder != nil && s.d.AddBeingPlanned != nil
+}
+
+// planNewHint is the Where field's hint. Pure. A name is only worth offering
+// when the page can make folders and the profile says where; the location is
+// named, never a fixed folder, because it is the owner's own setting.
+func planNewHint(canCreate bool, location string) string {
+	switch {
+	case !canCreate:
+		return planNewPathOnlyHint
+	case location == "":
+		return planNewNoLocationHint
+	default:
+		return "A name makes a new folder in " + location + "."
+	}
+}
+
+// renderPlanNew draws plan_new with the Where field's hint filled in. Every
+// draw of the page goes through it, so a refusal that redraws the form never
+// loses the hint.
+func (s *server) renderPlanNew(w http.ResponseWriter, r *http.Request, status int, v NewPlanPageView) {
+	location := ""
+	if s.d.PlanLocation != nil {
+		location = s.d.PlanLocation()
+	}
+	v.Hint = planNewHint(s.d.CreatePlanFolder != nil, location)
+	s.renderPage(w, r, status, "plan_new", v)
 }
 
 // planNewPage is GET /plan/new: the Where form, or with ?path= the confirm
@@ -210,15 +307,21 @@ func (s *server) planNewPage(w http.ResponseWriter, r *http.Request) {
 	var chk PlanFolderCheck
 	if text != "" && utf8.RuneCountInString(text) <= planNewPathLimit {
 		chk = s.d.CheckPlanFolder(text)
+		if chk.Kind == PlanFolderCreate && s.d.CreatePlanFolder == nil {
+			// The POST would refuse this card's Start planning, so the card
+			// is never drawn.
+			chk = PlanFolderCheck{Path: chk.Path, Kind: PlanFolderRefused, Name: chk.Name, Reason: planNewGetNoCreate}
+		}
 	}
 	v := withProjectLink(newPlanPageFor(text, q.Has("path"), chk), s.projects())
-	s.renderPage(w, r, http.StatusOK, "plan_new", v)
+	s.renderPlanNew(w, r, http.StatusOK, v)
 }
 
 // planNew is POST /plan/new and /api/plan/new: what the dashboard's new-plan
-// form does for a folder that exists, through Deps.StartPlan in mode new.
-// Nothing reaches a seam without the confirm in the body, and neither the
-// start nor the list is reached for a folder the check refused.
+// form does, through Deps.CreatePlanFolder for a name whose folder does not
+// exist yet and then Deps.StartPlan in mode new. Nothing reaches a seam
+// without the confirm in the body, and neither the create, the start nor the
+// list is reached for a folder the check refused.
 func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 	if !s.canPlanNew() {
 		s.notFound(w, r)
@@ -258,14 +361,34 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": why, "reason": reason, "path": chk.Path})
 			return
 		}
-		s.renderPage(w, r, http.StatusBadRequest, "plan_new", withProjectLink(v, s.projects()))
+		s.renderPlanNew(w, r, http.StatusBadRequest, withProjectLink(v, s.projects()))
 		return
 	}
 
 	// The full path the owner confirmed is what is started, not the typed
 	// text: the card showed that path, and the entry point re-resolves it
-	// either way.
-	res := s.d.StartPlan(chk.Path, "new", "")
+	// either way. For a new folder it is the path the create seam made.
+	path, created := chk.Path, false
+	if chk.Kind == PlanFolderCreate {
+		if s.d.CreatePlanFolder == nil {
+			s.planNewRefuse(w, r, text, planNewNoCreate, "refused", "")
+			return
+		}
+		// The typed text, never chk.Path: the seam decides again from the
+		// name, so it alone says where a folder may be made.
+		made, err := s.d.CreatePlanFolder(text)
+		if err != nil {
+			// Nothing is started in a folder that was half made; the
+			// sentence says what was left, and nothing is removed.
+			s.planNewRefuse(w, r, text, err.Error(), "create_failed", made)
+			return
+		}
+		if made != "" {
+			path = made
+		}
+		created = true
+	}
+	res := s.d.StartPlan(path, "new", "")
 	switch res.Outcome {
 	case PlanStartStarted, PlanStartResumed:
 	case PlanStartRefused:
@@ -276,12 +399,18 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 		if res.Reason == "" {
 			res.Reason = "Nothing was started, and no reason was given. Run afk plan status in the folder to see where the plan is now."
 		}
+		if created {
+			// The folder was made a moment ago and stays: the owner must
+			// know it is there, or typing the name again would surprise
+			// them with an existing folder.
+			res.Reason += " The new folder " + path + " was made and is left in place."
+		}
 		if isAPI(r.URL.Path) {
 			reason := "refused"
 			if res.Open {
 				reason = "session_open"
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": res.Reason, "reason": reason, "path": chk.Path})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": res.Reason, "reason": reason, "path": path, "created": created})
 			return
 		}
 		s.planNewRedraw(w, r, text, res.Reason)
@@ -290,7 +419,7 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 
 	root := res.Root
 	if root == "" {
-		root = chk.Path
+		root = path
 	}
 	project, notice := s.notePlanned(root)
 	chat := ""
@@ -299,7 +428,7 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 	}
 	if isAPI(r.URL.Path) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"path": chk.Path, "root": root, "project": project, "outcome": res.Outcome, "chat": chat, "notice": notice,
+			"path": path, "root": root, "project": project, "outcome": res.Outcome, "chat": chat, "notice": notice, "created": created,
 		})
 		return
 	}
@@ -308,7 +437,7 @@ func (s *server) planNew(w http.ResponseWriter, r *http.Request) {
 		// the session runs, but this page may not list it.
 		v := NewPlanPageView{Kind: newPlanKindStarted, Path: root, Chat: chat, Notice: notice,
 			Message: "Planning started in " + root + "."}
-		s.renderPage(w, r, http.StatusOK, "plan_new", v)
+		s.renderPlanNew(w, r, http.StatusOK, v)
 		return
 	}
 	w.Header().Set("Location", chat+"?done="+url.QueryEscape(res.Outcome))
@@ -349,11 +478,23 @@ func (s *server) planNewBad(w http.ResponseWriter, r *http.Request, text, why st
 	s.planNewRedraw(w, r, text, why)
 }
 
+// planNewRefuse answers a POST the page will not carry through after the
+// check: the API gets JSON with the given reason and the path (the one left
+// on disk, for create_failed), the page the form again with the sentence
+// above it, at 400 like every other refusal here.
+func (s *server) planNewRefuse(w http.ResponseWriter, r *http.Request, text, why, reason, path string) {
+	if isAPI(r.URL.Path) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": why, "reason": reason, "path": path})
+		return
+	}
+	s.planNewRedraw(w, r, text, why)
+}
+
 // planNewRedraw answers a refused page POST with the Where form at 400: the
 // sentence in a notice above it and the typed path kept, so a refusal costs
 // the owner no typing. It is the form and not the card again, because the
 // card's Start planning would only send the same refused request.
 func (s *server) planNewRedraw(w http.ResponseWriter, r *http.Request, text, why string) {
 	v := NewPlanPageView{Kind: newPlanKindForm, Text: text, Notice: why}
-	s.renderPage(w, r, http.StatusBadRequest, "plan_new", v)
+	s.renderPlanNew(w, r, http.StatusBadRequest, v)
 }

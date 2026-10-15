@@ -2764,6 +2764,7 @@ thing it does not do is attach to a session.
   confirm creating nothing. Against a scratch build with a scratch profile whose location is a
   scratch folder and a stand-in agent: typing `demo` and confirming leaves `<scratch>/demo/.git`,
   `.afk/plan/state.json` in mode `new`, and `demo` on the overview. `make check` is green.
+- Amended 2026-10-14 (T8.15a done): later tasks may assume the following. (1) `web.PlanFolderCheck` gains kind `create` (badge "New, empty folder", heading "afk will create and plan in") and a `Name` field set for any bare name; two optional seams, `web.Deps.CreatePlanFolder(text) (path, error)` and `web.Deps.PlanLocation() string`, are wired in `daemon_web_plan.go` (`webCreatePlanFolder`, `webPlanLocation`, the name check `webCheckPlanFolderNamesWith`). (2) The create confirm posts the typed name, not a path, and the create seam decides again from it, so only a bare name under the project location is ever made; it runs only after `confirm=yes`, and `StartPlan` gets the created path. T8.15b's GitHub question goes between the create and `StartPlan` in `planNew`. (3) `POST /api/plan/new` success gains `created`; a failed create answers 400 with reason `create_failed` and the `path` left on disk (empty when nothing was made), and starts nothing. No route was added (the table stays at 22). See `## T8.15a` in `docs/decisions.md`.
 
 #### T8.15b — Offer a GitHub repository for the new folder
 - **Depends on:** T8.15a, T7.6

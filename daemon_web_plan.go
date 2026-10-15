@@ -2,11 +2,17 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemonstate"
+	"github.com/dphaener/afk/internal/planfolder"
 	"github.com/dphaener/afk/internal/plansession"
+	"github.com/dphaener/afk/internal/profile"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/web"
 )
@@ -132,17 +138,71 @@ func webStartPlanWith(start func(planSurfaceRequest, planDeps) planSurfaceResult
 }
 
 // webCheckPlanFolder is web.Deps.CheckPlanFolder: what Start planning would do
-// with a typed folder, from the same looking the start does
+// with the text typed into the page's Where field. A bare name is decided
+// against the owner profile's project location (planfolder.Decide), as the
+// dashboard's form does; a path gets the same looking the start does
 // (checkNewPlanFolder), so the confirm card and the start agree. It only
-// reads, through planCheckDeps, whose writers refuse instead of writing.
+// reads: the profile, the disk, and git through planCheckDeps, whose writers
+// refuse instead of writing.
 func webCheckPlanFolder(text string) web.PlanFolderCheck {
-	return webCheckPlanFolderWith(planCheckDeps(realPlanDeps()), text)
+	return webCheckPlanFolderNamesWith(webProfileLocation, os.Stat, planCheckDeps(realPlanDeps()), text)
 }
 
-// webCheckPlanFolderWith is webCheckPlanFolder with the dependencies passed
-// in, so a test can check every kind against a temp folder and a fake git.
-// A kind it does not know is refused, so the page never offers to start what
-// this mapping has not been taught.
+// webProfileLocation reads the owner profile's project location. It is the
+// same reading dashPlanFolder does, so a name means the same folder on the
+// page and on the dashboard.
+func webProfileLocation() planfolder.Location {
+	p, _, found, _, err := profile.Load(profile.DefaultDeps())
+	home, _ := os.UserHomeDir()
+	return planfolder.LocationFrom(p, found, err, home)
+}
+
+// webCheckPlanFolderNamesWith is webCheckPlanFolder with the location, the
+// stat call and the plan dependencies passed in, so a test can check every
+// name and path row against a fake location and temp folders.
+//
+// Name is set for every bare-name text, whatever the kind: the page's create
+// card posts it back (never the full path), and an existing folder reached
+// from a name gets a note that it was found, not made.
+//
+// A name whose folder already exists is not refused, as planfolder words it:
+// it is looked at as that folder's path, so the card says repo, folder, open
+// or has_plan for it exactly as when the owner types the path. planfolder's
+// sentence for it ("The dashboard can plan in it.") is never shown here.
+func webCheckPlanFolderNamesWith(location func() planfolder.Location, stat func(string) (fs.FileInfo, error), deps planDeps, text string) web.PlanFolderCheck {
+	name := strings.TrimSpace(text)
+	if !planfolder.IsName(name) {
+		return webCheckPlanFolderWith(deps, text)
+	}
+	d := planfolder.Decide(name, location(), stat)
+	var out web.PlanFolderCheck
+	switch {
+	case d.Kind == planfolder.KindCreate:
+		out = web.PlanFolderCheck{Kind: web.PlanFolderCreate, Path: d.Path}
+	case d.Kind == planfolder.KindRefuse && d.Exists:
+		out = webCheckPlanFolderWith(deps, d.Path)
+	default:
+		// KindUse cannot come back for a bare name; were planfolder to change
+		// that, refusing is the safe reading, since nothing here was taught
+		// what it means for a name.
+		out = web.PlanFolderCheck{Kind: web.PlanFolderRefused, Reason: d.Reason}
+		if out.Reason == "" {
+			out.Reason = "afk could not tell what this name means. Nothing was started."
+		}
+	}
+	out.Name = name
+	return out
+}
+
+// webCheckPlanFolderWith is the page's check for a typed path, with the
+// dependencies passed in, so a test can check every kind against a temp
+// folder and a fake git. A kind it does not know is refused, so the page
+// never offers to start what this mapping has not been taught.
+//
+// A missing folder and a file get the page's own sentences. The shared
+// looking words them for the command line ("pass --project ..."), which a
+// page with a Where field has no use for, and the page can now offer a name
+// instead of making the owner create the folder first.
 func webCheckPlanFolderWith(deps planDeps, text string) web.PlanFolderCheck {
 	path, kind, reason := checkNewPlanFolder(text, deps)
 	out := web.PlanFolderCheck{Path: path, Kind: web.PlanFolderRefused, Reason: reason}
@@ -156,10 +216,86 @@ func webCheckPlanFolderWith(deps planDeps, text string) web.PlanFolderCheck {
 	case planFolderHasPlan:
 		out.Kind = web.PlanFolderHasPlan
 	}
+	if out.Kind == web.PlanFolderRefused && filepath.IsAbs(path) {
+		// The same os.Stat findPlanProject refused on. Any other refusal is
+		// about a folder that is there, so these two only replace its words.
+		fi, err := os.Stat(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			out.Reason = fmt.Sprintf("There is no folder at %s. Type the path of a folder that exists, or a plain name to make a new folder in your project location. Nothing was started.", path)
+		case err == nil && !fi.IsDir():
+			out.Reason = fmt.Sprintf("%s is a file, not a folder. Type the path of a folder. Nothing was started.", path)
+		}
+	}
 	if out.Kind == web.PlanFolderRefused && out.Reason == "" {
 		out.Reason = "afk could not tell what this folder is. Nothing was started."
 	}
 	return out
+}
+
+// webCreatePlanFolder is web.Deps.CreatePlanFolder: after the owner confirmed
+// a new project by name, make its folder under the profile's project
+// location and turn it into a git repository.
+func webCreatePlanFolder(text string) (string, error) {
+	return webCreatePlanFolderWith(webProfileLocation, os.Stat, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn, text)
+}
+
+// webCreatePlanFolderWith is webCreatePlanFolder with the location, the stat
+// call and the two side effects passed in, so a test can check the guard and
+// the failure sentences without a real profile or git.
+//
+// It decides again from the typed text and creates only on KindCreate. That
+// is the guard that matters: the text comes from a POST, and anyone holding
+// the token can post anything, so a path, a name with a slash, or a name
+// whose folder appeared since the card was drawn must make nothing. Where the
+// folder goes is decided here from the profile, never taken from the request.
+//
+// mkdir is os.Mkdir in production, never MkdirAll, so the project location
+// itself is never created. A failure removes nothing (planfolder.Create); the
+// path returned is the folder left on disk, or "" when mkdir itself failed
+// and nothing was made, so the page never claims a folder that is not there.
+func webCreatePlanFolderWith(location func() planfolder.Location, stat func(string) (fs.FileInfo, error), mkdir, gitInit func(string) error, text string) (string, error) {
+	name := strings.TrimSpace(text)
+	if !planfolder.IsName(name) {
+		return "", fmt.Errorf("%s is a path, and only a plain project name makes a new folder. Nothing was created.", name)
+	}
+	d := planfolder.Decide(name, location(), stat)
+	switch {
+	case d.Kind == planfolder.KindCreate:
+	case d.Exists:
+		return "", fmt.Errorf("%s already exists, so nothing was created. Check the folder again to plan in it.", d.Path)
+	case d.Reason != "":
+		return "", errors.New(d.Reason)
+	default:
+		return "", errors.New("afk could not tell what this name means. Nothing was created.")
+	}
+	made := false
+	err := planfolder.Create(d.Path, func(p string) error {
+		if err := mkdir(p); err != nil {
+			return err
+		}
+		made = true
+		return nil
+	}, gitInit)
+	if !made {
+		return "", err
+	}
+	return d.Path, err
+}
+
+// webPlanLocation is web.Deps.PlanLocation: the profile's project location
+// for the Where field's hint, or "" when none is set or it is unusable, so the
+// hint never names a folder a name could not be made in.
+func webPlanLocation() string {
+	return webPlanLocationFrom(webProfileLocation())
+}
+
+// webPlanLocationFrom is webPlanLocation's rule on a given location. Pure.
+func webPlanLocationFrom(loc planfolder.Location) string {
+	if !loc.Set || loc.Problem != "" {
+		return ""
+	}
+	return loc.Path
 }
 
 // errPlanCheckWrites is what the folder check's writers answer. The check
