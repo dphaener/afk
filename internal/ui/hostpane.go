@@ -122,7 +122,7 @@ const wedgeRecoveryKey = "r"
 // wedgeHintDashboard and wedgeHintAttach are the per-surface halves of the
 // wedge banner: the same "session unresponsive" fact, but recovery guidance
 // matched to what each surface actually does with keys. Since T7.2 the dashboard
-// restarts through the leader (ctrl+space r), which works from a focused pane
+// restarts through the leader (ctrl+] r), which works from a focused pane
 // too because the leader is the one key the pane keeps, so its hint names that
 // chord and needs no "leave the pane first" step. `afk attach` forwards every
 // non-chord key to the child and handles no restart at all, so its hint must

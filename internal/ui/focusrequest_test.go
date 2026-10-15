@@ -389,7 +389,7 @@ func TestFocusRequestSwitchingPanesClosesTheOutgoingOne(t *testing.T) {
 	}
 	m = pressLeader(t, m, keyRune('\\'))
 	if m.paneOwnsKeyboard() || !m.shouldRenderPane() {
-		t.Fatal("precondition: ctrl+space \\ must leave pane A drawn with keyboard ownership on the list")
+		t.Fatal("precondition: ctrl+] \\ must leave pane A drawn with keyboard ownership on the list")
 	}
 
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return paneB, nil }

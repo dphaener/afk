@@ -36,5 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
-↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+space actions
+╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
+↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+] actions

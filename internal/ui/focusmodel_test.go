@@ -89,7 +89,7 @@ type scenarioStep struct {
 	name string
 	msg  tea.Msg
 	act  func(h *scenarioHarness)
-	// leader presses ctrl+space first, so msg is the key after the leader: how
+	// leader presses ctrl+] first, so msg is the key after the leader: how
 	// every dashboard action is reached now that no bare letter acts.
 	leader bool
 	settle bool
@@ -113,7 +113,7 @@ func (h *scenarioHarness) run(step scenarioStep) scenarioState {
 		if step.leader {
 			h.m, _ = update(h.t, h.m, leaderKeyPress)
 			if !h.m.leaderOpen {
-				h.t.Fatalf("step %q: ctrl+space did not open the actions dialog", step.name)
+				h.t.Fatalf("step %q: ctrl+] did not open the actions dialog", step.name)
 			}
 		}
 		h.m, cmd = update(h.t, h.m, step.msg)
@@ -136,7 +136,7 @@ func (h *scenarioHarness) run(step scenarioStep) scenarioState {
 	}
 }
 
-// pressDimmedToggle presses ctrl+space t where the toggle is dimmed (a stopped
+// pressDimmedToggle presses ctrl+] t where the toggle is dimmed (a stopped
 // row has no agent to flip to). The dialog refuses the key and stays up, so
 // the step closes it with esc, leaving the model as it found it.
 func pressDimmedToggle(h *scenarioHarness) {
@@ -371,7 +371,7 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+space t is inert", act: pressDimmedToggle, want: scenarioState{
+				{name: "ctrl+] t is inert", act: pressDimmedToggle, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
 				}},
 				{name: "ctrl+backslash releases", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
@@ -712,7 +712,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		msg   func(h *scenarioHarness) tea.Msg
 		want  string
 		wrong string
-		// viaLeader sends msg as ctrl+space then the key, the only way a
+		// viaLeader sends msg as ctrl+] then the key, the only way a
 		// dashboard action is reached since T7.2.
 		viaLeader bool
 	}{
@@ -722,7 +722,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha", restarted: true}
 			},
-			want: "enter to reopen the agent", wrong: "ctrl+space t",
+			want: "enter to reopen the agent", wrong: "ctrl+] t",
 		},
 		{
 			name:  "restart done, overview focused",
@@ -731,7 +731,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha", restarted: true}
 			},
-			want: "ctrl+space t to reopen the agent", wrong: "enter",
+			want: "ctrl+] t to reopen the agent", wrong: "enter",
 		},
 		{
 			name:  "restart with no outcome, overview focused",
@@ -740,34 +740,34 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha"}
 			},
-			want: "ctrl+space t to reconnect the agent", wrong: "enter",
+			want: "ctrl+] t to reconnect the agent", wrong: "enter",
 		},
 		{
 			name: "one-off restart refused, list focused",
 			row:  wedgedScratch(),
 			msg:  func(*scenarioHarness) tea.Msg { return scenarioR },
-			want: "enter to show the agent", wrong: "ctrl+space t", viaLeader: true,
+			want: "enter to show the agent", wrong: "ctrl+] t", viaLeader: true,
 		},
 		{
 			name:  "one-off restart refused, overview focused",
 			row:   wedgedScratch(),
 			setup: focusOverview,
 			msg:   func(*scenarioHarness) tea.Msg { return scenarioR },
-			want:  "ctrl+space t to show the agent", wrong: "enter", viaLeader: true,
+			want:  "ctrl+] t to show the agent", wrong: "enter", viaLeader: true,
 		},
 		{
 			name:  "connection dropped behind the focused overview",
 			row:   runningSess("alpha"),
 			setup: focusOverview,
 			msg:   dropPane,
-			want:  "ctrl+space t to reopen the agent", wrong: "enter",
+			want:  "ctrl+] t to reopen the agent", wrong: "enter",
 		},
 		{
 			name:  "connection dropped under the focused agent pane",
 			row:   runningSess("alpha"),
 			setup: focusAgent,
 			msg:   dropPane,
-			want:  "enter to reopen the agent", wrong: "ctrl+space t",
+			want:  "enter to reopen the agent", wrong: "ctrl+] t",
 		},
 	}
 	for _, tc := range cases {

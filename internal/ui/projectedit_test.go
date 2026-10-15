@@ -42,13 +42,13 @@ func projectEditModel(t *testing.T) (Model, *projectEditSeam, *allProjectsSeam) 
 	return openAllProjects(t, m), seam, rows
 }
 
-// openAddForm is ctrl+space + with the folder field emptied, so a test types
+// openAddForm is ctrl+] + with the folder field emptied, so a test types
 // the whole folder itself.
 func openAddForm(t *testing.T, m Model) Model {
 	t.Helper()
 	m, _ = pressAction(t, m, keyRune('+'))
 	if m.modal != inputProjectAddFolder {
-		t.Fatalf("setup: ctrl+space + left modal %v, want the folder step", m.modal)
+		t.Fatalf("setup: ctrl+] + left modal %v, want the folder step", m.modal)
 	}
 	m.projectAddInput.SetValue("")
 	return m
@@ -293,7 +293,7 @@ func TestProjectEditRemove(t *testing.T) {
 			m = cursorOn(t, m, tt.root)
 			m, _ = pressAction(t, m, keyRune('-'))
 			if m.modal != inputConfirmProjectRemove || m.projectRemoveRow.Root != tt.root {
-				t.Fatalf("ctrl+space - gave modal %v for %q, want the confirm for %s", m.modal, m.projectRemoveRow.Root, tt.root)
+				t.Fatalf("ctrl+] - gave modal %v for %q, want the confirm for %s", m.modal, m.projectRemoveRow.Root, tt.root)
 			}
 			if len(seam.removes) != 0 {
 				t.Fatal("the seam ran before the answer")

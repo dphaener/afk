@@ -1,5 +1,5 @@
 // taskstatus.go is the Build tab's "set this task's status" (T7.11): the
-// leader row (ctrl+space S), the status picker it opens, the one-line step
+// leader row (ctrl+] S), the status picker it opens, the one-line step
 // asking for the replacing ids when the choice is superseded, the y/n confirm,
 // and the notice its result becomes.
 //
@@ -138,7 +138,7 @@ func taskStatusConfirmText(id, old, new string, replacedBy []string) string {
 	return taskstatus.ConfirmText(id, old, new, replacedBy)
 }
 
-// openTaskStatus is ctrl+space S on the Build tab: the picker for the task
+// openTaskStatus is ctrl+] S on the Build tab: the picker for the task
 // under the cursor, highlighted on its current status. No file is read and no
 // seam is called.
 //

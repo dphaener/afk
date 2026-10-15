@@ -20,5 +20,5 @@
 │                            ││ Stack     main › feat-auth                     │
 │                            ││                                                │
 │                            ││                                             0% │
-╰────────────────────────────╯╰─ enter: focus view · ctrl+space c: clean · c… ─╯
+╰────────────────────────────╯╰─ enter: focus view · ctrl+] c: clean · ctrl+… ─╯
 ↑/k up · ↓/j down · pgup page up · pgdn page down · home top · end bottom …

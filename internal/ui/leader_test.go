@@ -46,14 +46,21 @@ func leaderRowFor(rows []leaderRow, a modeAction) (leaderRow, bool) {
 	return rows[i], true
 }
 
-var leaderTestCtrlSpace = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
+// leaderTestCtrlBracket is the leader, ctrl+], as ultraviolet decodes 0x1D.
+// leaderTestCtrlSpace is the leader before T9.1, an ordinary key since.
+var (
+	leaderTestCtrlBracket = tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl}
+	leaderTestCtrlSpace   = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
+)
 
 // TestLeaderKeyDecision is every branch of leaderKeyDecision, one row each.
 //
 // Load-bearing rows:
-//   - the two ctrl+space rows: from the pane the second press must reach the
+//   - the two ctrl+] rows: from the pane the second press must reach the
 //     agent (passThrough); from anywhere else it only closes, so nothing is
 //     typed into a session the user was not talking to.
+//   - the two ctrl+space rows: the old leader neither closes the dialog nor
+//     passes anything on now; it is a key the dialog does not answer to.
 //   - "action key with a query filters": once the user has typed, `n` is a
 //     letter of the query, not New, or filtering for "clean" would open the
 //     creation form at its first letter.
@@ -83,8 +90,10 @@ func TestLeaderKeyDecision(t *testing.T) {
 	}{
 		{name: "esc closes", k: leaderPress("esc"), rows: rows, want: leaderClose},
 		{name: "esc closes with a query", k: leaderPress("esc"), query: "cl", rows: rows, want: leaderClose},
-		{name: "ctrl+space from the pane passes through", k: leaderTestCtrlSpace, rows: rows, fromPane: true, want: leaderPassThrough},
-		{name: "ctrl+space not from the pane closes", k: leaderTestCtrlSpace, rows: rows, want: leaderClose},
+		{name: "ctrl+] from the pane passes through", k: leaderTestCtrlBracket, rows: rows, fromPane: true, want: leaderPassThrough},
+		{name: "ctrl+] not from the pane closes", k: leaderTestCtrlBracket, rows: rows, want: leaderClose},
+		{name: "ctrl+space from the pane is ignored", k: leaderTestCtrlSpace, rows: rows, fromPane: true, want: leaderIgnore},
+		{name: "ctrl+space not from the pane is ignored", k: leaderTestCtrlSpace, rows: rows, want: leaderIgnore},
 		{name: "up moves", k: leaderPress("up"), rows: rows, want: leaderMove, wantDelta: -1},
 		{name: "down moves", k: leaderPress("down"), rows: rows, want: leaderMove, wantDelta: 1},
 		{name: "enter runs the highlighted row", k: leaderPress("enter"), rows: rows, highlight: 0, want: leaderRun, wantRun: actionNewSession},
@@ -129,7 +138,7 @@ func TestLeaderKeyDecision(t *testing.T) {
 
 // TestLeaderBlockedReason has one row per guard and one clear row per action
 // that has a guard. Load-bearing: the clean rows (a pane open blocks it, the
-// same rule cleanRequested enforces, and the reason names ctrl+space \ as the
+// same rule cleanRequested enforces, and the reason names ctrl+] \ as the
 // way out), the agent/overview rows (from the list the right side is not
 // under control, so it must not run there even through the dialog), and the
 // close-pane and clear-filter rows, which carry the two guards the old rules
@@ -204,7 +213,7 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"projects with a project", actionProjects, ready, ""},
 
 		{"clean needs a selection", actionClean, with(func(c *leaderConds) { c.selected = false; c.paneOpen = false }), "no session selected"},
-		{"clean blocked by an open pane", actionClean, ready, "close the pane first (ctrl+space \\)"},
+		{"clean blocked by an open pane", actionClean, ready, "close the pane first (ctrl+] \\)"},
 		{"clean blocked while creating", actionClean, with(func(c *leaderConds) { c.paneOpen = false; c.selectedPending = true }), "still being created"},
 		{"clean blocked while cleaning", actionClean, with(func(c *leaderConds) { c.paneOpen = false; c.selectedCleaning = true }), "already being cleaned"},
 		{"clean runs", actionClean, with(func(c *leaderConds) { c.paneOpen = false }), ""},
@@ -517,21 +526,21 @@ func TestRemovedKeyNotice(t *testing.T) {
 		key  string
 		want string // "" is no notice
 	}{
-		{"n", "n moved: press ctrl+space then n"},
-		{"o", "o moved: press ctrl+space then o"},
-		{"p", "p moved: press ctrl+space then p"},
-		{"c", "c moved: press ctrl+space then c"},
-		{"r", "r moved: press ctrl+space then r"},
-		{"l", "l moved: press ctrl+space then l"},
-		{"/", "/ moved: press ctrl+space then /"},
-		{"b", "b moved: press ctrl+space then b"},
-		{"i", "i moved: press ctrl+space then i"},
-		{"q", "q moved: press ctrl+space then q"},
-		{"f", "f moved: press ctrl+space then f"},
-		{"?", "? moved: press ctrl+space then ?"},
-		{"P", "P moved: press ctrl+space then P"},
-		{"U", "U moved: press ctrl+space then U"},
-		{":", ": moved: press ctrl+space, then type to filter the actions"},
+		{"n", "n moved: press ctrl+] then n"},
+		{"o", "o moved: press ctrl+] then o"},
+		{"p", "p moved: press ctrl+] then p"},
+		{"c", "c moved: press ctrl+] then c"},
+		{"r", "r moved: press ctrl+] then r"},
+		{"l", "l moved: press ctrl+] then l"},
+		{"/", "/ moved: press ctrl+] then /"},
+		{"b", "b moved: press ctrl+] then b"},
+		{"i", "i moved: press ctrl+] then i"},
+		{"q", "q moved: press ctrl+] then q"},
+		{"f", "f moved: press ctrl+] then f"},
+		{"?", "? moved: press ctrl+] then ?"},
+		{"P", "P moved: press ctrl+] then P"},
+		{"U", "U moved: press ctrl+] then U"},
+		{":", ": moved: press ctrl+], then type to filter the actions"},
 		{"k", ""},
 		{"j", ""},
 		{"x", ""},

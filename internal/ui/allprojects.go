@@ -1,7 +1,7 @@
 // allprojects.go is the all-projects screen (T7.9): one row for every project
 // the daemon builds, each with its current task, the state of its build and
 // what in its inbox needs the owner, opened from the actions dialog ("all
-// projects", ctrl+space A). It takes the place of the session list and the
+// projects", ctrl+] A). It takes the place of the session list and the
 // detail side until esc, enter switches the dashboard to the selected
 // project, and pause and resume act on the selected row's project rather
 // than the active one.

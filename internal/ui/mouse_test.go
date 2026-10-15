@@ -61,7 +61,7 @@ func TestSidebarRenderedWidthMatchesRenderedList(t *testing.T) {
 // The rawWidth field pins the measurement each variant's truncation behaviour
 // follows from, with a 33-character session name. Note that the three variants
 // have three different lengths, so they start truncating at three different
-// widths — the widest (focused, 74 cells) is cut at all five widths below,
+// widths — the widest (focused, 70 cells) is cut at all five widths below,
 // attach's 52-cell title only at the narrowest three. That is why the
 // truncation-actually-happened check is conditional on rawWidth rather than
 // asserted for every pair: a case where the title already fits still has to
@@ -74,7 +74,7 @@ func TestPaneTitleBlockIsAlwaysOneLine(t *testing.T) {
 		hint     string
 		rawWidth int
 	}{
-		{"dashboard focused", paneFocusHint, 74},
+		{"dashboard focused", paneFocusHint, 70},
 		{"dashboard unfocused", "[enter focus view]", 55},
 		{"attach", attachDetachHint, 52},
 	}
@@ -123,7 +123,7 @@ func TestPaneTitleBlockReproducesLegacyTitles(t *testing.T) {
 		hint   string
 		legacy string
 	}{
-		{paneFocusHint, theme.paneTitle.Render("▶ mysession" + "  [focused · ctrl+space \\ back to list]")},
+		{paneFocusHint, theme.paneTitle.Render("▶ mysession" + "  [focused · ctrl+] \\ back to list]")},
 		{"[enter focus view]", theme.paneTitle.Render("▶ mysession" + "  [enter focus view]")},
 		{attachDetachHint, theme.paneTitle.Render("▶ mysession" + "  [ctrl+\\ detach]")},
 	}
@@ -153,7 +153,7 @@ func TestRenderPaneOutputUnchangedForFittingTitle(t *testing.T) {
 		contentW, _ := paneContentDims(mainOuter, bodyHeight)
 		legacyTitleText := "▶ " + m.paneName
 		if focused {
-			legacyTitleText += "  [focused · ctrl+space \\ back to list]"
+			legacyTitleText += "  [focused · ctrl+] \\ back to list]"
 		} else {
 			legacyTitleText += "  [enter focus view]"
 		}
@@ -2242,7 +2242,7 @@ func TestMouseIsDroppedWhileTheTerminalOwnsIt(t *testing.T) {
 		// makes this the state a user can actually be in.
 		m = pressLeader(t, m, keyRune('g'))
 		if m.mouseCapture {
-			t.Fatalf("precondition: ctrl+space g must release capture")
+			t.Fatalf("precondition: ctrl+] g must release capture")
 		}
 		if got := m.View().MouseMode; got != tea.MouseModeNone {
 			t.Fatalf("precondition: the chord must leave View declaring MouseMode %v, got %v",
@@ -3122,7 +3122,7 @@ func TestAttachProgramOptionsAskTheTerminalForMouseReports(t *testing.T) {
 // this asserts the constant itself rather than a transformation of it — a
 // transformation would have absorbed the very drift being tested for.
 func TestMouseCaptureTextNamesTheRealChord(t *testing.T) {
-	// The dashboard's hint names the leader chord (ctrl+space g); the bare
+	// The dashboard's hint names the leader chord (ctrl+] g); the bare
 	// ctrl+g survives only inside overlays and in afk attach, so the hint is
 	// pinned to the leader table and the key binding to mouseChordKey.
 	hintChord := leaderChord(actionMouseToggle)
@@ -3156,8 +3156,8 @@ func TestMouseCaptureHintStatesAreTheSameWidth(t *testing.T) {
 		t.Errorf("the two hint states measure %d (%q) and %d (%q) cells — toggling ctrl+g "+
 			"would shift the rest of the focused help line", cw, captured, rw, released)
 	}
-	if cw != 24 {
-		t.Errorf("the hint is %d cells (%q), want 24 — renderHelp's 80-column budget is "+
+	if cw != 20 {
+		t.Errorf("the hint is %d cells (%q), want 20 — renderHelp's 80-column budget is "+
 			"measured against that width", cw, captured)
 	}
 }

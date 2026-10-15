@@ -95,7 +95,7 @@ const (
 	// (see modeSnapshot's two conjunctions).
 	inputDetail
 	// inputResize is the pane-resize mode (Model.resizing), entered with
-	// ctrl+space w: h/l and the arrows move the sidebar/main divider live,
+	// ctrl+] w: h/l and the arrows move the sidebar/main divider live,
 	// ctrl+w commits and persists the split, esc restores the width at entry.
 	// It swallows every key it does not bind, so a stray letter cannot open,
 	// clean or steal a session mid-resize.
@@ -106,7 +106,7 @@ const (
 	// parent rule at all — see its spec in newModeRegistry for
 	// why not even the quit chord.
 	inputInbox
-	// inputLeader is the actions dialog the leader key (ctrl+space) opens
+	// inputLeader is the actions dialog the leader key (ctrl+]) opens
 	// (Model.leaderOpen, leader.go). Every key is the dialog's: an action's key
 	// runs it, other letters filter, enter runs the highlighted row, esc
 	// closes. It is opened from the list, the overview (and the agent
@@ -549,14 +549,14 @@ const (
 
 	// Cross-cutting actions.
 	actionQuit        // requestQuit
-	actionMouseToggle // toggleMouseCapture (ctrl+g in overlays; ctrl+space g)
+	actionMouseToggle // toggleMouseCapture (ctrl+g in overlays; ctrl+] g)
 
 	// Pane actions.
-	actionPaneToggle // toggleView (ctrl+space t, right focus only)
-	actionPaneClose  // an open pane from the list: ctrl+space \ closes (detaches)
+	actionPaneToggle // toggleView (ctrl+] t, right focus only)
+	actionPaneClose  // an open pane from the list: ctrl+] \ closes (detaches)
 
 	// actionDetailUnfocus is "back to list": esc on the focused overview, and
-	// ctrl+space \ from anywhere on the right side. From the overview it is
+	// ctrl+] \ from anywhere on the right side. From the overview it is
 	// releaseDetailFocus; from the agent pane and its placeholder the
 	// dialog runs those surfaces' own releases instead (runLeaderRow),
 	// because each clears different state and says different things.
@@ -597,18 +597,18 @@ const (
 	actionDetailTabJump
 	actionFilterStart
 	actionFilterClear
-	actionBuild       // ctrl+space b: showBuildTab
-	actionInbox       // ctrl+space i: openInbox
-	actionPauseBuild  // ctrl+space P: pauseBuild
-	actionResumeBuild // ctrl+space U: resumeBuild
-	actionEnterResize // ctrl+space w: enterResize
-	// actionOpenLeader is ctrl+space, the leader key: it opens the actions
+	actionBuild       // ctrl+] b: showBuildTab
+	actionInbox       // ctrl+] i: openInbox
+	actionPauseBuild  // ctrl+] P: pauseBuild
+	actionResumeBuild // ctrl+] U: resumeBuild
+	actionEnterResize // ctrl+] w: enterResize
+	// actionOpenLeader is ctrl+], the leader key: it opens the actions
 	// dialog (leader.go, openLeader in model.go). It is a rule in normal,
 	// detail and pane mode and nowhere else, and it is not in the leader
 	// table — the dialog must never list the key that opened it.
 	actionOpenLeader
 	// actionHelp shows or hides the full help on the session list
-	// (toggleFullHelp): ctrl+space ? from anywhere, and esc on the list while
+	// (toggleFullHelp): ctrl+] ? from anywhere, and esc on the list while
 	// the full help is shown (guarded on routeConds.helpShown).
 	actionHelp
 	// The four plan actions (planstart.go). They have no key after the
@@ -624,7 +624,7 @@ const (
 	// actionPlanApprove is "approve the plan" (T7.8): openPlanApprove raises
 	// the confirm (planapprove.go). By name only, like the plan actions.
 	actionPlanApprove
-	// actionAllProjects is "all projects" (T7.9, ctrl+space A): it opens the
+	// actionAllProjects is "all projects" (T7.9, ctrl+] A): it opens the
 	// all-projects screen, or closes it when it is open (allprojects.go).
 	actionAllProjects
 	// The all-projects screen's own keys: move (clamped), switch to the
@@ -638,22 +638,22 @@ const (
 	actionAllProjectsSwitch
 	actionAllProjectsClose
 	// actionProjectAdd and actionProjectRemove are the all-projects screen's
-	// add and remove (T7.10, ctrl+space + and ctrl+space -): add opens the
+	// add and remove (T7.10, ctrl+] + and ctrl+] -): add opens the
 	// two-step form, remove raises the y/n confirm for the selected row
 	// (projectedit.go). They run only while the screen is open.
 	actionProjectAdd
 	actionProjectRemove
-	// actionTaskStatus is "set this task's status" (T7.11, ctrl+space S): it
+	// actionTaskStatus is "set this task's status" (T7.11, ctrl+] S): it
 	// opens the status picker for the Build tab's cursor row
 	// (taskstatus.go). It runs only on the Build tab with the right side
 	// focused.
 	actionTaskStatus
-	// actionTaskTokens is "show this task's tokens" (T7.12, ctrl+space T):
+	// actionTaskTokens is "show this task's tokens" (T7.12, ctrl+] T):
 	// it opens the tokens overlay for the Build tab's cursor row
 	// (tasktokens.go). It runs only on the Build tab with the right side
 	// focused.
 	actionTaskTokens
-	// actionRefreshUsage is "refresh usage" (T7.13, ctrl+space R): it takes
+	// actionRefreshUsage is "refresh usage" (T7.13, ctrl+] R): it takes
 	// a fresh usage reading through Deps.RefreshUsage, off the screen-drawing
 	// path, and the header shows it when it lands (usagerefresh.go).
 	actionRefreshUsage
@@ -902,7 +902,7 @@ type routeConds struct {
 	listFiltered bool
 	// helpShown is "the full help is on screen" (Model.helpShowAll). Esc
 	// closes it before it clears a filter: the help covers the footer, and
-	// the gesture that put it there was ctrl+space ?, so esc is the one key
+	// the gesture that put it there was ctrl+] ?, so esc is the one key
 	// out that needs no lookup.
 	helpShown bool
 }
@@ -982,7 +982,7 @@ var (
 
 // resizeToggleKey is ctrl+w, resize mode's commit chord, named by the keys
 // resizeHints looks the commit binding up by. Since T7.2 it is no longer a
-// rule outside resize mode: the way in is ctrl+space w (leader.go), and in a
+// rule outside resize mode: the way in is ctrl+] w (leader.go), and in a
 // focused agent pane ctrl+w is the agent's (delete-word in a shell or an
 // editor). Inside resize mode the commit is a separate binding with its own
 // help text (see newModeRegistry), because the footer must say "save" there.
@@ -994,7 +994,7 @@ var resizeToggleKey = key.NewBinding(
 // unfocusPaneKey is the agent view's "back to the list" as the placeholder's
 // footer line names it (renderHelp, views.go). It is help-only: since T7.2
 // no surface answers ctrl+\ — the agent pane types it to the agent, and back
-// to the list is ctrl+space \ (leader.go) — so nothing matches it; it is
+// to the list is ctrl+] \ (leader.go) — so nothing matches it; it is
 // declared once so the footer lines that name it read the same binding.
 var unfocusPaneKey = key.NewBinding(
 	key.WithKeys("ctrl+\\"),
@@ -1092,7 +1092,7 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 //     overlay replaces the pane in the main region, so there is no session
 //     output behind it worth selecting, and one Esc away the leader's `g`
 //     works. In the inbox overlay the chord closes the overlay (see its spec
-//     below). On the list, the overview and the agent pane it is ctrl+space g;
+//     below). On the list, the overview and the agent pane it is ctrl+] g;
 //     in the pane ctrl+g itself is the agent's.
 //   - ctrl+c quits from the modals, the switcher, the list and the overview,
 //     is deliberately component fall-through in the form (the name buffer is
@@ -1112,7 +1112,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	// bind unguarded in this mode for the reason it is NOT in normal mode:
 	// inputNormal's filterClear owns esc there, and mode precedence — not rule
 	// order — keeps an applied filter intact while the detail pane is focused.
-	// It was esc/ctrl+\ before T7.2; ctrl+\ is ctrl+space \ now.
+	// It was esc/ctrl+\ before T7.2; ctrl+\ is ctrl+] \ now.
 	releaseDetail := key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "back to list"),
@@ -1484,14 +1484,14 @@ func newModeRegistry(keys keyMap) modeRegistry {
 
 	// Pane mode is right focus in agent view with the selected row's pane
 	// installed. Since T7.2 exactly one key is the dashboard's: the leader
-	// (ctrl+space). Everything else forwards to the child — esc, q, tab,
-	// ctrl+c (the session owns SIGINT), and the chords the dashboard used to
-	// keep here, ctrl+t, ctrl+\ and ctrl+g, which are ctrl+space t, \ and g
-	// now. Adding a rule here takes a key away from every agent the
+	// (ctrl+]). Everything else forwards to the child — esc, q, tab,
+	// ctrl+c (the session owns SIGINT), Ctrl+Space (the leader before T9.1,
+	// now sent on as NUL), and the chords the dashboard used to keep here,
+	// ctrl+t, ctrl+\ and ctrl+g, which are ctrl+] t, \ and g now. Adding a rule here takes a key away from every agent the
 	// dashboard hosts, which is why the plan pins this set.
 	//
 	// The agent does not lose the leader either: pressed twice, the dialog
-	// closes and sends ctrl+space on (leaderComponentKey, model.go).
+	// closes and sends ctrl+] on (leaderComponentKey, model.go).
 	r[inputPane] = modeSpec{
 		mode: inputPane,
 		rules: []modeRule{

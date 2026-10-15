@@ -1,10 +1,10 @@
- afk Dashboard                                                                 inbox 1 · 1 blocking  ctrl+space i: inbox
+ afk Dashboard                                                                     inbox 1 · 1 blocking  ctrl+] i: inbox
 ╭─ Sessions ────────────────────────────────╮╭─ Build ─────────────────────────────────────────────────────────────────╮
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff   Build       tab/1-6: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
 │ ▌ ● feat-auth           EXECUTING   3/7 ● ││ 1/7 done · T1.2: executing                                              │
 │   ● Billing v2          REVIEWING   7/7   ││ paused: U or afk resume starts it again                                 │
-│   ● fix-login-redirect  PLANNING      – ● ││ 1 item needs you · ctrl+space i: inbox                                  │
+│   ● fix-login-redirect  PLANNING      – ● ││ 1 item needs you · ctrl+] i: inbox                                      │
 │   ○ feat-search         DONE        5/5   ││                                                                         │
 │   ● scratch-1           SCRATCH       –   ││   T1.1  done      Session model         PR #12 · 4c30e4a                │
 │   ○ old-migration       BROKEN        –   ││ › T1.2  running   Auth middleware       feat-auth · executing           │
@@ -37,4 +37,4 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 ╰───────────────────────────────────────────╯╰───────────────────────────────────────────────────── esc: back to list ─╯
-esc back to list · ctrl+space actions · ctrl+c quit · tab next tab · shift+tab previous tab · 1-6 jump to tab …         
+esc back to list · ctrl+] actions · ctrl+c quit · tab next tab · shift+tab previous tab · 1-6 jump to tab …             

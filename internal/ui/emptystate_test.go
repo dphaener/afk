@@ -904,7 +904,7 @@ func TestRenderHeaderReportsOnlyOtherProjectsAwaiting(t *testing.T) {
 // TestRenderHeaderSwitchHintVisibleAtEightyColumns keeps the original
 // contract this test was written for, which the redesign makes literal
 // again: at a REAL 80-column terminal, with the attention line populated,
-// the `ctrl+space p: projects` hint must still be on screen. 80 columns is the
+// the `ctrl+] p: projects` hint must still be on screen. 80 columns is the
 // width the ladder's first two rungs are tuned against, and the rung that
 // drops the hint must not be reached there.
 func TestRenderHeaderSwitchHintVisibleAtEightyColumns(t *testing.T) {

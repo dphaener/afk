@@ -288,7 +288,7 @@ func lookAtNewPlanFolder(text, providerName string, deps planDeps) newPlanLook {
 	n.kind = newPlanFolderKind(n.action)
 	switch n.kind {
 	case planFolderHasPlan:
-		n.reason = fmt.Sprintf("this folder already has a plan (%s). To change it, use the dashboard's extend, amend or document actions: press ctrl+space, then type the name. Nothing was started.", look.planPath)
+		n.reason = fmt.Sprintf("this folder already has a plan (%s). To change it, use the dashboard's extend, amend or document actions: press ctrl+], then type the name. Nothing was started.", look.planPath)
 	case planFolderRefused:
 		// Every refusal the decision makes, and any decision this caller does
 		// not act on, which planRefusal words as an internal error.
