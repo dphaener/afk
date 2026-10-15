@@ -333,3 +333,34 @@ dialog.confirm-sheet[data-status-sheet] { max-height: 90vh; overflow-y: auto; }
 .plan-findings { border: 1px solid var(--border); border-radius: var(--radius-md); }
 .afk a.finding__where { color: var(--text-3); }
 .afk a.finding__where:hover { color: var(--accent-hover); }
+
+/* ───────── planning chat ───────── */
+/* The thread and the reply area share one readable column, centred in the
+   detail pane on the desktop. */
+.chat-sub { margin-top: calc(var(--space-2) * -1); }
+.chat-main { align-items: center; }
+.chat-main > * { width: 100%; max-width: 720px; }
+/* Room under the last message so the sticky composer never covers it. */
+.chat-main .thread, .chat-pending { padding-bottom: var(--space-4); }
+.chat-pending:empty { display: none; }
+.chat-reply { display: flex; flex-direction: column; gap: var(--space-4); }
+.chat-reply .composer { margin: 0 calc(var(--space-4) * -1); }
+.chat-reply .composer .textarea { flex: 1; min-width: 0; }
+.chat-reply .composer .field__error, .chat-reply .question .field__error { flex-basis: 100%; }
+.chat-reply .composer { flex-wrap: wrap; }
+.chat-reply .composer .btn { min-width: var(--target); }
+.chat-fieldset { gap: var(--space-2); }
+.chat-asked { display: flex; flex-direction: column; gap: var(--space-2); }
+.chat-asked__options { margin: 0; padding-left: var(--space-5); color: var(--text-2); font-size: var(--text-sm); }
+.chat-options { display: flex; flex-direction: column; gap: var(--space-2); }
+/* Options side by side where there is room. */
+@media (min-width: 761px) {
+  .chat-options { flex-direction: row; flex-wrap: wrap; }
+  .chat-options .option { flex: 1 1 200px; width: auto; }
+}
+/* Sent (chosen) or unavailable option: the chosen one keeps its accent, the
+   rest fade, and none show a pointer. */
+.option:disabled { cursor: not-allowed; color: var(--text-3); background: var(--surface-2); border-color: var(--border); }
+.option.is-chosen:disabled { color: var(--text); background: var(--accent-soft); border-color: var(--accent); cursor: default; }
+.chat-sent { font-size: var(--text-xs); color: var(--text-3); }
+.chat-reply .option:focus-visible, .chat-reply .textarea:focus-visible, .chat-reply .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

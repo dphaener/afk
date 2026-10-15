@@ -10,7 +10,7 @@
 <div class="split plan-page">
 <div class="split__list">
 <section class="card plan-checker" aria-label="The plan checker">
-  {{if .Status.Known}}{{with .Status.Line}}<p class="plan-line">{{.}}</p>{{end}}{{end}}
+  {{if .Status.Known}}{{with .Status.Line}}<p class="plan-line">{{if $.Status.Session}}<a href="/p/{{pe $.Project}}/plan/chat">{{.}}</a>{{else}}{{.}}{{end}}</p>{{end}}{{end}}
   {{with .CheckerBadge}}<p><span class="badge {{.Class}}">{{.Word}}</span></p>{{end}}
   <div class="stats plan-stats">
     <div class="stat"><span class="stat__value">{{.Summary.Tasks}}</span><span class="stat__label">Tasks</span></div>

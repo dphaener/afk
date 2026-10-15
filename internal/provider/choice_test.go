@@ -86,3 +86,73 @@ func TestPlanChoiceKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanOtherKeys pins the own-answer bytes against the recorded trial
+// (.afk/t8-12/own-answer-keys.md, claude 2.1.300). Load-bearing rows: the
+// 3-option and 2-option rows pin the digit N+1 (one lower lands on the last
+// option and answers it; one higher lands on "Chat about this"), the paste
+// shape and the trailing CR, as attempts 6 and 7 recorded them; "newlines"
+// keeps a CR from submitting halfway through; "blank" exists because the
+// trial showed an empty own answer declines the question; the multi-select,
+// several-options and one-option rows keep a shape the trial never tried
+// from being guessed at. codex and opencode must refuse like their
+// PlanConversation.
+func TestPlanOtherKeys(t *testing.T) {
+	three := Question{Options: opts("Go", "Rust", "Python")}
+	two := Question{Options: opts("Tabs", "Spaces")}
+	four := Question{Options: opts("A", "B", "C", "D")}
+	k := func(s ...string) [][]byte {
+		var out [][]byte
+		for _, x := range s {
+			out = append(out, []byte(x))
+		}
+		return out
+	}
+	cases := []struct {
+		name    string
+		p       Provider
+		q       Question
+		text    string
+		want    [][]byte
+		wantErr error // nil with wantAny false means success
+		wantAny bool  // any error, no keys
+	}{
+		{name: "claude 3 options", p: claude{}, q: three, text: "Kotlin, honestly",
+			want: k("4", "\x1b[200~Kotlin, honestly\x1b[201~", "\r")},
+		{name: "claude 2 options", p: claude{}, q: two, text: "1 tab per level, my own words",
+			want: k("3", "\x1b[200~1 tab per level, my own words\x1b[201~", "\r")},
+		{name: "claude 4 options", p: claude{}, q: four, text: "none of these",
+			want: k("5", "\x1b[200~none of these\x1b[201~", "\r")},
+		{name: "claude newlines", p: claude{}, q: three, text: "one\r\ntwo\rthree",
+			want: k("4", "\x1b[200~one\ntwo\nthree\x1b[201~", "\r")},
+		{name: "claude multi-select", p: claude{}, q: Question{MultiSelect: true, Options: opts("X", "Y", "Z")}, text: "mine", wantErr: ErrChoiceUnsupported},
+		{name: "claude more than 4 options", p: claude{}, q: Question{Options: opts("A", "B", "C", "D", "E")}, text: "mine", wantErr: ErrChoiceUnsupported},
+		{name: "claude one option", p: claude{}, q: Question{Options: opts("A")}, text: "mine", wantErr: ErrChoiceUnsupported},
+		{name: "claude blank", p: claude{}, q: three, text: " \n\t ", wantAny: true},
+		{name: "claude control byte", p: claude{}, q: three, text: "a\x1b[201~b", wantAny: true},
+		{name: "codex", p: codex{}, q: three, text: "mine", wantErr: ErrNoPlanSession},
+		{name: "opencode", p: opencode{}, q: three, text: "mine", wantErr: ErrNoPlanSession},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.p.PlanOtherKeys(tt.q, tt.text)
+			if tt.wantErr != nil || tt.wantAny {
+				if err == nil || (tt.wantErr != nil && !errors.Is(err, tt.wantErr)) || got != nil {
+					t.Fatalf("got %q, %v; want no keys and error %v", got, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+			for i := range got {
+				if !bytes.Equal(got[i], tt.want[i]) {
+					t.Fatalf("write %d: got %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

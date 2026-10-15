@@ -814,7 +814,7 @@ func projectPageFor(in projectPageInput) projectPage {
 		tasksItem.Hint = fmt.Sprintf("%d of %d", sum.Done, sum.Total)
 	}
 	sessionsItem := navItem{Label: "Sessions", Href: sessionsBase(sum.Name), Count: len(in.Sessions), CountSet: true, Quiet: len(in.Sessions) == 0}
-	pg.Nav = []navItem{inboxItem, tasksItem, sessionsItem, planItem, {Label: "Usage", Href: "/usage"}}
+	pg.Nav = []navItem{inboxItem, tasksItem, sessionsItem, planItem, {Label: "Planning chat", Href: base + "/plan/chat"}, {Label: "Usage", Href: "/usage"}}
 	return pg
 }
 

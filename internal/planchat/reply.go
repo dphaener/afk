@@ -8,11 +8,14 @@ import (
 )
 
 // Reply is what the owner sends to the planning session from the web page:
-// either typed text, or one list of option labels for each pending question,
-// in the order of Chat.Questions. Exactly one of the two must be given.
+// typed text, one list of option labels for each pending question (in the
+// order of Chat.Questions), or Other, the owner's own answer to a single
+// open question instead of one of its options. Exactly one of the three must
+// be given.
 type Reply struct {
 	Text    string     `json:"text"`
 	Choices [][]string `json:"choices"`
+	Other   string     `json:"other"`
 }
 
 // RefusalReason says why a reply was refused, in a form a page script can
@@ -59,8 +62,15 @@ func refuse(reason RefusalReason, format string, args ...any) *Refusal {
 func Check(chat Chat, r Reply) *Refusal {
 	hasText := r.Text != ""
 	hasChoices := r.Choices != nil
-	if hasText == hasChoices {
-		return refuse(ReasonBadReply, "A reply needs either typed text or chosen options, and not both. Write your answer or pick an option, then send it again.")
+	hasOther := r.Other != ""
+	given := 0
+	for _, b := range []bool{hasText, hasChoices, hasOther} {
+		if b {
+			given++
+		}
+	}
+	if given != 1 {
+		return refuse(ReasonBadReply, "A reply needs exactly one of typed text, chosen options or your own answer. Write your answer, pick an option or type your own answer, then send it again.")
 	}
 	switch chat.State {
 	case StateNone:
@@ -77,7 +87,13 @@ func Check(chat Chat, r Reply) *Refusal {
 		if hasText {
 			return refuse(ReasonWrongKind, "The planning session is waiting for you to pick from the options it offered, not for typed text. Choose an option and send again.")
 		}
+		if hasOther {
+			return checkOther(chat.Questions, r.Other)
+		}
 	case StateWaitingForText:
+		if hasOther {
+			return refuse(ReasonWrongKind, "The planning session is waiting for typed text, not for your own answer to a question. Write your reply and send again.")
+		}
 		if hasChoices {
 			return refuse(ReasonWrongKind, "The planning session is waiting for typed text, not for a choice. Write your reply and send again.")
 		}
@@ -86,6 +102,17 @@ func Check(chat Chat, r Reply) *Refusal {
 		return refuse(ReasonNotWaiting, "The planning session is not waiting for a reply. Wait until it asks, then send again.")
 	}
 	return checkChoices(chat.Questions, r.Choices)
+}
+
+// checkOther decides whether an own answer may go to the open question. Only
+// a lone single-select question takes one: with several questions, or a
+// multi-select one, there is no single place to type it, so the owner is sent
+// to the dashboard rather than have the answer land on the wrong question.
+func checkOther(questions []provider.Question, text string) *Refusal {
+	if len(questions) != 1 || questions[0].MultiSelect {
+		return refuse(ReasonUnsupported, "Your own answer can only be sent from the page for a single question where you pick one option. Answer this one in afk dash.")
+	}
+	return checkTypeable(text)
 }
 
 func checkChoices(questions []provider.Question, choices [][]string) *Refusal {
@@ -134,16 +161,30 @@ func offered(q provider.Question, label string) bool {
 // LF and tab are refused, and 0x7f too, because an ESC inside the text could
 // end the bracketed paste early and let the rest run as keystrokes.
 func TextKeys(text string) ([][]byte, *Refusal) {
+	text = normaliseNewlines(text)
+	if refusal := checkTypeable(text); refusal != nil {
+		return nil, refusal
+	}
+	return [][]byte{[]byte("\x1b[200~" + text + "\x1b[201~"), []byte("\r")}, nil
+}
+
+func normaliseNewlines(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.ReplaceAll(text, "\r", "\n")
+}
+
+// checkTypeable refuses blank text and text with control bytes, the one rule
+// TextKeys and the own-answer check share so the two cannot drift apart.
+func checkTypeable(text string) *Refusal {
+	text = normaliseNewlines(text)
 	if strings.TrimSpace(text) == "" {
-		return nil, refuse(ReasonBadReply, "The reply is empty. Write something and send it again.")
+		return refuse(ReasonBadReply, "The reply is empty. Write something and send it again.")
 	}
 	for i := 0; i < len(text); i++ {
 		c := text[i]
 		if (c < 0x20 && c != '\n' && c != '\t') || c == 0x7f {
-			return nil, refuse(ReasonBadReply, "The reply contains a control character that cannot be typed into the session. Remove it and send again.")
+			return refuse(ReasonBadReply, "The reply contains a control character that cannot be typed into the session. Remove it and send again.")
 		}
 	}
-	return [][]byte{[]byte("\x1b[200~" + text + "\x1b[201~"), []byte("\r")}, nil
+	return nil
 }

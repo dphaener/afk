@@ -17,7 +17,9 @@ import (
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
+	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/plansession"
+	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
 )
 
@@ -137,7 +139,7 @@ func fingerprint(value any, err error) string {
 func readSnapshot(projects []Project, d Deps, refreshGen uint64) snapshot {
 	snap := make(snapshot, len(projects)+1)
 	for _, p := range projects {
-		snap[p.Name] = readProject(p.Root, d)
+		snap[p.Name] = readProject(p.Name, p.Root, d)
 	}
 	var usage usagestate.File
 	var ok bool
@@ -154,7 +156,7 @@ func readSnapshot(projects []Project, d Deps, refreshGen uint64) snapshot {
 
 // readProject reads one project's parts, each from the same files the page
 // that shows it reads.
-func readProject(root string, d Deps) map[string]string {
+func readProject(name, root string, d Deps) map[string]string {
 	fp := make(map[string]string, len(parts)-1)
 
 	items, unreadable, err := inbox.Store{Dir: inbox.Dir(root), Now: d.Now}.List()
@@ -185,8 +187,38 @@ func readProject(root string, d Deps) map[string]string {
 	}
 	fp[partSessions] = fingerprint(sessions, nil)
 
-	fp[partPlanning] = fingerprint(planningFiles(root), nil)
+	fp[partPlanning] = fingerprint(planningPart(name, root, d), nil)
 	return fp
+}
+
+// planningPart is what the planning part's fingerprint is made of: the raw
+// planning files, and, when the page has a conversation reader, the
+// conversation.
+//
+// The conversation is part of planning (T8.12) because the chat screen is
+// drawn from it: a new agent message, a question opening or a state change
+// (working to waiting for a choice) must reach an open chat screen, and none
+// of them writes a file in planningFiles' list; the transcript lives under
+// the agent's own folder. Only State, Messages, Questions and Problem are
+// folded in. Project is the name already keyed on, and nothing that changes
+// every tick (a clock, a read count) may ever be added, or the screen would
+// swap on every poll. It is read afresh on every tick, never cached, so a
+// change is seen on the tick it happens; planchat.Read answers none without
+// reading a transcript unless the host is alive, which bounds the cost. A
+// nil d.PlanChat leaves the part as the files alone.
+func planningPart(name, root string, d Deps) any {
+	files := planningFiles(root)
+	if d.PlanChat == nil {
+		return files
+	}
+	c := d.PlanChat(name, root)
+	return struct {
+		Files     []string            `json:"files"`
+		State     planchat.State      `json:"state"`
+		Messages  []planchat.Message  `json:"messages"`
+		Questions []provider.Question `json:"questions"`
+		Problem   string              `json:"problem"`
+	}{files, c.State, c.Messages, c.Questions, c.Problem}
 }
 
 // planningFiles reads the raw bytes of the files a planning session changes

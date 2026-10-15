@@ -326,6 +326,11 @@ func sessionsPageFor(project string, sessions []SessionView) SessionsView {
 			Badges: sessionBadges(s, k), Lines: sessionLines(s, k),
 			ShortID: shortID(s.SessionID), Done: s.PlanDone, Total: s.PlanTotal,
 		}
+		// The planning session's row opens its chat, the one screen that
+		// can talk to it; every other row opens its overview.
+		if k.Kind == "planning" {
+			row.Href = "/p/" + url.PathEscape(project) + "/plan/chat"
+		}
 		v.Sessions = append(v.Sessions, row)
 	}
 	if len(v.Sessions) == 0 {

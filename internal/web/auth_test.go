@@ -375,6 +375,37 @@ func TestAuthPlanReplyRouteNeedsTheToken(t *testing.T) {
 	}
 }
 
+// TestAuthPlanChatPageRoutesNeedTheToken covers the chat screen's two page
+// routes, which are not in the route table either, with the same refusals.
+// Load-bearing: the POST row, where the fake PlanReply must not run (a
+// stranger could type into the planning session), and the GET rows, where
+// PlanChat must not run (a stranger could read the conversation).
+func TestAuthPlanChatPageRoutesNeedTheToken(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for name, a := range map[string]authReq{
+			"no token":     {},
+			"wrong query":  {target: "/p/app/plan/chat?token=" + otherToken},
+			"wrong cookie": {cookie: goodCookie(otherToken)},
+			"wrong bearer": {bearer: otherToken},
+		} {
+			t.Run(method+"_"+name, func(t *testing.T) {
+				rg := newRig(t, Config{})
+				a.method = method
+				if a.target == "" {
+					a.target = "/p/app/plan/chat"
+				}
+				rec := a.send(rg.h)
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("status = %d, want 401\n%s", rec.Code, rec.Body.String())
+				}
+				if len(rg.replies) != 0 || len(rg.chatCalls) != 0 {
+					t.Errorf("the chat was read or replied to without the token: %v %v", rg.chatCalls, rg.replies)
+				}
+			})
+		}
+	}
+}
+
 // TestAuthUnauthorizedOutsideAPI: away from /api the refusal is a small page a
 // person can act on. It must hold for addresses that do not exist too, so a
 // stranger cannot map the site by telling 401 from 404.

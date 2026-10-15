@@ -3,6 +3,7 @@ package provider
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrChoiceUnsupported is returned by PlanChoiceKeys for a kind of question
@@ -16,6 +17,61 @@ func (codex) PlanChoiceKeys([]Question, [][]string) ([][]byte, error) {
 
 func (opencode) PlanChoiceKeys([]Question, [][]string) ([][]byte, error) {
 	return nil, ErrNoPlanSession
+}
+
+func (codex) PlanOtherKeys(Question, string) ([][]byte, error) {
+	return nil, ErrNoPlanSession
+}
+
+func (opencode) PlanOtherKeys(Question, string) ([][]byte, error) {
+	return nil, ErrNoPlanSession
+}
+
+// PlanOtherKeys builds the keystrokes that answer claude's open question
+// dialog with the owner's own text, through the "Type something." row the
+// dialog draws below the options. Every key here was observed on claude
+// 2.1.300 on 2026-10-14 (the task W1.T1 trial of plan t8-12:
+// `.afk/t8-12/own-answer-keys.md`, verdict RELIABLE, 7 of 7 answered
+// dialogs). The recipe is three writes:
+//
+//   - the digit N+1 for a question with N options, which moves the cursor to
+//     "Type something." without answering, from whatever row the cursor is
+//     on (the owner may have moved it in the dashboard first);
+//   - the text as one bracketed paste, `ESC[200~ text ESC[201~`, the same
+//     shape planchat.TextKeys sends to the prompt (provider cannot import
+//     planchat, so the shape is written out here); newlines inside it are
+//     kept as lines of the answer;
+//   - CR, which submits the row.
+//
+// Blank text is refused here as well as in planchat.Check because the trial
+// showed Enter on an empty "Type something." row declines the whole question
+// (the tool use is rejected), which is never what the owner meant. Carriage
+// returns are turned into newlines so the only CR sent is the submit, and
+// other control bytes are refused, since one inside the paste could end it
+// early and reach the dialog as a key. Only the shape the trial covered is
+// built: one single-select question with 2 to 4 options (2 and 3 were tried;
+// 4 is the most the question tool offers and keeps N+1 a single digit).
+// Anything else, multi-select or several questions included, is
+// ErrChoiceUnsupported rather than a guess.
+func (claude) PlanOtherKeys(q Question, text string) ([][]byte, error) {
+	if q.MultiSelect || len(q.Options) < 2 || len(q.Options) > maxChoiceOptions {
+		return nil, ErrChoiceUnsupported
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("the own answer is empty; sending it would decline the question")
+	}
+	for i := 0; i < len(text); i++ {
+		if c := text[i]; (c < 0x20 && c != '\n' && c != '\t') || c == 0x7f {
+			return nil, errors.New("the own answer contains a control character that cannot be typed into the session")
+		}
+	}
+	return [][]byte{
+		{byte('1' + len(q.Options))},
+		[]byte("\x1b[200~" + text + "\x1b[201~"),
+		[]byte("\r"),
+	}, nil
 }
 
 // maxChoiceOptions is the most options per question the trial covered (all

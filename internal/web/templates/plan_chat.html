@@ -1,0 +1,83 @@
+{{define "title"}}Planning {{.Project}}{{end}}
+{{define "content"}}
+{{- $name := .Project}}{{$p := .Page}}
+<div class="chat">
+<h1>Planning {{$name}}</h1>
+{{with $p.Sub}}<p class="chat-sub meta">{{.}}</p>{{end}}
+<div class="split chat-split">
+<div class="split__list chat-side">
+  {{with $p.Steps}}<ol class="steps" aria-label="Planning phases">
+  {{range .}}<li class="step{{if .Done}} is-done{{end}}{{if .Current}} is-current{{end}}"{{if .Current}} aria-current="step"{{end}}><span class="step__dot" aria-hidden="true"></span>{{.Name}}</li>
+  {{end}}</ol>{{end}}
+  <dl class="kv">
+    <dt>Folder</dt><dd class="path">{{$p.Folder}}</dd>
+    <dt>Repository</dt><dd>{{$p.Repository}}</dd>
+  </dl>
+  {{with $p.Overview}}<p><a href="{{.}}">The planning session&rsquo;s overview</a></p>{{end}}
+</div>
+<div class="split__detail chat-main">
+{{/* The thread holds no form and no input, so a live swap can always take
+     it whole. The reply area below is its own region: it holds the forms,
+     and opts into live.js's data-live-form rule, which never swaps it while
+     the owner is typing in it. */}}
+<div id="chat-thread" class="thread" aria-live="polite" data-live="planning" data-project="{{$name}}"{{if $p.Working}} data-working="true"{{end}}>
+{{range $p.Thread}}{{if .Agent}}<div class="msg msg--agent"><span class="msg__who">Agent</span>
+{{if .Questions}}{{range .Questions}}<div class="chat-asked">
+  <p class="question__text">{{.Question}}</p>
+  <ul class="chat-asked__options">{{range .Options}}<li>{{.Label}}{{if .Recommended}} <span class="meta">(Recommended)</span>{{end}}</li>{{end}}</ul>
+</div>
+{{end}}{{else}}<div class="prose">{{renderChat .Text}}</div>
+{{end}}</div>
+{{else}}<div class="msg msg--owner"><span class="msg__who">You</span><div class="msg__bubble item-body">{{.Text}}</div></div>
+{{end}}{{end}}
+{{- if $p.Working}}<p class="working"><span class="working__dots" aria-hidden="true"><span></span><span></span><span></span></span>The agent is working</p>
+{{end -}}
+</div>
+<div id="chat-reply" class="chat-reply" data-live="planning" data-project="{{$name}}" data-live-form>
+{{with $p.Error}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>
+{{end}}
+{{- if eq $p.State "none"}}<div class="empty">
+  <p class="empty__title">No planning session</p>
+  <p>Start one with afk dash; this page will be able to start one later.</p>
+</div>
+{{end}}
+{{- if eq $p.State "unknown"}}<div class="notice notice--error"><div class="notice__body">{{$p.Problem}}</div></div>
+{{end}}
+{{- with $p.Questions}}
+<form method="post" action="{{$p.Action}}" class="question" data-chat-form data-project="{{$name}}">
+{{if $p.OneTap}}{{with index . 0}}
+  {{with .Header}}<p class="meta">{{.}}</p>{{end}}
+  <p class="question__text" id="chat-q-0">{{.Question}}</p>
+  <div class="chat-options" role="group" aria-labelledby="chat-q-0">
+  {{range .Options}}<button type="submit" class="option{{if .Recommended}} option--recommended{{end}}" name="choice-0" value="{{.Label}}" aria-pressed="false" data-chat-option><span class="option__top">{{.Label}}{{if .Recommended}}<span class="option__mark">Recommended</span>{{end}}</span>{{with .Description}}<span class="option__desc">{{.}}</span>{{end}}</button>
+  {{end}}</div>
+{{end}}
+{{if $p.OwnAnswer}}  <div class="field"><label class="field__label" for="chat-other">Or answer in your own words</label>
+  <textarea class="textarea" id="chat-other" name="other" rows="3">{{$p.Other}}</textarea></div>
+  <div class="btn-row"><button type="submit" class="btn btn--primary">Send</button></div>
+{{end}}
+{{else}}
+{{range $q := .}}  <fieldset class="chat-fieldset">
+  <legend class="question__text">{{$q.Question}}</legend>
+  {{with $q.Header}}<p class="meta">{{.}}</p>{{end}}
+  {{range $q.Options}}<label class="option{{if .Recommended}} option--recommended{{end}}"><span class="option__top"><input type="{{if $q.MultiSelect}}checkbox{{else}}radio{{end}}" name="choice-{{$q.Index}}" value="{{.Label}}"> {{.Label}}{{if .Recommended}}<span class="option__mark">Recommended</span>{{end}}</span>{{with .Description}}<span class="option__desc">{{.}}</span>{{end}}</label>
+  {{end}}</fieldset>
+{{end}}  <div class="btn-row"><button type="submit" class="btn btn--primary">Send</button></div>
+{{end}}
+  <p class="field__error" role="alert" data-chat-error></p>
+</form>
+{{end}}
+{{- if $p.Composer}}
+{{with $p.ComposerHint}}<p class="field__hint" id="chat-composer-hint">{{.}}</p>
+{{end}}<form method="post" action="{{$p.Action}}" class="composer" data-chat-form data-project="{{$name}}">
+  <label class="sr-only" for="chat-text">Your reply</label>
+  <textarea class="textarea" id="chat-text" name="text" rows="1"{{if not $p.ComposerOn}} disabled aria-describedby="chat-composer-hint"{{end}}>{{$p.Text}}</textarea>
+  <button type="submit" class="btn btn--primary"{{if not $p.ComposerOn}} disabled{{end}}>Send</button>
+  <p class="field__error" role="alert" data-chat-error></p>
+</form>
+{{end}}
+</div>
+</div>
+</div>
+</div>
+{{end}}
