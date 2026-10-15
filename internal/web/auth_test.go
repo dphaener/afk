@@ -272,8 +272,8 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 		{"wrong cookie", func(a authReq) authReq { a.cookie = goodCookie(otherToken); return a }},
 		{"wrong bearer", func(a authReq) authReq { a.bearer = otherToken; return a }},
 	}
-	if len(routes) != 23 {
-		t.Fatalf("the route table has %d routes; the plan lists 23", len(routes))
+	if len(routes) != 25 {
+		t.Fatalf("the route table has %d routes; the plan lists 25", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -314,6 +314,9 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 				if len(rg.approveCalls) != 0 {
 					t.Errorf("a plan was approved without the token: %v", rg.approveCalls)
 				}
+				if len(rg.addProjectCalls)+len(rg.removeProjectCalls) != 0 {
+					t.Errorf("a project was added or removed without the token: %v %v", rg.addProjectCalls, rg.removeProjectCalls)
+				}
 				rg.waitRefresh()
 				if n := rg.refreshCalls.Load(); n != 0 {
 					t.Errorf("a usage reading ran %d times without the token", n)
@@ -342,10 +345,13 @@ func TestAuthEveryRouteNeedsTheToken(t *testing.T) {
 			// plan reaches its seam, whose rig answer is approved (200).
 			// Planning a new project is refused for its missing path (400),
 			// and so is the GitHub answer, since no folder was offered
-			// (400, not_offered). None is the catch-all's 404.
+			// (400, not_offered). Adding a project is refused for its missing
+			// folder (400), and removing one for its missing name (400,
+			// not_listed), both before their seam. None is the catch-all's 404.
 			want := http.StatusOK
 			if strings.HasSuffix(rt.path, "/answer") || strings.HasSuffix(rt.path, "/status") ||
 				strings.HasSuffix(rt.path, "/restart") || strings.HasSuffix(rt.path, "/plan/change") || rt.path == "/plan/new" || rt.path == "/plan/new/github" ||
+				rt.path == "/projects/add" || rt.path == "/projects/remove" ||
 				(rt.method == http.MethodPost && rt.path == "/p/{project}/sessions") {
 				want = http.StatusBadRequest
 			}

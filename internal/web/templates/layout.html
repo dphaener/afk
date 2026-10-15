@@ -22,7 +22,8 @@
   <span class="app-bar__title">{{.Title}}</span>
 {{end}}
   <span class="live" data-live-status hidden>Live</span>
-</header>
+{{if and .Overview .AddProject}}  <a class="icon-btn app-bar__action" href="/projects/add" aria-label="Add a project"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></a>
+{{end}}</header>
 <header class="topnav">
   <a class="wordmark topnav__brand" href="/">afk</a>
   <nav class="topnav__links" aria-label="Main">
@@ -30,7 +31,8 @@
     <a class="topnav__link" href="/usage"{{if eq .Nav "usage"}} aria-current="{{.Current}}"{{end}}>Usage</a>
   </nav>
   <span class="live topnav__live" data-live-mirror hidden>Live</span>
-  {{if .PlanNew}}<a class="btn btn--primary btn--sm topnav__action" href="/plan/new">Plan a new project</a>
+  {{if .AddProject}}<a class="btn btn--secondary btn--sm topnav__action" href="/projects/add">Add a project</a>
+  {{end}}{{if .PlanNew}}<a class="btn btn--primary btn--sm topnav__action" href="/plan/new">Plan a new project</a>
   {{end}}</header>
 {{end}}{{end}}
 <main class="page{{if .Chrome.Bare}} page--alone{{end}}">

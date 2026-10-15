@@ -3333,3 +3333,28 @@ Why these choices, in plain words:
 - **Nothing is pushed.** The create makes the repository and sets `origin`; the first push belongs to the build, much later.
 
 Verification for the owner (T8.15b): on a phone, open **Plan a new project**, type a new name such as `demo`, press **Start planning**, and check that the question "Create a private GitHub repository for it?" shows your account and has **No** checked. Answer yes once with a throwaway name and check on GitHub that the repository is private and empty, and that `git remote -v` in the new folder shows `origin`. The review ran this against a scratch build with a stand-in `gh`, not against GitHub.
+
+## T8.16
+
+T8.16 lets the web page add a project to the daemon's list and remove one, with the same effect and words as `afk project add` and `afk project remove`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **Addresses (A1).** `POST /projects/add` and `POST /projects/remove`, each with an `/api` twin, so there are 25 routes. The add form, the remove screen and the remove confirm page (for a browser without JavaScript) are pages of their own at `/projects/add`, `/projects/remove` and `/projects/remove/confirm`.
+- **Both need the confirm (A2).** Every change the page makes needs `confirm` in the request, so add does too; the add form sends it. A request without it changes nothing.
+- **Remove names a listed project (A3).** The page sends only the project's name. The server looks it up in the daemon's own list and shows that folder in the confirm; a name not on the list is refused without touching `config.toml`. The web page still never reads `config.toml` itself.
+- **The folder you type (A4).** `~` means your home folder. Any other path must be a full one, because the daemon's own working folder means nothing to you. The same rule as the dashboard's form.
+- **Until the daemon reads the list again (A5).** The daemon reads `config.toml` again at the start of every pass, a few seconds apart. Until it does, the overview says the project was added or removed and that its row appears or goes on the next pass. The server keeps these notes in memory only (at most 32, for ten minutes), so a restart forgets them, which is harmless: by then the list has caught up.
+- **The JSON answer (A6)** is `{"result":{"outcome","name","root","text"},"pending"}`, with 200 for added, already listed and removed, 400 for refused and not listed, and 500 when `config.toml` could not be read or written.
+- **One change at a time (A7).** Adds and removes from the page run one after another, so two requests cannot both read the file and overwrite each other's change.
+- **The remove confirm (A8).** It names the project and its folder and says the folder, its plan and its sessions are not touched and a task that is running is left to finish. **Keep it** has the focus.
+- **Buttons (A9).** Add a project sits in the phone's top bar, the desktop's top bar and the overview's footer; Remove a project is a quiet button in the footer. Each shows only when the daemon wired its action.
+- **Tests (A10)** are table and handler tests written with the code. **Nothing had to be in place first (A11):** T8.5 and T7.10 are merged.
+
+Decided while building (T8.16):
+
+- **The overview's JSON gains `pending`.** The notes about a change the daemon has not picked up yet are a new `pending` list on `GET /api/`, beside the existing keys, never null.
+- **The remove sheet reuses the session sheet.** The same partial that draws the session actions' confirm draws the remove question, and the same value draws the page for a browser without JavaScript.
+- **`confirm.js` fills the folder and skips unchecked radios.** It now fills `{folder}` as well as `{name}` and `{description}`, and it reads only the checked radio, so the sheet names the project you picked and not the last one in the list.
+- **A remove answer has no folder.** `afk project remove` does not report the folder it removed, so the JSON `root` is empty after a remove. The page's note uses only the name.
+- **Names match.** The daemon's list uses the `[[project]]` names, so remove passes the listed name straight to the command's code, with no matching by folder.
+
+Verification for the owner (T8.16): in a browser, open the overview, press **Remove a project**, pick a project and press **Remove…**. Check the sheet names the project and its folder and that **Keep it** has the focus. Also check that the **Add a project** button sits right in the phone's top bar and the desktop's top bar. The review checked the page for a browser without JavaScript over HTTP, and nothing in a real browser.

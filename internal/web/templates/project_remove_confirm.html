@@ -1,0 +1,15 @@
+{{define "title"}}{{.Sheet.Title}}{{end}}
+{{define "content"}}
+<div class="stack">
+<h1>{{.Sheet.Title}}</h1>
+<div>{{range .Sheet.Body}}<p>{{.Text}}</p>{{end}}</div>
+<form method="post" action="{{.Sheet.Path}}" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  {{range .Sheet.Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+  {{end}}<div class="btn-row">
+    <button type="submit" class="btn btn--danger">{{.Sheet.Button}}</button>
+    <a class="btn btn--secondary" href="/projects/remove" autofocus>{{.Sheet.Safe}}</a>
+  </div>
+</form>
+</div>
+{{end}}

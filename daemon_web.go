@@ -115,6 +115,8 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		GitHubOffer:      webGitHubOffer,
 		CreateGitHubRepo: webCreateGitHubRepo,
 		PlanLocation:     webPlanLocation,
+		AddProject:       webAddProject,
+		RemoveProject:    webRemoveProject,
 		AddBeingPlanned:  webAddBeingPlanned(stateDir, configured, now, planSessionGone),
 		PlanChat:         webPlanChat(now),
 		PlanReply:        webPlanReply(now),

@@ -25,6 +25,10 @@ body.afk { margin: 0; }
    yet, or no stream), the action takes it instead. */
 .topnav__action { margin-left: auto; }
 .topnav__live:not([hidden]) + .topnav__action { margin-left: 0; }
+/* Add a project sits beside it: only the first action takes the free space. */
+.topnav__action + .topnav__action { margin-left: 0; }
+.app-bar__action { margin-left: auto; }
+.app-bar .live:not([hidden]) + .app-bar__action { margin-left: 0; }
 
 /* afk.css colours every link with ".afk a" and ".afk a:hover", which are
    more specific than its own component classes, so a component drawn on an

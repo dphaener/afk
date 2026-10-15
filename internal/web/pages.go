@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "error"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -140,6 +140,10 @@ type chrome struct {
 	// renderPage, not chromeFor, because it is the server's seams and not
 	// the page's view that decide it.
 	PlanNew bool
+	// AddProject and RemoveProject are whether the page offers Add a project
+	// and Remove a project (canAddProject, canRemoveProject), set by
+	// renderPage for the same reason as PlanNew.
+	AddProject, RemoveProject bool
 }
 
 // chromeFor works out the bars for a page from its name and view, the
@@ -202,6 +206,13 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 		c.Back, c.BackLabel = v.Back, "Back to "+v.Project
 	case NewPlanPageView:
 		c.Title = "Plan a new project"
+	case ProjectAddPageView:
+		c.Title = "Add a project"
+	case ProjectRemovePageView:
+		c.Title = "Remove a project"
+	case ProjectRemoveConfirmView:
+		c.Title = "Remove a project"
+		c.Back, c.BackLabel = "/projects/remove", "Back to the project list"
 	case PlanResultView:
 		c.Title = v.Title
 		c.Back, c.BackLabel = v.Back, "Back to the plan of "+v.Project
@@ -249,6 +260,11 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		}
 		ch := chromeFor(name, view, r.Method, r.URL.Path, projects)
 		ch.PlanNew = !ch.Bare && s.canPlanNew()
+		ch.AddProject = !ch.Bare && s.canAddProject()
+		ch.RemoveProject = !ch.Bare && s.canRemoveProject()
+		if _, isOverview := view.(OverviewView); isOverview && r.Method == http.MethodGet {
+			ch.Toast = projectToast(r.URL.Query().Get("done"))
+		}
 		if pv, isProject := view.(ProjectView); isProject && r.Method == http.MethodGet {
 			ch.Toast = toastFor(r.URL.Query().Get("done"), pv.Name, "")
 		}
@@ -345,6 +361,12 @@ var toastTexts = map[string]string{
 	// The code a reply from the planning chat leads to, shown only on the
 	// chat screen (see chatToast).
 	"sent": "Sent to the planning agent.",
+	// The three codes adding or removing a project leads to, shown only on
+	// the overview (see projectToast). They name no project: the name would
+	// have to come from the request.
+	"project_added":     "Project added.",
+	"project_removed":   "Project removed.",
+	"project_unchanged": "Nothing was changed.",
 }
 
 // toastFor is the toast sentence for a ?done= code, or "" when the code is
@@ -354,7 +376,7 @@ var toastTexts = map[string]string{
 // is no task to name, so a placeholder is never shown.
 func toastFor(code, project, task string) string {
 	text, ok := toastTexts[code]
-	if !ok || refreshToastCodes[code] || sessionToastCodes[code] || chatToastCodes[code] {
+	if !ok || refreshToastCodes[code] || sessionToastCodes[code] || chatToastCodes[code] || projectToastCodes[code] {
 		// A refresh code belongs to the usage screen (usageToast); on a
 		// project or the inbox it would say a reading started when none did.
 		// A session code belongs to the Sessions screens, and a chat code to
@@ -372,6 +394,20 @@ func toastFor(code, project, task string) string {
 	}
 	text = strings.ReplaceAll(text, "{project}", project)
 	return strings.ReplaceAll(text, "{task}", task)
+}
+
+// projectToastCodes are the toast codes adding or removing a project leads
+// to. They belong to the overview alone (projectToast): toastFor leaves them
+// out, so another page's address cannot show them.
+var projectToastCodes = map[string]bool{"project_added": true, "project_removed": true, "project_unchanged": true}
+
+// projectToast is the overview's toast after an add or a remove, or "" for
+// any other code.
+func projectToast(code string) string {
+	if !projectToastCodes[code] {
+		return ""
+	}
+	return toastTexts[code]
 }
 
 // inboxToast is the toast on the inbox list after an answer. The item named

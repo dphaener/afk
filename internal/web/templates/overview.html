@@ -3,6 +3,7 @@
 <div class="overview split">
 <div class="split__list">
 <h1>{{.Page.Heading}}</h1>
+<div class="stack" aria-live="polite">{{range .Pending}}<div class="notice notice--info"><div class="notice__body">{{.}}</div></div>{{end}}</div>
 {{if .Page.Empty}}
 <div class="empty">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 7h6l2 2h10v10H3z"/></svg>
@@ -64,10 +65,12 @@
   </a>{{end}}
 
 {{/* foot is drawn by the layout with the page's chrome, after the split, so
-     the footer can know whether the server offers Plan a new project. Add an
-     existing project and Remove a project join it in T8.16. */}}
-{{define "foot"}}{{if .PlanNew}}
+     the footer can know which of Plan a new project, Add an existing project
+     and Remove a project the server offers. */}}
+{{define "foot"}}{{if or .PlanNew .AddProject .RemoveProject}}
 <div class="btn-stack overview-foot">
-  <a class="btn btn--primary" href="/plan/new">Plan a new project</a>
-</div>
+  {{if .PlanNew}}<a class="btn btn--primary" href="/plan/new">Plan a new project</a>
+  {{end}}{{if .AddProject}}<a class="btn btn--secondary" href="/projects/add">Add an existing project</a>
+  {{end}}{{if .RemoveProject}}<a class="btn btn--quiet" href="/projects/remove">Remove a project</a>
+  {{end}}</div>
 {{end}}{{end}}

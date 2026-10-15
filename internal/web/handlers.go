@@ -39,6 +39,10 @@ type OverviewView struct {
 	// three keys above rather than in place of Projects, so a reader of the
 	// API built against those keys keeps working; never null.
 	Rows []RowView `json:"rows"`
+	// Pending is the sentences saying a project added or removed from this
+	// page is not on the list yet (see projects_edit.go), oldest first. It is
+	// added beside the keys above, which stay as they were; never null.
+	Pending []string `json:"pending"`
 	// Page is the home page's layout of Rows and Reviews. Only the page
 	// reads it, so the JSON leaves it out.
 	Page overviewPage `json:"-"`
@@ -496,6 +500,9 @@ func (s *server) overview(w http.ResponseWriter, r *http.Request) {
 			v.Rows = append(v.Rows, rowView(row))
 		}
 	}
+	// Measured against the same list the rows above came from, so a notice
+	// goes the moment the daemon's list shows the change.
+	v.Pending = s.pending.notices(configured, s.d.Now())
 	v.Page = overviewPageFor(v.Rows, v.Reviews, v.BeingPlanned...)
 	s.respond(w, r, http.StatusOK, "overview", v)
 }
