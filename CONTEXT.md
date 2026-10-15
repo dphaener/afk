@@ -210,3 +210,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Planning wait**: one stretch of time in which a planning session waits for the owner (a question to answer, or a reply to type); afk sends one notification per planning wait, and a new one starts only after the owner answers.
 - **Plan-waits file**: `plan-waits.json` in afk's state folder, where the daemon records which planning waits it has already sent a notification for, so a restart does not send them again.
 - **GitHub question**: the web page's yes-or-no after it makes a new folder, offering a private GitHub repository named `<account>/<folder>` for it; No is checked, the question is asked only for a folder the page has just made, and nothing is pushed.
+- **Pending change**: a project the web page has just added or removed that the daemon has not yet picked up from `config.toml`; the overview says so until its next pass.

@@ -1,0 +1,25 @@
+{{define "title"}}Remove a project{{end}}
+{{define "content"}}
+<div class="stack">
+<h1>Remove a project</h1>
+{{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+{{if .Projects}}
+<form method="get" action="/projects/remove/confirm" class="stack" data-confirm-form="{{.Sheet.ID}}">
+  <fieldset>
+    <legend class="field__label">Which project should afk stop watching?</legend>
+    <div class="choice-list">
+    {{range $i, $p := .Projects}}<label class="choice"><input type="radio" name="name" value="{{$p.Name}}" data-folder="{{$p.Folder}}" required><span class="choice__label">{{$p.Name}}</span><span class="choice__meta">{{$p.Folder}}</span></label>
+    {{end}}</div>
+  </fieldset>
+  <div class="btn-row">
+    <button type="submit" class="btn btn--secondary">Remove…</button>
+    <a class="btn btn--quiet" href="/">Cancel</a>
+  </div>
+</form>
+{{template "session-sheet" .Sheet}}
+{{else}}
+<p>No projects are on afk's list, so there is nothing to remove.</p>
+<div class="btn-row"><a class="btn btn--secondary" href="/">Back to all projects</a></div>
+{{end}}
+</div>
+{{end}}

@@ -12,7 +12,8 @@
 // session…) opens that dialog instead of going to its no-JavaScript confirm
 // page. The dialog's hidden fields marked data-fill-field get the form's
 // values, and an element with data-fill-text gets that attribute's text
-// (the server's words) with {name} and {description} replaced by them.
+// (the server's words) with {name}, {description} and {folder} replaced by
+// them.
 'use strict';
 
 (function () {
@@ -49,14 +50,25 @@
     }
   }
 
+  // A remove screen's radios carry the project's folder in data-folder; the
+  // chosen one fills {folder} as well as {name}.
   // fillSheet copies the form's values into the dialog. The text is set with
   // textContent, so a typed value is shown as text and never as markup, and
   // the replacement is one pass, so a value holding "{name}" stays as typed.
   function fillSheet(d, form) {
     var values = {};
     Array.prototype.slice.call(form.elements).forEach(function (el) {
-      if (el.name) {
-        values[el.name] = el.value.trim();
+      if (!el.name) {
+        return;
+      }
+      // Only the chosen radio or ticked box counts; every other radio of the
+      // group would otherwise overwrite it with its own value.
+      if ((el.type === 'radio' || el.type === 'checkbox') && !el.checked) {
+        return;
+      }
+      values[el.name] = el.value.trim();
+      if (el.hasAttribute('data-folder')) {
+        values.folder = el.getAttribute('data-folder');
       }
     });
     Array.prototype.slice.call(d.querySelectorAll('[data-fill-field]')).forEach(function (input) {
@@ -64,7 +76,8 @@
       input.value = v === undefined ? '' : v;
     });
     Array.prototype.slice.call(d.querySelectorAll('[data-fill-text]')).forEach(function (el) {
-      el.textContent = el.getAttribute('data-fill-text').replace(/\{(name|description)\}/g, function (all, key) {
+      el.textContent = el.getAttribute('data-fill-text').replace(/\{(name|description)\}|\{(folder)\}/g, function (all, key, folderKey) {
+        key = key || folderKey;
         return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : all;
       });
     });

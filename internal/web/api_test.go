@@ -162,6 +162,14 @@ type rig struct {
 	addedErr   error
 	// fresh is an empty folder the fake check calls a repository.
 	fresh string
+	// addProjectCalls records every call of the fake AddProject as (folder,
+	// name) and removeProjectCalls every call of the fake RemoveProject (the
+	// name); addProjectResult and removeProjectResult are what they answer
+	// (added "shop" and removed "my app", until a test says otherwise).
+	addProjectCalls     [][2]string
+	removeProjectCalls  []string
+	addProjectResult    ProjectEditResult
+	removeProjectResult ProjectEditResult
 	// onStatus, when set, runs inside the fake SetTaskStatus before it
 	// answers, so a test can change rg.ledger as the real write would and
 	// prove the answer was read after the call.
@@ -322,6 +330,8 @@ func newRig(t *testing.T, cfg Config) *rig {
 	rg.fresh = filepath.Join(t.TempDir(), "shop")
 	rg.checkResult = PlanFolderCheck{Path: rg.fresh, Kind: PlanFolderRepo}
 	rg.addedName = "shop"
+	rg.addProjectResult = ProjectEditResult{Outcome: ProjectAdded, Name: "shop", Root: rg.fresh, Text: "Added shop (" + rg.fresh + ") to afk's project list."}
+	rg.removeProjectResult = ProjectEditResult{Outcome: ProjectRemoved, Name: "my app", Root: rg.other, Text: "Removed my app from afk's project list."}
 	srv, h, err := build(cfg, Deps{
 		Projects:     func() []Project { return rg.projects },
 		Reviews:      func() []Project { return rg.reviews },
@@ -443,6 +453,14 @@ func newRig(t *testing.T, cfg Config) *rig {
 		AddBeingPlanned: func(root string) (string, error) {
 			rg.addedCalls = append(rg.addedCalls, root)
 			return rg.addedName, rg.addedErr
+		},
+		AddProject: func(folder, name string) ProjectEditResult {
+			rg.addProjectCalls = append(rg.addProjectCalls, [2]string{folder, name})
+			return rg.addProjectResult
+		},
+		RemoveProject: func(name string) ProjectEditResult {
+			rg.removeProjectCalls = append(rg.removeProjectCalls, name)
+			return rg.removeProjectResult
 		},
 		RefreshUsage: func() UsageRefreshResult {
 			rg.refreshCalls.Add(1)

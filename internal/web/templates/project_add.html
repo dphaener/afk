@@ -1,0 +1,24 @@
+{{define "title"}}Add a project{{end}}
+{{define "content"}}
+<div class="stack">
+<h1>Add a project</h1>
+{{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+<form method="post" action="/projects/add" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  <div class="field">
+    <label class="field__label" for="project-add-folder">Folder</label>
+    <input class="input input--mono" type="text" id="project-add-folder" name="folder" value="{{.Folder}}" required autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="project-add-folder-hint">
+    <span class="field__hint" id="project-add-folder-hint">The full path to the project's folder. A ~ means your home folder. The folder must be a git repository.</span>
+  </div>
+  <div class="field">
+    <label class="field__label" for="project-add-name">Name (optional)</label>
+    <input class="input input--mono" type="text" id="project-add-name" name="name" value="{{.Name}}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="project-add-name-hint">
+    <span class="field__hint" id="project-add-name-hint">Defaults to the folder name</span>
+  </div>
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary" data-loading-label="Adding">Add project</button>
+    <a class="btn btn--quiet" href="/">Cancel</a>
+  </div>
+</form>
+</div>
+{{end}}

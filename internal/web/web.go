@@ -347,6 +347,22 @@ type Deps struct {
 	// answer's request. Nil (or GitHubOffer nil) means the question is never
 	// asked.
 	CreateGitHubRepo func(path, repo string) GitHubOutcome
+	// AddProject and RemoveProject do what `afk project add` and `afk project
+	// remove` do, through the root package's print-free entry points the
+	// dashboard's add and remove use (see projects_edit.go), and report what
+	// happened in the commands' own words. They are seams because the web
+	// never writes config.toml itself: the list is the daemon's, edited as
+	// text by that one writer so comments and the [dash] table survive, and
+	// this package cannot import the root package. They are optional so a
+	// server built without them (a test, or a daemon that chose not to
+	// offer it) simply has no add or remove: the POSTs are not found.
+	//
+	// AddProject is given the folder as the owner typed it, trimmed, and an
+	// optional name; resolving ~ and refusing a relative path are the
+	// root's. RemoveProject is only ever given the name of a project on
+	// Projects' list, never a folder from the request.
+	AddProject    func(folder, name string) ProjectEditResult
+	RemoveProject func(name string) ProjectEditResult
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Ticker starts the clock the live-change stream's reader runs on (see
@@ -503,6 +519,13 @@ type server struct {
 	// this folder a moment ago" exists nowhere else; it holds no file's
 	// contents, so the "no cache" rule stands.
 	offered *gitHubOffered
+	// pending is the project adds and removes this server made that the
+	// daemon's list may not show yet (see projects_edit.go). It is the fourth
+	// thing that changes after New, because "this change went through a
+	// moment ago" exists nowhere the page reads until the daemon's next
+	// pass; it holds names and folders, never a file's contents, so the "no
+	// cache" rule stands.
+	pending *projectPending
 }
 
 // route is one address and the handler method behind it. The path carries no
@@ -545,6 +568,11 @@ var routes = []route{
 	// folder this server just made, then Deps.StartPlan whatever the answer
 	// (see plan_new_github.go).
 	{http.MethodPost, "/plan/new/github", (*server).planNewGitHub},
+	// Adding and removing a project: what `afk project add` and `afk project
+	// remove` do, behind the confirm, through Deps.AddProject and
+	// Deps.RemoveProject and nothing else (see projects_edit.go).
+	{http.MethodPost, "/projects/add", (*server).addProject},
+	{http.MethodPost, "/projects/remove", (*server).removeProject},
 	{http.MethodGet, "/p/{project}/inbox", (*server).inboxList},
 	{http.MethodGet, "/p/{project}/inbox/{id}", (*server).item},
 	{http.MethodPost, "/p/{project}/inbox/{id}/answer", (*server).answer},
@@ -619,6 +647,7 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	s.pages = pages
 	s.refresher = newUsageRefresher(d.Now)
 	s.offered = newGitHubOffered()
+	s.pending = newProjectPending()
 	s.hub = newHub(d, s.refresher.generation)
 
 	mux := http.NewServeMux()
@@ -654,6 +683,10 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("GET /p/{project}/plan/change", s.planChangePage)
 	// And the Where form and confirm card of Plan a new project.
 	mux.HandleFunc("GET /plan/new", s.planNewPage)
+	// And the add form, the remove screen and its no-JS confirm page.
+	mux.HandleFunc("GET /projects/add", s.addProjectPage)
+	mux.HandleFunc("GET /projects/remove", s.removeProjectPage)
+	mux.HandleFunc("GET /projects/remove/confirm", s.removeProjectConfirmPage)
 	// Static files likewise have no JSON form and no /api twin.
 	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
 	// Everything else, including a known address asked for with the wrong
