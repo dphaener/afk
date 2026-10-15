@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dphaener/afk/internal/plansession"
+	"github.com/dphaener/afk/internal/ui"
 )
 
 // planSurfaceOutcome is how a request from the dashboard to start or resume a
@@ -288,13 +289,24 @@ func lookAtNewPlanFolder(text, providerName string, deps planDeps) newPlanLook {
 	n.kind = newPlanFolderKind(n.action)
 	switch n.kind {
 	case planFolderHasPlan:
-		n.reason = fmt.Sprintf("this folder already has a plan (%s). To change it, use the dashboard's extend, amend or document actions: press ctrl+], then type the name. Nothing was started.", look.planPath)
+		n.reason = fmt.Sprintf("this folder already has a plan (%s). To change it, use the dashboard's extend, amend or document actions: press %s, then type the name. Nothing was started.", look.planPath, planLeaderName(deps))
 	case planFolderRefused:
 		// Every refusal the decision makes, and any decision this caller does
 		// not act on, which planRefusal words as an internal error.
 		n.reason = planRefusal(n.action.Kind, look)
 	}
 	return n
+}
+
+// planLeaderName is the dashboard's leader key as config.toml sets it, for
+// the refusal text. A deps without a reader (a test, the web page) gets the
+// default.
+func planLeaderName(deps planDeps) string {
+	configured := ""
+	if deps.leader != nil {
+		configured = deps.leader()
+	}
+	return ui.LeaderName(configured)
 }
 
 // startNewPlanForSurface is startPlanForSurface for a new-plan request: the

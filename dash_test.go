@@ -132,6 +132,8 @@ func TestDashUsageNamesTheLeader(t *testing.T) {
 		"tab        next tab on the right side",
 		"esc        back to the list from the right side",
 		"ctrl+c     quit from the list and the overview",
+		"ctrl+] (the default leader key)",
+		`leader = "ctrl+o"`,
 		"ctrl+] n    create a session",
 		"ctrl+] o    create a one-off session",
 		"ctrl+] p    open the project switcher",
@@ -1590,5 +1592,47 @@ func TestRememberSelectionAndRecordProjectOpenShareTheWriteLock(t *testing.T) {
 	if gotOpened["/repo/shared"] != wantOpenedTotal {
 		t.Errorf("after interleaved writes, loadProjectOpens()[/repo/shared] = %d, want %d",
 			gotOpened["/repo/shared"], wantOpenedTotal)
+	}
+}
+
+// TestConfiguredLeader pins the start-up read of config.toml's leader. The
+// load-error and bad-[dash] rows are load-bearing: both must give "" (the
+// default leader) without failing, because a malformed file must not stop the
+// dashboard; the bad-[dash] row also proves a leader sitting beside a bad
+// value is not used.
+func TestConfiguredLeader(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{name: "absent file", file: "", want: ""},
+		{name: "value present", file: "[dash]\nleader = \"ctrl+o\"\n", want: "ctrl+o"},
+		{name: "no leader key", file: "[dash]\nmax_depth = 3\n", want: ""},
+		{name: "bad dash value", file: "[dash]\nleader = \"ctrl+o\"\nscan_interval = \"soon\"\n", want: ""},
+		{name: "load error", file: "[dash\n", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			d := daemonconfig.DefaultDeps()
+			d.Getenv = func(k string) string {
+				if k == "XDG_CONFIG_HOME" {
+					return dir
+				}
+				return ""
+			}
+			if tt.file != "" {
+				if err := os.MkdirAll(filepath.Join(dir, "afk"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(daemonconfig.Path(d), []byte(tt.file), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := configuredLeader(d); got != tt.want {
+				t.Errorf("configuredLeader = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

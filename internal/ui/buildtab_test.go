@@ -86,7 +86,7 @@ func TestBuildTabLinesWidths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("width %d", tc.width), func(t *testing.T) {
-			lines := buildTabLines(snap, PlanStatus{}, tc.width)
+			lines := buildTabLines(defaultLeaderKey, snap, PlanStatus{}, tc.width)
 			for _, ln := range lines {
 				if w := lipgloss.Width(ln); w > tc.width {
 					t.Errorf("line is %d cells, over the width %d: %q", w, tc.width, xansi.Strip(ln))
@@ -243,7 +243,7 @@ func TestBuildTabSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := strings.Join(plain(buildTabLines(tc.snap, PlanStatus{}, 100)), "\n")
+			got := strings.Join(plain(buildTabLines(defaultLeaderKey, tc.snap, PlanStatus{}, 100)), "\n")
 			for _, w := range tc.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("missing %q in:\n%s", w, got)
@@ -266,7 +266,7 @@ func TestBuildTabProblemWraps(t *testing.T) {
 		HasBuild: true,
 		Problem:  "The ledger at /home/someone/code/project/.afk/build/ledger.json is damaged and could not be read.",
 	}
-	lines := plain(buildTabLines(snap, PlanStatus{}, 40))
+	lines := plain(buildTabLines(defaultLeaderKey, snap, PlanStatus{}, 40))
 	if len(lines) < 2 {
 		t.Fatalf("the problem was not wrapped: %q", lines)
 	}
@@ -683,7 +683,7 @@ func TestBuildKeyIsInTheLeaderTable(t *testing.T) {
 	if row.keyLabel != "b" || row.name != "build tasks" || row.blocked != "" {
 		t.Errorf("row = %+v, want a runnable \"build tasks\" under b", row)
 	}
-	if got := leaderKeyDecision(leaderPress("b"), "", rows, 0, false); got.kind != leaderRun || got.row.action != actionBuild {
+	if got := leaderKeyDecision(leaderPress("b"), defaultLeaderKey, "", rows, 0, false); got.kind != leaderRun || got.row.action != actionBuild {
 		t.Errorf("ctrl+] b = %v %v, want the build action", got.kind, got.row.action)
 	}
 }

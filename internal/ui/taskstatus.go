@@ -77,8 +77,8 @@ const (
 // task is drawn only when the right side has the keyboard (buildCursorShown).
 // The key is read from the leader table, so the reason cannot name a key that
 // does not open the tab.
-func taskStatusOpenBuildFirst() string {
-	return "open the Build tab first (" + leaderChord(actionBuild) + ")"
+func taskStatusOpenBuildFirst(leader string) string {
+	return "open the Build tab first (" + leaderChord(leader, actionBuild) + ")"
 }
 
 // taskStatusAlreadyNotice is the picker's answer when the current status is
@@ -118,7 +118,7 @@ func taskStatusBlockedReason(c leaderConds) string {
 	case !c.canSetTaskStatus:
 		return taskStatusNoSeam
 	case !c.buildTabFocused:
-		return taskStatusOpenBuildFirst()
+		return taskStatusOpenBuildFirst(c.leader)
 	case !c.buildTaskSelected:
 		return taskStatusNoTask
 	}

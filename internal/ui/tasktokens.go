@@ -93,7 +93,7 @@ func taskTokensBlockedReason(c leaderConds) string {
 	case !c.canLoadTaskTokens:
 		return taskTokensNoSeam
 	case !c.buildTabFocused:
-		return taskStatusOpenBuildFirst()
+		return taskStatusOpenBuildFirst(c.leader)
 	case !c.buildTaskSelected:
 		return taskTokensNoTask
 	}

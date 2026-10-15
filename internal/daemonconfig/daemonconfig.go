@@ -240,6 +240,12 @@ type Dash struct {
 	// being 0 can only be told apart in this loader, so this is where the 0
 	// is caught.
 	MaxDepth int
+	// Leader is the configured leader key exactly as written, trimmed of
+	// surrounding white space, and "" when unset. It is checked by the
+	// dashboard (internal/ui checkLeader), not here: DashErr is all-or-nothing,
+	// so refusing a mistyped key name in this loader would also throw away the
+	// owner's folder search. Only the type is checked here.
+	Leader string
 }
 
 func defaultDash() Dash {
@@ -416,7 +422,7 @@ func loadDash(path string, raw rawFile, d Deps) (Dash, error) {
 	}
 	table, ok := raw.Dash.(map[string]any)
 	if !ok {
-		return Dash{}, fmt.Errorf("%s: dash is not a table; write a [dash] line and put search_roots, scan_interval and max_depth under it", path)
+		return Dash{}, fmt.Errorf("%s: dash is not a table; write a [dash] line and put search_roots, scan_interval, max_depth and leader under it", path)
 	}
 
 	if v, ok := table["scan_interval"]; ok {
@@ -444,6 +450,14 @@ func loadDash(path string, raw rawFile, d Deps) (Dash, error) {
 			return Dash{}, fmt.Errorf("%s: dash.max_depth is %d; write a whole number of 1 or more, such as 3", path, n)
 		}
 		dash.MaxDepth = int(n)
+	}
+
+	if v, ok := table["leader"]; ok {
+		s, isString := v.(string)
+		if !isString {
+			return Dash{}, fmt.Errorf("%s: dash.leader is %#v, which is not text in quotes; write it like \"ctrl+o\"", path, v)
+		}
+		dash.Leader = strings.TrimSpace(s)
 	}
 
 	if v, ok := table["search_roots"]; ok {

@@ -208,6 +208,10 @@ name = "bee"
 // The wrong-type rows are load-bearing for a second reason: a typed decode of
 // the table would fail the whole file on them, with an error that never
 // reaches loadDash. "at the floor" pins that the limit is inclusive.
+// The leader rows pin that a non-string leader is refused like any other bad
+// value, that a string is kept as written (trimmed, never checked here, so a
+// mistyped key name cannot reset the folder search) and that it does not
+// disturb the other keys.
 // "max_depth zero" pins that a written 0 is refused and not passed on as
 // "not set" (see Dash.MaxDepth). "relative root" pins that a relative folder
 // stays allowed, unlike a [[project]] path.
@@ -275,6 +279,17 @@ func TestLoadDash(t *testing.T) {
 			errHas: []string{home, "dash.search_roots", "list"}},
 		{name: "search_roots holds a number", toml: "[dash]\nsearch_roots = [\"/srv/code\", 7]\n",
 			errHas: []string{home, "dash.search_roots[1]"}},
+		{name: "leader alone", toml: "[dash]\nleader = \"ctrl+o\"\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Leader: "ctrl+o"}},
+		{name: "leader trimmed", toml: "[dash]\nleader = \"  ctrl+o  \"\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Leader: "ctrl+o"}},
+		{name: "leader empty", toml: "[dash]\nleader = \"\"\n", want: def},
+		{name: "leader unchecked here", toml: "[dash]\nleader = \"enter\"\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Leader: "enter"}},
+		{name: "leader beside search_roots", toml: "[dash]\nleader = \"alt+x\"\nsearch_roots = [\"/srv/code\"]\n",
+			want: Dash{SearchRoots: []string{"/srv/code"}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Leader: "alt+x"}},
+		{name: "leader of the wrong type", toml: "[dash]\nleader = 5\n",
+			errHas: []string{home, "dash.leader", "ctrl+o"}},
 		{name: "dash is a number", toml: "dash = 5\n",
 			errHas: []string{home, "dash", "[dash]"}},
 		{name: "dash is a list of tables", toml: "[[dash]]\nmax_depth = 2\n",

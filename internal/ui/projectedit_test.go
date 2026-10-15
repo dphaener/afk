@@ -62,7 +62,7 @@ func openAddForm(t *testing.T, m Model) Model {
 // help), and "other rows over the screen are unchanged", which pins that
 // adding these two did not open the screen to anything else.
 func TestProjectEditBlockedReason(t *testing.T) {
-	both := leaderConds{canAddProject: true, canRemoveProject: true, allProjectsOpen: true,
+	both := leaderConds{leader: defaultLeaderKey, canAddProject: true, canRemoveProject: true, allProjectsOpen: true,
 		projectRowSelected: true, projectRowListed: true, projectRowName: "alpha"}
 	with := func(f func(*leaderConds)) leaderConds { c := both; f(&c); return c }
 	tests := []struct {
@@ -74,11 +74,11 @@ func TestProjectEditBlockedReason(t *testing.T) {
 		{"add runs over the screen", actionProjectAdd, both, ""},
 		{"add runs with no row selected", actionProjectAdd, with(func(c *leaderConds) { c.projectRowSelected = false }), ""},
 		{"add runs on an unlisted row", actionProjectAdd, with(func(c *leaderConds) { c.projectRowListed = false }), ""},
-		{"add dimmed away from the screen", actionProjectAdd, with(func(c *leaderConds) { c.allProjectsOpen = false }), projectEditOpenScreenFirst},
+		{"add dimmed away from the screen", actionProjectAdd, with(func(c *leaderConds) { c.allProjectsOpen = false }), projectEditOpenScreenFirst(defaultLeaderKey)},
 		{"add dimmed without its seam", actionProjectAdd, with(func(c *leaderConds) { c.canAddProject = false }), "adding a project is not available here"},
 		{"a seam beats the screen", actionProjectAdd, leaderConds{}, "adding a project is not available here"},
 		{"remove runs on a listed row", actionProjectRemove, both, ""},
-		{"remove dimmed away from the screen", actionProjectRemove, with(func(c *leaderConds) { c.allProjectsOpen = false }), projectEditOpenScreenFirst},
+		{"remove dimmed away from the screen", actionProjectRemove, with(func(c *leaderConds) { c.allProjectsOpen = false }), projectEditOpenScreenFirst(defaultLeaderKey)},
 		{"remove dimmed without its seam", actionProjectRemove, with(func(c *leaderConds) { c.canRemoveProject = false }), "removing a project is not available here"},
 		{"remove dimmed with no row selected", actionProjectRemove, with(func(c *leaderConds) { c.projectRowSelected = false }), "no project is selected"},
 		{"remove on an unlisted row is dimmed", actionProjectRemove,
@@ -107,8 +107,8 @@ func TestProjectEditRowsDimmedAwayFromTheScreen(t *testing.T) {
 	m, _ = update(t, m, leaderKeyPress)
 	for _, a := range []modeAction{actionProjectAdd, actionProjectRemove} {
 		r, ok := leaderRowFor(m.leader.rows, a)
-		if !ok || r.blocked != projectEditOpenScreenFirst {
-			t.Errorf("%v row blocked %q, want %q", a, r.blocked, projectEditOpenScreenFirst)
+		if !ok || r.blocked != projectEditOpenScreenFirst(defaultLeaderKey) {
+			t.Errorf("%v row blocked %q, want %q", a, r.blocked, projectEditOpenScreenFirst(defaultLeaderKey))
 		}
 	}
 	for _, k := range []rune{'+', '-'} {

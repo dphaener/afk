@@ -1100,6 +1100,10 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 //     TestFormSwallowsQuitKeysEscIsOnlyExit), and forwards to the child in a
 //     focused pane (the session owns SIGINT semantics).
 func newModeRegistry(keys keyMap) modeRegistry {
+	// leader is the leader key's name, read from keys.Leader (which New sets
+	// from config.toml's [dash] leader) so the help-only entries below name
+	// the same key the rules match.
+	leader := keys.Leader.Keys()[0]
 	// quitChord is ctrl+c ALONE, not keys.Quit: the modals and the switcher
 	// must let `q` through as an ordinary character (it answers nothing in a
 	// y/n modal, filters in the switcher, and types into the label prompt),
@@ -1491,7 +1495,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	// dashboard hosts, which is why the plan pins this set.
 	//
 	// The agent does not lose the leader either: pressed twice, the dialog
-	// closes and sends ctrl+] on (leaderComponentKey, model.go).
+	// closes and sends the leader on (leaderComponentKey, model.go).
 	r[inputPane] = modeSpec{
 		mode: inputPane,
 		rules: []modeRule{
@@ -1611,7 +1615,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		mode: inputLeader,
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: []key.Binding{
-			leaderRunKey, leaderMoveKey, leaderFilterKey, leaderCloseKey, leaderAgainKey,
+			leaderRunKey, leaderMoveKey, leaderFilterKey, leaderCloseKey, leaderAgainBinding(leader),
 		}},
 	}
 
@@ -1701,8 +1705,8 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
 			allProjectsSwitchKey, allProjectsCloseKey, allProjectsUpKey, allProjectsDownKey,
-			leaderHelpBinding(actionPauseBuild, "pause", true),
-			leaderHelpBinding(actionResumeBuild, "resume", true),
+			leaderHelpBinding(leader, actionPauseBuild, "pause", true),
+			leaderHelpBinding(leader, actionResumeBuild, "resume", true),
 			keys.Leader,
 			allProjectsPageUpKey, allProjectsPageDownKey, allProjectsTopKey, allProjectsBottomKey,
 			quitChord,

@@ -24,6 +24,12 @@ type hostPaneConfig struct {
 	// The dashboard leaves it zero and takes the default — the window it needs
 	// is the one that absorbs a just-spawned host's startup.
 	Wait time.Duration
+	// WedgeHint is the wedge banner's recovery guidance for openHostPane
+	// (the dashboard's dial). It is carried here rather than read from a
+	// package value because it names the leader, which config.toml sets
+	// (T9.2): attachPaneCmd fills it with wedgeHintDashboard of the Model's
+	// leader. dialHostPane's callers pass their hint directly and ignore it.
+	WedgeHint string
 }
 
 // openHostPane dials the session's host and returns a pane rendering it.
@@ -38,7 +44,7 @@ type hostPaneConfig struct {
 // repaint. Without it a pane opened onto an idle session stays blank until that
 // session next writes on its own.
 func openHostPane(cfg hostPaneConfig) (paneHandle, error) {
-	pane, _, err := dialHostPane(cfg, wedgeHintDashboard)
+	pane, _, err := dialHostPane(cfg, cfg.WedgeHint)
 	if err != nil {
 		return nil, err
 	}
@@ -122,12 +128,17 @@ const wedgeRecoveryKey = "r"
 // wedgeHintDashboard and wedgeHintAttach are the per-surface halves of the
 // wedge banner: the same "session unresponsive" fact, but recovery guidance
 // matched to what each surface actually does with keys. Since T7.2 the dashboard
-// restarts through the leader (ctrl+] r), which works from a focused pane
+// restarts through the leader (ctrl+] r by default), which works from a focused pane
 // too because the leader is the one key the pane keeps, so its hint names that
 // chord and needs no "leave the pane first" step. `afk attach` forwards every
 // non-chord key to the child and handles no restart at all, so its hint must
 // not invite any in-place keypress; the restart lives in the dashboard.
-var wedgeHintDashboard = fmt.Sprintf("press %s to restart", leaderChord(actionRestart))
+//
+// wedgeHintDashboard is a function of the leader, which config.toml sets
+// (T9.2), so the banner names the key that is actually bound.
+func wedgeHintDashboard(leader string) string {
+	return fmt.Sprintf("press %s to restart", leaderChord(leader, actionRestart))
+}
 
 const wedgeHintAttach = `detach (ctrl+\) and restart it from the dashboard`
 

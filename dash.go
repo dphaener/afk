@@ -141,7 +141,9 @@ Keys:
   esc        back to the list from the right side; clears the filter on the list
   ctrl+c     quit from the list and the overview (in the agent pane it goes to the agent)
 
-Actions: press ctrl+], then the letter. The actions dialog lists them too.
+Actions: press ctrl+] (the default leader key), then the letter. The actions dialog
+lists them too. Set leader = "ctrl+o" (or another key) in config.toml's [dash]
+table to change the leader; it is read when the dashboard starts.
   ctrl+] n    create a session (in-TUI form)
   ctrl+] o    create a one-off session
   ctrl+] p    open the project switcher (filterable list of discovered projects)
@@ -615,6 +617,7 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		ActiveProjectIndex: activeProject,
 		Scan:               scanProjects,
 		LoadConfig:         loadDashConfig,
+		Leader:             startupLeader(),
 		LoadSelections:     loadSelections,
 		RememberSelection:  rememberSelection,
 		LoadProjectOpens:   loadProjectOpens,
@@ -734,6 +737,23 @@ func loadDashConfig() (ui.SearchSettings, string, error) {
 		Interval: cfg.Dash.ScanInterval,
 		MaxDepth: cfg.Dash.MaxDepth,
 	}, path, nil
+}
+
+// startupLeader is the leader key read once when `afk dash` starts. It is a
+// variable so a test can stand in for the config file.
+var startupLeader = func() string { return configuredLeader(daemonconfig.DefaultDeps()) }
+
+// configuredLeader reads config.toml's [dash] leader, best effort: it never
+// fails and never prints. A malformed file must not stop the dashboard (see
+// the rule at the top of cmdDash), so a load error gives "" (the default
+// leader). When the [dash] table is bad Load resets it, and the first scan
+// toast already names the file and the key, so that gives "" as well.
+func configuredLeader(d daemonconfig.Deps) string {
+	cfg, err := daemonconfig.Load(d)
+	if err != nil || cfg.DashErr != nil {
+		return ""
+	}
+	return cfg.Dash.Leader
 }
 
 // resolveTmuxClientTTY asks tmux which tty the attached client is on, or returns

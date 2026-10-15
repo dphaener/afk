@@ -1465,7 +1465,7 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 			}
 			// The toggle and back-to-list chords moved into the actions
 			// dialog; the footer keeps the one entry that opens it.
-			if want := leaderKey; !strings.Contains(footer, want) {
+			if want := defaultLeaderKey; !strings.Contains(footer, want) {
 				t.Errorf("footer dropped %q: %q", want, footer)
 			}
 		})
@@ -1484,18 +1484,18 @@ func TestLeaderChordNamesEveryTableKey(t *testing.T) {
 			// A by-name row (the T7.3 plan actions) has no key to name, so
 			// its chord is the leader alone, never "ctrl+] " with a
 			// dangling space.
-			want := leaderKey + " " + e.key
+			want := defaultLeaderKey + " " + e.key
 			if e.key == "" {
-				want = leaderKey
+				want = defaultLeaderKey
 			}
-			if got := leaderChord(e.action); got != want {
+			if got := leaderChord(defaultLeaderKey, e.action); got != want {
 				t.Errorf("leaderChord = %q, want %q", got, want)
 			}
 		})
 	}
 	t.Run("an action the table lacks names the leader alone", func(t *testing.T) {
-		if got := leaderChord(actionNone); got != leaderKey {
-			t.Errorf("leaderChord(actionNone) = %q, want %q", got, leaderKey)
+		if got := leaderChord(defaultLeaderKey, actionNone); got != defaultLeaderKey {
+			t.Errorf("leaderChord(defaultLeaderKey, actionNone) = %q, want %q", got, defaultLeaderKey)
 		}
 	})
 }
@@ -1554,7 +1554,7 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 		full := xansi.Strip(renderModeHelp(list.renderNormalHelpKeyMap(), true, 100000))
 		for _, e := range leaderTable {
 			blocked := leaderBlockedReason(e.action, list.leaderConditions())
-			if got := fullHelpHasItem(full, leaderChord(e.action), leaderNames[e.action]); got == (blocked != "") {
+			if got := fullHelpHasItem(full, leaderChord(defaultLeaderKey, e.action), leaderNames[e.action]); got == (blocked != "") {
 				t.Errorf("%s: listed=%v with blocked reason %q; a row is listed exactly when it can run", leaderNames[e.action], got, blocked)
 			}
 		}
@@ -1562,11 +1562,11 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 
 	t.Run("texts name the chord", func(t *testing.T) {
 		for _, tc := range []struct{ name, got, want string }{
-			{"header switch hint", headerSwitchHint, "ctrl+] p"},
-			{"header inbox hint", headerInboxHint, "ctrl+] i"},
-			{"wedge banner hint", wedgeHintDashboard, "ctrl+] r"},
-			{"pane focus hint", paneFocusHint, "ctrl+] \\"},
-			{"pause notice", func() string { _, s := pauseNotice(false); return s }(), "ctrl+] U"},
+			{"header switch hint", headerSwitchHint(defaultLeaderKey), "ctrl+] p"},
+			{"header inbox hint", headerInboxHint(defaultLeaderKey), "ctrl+] i"},
+			{"wedge banner hint", wedgeHintDashboard(defaultLeaderKey), "ctrl+] r"},
+			{"pane focus hint", paneFocusHint(defaultLeaderKey), "ctrl+] \\"},
+			{"pause notice", func() string { _, s := pauseNotice(defaultLeaderKey, false); return s }(), "ctrl+] U"},
 			{"mouse hint", list.mouseCaptureHint(), "ctrl+] g"},
 		} {
 			if !strings.Contains(tc.got, tc.want) {
@@ -1577,8 +1577,8 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 
 	t.Run("no hint names an old key as an action key", func(t *testing.T) {
 		for name, text := range map[string]string{
-			"switch hint": headerSwitchHint, "inbox hint": headerInboxHint,
-			"wedge hint": wedgeHintDashboard, "pane focus hint": paneFocusHint,
+			"switch hint": headerSwitchHint(defaultLeaderKey), "inbox hint": headerInboxHint(defaultLeaderKey),
+			"wedge hint": wedgeHintDashboard(defaultLeaderKey), "pane focus hint": paneFocusHint(defaultLeaderKey),
 			"list footer": strip(list), "pane footer": strip(pane),
 			"empty state": xansi.Strip(testModel().renderRowsBody(60, 10)),
 		} {

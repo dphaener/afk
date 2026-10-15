@@ -991,14 +991,14 @@ func afkBinary() string {
 // we just spawned died on startup and only its log says why.
 // Model.applyPaneAttached pairs this with markHostStopped, so the row reads
 // stopped and the "r to restart" hint is true by the time it is read.
-func paneAttachFailedStatus(msg paneAttachedMsg) string {
+func paneAttachFailedStatus(leader string, msg paneAttachedMsg) string {
 	if errors.Is(msg.err, host.ErrHostNotReachable) {
 		if msg.restarted {
 			return fmt.Sprintf("%s didn't start — see %s",
 				msg.name, hostLogPath(msg.worktree, msg.name))
 		}
 		return fmt.Sprintf("%s isn't running — its host record was stale · %s to restart",
-			msg.name, leaderChord(actionRestart))
+			msg.name, leaderChord(leader, actionRestart))
 	}
 	return fmt.Sprintf("opening %s failed: %v — see %s",
 		msg.name, msg.err, hostLogPath(msg.worktree, msg.name))
@@ -1119,13 +1119,15 @@ func appendWarningSuffix(status string, warnings []string) string {
 func (m Model) attachPaneCmd(req paneOpenRequest) tea.Cmd {
 	openHost := m.deps.OpenHostPane
 	cols, rows := m.paneRegionSize()
+	wedgeHint := wedgeHintDashboard(m.leaderKey.name)
 	return func() tea.Msg {
 		p, err := openHost(hostPaneConfig{
-			Name:     req.name,
-			Worktree: req.worktree,
-			Cols:     cols,
-			Rows:     rows,
-			Wait:     req.wait,
+			Name:      req.name,
+			Worktree:  req.worktree,
+			Cols:      cols,
+			Rows:      rows,
+			Wait:      req.wait,
+			WedgeHint: wedgeHint,
 		})
 		if err != nil {
 			return paneAttachedMsg{
@@ -1356,9 +1358,11 @@ func specialKeyEvent(k tea.KeyPressMsg) (termpane.KeyEvent, bool) {
 // Since T9.1 ctrl+space is not the dashboard's leader (ctrl+] is; leader.go),
 // so in the agent pane ctrl+space is an ordinary key: no rule takes it, and it
 // reaches here and goes to the agent as one NUL, like any other chord. The
-// case below must stay for that reason. The leader itself reaches here too,
-// through the `]` case, when it is pressed twice in the pane and the dialog
-// passes it on (leaderComponentKey, model.go), so the agent gets 0x1D.
+// case below must stay for that reason. The leader pressed twice in the pane
+// does not come through here: since T9.2 the leader is configurable, and the
+// dialog sends the Model's decoded leader straight to the pane's SendKey
+// (leaderComponentKey, model.go), so x/vt encodes ctrl+] as 0x1D there. The
+// `]` case stays for a ctrl+] typed in the pane while another leader is set.
 //
 // Ctrl+[ is likewise absent because the decoder resolves it to KeyEscape before
 // it can reach here (see specialKeyEvent's doc), which is where v1 sent it too.

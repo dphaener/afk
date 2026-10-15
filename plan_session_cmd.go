@@ -84,6 +84,9 @@ type planDeps struct {
 	// review is what the "plan ready for review" notification uses; the zero
 	// value sends nothing.
 	review planReviewDeps
+	// leader reads the dashboard's leader key from config.toml (best effort,
+	// "" for the default); nil means the default.
+	leader func() string
 }
 
 func realPlanDeps() planDeps {
@@ -110,6 +113,7 @@ func realPlanDeps() planDeps {
 		lintErrors: func(plan []byte) int { return planlint.Lint(plan).Summary.Errors },
 		now:        time.Now,
 		review:     realPlanReviewDeps(),
+		leader:     startupLeader,
 		ask: func(prompt string) (string, error) {
 			fmt.Fprint(os.Stdout, prompt)
 			line, err := stdin.ReadString('\n')

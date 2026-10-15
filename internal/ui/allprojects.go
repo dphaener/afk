@@ -382,7 +382,7 @@ func (m Model) applyAllProjectsPaused(msg allProjectsPausedMsg) (tea.Model, tea.
 	if msg.err != nil {
 		m.notify(notifyError, msg.name+": "+pauseFailedNotice(msg.err))
 	} else {
-		kind, text := pauseNotice(msg.already)
+		kind, text := pauseNotice(m.leaderKey.name, msg.already)
 		m.notify(kind, msg.name+": "+text)
 	}
 	return m, tea.Batch(m.allProjectsCmd(), m.buildCmd())
