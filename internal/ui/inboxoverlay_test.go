@@ -104,7 +104,7 @@ func openInboxItem(t *testing.T, m Model, i int) Model {
 	t.Helper()
 	m = pressLeader(t, m, keyI)
 	if !m.inboxOpen {
-		t.Fatal("ctrl+space i did not open the inbox")
+		t.Fatal("ctrl+] i did not open the inbox")
 	}
 	for range i {
 		m, _ = update(t, m, keyRune('j'))
@@ -1074,7 +1074,7 @@ func TestInboxClosesOnAProjectSwitch(t *testing.T) {
 }
 
 // TestInboxKeyIsInTheLeaderTable is the proof that the actions dialog lists
-// the inbox under ctrl+space i and that the key runs it: the rows come from
+// the inbox under ctrl+] i and that the key runs it: the rows come from
 // the leader table, so this fails if the row or its help line is removed. The
 // short footer line must not grow (it is at its measured-width cap), and
 // while the overlay is open the footer shows the keys of the screen that is
@@ -1094,8 +1094,8 @@ func TestInboxKeyIsInTheLeaderTable(t *testing.T) {
 	if row.keyLabel != "i" || row.name != "inbox" || row.blocked != "" {
 		t.Errorf("row = %+v, want a runnable \"inbox\" under i", row)
 	}
-	if got := leaderKeyDecision(leaderPress("i"), "", rows, 0, false); got.kind != leaderRun || got.row.action != actionInbox {
-		t.Errorf("ctrl+space i = %v %v, want the inbox action", got.kind, got.row.action)
+	if got := leaderKeyDecision(leaderPress("i"), defaultLeaderKey, "", rows, 0, false); got.kind != leaderRun || got.row.action != actionInbox {
+		t.Errorf("ctrl+] i = %v %v, want the inbox action", got.kind, got.row.action)
 	}
 
 	om, _ := inboxModel(t, 120, 40, nil)

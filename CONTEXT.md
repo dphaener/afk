@@ -179,7 +179,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Search folders**: the folders the dashboard looks under for more projects (`search_roots`); until T6.2 they are set in `config.json`.
 - **Dash table**: the `[dash]` table of the machine config, holding the dashboard's search folders, how often it searches and how deep; the daemon ignores it, and a bad value in it stops nothing but the folder search.
 - **Old-settings notice**: what `afk dash` says once per start when a `config.json` is still in afk's config folder: the file is no longer read, and here are the `[dash]` lines to add to `config.toml`.
-- **Leader key**: the one key (ctrl+space) that, pressed anywhere in the dashboard, says the next key is a dashboard action and not typing.
+- **Leader key**: the one key (ctrl+]) that, pressed anywhere in the dashboard, says the next key is a dashboard action and not typing.
 - **Actions dialog**: the list the leader key opens, showing every dashboard action with its key; a key runs one, and typing filters by name.
 - **All-projects screen**: one dashboard screen with a row per project the daemon builds, showing its current task, build state and inbox count.
 - **Chat view**: the web page's screen that shows a planning session as messages, with a reply box and a button per offered option; it is never the session's terminal, and a reply from it takes the session from the dashboard for a moment.
@@ -211,3 +211,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Plan-waits file**: `plan-waits.json` in afk's state folder, where the daemon records which planning waits it has already sent a notification for, so a restart does not send them again.
 - **GitHub question**: the web page's yes-or-no after it makes a new folder, offering a private GitHub repository named `<account>/<folder>` for it; No is checked, the question is asked only for a folder the page has just made, and nothing is pushed.
 - **Pending change**: a project the web page has just added or removed that the daemon has not yet picked up from `config.toml`; the overview says so until its next pass.
+- **Leader setting**: the `leader = "<key>"` line in the `[dash]` table of `config.toml` that picks the dashboard's leader key; a key the dashboard cannot use falls back to ctrl+] with a line in the header saying what to fix.

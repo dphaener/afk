@@ -12,13 +12,19 @@ import (
 	"github.com/dphaener/afk/internal/termpane"
 )
 
-// leaderKeyPress is ctrl+space as the program receives it: ultraviolet decodes
-// the NUL byte to {Code: KeySpace, Mod: ModCtrl}, with no Text.
-var leaderKeyPress = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
+// leaderKeyPress is ctrl+] as the program receives it: ultraviolet decodes
+// the byte 0x1D (and a kitty-protocol CSI 93;5u) to {Code: ']', Mod: ModCtrl},
+// with no Text (docs/decisions.md "## T9.1").
+var leaderKeyPress = tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl}
 
-// leaderNUL is what the pane must receive when ctrl+space is passed on to the
-// agent: the emulator's ctrl+space key event, which x/vt encodes as NUL.
-var leaderNUL = termpane.KeyEvent{Code: vt.KeySpace, Mod: vt.ModCtrl}
+// leaderPassedOn is what the pane must receive when ctrl+] is passed on to
+// the agent: the emulator's ctrl+] key event, which x/vt encodes as 0x1D.
+var leaderPassedOn = termpane.KeyEvent{Code: ']', Mod: vt.ModCtrl}
+
+// ctrlSpacePress is Ctrl+Space as the program receives it: ultraviolet decodes
+// the NUL byte to {Code: KeySpace, Mod: ModCtrl}. It was the leader before
+// T9.1 and is an ordinary key now.
+var ctrlSpacePress = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
 
 // leaderPlaceholderModel is the right side focused on the agent placeholder:
 // a row with a live host, the agent view, and no pane installed for it.
@@ -36,14 +42,14 @@ func leaderPlaceholderModel(t *testing.T) Model {
 // sentToPane is everything a fake pane has been given: keys, text and pastes.
 func sentToPane(fp *fakePane) int { return len(fp.keys) + len(fp.texts) + len(fp.pastes) }
 
-// pressLeader is ctrl+space then k, the way every dashboard action is run
+// pressLeader is ctrl+] then k, the way every dashboard action is run
 // since T7.2. It fails the test if the dialog did not open, so a caller's
 // later assertion is about k and never about a leader that went nowhere.
 func pressLeader(t *testing.T, m Model, k tea.Msg) Model {
 	t.Helper()
 	m, _ = update(t, m, leaderKeyPress)
 	if !m.leaderOpen {
-		t.Fatal("setup: ctrl+space did not open the actions dialog")
+		t.Fatal("setup: ctrl+] did not open the actions dialog")
 	}
 	m, _ = update(t, m, k)
 	return m
@@ -62,7 +68,7 @@ func leaderFocusedPane(t *testing.T, fp *fakePane) Model {
 	return m
 }
 
-// TestLeaderOpensTheDialog drives ctrl+space through Update from each place
+// TestLeaderOpensTheDialog drives ctrl+] through Update from each place
 // it is a rule. Load-bearing rows:
 //   - "from a focused agent pane": the pane's mode forwards every unclaimed
 //     key to the agent, so this row is what proves the leader is claimed
@@ -72,7 +78,7 @@ func leaderFocusedPane(t *testing.T, fp *fakePane) Model {
 //     through there separately; without it this row stays closed.
 //   - openedFromPane: the dialog's own mode outranks the pane's, so it is
 //     recorded at open, and only the pane row may set it — it is what makes a
-//     second ctrl+space reach the agent.
+//     second ctrl+] reach the agent.
 func TestLeaderOpensTheDialog(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -131,7 +137,7 @@ func TestLeaderOpensTheDialog(t *testing.T) {
 			m, fp := tc.model(t)
 			got, cmd := update(t, m, leaderKeyPress)
 			if !got.leaderOpen {
-				t.Fatal("ctrl+space did not open the actions dialog")
+				t.Fatal("ctrl+] did not open the actions dialog")
 			}
 			if mode := activeInputMode(got.modeSnapshot()); mode != inputLeader {
 				t.Fatalf("the keyboard is with %v, want the dialog", mode)
@@ -158,12 +164,12 @@ func TestLeaderOpensTheDialog(t *testing.T) {
 	}
 }
 
-// TestLeaderIgnoredUnderEveryOverlay pins that ctrl+space opens nothing while
+// TestLeaderIgnoredUnderEveryOverlay pins that ctrl+] opens nothing while
 // an overlay, a form, a prompt or a confirmation has the keyboard, and that
 // the surface it lands on is left as it was. Every row is load-bearing in the
 // same way: the leader is a rule only in normal, detail and pane mode, and a
 // global intercept added later would turn exactly one of these red. The text
-// rows (form, label, filter) also check the key typed nothing: ctrl+space has
+// rows (form, label, filter) also check the key typed nothing: ctrl+] has
 // no text, so a field that grew a character would mean the key was mistaken
 // for a space.
 func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
@@ -246,14 +252,14 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 			}
 			got, _ := update(t, m, leaderKeyPress)
 			if got.leaderOpen {
-				t.Fatalf("ctrl+space opened the actions dialog over the %s", tc.name)
+				t.Fatalf("ctrl+] opened the actions dialog over the %s", tc.name)
 			}
 			if mode := activeInputMode(got.modeSnapshot()); mode != tc.mode {
-				t.Fatalf("ctrl+space moved the keyboard from %v to %v; the %s must stay open", tc.mode, mode, tc.name)
+				t.Fatalf("ctrl+] moved the keyboard from %v to %v; the %s must stay open", tc.mode, mode, tc.name)
 			}
 			if tc.text != nil {
 				if after := tc.text(got); after != before {
-					t.Fatalf("ctrl+space changed the %s's text from %q to %q", tc.name, before, after)
+					t.Fatalf("ctrl+] changed the %s's text from %q to %q", tc.name, before, after)
 				}
 			}
 		})
@@ -381,7 +387,7 @@ func TestLeaderRunsAnActionOnce(t *testing.T) {
 			m, fp := tc.model(t)
 			m, _ = update(t, m, leaderKeyPress)
 			if !m.leaderOpen {
-				t.Fatal("setup: ctrl+space did not open the dialog")
+				t.Fatal("setup: ctrl+] did not open the dialog")
 			}
 			got, _ := update(t, m, tc.key)
 			if got.leaderOpen {
@@ -451,11 +457,11 @@ func TestLeaderDimmedKeyDoesNothing(t *testing.T) {
 
 // TestLeaderPassThrough pins what reaches the agent when the dialog closes.
 // Load-bearing rows:
-//   - "ctrl+space twice in the pane" is how the agent keeps the key the
-//     leader takes: exactly one NUL key event, no text.
+//   - "ctrl+] twice in the pane" is how the agent keeps the key the
+//     leader takes: exactly one ctrl+] key event (0x1D), no text.
 //   - "esc from the pane" closes and sends nothing: esc is an agent key too
 //     (it interrupts Claude), and the dialog must not forward its own close.
-//   - "ctrl+space twice from the list" sends nothing even with a pane
+//   - "ctrl+] twice from the list" sends nothing even with a pane
 //     installed: the list was not talking to the agent.
 func TestLeaderPassThrough(t *testing.T) {
 	cases := []struct {
@@ -466,10 +472,10 @@ func TestLeaderPassThrough(t *testing.T) {
 		wantPane bool // the pane still has the keyboard afterwards
 	}{
 		{
-			name:     "ctrl+space twice in the pane",
+			name:     "ctrl+] twice in the pane",
 			focused:  true,
 			keys:     []tea.KeyPressMsg{leaderKeyPress, leaderKeyPress},
-			wantKeys: []termpane.KeyEvent{leaderNUL},
+			wantKeys: []termpane.KeyEvent{leaderPassedOn},
 			wantPane: true,
 		},
 		{
@@ -479,7 +485,7 @@ func TestLeaderPassThrough(t *testing.T) {
 			wantPane: true,
 		},
 		{
-			name: "ctrl+space twice from the list",
+			name: "ctrl+] twice from the list",
 			keys: []tea.KeyPressMsg{leaderKeyPress, leaderKeyPress},
 		},
 		{
@@ -521,6 +527,105 @@ func TestLeaderPassThrough(t *testing.T) {
 	}
 }
 
+// agentBytes is what the agent would read for everything the fake pane was
+// given: its keys, run through a real x/vt emulator, the same encoder the
+// real pane (termpane.Pane.SendKey) uses. So a row can say "one 0x1D" in bytes
+// instead of trusting that a key event means that byte. Text and pastes fail
+// the test, because the rows that use this send keys only.
+//
+// The emulator hands encoded input out through an io.Pipe, so every SendKey
+// blocks until it is read. The reader goroutine stops at a sentinel written
+// after the keys rather than at Close, because Emulator.Read checks its
+// closed flag without a lock and Close from this goroutine would race it.
+func agentBytes(t *testing.T, fp *fakePane) string {
+	t.Helper()
+	if len(fp.texts) != 0 || len(fp.pastes) != 0 {
+		t.Fatalf("the pane was sent text %q / pastes %q, want keys only", fp.texts, fp.pastes)
+	}
+	const sentinel = "<end of keys>"
+	emu := vt.NewEmulator(80, 24)
+	got := make(chan string, 1)
+	go func() {
+		var b []byte
+		buf := make([]byte, 64)
+		for !strings.HasSuffix(string(b), sentinel) {
+			n, err := emu.Read(buf)
+			b = append(b, buf[:n]...)
+			if err != nil {
+				break
+			}
+		}
+		got <- strings.TrimSuffix(string(b), sentinel)
+	}()
+	for _, k := range fp.keys {
+		emu.SendKey(k)
+	}
+	emu.SendText(sentinel)
+	return <-got
+}
+
+// TestLeaderIsCtrlBracket pins T9.1: ctrl+] is the leader, and Ctrl+Space,
+// the leader before it, is an ordinary key. Each row presses keys through
+// Update and checks whether the dialog is open and the exact bytes the agent
+// would read. Load-bearing rows:
+//   - the three ctrl+] rows: the leader has to open from each place a person
+//     presses it (the list, the focused overview, the focused agent pane), and
+//     from the pane it must not ALSO type 0x1D to the agent.
+//   - the three ctrl+space rows: any of them opening the dialog means the old
+//     leader is still bound somewhere. The pane row is the one that proves
+//     the key is now ordinary rather than swallowed: the agent reads exactly
+//     one NUL, which is what Ctrl+Space, ctrl+@ and ctrl+2 all send.
+//   - "ctrl+] twice in the pane": the agent still gets the key the dashboard
+//     took, as exactly one 0x1D, not NUL (the old pass-through) and not two.
+func TestLeaderIsCtrlBracket(t *testing.T) {
+	fromList := func(t *testing.T) (Model, *fakePane) {
+		fp := newFakePane("X")
+		m := testModel(sess("a"))
+		m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
+		return m, fp
+	}
+	fromDetail := func(t *testing.T) (Model, *fakePane) {
+		m := focusOverview(t, detailFocusFixture(t, "alpha", "alpha"))
+		return m, m.pane.(*fakePane)
+	}
+	fromPane := func(t *testing.T) (Model, *fakePane) {
+		fp := newFakePane("X")
+		return leaderFocusedPane(t, fp), fp
+	}
+	cases := []struct {
+		name      string
+		model     func(t *testing.T) (Model, *fakePane)
+		keys      []tea.KeyPressMsg
+		wantOpen  bool
+		wantBytes string
+	}{
+		{name: "ctrl+] opens the dialog from the list", model: fromList, keys: []tea.KeyPressMsg{leaderKeyPress}, wantOpen: true},
+		{name: "ctrl+] opens the dialog from the detail side", model: fromDetail, keys: []tea.KeyPressMsg{leaderKeyPress}, wantOpen: true},
+		{name: "ctrl+] opens the dialog from the agent pane", model: fromPane, keys: []tea.KeyPressMsg{leaderKeyPress}, wantOpen: true},
+		{name: "ctrl+space opens nothing from the list", model: fromList, keys: []tea.KeyPressMsg{ctrlSpacePress}},
+		{name: "ctrl+space opens nothing from the detail side", model: fromDetail, keys: []tea.KeyPressMsg{ctrlSpacePress}},
+		{name: "ctrl+space in the agent pane types one NUL", model: fromPane, keys: []tea.KeyPressMsg{ctrlSpacePress}, wantBytes: "\x00"},
+		{name: "ctrl+] twice in the pane types one 0x1D", model: fromPane, keys: []tea.KeyPressMsg{leaderKeyPress, leaderKeyPress}, wantBytes: "\x1d"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, fp := tc.model(t)
+			for _, k := range tc.keys {
+				m, _ = update(t, m, k)
+			}
+			if m.leaderOpen != tc.wantOpen {
+				t.Fatalf("leaderOpen = %v, want %v", m.leaderOpen, tc.wantOpen)
+			}
+			if onScreen := strings.Contains(render(m), "type to filter, or press an action's key"); onScreen != tc.wantOpen {
+				t.Fatalf("dialog on screen = %v, want %v", onScreen, tc.wantOpen)
+			}
+			if got := agentBytes(t, fp); got != tc.wantBytes {
+				t.Fatalf("the agent read %q, want %q", got, tc.wantBytes)
+			}
+		})
+	}
+}
+
 // leaderActionCase is one row of TestLeaderRunsEveryAction: a model in the
 // mode the action lives in, the key that used to run it there, and how to
 // tell that it ran.
@@ -540,7 +645,7 @@ type leaderActionCase struct {
 }
 
 // leaderApplyFilter applies a session-list filter the way a user does now:
-// ctrl+space /, the query, enter.
+// ctrl+] /, the query, enter.
 func leaderApplyFilter(t *testing.T, m Model, q string) Model {
 	t.Helper()
 	m, _ = update(t, m, leaderKeyPress)
@@ -741,7 +846,7 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 }
 
 // TestLeaderRunsEveryAction is the per-action table T7.2 is built on: one
-// subtest per leader-table action, each asserting that ctrl+space then its
+// subtest per leader-table action, each asserting that ctrl+] then its
 // key runs it and that the key it used to answer to (a bare letter or a
 // chord) no longer does, in the mode the action lives in. Every row is
 // load-bearing — the old key half is what proves the bare rule, the chord or
@@ -770,14 +875,14 @@ func TestLeaderRunsEveryAction(t *testing.T) {
 					t.Fatalf("%q opened the actions dialog", tc.old.String())
 				}
 			})
-			t.Run("ctrl+space then its key runs it", func(t *testing.T) {
+			t.Run("ctrl+] then its key runs it", func(t *testing.T) {
 				m := tc.setup(t)
 				if got := activeInputMode(m.modeSnapshot()); got != tc.mode {
 					t.Fatalf("setup: mode = %v, want %v", got, tc.mode)
 				}
 				m, _ = update(t, m, leaderKeyPress)
 				if !m.leaderOpen {
-					t.Fatal("ctrl+space did not open the dialog")
+					t.Fatal("ctrl+] did not open the dialog")
 				}
 				row, ok := leaderRowFor(m.leader.rows, e.action)
 				if !ok || row.blocked != "" {
@@ -806,7 +911,7 @@ func TestLeaderRunsEveryAction(t *testing.T) {
 					t.Fatal("the dialog stayed open")
 				}
 				if !tc.ran(m, after, cmd) {
-					t.Fatalf("ctrl+space %s did not run %v", e.key, e.action)
+					t.Fatalf("ctrl+] %s did not run %v", e.key, e.action)
 				}
 			})
 		})
@@ -828,7 +933,7 @@ func TestRemovedListKeyOnlyRaisesItsNotice(t *testing.T) {
 				t.Fatalf("key %q does not round-trip", k)
 			}
 			got, cmd := update(t, m, press)
-			want, _ := removedKeyNotice(k)
+			want, _ := removedKeyNotice(defaultLeaderKey, k)
 			if got.status != want || got.statusKind != notifyInfo {
 				t.Fatalf("status = %q (%v), want the info notice %q", got.status, got.statusKind, want)
 			}
@@ -909,7 +1014,7 @@ func TestCtrlCStillQuits(t *testing.T) {
 	}
 }
 
-// TestHelpOpensFromTheLeaderAndEscClosesIt pins A5: ctrl+space ? shows the
+// TestHelpOpensFromTheLeaderAndEscClosesIt pins A5: ctrl+] ? shows the
 // full help, and esc on the list closes it before it would clear a filter.
 // The filtered row is the load-bearing one: with both up, one esc must take
 // the help away and leave the filter, or the owner loses the filter they
@@ -919,7 +1024,7 @@ func TestHelpOpensFromTheLeaderAndEscClosesIt(t *testing.T) {
 	m = leaderApplyFilter(t, m, "b")
 	m = pressLeader(t, m, keyRune('?'))
 	if !m.helpShowAll {
-		t.Fatal("ctrl+space ? did not show the full help")
+		t.Fatal("ctrl+] ? did not show the full help")
 	}
 	m, _ = update(t, m, keyEscMsg())
 	if m.helpShowAll {

@@ -2870,6 +2870,7 @@ and anyone who wants another key sets it in `config.toml`.
   scratch build in a throwaway repo, inside tmux with the default prefix: `tmux send-keys C-]` opens the
   dialog from the list and from a focused agent pane, and twice leaves one `^]` at a stand-in agent.
   `make check` is green.
+- Amended 2026-10-14 (T9.1 done): the leader is `leaderKey = "ctrl+]"` in `internal/ui/leader.go`, but two places still name ctrl+] literally and T9.2 must derive them from the configured key: the pass-through in `leaderComponentKey` (`internal/ui/model.go`) forwards `{Code: ']', Mod: ModCtrl}`, and `projectEditOpenScreenFirst` in `internal/ui/projectedit.go` is a const naming `ctrl+] A`. Tests press the leader through `leaderKeyPress` (`leader_wiring_test.go`), and `TestLeaderIsCtrlBracket` checks the bytes the agent reads through a real x/vt emulator. Comments and the README write the old key as "Ctrl+Space" so the acceptance grep stays clean.
 
 #### T9.2 — Set the leader in config.toml
 - **Depends on:** T9.1
@@ -2903,6 +2904,7 @@ and anyone who wants another key sets it in `config.toml`.
   Against a scratch build with a scratch config folder: `leader = "ctrl+o"` opens the dialog on ctrl+o
   through tmux `send-keys C-o`, and `leader = "enter"` shows the header line and ctrl+] still works.
   `make check` is green.
+- Amended 2026-10-14 (T9.2 done): later tasks may assume the following. (1) `daemonconfig.Dash.Leader` is the trimmed raw string ("" when unset); only a non-string value becomes `DashErr`, and the key itself is checked by the pure `checkLeader` in `internal/ui/leaderconfig.go` (exported for other packages as `ui.LeaderName`). (2) `afk dash` reads it once at start through `startupLeader` in `dash.go` into `ui.Deps.Leader`, best effort (a load error or `DashErr` means the default); there is no live reload, so a change applies on restart. (3) The model holds the checked key as `Model.leaderKey` (a `leaderSetting`: name, decoded `tea.Key`, refusal); the old const is `defaultLeaderKey` and is used only as the fallback, so new hint text must take the leader from the model (free helpers take it as a parameter, panels through `panelContext.Leader`). (4) Pressed twice in the agent pane, the decoded key goes straight to the pane's `SendKey` for x/vt to encode. (5) A refused key shows a persistent header line (`leaderHeaderForms` in `views.go`, three lengths) ahead of every other header piece. See `## T9.2` in `docs/decisions.md`.
 
 ## 9. Deferred / later
 

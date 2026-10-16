@@ -170,7 +170,8 @@ Subcommands:
                  with the session live in an embedded pane; pass --no-dash to skip the
                  dashboard and get a text pointer instead.
   dash           Launch the afk dashboard; keys: ↑/↓ move/preview, enter focus,
-                 ctrl+space actions (new, clean, restart, quit and the rest), ctrl+c quit
+                 ctrl+] actions (new, clean, restart, quit and the rest; change the
+                 key with leader in config.toml's [dash]), ctrl+c quit
   clean [name]   Clean afk artifacts (remove worktree and archive session data)
   attach <name>  Reattach to a running session (detach with ctrl-\, session keeps running)
   notify         Post a desktop notification for a session. Delivery is always

@@ -67,13 +67,13 @@ func taskStatusCursorOn(t *testing.T, m Model, id string) Model {
 	return m
 }
 
-// taskStatusPicker opens the picker on task id with ctrl+space S.
+// taskStatusPicker opens the picker on task id with ctrl+] S.
 func taskStatusPicker(t *testing.T, m Model, id string) Model {
 	t.Helper()
 	m = taskStatusCursorOn(t, m, id)
 	m, _ = pressAction(t, m, keyRune('S'))
 	if m.modal != inputPickTaskStatus || m.taskStatus.id != id {
-		t.Fatalf("setup: ctrl+space S gave modal %v for %q, want the picker for %s", m.modal, m.taskStatus.id, id)
+		t.Fatalf("setup: ctrl+] S gave modal %v for %q, want the picker for %s", m.modal, m.taskStatus.id, id)
 	}
 	return m
 }
@@ -104,7 +104,7 @@ func taskStatusChoose(t *testing.T, m Model, status string) (Model, tea.Cmd) {
 // "over the all-projects screen" pins that the screen's own rule still
 // decides there.
 func TestTaskStatusBlockedReason(t *testing.T) {
-	ok := leaderConds{canSetTaskStatus: true, buildTabFocused: true, buildTaskSelected: true}
+	ok := leaderConds{leader: defaultLeaderKey, canSetTaskStatus: true, buildTabFocused: true, buildTaskSelected: true}
 	with := func(f func(*leaderConds)) leaderConds { c := ok; f(&c); return c }
 	tests := []struct {
 		name  string
@@ -114,7 +114,7 @@ func TestTaskStatusBlockedReason(t *testing.T) {
 		{"runs on a selected task", ok, ""},
 		{"no seam wins over everything", leaderConds{}, taskStatusNoSeam},
 		{"from the list", with(func(c *leaderConds) { c.buildTabFocused = false; c.buildTaskSelected = false }),
-			"open the Build tab first (ctrl+space b)"},
+			"open the Build tab first (ctrl+] b)"},
 		{"no task", with(func(c *leaderConds) { c.buildTaskSelected = false }), taskStatusNoTask},
 		{"over the all-projects screen", with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
 	}
@@ -128,7 +128,7 @@ func TestTaskStatusBlockedReason(t *testing.T) {
 }
 
 // TestTaskStatusRowDimmed drives the dialog from a real model. Every row is
-// load-bearing: each is a place the owner can press ctrl+space S where the
+// load-bearing: each is a place the owner can press ctrl+] S where the
 // action must not open the picker, and the seam must never be called. "the
 // seam is nil" is the zero-Deps guarantee: a dashboard not wired to the
 // ledger cannot write it.
@@ -148,7 +148,7 @@ func TestTaskStatusRowDimmed(t *testing.T) {
 			m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 			m.deps.SetTaskStatus = seam.set
 			return m, seam
-		}, "open the Build tab first (ctrl+space b)"},
+		}, "open the Build tab first (ctrl+] b)"},
 		{"the Build tab has no tasks", func(t *testing.T) (Model, *taskStatusSeam) {
 			seam := &taskStatusSeam{}
 			m := withBuild(t, testModel(sess("alpha")), buildview.Snapshot{Root: "/repo", HasBuild: true})
@@ -181,7 +181,7 @@ func TestTaskStatusRowDimmed(t *testing.T) {
 		if cmd != nil || m.modal != inputNormal {
 			t.Fatalf("modal %v, cmd %v; want nothing but a notice", m.modal, cmd != nil)
 		}
-		if m.status != "Open the Build tab first (ctrl+space b)." {
+		if m.status != "Open the Build tab first (ctrl+] b)." {
 			t.Errorf("status %q", m.status)
 		}
 	})

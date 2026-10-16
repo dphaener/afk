@@ -1199,7 +1199,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 
 	t.Run("open", func(t *testing.T) {
 		m, _ := update(t, newModel(), paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
-		if want := "opened alpha · enter/x to focus, ctrl+space \\ to return"; m.status != want {
+		if want := "opened alpha · enter/x to focus, ctrl+] \\ to return"; m.status != want {
 			t.Fatalf("open status = %q, want %q", m.status, want)
 		}
 	})
@@ -1221,7 +1221,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 		m, _ = update(t, m, keyEnter)
 		m = pressLeader(t, m, keyRune('t'))
 		m = pressLeader(t, m, keyRune('t'))
-		if want := "input goes to alpha · ctrl+space \\ to return"; m.status != want {
+		if want := "input goes to alpha · ctrl+] \\ to return"; m.status != want {
 			t.Fatalf("round-trip status = %q, want %q", m.status, want)
 		}
 	})
@@ -1465,7 +1465,7 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 			}
 			// The toggle and back-to-list chords moved into the actions
 			// dialog; the footer keeps the one entry that opens it.
-			if want := leaderKey; !strings.Contains(footer, want) {
+			if want := defaultLeaderKey; !strings.Contains(footer, want) {
 				t.Errorf("footer dropped %q: %q", want, footer)
 			}
 		})
@@ -1475,27 +1475,27 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 // TestLeaderChordNamesEveryTableKey holds leaderChord to the leader table: one
 // row per action, so a hint can never name a key the dialog does not answer
 // to. Load-bearing rows: back to list and close pane share `\`, and the chord
-// for both must still read "ctrl+space \" (the table lookup takes the first,
+// for both must still read "ctrl+] \" (the table lookup takes the first,
 // which has the same key); an action missing from the table falls back to the
 // leader alone rather than inventing a key.
 func TestLeaderChordNamesEveryTableKey(t *testing.T) {
 	for _, e := range leaderTable {
 		t.Run(leaderNames[e.action], func(t *testing.T) {
 			// A by-name row (the T7.3 plan actions) has no key to name, so
-			// its chord is the leader alone, never "ctrl+space " with a
+			// its chord is the leader alone, never "ctrl+] " with a
 			// dangling space.
-			want := leaderKey + " " + e.key
+			want := defaultLeaderKey + " " + e.key
 			if e.key == "" {
-				want = leaderKey
+				want = defaultLeaderKey
 			}
-			if got := leaderChord(e.action); got != want {
+			if got := leaderChord(defaultLeaderKey, e.action); got != want {
 				t.Errorf("leaderChord = %q, want %q", got, want)
 			}
 		})
 	}
 	t.Run("an action the table lacks names the leader alone", func(t *testing.T) {
-		if got := leaderChord(actionNone); got != leaderKey {
-			t.Errorf("leaderChord(actionNone) = %q, want %q", got, leaderKey)
+		if got := leaderChord(defaultLeaderKey, actionNone); got != defaultLeaderKey {
+			t.Errorf("leaderChord(defaultLeaderKey, actionNone) = %q, want %q", got, defaultLeaderKey)
 		}
 	})
 }
@@ -1503,9 +1503,9 @@ func TestLeaderChordNamesEveryTableKey(t *testing.T) {
 // TestHintsNameTheLeaderKey pins every hint and notice W2.T1 rewrote to the
 // chord, and forbids the old key as a way to run an action. Load-bearing
 // rows:
-//   - the footer rows: each input mode's line must show "ctrl+space actions";
+//   - the footer rows: each input mode's line must show "ctrl+] actions";
 //     the pane row keeps its "input → session" prefix.
-//   - full help: one "ctrl+space X" entry per leader action that can run.
+//   - full help: one "ctrl+] X" entry per leader action that can run.
 //   - wedge banner hint: shown over a focused pane, where a bare r is the
 //     agent's, so only the chord is true there.
 //   - the notice rows: a bare letter or ctrl+t / ctrl+\ / ctrl+g in a notice
@@ -1536,9 +1536,9 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 		got  string
 		want []string
 	}{
-		{"session list", strip(list), []string{"enter focus view", "ctrl+space actions"}},
-		{"focused agent pane", strip(pane), []string{"input → session · ", "ctrl+space actions", "ctrl+space g mouse:"}},
-		{"focused detail pane", strip(detail), []string{"ctrl+space actions"}},
+		{"session list", strip(list), []string{"enter focus view", "ctrl+] actions"}},
+		{"focused agent pane", strip(pane), []string{"input → session · ", "ctrl+] actions", "ctrl+] g mouse:"}},
+		{"focused detail pane", strip(detail), []string{"ctrl+] actions"}},
 	}
 	for _, tc := range footers {
 		t.Run("footer: "+tc.name, func(t *testing.T) {
@@ -1554,7 +1554,7 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 		full := xansi.Strip(renderModeHelp(list.renderNormalHelpKeyMap(), true, 100000))
 		for _, e := range leaderTable {
 			blocked := leaderBlockedReason(e.action, list.leaderConditions())
-			if got := fullHelpHasItem(full, leaderChord(e.action), leaderNames[e.action]); got == (blocked != "") {
+			if got := fullHelpHasItem(full, leaderChord(defaultLeaderKey, e.action), leaderNames[e.action]); got == (blocked != "") {
 				t.Errorf("%s: listed=%v with blocked reason %q; a row is listed exactly when it can run", leaderNames[e.action], got, blocked)
 			}
 		}
@@ -1562,12 +1562,12 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 
 	t.Run("texts name the chord", func(t *testing.T) {
 		for _, tc := range []struct{ name, got, want string }{
-			{"header switch hint", headerSwitchHint, "ctrl+space p"},
-			{"header inbox hint", headerInboxHint, "ctrl+space i"},
-			{"wedge banner hint", wedgeHintDashboard, "ctrl+space r"},
-			{"pane focus hint", paneFocusHint, "ctrl+space \\"},
-			{"pause notice", func() string { _, s := pauseNotice(false); return s }(), "ctrl+space U"},
-			{"mouse hint", list.mouseCaptureHint(), "ctrl+space g"},
+			{"header switch hint", headerSwitchHint(defaultLeaderKey), "ctrl+] p"},
+			{"header inbox hint", headerInboxHint(defaultLeaderKey), "ctrl+] i"},
+			{"wedge banner hint", wedgeHintDashboard(defaultLeaderKey), "ctrl+] r"},
+			{"pane focus hint", paneFocusHint(defaultLeaderKey), "ctrl+] \\"},
+			{"pause notice", func() string { _, s := pauseNotice(defaultLeaderKey, false); return s }(), "ctrl+] U"},
+			{"mouse hint", list.mouseCaptureHint(), "ctrl+] g"},
 		} {
 			if !strings.Contains(tc.got, tc.want) {
 				t.Errorf("%s = %q, want it to name %q", tc.name, tc.got, tc.want)
@@ -1577,8 +1577,8 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 
 	t.Run("no hint names an old key as an action key", func(t *testing.T) {
 		for name, text := range map[string]string{
-			"switch hint": headerSwitchHint, "inbox hint": headerInboxHint,
-			"wedge hint": wedgeHintDashboard, "pane focus hint": paneFocusHint,
+			"switch hint": headerSwitchHint(defaultLeaderKey), "inbox hint": headerInboxHint(defaultLeaderKey),
+			"wedge hint": wedgeHintDashboard(defaultLeaderKey), "pane focus hint": paneFocusHint(defaultLeaderKey),
 			"list footer": strip(list), "pane footer": strip(pane),
 			"empty state": xansi.Strip(testModel().renderRowsBody(60, 10)),
 		} {

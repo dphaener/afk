@@ -3400,3 +3400,30 @@ T8.17 proves the web page on a phone: the owner ran one whole plan from it, then
 - **Nothing the check found was left unfixed**, so no inbox item was filed for the accessibility check.
 
 Verification for the owner (T8.17): in a planning chat on your phone, answer a question that has options. Your answer should show once, in its place in the conversation, with no "Sent" bubble left below it. The fix was tested with node tests only, not in a real browser (inbox item k3aq3e).
+
+## T9.1
+
+T9.1 makes ctrl+] the dashboard's default leader in place of ctrl+space. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **One task for the dashboard package (A1).** Changing the leader breaks every dashboard test that presses it, so the key, its comments, the tests and the saved screens change together; the help text, README and glossary follow.
+- **Tests (A2).** The existing tests are updated, and one new table test holds the acceptance rows: ctrl+] opens the dialog from the list, the detail side and the agent pane; ctrl+space opens none of them; ctrl+] twice in the pane types one 0x1D.
+- **Passing the leader on (A3).** Pressed twice in the agent pane, the dialog hands ctrl+] to the pane, which already encodes it as the byte 0x1D. The pane still encodes ctrl+space as NUL, so ctrl+space now reaches the agent like any other key.
+- **Old ctrl+space tests (A4).** A test that checked ctrl+space as the leader now checks that it is an ordinary key, rather than being deleted.
+- **Nothing to wait for (A5).** T7.11, T7.12 and T7.13, which also change the dashboard package, are merged.
+- **How ctrl+] arrives.** Read in ultraviolet `v0.0.0-20260811164956-006e29f97886`, the decoder bubbletea v2.0.9 reads keys through (`tty.go` calls `uv.NewTerminalReader`). A legacy ctrl+] is the byte 0x1D: `decoder.go` `parseControl` sends bytes `ansi.FS`..`ansi.US` (0x1C–0x1F) to `KeyPressEvent{Code: b+0x40, Mod: ModCtrl}`, so 0x1D becomes `{Code: ']', Mod: ModCtrl}`. A kitty-protocol ctrl+] is `CSI 93;5u`: `decoder.go` hands `CSI … u` to `parseKittyKeyboard`, 93 is not in `kittyKeyMap` (its `init` adds only the C0 codes 0x00–0x1F), so the code is the rune `]`, and modifier 5 becomes `fromKittyMod(4)`, which is `ModCtrl`; with no text field the result is again `{Code: ']', Mod: ModCtrl}`. `key.go` `Key.String()` returns `Keystroke()` when there is no text, which writes `ctrl+` and then the rune, so bubbletea's `KeyPressMsg.String()` is `ctrl+]` for both. NUL still decodes to `{Code: KeySpace, Mod: ModCtrl}`, `ctrl+space`. All three were checked by feeding the bytes to `uv.EventDecoder.Decode` in a throwaway program.
+- **The old key in prose.** Comments and the README name the old key "Ctrl+Space", so they can still say why the leader moved while a search for the literal `ctrl+space` finds only the pane's key encoding and the tests that check ctrl+space is now an ordinary key.
+- **Tests check bytes.** The new table test sends the fake pane's keys through a real terminal emulator, so "one NUL" and "one 0x1D" are the bytes the agent would read, not key events.
+- **The pass-through key is written out.** Pressed twice in the pane, the dialog forwards ctrl+] as a literal key, and the hint for opening the all-projects screen first is a fixed string naming ctrl+] A. T9.2, which makes the leader configurable, must derive both from the configured key.
+
+## T9.2
+
+T9.2 lets the owner set the dashboard's leader with `leader = "<key>"` in the `[dash]` table of `config.toml`. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
+
+- **Where the key is checked (A1).** `daemonconfig` stores what is written, trimmed, and only a value that is not a string becomes `DashErr`. The dashboard checks the key itself. A bad `[dash]` value resets the whole table, so checking the key in `daemonconfig` would let a leader typo switch off the folder search too.
+- **When it is read (A2).** `afk dash` reads the leader once, when it starts, and a bad or unreadable file means the default with no header line (the existing toast already names the file). A changed leader applies on the next start. The leader has to work from the first keypress, and a key that changes while the actions dialog is open would leave the dialog unsure what closes it.
+- **Where it lives (A3).** The dashboard model holds the leader, and every hint, help line, the dialog and the pass-through take it from there. Nothing keeps it in a package-level variable, so tests stay independent of each other.
+- **Passing it to the agent (A4).** Pressed twice in the agent pane, the configured key goes straight to the terminal emulator, which encodes it, so ctrl+] still arrives as 0x1D and ctrl+o as 0x0F. The pane's own key table drops keys it does not list, so it is not used for this.
+- **Which keys are refused (A5).** In this order: a name the dashboard would never receive (an unknown key name, a modifier that is unknown, repeated or out of order, an upper-case letter, or shift with a printable key, which arrives as typed text); a key the dashboard keeps for itself (enter, esc, tab, shift+tab, ctrl+c, the arrows, pgup, pgdown, home, end, k, j, and ctrl+u and ctrl+d, which scroll the detail pane); and a key with no modifier. Upper and lower case are treated alike.
+- **The header line (A6).** A refused key puts one line at the front of the header, saying what is wrong, what to write in `config.toml`, and that ctrl+] is in use. It has a shorter form for narrow windows, because the header must stay one row.
+- **Text outside the dashboard (A7).** The help for `afk dash` and `afk` says ctrl+] is the default and how to change it. The message that sends someone to the dashboard to change a plan names the leader they configured.
+- **Tests (A8).** Each part is tested as it is written: the check is a table test, `daemonconfig` gets rows for the new key, and model tests cover a configured ctrl+o and a refused `q`.

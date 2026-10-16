@@ -89,7 +89,7 @@ func TestRenderHeaderCarriesNoProjectChromeForSingleOrZeroProjects(t *testing.T)
 			got := m.renderHeader()
 			for _, banned := range []string{
 				"session(s)", "projects)", "refreshed", "every 1s", "awaiting",
-				headerSwitchHint,
+				headerSwitchHint(defaultLeaderKey),
 			} {
 				if strings.Contains(xansi.Strip(got), banned) {
 					t.Errorf("renderHeader() = %q, must not carry %q", got, banned)
@@ -142,7 +142,7 @@ func TestRenderHeaderDoesNotHandCarryOneOffAndLabel(t *testing.T) {
 					t.Errorf("renderHeader() at width 80 = %q, must not hand-carry %q", got, banned)
 				}
 			}
-			if has := strings.Contains(got, headerSwitchHint); has != tc.wantHint {
+			if has := strings.Contains(got, headerSwitchHint(defaultLeaderKey)); has != tc.wantHint {
 				t.Fatalf("renderHeader() at width 80 = %q, switch hint present = %v, want %v",
 					got, has, tc.wantHint)
 			}
@@ -169,7 +169,7 @@ func TestRenderHeaderShowsCrossProjectAttention(t *testing.T) {
 	if want := awaitingGlyph + " 2 awaiting in gamma · 1 in delta"; !strings.Contains(got, want) {
 		t.Fatalf("renderHeader() = %q, want it to contain %q", got, want)
 	}
-	if !strings.Contains(got, headerSwitchHint) {
+	if !strings.Contains(got, headerSwitchHint(defaultLeaderKey)) {
 		t.Errorf("renderHeader() = %q, want the switch hint with four known projects", got)
 	}
 	for _, banned := range []string{"alpha", "beta", "of 4 projects", "session(s)", "refreshed"} {
@@ -210,7 +210,7 @@ func TestRenderHeaderCarriesStalenessBesideTheAttentionLine(t *testing.T) {
 		headerBadgeText,
 		"stale · discovery failing 45s",
 		awaitingGlyph + " 2 awaiting in gamma · 1 in delta",
-		headerSwitchHint,
+		headerSwitchHint(defaultLeaderKey),
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderHeader() = %q, want it to contain %q", got, want)
@@ -649,17 +649,17 @@ func TestHeaderInboxSegment(t *testing.T) {
 			return m
 		}, "", "", ""},
 		{"open only", func(*testing.T) Model { return inboxHeaderModel(open("a"), open("b"), answered) },
-			"inbox 2", "", headerInboxHint},
+			"inbox 2", "", headerInboxHint(defaultLeaderKey)},
 		{"open and blocking", func(*testing.T) Model {
 			return inboxHeaderModel(blocking("a"), open("b"), blocking("c"), answered)
-		}, "inbox 3 · 2 blocking", "2 blocking", headerInboxHint},
+		}, "inbox 3 · 2 blocking", "2 blocking", headerInboxHint(defaultLeaderKey)},
 		{"one item, the same words", func(*testing.T) Model { return inboxHeaderModel(blocking("a")) },
-			"inbox 1 · 1 blocking", "1 blocking", headerInboxHint},
+			"inbox 1 · 1 blocking", "1 blocking", headerInboxHint(defaultLeaderKey)},
 		{"with a master plan too", func(*testing.T) Model {
 			m := inboxHeaderModel(open("a"))
 			m.build.HasBuild = true
 			return m
-		}, "inbox 1", "", headerInboxHint},
+		}, "inbox 1", "", headerInboxHint(defaultLeaderKey)},
 		{"agent focus hides the hint", func(t *testing.T) Model {
 			m := testModel(runningSess("alpha"))
 			m.projects = nil
@@ -700,8 +700,8 @@ func TestHeaderInboxSegment(t *testing.T) {
 			if !strings.Contains(header, tc.inbox) {
 				t.Errorf("header = %q, want it to contain %q", header, tc.inbox)
 			}
-			if tc.hintWant == "" && strings.Contains(header, headerInboxHint) {
-				t.Errorf("header = %q, want no %q while the agent has the keyboard", header, headerInboxHint)
+			if tc.hintWant == "" && strings.Contains(header, headerInboxHint(defaultLeaderKey)) {
+				t.Errorf("header = %q, want no %q while the agent has the keyboard", header, headerInboxHint(defaultLeaderKey))
 			}
 		})
 	}
@@ -715,7 +715,7 @@ func TestHeaderInboxSegment(t *testing.T) {
 		if p.inboxShort != theme.awaitingFlag.Render("1 blocking") {
 			t.Errorf("inboxShort = %q, want theme.awaitingFlag", p.inboxShort)
 		}
-		if p.inboxHint != theme.dim.Render(headerInboxHint) {
+		if p.inboxHint != theme.dim.Render(headerInboxHint(defaultLeaderKey)) {
 			t.Errorf("inboxHint = %q, want theme.dim", p.inboxHint)
 		}
 	})
@@ -728,7 +728,7 @@ func TestHeaderInboxSegment(t *testing.T) {
 		m.build = buildview.Snapshot{Items: []inbox.Item{blocking("a")}}
 		m.buildKnown = true
 		if got := xansi.Strip(m.renderHeader()); !strings.Contains(got, "inbox 1 · 1 blocking") ||
-			!strings.Contains(got, headerSwitchHint) {
+			!strings.Contains(got, headerSwitchHint(defaultLeaderKey)) {
 			t.Errorf("header = %q, want the inbox segment and the switch hint", got)
 		}
 	})
@@ -765,8 +765,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 		attentionShort: agg,
 		inbox:          ilong,
 		inboxShort:     iblk,
-		inboxHint:      headerInboxHint,
-		hint:           headerSwitchHint,
+		inboxHint:      headerInboxHint(defaultLeaderKey),
+		hint:           headerSwitchHint(defaultLeaderKey),
 	}
 	withUsage := base
 	withUsage.usage, withUsage.usageShort = ulong, ushrt
@@ -783,17 +783,17 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 		rungs []rung
 	}{
 		{"no usage", base, []rung{
-			{badge + " " + named, j(ilong, headerInboxHint, headerSwitchHint)},
-			{badge + " " + named, j(ilong, headerInboxHint)}, // switch hint gone
-			{badge + " " + named, ilong},                     // inbox hint gone
-			{badge + " " + agg, ilong},                       // names collapse
-			{badge + " " + agg, iblk},                        // inbox long to short
-			{agg, iblk},                                      // badge gone, blocking stays
-			{"", iblk},                                       // attention gone, blocking stays
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey), headerSwitchHint(defaultLeaderKey))},
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey))}, // switch hint gone
+			{badge + " " + named, ilong}, // inbox hint gone
+			{badge + " " + agg, ilong},   // names collapse
+			{badge + " " + agg, iblk},    // inbox long to short
+			{agg, iblk},                  // badge gone, blocking stays
+			{"", iblk},                   // attention gone, blocking stays
 		}},
 		{"with usage", withUsage, []rung{
-			{badge + " " + named, j(ilong, headerInboxHint, ulong, headerSwitchHint)},
-			{badge + " " + named, j(ilong, headerInboxHint, ulong)},
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey), ulong, headerSwitchHint(defaultLeaderKey))},
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey), ulong)},
 			{badge + " " + named, j(ilong, ulong)},
 			{badge + " " + agg, j(ilong, ulong)},
 			{badge + " " + agg, j(ilong, ushrt)},
@@ -803,8 +803,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 			{"", iblk},            // attention gone, blocking stays
 		}},
 		{"stale", withStale, []rung{
-			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint, headerSwitchHint)},
-			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint)},
+			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint(defaultLeaderKey), headerSwitchHint(defaultLeaderKey))},
+			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint(defaultLeaderKey))},
 			{badge + " " + stale + "  " + named, ilong},
 			{badge + " " + stale + "  " + agg, ilong},
 			{badge + " " + stale + "  " + agg, iblk},
@@ -813,8 +813,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 			{stale, ""}, // blocking gone, stale stays
 		}},
 		{"open only", openOnly, []rung{
-			{badge + " " + named, j("inbox 2", headerInboxHint, headerSwitchHint)},
-			{badge + " " + named, j("inbox 2", headerInboxHint)},
+			{badge + " " + named, j("inbox 2", headerInboxHint(defaultLeaderKey), headerSwitchHint(defaultLeaderKey))},
+			{badge + " " + named, j("inbox 2", headerInboxHint(defaultLeaderKey))},
 			{badge + " " + named, "inbox 2"},
 			{badge + " " + agg, "inbox 2"},
 			{badge + " " + agg, ""}, // open-only items vanish
@@ -904,7 +904,7 @@ func TestRenderHeaderReportsOnlyOtherProjectsAwaiting(t *testing.T) {
 // TestRenderHeaderSwitchHintVisibleAtEightyColumns keeps the original
 // contract this test was written for, which the redesign makes literal
 // again: at a REAL 80-column terminal, with the attention line populated,
-// the `ctrl+space p: projects` hint must still be on screen. 80 columns is the
+// the `ctrl+] p: projects` hint must still be on screen. 80 columns is the
 // width the ladder's first two rungs are tuned against, and the rung that
 // drops the hint must not be reached there.
 func TestRenderHeaderSwitchHintVisibleAtEightyColumns(t *testing.T) {
@@ -913,8 +913,8 @@ func TestRenderHeaderSwitchHintVisibleAtEightyColumns(t *testing.T) {
 
 	got := m.renderHeader()
 	stripped := xansi.Strip(got)
-	if !strings.Contains(stripped, headerSwitchHint) {
-		t.Fatalf("renderHeader() at width 80 = %q, want it to contain %q", stripped, headerSwitchHint)
+	if !strings.Contains(stripped, headerSwitchHint(defaultLeaderKey)) {
+		t.Fatalf("renderHeader() at width 80 = %q, want it to contain %q", stripped, headerSwitchHint(defaultLeaderKey))
 	}
 	if !strings.Contains(stripped, "awaiting in gamma") {
 		t.Errorf("renderHeader() at width 80 = %q, want the named attention line to survive", stripped)

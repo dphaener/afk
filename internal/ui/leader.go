@@ -1,12 +1,19 @@
-// leader.go holds the actions dialog the leader key (ctrl+space) opens: every
+// leader.go holds the actions dialog the leader key (ctrl+]) opens: every
 // dashboard action with its key and one line of help, from the session list,
 // the overview and the agent pane alike (T7.1).
+//
+// The leader was Ctrl+Space until T9.1 and is ctrl+] since (docs/decisions.md
+// "## T9.1"). ctrl+] is a byte of its own, 0x1D, that neither tmux's default
+// prefix (ctrl+b) nor a common custom one (ctrl+a) takes. Ctrl+Space is not:
+// a terminal sends Ctrl+Space, ctrl+@ and ctrl+2 all as the one NUL byte, and
+// on macOS Raycast takes Ctrl+Space before the terminal sees it at all. Now
+// Ctrl+Space is an ordinary key, which the agent pane forwards as NUL.
 //
 // Since T7.2 the leader is the ONE way to run a dashboard action. The owner
 // chose that the session list keeps only the keys that move around (PLAN
 // T7.2, docs/decisions.md "## T7.2"): the bare letters, the dashboard chords
 // and the `:` palette are gone, and an action is a key pressed after
-// ctrl+space. So the dialog's rows no longer come from mode.go's rules —
+// the leader. So the dialog's rows no longer come from mode.go's rules —
 // there are no rules for these actions left to derive them from — but from
 // leaderTable below, which holds the key after the leader for each action and
 // the side of the screen it runs on.
@@ -37,11 +44,18 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// leaderKey is the leader key's string as key.Matches and KeyPressMsg.String
-// see it. Its arrival from the terminal is recorded in docs/decisions.md
-// (T7.1); here it only has to equal what String() prints for
-// {Code: KeySpace, Mod: ModCtrl}, which TestLeaderKeyDecision exercises.
-const leaderKey = "ctrl+space"
+// defaultLeaderKey is the default leader key's string as key.Matches and
+// KeyPressMsg.String see it, used when config.toml's [dash] leader is unset
+// or refused (checkLeader, leaderconfig.go). The Model holds the leader it
+// actually uses (Model.leaderKey); nothing but checkLeader reads this
+// constant outside tests, so every hint names the configured key. How it arrives from the terminal is recorded in docs/decisions.md
+// (T9.1, "How ctrl+] arrives"): ultraviolet decodes the legacy byte 0x1D and
+// the kitty-protocol CSI 93;5u alike to {Code: ']', Mod: ModCtrl}, whose
+// String() is "ctrl+]", so this one string matches both. It is not
+// Ctrl+Space because that key is the NUL byte ctrl+@ and ctrl+2 also send,
+// and Raycast takes it on macOS (see the file comment). TestLeaderKeyDecision
+// exercises the match.
+const defaultLeaderKey = "ctrl+]"
 
 // The dialog's own gestures, declared HELP-ONLY: leaderKeyDecision stages
 // them, and declaring them as parent rules in the registry would implement
@@ -67,11 +81,27 @@ var (
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "close"),
 	)
-	leaderAgainKey = key.NewBinding(
-		key.WithKeys(leaderKey),
-		key.WithHelp(leaderKey, "close, or pass it to the agent"),
-	)
 )
+
+// leaderAgainBinding is the help-only footer entry for the leader pressed
+// again inside the dialog. A function of the leader rather than one more var
+// above, because the leader is the Model's (set in config.toml, T9.2) and a
+// var would freeze the default into the footer.
+func leaderAgainBinding(leader string) key.Binding {
+	return key.NewBinding(
+		key.WithKeys(leader),
+		key.WithHelp(leader, "close, or pass it to the agent"),
+	)
+}
+
+// leaderBinding is the binding that opens the actions dialog with leader as
+// its key: keyMap.Leader, and the rule normal, detail and pane mode share.
+func leaderBinding(leader string) key.Binding {
+	return key.NewBinding(
+		key.WithKeys(leader),
+		key.WithHelp(leader, "actions"),
+	)
+}
 
 // leaderReach is where a leader action runs from, which decides whether the
 // keyboard moves to the session list before it runs. It reproduces where
@@ -104,7 +134,7 @@ const (
 
 // leaderEntry is one action in the leader table.
 type leaderEntry struct {
-	// key is what is pressed after ctrl+space. It is a key.Matches string
+	// key is what is pressed after the leader. It is a key.Matches string
 	// ("n", "P", "\\", "?"), so a dialog key is compared with KeyPressMsg's
 	// String() exactly as a binding would be. It is "" for an action reached
 	// by name only (the plan actions): such a row shows no key, answers to no
@@ -404,43 +434,45 @@ func leaderKeyFor(a modeAction) string {
 var removedListKeys = []string{"n", "o", "p", "c", "r", "l", "/", "b", "i", "q", "f", "?", "P", "U", ":"}
 
 // removedKeyNotice is the notice for key s pressed on the session list, and
-// whether s is one of removedListKeys. Every removed letter kept its letter
+// whether s is one of removedListKeys; leader is the key the notice names. Every removed letter kept its letter
 // under the leader; the table is still asked, so a letter that ever left the
 // table would lose its notice rather than name a key that does nothing.
-func removedKeyNotice(s string) (string, bool) {
+func removedKeyNotice(leader, s string) (string, bool) {
 	if !slices.Contains(removedListKeys, s) {
 		return "", false
 	}
 	if s == ":" {
-		return ": moved: press " + leaderKey + ", then type to filter the actions", true
+		return ": moved: press " + leader + ", then type to filter the actions", true
 	}
 	if leaderActionForKey(s) == actionNone {
 		return "", false
 	}
-	return s + " moved: press " + leaderKey + " then " + s, true
+	return s + " moved: press " + leader + " then " + s, true
 }
 
-// leaderChord is how a hint or a notice names the key that runs action a:
-// "ctrl+space n". It reads the key from leaderTable, so a hint cannot name a
-// key the dialog does not answer to. An action the table does not list gives
-// the leader alone, which still tells the reader where to look.
-func leaderChord(a modeAction) string {
+// leaderChord is how a hint or a notice names the key that runs action a
+// after leader: "ctrl+] n". It reads the key from leaderTable, so a hint
+// cannot name a key the dialog does not answer to. An action the table does
+// not list gives the leader alone, which still tells the reader where to
+// look. leader is a parameter, never a package value, because the owner can
+// set it in config.toml (T9.2) and every caller passes the Model's.
+func leaderChord(leader string, a modeAction) string {
 	if k := leaderKeyFor(a); k != "" {
-		return leaderKey + " " + k
+		return leader + " " + k
 	}
-	return leaderKey
+	return leader
 }
 
-// leaderHelpBinding is a help entry that shows "ctrl+space X" for action a
+// leaderHelpBinding is a help entry that shows "ctrl+] X" for action a
 // with the given short description, for the footer and the full help. Its
 // match key is the plain key after the leader: nothing dispatches on it (the
 // dialog does, from leaderTable), it only has to be non-empty because
 // help.Model skips a binding that has no key. enabled false drops it from the
 // line, on the rule that help never offers a key that would do nothing.
-func leaderHelpBinding(a modeAction, desc string, enabled bool) key.Binding {
+func leaderHelpBinding(leader string, a modeAction, desc string, enabled bool) key.Binding {
 	b := key.NewBinding(
 		key.WithKeys(leaderKeyFor(a)),
-		key.WithHelp(leaderChord(a), desc),
+		key.WithHelp(leaderChord(leader, a), desc),
 	)
 	b.SetEnabled(enabled)
 	return b
@@ -466,6 +498,10 @@ func leaderActionForKey(s string) modeAction {
 // guard an action's own handler applies, so the dialog dims exactly the rows
 // that would do nothing (or only say why it did nothing).
 type leaderConds struct {
+	// leader is the Model's leader key name (Model.leaderKey.name). It is
+	// here, with the facts, because a few reasons name a chord ("close the
+	// pane first (ctrl+] \)") and the leader is configurable (T9.2).
+	leader string
 	// hasActiveProject is Model.hasActiveProject: the new-session form, the
 	// one-off picker and the switcher are inert without one.
 	hasActiveProject bool
@@ -641,7 +677,7 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		case !c.selected:
 			return noSession
 		case c.paneOpen:
-			return "close the pane first (" + leaderKey + " \\)"
+			return "close the pane first (" + c.leader + " \\)"
 		case c.selectedPending:
 			return "this session is still being created"
 		case c.selectedCleaning:
@@ -820,7 +856,7 @@ const (
 	leaderFilter
 	// leaderClose closes the dialog and does nothing else.
 	leaderClose
-	// leaderPassThrough closes the dialog and types ctrl+space to the agent:
+	// leaderPassThrough closes the dialog and types the leader to the agent:
 	// the leader pressed twice from the agent pane is how the agent still gets
 	// the key the dashboard took for itself.
 	leaderPassThrough
@@ -863,7 +899,7 @@ type leaderOutcome struct {
 // The rules run in a fixed order, and the order is the design:
 //
 //  1. esc closes, whatever is typed — one key out, always.
-//  2. ctrl+space closes; from the agent pane it also passes ctrl+space on.
+//  2. The leader closes; from the agent pane it also passes the leader on.
 //  3. up and down move the highlight.
 //  4. enter runs the highlighted row. enter and esc are checked before any
 //     row's keys; no row carries either (rows carry the key after the
@@ -879,15 +915,22 @@ type leaderOutcome struct {
 //
 // Anything else is ignored. A run that lands on a dimmed row is ignored too:
 // the dialog stays open and the row keeps saying why.
-func leaderKeyDecision(k tea.KeyPressMsg, query string, rows []leaderRow, highlight int, openedFromPane bool) leaderOutcome {
+//
+// leader is the Model's leader key name. It is compared before the switch
+// rather than as a case because it is a value, not a constant; checkLeader
+// refuses esc, up, down, enter and backspace as leaders (reserved, or with no
+// modifier), so testing it first cannot shadow the dialog's own keys and
+// rule 1 still holds.
+func leaderKeyDecision(k tea.KeyPressMsg, leader, query string, rows []leaderRow, highlight int, openedFromPane bool) leaderOutcome {
 	s := k.String()
-	switch s {
-	case "esc":
-		return leaderOutcome{kind: leaderClose}
-	case leaderKey:
+	if s == leader {
 		if openedFromPane {
 			return leaderOutcome{kind: leaderPassThrough}
 		}
+		return leaderOutcome{kind: leaderClose}
+	}
+	switch s {
+	case "esc":
 		return leaderOutcome{kind: leaderClose}
 	case "up":
 		return leaderOutcome{kind: leaderMove, delta: -1}
@@ -942,10 +985,13 @@ type leaderDialog struct {
 	// leader was pressed. The dialog's own mode outranks the pane's, so this
 	// cannot be worked out again later and has to be kept.
 	openedFromPane bool
+	// leader is the key that opened the dialog, the one that closes it (or
+	// passes it on) when pressed again: the Model's, which config.toml sets.
+	leader string
 }
 
-func newLeaderDialog(rows []leaderRow, openedFromPane bool) leaderDialog {
-	return leaderDialog{rows: rows, openedFromPane: openedFromPane}
+func newLeaderDialog(rows []leaderRow, leader string, openedFromPane bool) leaderDialog {
+	return leaderDialog{rows: rows, leader: leader, openedFromPane: openedFromPane}
 }
 
 // visible is the rows the query keeps: a case-insensitive substring match on
@@ -970,7 +1016,7 @@ func (d leaderDialog) visible() []leaderRow {
 
 // decide is leaderKeyDecision against the dialog's own state.
 func (d leaderDialog) decide(k tea.KeyPressMsg) leaderOutcome {
-	return leaderKeyDecision(k, d.query, d.visible(), d.highlight, d.openedFromPane)
+	return leaderKeyDecision(k, d.leader, d.query, d.visible(), d.highlight, d.openedFromPane)
 }
 
 // apply carries out the two outcomes that change the dialog itself, filter

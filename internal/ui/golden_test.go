@@ -242,7 +242,7 @@ func TestGoldenDashboardFrames(t *testing.T) {
 
 // TestGoldenModals pins two floating overlays at 120×40 over the fixture
 // dashboard: the project switcher and the creation form. Each is opened
-// through its own key after the leader (ctrl+space p, ctrl+space n) so the
+// through its own key after the leader (ctrl+] p, ctrl+] n) so the
 // frame is the one a user sees.
 func TestGoldenModals(t *testing.T) {
 	open := func(t *testing.T, m Model, k tea.KeyPressMsg) Model {
@@ -283,7 +283,7 @@ func TestGoldenModals(t *testing.T) {
 		t.Run(size.name, func(t *testing.T) {
 			m, _ := update(t, goldenModel(t, size.w, size.h), leaderKeyPress)
 			if !m.leaderOpen {
-				t.Fatal("ctrl+space did not open the actions dialog")
+				t.Fatal("ctrl+] did not open the actions dialog")
 			}
 			assertGolden(t, size.name, render(m))
 		})
@@ -293,7 +293,7 @@ func TestGoldenModals(t *testing.T) {
 // TestGoldenDialogs pins the five confirmation/prompt dialogs at 120×40 over
 // the fixture dashboard: the clean confirmation (on the selected feat-auth),
 // the restart confirmation (on a wedged fixture), the label editor, the
-// failed-create report, and the one-off provider picker (fresh from ctrl+space o, so
+// failed-create report, and the one-off provider picker (fresh from ctrl+] o, so
 // on its default row).
 func TestGoldenDialogs(t *testing.T) {
 	t.Run("dash-120x40-clean", func(t *testing.T) {
@@ -582,7 +582,7 @@ func TestGoldenBuildCursor(t *testing.T) {
 
 // TestGoldenTaskStatusConfirm pins the "set this task's status" confirm
 // (T7.11) at both sizes, reached the way a person reaches it: `b`, the cursor
-// moved to the failed task, ctrl+space S, the highlight moved to pending, and
+// moved to the failed task, ctrl+] S, the highlight moved to pending, and
 // enter. The frame shows the change, what follows from it and the y/n hint;
 // at 80×24 the dialog is narrowest and the consequence has to wrap. The seam
 // is a stand-in that is never called: nothing is pressed after the confirm.
@@ -625,7 +625,7 @@ func TestGoldenTaskStatusConfirm(t *testing.T) {
 
 // TestGoldenTaskTokens pins the tokens overlay (T7.12) at both sizes, reached
 // the way a person reaches it: the build read lands and the cursor's task's
-// tokens are read, then `b`, then ctrl+space T. At 120x40 the box shows the
+// tokens are read, then `b`, then ctrl+] T. At 120x40 the box shows the
 // command's full table, cache columns included; at 80x24 the full table does
 // not fit and the compact one is shown. The cursor row behind the box has no
 // room for its short total at either size (the detail pane is narrower than
@@ -647,7 +647,7 @@ func TestGoldenTaskTokens(t *testing.T) {
 			m = pressLeader(t, m, keyRune('b'))
 			m = pressLeader(t, m, keyRune('T'))
 			if !m.taskTokensOpen {
-				t.Fatal("ctrl+space T did not open the overlay")
+				t.Fatal("ctrl+] T did not open the overlay")
 			}
 			m.clearStatus()
 			assertGolden(t, size.name, render(m))
@@ -656,7 +656,7 @@ func TestGoldenTaskTokens(t *testing.T) {
 }
 
 // TestGoldenPlanStart pins the plan actions' screens (T7.3): the amend form
-// at both sizes, reached the way a person reaches it (ctrl+space, "amend",
+// at both sizes, reached the way a person reaches it (ctrl+], "amend",
 // enter) with a sentence typed; the reconcile form after a blank enter, so
 // the line saying what is missing is framed; and the open-it offer raised
 // when a planning session is already open. The seam is a stand-in that only
@@ -704,7 +704,7 @@ func TestGoldenPlanStart(t *testing.T) {
 
 // TestGoldenPlanCheck pins the check-the-plan overlay (T7.7) at both sizes,
 // reached the way a person reaches it: the plan status read lands, then
-// ctrl+space, "errors", enter. The fixture lists a warning before the errors
+// ctrl+], "errors", enter. The fixture lists a warning before the errors
 // in plan order, so the frame shows the errors-first order, and at 80x24 its
 // findings wrap inside the box.
 func TestGoldenPlanCheck(t *testing.T) {

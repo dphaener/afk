@@ -150,7 +150,7 @@ func TestDetailFocusModeDerivation(t *testing.T) {
 				m := detailFocusFixture(t, "alpha", "alpha")
 				m = focusOverview(t, m)
 				if m.view != viewOverview {
-					t.Fatalf("enter must not reveal the pane — the view is ctrl+space t's, from the right side only")
+					t.Fatalf("enter must not reveal the pane — the view is ctrl+] t's, from the right side only")
 				}
 				return m
 			},
@@ -266,7 +266,7 @@ func TestDetailFocusReleaseKeys(t *testing.T) {
 			m, _ = update(t, m, keyEscMsg())
 			return m
 		}},
-		{"ctrl+space then backslash releases", func(t *testing.T, m Model) Model {
+		{"ctrl+] then backslash releases", func(t *testing.T, m Model) Model {
 			return pressLeader(t, m, keyRune('\\'))
 		}},
 	} {
@@ -564,7 +564,7 @@ func TestEnterAndFocusKeyCurrentViewMatrix(t *testing.T) {
 		{
 			name:       "agent view, the selected row's pane installed",
 			setup:      paneOn("alpha"),
-			wantStatus: "input goes to alpha · ctrl+space \\ to return",
+			wantStatus: "input goes to alpha · ctrl+] \\ to return",
 			wantFocus:  focusRight, wantView: viewAgent, wantMode: inputPane, wantTab: tabOverview,
 			wantSettledMode: inputPane, wantSettledSurface: focusSurfacePane, wantSettledPane: "alpha",
 		},

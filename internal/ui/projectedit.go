@@ -1,5 +1,5 @@
 // projectedit.go is the all-projects screen's add and remove (T7.10): the two
-// leader rows (ctrl+space + and ctrl+space -), the two-step form add opens,
+// leader rows (ctrl+] + and ctrl+] -), the two-step form add opens,
 // the y/n confirm remove raises, and the notices their results become.
 //
 // Nothing here reads or writes config.toml. The work is Deps.AddProject and
@@ -60,12 +60,18 @@ const (
 	ProjectFailed = "failed"
 )
 
+// projectEditOpenScreenFirst is both rows' reason away from the all-projects
+// screen: they act on its rows, which are not on screen. A function and not
+// one of the constants below because it names the all-projects chord, whose
+// leader config.toml sets (T9.2); the chord is read from the leader table, so
+// it cannot name a key that does not open the screen.
+func projectEditOpenScreenFirst(leader string) string {
+	return "Open the all-projects screen first (" + leaderChord(leader, actionAllProjects) + ")."
+}
+
 // The add form's and the remove confirm's own words. Constants because the
 // tests and the README quote them.
 const (
-	// projectEditOpenScreenFirst is both rows' reason away from the
-	// all-projects screen: they act on its rows, which are not on screen.
-	projectEditOpenScreenFirst = "Open the all-projects screen first (ctrl+space A)."
 	// projectAddFolderQuestion and projectAddFolderNote are the form's first
 	// step.
 	projectAddFolderQuestion = "Which folder? Give its full path, or start it with ~/."
@@ -114,7 +120,7 @@ func projectEditBlockedReason(a modeAction, c leaderConds) string {
 	case a == actionProjectRemove && !c.canRemoveProject:
 		return "removing a project is not available here"
 	case !c.allProjectsOpen:
-		return projectEditOpenScreenFirst
+		return projectEditOpenScreenFirst(c.leader)
 	case a == actionProjectRemove && !c.projectRowSelected:
 		return "no project is selected"
 	case a == actionProjectRemove && !c.projectRowListed:
@@ -134,7 +140,7 @@ func reasonSentence(reason string) string {
 	return strings.ToUpper(reason[:1]) + reason[1:] + "."
 }
 
-// openProjectAdd is ctrl+space + on the all-projects screen: the add form's
+// openProjectAdd is ctrl+] + on the all-projects screen: the add form's
 // first step, asking for the folder. No file is read and no seam is called.
 func (m Model) openProjectAdd() (tea.Model, tea.Cmd) {
 	if reason := projectEditBlockedReason(actionProjectAdd, m.leaderConditions()); reason != "" {
@@ -284,7 +290,7 @@ func (m *Model) clearProjectAdd() {
 	m.projectAddInput = textinput.Model{}
 }
 
-// openProjectRemove is ctrl+space - on the all-projects screen: the confirm
+// openProjectRemove is ctrl+] - on the all-projects screen: the confirm
 // for the selected row. It copies the row, so y removes the project the
 // dialog names even if a refresh re-sorts the rows under it.
 func (m Model) openProjectRemove() (tea.Model, tea.Cmd) {

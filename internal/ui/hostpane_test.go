@@ -353,14 +353,14 @@ func TestHostChildDetachReason(t *testing.T) {
 // and attach's advertises no in-place keypress at all, pointing at the
 // dashboard instead.
 func TestWedgeBannerHintsMatchEachSurfacesKeyHandling(t *testing.T) {
-	dash := xansi.Strip(renderWedgeBanner(12*time.Minute, wedgeHintDashboard))
+	dash := xansi.Strip(renderWedgeBanner(12*time.Minute, wedgeHintDashboard(defaultLeaderKey)))
 	if !strings.Contains(dash, "12m") {
 		t.Fatalf("dashboard banner missing the wedge age: %q", dash)
 	}
 	// The banner is shown over a focused pane, where a bare r goes to the
 	// child; the leader is the one key the dashboard keeps there, so naming
 	// the leader chord is what makes the hint true in the place it is read.
-	if !strings.Contains(dash, "ctrl+space "+wedgeRecoveryKey) {
+	if !strings.Contains(dash, "ctrl+] "+wedgeRecoveryKey) {
 		t.Fatalf("dashboard banner does not name the leader chord for the recovery key %q: %q", wedgeRecoveryKey, dash)
 	}
 	if strings.Contains(dash, `ctrl+\`) {

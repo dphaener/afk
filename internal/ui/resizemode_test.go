@@ -48,7 +48,7 @@ func drainCmd(cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
-// TestLeaderWEntersResizeModeFromNormal is ctrl+space w from the list, the
+// TestLeaderWEntersResizeModeFromNormal is ctrl+] w from the list, the
 // way into resize mode since T7.2 (ctrl+w on the list is nothing now).
 func TestLeaderWEntersResizeModeFromNormal(t *testing.T) {
 	m := testModel(runningSess("alpha"))
@@ -57,7 +57,7 @@ func TestLeaderWEntersResizeModeFromNormal(t *testing.T) {
 	m, cmd := update(t, m, keyRune('w'))
 
 	if !m.resizing {
-		t.Fatal("ctrl+space w did not enter resize mode")
+		t.Fatal("ctrl+] w did not enter resize mode")
 	}
 	if got := activeInputMode(m.modeSnapshot()); got != inputResize {
 		t.Fatalf("active mode = %v, want %v", got, inputResize)
@@ -73,7 +73,7 @@ func TestLeaderWEntersResizeModeFromNormal(t *testing.T) {
 	}
 }
 
-// TestLeaderWEntersResizeModeFromDetailAndResumesDetailFocus is ctrl+space w
+// TestLeaderWEntersResizeModeFromDetailAndResumesDetailFocus is ctrl+] w
 // from the focused overview: an overview action, so it runs in place and the
 // overview has the keyboard again when the resize ends. Inside resize mode
 // ctrl+w still commits and esc still cancels (T7.2 left resize mode's keys
@@ -88,7 +88,7 @@ func TestLeaderWEntersResizeModeFromDetailAndResumesDetailFocus(t *testing.T) {
 
 	m = pressLeader(t, m, keyRune('w'))
 	if !m.resizing {
-		t.Fatal("ctrl+space w did not enter resize mode from detail focus")
+		t.Fatal("ctrl+] w did not enter resize mode from detail focus")
 	}
 	if !m.detailOwnsKeyboard() {
 		t.Fatal("entering resize mode dropped detail focus")

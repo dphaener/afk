@@ -86,7 +86,7 @@ func TestBuildTabLinesWidths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("width %d", tc.width), func(t *testing.T) {
-			lines := buildTabLines(snap, PlanStatus{}, tc.width)
+			lines := buildTabLines(defaultLeaderKey, snap, PlanStatus{}, tc.width)
 			for _, ln := range lines {
 				if w := lipgloss.Width(ln); w > tc.width {
 					t.Errorf("line is %d cells, over the width %d: %q", w, tc.width, xansi.Strip(ln))
@@ -196,7 +196,7 @@ func TestBuildTabSummary(t *testing.T) {
 				Problem: "The master plan at /repo/docs/PLAN.md could not be read.",
 				Items:   []inbox.Item{item("q-1", true, false)},
 			},
-			want:    []string{"The master plan at /repo/docs/PLAN.md could not be read.", "1 item needs you · ctrl+space i: inbox"},
+			want:    []string{"The master plan at /repo/docs/PLAN.md could not be read.", "1 item needs you · ctrl+] i: inbox"},
 			wantNot: []string{"done", "no tasks", "T1.1"},
 		},
 		{
@@ -204,7 +204,7 @@ func TestBuildTabSummary(t *testing.T) {
 			snap: base(func(s *buildview.Snapshot) {
 				s.Items = []inbox.Item{item("q-1", true, false), item("q-2", true, false), item("n-1", false, false)}
 			}),
-			want:    []string{"2 items need you · ctrl+space i: inbox"},
+			want:    []string{"2 items need you · ctrl+] i: inbox"},
 			wantNot: []string{"open items"},
 		},
 		{
@@ -212,13 +212,13 @@ func TestBuildTabSummary(t *testing.T) {
 			snap: base(func(s *buildview.Snapshot) {
 				s.Items = []inbox.Item{item("n-1", false, false), item("n-2", false, false), item("q-1", true, true)}
 			}),
-			want:    []string{"2 open items · ctrl+space i: inbox"},
+			want:    []string{"2 open items · ctrl+] i: inbox"},
 			wantNot: []string{"need you"},
 		},
 		{
 			name: "one open item",
 			snap: base(func(s *buildview.Snapshot) { s.Items = []inbox.Item{item("n-1", false, false)} }),
-			want: []string{"1 open item · ctrl+space i: inbox"},
+			want: []string{"1 open item · ctrl+] i: inbox"},
 		},
 		{
 			name:    "every item answered",
@@ -243,7 +243,7 @@ func TestBuildTabSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := strings.Join(plain(buildTabLines(tc.snap, PlanStatus{}, 100)), "\n")
+			got := strings.Join(plain(buildTabLines(defaultLeaderKey, tc.snap, PlanStatus{}, 100)), "\n")
 			for _, w := range tc.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("missing %q in:\n%s", w, got)
@@ -266,7 +266,7 @@ func TestBuildTabProblemWraps(t *testing.T) {
 		HasBuild: true,
 		Problem:  "The ledger at /home/someone/code/project/.afk/build/ledger.json is damaged and could not be read.",
 	}
-	lines := plain(buildTabLines(snap, PlanStatus{}, 40))
+	lines := plain(buildTabLines(defaultLeaderKey, snap, PlanStatus{}, 40))
 	if len(lines) < 2 {
 		t.Fatalf("the problem was not wrapped: %q", lines)
 	}
@@ -665,7 +665,7 @@ func TestPausedForUsageNeverReadsAsStopped(t *testing.T) {
 }
 
 // TestBuildKeyIsInTheLeaderTable is the proof that the actions dialog lists
-// the build tasks under ctrl+space b and that the key runs it. The dialog's
+// the build tasks under ctrl+] b and that the key runs it. The dialog's
 // rows come from the leader table, so this fails if the row or its help line
 // is ever removed. The short footer line must NOT grow: it is at its
 // measured-width cap.
@@ -683,7 +683,7 @@ func TestBuildKeyIsInTheLeaderTable(t *testing.T) {
 	if row.keyLabel != "b" || row.name != "build tasks" || row.blocked != "" {
 		t.Errorf("row = %+v, want a runnable \"build tasks\" under b", row)
 	}
-	if got := leaderKeyDecision(leaderPress("b"), "", rows, 0, false); got.kind != leaderRun || got.row.action != actionBuild {
-		t.Errorf("ctrl+space b = %v %v, want the build action", got.kind, got.row.action)
+	if got := leaderKeyDecision(leaderPress("b"), defaultLeaderKey, "", rows, 0, false); got.kind != leaderRun || got.row.action != actionBuild {
+		t.Errorf("ctrl+] b = %v %v, want the build action", got.kind, got.row.action)
 	}
 }

@@ -54,11 +54,11 @@ const buildPauseUnavailableNotice = "Pause and resume are not available in this 
 // pauseNotice words a pause that worked. already is true when the build was
 // paused before the key was pressed, which is not a failure and changed
 // nothing, so it is told as a fact and not as a success.
-func pauseNotice(already bool) (notificationKind, string) {
+func pauseNotice(leader string, already bool) (notificationKind, string) {
 	if already {
-		return notifyInfo, "The build was already paused. Press " + leaderChord(actionResumeBuild) + " to resume."
+		return notifyInfo, "The build was already paused. Press " + leaderChord(leader, actionResumeBuild) + " to resume."
 	}
-	return notifySuccess, "Build paused. A task that is running finishes; nothing new starts. Press " + leaderChord(actionResumeBuild) + " to resume."
+	return notifySuccess, "Build paused. A task that is running finishes; nothing new starts. Press " + leaderChord(leader, actionResumeBuild) + " to resume."
 }
 
 // resumeNotice words a resume that worked, one sentence per combination of
@@ -193,7 +193,7 @@ func (m Model) applyBuildPaused(msg buildPausedMsg) (tea.Model, tea.Cmd) {
 		m.notify(notifyError, pauseFailedNotice(msg.err))
 		return m, m.buildCmd()
 	}
-	kind, text := pauseNotice(msg.already)
+	kind, text := pauseNotice(m.leaderKey.name, msg.already)
 	m.notify(kind, text)
 	return m, m.buildCmd()
 }

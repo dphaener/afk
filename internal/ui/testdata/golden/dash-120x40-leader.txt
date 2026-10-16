@@ -36,5 +36,5 @@
 │         │    check the plan                      — checking the plan is not available here                 │         │
 │         │    approve the plan                    — approving is not available here                         │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
-╰───────────────────────────────────────────╯╰───────── enter: focus view · ctrl+space c: clean · ctrl+space l: label ─╯
-enter run · ↑/↓ move · type filter · esc close · ctrl+space close, or pass it to the agent
+╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
+enter run · ↑/↓ move · type filter · esc close · ctrl+] close, or pass it to the agent

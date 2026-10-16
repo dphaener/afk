@@ -171,7 +171,7 @@ func openAllProjectsGolden(t *testing.T, w, h int, res AllProjects) Model {
 	m.deps.LoadAllProjects = seam.load
 	m, cmd := pressAction(t, m, keyRune('A'))
 	if !m.allProjectsOpen {
-		t.Fatal("ctrl+space A did not open the all-projects screen")
+		t.Fatal("ctrl+] A did not open the all-projects screen")
 	}
 	for _, msg := range collectMsgs(t, cmd) {
 		m, _ = update(t, m, msg)

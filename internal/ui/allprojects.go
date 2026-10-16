@@ -1,7 +1,7 @@
 // allprojects.go is the all-projects screen (T7.9): one row for every project
 // the daemon builds, each with its current task, the state of its build and
 // what in its inbox needs the owner, opened from the actions dialog ("all
-// projects", ctrl+space A). It takes the place of the session list and the
+// projects", ctrl+] A). It takes the place of the session list and the
 // detail side until esc, enter switches the dashboard to the selected
 // project, and pause and resume act on the selected row's project rather
 // than the active one.
@@ -382,7 +382,7 @@ func (m Model) applyAllProjectsPaused(msg allProjectsPausedMsg) (tea.Model, tea.
 	if msg.err != nil {
 		m.notify(notifyError, msg.name+": "+pauseFailedNotice(msg.err))
 	} else {
-		kind, text := pauseNotice(msg.already)
+		kind, text := pauseNotice(m.leaderKey.name, msg.already)
 		m.notify(kind, msg.name+": "+text)
 	}
 	return m, tea.Batch(m.allProjectsCmd(), m.buildCmd())

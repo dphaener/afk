@@ -65,7 +65,9 @@ func TestStartPlanForSurface(t *testing.T) {
 		// refusingAgent sets the request's provider to one that cannot plan.
 		refusingAgent bool
 		// notRepo makes the fake report that the folder is not in a repository.
-		notRepo       bool
+		notRepo bool
+		// leader is what config.toml's [dash] leader reads as ("" for unset).
+		leader        string
 		wantOutcome   planSurfaceOutcome
 		wantReason    string
 		wantOpen      bool
@@ -192,7 +194,21 @@ func TestStartPlanForSurface(t *testing.T) {
 			name: "new, a folder with a plan is refused", setup: plan,
 			req:         planSurfaceRequest{Mode: planSurfaceNew},
 			wantOutcome: planSurfaceRefused,
-			wantReason:  "this folder already has a plan (" + filepath.Join("{dir}", "docs", "PLAN.md") + "). To change it, use the dashboard's extend, amend or document actions: press ctrl+space, then type the name. Nothing was started.",
+			wantReason:  "this folder already has a plan (" + filepath.Join("{dir}", "docs", "PLAN.md") + "). To change it, use the dashboard's extend, amend or document actions: press ctrl+], then type the name. Nothing was started.",
+			unchanged:   true,
+		},
+		{
+			name: "new, a folder with a plan names the configured leader", setup: plan, leader: "ctrl+o",
+			req:         planSurfaceRequest{Mode: planSurfaceNew},
+			wantOutcome: planSurfaceRefused,
+			wantReason:  "dashboard's extend, amend or document actions: press ctrl+o, then type the name.",
+			unchanged:   true,
+		},
+		{
+			name: "new, a folder with a plan names ctrl+] when the leader is refused", setup: plan, leader: "q",
+			req:         planSurfaceRequest{Mode: planSurfaceNew},
+			wantOutcome: planSurfaceRefused,
+			wantReason:  "press ctrl+], then type the name.",
 			unchanged:   true,
 		},
 		{
@@ -386,7 +402,11 @@ func TestStartPlanForSurface(t *testing.T) {
 
 			// The dashboard runs from some other folder; the entry point must
 			// not depend on it.
-			got := startPlanForSurface(req, f.deps(other))
+			deps := f.deps(other)
+			if tt.leader != "" {
+				deps.leader = func() string { return tt.leader }
+			}
+			got := startPlanForSurface(req, deps)
 
 			if got.Outcome != tt.wantOutcome {
 				t.Fatalf("outcome = %q, want %q; reason: %s", got.Outcome, tt.wantOutcome, got.Reason)

@@ -1,5 +1,5 @@
 // taskstatus.go is the Build tab's "set this task's status" (T7.11): the
-// leader row (ctrl+space S), the status picker it opens, the one-line step
+// leader row (ctrl+] S), the status picker it opens, the one-line step
 // asking for the replacing ids when the choice is superseded, the y/n confirm,
 // and the notice its result becomes.
 //
@@ -77,8 +77,8 @@ const (
 // task is drawn only when the right side has the keyboard (buildCursorShown).
 // The key is read from the leader table, so the reason cannot name a key that
 // does not open the tab.
-func taskStatusOpenBuildFirst() string {
-	return "open the Build tab first (" + leaderChord(actionBuild) + ")"
+func taskStatusOpenBuildFirst(leader string) string {
+	return "open the Build tab first (" + leaderChord(leader, actionBuild) + ")"
 }
 
 // taskStatusAlreadyNotice is the picker's answer when the current status is
@@ -118,7 +118,7 @@ func taskStatusBlockedReason(c leaderConds) string {
 	case !c.canSetTaskStatus:
 		return taskStatusNoSeam
 	case !c.buildTabFocused:
-		return taskStatusOpenBuildFirst()
+		return taskStatusOpenBuildFirst(c.leader)
 	case !c.buildTaskSelected:
 		return taskStatusNoTask
 	}
@@ -138,7 +138,7 @@ func taskStatusConfirmText(id, old, new string, replacedBy []string) string {
 	return taskstatus.ConfirmText(id, old, new, replacedBy)
 }
 
-// openTaskStatus is ctrl+space S on the Build tab: the picker for the task
+// openTaskStatus is ctrl+] S on the Build tab: the picker for the task
 // under the cursor, highlighted on its current status. No file is read and no
 // seam is called.
 //

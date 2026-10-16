@@ -46,14 +46,21 @@ func leaderRowFor(rows []leaderRow, a modeAction) (leaderRow, bool) {
 	return rows[i], true
 }
 
-var leaderTestCtrlSpace = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
+// leaderTestCtrlBracket is the leader, ctrl+], as ultraviolet decodes 0x1D.
+// leaderTestCtrlSpace is the leader before T9.1, an ordinary key since.
+var (
+	leaderTestCtrlBracket = tea.KeyPressMsg{Code: ']', Mod: tea.ModCtrl}
+	leaderTestCtrlSpace   = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
+)
 
 // TestLeaderKeyDecision is every branch of leaderKeyDecision, one row each.
 //
 // Load-bearing rows:
-//   - the two ctrl+space rows: from the pane the second press must reach the
+//   - the two ctrl+] rows: from the pane the second press must reach the
 //     agent (passThrough); from anywhere else it only closes, so nothing is
 //     typed into a session the user was not talking to.
+//   - the two ctrl+space rows: the old leader neither closes the dialog nor
+//     passes anything on now; it is a key the dialog does not answer to.
 //   - "action key with a query filters": once the user has typed, `n` is a
 //     letter of the query, not New, or filtering for "clean" would open the
 //     creation form at its first letter.
@@ -67,11 +74,15 @@ var leaderTestCtrlSpace = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
 //     be left from inside the dialog too.
 //   - "old chord is not a row key": a row shows the key after the leader, so
 //     the chord it replaced (ctrl+t) is nobody's key in the dialog.
+//   - the three "configured ctrl+o" rows: with config.toml's leader in use
+//     (T9.2), the configured key is the one that closes or passes through,
+//     and ctrl+] is then just an unbound chord, ignored like any other.
 func TestLeaderKeyDecision(t *testing.T) {
 	rows := leaderTestRows()
 	cases := []struct {
 		name      string
 		k         tea.KeyPressMsg
+		leader    string // "" means defaultLeaderKey
 		query     string
 		rows      []leaderRow
 		highlight int
@@ -83,8 +94,10 @@ func TestLeaderKeyDecision(t *testing.T) {
 	}{
 		{name: "esc closes", k: leaderPress("esc"), rows: rows, want: leaderClose},
 		{name: "esc closes with a query", k: leaderPress("esc"), query: "cl", rows: rows, want: leaderClose},
-		{name: "ctrl+space from the pane passes through", k: leaderTestCtrlSpace, rows: rows, fromPane: true, want: leaderPassThrough},
-		{name: "ctrl+space not from the pane closes", k: leaderTestCtrlSpace, rows: rows, want: leaderClose},
+		{name: "ctrl+] from the pane passes through", k: leaderTestCtrlBracket, rows: rows, fromPane: true, want: leaderPassThrough},
+		{name: "ctrl+] not from the pane closes", k: leaderTestCtrlBracket, rows: rows, want: leaderClose},
+		{name: "ctrl+space from the pane is ignored", k: leaderTestCtrlSpace, rows: rows, fromPane: true, want: leaderIgnore},
+		{name: "ctrl+space not from the pane is ignored", k: leaderTestCtrlSpace, rows: rows, want: leaderIgnore},
 		{name: "up moves", k: leaderPress("up"), rows: rows, want: leaderMove, wantDelta: -1},
 		{name: "down moves", k: leaderPress("down"), rows: rows, want: leaderMove, wantDelta: 1},
 		{name: "enter runs the highlighted row", k: leaderPress("enter"), rows: rows, highlight: 0, want: leaderRun, wantRun: actionNewSession},
@@ -107,10 +120,17 @@ func TestLeaderKeyDecision(t *testing.T) {
 		// starts the query, and enter on the highlighted row runs it.
 		{name: "a by-name row's letter filters", k: leaderPress("e"), rows: rows, want: leaderFilter, wantText: "e"},
 		{name: "enter runs a highlighted by-name row", k: leaderPress("enter"), rows: rows, highlight: 7, want: leaderRun, wantRun: actionPlanExtend},
+		{name: "configured ctrl+o from the pane passes through", k: leaderPress("ctrl+o"), leader: "ctrl+o", rows: rows, fromPane: true, want: leaderPassThrough},
+		{name: "configured ctrl+o not from the pane closes", k: leaderPress("ctrl+o"), leader: "ctrl+o", rows: rows, want: leaderClose},
+		{name: "configured ctrl+o leaves ctrl+] unbound", k: leaderTestCtrlBracket, leader: "ctrl+o", rows: rows, fromPane: true, want: leaderIgnore},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := leaderKeyDecision(tc.k, tc.query, tc.rows, tc.highlight, tc.fromPane)
+			leader := tc.leader
+			if leader == "" {
+				leader = defaultLeaderKey
+			}
+			got := leaderKeyDecision(tc.k, leader, tc.query, tc.rows, tc.highlight, tc.fromPane)
 			if got.kind != tc.want {
 				t.Fatalf("kind = %v, want %v", got.kind, tc.want)
 			}
@@ -129,7 +149,7 @@ func TestLeaderKeyDecision(t *testing.T) {
 
 // TestLeaderBlockedReason has one row per guard and one clear row per action
 // that has a guard. Load-bearing: the clean rows (a pane open blocks it, the
-// same rule cleanRequested enforces, and the reason names ctrl+space \ as the
+// same rule cleanRequested enforces, and the reason names ctrl+] \ as the
 // way out), the agent/overview rows (from the list the right side is not
 // under control, so it must not run there even through the dialog), and the
 // close-pane and clear-filter rows, which carry the two guards the old rules
@@ -139,6 +159,7 @@ func TestLeaderKeyDecision(t *testing.T) {
 // as the change actions are dimmed would hide it exactly when it is needed.
 func TestLeaderBlockedReason(t *testing.T) {
 	ready := leaderConds{
+		leader:           defaultLeaderKey,
 		hasActiveProject: true,
 		selected:         true,
 		paneOpen:         true,
@@ -204,7 +225,7 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"projects with a project", actionProjects, ready, ""},
 
 		{"clean needs a selection", actionClean, with(func(c *leaderConds) { c.selected = false; c.paneOpen = false }), "no session selected"},
-		{"clean blocked by an open pane", actionClean, ready, "close the pane first (ctrl+space \\)"},
+		{"clean blocked by an open pane", actionClean, ready, "close the pane first (ctrl+] \\)"},
 		{"clean blocked while creating", actionClean, with(func(c *leaderConds) { c.paneOpen = false; c.selectedPending = true }), "still being created"},
 		{"clean blocked while cleaning", actionClean, with(func(c *leaderConds) { c.paneOpen = false; c.selectedCleaning = true }), "already being cleaned"},
 		{"clean runs", actionClean, with(func(c *leaderConds) { c.paneOpen = false }), ""},
@@ -517,21 +538,21 @@ func TestRemovedKeyNotice(t *testing.T) {
 		key  string
 		want string // "" is no notice
 	}{
-		{"n", "n moved: press ctrl+space then n"},
-		{"o", "o moved: press ctrl+space then o"},
-		{"p", "p moved: press ctrl+space then p"},
-		{"c", "c moved: press ctrl+space then c"},
-		{"r", "r moved: press ctrl+space then r"},
-		{"l", "l moved: press ctrl+space then l"},
-		{"/", "/ moved: press ctrl+space then /"},
-		{"b", "b moved: press ctrl+space then b"},
-		{"i", "i moved: press ctrl+space then i"},
-		{"q", "q moved: press ctrl+space then q"},
-		{"f", "f moved: press ctrl+space then f"},
-		{"?", "? moved: press ctrl+space then ?"},
-		{"P", "P moved: press ctrl+space then P"},
-		{"U", "U moved: press ctrl+space then U"},
-		{":", ": moved: press ctrl+space, then type to filter the actions"},
+		{"n", "n moved: press ctrl+] then n"},
+		{"o", "o moved: press ctrl+] then o"},
+		{"p", "p moved: press ctrl+] then p"},
+		{"c", "c moved: press ctrl+] then c"},
+		{"r", "r moved: press ctrl+] then r"},
+		{"l", "l moved: press ctrl+] then l"},
+		{"/", "/ moved: press ctrl+] then /"},
+		{"b", "b moved: press ctrl+] then b"},
+		{"i", "i moved: press ctrl+] then i"},
+		{"q", "q moved: press ctrl+] then q"},
+		{"f", "f moved: press ctrl+] then f"},
+		{"?", "? moved: press ctrl+] then ?"},
+		{"P", "P moved: press ctrl+] then P"},
+		{"U", "U moved: press ctrl+] then U"},
+		{":", ": moved: press ctrl+], then type to filter the actions"},
 		{"k", ""},
 		{"j", ""},
 		{"x", ""},
@@ -541,9 +562,9 @@ func TestRemovedKeyNotice(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
-			got, ok := removedKeyNotice(tc.key)
+			got, ok := removedKeyNotice(defaultLeaderKey, tc.key)
 			if ok != (tc.want != "") {
-				t.Fatalf("removedKeyNotice(%q) ok = %v, want %v", tc.key, ok, tc.want != "")
+				t.Fatalf("removedKeyNotice(defaultLeaderKey, %q) ok = %v, want %v", tc.key, ok, tc.want != "")
 			}
 			if got != tc.want {
 				t.Fatalf("notice = %q, want %q", got, tc.want)
@@ -631,7 +652,7 @@ func TestLeaderDialogFilterAndMove(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := newLeaderDialog(rows, false)
+			d := newLeaderDialog(rows, defaultLeaderKey, false)
 			for _, o := range tc.steps {
 				d.apply(o)
 			}
@@ -666,7 +687,7 @@ func TestLeaderDialogView(t *testing.T) {
 		w, h int
 	}{{"80x24", 80, 24}, {"120x40", 120, 40}} {
 		t.Run(sz.name, func(t *testing.T) {
-			d := newLeaderDialog(rows, false)
+			d := newLeaderDialog(rows, defaultLeaderKey, false)
 			out := d.view(sz.w, sz.h)
 			lines := strings.Split(out, "\n")
 			if len(lines) > sz.h-2*modalMargin {
@@ -686,14 +707,14 @@ func TestLeaderDialogView(t *testing.T) {
 		})
 	}
 	t.Run("empty filter says so", func(t *testing.T) {
-		d := newLeaderDialog(rows, false)
+		d := newLeaderDialog(rows, defaultLeaderKey, false)
 		d.apply(leaderOutcome{kind: leaderFilter, text: "zzzz"})
 		if out := d.view(80, 24); !strings.Contains(out, "no action matches") {
 			t.Errorf("empty list does not say so:\n%s", out)
 		}
 	})
 	t.Run("highlight scrolls into view", func(t *testing.T) {
-		d := newLeaderDialog(rows, false)
+		d := newLeaderDialog(rows, defaultLeaderKey, false)
 		d.apply(leaderOutcome{kind: leaderMove, delta: -1}) // wraps to the last row
 		last := rows[len(rows)-1]
 		if out := d.view(80, 24); !strings.Contains(out, last.name) {

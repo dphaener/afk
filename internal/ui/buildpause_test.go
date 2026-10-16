@@ -13,14 +13,14 @@ import (
 )
 
 // pressAction runs a dashboard action the way a person does since T7.2:
-// ctrl+space, then the action's key. It returns what the action's key
+// ctrl+], then the action's key. It returns what the action's key
 // returned, so a test can still read the command it produced, and it fails the
 // test if the dialog did not open, so a later assertion is about the action.
 func pressAction(t *testing.T, m Model, k tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
 	m, _ = update(t, m, leaderKeyPress)
 	if !m.leaderOpen {
-		t.Fatal("setup: ctrl+space did not open the actions dialog")
+		t.Fatal("setup: ctrl+] did not open the actions dialog")
 	}
 	return update(t, m, k)
 }
@@ -104,15 +104,15 @@ func TestBuildPauseNotices(t *testing.T) {
 	}{
 		{
 			name:     "fresh pause",
-			got:      func() (notificationKind, string) { return pauseNotice(false) },
+			got:      func() (notificationKind, string) { return pauseNotice(defaultLeaderKey, false) },
 			wantKind: notifySuccess,
-			wantText: "Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume.",
+			wantText: "Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume.",
 		},
 		{
 			name:     "already paused",
-			got:      func() (notificationKind, string) { return pauseNotice(true) },
+			got:      func() (notificationKind, string) { return pauseNotice(defaultLeaderKey, true) },
 			wantKind: notifyInfo,
-			wantText: "The build was already paused. Press ctrl+space U to resume.",
+			wantText: "The build was already paused. Press ctrl+] U to resume.",
 		},
 		{
 			name:     "resumed",
@@ -224,8 +224,8 @@ func TestBuildPauseKeysCallTheSeam(t *testing.T) {
 		wantResume int
 		wantNotice string
 	}{
-		{"P from the list", keyPause, false, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume."},
-		{"P from a focused overview", keyPause, true, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume."},
+		{"P from the list", keyPause, false, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume."},
+		{"P from a focused overview", keyPause, true, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume."},
 		{"U from the list", keyResume, false, 0, 1, "Build resumed. The daemon may start new tasks again."},
 		{"U from a focused overview", keyResume, true, 0, 1, "Build resumed. The daemon may start new tasks again."},
 	}
@@ -298,9 +298,9 @@ func TestBuildPauseOutcomes(t *testing.T) {
 		wantText string
 	}{
 		{"pause, fresh", keyPause, func(*pauseSeams) {}, notifySuccess,
-			"Build paused. A task that is running finishes; nothing new starts. Press ctrl+space U to resume."},
+			"Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume."},
 		{"pause, already paused", keyPause, func(r *pauseSeams) { r.already = true }, notifyInfo,
-			"The build was already paused. Press ctrl+space U to resume."},
+			"The build was already paused. Press ctrl+] U to resume."},
 		{"pause, seam error", keyPause, func(r *pauseSeams) { r.pauseErr = errors.New("permission denied") }, notifyError,
 			"Pausing the build did not work: permission denied"},
 		{"pause, seam error after the flag was written", keyPause,
@@ -579,9 +579,9 @@ func TestBuildPauseKeysAreInTheLeaderTable(t *testing.T) {
 			if row.blocked != "" {
 				t.Errorf("the row is dimmed (%q) on a project with a build", row.blocked)
 			}
-			got := leaderKeyDecision(leaderPress(tc.label), "", rows, 0, false)
+			got := leaderKeyDecision(leaderPress(tc.label), defaultLeaderKey, "", rows, 0, false)
 			if got.kind != leaderRun || got.row.action != tc.action {
-				t.Errorf("ctrl+space %s = %v %v, want it to run %v", tc.label, got.kind, got.row.action, tc.action)
+				t.Errorf("ctrl+] %s = %v %v, want it to run %v", tc.label, got.kind, got.row.action, tc.action)
 			}
 		})
 	}

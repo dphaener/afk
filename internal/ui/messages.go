@@ -28,15 +28,15 @@
 //
 //   - No "→" arrows, and no parenthesised hints. "opened x · enter to focus",
 //     never "opened x (press enter to focus)".
-//   - "ctrl+space r to restart", not "press ctrl+space r to restart it": the hint names the key
+//   - "ctrl+] r to restart", not "press ctrl+] r to restart it": the hint names the key
 //     and the verb it performs, nothing more.
-//   - Key names are spelled the way bubbles/key spells a chord — "ctrl+space",
-//     not "ctrl-space". An action key is always named with the leader
+//   - Key names are spelled the way bubbles/key spells a chord — "ctrl+]",
+//     not "ctrl-]". An action key is always named with the leader
 //     (leaderChord), since a bare letter does nothing on the dashboard. The help row an inch below the toast carries the same
 //     spelling (defaultKeyMap's WithHelp in model.go, mouseCaptureHint in
 //     views.go), so the two surfaces never disagree about a chord.
 //   - At most ONE em-dash clause of qualification inside the outcome, never
-//     two: "x isn't running — its host record was stale · ctrl+space r to restart".
+//     two: "x isn't running — its host record was stale · ctrl+] r to restart".
 //   - The in-flight family ("creating x…", "opening x…") keeps its shape. A
 //     trailing ellipsis already reads as "in progress", and there is no
 //     outcome yet to lead with.
@@ -991,14 +991,14 @@ func afkBinary() string {
 // we just spawned died on startup and only its log says why.
 // Model.applyPaneAttached pairs this with markHostStopped, so the row reads
 // stopped and the "r to restart" hint is true by the time it is read.
-func paneAttachFailedStatus(msg paneAttachedMsg) string {
+func paneAttachFailedStatus(leader string, msg paneAttachedMsg) string {
 	if errors.Is(msg.err, host.ErrHostNotReachable) {
 		if msg.restarted {
 			return fmt.Sprintf("%s didn't start — see %s",
 				msg.name, hostLogPath(msg.worktree, msg.name))
 		}
 		return fmt.Sprintf("%s isn't running — its host record was stale · %s to restart",
-			msg.name, leaderChord(actionRestart))
+			msg.name, leaderChord(leader, actionRestart))
 	}
 	return fmt.Sprintf("opening %s failed: %v — see %s",
 		msg.name, msg.err, hostLogPath(msg.worktree, msg.name))
@@ -1119,13 +1119,15 @@ func appendWarningSuffix(status string, warnings []string) string {
 func (m Model) attachPaneCmd(req paneOpenRequest) tea.Cmd {
 	openHost := m.deps.OpenHostPane
 	cols, rows := m.paneRegionSize()
+	wedgeHint := wedgeHintDashboard(m.leaderKey.name)
 	return func() tea.Msg {
 		p, err := openHost(hostPaneConfig{
-			Name:     req.name,
-			Worktree: req.worktree,
-			Cols:     cols,
-			Rows:     rows,
-			Wait:     req.wait,
+			Name:      req.name,
+			Worktree:  req.worktree,
+			Cols:      cols,
+			Rows:      rows,
+			Wait:      req.wait,
+			WedgeHint: wedgeHint,
 		})
 		if err != nil {
 			return paneAttachedMsg{
@@ -1262,8 +1264,8 @@ func specialKeyEvent(k tea.KeyPressMsg) (termpane.KeyEvent, bool) {
 	// Ctrl chords are tested first because v2 reports them as an ORDINARY code
 	// plus ModCtrl — ctrl+u is {Code: 'u', Mod: ModCtrl}, not a sentinel — so
 	// they would otherwise fall through the named-key switch below and be
-	// dropped. The one code this steals from the switch is ctrl+space, which is
-	// the NUL chord and belongs to ctrlChordEvent anyway.
+	// dropped. The one code this steals from the switch is KeySpace with
+	// ModCtrl, which is the NUL chord and belongs to ctrlChordEvent anyway.
 	if k.Mod.Contains(tea.ModCtrl) {
 		return ctrlChordEvent(k.Code)
 	}
@@ -1353,13 +1355,22 @@ func specialKeyEvent(k tea.KeyPressMsg) (termpane.KeyEvent, bool) {
 // LegacyKeyEncoding CtrlAt flag is set, and bubbletea v2 never sets it — so the
 // ctrl+space case IS the ctrl+@ case, exactly as v1's KeyCtrlAt was.
 //
+// Since T9.1 ctrl+space is not the dashboard's leader (ctrl+] is; leader.go),
+// so in the agent pane ctrl+space is an ordinary key: no rule takes it, and it
+// reaches here and goes to the agent as one NUL, like any other chord. The
+// case below must stay for that reason. The leader pressed twice in the pane
+// does not come through here: since T9.2 the leader is configurable, and the
+// dialog sends the Model's decoded leader straight to the pane's SendKey
+// (leaderComponentKey, model.go), so x/vt encodes ctrl+] as 0x1D there. The
+// `]` case stays for a ctrl+] typed in the pane while another leader is set.
+//
 // Ctrl+[ is likewise absent because the decoder resolves it to KeyEscape before
 // it can reach here (see specialKeyEvent's doc), which is where v1 sent it too.
 //
 // ctrl+\ and ctrl+g reach here from the dashboard's agent pane. Until T7.2 the
 // pane's own rules claimed both before forwarding (the keyboard-back chord and
-// mouseChordKey); since then the dashboard's ways to do those are ctrl+space \
-// and ctrl+space g, and the pane's only rule is the leader, so the agent gets
+// mouseChordKey); since then the dashboard's ways to do those are ctrl+] \
+// and ctrl+] g, and the pane's only rule is the leader, so the agent gets
 // the chords like any other key, ctrl+t included. afk attach (attachpane.go)
 // still reserves ctrl+\ and ctrl+g, so from there their cases below stay
 // unreachable.

@@ -20,5 +20,5 @@
 │                            ││ Stack     main › feat-auth                     │
 │                            ││                                                │
 │                            ││                                             0% │
-╰────────────────────────────╯╰─ enter: focus view · ctrl+space c: clean · c… ─╯
-↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+space actions             
+╰────────────────────────────╯╰─ enter: focus view · ctrl+] c: clean · ctrl+… ─╯
+↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+] actions                 

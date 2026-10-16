@@ -141,26 +141,28 @@ Keys:
   esc        back to the list from the right side; clears the filter on the list
   ctrl+c     quit from the list and the overview (in the agent pane it goes to the agent)
 
-Actions: press ctrl+space, then the letter. The actions dialog lists them too.
-  ctrl+space n    create a session (in-TUI form)
-  ctrl+space o    create a one-off session
-  ctrl+space p    open the project switcher (filterable list of discovered projects)
-  ctrl+space c    confirm clean in the dashboard (runs in-process)
-  ctrl+space r    restart a stopped session; confirm to restart a wedged one
-  ctrl+space l    edit the session's label
-  ctrl+space /    filter sessions by name
-  ctrl+space x    clear the filter
-  ctrl+space b    show the Build tab: the master plan's tasks and their status (needs a master plan)
-  ctrl+space i    open the inbox: read an item, answer it by typing or by number (enter sends)
-  ctrl+space P    pause the build
-  ctrl+space U    resume the build
-  ctrl+space f    focus the right side
-  ctrl+space t    switch the right side between agent and overview
-  ctrl+space \    close the pane from the list; back to the list from the right side
-  ctrl+space g    hand the mouse to the terminal (native selection), again to return it
-  ctrl+space w    resize the panes
-  ctrl+space ?    show the full key help
-  ctrl+space q    quit
+Actions: press ctrl+] (the default leader key), then the letter. The actions dialog
+lists them too. Set leader = "ctrl+o" (or another key) in config.toml's [dash]
+table to change the leader; it is read when the dashboard starts.
+  ctrl+] n    create a session (in-TUI form)
+  ctrl+] o    create a one-off session
+  ctrl+] p    open the project switcher (filterable list of discovered projects)
+  ctrl+] c    confirm clean in the dashboard (runs in-process)
+  ctrl+] r    restart a stopped session; confirm to restart a wedged one
+  ctrl+] l    edit the session's label
+  ctrl+] /    filter sessions by name
+  ctrl+] x    clear the filter
+  ctrl+] b    show the Build tab: the master plan's tasks and their status (needs a master plan)
+  ctrl+] i    open the inbox: read an item, answer it by typing or by number (enter sends)
+  ctrl+] P    pause the build
+  ctrl+] U    resume the build
+  ctrl+] f    focus the right side
+  ctrl+] t    switch the right side between agent and overview
+  ctrl+] \    close the pane from the list; back to the list from the right side
+  ctrl+] g    hand the mouse to the terminal (native selection), again to return it
+  ctrl+] w    resize the panes
+  ctrl+] ?    show the full key help
+  ctrl+] q    quit
 
 Options:
 `)
@@ -615,6 +617,7 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		ActiveProjectIndex: activeProject,
 		Scan:               scanProjects,
 		LoadConfig:         loadDashConfig,
+		Leader:             startupLeader(),
 		LoadSelections:     loadSelections,
 		RememberSelection:  rememberSelection,
 		LoadProjectOpens:   loadProjectOpens,
@@ -734,6 +737,23 @@ func loadDashConfig() (ui.SearchSettings, string, error) {
 		Interval: cfg.Dash.ScanInterval,
 		MaxDepth: cfg.Dash.MaxDepth,
 	}, path, nil
+}
+
+// startupLeader is the leader key read once when `afk dash` starts. It is a
+// variable so a test can stand in for the config file.
+var startupLeader = func() string { return configuredLeader(daemonconfig.DefaultDeps()) }
+
+// configuredLeader reads config.toml's [dash] leader, best effort: it never
+// fails and never prints. A malformed file must not stop the dashboard (see
+// the rule at the top of cmdDash), so a load error gives "" (the default
+// leader). When the [dash] table is bad Load resets it, and the first scan
+// toast already names the file and the key, so that gives "" as well.
+func configuredLeader(d daemonconfig.Deps) string {
+	cfg, err := daemonconfig.Load(d)
+	if err != nil || cfg.DashErr != nil {
+		return ""
+	}
+	return cfg.Dash.Leader
 }
 
 // resolveTmuxClientTTY asks tmux which tty the attached client is on, or returns
