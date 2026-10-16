@@ -59,8 +59,12 @@ hook-test: ## Run the plugin hook shell tests
 		bash "$$t" || exit 1; \
 	done
 
+.PHONY: web-js-test
+web-js-test: ## Run the web page script tests (node --test)
+	node --test internal/web/jstest/*.test.mjs
+
 .PHONY: check
-check: fmt-check vet test plugin-test hook-test ## Everything CI runs
+check: fmt-check vet test plugin-test hook-test web-js-test ## Everything CI runs
 
 .PHONY: clean
 clean: ## Remove the locally built binary

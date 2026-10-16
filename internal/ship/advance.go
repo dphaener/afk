@@ -594,8 +594,7 @@ func (a *advance) carryOut(step Step, f Facts) Outcome {
 				fmt.Sprintf("%s could not be pushed to GitHub", task),
 				fmt.Sprintf("afk tried to push the branch %s and GitHub refused it.", branch),
 				err,
-				"The usual cause is that the branch on GitHub has commits the session does not have. "+
-					"Pull them into the session's branch, then answer this item and afk pushes again.")
+				pushHint(err))
 		}
 		return a.save(step.Progress, step.Reason)
 

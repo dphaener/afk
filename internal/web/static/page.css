@@ -73,7 +73,7 @@ body.afk { margin: 0; }
 .plan ol { padding-left: 1.5rem; margin: var(--space-2) 0; }
 .plan li { margin: var(--space-1) 0; }
 .plan code { font-family: var(--font-mono); font-size: 0.875em; }
-.plan pre { white-space: pre; overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); }
+.plan pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); }
 .plan .scroll { overflow-x: auto; }
 .plan table { border-collapse: collapse; font-size: var(--text-sm); }
 .plan th, .plan td { border: 1px solid var(--border); padding: var(--space-1) var(--space-2); text-align: left; vertical-align: top; min-width: 6rem; }

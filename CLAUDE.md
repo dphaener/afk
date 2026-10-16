@@ -55,10 +55,11 @@ shasum -a 256 ~/bin/afk $(git rev-parse --show-toplevel)/afk
 ```bash
 make            # build ./afk in the repo root
 make install    # build into ~/bin (PREFIX=... to override)
-make check      # fmt-check + vet + test + plugin-test + hook-test, run by .github/workflows/ci.yml
+make check      # fmt-check + vet + test + plugin-test + hook-test + web-js-test, run by .github/workflows/ci.yml
 make test       # go test ./...
 make plugin-test  # Ruby parser test, prompt size-cap check, plugin node tests (plugins/afk and plugins/afk-opencode)
 make hook-test  # plugin hook shell tests
+make web-js-test  # node tests of the web page scripts (internal/web/jstest)
 make clean      # remove the local ./afk
 make help       # list targets
 ```

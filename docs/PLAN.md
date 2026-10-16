@@ -2834,6 +2834,7 @@ thing it does not do is attach to a session.
 - **Acceptance:** the throwaway project's plan was approved from the phone and its first task merged
   by the daemon; the automated check reports no violation on any screen; the write-up names every
   place the owner had to leave the page.
+- Amended 2026-10-16 (T8.17 done): later tasks may assume the following. (1) `make check` now also runs `make web-js-test` (`node --test internal/web/jstest/*.test.mjs`); a pure function in `internal/web/static/chat.js` is exported for node only when `module` exists, and its tests live outside `static/` because `//go:embed static` would serve them. (2) Pending "Sent" bubbles in the chat are pruned by owner-message count, not by text. (3) `internal/ship` picks the push-failure hint with `pushHint`, which names the GitHub workflow-scope refusal. (4) Afk never writes the agent CLI's trust record; a brand-new folder still stops at the trust prompt (inbox vbkr6s). (5) Every web screen passes axe WCAG 2.2 AA at 390 and 1280 px in both schemes; the harness is not in the repo (see `docs/decisions.md` `## T8.17`), so a later task re-checks with its own run.
 
 ### M9 — Choose your own leader key
 

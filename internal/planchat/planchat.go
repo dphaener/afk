@@ -108,10 +108,13 @@ type Deps struct {
 const transcriptGrace = 2 * time.Minute
 
 // problemNoTranscript is shown when the host runs but no transcript is found
-// after the grace period. The likely causes are a session started by hand
-// (not with the planning command the reader looks for) or a cleared one, and
-// the dashboard can still show it, so the sentence says where to look.
-const problemNoTranscript = "The planning session is running, but afk cannot find its conversation. It may have been started by hand or cleared; open it in afk dash to see it."
+// after the grace period. Two causes look the same from here: the agent is
+// still waiting at a question in its terminal before the conversation can
+// start (a new folder's trust prompt is the common one), or the session was
+// started by hand or cleared, so the reader cannot find it. The sentence names
+// both and says what to do about the first, since the owner can answer it from
+// afk dash or afk attach.
+const problemNoTranscript = "The planning session is running, but its conversation has not started. It may be waiting at a question in its terminal, such as whether to trust a new folder; open it in afk dash or with afk attach and answer it. If it was started by hand or cleared, afk cannot show it here."
 
 // problemReadPrefix starts the sentence shown when reading failed for any
 // other reason; the error follows it.

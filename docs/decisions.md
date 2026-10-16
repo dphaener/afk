@@ -3359,6 +3359,48 @@ Decided while building (T8.16):
 
 Verification for the owner (T8.16): in a browser, open the overview, press **Remove a project**, pick a project and press **Remove…**. Check the sheet names the project and its folder and that **Keep it** has the focus. Also check that the **Add a project** button sits right in the phone's top bar and the desktop's top bar. The review checked the page for a browser without JavaScript over HTTP, and nothing in a real browser.
 
+## T8.17
+
+T8.17 proves the web page on a phone: the owner ran one whole plan from it, then this task checked every screen against WCAG 2.2 AA and fixed what it and the owner found. These are the decisions the master plan left open, made while planning the task (2026-10-16), numbered as in the work plan's assumptions.
+
+- **Afk does not answer the agent's trust prompt for you (A1).** A new folder stops the planning session at the agent's "do you trust this folder?" question. Afk could answer it ahead of time by writing the agent's own settings file, but the agent rewrites that file constantly, so afk could lose its changes, and it would grant trust on your behalf. So afk leaves it alone, and the chat view now says the session may be waiting at a question in its terminal and how to answer it. Inbox item vbkr6s asks whether a later task should pre-trust only the folders afk creates.
+- **Sent answers are tidied by count, not by text (A2).** The chat shows a "Sent" bubble until your reply appears in the conversation. A choice's reply never matched that bubble's text, so it stayed pinned below the conversation. The bubble now goes as soon as the conversation gains a reply of yours, whatever its words.
+- **A push refused for workflow files says why (A3).** When GitHub refuses a push because afk's login cannot change `.github/workflows/`, the inbox item now says so and gives the two fixes (`gh auth refresh -s workflow`, or an SSH origin). Afk still follows your `gh` protocol setting when it creates a repository.
+- **The accessibility check is not part of the repository (A4).** It is a script that drives headless Chrome and axe-core 4.13 against a test copy of the page; it lives with this session's files and nothing new is added to the build.
+- **Every screen means every page and state (A5):** each address the page serves, each state of the planning chat and the inbox, and each confirm sheet opened, on a phone width (390 px) and a desktop width (1280 px), in light and dark, against axe's WCAG 2.0, 2.1 and 2.2 A and AA rules.
+- **Colours may move a little (A6).** Where a contrast failure needs it, a design-system colour changes by the smallest step that passes, and `docs/design-system.md` changes with it.
+
+### The owner's run and what it found
+
+- **The run.** The owner ran one whole plan from a phone through the web page, in a throwaway project, `woodshop` (`/home/dphaener/code/woodshop`). They planned it and approved it from the phone, and the daemon built and merged its first task, T1.1, as pull request #1 (merge commit f2579e0). The report is inbox item sm2qbj.
+- **Two places the owner had to leave the page, both for a terminal.**
+  1. To answer the agent's "do you trust this folder?" question for the new `woodshop` folder. The planning chat showed "working" for two minutes and then a sentence that never mentioned a terminal prompt.
+  2. To switch `woodshop`'s `origin` from https to SSH after GitHub refused the push of T1.1.
+- **Fault 1: the trust prompt.** A folder the agent has not seen before stops the planning session at a question in its terminal, before any conversation exists, so the chat has nothing to show. Cause in afk: the sentence for "no conversation after the grace period" only covered a session started by hand or cleared. Fix: that sentence now says the session may be waiting at a question in its terminal, such as whether to trust a new folder, and to answer it in `afk dash` or with `afk attach`. The grace period and the chat's states are unchanged.
+- **Fault 2: the answer shown twice.** After a choice answer, the reply showed in the thread and again as a "Sent" bubble pinned under it. Cause: `chat.js` removed the pinned bubble only when an owner message with the same text arrived, but a choice is shown as its label while the server writes `Header: Label`, so the texts never matched. Fix: each pinned bubble remembers how many owner messages the thread held when it was sent, and goes once the thread holds more (the text match stays as an extra way for typed replies). The rule is a pure function with a node table test, run by the new `make web-js-test` and by `make check`.
+- **Fault 3: the refused push.** The https origin's `gh` token lacks the `workflow` scope, and the branch added `.github/workflows/ci.yml`, so GitHub refused the push. Afk's inbox item gave the wrong cause ("the branch on GitHub has commits the session does not have"). Fix: a pure function in `internal/ship` recognises GitHub's workflow-scope refusal and the item now says the real cause and the two fixes, `gh auth refresh -s workflow` or an SSH origin. Every other push failure keeps its old hint, byte for byte. Afk still does not pick the protocol for you.
+
+### The accessibility check
+
+- **Method.** axe-core 4.13.0 with the tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` and `wcag22aa` (so WCAG 2.2 AA, including the 24 px target-size rule), driven over the Chrome DevTools protocol in headless Chrome against a test copy of the page seeded with every state. Each screen was checked at 390 px and 1280 px wide, in light and dark. The run first plants an image with no alt text and stops unless axe reports it, and stops unless the contrast and target-size rules ran.
+- **Screens.** 82 screens, covering every address the page serves and each state of the planning chat, the inbox, the tasks, the sessions, the usage reading, plan change, plan new (including the GitHub question and the started page) and project add and remove, plus the 404, 400 and refused pages. Each of the 22 confirm sheets was also opened and checked. That is 416 views in all (82 x 4, plus 22 x 4 with a sheet open).
+- **Baseline: 6 failing views, 2 distinct problems, both `scrollable-region-focusable`** (a region that scrolls sideways but cannot take keyboard focus, so a keyboard user could not reach the hidden part). Colour contrast, names, labels, landmarks, headings and target size passed everywhere.
+  1. The task screen's tokens-by-role table on a phone (390 px, light and dark): five columns do not fit, and the scrolling wrapper could not be focused.
+  2. The plan view's code block (both widths, light and dark): a long command line scrolled sideways inside a `pre` that could not be focused.
+- **Fixes.**
+  1. The tokens table wrapper is now a named, focusable region (`role="region"`, `aria-labelledby` its heading, `tabindex="0"`), so the keyboard can scroll it and the existing focus ring shows. The table was not squeezed to fit, because five columns cannot fit a phone.
+  2. Code blocks in the plan view now wrap long lines, as the rest of the page already did, instead of scrolling. The chat's code blocks got the same wrap in advance, since they had the same pattern and a longer line would have failed there too.
+  No design colour changed, so `docs/design-system.md` is unchanged. No rule was turned off and no selector excluded.
+- **Result.** After the fixes, 416 views, 0 violations, 0 harness errors. Putting one fix back made the check report the violation and fail, so it still catches what it was built to catch.
+- **Not covered by automation.** A scripts-off Chrome pass, focus order, the look of the focus ring, reflow at 320 px, and how a screen reader reads a live update. These need a person.
+
+### What remains
+
+- **The trust prompt still needs a terminal.** The chat now tells the owner what is wrong and how to answer it, but a brand-new folder still stops at the agent's question until someone answers it in `afk dash` or `afk attach`. Fixing that for good means afk pre-trusting the folders it creates, which is the open question in inbox item vbkr6s (filed at planning, not filed again).
+- **Nothing the check found was left unfixed**, so no inbox item was filed for the accessibility check.
+
+Verification for the owner (T8.17): in a planning chat on your phone, answer a question that has options. Your answer should show once, in its place in the conversation, with no "Sent" bubble left below it. The fix was tested with node tests only, not in a real browser (inbox item k3aq3e).
+
 ## T9.1
 
 T9.1 makes ctrl+] the dashboard's default leader in place of ctrl+space. These are the decisions the master plan left open, made while planning the task (2026-10-14), numbered as in the work plan's assumptions.
