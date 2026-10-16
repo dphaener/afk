@@ -1072,6 +1072,119 @@ func TestPageLayout(t *testing.T) {
 	}
 }
 
+// TestDesktopBackRow checks the desktop back row on every page chromeFor
+// knows: it holds the phone bar's back address, spoken name and title, and is
+// absent from the overview and the bare error page.
+//
+// Load-bearing rows: "overview" and "error" (no row: the overview is the top,
+// the error page has no bars), "plan waiting for approval" (back to /, since
+// the project page answers 404 for a plan not built yet) and "item" (back to
+// the project's inbox). The row list is compared with pageNames, so a page
+// added later fails here until it has a row.
+func TestDesktopBackRow(t *testing.T) {
+	tests := []struct {
+		name   string
+		page   string
+		path   string
+		form   string
+		status int
+		// back is empty when the page has no row.
+		back, label, title string
+	}{
+		{name: "overview", page: "overview", path: "/", status: 200},
+		{name: "usage", page: "usage", path: "/usage", status: 200, back: "/", label: "Back to all projects", title: "Usage"},
+		{name: "project", page: "project", path: "/p/app", status: 200, back: "/", label: "Back to all projects", title: "app"},
+		{name: "plan", page: "plan", path: "/p/app/plan", status: 200, back: "/p/app", label: "Back to app", title: "Plan: app"},
+		{name: "plan waiting for approval", page: "plan", path: "/p/draft/plan", status: 200, back: "/", label: "Back to all projects", title: "Plan: draft"},
+		{name: "inbox", page: "inbox", path: "/p/app/inbox", status: 200, back: "/p/app", label: "Back to app", title: "Inbox"},
+		{name: "item", page: "item", path: "/p/app/inbox/" + idBlocking, status: 200, back: "/p/app/inbox", label: "Back to the inbox of app", title: "Which database?"},
+		{name: "tasks", page: "tasks", path: "/p/app/tasks", status: 200, back: "/p/app", label: "Back to app", title: "Tasks"},
+		{name: "task", page: "task", path: "/p/app/tasks/T1.2", status: 200, back: "/p/app/tasks", label: "Back to the tasks of app", title: "T1.2"},
+		{name: "task status", page: "task_status", path: "/p/app/tasks/T1.2/status", status: 200, back: "/p/app/tasks/T1.2", label: "Back to T1.2", title: "Set status"},
+		{name: "sessions", page: "sessions", path: "/p/app/sessions", status: 200, back: "/p/app", label: "Back to app", title: "Sessions"},
+		{name: "session", page: "session", path: "/p/app/sessions/t1-2", status: 200, back: "/p/app/sessions", label: "Back to the sessions of app", title: "t1-2"},
+		{name: "session action", page: "session_confirm", path: "/p/app/sessions/t1-2/confirm/clean", status: 200, back: "/p/app/sessions/t1-2", label: "Back to t1-2", title: "Clean"},
+		{name: "new session", page: "session_confirm", path: "/p/app/sessions/new?name=fix-login&description=Fix+it", status: 200, back: "/p/app/sessions", label: "Back to the sessions of app", title: "New session"},
+		{name: "confirm", page: "confirm", path: "/p/app/confirm/pause", status: 200, back: "/p/app", label: "Back to app", title: "Pause project"},
+		{name: "plan approve", page: "plan_confirm", path: "/p/app/plan/approve", status: 400, back: "/p/app/plan", label: "Back to the plan of app", title: "Approve the plan"},
+		{name: "plan approve result", page: "plan_result", path: "/p/app/plan/approve", form: "confirm=yes", status: 200, back: "/p/app/plan", label: "Back to the plan of app", title: "Plan approved"},
+		{name: "planning chat", page: "plan_chat", path: "/p/app/plan/chat", status: 200, back: "/p/app", label: "Back to app", title: "Planning app"},
+		{name: "plan change", page: "plan_change", path: "/p/app/plan/change?mode=extend", status: 200, back: "/p/app", label: "Back to app", title: "Change the plan"},
+		{name: "plan a new project", page: "plan_new", path: "/plan/new", status: 200, back: "/", label: "Back to all projects", title: "Plan a new project"},
+		{name: "add a project", page: "project_add", path: "/projects/add", status: 200, back: "/", label: "Back to all projects", title: "Add a project"},
+		{name: "remove a project", page: "project_remove", path: "/projects/remove", status: 200, back: "/", label: "Back to all projects", title: "Remove a project"},
+		{name: "remove a project confirm", page: "project_remove_confirm", path: "/projects/remove/confirm?name=app", status: 200, back: "/projects/remove", label: "Back to the project list", title: "Remove a project"},
+		{name: "error", page: "error", path: "/p/nope", status: 404},
+	}
+	covered := map[string]bool{}
+	for _, tc := range tests {
+		covered[tc.page] = true
+	}
+	for _, name := range pageNames {
+		if !covered[name] {
+			t.Errorf("page %q has no row", name)
+		}
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			rg.seedInbox()
+			method := "GET"
+			if tc.form != "" {
+				method = "POST"
+			}
+			rec := rg.pageDo(method, tc.path, tc.form)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.status)
+			}
+			body := rec.Body.String()
+			start := strings.Index(body, `<nav class="back-row"`)
+			if tc.back == "" {
+				if start >= 0 || strings.Contains(body, "back-row") {
+					t.Errorf("the page holds a back row")
+				}
+				return
+			}
+			if start < 0 {
+				t.Fatalf("the page has no back row")
+			}
+			row := body[start:]
+			end := strings.Index(row, "</nav>")
+			if end < 0 {
+				t.Fatalf("the back row is not closed")
+			}
+			row = row[:end]
+			// A labelled nav landmark, not a bare div: axe's region rule wants
+			// all content inside a landmark, and the top bar's nav is "Main".
+			if w := `<nav class="back-row" aria-label="Back">`; !strings.HasPrefix(row, w) {
+				t.Errorf("the back row does not open with %q:\n%s", w, row)
+			}
+			if w := `href="` + tc.back + `" aria-label="` + tc.label + `"`; !strings.Contains(row, w) {
+				t.Errorf("the back row lacks %q:\n%s", w, row)
+			}
+			if w := `<span class="app-bar__title">` + tc.title + `</span>`; !strings.Contains(row, w) {
+				t.Errorf("the back row lacks %q:\n%s", w, row)
+			}
+			if strings.Index(body, `<header class="topnav">`) > start {
+				t.Errorf("the back row is not under the top bar")
+			}
+		})
+	}
+}
+
+// TestBackRowHiddenOnPhone checks page.css hides the desktop back row at the
+// phone breakpoint, so the phone keeps exactly one back button.
+func TestBackRowHiddenOnPhone(t *testing.T) {
+	css, err := staticFiles.ReadFile("static/page.css")
+	if err != nil {
+		t.Fatalf("the binary holds no page.css: %v", err)
+	}
+	re := regexp.MustCompile(`@media \(max-width: 760px\)\s*\{\s*\.back-row\s*\{\s*display:\s*none;`)
+	if !re.Match(css) {
+		t.Errorf("page.css does not hide .back-row at max-width 760px")
+	}
+}
+
 // TestChromeFor is the bars' decision for each view. Load-bearing rows: "plan
 // waiting" (back to /, never to a project page that is a 404), "item" (back
 // to the project's inbox, the name path-escaped), "error" (bare: no bars,

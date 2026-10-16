@@ -212,3 +212,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **GitHub question**: the web page's yes-or-no after it makes a new folder, offering a private GitHub repository named `<account>/<folder>` for it; No is checked, the question is asked only for a folder the page has just made, and nothing is pushed.
 - **Pending change**: a project the web page has just added or removed that the daemon has not yet picked up from `config.toml`; the overview says so until its next pass.
 - **Leader setting**: the `leader = "<key>"` line in the `[dash]` table of `config.toml` that picks the dashboard's leader key; a key the dashboard cannot use falls back to ctrl+] with a line in the header saying what to fix.
+- **Back row**: on the web page above 760px wide, the row under the top bar holding the back chevron and the page title, as the phone bar does; absent on the overview and the error page.

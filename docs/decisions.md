@@ -3427,3 +3427,13 @@ T9.2 lets the owner set the dashboard's leader with `leader = "<key>"` in the `[
 - **The header line (A6).** A refused key puts one line at the front of the header, saying what is wrong, what to write in `config.toml`, and that ctrl+] is in use. It has a shorter form for narrow windows, because the header must stay one row.
 - **Text outside the dashboard (A7).** The help for `afk dash` and `afk` says ctrl+] is the default and how to change it. The message that sends someone to the dashboard to change a plan names the leader they configured.
 - **Tests (A8).** Each part is tested as it is written: the check is a table test, `daemonconfig` gets rows for the new key, and model tests cover a configured ctrl+o and a refused `q`.
+
+## T10.1
+
+T10.1 adds a back row under the desktop top bar. These are the decisions the master plan left open, made while planning the task (2026-10-16), numbered as in the work plan's assumptions.
+
+- **Reuse, no design round.** The row reuses the phone bar's back `icon-btn`, its chevron and its `app-bar__title`, by the owner's choice, with no new design. `.back-row` is layout glue in `page.css`, not a new component, so a later reconcile against `docs/design-system.md` must not read it as a stray one.
+- **Markup (A1).** A `<nav class="back-row" aria-label="Back">` holds the back link and a `<span>` for the title, not a heading, so the page's own `<h1>` stays the only heading. The row is a labelled nav landmark, not a bare div, because axe's region rule wants all content inside a landmark (the top bar's nav is labelled "Main", so the labels differ).
+- **Layout (A2).** A flex row aligned to the 48rem page column, not sticky, with no border, using only values `afk.css` and `page.css` already define. It is hidden at 760px and below, where the phone bar has the one back button. It is absent from the overview and the bare error page.
+- **Tests (A3, A4).** A table test renders every page `chromeFor` knows and checks the row on each, written in the same task as the change. A second test checks `page.css` hides the row at the phone width.
+- **Nothing to wait for (A5).** No other task had to land first.
