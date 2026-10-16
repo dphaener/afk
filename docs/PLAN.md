@@ -2909,7 +2909,7 @@ and anyone who wants another key sets it in `config.toml`.
 
 ### M10 — Find your way back on the desktop
 
-**Outcome:** on a desktop browser every page but the overview has a back button and its title under the
+**Outcome:** on a desktop browser every page but the overview and the error page has a back button and its title under the
 top bar, as the phone does, so the browser's own back button is never the only way back.
 
 #### T10.1 — A back row on desktop pages
