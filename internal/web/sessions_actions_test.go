@@ -636,8 +636,8 @@ func TestSessionConfirmPages(t *testing.T) {
 		}},
 		{name: "restart", path: "/p/app/sessions/stuck/confirm/restart", status: 200, want: []string{`<h1>Restart &#34;stuck&#34;?</h1>`, `action="/p/app/sessions/stuck/restart"`}},
 		{name: "restart not offered", path: "/p/app/sessions/busy/confirm/restart", status: 200,
-			want:    []string{`<div class="notice notice--error" role="alert"><div class="notice__body">Its host is running and its agent is working, so there is nothing to restart.</div></div>`, `<a class="btn btn--secondary" href="/p/app/sessions/busy">Back</a>`},
-			notWant: []string{`action="/p/app/sessions/busy/restart"`}},
+			want:    []string{`<div class="notice notice--error" role="alert"><div class="notice__body">Its host is running and its agent is working, so there is nothing to restart.</div></div>`, `href="/p/app/sessions/busy" aria-label="Back to busy"`},
+			notWant: []string{`action="/p/app/sessions/busy/restart"`, `<a class="btn btn--secondary" href="/p/app/sessions/busy">Back</a>`}},
 		{name: "label", path: "/p/app/sessions/finished/confirm/label", status: 200, want: []string{
 			`<h1>Label for finished:</h1>`, `<input class="input" type="text" id="label-input" name="label" value="login fix" maxlength="128"`,
 			`<span class="field__hint" id="label-hint">blank clears it</span>`, `<button type="submit" class="btn btn--primary">Save label</button>`,

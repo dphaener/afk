@@ -3437,3 +3437,13 @@ T10.1 adds a back row under the desktop top bar. These are the decisions the mas
 - **Layout (A2).** A flex row aligned to the 48rem page column, not sticky, with no border, using only values `afk.css` and `page.css` already define. It is hidden at 760px and below, where the phone bar has the one back button. It is absent from the overview and the bare error page.
 - **Tests (A3, A4).** A table test renders every page `chromeFor` knows and checks the row on each, written in the same task as the change. A second test checks `page.css` hides the row at the phone width.
 - **Nothing to wait for (A5).** No other task had to land first.
+
+## T10.2
+
+T10.2 removes the "Back to …" links in page content that only repeat the bar's back button. These are the decisions the master plan left open, made while planning the task (2026-10-16), numbered as in the work plan's assumptions.
+
+- **No link kept for its address.** Each removed link's address was checked against the bar's back address for the same page, in every branch. All of them matched, so no link stayed because it went somewhere else.
+- **Tests (A1).** The tests are written in the same task as the change: a table test of each changed page and branch, plus rows for the links that stay. The older tests that looked for the removed links now look for the bar's back button.
+- **Nothing to wait for (A2).** T10.1 had already landed.
+- **New plan started with no chat (A3).** On the new-plan page's "started" result, the button row is drawn only when there is a chat to open, so the page never ends in an empty row.
+- **One task (A4).** Templates, tests and this note are one task, because every test edit is in the same Go package.

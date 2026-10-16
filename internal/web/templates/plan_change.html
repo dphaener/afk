@@ -5,13 +5,11 @@
 {{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
 {{if eq .Kind "none"}}
 <p>{{.Message}}</p>
-<div class="btn-row"><a class="btn btn--secondary" href="{{.Back}}">Back to {{.Project}}</a></div>
 {{else if eq .Kind "open"}}
 <p>{{.Message}}</p>
-<div class="btn-row"><a class="btn btn--primary" href="{{.Chat}}">Open its chat</a> <a class="btn btn--secondary" href="{{.Back}}">Back to {{.Project}}</a></div>
+<div class="btn-row"><a class="btn btn--primary" href="{{.Chat}}">Open its chat</a></div>
 {{else if eq .Kind "unknown"}}
 <div class="notice notice--error" role="alert"><div class="notice__body">{{.Message}}</div></div>
-<div class="btn-row"><a class="btn btn--secondary" href="{{.Back}}">Back to {{.Project}}</a></div>
 {{else if eq .Kind "form"}}
 <form method="get" action="{{.Action}}" class="stack">
   <input type="hidden" name="mode" value="{{.Mode}}">
