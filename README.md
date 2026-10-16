@@ -1147,6 +1147,7 @@ On its next pass the daemon sees every item answered and marks the task `running
 
 1. It checks the session left nothing uncommitted and that its branch has a commit the base branch does not.
 2. It pushes the branch (never a force push).
+   If GitHub refuses the push because afk's login over https may not change workflow files (`.github/workflows/`), the inbox item says so and gives two ways out: run `gh auth refresh -s workflow`, or switch the repository's `origin` to SSH. afk changes neither itself. Answer the item and it pushes again.
 3. It opens a pull request against the base branch, titled from the branch's last commit.
 4. It waits for the pull request's checks, asking GitHub at most every 20 seconds.
 5. Red checks are re-run, up to `ci_reruns` times.

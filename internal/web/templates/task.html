@@ -24,7 +24,7 @@
   <ul class="legend">
   {{range .Legend}}<li class="legend__item"><span class="legend__swatch split-bar__seg--{{.Class}}" aria-hidden="true"></span>{{.Phase}}<span class="legend__value">{{.Value}} · {{.Share}}</span></li>
   {{end}}</ul>
-  {{with .Roles}}<div class="table-wrap">
+  {{with .Roles}}<div class="table-wrap" role="region" aria-labelledby="tokens-title" tabindex="0">
   <table class="table">
     <thead><tr><th scope="col">role</th><th scope="col">calls</th><th scope="col">input</th><th scope="col">output</th><th scope="col">weighted</th></tr></thead>
     <tbody>

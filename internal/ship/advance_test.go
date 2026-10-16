@@ -679,6 +679,9 @@ func TestAdvanceActionFailuresPark(t *testing.T) {
 		call     string
 		setup    func(w *world)
 		wantBody []string
+		// errText replaces the default made-up error for a row that needs
+		// git's real wording.
+		errText string
 		// owner is what the owner does before answering, beyond the error
 		// going away.
 		owner       func(w *world)
@@ -686,6 +689,9 @@ func TestAdvanceActionFailuresPark(t *testing.T) {
 	}{
 		{name: "push", call: "Push", setup: green,
 			wantBody: []string{"has commits the session does not have", "Pull them into the session's branch"}},
+		{name: "push refused for workflow scope", call: "Push", setup: green,
+			errText:  "! [remote rejected] t9-9 -> t9-9 (refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)",
+			wantBody: []string{"gh auth refresh -s workflow", "git remote set-url origin"}},
 		{name: "open pull request", call: "OpenPR", setup: green,
 			wantBody: []string{"could not open a pull request", "main"}},
 		{name: "re-run", call: "RerunFailed",
@@ -713,6 +719,11 @@ func TestAdvanceActionFailuresPark(t *testing.T) {
 			w := newWorld(t)
 			tt.setup(w)
 			boom := fmt.Errorf("boom in %s\nsecond line", tt.call)
+			wantErr := []string{"boom in " + tt.call, "second line"}
+			if tt.errText != "" {
+				boom = errors.New(tt.errText)
+				wantErr = []string{tt.errText}
+			}
 			w.errs[tt.call] = boom
 
 			out := w.run()
@@ -720,9 +731,9 @@ func TestAdvanceActionFailuresPark(t *testing.T) {
 				t.Fatalf("outcome = %q (%s), want park", out.Kind, out.Reason)
 			}
 			item := wantItem(t, out, ItemFailure)
-			wantText(t, "the item body", item.Body, append(tt.wantBody, "boom in "+tt.call, "second line")...)
+			wantText(t, "the item body", item.Body, append(tt.wantBody, wantErr...)...)
 			wantText(t, "the item title", item.Title, testTask)
-			wantText(t, "the reason", out.Reason, "boom in "+tt.call)
+			wantText(t, "the reason", out.Reason, wantErr[0])
 			if tt.call == "SyncBase" && strings.Index(item.Body, "another worktree") > strings.Index(item.Body, "boom in") {
 				t.Errorf("the likely cause comes after git's own message:\n%s", item.Body)
 			}

@@ -5,7 +5,31 @@
 // post natively to the page's own address and the server draws the result.
 'use strict';
 
+// stalePending says whether a pending owner message can be dropped because
+// the thread now shows it. sentCount is how many owner messages the thread
+// held (plus earlier pending ones) when this one was sent; nowCount is how
+// many it holds now. Any growth past sentCount means the server wrote this
+// reply, whether it was typed or a choice. Counting is needed because a
+// choice is shown by its label while the server writes "Header: Label", so
+// the words never match. The text match stays as a second way for a typed
+// reply. It is a pure function so a node test can load this file.
+function stalePending(sentCount, nowCount, pendingText, ownerTexts) {
+  if (nowCount > sentCount) {
+    return true;
+  }
+  return ownerTexts.indexOf(pendingText) !== -1;
+}
+
+if (typeof module !== 'undefined') {
+  module.exports = { stalePending: stalePending };
+}
+
 (function () {
+  // Loaded by a node test: there is no page to enhance.
+  if (typeof document === 'undefined' || typeof window === 'undefined') {
+    return;
+  }
+
   // Without fetch there is nothing to enhance; the forms post natively.
   if (!('fetch' in window)) {
     return;
@@ -175,6 +199,11 @@
     var msg = document.createElement('div');
     msg.className = 'msg msg--owner';
     msg.setAttribute('data-pending-text', words.trim());
+    // Owner messages the thread holds now, plus those still pending ahead of
+    // this one: this reply is the next to arrive after all of them.
+    var thread = document.getElementById('chat-thread');
+    var held = thread ? thread.querySelectorAll('.msg--owner').length : 0;
+    msg.setAttribute('data-sent-count', String(held + box.querySelectorAll('[data-pending-text]').length));
     var who = document.createElement('span');
     who.className = 'msg__who';
     who.textContent = 'You';
@@ -190,23 +219,22 @@
     box.appendChild(msg);
   }
 
-  // prune drops each pending message once the thread holds an owner message
-  // with the same words, and keeps the rest.
+  // prune drops each pending message once the thread shows its reply (see
+  // stalePending) and keeps the rest.
   function prune() {
     var box = document.getElementById('chat-pending');
     var thread = document.getElementById('chat-thread');
     if (!box || !thread) {
       return;
     }
+    var now = thread.querySelectorAll('.msg--owner').length;
     var seen = Array.prototype.slice.call(thread.querySelectorAll('.msg--owner .msg__bubble'))
       .map(function (b) {
         return b.textContent.trim();
       });
     Array.prototype.slice.call(box.querySelectorAll('[data-pending-text]')).forEach(function (m) {
-      var at = seen.indexOf(m.getAttribute('data-pending-text'));
-      if (at !== -1) {
-        // One thread message answers one pending message.
-        seen.splice(at, 1);
+      var sent = parseInt(m.getAttribute('data-sent-count'), 10);
+      if (stalePending(isNaN(sent) ? now : sent, now, m.getAttribute('data-pending-text'), seen)) {
         m.remove();
       }
     });
