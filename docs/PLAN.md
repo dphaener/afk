@@ -2947,6 +2947,7 @@ top bar, as the phone does, so the browser's own back button is never the only w
   the address `chromeFor` names; at 390px wide each page shows exactly one back button (the phone
   bar's). An axe run on a project page at 1280px reports no new violation. `make check` is green.
 
+- Amended 2026-10-16: "every page but the overview" in the Goal means every page but the overview and the error page; the error page is `Bare` and draws no bars, as the Scope and Acceptance already say.
 #### T10.2 — Remove the in-page back links that only repeat it
 - **Depends on:** T10.1 (both edit `internal/web`, and tasks in one Go package collide at merge)
 - **Goal:** a "Back to …" link in a page's content that goes where the bar's back button goes and does
