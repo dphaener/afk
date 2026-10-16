@@ -1,6 +1,5 @@
 {{define "title"}}Plan: {{.Project}}{{end}}
 {{define "content"}}
-<p>{{if .WaitingForApproval}}<a href="/">Back to the overview</a>{{else}}<a href="/p/{{pe .Project}}">Back to {{.Project}}</a>{{end}}</p>
 <h1>Plan: {{.Project}}</h1>
 {{if .Path}}<p class="muted">{{.Path}}</p>{{end}}
 {{if .Problem}}

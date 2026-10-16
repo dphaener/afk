@@ -2974,6 +2974,7 @@ top bar, as the phone does, so the browser's own back button is never the only w
   they are still there. Against a scratch build in headless Chrome at 390px and 1280px wide, the plan
   page and the remove-a-project page with an empty list show one way back, the bar's. `make check` is
   green.
+- Amended 2026-10-16 (T10.2 done): later tasks may assume page content has no "Back to …" link that repeats the bar's back address; the bar (`app-bar` on the phone, `back-row` on the desktop) is the only way back on the plan, plan result, cannot-be-approved confirm, plan change (none, open, unknown), new plan started, empty remove-a-project and not-offered session confirm pages. The new-plan "started" page draws its button row only when there is a chat. Every removed link matched `chromeFor`'s `Back`, so none was kept for its address. `TestInPageBackLinksRemoved` in `pages_test.go` covers each branch and the kept links; a body `<a>` whose text starts with "Back" is a content link, since the bar's buttons are icon-only. See `## T10.2` in `docs/decisions.md`.
 
 ## 9. Deferred / later
 

@@ -647,8 +647,8 @@ func TestPlanPage(t *testing.T) {
 			setup:   func(rg *rig) { rg.reviews = append(rg.reviews, Project{Name: "app-2", Root: rg.root}) },
 			notWant: []string{"Waiting for approval"}},
 		{name: "review-only project", path: "/p/draft/plan", status: 200,
-			want:    []string{"Plan: draft", `<h1 id="draft-plan">Draft plan</h1>`, "A plan nobody has approved yet.", `badge--error">`, `<a href="/">Back to the overview</a>`},
-			notWant: []string{`href="/p/draft"`, "Waiting for approval", "run afk plan approve"}},
+			want:    []string{"Plan: draft", `<h1 id="draft-plan">Draft plan</h1>`, "A plan nobody has approved yet.", `badge--error">`, `href="/" aria-label="Back to all projects"`},
+			notWant: []string{`href="/p/draft"`, "Back to the overview", "Waiting for approval", "run afk plan approve"}},
 		{name: "project name with a space", path: "/p/my%20app/plan", status: 200,
 			want: []string{"Plan: my app", `href="/p/my%20app"`, "Problem: The plan could not be read"}},
 		{name: "plan that cannot be read", path: "/p/app/plan", status: 200,
@@ -1167,6 +1167,138 @@ func TestDesktopBackRow(t *testing.T) {
 			}
 			if strings.Index(body, `<header class="topnav">`) > start {
 				t.Errorf("the back row is not under the top bar")
+			}
+		})
+	}
+}
+
+// TestInPageBackLinksRemoved checks that a page whose bar already holds a
+// back button does not repeat it in its content, and that the links that stay
+// are still there. A content link counts as a repeat when its text starts
+// with "Back": the bar's own buttons are icons named by aria-label, so they
+// carry no text.
+//
+// Load-bearing rows: "plan result" and "plan confirm, cannot be approved"
+// (their only way back was the repeated link, so a template that put it back
+// would still pass the older tests), "new plan started, no chat" (the row
+// that held the link must not be left empty), "remove a project, empty list"
+// (the page then holds only a sentence and the bar), and the kept rows
+// ("plan confirm, available", "session action", "task status", "new
+// session, form", "plan change, open"), which fail if a later edit removes a
+// link that is the safe choice beside an action. Every row also checks the
+// bar's back button holds the same address the removed link had.
+func TestInPageBackLinksRemoved(t *testing.T) {
+	contentBack := regexp.MustCompile(`<a [^>]*>\s*Back[^<]*</a>`)
+	emptyRow := regexp.MustCompile(`<div class="btn-row">\s*</div>`)
+	type result struct {
+		rg  *rig
+		rec *httptest.ResponseRecorder
+	}
+	get := func(setup func(*rig), path string) func(*testing.T) result {
+		return func(t *testing.T) result {
+			rg := newRig(t, Config{})
+			if setup != nil {
+				setup(rg)
+			}
+			return result{rg, rg.pageDo(http.MethodGet, path, "")}
+		}
+	}
+	started := func(t *testing.T) result {
+		rg, f := ghRig(t)
+		f.outcome = GitHubOutcome{Kind: GitHubFailed, Repo: "me/demo", Text: "gh could not make it"}
+		ghAsk(t, rg)
+		return result{rg, rg.pageDo(http.MethodPost, "/plan/new/github", ghAnswerForm(rg.createPath, "yes"))}
+	}
+	tests := []struct {
+		name   string
+		do     func(*testing.T) result
+		status int
+		// back is the bar's back button, as href and aria-label.
+		back string
+		// kept is whether the content holds a link whose text starts with
+		// "Back", which only the kept rows do.
+		kept bool
+		want []string
+	}{
+		{name: "plan", do: get(nil, "/p/app/plan"), status: 200, back: `href="/p/app" aria-label="Back to app"`},
+		{name: "plan waiting for approval", do: get(nil, "/p/draft/plan"), status: 200, back: `href="/" aria-label="Back to all projects"`},
+		{name: "plan result", status: 200, back: `href="/p/app/plan" aria-label="Back to the plan of app"`,
+			do: func(t *testing.T) result {
+				rg := newRig(t, Config{})
+				return result{rg, rg.pageDo(http.MethodPost, "/p/app/plan/approve", "confirm=yes")}
+			}},
+		{name: "plan confirm, cannot be approved", status: 400, back: `href="/p/app/plan" aria-label="Back to the plan of app"`,
+			do: get(func(rg *rig) {
+				st := approvable()
+				st.Phase, st.Approvable = "draft", false
+				rg.planStatus[rg.root] = st
+			}, "/p/app/plan/approve")},
+		{name: "plan change, none", status: 200, back: `href="/p/app" aria-label="Back to app"`,
+			do: get(func(rg *rig) { delete(rg.plans, rg.root) }, "/p/app/plan/change?mode=extend")},
+		{name: "plan change, open", status: 200, back: `href="/p/app" aria-label="Back to app"`,
+			do: get(func(rg *rig) {
+				must(rg.t, plansession.WriteState(rg.root, plansession.State{Mode: "amend", Phase: "draft", UpdatedAt: "2026-10-12T11:00:00Z"}))
+			}, "/p/app/plan/change?mode=extend"),
+			want: []string{`<a class="btn btn--primary" href="/p/app/plan/chat">Open its chat</a>`}},
+		{name: "plan change, unknown", do: get(nil, "/p/app/plan/change?mode=new"), status: 400, back: `href="/p/app" aria-label="Back to app"`},
+		{name: "new plan started, with a chat", do: started, status: 200, back: `href="/" aria-label="Back to all projects"`,
+			want: []string{`<a class="btn btn--primary" href="/p/demo/plan/chat">Open its chat</a>`}},
+		{name: "new plan started, no chat", status: 200, back: `href="/" aria-label="Back to all projects"`,
+			do: func(t *testing.T) result {
+				rg := newRig(t, Config{})
+				rg.addedName, rg.addedErr = "", errors.New("disk full")
+				return result{rg, rg.pageDo(http.MethodPost, "/plan/new", planNewForm("~/code/shop"))}
+			}},
+		{name: "remove a project, empty list", do: get(func(rg *rig) { rg.projects = nil }, "/projects/remove"), status: 200,
+			back: `href="/" aria-label="Back to all projects"`, want: []string{"there is nothing to remove"}},
+		{name: "session action, last branch", do: func(t *testing.T) result {
+			rg := actionRig(t)
+			return result{rg, rg.pageDo(http.MethodGet, "/p/app/sessions/busy/confirm/restart", "")}
+		}, status: 200, back: `href="/p/app/sessions/busy" aria-label="Back to busy"`, want: []string{"there is nothing to restart"}},
+
+		{name: "plan confirm, available", status: 200, kept: false, back: `href="/p/app/plan" aria-label="Back to the plan of app"`,
+			do:   get(func(rg *rig) { rg.planStatus[rg.root] = approvable() }, "/p/app/plan/approve"),
+			want: []string{`href="/p/app/plan" autofocus>`, "Approve and start"}},
+		{name: "session action", status: 200, back: `href="/p/app/sessions/finished" aria-label="Back to finished"`,
+			do: func(t *testing.T) result {
+				rg := actionRig(t)
+				return result{rg, rg.pageDo(http.MethodGet, "/p/app/sessions/finished/confirm/clean", "")}
+			},
+			want: []string{`<a class="btn btn--secondary" href="/p/app/sessions/finished" autofocus>Keep it</a>`}},
+		{name: "task status", do: get((*rig).useTasksPlan, "/p/app/tasks/T2.2/status?to=pending"), status: 200, kept: true, back: `href="/p/app/tasks/T2.2" aria-label="Back to T2.2"`,
+			want: []string{`<a class="btn btn--secondary" href="/p/app/tasks/T2.2/status">Back</a>`}},
+		{name: "new session, form", status: 200, kept: true, back: `href="/p/app/sessions" aria-label="Back to the sessions of app"`,
+			do: func(t *testing.T) result {
+				rg := actionRig(t)
+				return result{rg, rg.pageDo(http.MethodGet, "/p/app/sessions/new", "")}
+			},
+			want: []string{`<a class="btn btn--secondary" href="/p/app/sessions">Back</a>`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.do(t)
+			if res.rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d\n%s", res.rec.Code, tc.status, res.rec.Body.String())
+			}
+			body := res.rec.Body.String()
+			for _, bar := range []string{`<nav class="back-row"`, `class="app-bar`} {
+				if !strings.Contains(body, bar) {
+					t.Errorf("the page lacks the bar %q", bar)
+				}
+			}
+			if !strings.Contains(body, `<a class="icon-btn" `+tc.back+`>`) {
+				t.Errorf("the bar lacks the back button %q", tc.back)
+			}
+			if got := contentBack.FindString(body); (got != "") != tc.kept {
+				t.Errorf("content back link = %q, want one: %v", got, tc.kept)
+			}
+			if emptyRow.MatchString(body) {
+				t.Errorf("the page holds an empty button row")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("the page lacks %q", w)
+				}
 			}
 		})
 	}

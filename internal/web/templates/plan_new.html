@@ -47,7 +47,7 @@
 {{else if eq .Kind "started"}}
 {{with .GitHubText}}<div class="notice {{$.GitHubClass}}" role="{{$.GitHubRole}}"><div class="notice__body">{{.}}</div></div>{{end}}
 <p>{{.Message}}</p>
-<div class="btn-row">{{with .Chat}}<a class="btn btn--primary" href="{{.}}">Open its chat</a> {{end}}<a class="btn btn--secondary" href="/">Back to all projects</a></div>
+{{with .Chat}}<div class="btn-row"><a class="btn btn--primary" href="{{.}}">Open its chat</a></div>{{end}}
 {{else}}
 <form method="get" action="/plan/new" class="stack">
   <div class="field">

@@ -192,10 +192,13 @@ func TestPlanApproveOutcomes(t *testing.T) {
 				t.Errorf("the page redirected to %q; it must show the result", loc)
 			}
 			body := html.UnescapeString(rec.Body.String())
-			for _, want := range []string{"<h1>" + tc.title + "</h1>", tc.wantText, `href="/p/app/plan">Back to the plan</a>`} {
+			for _, want := range []string{"<h1>" + tc.title + "</h1>", tc.wantText, `href="/p/app/plan" aria-label="Back to the plan of app"`} {
 				if !strings.Contains(body, want) {
 					t.Errorf("page lacks %q\n%s", want, body)
 				}
+			}
+			if strings.Contains(body, ">Back to the plan</a>") {
+				t.Errorf("the page repeats the bar's back button in its content\n%s", body)
 			}
 			if len(rg.approveCalls) != 1 {
 				t.Errorf("approveCalls = %v, want one", rg.approveCalls)
@@ -297,8 +300,8 @@ func TestPlanApprovePage(t *testing.T) {
 			},
 			path:   "/p/app/plan/approve",
 			status: http.StatusBadRequest,
-			want:   []string{"The plan can be approved once the planning session reaches review; it is at draft now.", `href="/p/app/plan">Back to the plan</a>`},
-			absent: []string{"<form", "Approve and start"},
+			want:   []string{"The plan can be approved once the planning session reaches review; it is at draft now.", `href="/p/app/plan" aria-label="Back to the plan of app"`},
+			absent: []string{"<form", "Approve and start", ">Back to the plan</a>"},
 		},
 		{
 			name:   "refused with no seam",
