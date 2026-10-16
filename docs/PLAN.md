@@ -2906,6 +2906,72 @@ and anyone who wants another key sets it in `config.toml`.
   `make check` is green.
 - Amended 2026-10-14 (T9.2 done): later tasks may assume the following. (1) `daemonconfig.Dash.Leader` is the trimmed raw string ("" when unset); only a non-string value becomes `DashErr`, and the key itself is checked by the pure `checkLeader` in `internal/ui/leaderconfig.go` (exported for other packages as `ui.LeaderName`). (2) `afk dash` reads it once at start through `startupLeader` in `dash.go` into `ui.Deps.Leader`, best effort (a load error or `DashErr` means the default); there is no live reload, so a change applies on restart. (3) The model holds the checked key as `Model.leaderKey` (a `leaderSetting`: name, decoded `tea.Key`, refusal); the old const is `defaultLeaderKey` and is used only as the fallback, so new hint text must take the leader from the model (free helpers take it as a parameter, panels through `panelContext.Leader`). (4) Pressed twice in the agent pane, the decoded key goes straight to the pane's `SendKey` for x/vt to encode. (5) A refused key shows a persistent header line (`leaderHeaderForms` in `views.go`, three lengths) ahead of every other header piece. See `## T9.2` in `docs/decisions.md`.
 
+### M10 — Find your way back on the desktop
+
+**Outcome:** on a desktop browser every page but the overview has a back button and its title under the
+top bar, as the phone does, so the browser's own back button is never the only way back.
+
+#### T10.1 — A back row on desktop pages
+- **Depends on:** —
+- **Goal:** above 760px, every page but the overview shows a row under the top bar holding the phone
+  bar's back chevron and the page's title. The chevron goes where the phone's back button goes and has
+  the same spoken name.
+- **Background:** the owner reported: "The desktop view doesn't seem to have the same back button
+  affordances as the mobile view. I have to use the browser back button to navigate back." The cause:
+  `internal/web/templates/layout.html` has two bars, `app-bar` (phone: back `icon-btn`, title, live) and
+  `topnav` (desktop: wordmark, Projects, Usage, live mirror, actions), and `internal/web/static/page.css`
+  hides `.app-bar` above 760px. The back address, its spoken name and the title are already worked out
+  per page by the pure `chromeFor` in `internal/web/pages.go` (`chrome.Back`, `BackLabel`, `Title`) and
+  table-tested in `TestChromeFor` (`pages_test.go`); the error page is `Bare` and draws no bars. The
+  owner chose the phone's chevron and title over a breadcrumb or a plain link, built from components
+  the design system already has (`icon-btn`, the title style) with no design round.
+- **Scope:** in `layout.html`, a desktop-only row under `topnav` (not on the overview, not on a `Bare`
+  page) with the same back `icon-btn` (its `href` from `.Back`, its `aria-label` from `.BackLabel`, the
+  same chevron svg) and the title from `.Title`. Its CSS goes in `page.css` beside the bar rules: shown
+  only above 760px, hidden below it, so the phone keeps exactly one back button and the desktop gets
+  one. Use afk.css's existing classes and tokens; add no colour, size or spacing value afk.css does not
+  already define. The page's own `<h1>` stays as it is. Record in `docs/decisions.md` under `## T10.1`
+  that the desktop row reuses the phone bar's parts and why (no design round, the owner's choice), so a
+  later reconcile against `docs/design-system.md` does not read it as a stray component.
+- **Must not:** change `chromeFor`'s addresses or names (the phone's back button is right today); change
+  `topnav`'s links or actions; change the JSON API; add JavaScript for it (the row works with
+  JavaScript off).
+- **Acceptance:** a table test renders the layout for every page `chromeFor` knows (overview, usage,
+  project, plan with and without `WaitingForApproval`, inbox, item, tasks, task, sessions, session,
+  set status, each confirm, chat, change, new plan, add, remove, remove confirm, plan result, error)
+  and checks that the desktop row is present with the right `href`, `aria-label` and title on every
+  page but the overview and the error page, and absent on those two. Against a scratch build serving
+  the page (`afk daemon` with scratch state and config folders), in headless Chrome at 1280px wide:
+  a project page, a task page and the usage page each show the back chevron, and following it reaches
+  the address `chromeFor` names; at 390px wide each page shows exactly one back button (the phone
+  bar's). An axe run on a project page at 1280px reports no new violation. `make check` is green.
+
+#### T10.2 — Remove the in-page back links that only repeat it
+- **Depends on:** T10.1 (both edit `internal/web`, and tasks in one Go package collide at merge)
+- **Goal:** a "Back to …" link in a page's content that goes where the bar's back button goes and does
+  nothing else is gone, on the phone and the desktop alike, because both now have the bar's button.
+- **Background:** the owner chose to remove the links that only duplicate the back button and keep the
+  ones that are the safe choice beside an action.
+- **Scope:** remove these, from `internal/web/templates/`: the "Back to the overview" / "Back to
+  <project>" paragraph at the top of `plan.html`; the "Back to the plan" button in `plan_result.html`
+  and in the cannot-be-approved branch of `plan_confirm.html`; the "Back to <project>" button in the
+  `none`, `open` and `unknown` branches of `plan_change.html` (the `open` branch keeps "Open its chat");
+  the "Back to all projects" button in the `started` branch of `plan_new.html` (it keeps "Open its
+  chat") and in the empty-list branch of `project_remove.html`; the "Back" button in the last
+  (`{{else}}`) branch of `session_confirm.html`. Before removing each, check that its `href` equals the
+  `chrome.Back` that `chromeFor` gives the same view; a link whose address differs stays and is listed
+  in `docs/decisions.md` under `## T10.2` with why. A `btn-row` left empty is removed with it. Update the
+  tests that looked for the removed links.
+- **Must not:** remove a confirm's safe button (`.Sheet.Safe`), a Cancel beside a form, the "Back" under
+  the new-session form in `session_confirm.html`, the "Back" beside the submit in `task_status.html`, or
+  any link that goes somewhere other than the bar's back address.
+- **Acceptance:** a table test renders each changed page in each changed branch and checks that the
+  removed link is gone and the bar's back button is still there with the same `href`; rows for the
+  kept links (a confirm's safe button, `task_status.html`'s Back, the new-session form's Back) check
+  they are still there. Against a scratch build in headless Chrome at 390px and 1280px wide, the plan
+  page and the remove-a-project page with an empty list show one way back, the bar's. `make check` is
+  green.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
