@@ -2946,6 +2946,7 @@ top bar, as the phone does, so the browser's own back button is never the only w
   a project page, a task page and the usage page each show the back chevron, and following it reaches
   the address `chromeFor` names; at 390px wide each page shows exactly one back button (the phone
   bar's). An axe run on a project page at 1280px reports no new violation. `make check` is green.
+- Amended 2026-10-16 (T10.1 done): later tasks may assume the desktop back row is `<nav class="back-row" aria-label="Back">` in `layout.html`, right after the `topnav` header, inside the `{{if not .Bare}}` block and only when not `.Overview`, holding the same back `icon-btn` (`.Back`, `.BackLabel`) and `<span class="app-bar__title">{{.Title}}</span>`; `page.css` hides it at 760px and below. It is a labelled nav, not a div, because axe's region rule needs every element in a landmark. `TestDesktopBackRow` and `TestBackRowHiddenOnPhone` in `pages_test.go` cover it; T10.2's tests can check "the bar's back button is still there" against either bar. See `## T10.1` in `docs/decisions.md`.
 
 - Amended 2026-10-16: "every page but the overview" in the Goal means every page but the overview and the error page; the error page is `Bare` and draws no bars, as the Scope and Acceptance already say.
 #### T10.2 — Remove the in-page back links that only repeat it

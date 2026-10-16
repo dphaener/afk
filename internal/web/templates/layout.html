@@ -34,7 +34,11 @@
   {{if .AddProject}}<a class="btn btn--secondary btn--sm topnav__action" href="/projects/add">Add a project</a>
   {{end}}{{if .PlanNew}}<a class="btn btn--primary btn--sm topnav__action" href="/plan/new">Plan a new project</a>
   {{end}}</header>
-{{end}}{{end}}
+{{if not .Overview}}<nav class="back-row" aria-label="Back">
+  <a class="icon-btn" href="{{.Back}}" aria-label="{{.BackLabel}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6"/></svg></a>
+  <span class="app-bar__title">{{.Title}}</span>
+</nav>
+{{end}}{{end}}{{end}}
 <main class="page{{if .Chrome.Bare}} page--alone{{end}}">
 {{template "content" .View}}
 {{block "foot" .Chrome}}{{end}}
