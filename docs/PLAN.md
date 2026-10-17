@@ -3243,6 +3243,7 @@ T8.18 password ──────────┘
 - **Acceptance:** the shell test covers a Linux amd64 install, a macOS arm64 install, an unknown
   architecture, a checksum mismatch (nothing written to `~/bin`), root (refused), `AFK_VERSION`, and
   `AFK_NO_INSTALL=1`; `shellcheck install.sh` is clean. `make check` is green.
+- Amended 2026-10-17 (T11.5 done): `install.sh` exists at the repository root and `make check` runs its shell test (`scripts/install.test.sh`) and `shellcheck install.sh` through the `install-script-test` target (shellcheck is required when `CI` is set, skipped with a note otherwise). Later tasks may assume it finds the latest release through the `/releases/latest` redirect, takes `AFK_VERSION` with or without a `v`, replaces `~/bin/afk` by a same-folder rename, signs on macOS only when `afk version` fails, and runs `afk install` with input from `/dev/tty` (`AFK_TTY` is a test seam). No release is published yet, so the one-line command works only after the owner pushes a `v*` tag; T11.6 checks it on a VM and a Mac. See `## T11.5` in `docs/decisions.md`.
 
 #### T11.6 — Prove it on fresh machines (owner)
 - **Depends on:** T11.3, T11.4, T11.5

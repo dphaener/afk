@@ -3640,3 +3640,26 @@ Each line below quotes or closely paraphrases launchd.plist(5) (https://keith.gi
 ### Verification for the owner
 
 - On a Mac with Homebrew, from a desktop login (not over SSH), run `afk install --dry-run` and check that the packages step names Homebrew and the service step names `~/Library/LaunchAgents/io.github.dphaener.afk.plist`. Then run `afk install` as far as the service, and check that `launchctl print gui/$(id -u)/io.github.dphaener.afk` shows `state = running` and that `~/.local/state/afk/daemon.log` fills.
+
+## T11.5
+
+T11.5 adds `install.sh`, the bootstrap script behind `curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh`: it downloads the latest release's afk, checks it against `checksums.txt`, puts it in `~/bin` and starts `afk install`. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Signing on macOS (A1).** T11.1 has not recorded whether a downloaded macOS binary runs without `codesign`, so the script does not assume either answer. It places the binary and runs `afk version`; only on a Mac, and only if that fails, it signs the binary with `codesign --force --sign -` and tries once more. Still failing, it stops and says what to try by hand.
+- **Finding the latest release (A2).** The script follows GitHub's redirect from `/releases/latest` and reads the tag from the address it lands on. That needs no `jq` on a fresh machine and does not count against the GitHub API's limit for anonymous callers.
+- **Asking questions through a pipe (A3).** `afk install` reads from `/dev/tty`, because the script's own input is the download. A machine with no terminal gets the binary and a line saying to run `~/bin/afk install` from a terminal. The test points the script at a file instead, through `AFK_TTY`.
+- **shellcheck (A4).** `make check` runs `shellcheck install.sh` when shellcheck is installed. In CI a missing shellcheck is a failure (GitHub's runners include it); on a laptop without it the check is skipped with a note.
+- **Where the test lives (A5).** `scripts/install.test.sh`, run by its own make target, `install-script-test`, so the hook-test loop stays about hooks.
+- **Replacing an afk that is already there (A6).** The new binary is written to a temporary name inside `~/bin` and renamed over `~/bin/afk`, so it is always a new file.
+- **Tests (A7).** The shell test was written with the script, with stand-in `curl`, `uname`, `id`, `codesign` and `afk`.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. `make check` was run in full, with shellcheck: green. Minor notes: this section and the `CONTEXT.md` line are written by the planner and conductor, by design; the Makefile changed, so CI's full run is the last word.
+
+### Verification for the owner
+
+- **The one-line command needs a release.** No `v*` tag has been pushed yet, so `curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh` stops with "could not find the latest afk release" until one is. After tagging, run it on a fresh Multipass VM and on a Mac (T11.6).
+- **CI must have shellcheck.** If the first CI run fails with "shellcheck is required in CI and is not installed", add an `apt-get install -y shellcheck` step to `.github/workflows/ci.yml`.

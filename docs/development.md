@@ -4,13 +4,14 @@ How to build and test afk, and how the code is laid out. `CLAUDE.md` has the rul
 
 ## Building and Testing
 
-`make check` is the one command that says whether a change is good. It runs, in order: `gofmt` (formatting), `go vet`, the Go tests, the plugin's Ruby parser test, the prompt size check and Node tests (`plugins/afk` workflows and the `plugins/afk-opencode` port), and the plugin's hook shell tests. It needs Go, Node, `bash` and `jq`. CI runs the same command.
+`make check` is the one command that says whether a change is good. It runs, in order: `gofmt` (formatting), `go vet`, the Go tests, the plugin's Ruby parser test, the prompt size check and Node tests (`plugins/afk` workflows and the `plugins/afk-opencode` port), the plugin's hook shell tests, and `install-script-test` (the shell test of the bootstrap script `install.sh`, then `shellcheck install.sh`). It needs Go, Node, `bash` and `jq`; `shellcheck` is used when installed: without it `make check` says so and skips that lint locally, but fails in CI. CI runs the same command.
 
 ```bash
 # Build ./afk in the repo root
 make
 
-# The full check: gofmt, vet, Go tests, plugin node tests, hook shell tests
+# The full check: gofmt, vet, Go tests, plugin node tests, hook shell tests,
+# the install script's test
 make check
 
 # Or run the pieces on their own
@@ -20,6 +21,7 @@ gofmt -l .
 go vet ./...
 node --test plugins/afk/workflows/test/*.test.mjs
 (cd plugins/afk-opencode && npm test)
+make install-script-test   # install.sh's shell test, then shellcheck
 
 # Test a dry-run (no side effects)
 ./afk new --dry-run --base main test-session

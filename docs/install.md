@@ -38,7 +38,26 @@ multipass shell afk
 
 ## 2. Get afk
 
-Release downloads and a one-line install command are on the way. Until then, build afk from its source, which needs git, Go and make:
+Run this one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh
+```
+
+It finds the latest afk release for your machine (Linux or macOS, on x86_64 or arm64), downloads it, and checks it against the release's list of checksums before it unpacks anything. If the check fails it stops and installs nothing. Then it puts `afk` in `~/bin` and starts `afk install` (step 3), so you can carry straight on. It never uses `sudo`, and it refuses to run as root.
+
+Two settings change what it does. Put them in front of `sh`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | AFK_VERSION=1.2.3 AFK_NO_INSTALL=1 sh
+```
+
+- `AFK_VERSION=1.2.3` installs that release instead of the latest.
+- `AFK_NO_INSTALL=1` stops once `~/bin/afk` is in place and does not start `afk install`. Run `~/bin/afk install` yourself when you are ready.
+
+If `~/bin` is not on your `PATH`, the script prints the line to add and the file to put it in (`~/.bashrc`, or `~/.zshrc` on a Mac). It never edits those files itself. Open a new terminal after adding it.
+
+**Building from source instead.** This needs git, Go and make:
 
 ```bash
 sudo apt-get update
@@ -57,6 +76,8 @@ export PATH="$HOME/bin:$PATH"
 ```
 
 ## 3. Run `afk install`
+
+The one-line command in step 2 has already started it. If you built afk from source, or used `AFK_NO_INSTALL=1`, or want to run it again later:
 
 ```bash
 afk install
@@ -115,7 +136,7 @@ The service notices the new binary, stops between passes and is started again. R
 A Mac is the "your laptop itself" row above: the agents can reach your files. Run afk in a Multipass VM instead, unless you accept that risk. If you do:
 
 - Install [Homebrew](https://brew.sh) first. afk never installs it, and never uses `sudo` on a Mac.
-- Get afk: `brew install git go`, then the `git clone` and `make install` lines from step 2.
+- Get afk: the one-line command from step 2. Or build it: `brew install git go`, then the `git clone` and `make install` lines from step 2.
 - Run `afk install` from a desktop login on the Mac, not over SSH: the service is a launchd agent loaded into your desktop session. Its packages step uses `brew install`.
 
 The service's details, and how to set it up by hand, are in [`contrib/README.md`](../contrib/README.md#on-macos). Desktop notifications (`afk notify`) work only on macOS; on Linux, use push notifications to your phone through ntfy (see [`afk inbox`](reference.md#afk-inbox--things-that-need-you)).

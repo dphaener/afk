@@ -23,10 +23,15 @@ The install guide takes a fresh Ubuntu machine (or a Multipass VM on your laptop
 In short:
 
 1. Get an Ubuntu machine (or a Mac with Homebrew, at your own risk).
-2. Build afk: `git clone https://github.com/dphaener/afk.git && cd afk && make install` (needs git, Go and make).
-3. Run `afk install`. It walks you through the rest: the tools, Claude Code and its sign-in, GitHub, the web page's password and the background service, asking before each step. Run it again at any time to check and fix the machine.
+2. Run the one-line command. It puts the latest afk release in `~/bin` and starts `afk install`:
 
-Release downloads and a one-line install command are on the way.
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh
+   ```
+
+3. `afk install` walks you through the rest: the tools, Claude Code and its sign-in, GitHub, the web page's password and the background service, asking before each step. Run it again at any time to check and fix the machine.
+
+To build afk from its source instead (needs git, Go and make): `git clone https://github.com/dphaener/afk.git && cd afk && make install`, then run `afk install`.
 
 ## Your first project, from the browser
 

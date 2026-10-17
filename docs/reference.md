@@ -298,6 +298,21 @@ Guided setup for a Linux machine (Ubuntu or another system with `apt-get` and sy
 
 Exit codes: 0 everything is in place, 1 a step failed or was stopped (or there was no terminal), 2 the command was written wrongly. [`contrib/README.md`](../contrib/README.md) has the by-hand way to set up the service.
 
+## `install.sh` — Get afk on a new machine
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh
+```
+
+`afk install` cannot install afk itself, so this script, at the top of the repository, does that first. It refuses to run as root, picks the release archive for the machine (Linux or macOS, `amd64` or `arm64`), downloads it with its `checksums.txt`, and stops unless the checksum matches. Only then does it put `afk` in `~/bin` (never using `sudo`), check that it runs, and start `afk install` with its input from the terminal. If `~/bin` is not on your `PATH` it prints the line to add. On a Mac it runs `codesign --force --sign -` on the binary only if the binary does not run without it.
+
+| Variable | Effect |
+|---|---|
+| `AFK_VERSION` | Install this release (`1.2.3` or `v1.2.3`) instead of the latest. |
+| `AFK_NO_INSTALL=1` | Stop once `~/bin/afk` is in place; do not start `afk install`. |
+
+Exit codes: 0 afk is in place (and `afk install` finished, or was not wanted, or there was no terminal to run it in: run `~/bin/afk install` from a terminal), 1 nothing was installed because of a refusal or a failure (root, an unsupported machine, no release found, a failed download, a checksum that did not match, or a binary that would not run), and otherwise the exit code of `afk install`. The message says which, in plain words.
+
 ## `afk plugin install` — Install the agent plugin
 
 Install the afk plugin into the agent CLIs on this machine.
