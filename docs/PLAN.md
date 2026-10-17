@@ -2837,6 +2837,66 @@ thing it does not do is attach to a session.
   place the owner had to leave the page.
 - Amended 2026-10-16 (T8.17 done): later tasks may assume the following. (1) `make check` now also runs `make web-js-test` (`node --test internal/web/jstest/*.test.mjs`); a pure function in `internal/web/static/chat.js` is exported for node only when `module` exists, and its tests live outside `static/` because `//go:embed static` would serve them. (2) Pending "Sent" bubbles in the chat are pruned by owner-message count, not by text. (3) `internal/ship` picks the push-failure hint with `pushHint`, which names the GitHub workflow-scope refusal. (4) Afk never writes the agent CLI's trust record; a brand-new folder still stops at the trust prompt (inbox vbkr6s). (5) Every web screen passes axe WCAG 2.2 AA at 390 and 1280 px in both schemes; the harness is not in the repo (see `docs/decisions.md` `## T8.17`), so a later task re-checks with its own run.
 
+#### T8.18 — Sign in to the web page with a password
+- **Depends on:** —
+- **Goal:** the owner turns the web page on with `afk web password` and signs in on a form with that
+  password; the browser stays signed in for 180 days and has a sign-out button. The token, `?token=`
+  and the `Authorization: Bearer` header are gone, so there is one way in and nothing to paste into
+  `config.toml` or an address bar.
+- **Background:** the owner asked on 2026-10-17: "The token based authentication for web got us off the
+  ground but it isn't a tenable path forward for public release. This is intended for a single person
+  use so I think we can make it simple". Offered a password, a one-time sign-in link from the terminal,
+  a passkey, or leaving sign-in to Tailscale or a proxy, they chose the password, and chose to remove
+  the token rather than keep it for scripts. Today's sign-in is `internal/web/auth.go` (the `afk_web`
+  cookie as a hash of the token, set by a `?token=` visit; the Bearer header; the `Origin` check),
+  `build` in `internal/web/web.go` refuses an empty token, and `daemon_cmd.go` starts the page only when
+  `[web] token` is set (§4, "Amended 2026-10-12 (T3.1)").
+- **Scope:**
+  - **`afk web password`**: asks for a password twice without echo and saves only a slow, salted hash
+    of it, never the password, in a file in afk's state folder (`$XDG_STATE_HOME/afk/`, else
+    `~/.local/state/afk/`), mode 0600, written atomically. Not in `config.toml`, so that file stays
+    free of secrets. At least 8 characters; a mismatch or a short one says so and saves nothing. It
+    refuses in plain words when not run in a terminal. Setting a new password signs every browser out.
+    Record the hash chosen (and why) in `docs/decisions.md` under `## T8.18`.
+  - **The page is on when the password file exists.** `afk daemon` reads it when the page starts; a
+    `bind` other machines can reach with no password stops the daemon with a message naming
+    `afk web password` (it named `web.token` before). With no password the log line says to run
+    `afk web password`. The page reads the file again on each sign-in and cookie check, so a new
+    password takes effect without restarting the daemon.
+  - **The sign-in page**: any request without a valid cookie gets a sign-in form (a page; under `/api/`
+    a 401 with a JSON error), built from components `docs/design-system.md` already has and working
+    with JavaScript off. A right password sets the cookie (180 days, HttpOnly, SameSite Lax, Secure as
+    today) and goes on to the address first asked for, never to another site. The cookie's value is
+    tied to the stored hash, so it is useless once the password changes. Wrong passwords are slowed
+    down: after 5 wrong in a row the form refuses for a minute, in memory, and says so. The form's POST
+    passes the existing `Origin` check.
+  - **Sign out**: a button on every signed-in page (in the bars' actions, from existing components) that
+    POSTs, clears the cookie and shows the sign-in page.
+  - **The token goes**: `[web] token`, `?token=`, the Bearer header, the cookie-from-token path and
+    their tests. A `[web] token` still in `config.toml` is not an error: the daemon ignores it and logs
+    one line saying the page no longer uses a token, to remove it and run `afk web password`.
+    Notifications carry the `Click` link when the page is on and `public_url` is set, as before.
+  - **Docs**: README's web section ("Turn it on", "Where it listens", "Sign in once", the `curl` Bearer
+    example) and `afk web password` in the command list; §4's `[web]` contract and the Decisions rows
+    "Web surface" and "Web page as command center" amended in place to say a password, not a token.
+- **Must not:** store or log the password or anything that can be reversed into it; put a secret in
+  `config.toml`; add a JavaScript requirement for signing in or out; change the `Origin` check's
+  rules; add multi-user accounts, a "remember me" choice or a password reset by email.
+- **Not in scope:** removing the password (`afk web password --remove`), a passkey, TLS of the page's
+  own.
+- **Acceptance:** table tests for the pure sign-in decisions: no cookie, a good cookie, a cookie from
+  before a password change, a right and a wrong password, the sixth wrong try within the minute, a
+  `?token=` visit and a Bearer header (both now refused), a return address pointing at another site
+  (sent to `/` instead); `/api/` without a cookie gets a JSON 401. Table tests for the daemon's start-up
+  choice: no password on loopback (page off), no password on a reachable bind (error), a password,
+  a leftover `[web] token` (logged, ignored). `afk web password` tested with an injected terminal:
+  mismatch, too short, not a terminal, saved (the file holds no copy of the password, mode 0600).
+  Against a scratch build (scratch `XDG_STATE_HOME` and `XDG_CONFIG_HOME`, `afk web password`, then
+  `afk daemon`), in headless Chrome at 390px and 1280px wide: the overview shows the sign-in form; a
+  wrong password is refused; the right one reaches the overview; sign out returns to the form; with
+  JavaScript off the same works; an axe run on the sign-in page reports no violation. `curl` with
+  `Authorization: Bearer` gets 401. `make check` is green.
+
 ### M9 — Choose your own leader key
 
 **Outcome:** the dashboard's leader is ctrl+], which no common launcher, tmux default or agent takes,
