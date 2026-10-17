@@ -58,6 +58,9 @@ type inboxFixture struct {
 	machine      daemonconfig.Config
 	machineErr   error
 	machineLoads int
+	// pageOn is what the fake "is a web password set" check answers. A new
+	// fixture has none, so its page is off.
+	pageOn bool
 }
 
 func newInboxFixture(t *testing.T) *inboxFixture {
@@ -99,6 +102,7 @@ func newInboxFixture(t *testing.T) *inboxFixture {
 			f.machineLoads++
 			return f.machine, f.machineErr
 		},
+		pageOn: func() bool { return f.pageOn },
 	}
 	return f
 }
@@ -981,13 +985,14 @@ func TestInboxNotification(t *testing.T) {
 //     would open "no such project".
 //   - "two entries for one checkout": the daemon keeps the first, so the link
 //     must use the first.
-//   - "an address but no token": the page is off, and a link would open
-//     nothing.
+//   - "an address but no password": the page is off, and a link would open
+//     nothing. "a leftover token is not a password" pins that the old [web]
+//     token no longer turns the page on.
 //
-// No link ever holds the token or any query string.
+// No link ever holds the leftover token or any query string.
 func TestInboxItemLink(t *testing.T) {
 	const token = "tok-3f9a1c7e5b2d4a68"
-	on := daemonconfig.Web{Token: token, PublicURL: "https://afk.example"}
+	on := daemonconfig.Web{PublicURL: "https://afk.example"}
 	projects := []daemonconfig.Project{
 		{Name: "blog", Path: "/p/blog"},
 		{Name: "my app", Path: "/p/app-folder"},
@@ -1005,8 +1010,10 @@ func TestInboxItemLink(t *testing.T) {
 		name   string
 		cfg    daemonconfig.Config
 		cfgErr error
-		root   string
-		want   string
+		// off is a row whose page has no password; every other row has one.
+		off  bool
+		root string
+		want string
 	}{
 		{name: "the name is the configured one", cfg: daemonconfig.Config{Web: on, Projects: projects},
 			root: "/p/app-folder", want: "https://afk.example/p/my%20app/inbox/abc234"},
@@ -1018,12 +1025,14 @@ func TestInboxItemLink(t *testing.T) {
 		{name: "no projects at all", cfg: daemonconfig.Config{Web: on}, root: "/p/app-folder"},
 		{name: "config could not be read", cfg: daemonconfig.Config{Web: on, Projects: projects},
 			cfgErr: errors.New("config.toml: not valid TOML"), root: "/p/app-folder"},
-		{name: "no public address", cfg: daemonconfig.Config{Web: daemonconfig.Web{Token: token}, Projects: projects}, root: "/p/app-folder"},
-		{name: "an address but no token", cfg: daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example"}, Projects: projects}, root: "/p/app-folder"},
+		{name: "no public address", cfg: daemonconfig.Config{Web: daemonconfig.Web{}, Projects: projects}, root: "/p/app-folder"},
+		{name: "an address but no password", cfg: daemonconfig.Config{Web: on, Projects: projects}, off: true, root: "/p/app-folder"},
+		{name: "a leftover token is not a password", cfg: daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example", LeftoverToken: true}, Projects: projects},
+			off: true, root: "/p/app-folder"},
 	}
 	for _, tt := range cases {
 		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
-			got := inboxItemLink(tt.cfg, tt.cfgErr, tt.root, "abc234", sameDir)
+			got := inboxItemLink(tt.cfg, tt.cfgErr, !tt.off, tt.root, "abc234", sameDir)
 			if got != tt.want {
 				t.Errorf("link = %q, want %q", got, tt.want)
 			}
@@ -1136,8 +1145,9 @@ func TestRunInboxRealConfigAndSender(t *testing.T) {
 		f := newInboxFixture(t)
 		wire(f)
 		f.machineErr = nil
+		f.pageOn = true
 		f.machine = daemonconfig.Config{
-			Web: daemonconfig.Web{Token: "tok-3f9a1c7e5b2d4a68", PublicURL: "https://afk.example"},
+			Web: daemonconfig.Web{PublicURL: "https://afk.example"},
 			Projects: []daemonconfig.Project{
 				{Name: "my app", Path: filepath.Join(t.TempDir(), "a-session-worktree")},
 			},
@@ -1164,6 +1174,39 @@ func TestRunInboxRealConfigAndSender(t *testing.T) {
 			"https://afk.example/p/my%20app/inbox/aaaaaa"}
 		if requests[0] != want {
 			t.Errorf("request = %+v, want %+v", requests[0], want)
+		}
+	})
+
+	// The same machine config with no web password set: the page is off, so
+	// the notification goes out with no link at all. This is the run seen
+	// from the command; pageOn is the one thing that differs from the row
+	// above.
+	t.Run("no_web_password_sends_no_link", func(t *testing.T) {
+		mu.Lock()
+		requests = nil
+		mu.Unlock()
+
+		f := newInboxFixture(t)
+		wire(f)
+		f.machineErr = nil
+		f.machine = daemonconfig.Config{
+			Web: daemonconfig.Web{PublicURL: "https://afk.example"},
+			Projects: []daemonconfig.Project{
+				{Name: "my app", Path: filepath.Join(t.TempDir(), "a-session-worktree")},
+			},
+		}
+		toml := "[notify]\nntfy_url = \"" + srv.URL + "/afk-test\"\n"
+		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := f.run(args...); code != 0 {
+			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa", ""}
+		if len(requests) != 1 || requests[0] != want {
+			t.Errorf("requests = %+v, want exactly %+v", requests, want)
 		}
 	})
 

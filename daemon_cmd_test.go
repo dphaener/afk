@@ -32,6 +32,7 @@ import (
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 var daemonTestNow = time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)
@@ -62,8 +63,9 @@ type daemonRig struct {
 	// answers the same identity every time. binaryReads counts the asks.
 	binary      func(read int) (daemon.Binary, error)
 	binaryReads int
-	// stderr is what the last runDaemon wrote to it, for a row's check.
-	stderr string
+	// stderr and stdout are what the last runDaemon wrote to them, for a
+	// row's check.
+	stderr, stdout string
 	// publicURLs is the web page address each newDeps call was handed.
 	publicURLs []string
 	// listens are the addresses the fake "open the web page's port" was asked
@@ -775,28 +777,72 @@ func TestRunDaemon(t *testing.T) {
 	}
 }
 
-// daemonTestWebToken is the [web] token the web rows configure. It is unlike
-// anything else a row prints, so "the token is in the output" cannot match by
-// accident.
-const daemonTestWebToken = "tok-3f9a1c7e5b2d4a68"
+// daemonTestWebPassword is the password the web rows set, and
+// daemonTestWebRecord its saved record. The record is made once with few
+// iterations and a fixed salt, so every run is the same and no row pays for
+// the real iteration count.
+const daemonTestWebPassword = "pw-3f9a1c7e5b2d4a68"
+
+var (
+	daemonTestWebRecord    = mustDaemonTestRecord(daemonTestWebPassword, 5)
+	daemonTestOldWebRecord = mustDaemonTestRecord("pw-old-0000000000000000", 6)
+)
+
+func mustDaemonTestRecord(password string, saltByte byte) webpass.Record {
+	rec, err := webpass.New(password, bytes.NewReader(bytes.Repeat([]byte{saltByte}, 16)), 1000)
+	if err != nil {
+		panic(err)
+	}
+	return rec
+}
+
+// daemonTestWebCookie is the sign-in cookie value a browser holds after
+// signing in with daemonTestWebPassword, and daemonTestOldWebCookie one kept
+// from before a password change. Root-package tests prove themselves with
+// these, never with a header: the page has no other way in.
+func daemonTestWebCookie() string    { return daemonTestWebRecord.CookieValue() }
+func daemonTestOldWebCookie() string { return daemonTestOldWebRecord.CookieValue() }
+
+// setWebPassword saves daemonTestWebRecord in the rig's state folder, as
+// `afk web password` would.
+func (r *daemonRig) setWebPassword() {
+	r.t.Helper()
+	if err := webpass.Write(r.env().state, daemonTestWebRecord); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// daemonTestLeftoverToken is a [web] token left from before the page used a
+// password. It is unlike anything else a row prints, so "the token is in
+// the output" cannot match by accident.
+const daemonTestLeftoverToken = "tok-3f9a1c7e5b2d4a68"
 
 // TestRunDaemonWeb runs `afk daemon` with a [web] table against the rig. The
 // port is the rig's pipe listener: nothing binds, and a request to the page
 // travels over an in-memory connection.
 //
 // Load-bearing rows:
-//   - "token set" is the feature seen from the command: the port asked for is
-//     the configured bind, the page answers while the loop runs (401 without
-//     the token, 200 with it), and the listener is closed once the command
-//     returns.
+//   - "password set" is the feature seen from the command: the port asked for
+//     is the configured bind, the page answers while the loop runs (the
+//     sign-in form at / and a 401 without the cookie, 200 with it), and the
+//     listener is closed once the command returns.
 //   - "the port cannot be opened" must be exit 1 with the bind and the config
 //     file named, before the loop looks at any project, and must give the
 //     machine lock back: a daemon that kept it would lock out the next start.
-//   - "a bind other machines can reach, no token" is the non-loopback refusal
-//     seen from the command. Nothing may be opened for it.
-//   - "no token", "--once" and "status" must never ask for a port. With no
-//     token there is nothing a request could prove, and the other two are
-//     over before anyone could open a page.
+//   - "a reachable bind, no password" (for `afk daemon` and `--once` alike) is
+//     the non-loopback refusal seen from the command: exit 1, the message
+//     names web.bind, the password file and `afk web password`, and nothing
+//     is opened, built or looked at. It moved here from daemonconfig.Load, so
+//     without these rows a reachable page with no password would just start.
+//   - "no password on loopback", "--once" and "status" must never ask for a
+//     port. With no password nobody could sign in, and the other two are over
+//     before anyone could open a page.
+//   - the leftover-token rows: the line is logged once, the page is still on
+//     or off by the password alone, and the token's value is never printed.
+//     The --once one pins that webStart's lines are not printed for a single
+//     pass.
+//   - "a damaged password file" is logged with the file's path and is off on
+//     loopback: the daemon still builds, and the owner is told which file.
 //   - "a project added while the daemon runs gets a page" is the reload seen
 //     from the page: 404 before the project is in config.toml, 200 for the
 //     project and for its plan on the pass after, from the same daemon.
@@ -804,7 +850,8 @@ const daemonTestWebToken = "tok-3f9a1c7e5b2d4a68"
 //     without the stop signal, so a shutdown tied to the signal would leave
 //     the port held against the daemon that is started next.
 //
-// Every row also checks that nothing printed holds the token.
+// Every row also checks that nothing printed holds the password, its cookie
+// value or the leftover token.
 func TestRunDaemonWeb(t *testing.T) {
 	const bind = "127.0.0.1:4999"
 	// oneProject writes a config with one paused project (so a pass has
@@ -816,7 +863,11 @@ func TestRunDaemonWeb(t *testing.T) {
 		}
 		r.writeConfig(fmt.Sprintf("[daemon]\ntick = \"1s\"\n%s\n[[project]]\nname = \"demo\"\npath = %q\n", webTable, root))
 	}
-	withToken := fmt.Sprintf("[web]\nbind = %q\ntoken = %q\npublic_url = \"https://afk.example/\"\n", bind, daemonTestWebToken)
+	withWeb := fmt.Sprintf("[web]\nbind = %q\npublic_url = \"https://afk.example/\"\n", bind)
+	withLeftover := fmt.Sprintf("[web]\nbind = %q\ntoken = %q\npublic_url = \"https://afk.example/\"\n", bind, daemonTestLeftoverToken)
+	reachable := "[web]\nbind = \"0.0.0.0:4999\"\n"
+	const leftoverLine = "web page: it no longer uses a token"
+	const offLine = "web page: off (run `afk web password` to turn it on)"
 	// running gives the row a daemon that is not asked to stop at once. The
 	// limit only keeps a broken row from hanging the suite.
 	running := func(r *daemonRig) context.CancelFunc {
@@ -824,6 +875,36 @@ func TestRunDaemonWeb(t *testing.T) {
 		r.t.Cleanup(cancel)
 		r.ctx = ctx
 		return cancel
+	}
+	passwordPath := func(r *daemonRig) string {
+		path, err := webpass.Path(r.env().state)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		return path
+	}
+	// damage writes a password file that is not a record.
+	damage := func(r *daemonRig) {
+		path := passwordPath(r)
+		writeBuildFile(r.t, filepath.Dir(path), filepath.Base(path), "not a record {")
+	}
+	// refused is the check every refusal row shares: the files are named,
+	// and nothing was built, locked or looked at.
+	refused := func(t *testing.T, r *daemonRig) {
+		for _, w := range []string{r.configPath(), passwordPath(r)} {
+			if !strings.Contains(r.stderr, w) {
+				t.Errorf("the message does not name %s:\n%s", w, r.stderr)
+			}
+		}
+		if len(r.governors) != 0 {
+			t.Error("the loop's deps were built for a config that is refused")
+		}
+		if _, ok := daemonstate.ReadState(r.roots[0]); ok {
+			t.Error("the loop looked at the project under a config that was refused")
+		}
+		if pid, _, ok := daemonstate.ReadMachine(r.stateDir()); ok {
+			t.Errorf("the machine lock was taken (pid %d) for a refused start", pid)
+		}
 	}
 	tests := []struct {
 		name        string
@@ -836,21 +917,32 @@ func TestRunDaemonWeb(t *testing.T) {
 		check       func(t *testing.T, r *daemonRig)
 	}{
 		{
-			name: "token set: the page is opened, answers while the loop runs, and is closed after",
+			name: "password set: the page is opened, answers while the loop runs, and is closed after",
 			setup: func(r *daemonRig) {
-				oneProject(r, withToken)
+				oneProject(r, withWeb)
+				r.setWebPassword()
 				cancel := running(r)
 				// The second look at the program file is the top of the first
 				// pass: the loop is running and the page must be up. The row
-				// asks it twice from here and then asks the daemon to stop.
+				// asks it from here and then asks the daemon to stop.
 				r.binary = func(read int) (daemon.Binary, error) {
 					if read == 2 {
 						ln := r.listeners[0]
-						if code := ln.get(r.t, "/api/usage", ""); code != http.StatusUnauthorized {
-							r.t.Errorf("the page answered %d without the token, want 401", code)
+						code, body, err := ln.fetch("/", "")
+						if err != nil {
+							r.t.Fatalf("GET /: %v", err)
 						}
-						if code := ln.get(r.t, "/api/usage", daemonTestWebToken); code != http.StatusOK {
-							r.t.Errorf("the page answered %d with the token, want 200", code)
+						if code != http.StatusUnauthorized || !strings.Contains(body, `action="/signin"`) {
+							r.t.Errorf("GET / without the cookie answered %d, want 401 with the sign-in form:\n%s", code, body)
+						}
+						if code := ln.get(r.t, "/api/usage", ""); code != http.StatusUnauthorized {
+							r.t.Errorf("the page answered %d without the cookie, want 401", code)
+						}
+						if code := ln.get(r.t, "/api/usage", daemonTestOldWebCookie()); code != http.StatusUnauthorized {
+							r.t.Errorf("the page answered %d to a cookie from an old password, want 401", code)
+						}
+						if code := ln.get(r.t, "/api/usage", daemonTestWebCookie()); code != http.StatusOK {
+							r.t.Errorf("the page answered %d with the cookie, want 200", code)
 						}
 						cancel()
 					}
@@ -859,7 +951,7 @@ func TestRunDaemonWeb(t *testing.T) {
 			},
 			code:    0,
 			errOut:  []string{"web page: listening on http://" + bind, "afk daemon started", "afk daemon stopped"},
-			errNot:  []string{"web page: off", "stopped answering"},
+			errNot:  []string{"web page: off", "stopped answering", leftoverLine},
 			listens: []string{bind},
 			check: func(t *testing.T, r *daemonRig) {
 				if r.binaryReads < 2 {
@@ -877,7 +969,8 @@ func TestRunDaemonWeb(t *testing.T) {
 		{
 			name: "the port cannot be opened",
 			setup: func(r *daemonRig) {
-				oneProject(r, withToken)
+				oneProject(r, withWeb)
+				r.setWebPassword()
 				running(r)
 				r.listenErr = errors.New("listen tcp " + bind + ": bind: address already in use")
 			},
@@ -908,13 +1001,11 @@ func TestRunDaemonWeb(t *testing.T) {
 			},
 		},
 		{
-			name: "no token: the page is off and no port is asked for",
-			setup: func(r *daemonRig) {
-				oneProject(r, "[web]\nbind = \""+bind+"\"\npublic_url = \"https://afk.example\"\n")
-			},
+			name:   "no password on loopback: the page is off and no port is asked for",
+			setup:  func(r *daemonRig) { oneProject(r, withWeb) },
 			code:   0,
-			errOut: []string{"web page: off (set [web] token in", "config.toml", "afk daemon started"},
-			errNot: []string{"web page: listening"},
+			errOut: []string{offLine, "afk daemon started"},
+			errNot: []string{"web page: listening", leftoverLine},
 			check: func(t *testing.T, r *daemonRig) {
 				if n := strings.Count(r.stderr, "web page: off"); n != 1 {
 					t.Errorf("the log says the page is off %d times, want once", n)
@@ -929,41 +1020,118 @@ func TestRunDaemonWeb(t *testing.T) {
 			name:   "no web table at all",
 			setup:  func(r *daemonRig) { oneProject(r, "") },
 			code:   0,
-			errOut: []string{"web page: off (set [web] token in"},
+			errOut: []string{offLine},
 		},
 		{
-			name:   "--once with a token never opens the page",
-			args:   []string{"--once"},
-			setup:  func(r *daemonRig) { oneProject(r, withToken) },
+			name: "a leftover token with a password: logged, ignored, and the page is on",
+			setup: func(r *daemonRig) {
+				oneProject(r, withLeftover)
+				r.setWebPassword()
+				cancel := running(r)
+				r.binary = func(read int) (daemon.Binary, error) {
+					if read == 2 {
+						if code := r.listeners[0].get(r.t, "/api/usage", daemonTestWebCookie()); code != http.StatusOK {
+							r.t.Errorf("the page answered %d with the cookie, want 200", code)
+						}
+						cancel()
+					}
+					return daemonTestBinary, nil
+				}
+			},
+			code:    0,
+			errOut:  []string{leftoverLine, "Remove the token line from [web]", "config.toml", "web page: listening on http://" + bind},
+			errNot:  []string{"web page: off"},
+			listens: []string{bind},
+			check: func(t *testing.T, r *daemonRig) {
+				if n := strings.Count(r.stderr, leftoverLine); n != 1 {
+					t.Errorf("the leftover token is logged %d times, want once", n)
+				}
+			},
+		},
+		{
+			name:   "a leftover token with no password: logged, and the page is off",
+			setup:  func(r *daemonRig) { oneProject(r, withLeftover) },
+			code:   0,
+			errOut: []string{leftoverLine, offLine},
+			errNot: []string{"web page: listening"},
+		},
+		{
+			name: "a damaged password file: logged with its path, page off on loopback",
+			setup: func(r *daemonRig) {
+				oneProject(r, withWeb)
+				damage(r)
+			},
+			code:   0,
+			errOut: []string{"web page: off, because the password file cannot be read", "afk web password", "afk daemon started"},
+			errNot: []string{"web page: listening", "not a record {"},
+			check: func(t *testing.T, r *daemonRig) {
+				if !strings.Contains(r.stderr, passwordPath(r)) {
+					t.Errorf("the log does not name the password file %s:\n%s", passwordPath(r), r.stderr)
+				}
+			},
+		},
+		{
+			name: "--once with a password never opens the page",
+			args: []string{"--once"},
+			setup: func(r *daemonRig) {
+				oneProject(r, withWeb)
+				r.setWebPassword()
+			},
 			code:   0,
 			out:    []string{"demo: waiting"},
 			errNot: []string{"web page"},
 		},
 		{
-			name:   "status with a token never opens the page",
-			args:   []string{"status"},
-			setup:  func(r *daemonRig) { oneProject(r, withToken) },
+			name:   "--once prints no page line, leftover token or not",
+			args:   []string{"--once"},
+			setup:  func(r *daemonRig) { oneProject(r, withLeftover) },
+			code:   0,
+			out:    []string{"demo: waiting"},
+			errNot: []string{"web page", "token"},
+		},
+		{
+			name: "status with a password never opens the page",
+			args: []string{"status"},
+			setup: func(r *daemonRig) {
+				oneProject(r, withLeftover)
+				r.setWebPassword()
+			},
 			code:   0,
 			out:    []string{"demo"},
 			errNot: []string{"web page"},
 		},
 		{
-			name:   "a bind other machines can reach, no token",
-			setup:  func(r *daemonRig) { oneProject(r, "[web]\nbind = \"0.0.0.0:4999\"\n") },
+			name:   "a reachable bind, no password",
+			setup:  func(r *daemonRig) { oneProject(r, reachable) },
 			code:   1,
-			errOut: []string{"config.toml", "web.bind", "web.token", "0.0.0.0:4999"},
+			errOut: []string{"config.toml", "web.bind", "0.0.0.0:4999", "no web password is set", "afk web password"},
 			errNot: []string{"afk daemon started", "web page"},
+			check:  refused,
+		},
+		{
+			name:   "--once with a reachable bind, no password",
+			args:   []string{"--once"},
+			setup:  func(r *daemonRig) { oneProject(r, reachable) },
+			code:   1,
+			errOut: []string{"config.toml", "web.bind", "0.0.0.0:4999", "afk web password"},
+			errNot: []string{"web page"},
 			check: func(t *testing.T, r *daemonRig) {
-				if !strings.Contains(r.stderr, r.configPath()) {
-					t.Errorf("the message does not name the config file %s:\n%s", r.configPath(), r.stderr)
-				}
-				if len(r.governors) != 0 {
-					t.Error("the loop's deps were built for a config that does not load")
-				}
-				if _, ok := daemonstate.ReadState(r.roots[0]); ok {
-					t.Error("the loop looked at the project under a config that was refused")
+				refused(t, r)
+				if strings.Contains(r.stdout, "demo") {
+					t.Errorf("the single pass ran under a refused config:\n%s", r.stdout)
 				}
 			},
+		},
+		{
+			name: "a reachable bind with a damaged password file",
+			setup: func(r *daemonRig) {
+				oneProject(r, reachable)
+				damage(r)
+			},
+			code:   1,
+			errOut: []string{"web.bind", "cannot be read", "afk web password"},
+			errNot: []string{"afk daemon started", "not a record {"},
+			check:  refused,
 		},
 		{
 			// The page as a phone sees it, over the daemon's own listener: a
@@ -971,20 +1139,21 @@ func TestRunDaemonWeb(t *testing.T) {
 			// page one pass later. Nothing here restarts anything.
 			name: "a project added while the daemon runs gets a page",
 			setup: func(r *daemonRig) {
-				r.writeConfig(fmt.Sprintf("[daemon]\ntick = \"1s\"\n%s", withToken))
+				r.setWebPassword()
+				r.writeConfig(fmt.Sprintf("[daemon]\ntick = \"1s\"\n%s", withWeb))
 				cancel := running(r)
 				r.binary = func(read int) (daemon.Binary, error) {
 					switch read {
 					case 2:
 						// First pass, the list read as empty.
-						if code := r.listeners[0].get(r.t, "/api/p/demo", daemonTestWebToken); code != http.StatusNotFound {
+						if code := r.listeners[0].get(r.t, "/api/p/demo", daemonTestWebCookie()); code != http.StatusNotFound {
 							r.t.Errorf("the page answered %d for a project nobody has added, want 404", code)
 						}
-						oneProject(r, withToken)
+						oneProject(r, withWeb)
 					case 3:
 						// Second pass: the list was read again just now.
 						for _, path := range []string{"/api/p/demo", "/api/p/demo/plan"} {
-							if code := r.listeners[0].get(r.t, path, daemonTestWebToken); code != http.StatusOK {
+							if code := r.listeners[0].get(r.t, path, daemonTestWebCookie()); code != http.StatusOK {
 								r.t.Errorf("GET %s answered %d after the project was added, want 200", path, code)
 							}
 						}
@@ -1005,7 +1174,8 @@ func TestRunDaemonWeb(t *testing.T) {
 		{
 			name: "stopping for a new version closes the page",
 			setup: func(r *daemonRig) {
-				oneProject(r, withToken)
+				oneProject(r, withWeb)
+				r.setWebPassword()
 				running(r)
 				r.binary = func(read int) (daemon.Binary, error) {
 					b := daemonTestBinary
@@ -1035,6 +1205,7 @@ func TestRunDaemonWeb(t *testing.T) {
 			var so, se bytes.Buffer
 			code := runDaemon(tt.args, &so, &se, r.env())
 			r.stderr = se.String()
+			r.stdout = so.String()
 			t.Logf("exit %d\nstdout: %s\nstderr: %s", code, so.String(), se.String())
 			if code != tt.code {
 				t.Errorf("exit code = %d, want %d", code, tt.code)
@@ -1054,8 +1225,10 @@ func TestRunDaemonWeb(t *testing.T) {
 					t.Errorf("stderr holds %q, which it must not", w)
 				}
 			}
-			if strings.Contains(so.String()+se.String(), daemonTestWebToken) {
-				t.Error("the output holds the web token")
+			for _, secret := range []string{daemonTestWebPassword, daemonTestWebCookie(), daemonTestLeftoverToken} {
+				if strings.Contains(so.String()+se.String(), secret) {
+					t.Errorf("the output holds a secret (%q)", secret)
+				}
 			}
 			if !reflect.DeepEqual(r.listens, tt.listens) {
 				t.Errorf("ports asked for = %q, want %q", r.listens, tt.listens)
@@ -1065,6 +1238,89 @@ func TestRunDaemonWeb(t *testing.T) {
 			}
 			if tt.check != nil {
 				tt.check(t, r)
+			}
+		})
+	}
+}
+
+// TestWebStart is the pure start decision, one row per branch.
+//
+// Load-bearing rows:
+//   - "no password, reachable bind" and "damaged file, reachable bind" are
+//     the only refusals between a bind other machines can reach and a page
+//     that could let anyone in. They must be errors naming web.bind, the
+//     password file and `afk web password`, and must give no log lines (the
+//     caller exits before any are printed).
+//   - "no password, loopback" is off with the one line that says how to turn
+//     it on: the common first run, which must not be an error.
+//   - "damaged file, loopback" is off, not on: a page whose password cannot
+//     be read can let nobody in, and the line names the file to fix.
+//   - the leftover-token rows: one line beside whatever else applies, never
+//     an error and never the value, and it changes nothing about on or off.
+func TestWebStart(t *testing.T) {
+	const cfgPath = "/home/me/.config/afk/config.toml"
+	const pwPath = "/home/me/.local/state/afk/web-password.json"
+	loop := daemonconfig.Web{Bind: "127.0.0.1:4253"}
+	wide := daemonconfig.Web{Bind: "0.0.0.0:4253"}
+	leftover := func(w daemonconfig.Web) daemonconfig.Web { w.LeftoverToken = true; return w }
+	damaged := fmt.Errorf("the web password file %s is not a valid password record", pwPath)
+	unreadable := errors.New("permission denied")
+	const offLine = "web page: off (run `afk web password` to turn it on)"
+	const leftoverLine = "web page: it no longer uses a token. Remove the token line from [web] in " + cfgPath + ", and run `afk web password` if you have not set a password yet."
+	tests := []struct {
+		name    string
+		web     daemonconfig.Web
+		readErr error
+		path    string
+		on      bool
+		logs    []string
+		errHas  []string
+	}{
+		{name: "password set, loopback", web: loop, path: pwPath, on: true},
+		{name: "password set, reachable bind", web: wide, path: pwPath, on: true},
+		{name: "no password, loopback", web: loop, readErr: webpass.ErrNoPassword, path: pwPath, logs: []string{offLine}},
+		{name: "no password, reachable bind", web: wide, readErr: webpass.ErrNoPassword, path: pwPath,
+			errHas: []string{cfgPath, "web.bind", "0.0.0.0:4253", "no web password is set in " + pwPath, "afk web password"}},
+		{name: "a wrapped no-password error counts as none", web: loop, readErr: fmt.Errorf("x: %w", webpass.ErrNoPassword), path: pwPath, logs: []string{offLine}},
+		{name: "damaged file, loopback", web: loop, readErr: damaged, path: pwPath,
+			logs: []string{"web page: off, because the password file cannot be read (" + damaged.Error() + "). Run `afk web password` again to set a new password."}},
+		{name: "unreadable file names the path it lacks", web: loop, readErr: unreadable, path: pwPath,
+			logs: []string{"web page: off, because the password file cannot be read (" + pwPath + ": permission denied). Run `afk web password` again to set a new password."}},
+		{name: "damaged file, reachable bind", web: wide, readErr: damaged, path: pwPath,
+			errHas: []string{"web.bind", "the web password file " + pwPath + " cannot be read", "afk web password"}},
+		{name: "unknown password path", web: wide, readErr: webpass.ErrNoPassword,
+			errHas: []string{"web.bind", "afk's state folder (web-password.json)", "afk web password"}},
+		{name: "leftover token with a password", web: leftover(loop), path: pwPath, on: true, logs: []string{leftoverLine}},
+		{name: "leftover token, no password, loopback", web: leftover(loop), readErr: webpass.ErrNoPassword, path: pwPath,
+			logs: []string{leftoverLine, offLine}},
+		{name: "leftover token, no password, reachable bind", web: leftover(wide), readErr: webpass.ErrNoPassword, path: pwPath,
+			errHas: []string{"web.bind", "afk web password"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			on, logs, err := webStart(tt.web, tt.readErr, cfgPath, tt.path)
+			if len(tt.errHas) > 0 {
+				if err == nil {
+					t.Fatalf("want an error, got on=%v logs=%q", on, logs)
+				}
+				for _, w := range tt.errHas {
+					if !strings.Contains(err.Error(), w) {
+						t.Errorf("error %q lacks %q", err, w)
+					}
+				}
+				if on || logs != nil {
+					t.Errorf("a refusal gave on=%v logs=%q, want off and no lines", on, logs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if on != tt.on {
+				t.Errorf("on = %v, want %v", on, tt.on)
+			}
+			if !reflect.DeepEqual(logs, tt.logs) {
+				t.Errorf("logs = %q, want %q", logs, tt.logs)
 			}
 		})
 	}

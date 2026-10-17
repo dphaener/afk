@@ -36,6 +36,7 @@ import (
 	"github.com/dphaener/afk/internal/state"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 // pipeListener is a net.Listener with no port behind it: each connection is
@@ -94,9 +95,16 @@ func (l *pipeListener) dial() (net.Conn, error) {
 }
 
 // request sends one GET over the listener and returns the status code, or an
-// error when no connection could be made. token, when set, is sent as the
-// bearer token.
-func (l *pipeListener) request(path, token string) (int, error) {
+// error when no connection could be made. cookie, when set, is sent as the
+// page's sign-in cookie (afk_web), the one way a request proves itself.
+func (l *pipeListener) request(path, cookie string) (int, error) {
+	code, _, err := l.fetch(path, cookie)
+	return code, err
+}
+
+// fetch is request that also returns the body, for a row that must see which
+// page came back (the sign-in form or the page asked for).
+func (l *pipeListener) fetch(path, cookie string) (int, string, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -106,23 +114,27 @@ func (l *pipeListener) request(path, token string) (int, error) {
 	}
 	req, err := http.NewRequest(http.MethodGet, "http://afk.test"+path, nil)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if cookie != "" {
+		req.AddCookie(&http.Cookie{Name: "afk_web", Value: cookie})
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode, nil
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, "", err
+	}
+	return resp.StatusCode, string(body), nil
 }
 
 // get is request for a page that must be up.
-func (l *pipeListener) get(t *testing.T, path, token string) int {
+func (l *pipeListener) get(t *testing.T, path, cookie string) int {
 	t.Helper()
-	code, err := l.request(path, token)
+	code, err := l.request(path, cookie)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
@@ -181,7 +193,8 @@ func newWebRig(t *testing.T) *webRig {
 	t.Helper()
 	r := newDaemonRig(t)
 	root := r.project()
-	r.writeConfig(fmt.Sprintf("[web]\ntoken = %q\n\n[[project]]\nname = \"demo\"\npath = %q\n", daemonTestWebToken, root))
+	r.setWebPassword()
+	r.writeConfig(fmt.Sprintf("[[project]]\nname = \"demo\"\npath = %q\n", root))
 	env := r.env()
 	cfg, err := daemonconfig.Load(env.config)
 	if err != nil {
@@ -192,29 +205,29 @@ func newWebRig(t *testing.T) *webRig {
 	list.set(projects)
 	deps := daemonWebDeps(list.get, r.stateDir(), env.state, env.now)
 	deps.Sessions = func(string) []web.SessionView { return nil }
-	h, err := web.New(web.Config{Token: cfg.Web.Token, PublicURL: cfg.Web.PublicURL}, deps)
+	h, err := web.New(web.Config{PublicURL: cfg.Web.PublicURL}, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &webRig{daemonRig: r, root: root, handler: h, list: list}
 }
 
-// get sends a GET to the handler with the token.
+// get sends a GET to the handler with the sign-in cookie.
 func (w *webRig) get(path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	req.Header.Set("Authorization", "Bearer "+daemonTestWebToken)
+	req.AddCookie(&http.Cookie{Name: "afk_web", Value: daemonTestWebCookie()})
 	rec := httptest.NewRecorder()
 	w.handler.ServeHTTP(rec, req)
 	return rec
 }
 
-// post sends a form POST to the handler. token, when set, is the bearer
-// token.
-func (w *webRig) post(path, token, form string) *httptest.ResponseRecorder {
+// post sends a form POST to the handler. cookie, when set, is the sign-in
+// cookie's value. No Origin is sent, which the page takes as its own.
+func (w *webRig) post(path, cookie, form string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if cookie != "" {
+		req.AddCookie(&http.Cookie{Name: "afk_web", Value: cookie})
 	}
 	rec := httptest.NewRecorder()
 	w.handler.ServeHTTP(rec, req)
@@ -247,33 +260,34 @@ func decisionKinds(t *testing.T, root string) []string {
 // the item and the ledger back from disk.
 //
 // Load-bearing rows:
-//   - "answered with the token": the item is answered via "web" and, after
+//   - "answered with the cookie": the item is answered via "web" and, after
 //     one pass, the ledger says running. The handler wrote nothing but the
 //     item; it is the loop that un-parks, from the file, with no memory shared
 //     between the two.
-//   - "no token" and "a wrong token" are the same POST refused. The item
+//   - "no cookie" and "a cookie from an old password" are the same POST
+//     refused. The item
 //     stays open and the task stays parked, which is also what shows the
 //     first row is the answer's doing and not something any pass would do.
 func TestDaemonWebAnswerUnparksTheTask(t *testing.T) {
 	tests := []struct {
 		name       string
-		token      string
+		cookie     string
 		form       string
 		wantCode   int
 		wantVia    string
 		wantStatus ledger.Status
 		wantOnce   string
 	}{
-		{name: "answered with the token", token: daemonTestWebToken, form: "answer=Sidekiq",
+		{name: "answered with the cookie", cookie: daemonTestWebCookie(), form: "answer=Sidekiq",
 			wantCode: http.StatusOK, wantVia: inbox.ViaWeb, wantStatus: ledger.Running,
 			wantOnce: "demo: a parked task is running again (T1.1, session t1-1)"},
-		{name: "no token", form: "answer=Sidekiq",
+		{name: "no cookie", form: "answer=Sidekiq",
 			wantCode: http.StatusUnauthorized, wantStatus: ledger.Parked,
 			wantOnce: "waiting on owner: T1.1 parked; answer inbox"},
-		{name: "a wrong token", token: "tok-0000000000000000", form: "answer=Sidekiq",
+		{name: "a cookie from an old password", cookie: daemonTestOldWebCookie(), form: "answer=Sidekiq",
 			wantCode: http.StatusUnauthorized, wantStatus: ledger.Parked,
 			wantOnce: "waiting on owner: T1.1 parked; answer inbox"},
-		{name: "the token, but an empty answer", token: daemonTestWebToken, form: "answer=",
+		{name: "the cookie, but an empty answer", cookie: daemonTestWebCookie(), form: "answer=",
 			wantCode: http.StatusBadRequest, wantStatus: ledger.Parked,
 			wantOnce: "waiting on owner: T1.1 parked; answer inbox"},
 	}
@@ -292,13 +306,13 @@ func TestDaemonWebAnswerUnparksTheTask(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			rec := w.post("/api/p/demo/inbox/"+item.ID+"/answer", tt.token, tt.form)
+			rec := w.post("/api/p/demo/inbox/"+item.ID+"/answer", tt.cookie, tt.form)
 			t.Logf("POST answer: %d %s", rec.Code, strings.TrimSpace(rec.Body.String()))
 			if rec.Code != tt.wantCode {
 				t.Fatalf("the answer POST got %d, want %d", rec.Code, tt.wantCode)
 			}
-			if strings.Contains(rec.Body.String(), daemonTestWebToken) {
-				t.Error("the answer holds the web token")
+			if strings.Contains(rec.Body.String(), daemonTestWebCookie()) {
+				t.Error("the answer holds the sign-in cookie's value")
 			}
 			got := readInboxItem(t, w.root, item.ID)
 			if got.AnsweredVia != tt.wantVia {
@@ -346,7 +360,7 @@ func TestDaemonWebAnswerUnparksTheTask(t *testing.T) {
 // The rows are steps on one project, in order, because the second half of
 // each is "and the state from the step before is what it changed".
 //
-// Load-bearing: "pause without the token" (a refused button must write
+// Load-bearing: "pause without the cookie" (a refused button must write
 // nothing at all: no flag, no decision line) and "pause" and "resume" (the
 // flag appears and goes, and each press is one line in the decision log with
 // the owner as the one who chose, exactly as the commands leave it).
@@ -355,26 +369,26 @@ func TestDaemonWebPauseAndResume(t *testing.T) {
 	steps := []struct {
 		name       string
 		path       string
-		token      string
+		cookie     string
 		wantCode   int
 		wantPaused bool
 		wantKinds  []string
 	}{
-		{name: "pause without the token", path: "/api/p/demo/pause", wantCode: http.StatusUnauthorized},
-		{name: "pause", path: "/api/p/demo/pause", token: daemonTestWebToken,
+		{name: "pause without the cookie", path: "/api/p/demo/pause", wantCode: http.StatusUnauthorized},
+		{name: "pause", path: "/api/p/demo/pause", cookie: daemonTestWebCookie(),
 			wantCode: http.StatusOK, wantPaused: true, wantKinds: []string{"pause"}},
-		{name: "resume without the token", path: "/api/p/demo/resume",
+		{name: "resume without the cookie", path: "/api/p/demo/resume",
 			wantCode: http.StatusUnauthorized, wantPaused: true, wantKinds: []string{"pause"}},
-		{name: "resume", path: "/api/p/demo/resume", token: daemonTestWebToken,
+		{name: "resume", path: "/api/p/demo/resume", cookie: daemonTestWebCookie(),
 			wantCode: http.StatusOK, wantKinds: []string{"pause", "resume"}},
-		{name: "resume with nothing to resume", path: "/api/p/demo/resume", token: daemonTestWebToken,
+		{name: "resume with nothing to resume", path: "/api/p/demo/resume", cookie: daemonTestWebCookie(),
 			wantCode: http.StatusOK, wantKinds: []string{"pause", "resume"}},
-		{name: "a project the page does not serve", path: "/api/p/other/pause", token: daemonTestWebToken,
+		{name: "a project the page does not serve", path: "/api/p/other/pause", cookie: daemonTestWebCookie(),
 			wantCode: http.StatusNotFound, wantKinds: []string{"pause", "resume"}},
 	}
 	for _, st := range steps {
 		t.Run(st.name, func(t *testing.T) {
-			rec := w.post(st.path, st.token, "confirm=yes")
+			rec := w.post(st.path, st.cookie, "confirm=yes")
 			if rec.Code != st.wantCode {
 				t.Fatalf("POST %s got %d, want %d: %s", st.path, rec.Code, st.wantCode, rec.Body.String())
 			}
@@ -387,8 +401,8 @@ func TestDaemonWebPauseAndResume(t *testing.T) {
 			if got := decisionKinds(t, w.root); !reflect.DeepEqual(got, st.wantKinds) {
 				t.Errorf("decision log kinds = %q, want %q", got, st.wantKinds)
 			}
-			if strings.Contains(rec.Body.String(), daemonTestWebToken) {
-				t.Error("the answer holds the web token")
+			if strings.Contains(rec.Body.String(), daemonTestWebCookie()) {
+				t.Error("the answer holds the sign-in cookie's value")
 			}
 		})
 	}
@@ -453,7 +467,7 @@ func TestServeDaemonWeb(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Authorization", "Bearer "+daemonTestWebToken)
+		req.AddCookie(&http.Cookie{Name: "afk_web", Value: daemonTestWebCookie()})
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -688,22 +702,25 @@ func TestWebPauseError(t *testing.T) {
 
 // TestWebPublicURL pins when a notification may carry a link.
 //
-// Load-bearing: "an address but no token". With no token the page is off, so
-// a link would open nothing.
+// Load-bearing: "an address but the page is off". With no password set the
+// page is off, so a link would open nothing; pageOn is the only thing that
+// turns the link on, since [web] has no secret of its own any more.
 func TestWebPublicURL(t *testing.T) {
 	tests := []struct {
-		name string
-		in   daemonconfig.Web
-		want string
+		name   string
+		in     daemonconfig.Web
+		pageOn bool
+		want   string
 	}{
 		{name: "nothing set", in: daemonconfig.Web{Bind: daemonconfig.DefaultWebBind}},
-		{name: "a token and an address", in: daemonconfig.Web{Token: daemonTestWebToken, PublicURL: "https://afk.example"}, want: "https://afk.example"},
-		{name: "a token but no address", in: daemonconfig.Web{Token: daemonTestWebToken}},
-		{name: "an address but no token", in: daemonconfig.Web{PublicURL: "https://afk.example"}},
+		{name: "page on and an address", in: daemonconfig.Web{PublicURL: "https://afk.example"}, pageOn: true, want: "https://afk.example"},
+		{name: "page on but no address", in: daemonconfig.Web{}, pageOn: true},
+		{name: "an address but the page is off", in: daemonconfig.Web{PublicURL: "https://afk.example"}},
+		{name: "a leftover token does not turn the page on", in: daemonconfig.Web{PublicURL: "https://afk.example", LeftoverToken: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := webPublicURL(tt.in); got != tt.want {
+			if got := webPublicURL(tt.in, tt.pageOn); got != tt.want {
 				t.Errorf("webPublicURL = %q, want %q", got, tt.want)
 			}
 		})
@@ -1356,5 +1373,34 @@ func TestWebDepsRepositoryWired(t *testing.T) {
 	deps := daemonWebDeps(func() []daemon.Project { return nil }, t.TempDir(), usagestate.Deps{}, time.Now)
 	if deps.Repository == nil {
 		t.Fatal("daemonWebDeps left Repository nil")
+	}
+}
+
+// TestDaemonWebPasswordSeam checks daemonWebDeps reads the password file in
+// the state folder it was given, again on every call. Load-bearing: the
+// second call after a new password must see the new record, or a password
+// changed while the daemon runs would leave every old browser signed in; and
+// the first call must be ErrNoPassword, which the page shows as "no password
+// set" rather than a damaged file.
+func TestDaemonWebPasswordSeam(t *testing.T) {
+	r := newDaemonRig(t)
+	env := r.env()
+	deps := daemonWebDeps(func() []daemon.Project { return nil }, r.stateDir(), env.state, env.now)
+	if deps.Password == nil {
+		t.Fatal("daemonWebDeps left Password nil")
+	}
+	if _, err := deps.Password(); !errors.Is(err, webpass.ErrNoPassword) {
+		t.Fatalf("before any password: err = %v, want ErrNoPassword", err)
+	}
+	r.setWebPassword()
+	got, err := deps.Password()
+	if err != nil || got.CookieValue() != daemonTestWebCookie() {
+		t.Fatalf("after the password: %v, cookie match %v", err, got.CookieValue() == daemonTestWebCookie())
+	}
+	if err := webpass.Write(env.state, daemonTestOldWebRecord); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := deps.Password(); err != nil || got.CookieValue() != daemonTestOldWebCookie() {
+		t.Fatalf("after a new password the seam still gave the old record (err %v)", err)
 	}
 }

@@ -366,7 +366,8 @@ func TestTaskPageTokensNotLiveAndNoSeams(t *testing.T) {
 
 	tasks, err := masterplan.Parse([]byte(tasksPlan))
 	must(t, err)
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password:  testPasswordSeam,
 		Projects:  func() []Project { return []Project{{Name: "app", Root: t.TempDir()}} },
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return tasks, ledger.Ledger{}, nil },
 		Sessions:  func(string) []SessionView { return nil },
@@ -378,7 +379,7 @@ func TestTaskPageTokensNotLiveAndNoSeams(t *testing.T) {
 	must(t, err)
 	for _, path := range []string{"/p/app/tasks/T1.2", "/api/p/app/tasks/T1.2", "/p/app/tasks"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {

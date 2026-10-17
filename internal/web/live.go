@@ -29,7 +29,7 @@ import (
 // waiting for the owner to reload.
 //
 // The stream carries names, never content. A browser that hears "the inbox of
-// app changed" asks for the page again through the ordinary, token-guarded
+// app changed" asks for the page again through the ordinary, sign-in-guarded
 // handlers, which read the files fresh as they always do. So the stream adds
 // no second way to read anything, and what the page shows still comes from
 // one place.

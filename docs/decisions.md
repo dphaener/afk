@@ -3447,3 +3447,48 @@ T10.2 removes the "Back to …" links in page content that only repeat the bar's
 - **Nothing to wait for (A2).** T10.1 had already landed.
 - **New plan started with no chat (A3).** On the new-plan page's "started" result, the button row is drawn only when there is a chat to open, so the page never ends in an empty row.
 - **One task (A4).** Templates, tests and this note are one task, because every test edit is in the same Go package.
+
+## T8.18
+
+T8.18 replaces the web page's shared token with a password: `afk web password` saves a hash of it, the page shows a sign-in form, and a sign-out button sits in the bars. The token, `?token=` and the `Authorization: Bearer` header are gone. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The hash (A1).** PBKDF2 with HMAC-SHA256 from Go's standard library, 600,000 rounds, a 16-byte random salt and a 32-byte result. It is slow and salted, which is what a stored password needs, and it adds no new module. Argon2id or scrypt would be stronger against special hardware, but both need `golang.org/x/crypto`, and for one owner's page behind Tailscale or a proxy, PBKDF2 at this count is enough.
+- **Where it is kept (A2).** A new package, `internal/webpass`, used by the command, the page and the daemon. The file is `web-password.json` in afk's state folder. It holds the method, the round count, the salt and the result, never the password. It is written with mode 0600 through a temporary file and a rename. The round count is stored in the file so tests can use a small one.
+- **The cookie (A3).** The cookie's value is worked out from the stored hash. A new password gets a new salt and so a new hash, so every browser signed in before is signed out. The value cannot be turned back into the password.
+- **Too many wrong passwords (A4).** There is one count for the whole page, because there is one owner. After 5 wrong passwords in a row, sign-in is refused for a minute, even with the right password. A right password resets the count. The count is kept in memory, so restarting the daemon clears it. Each sign-in try waits its turn, so many tries sent at once cannot all be checked before the count catches up.
+- **Addresses (A5).** Any address asked for without a valid cookie answers with the sign-in form. After a right password the browser goes back to the address it asked for, but only when that is an address on this page. Anything else goes to `/`. Sign out is a POST to `/signout`, which clears the cookie and goes back to the form.
+- **When the page is on (A6, A7).** The page is on when the password file exists. The daemon checks this when it starts. An address other machines can reach with no password stops the daemon. That check moved out of reading `config.toml`, because reading the config file cannot see the state folder. A `[web] token` left in `config.toml` is read and ignored, with one log line. A password file that cannot be read counts as no password, and the daemon's log says which file and to run `afk web password` again.
+- **Scripts (A8).** The page's scripts already fall back to a normal page load when an answer is not a page they can show, so a signed-out tab does not draw the form inside another page.
+- **Tests and prerequisites (A9, A10).** Tests are written in the same task as the code. Nothing had to be in place first.
+
+### Decided while building
+
+- **The password record is checked strictly.** Reading, writing, signing in and the cookie all use one check: the method must be PBKDF2-SHA256, the round count above 0, the salt not empty and the result exactly 32 bytes. A file that fails it gives a plain "not a valid password record" error, never a sign-in that silently always fails, and a bad record is never saved. No error quotes the file's contents.
+- **The state folder** is made with mode 0700 when it is missing. If it already exists, its mode is left alone. The password file is 0600 from the moment it is made.
+- **`/signin` can be visited directly.** With no cookie it shows the form (200). When signed in it goes to `/`.
+- **What counts toward the lockout**: only wrong passwords, and passwords over 1024 bytes. "No password set", an unreadable file and a broken form do not count, because none of them is a guess. A try while locked does not lengthen the lock, so the wait is never more than a minute from the fifth wrong try.
+- **The return address** is checked both as typed and after decoding. It is cleaned before the checks, so `/p/../api/x` also goes to `/`. It never goes to `/signin`, `/signout` or `/api`.
+- **Messages on the form.** A wrong password is shown under the field. The lockout, "no password is set" and "the file cannot be read" are shown in a notice above the form. None of them repeats what was sent or what the file holds.
+- **An unreadable password file on an address other machines can reach** stops the daemon, the same as a missing one, with a message saying the file cannot be read. The plan said to treat it as no password. Refusing keeps a reachable page from starting in a state no one can sign in to.
+- **A `[web] token` set to an empty string is not a leftover token.** Any other value is, and its value is never kept or printed.
+- **Notification links** (`afk inbox add`, plan reviews) check for the password file in their own process. In tests that check is a seam, so no test reads the real state folder.
+- **The sign-out button.** On the phone it shares the bar's actions area with the Add-a-project icon. On the desktop it is the last item in the top bar. It is a plain form, so it works the same with JavaScript off. Page tests that check a page has no form now ignore the two sign-out forms in the bars.
+
+### Checked, and not checked
+
+- **Checked against a scratch build** (never `~/bin`), with scratch state and config folders:
+  - `afk web password` saved a 0600 file holding no copy of the password, and refused a mismatch and input that was not a terminal.
+  - `afk daemon` with a leftover token logged the one line and served the sign-in form. `curl` with `Authorization: Bearer` got a JSON 401.
+  - A `0.0.0.0` bind with no password exited 1, with a message naming `afk web password`.
+  - In headless Chrome at 390 and 1280 px, with JavaScript on and off: the overview showed the form, a wrong password was refused, the right one reached the overview, Sign out returned to the form, and the sixth wrong try showed the one-minute notice.
+  - axe (WCAG 2.2 AA) found no violation on the sign-in page, empty and with the error, or on the overview, in both colour schemes.
+- **`make check` was run in full**: green.
+- **Not checked: a real phone, Tailscale or a reverse proxy.** Owner check: run `afk web password` on the VM, restart `afkd`, remove `[web] token` from `config.toml`, then sign in from the phone, tap a notification link and press Sign out.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes:
+- Five test files changed that no task's file list named: only to drop the token from the test setup and to skip the bars' sign-out forms.
+- This file and `CONTEXT.md` are written by the planner and conductor, by design.

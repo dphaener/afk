@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "error"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "error", "signin"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -221,6 +221,11 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
 	case ErrorView:
 		return chrome{Bare: true, Status: v.Status, Path: path, Retry: retryPath(method, path)}
+	case SignInView:
+		// Bare like the error page, and for a stronger reason: the request
+		// has not signed in, so the bars' data (the project count) and the
+		// scripts are exactly what it must not get.
+		return chrome{Bare: true}
 	default:
 		c.Title = name
 	}
@@ -231,8 +236,10 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 // for again. A failed POST is not, because a link cannot post and a GET of a
 // POST address is a 404: it goes to the page the form was on, which for every
 // POST route (an answer, a pause, a resume) is the address with its last
-// part taken off. The leading slashes are collapsed as in withoutToken, so an
-// address that reached here oddly can never become a link to another site.
+// part taken off. The leading slashes and backslashes are collapsed to one
+// slash, so an address that reached here oddly (the guard sees the path
+// before the mux cleans it, and a browser reads "//other.example" and
+// "/\other.example" as another site) can never become a link elsewhere.
 func retryPath(method, path string) string {
 	p := "/" + strings.TrimLeft(path, `/\`)
 	if method != http.MethodGet && method != http.MethodHead {
@@ -254,8 +261,13 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		status = http.StatusInternalServerError
 		buf.WriteString("<!doctype html><title>afk</title><p>This page is missing. This is a fault in afk; please report it.</p>")
 	} else {
+		// Neither the error page nor the sign-in form shows the count, and
+		// the sign-in form is drawn for requests that have not signed in, so
+		// it must not even read the project list.
 		projects := 0
-		if _, isErr := view.(ErrorView); !isErr {
+		switch view.(type) {
+		case ErrorView, SignInView:
+		default:
 			projects = len(s.projects())
 		}
 		ch := chromeFor(name, view, r.Method, r.URL.Path, projects)

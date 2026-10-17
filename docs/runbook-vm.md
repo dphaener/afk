@@ -659,28 +659,33 @@ starts, so a problem found on the phone is not built on top of.
 ## 7. The web page over a tunnel
 
 The daemon can serve a small page that shows what it is doing, lets you answer
-inbox items, and has Pause and Resume buttons. It is off until you give it a
-token. This is an owner step.
+inbox items, and has Pause and Resume buttons. It is off until you set a
+password. This is an owner step.
 
-1. Make a token:
+1. Set a password. On this VM, in a terminal, run:
 
    ```bash
-   openssl rand -hex 16
+   afk web password
    ```
+
+   It asks for the password twice without showing it. It must be at least
+   8 characters. afk keeps only a salted hash, in its state folder: never the
+   password, and never in the config file.
 
 2. Add a `[web]` table to `~/.config/afk/config.toml`:
 
    ```toml
    [web]
    bind = "127.0.0.1:4253"
-   token = "<token>"
    public_url = "https://<the address you open from your phone>"
    ```
 
    - `bind` stays `127.0.0.1:4253`, which only this machine can reach.
-   - `token` is what step 1 printed.
    - `public_url` is the address you will use from outside, with no slash on
      the end. Inbox notifications link to it.
+
+   A `token` line left over from an older version is ignored, so delete it.
+   The daemon logs one line saying so.
 
 3. Restart the daemon so it reads the file. Running sessions keep running:
 
@@ -690,16 +695,17 @@ token. This is an owner step.
    ```
 
    Expect a line saying `web page: listening on http://127.0.0.1:4253`. The
-   token is never written to the log.
+   password is never written to the log.
 
-4. Sign in once. Open the page with the token on the end of the address:
+4. Sign in once. Open the page in a browser:
 
    ```
-   http://127.0.0.1:4253/?token=<token>
+   http://127.0.0.1:4253/
    ```
 
-   The page stores a cookie and sends you to the same address without the
-   token. After that, open it without the token.
+   It shows a sign-in form. Type the password from step 1 and press **Sign
+   in**. The browser keeps a cookie for 180 days, so after that the page opens
+   without asking. **Sign out** on the page's bar signs this browser out.
 
 5. **Reach it from outside.** The page speaks plain HTTP and has no encryption
    of its own, so it must sit behind something that does. Which one is your
@@ -725,12 +731,12 @@ token. This is an owner step.
      }
      ```
 
-   **The rule:** a bind that other machines can reach needs a token. With
+   **The rule:** a bind that other machines can reach needs a password. With
    none, `afk daemon` refuses to start and says so. Never put the page on the
    open internet as plain HTTP.
 
-6. **Check it from your phone.** Open `<public_url>/?token=<token>` once on
-   the phone. Then:
+6. **Check it from your phone.** Open `<public_url>/` on the phone and sign in
+   with the password. Then:
 
    - answer an inbox item from the page, and expect its task to carry on
      within a few seconds;

@@ -36,8 +36,15 @@ body.afk { margin: 0; }
 .topnav__live:not([hidden]) + .topnav__action { margin-left: 0; }
 /* Add a project sits beside it: only the first action takes the free space. */
 .topnav__action + .topnav__action { margin-left: 0; }
-.app-bar__action { margin-left: auto; }
-.app-bar .live:not([hidden]) + .app-bar__action { margin-left: 0; }
+/* The phone bar's right end: Add a project and Sign out. The group takes the
+   free space unless the Live pill (which takes it itself) is showing. */
+.app-bar__actions { margin-left: auto; }
+.app-bar .live:not([hidden]) + .app-bar__actions { margin-left: 0; }
+.app-bar__actions form, .topnav__signout { margin: 0; }
+/* Sign out is last in the top bar. The live mirror or an action takes the
+   free space when it shows; with neither (the mirror hidden and no action
+   after it) Sign out takes it. */
+.topnav__live[hidden] + .topnav__signout { margin-left: auto; }
 
 /* afk.css colours every link with ".afk a" and ".afk a:hover", which are
    more specific than its own component classes, so a component drawn on an

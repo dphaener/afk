@@ -268,7 +268,8 @@ func TestUsageRefreshNeverOnRead(t *testing.T) {
 // reading nothing will take) and the missing refresh object (the page draws
 // no button from it).
 func TestUsageRefreshWithoutSeam(t *testing.T) {
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password:  testPasswordSeam,
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil },
 		Sessions:  func(string) []SessionView { return nil },
 		Usage:     func() (usagestate.File, bool) { return usagestate.File{}, false },

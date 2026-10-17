@@ -25,6 +25,7 @@ var subcommands = map[string]func([]string){
 	"inbox":   cmdInbox,
 	"tokens":  cmdTokens,
 	"daemon":  cmdDaemon,
+	"web":     cmdWeb,
 	"pause":   cmdPause,
 	"resume":  cmdResume,
 	"_host":   cmdHost,
@@ -210,6 +211,8 @@ Subcommands:
   project        Choose the projects the daemon builds: 'project list', and
                  'project add' or 'project remove' with a name or folder:
                  afk project add [--name NAME] [DIR]
+  web password   Set the password for the web page afk daemon serves; asks twice
+                 without showing it and saves only a hash: afk web password
   usage          Show how much of the agent's usage windows is spent, when they
                  reset, and what the usage governor would do:
                  afk usage [--provider NAME] [--refresh]

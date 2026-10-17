@@ -100,7 +100,8 @@ func TestPlanReplyBody(t *testing.T) {
 func TestPlanReplyWithoutTheDependency(t *testing.T) {
 	rg := newRig(t, Config{})
 	// A second handler over the same projects but no PlanReply.
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password:  testPasswordSeam,
 		Projects:  func() []Project { return rg.projects },
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil },
 		Sessions:  func(string) []SessionView { return nil },
@@ -112,7 +113,7 @@ func TestPlanReplyWithoutTheDependency(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/p/app/plan/chat", strings.NewReader(`{"text":"x"}`))
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -158,7 +159,7 @@ func TestPlanReplyRefusedBeforeTheDependency(t *testing.T) {
 			rg := newRig(t, Config{})
 			req := httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader(tc.body))
 			if tc.auth {
-				req.Header.Set("Authorization", "Bearer "+testToken)
+				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 			}
 			if tc.ctype != "" {
 				req.Header.Set("Content-Type", tc.ctype)
@@ -205,7 +206,7 @@ func TestPlanChatFormReply(t *testing.T) {
 		chat     planchat.Chat
 		body     string
 		err      error
-		noToken  bool
+		noCookie bool
 		origin   string
 		want     int
 		wantLoc  string
@@ -230,7 +231,7 @@ func TestPlanChatFormReply(t *testing.T) {
 		{name: "unreachable", chat: planchat.Chat{State: planchat.StateWaitingForText}, body: "text=x", err: errors.New("dial: no such file"), want: 502,
 			wantSent: &planchat.Reply{Text: "x"}, wantBody: []string{"The planning session could not be reached"}},
 		{name: "cross-site Origin", body: "text=x", origin: "https://evil.example", want: 403},
-		{name: "no token", body: "text=x", noToken: true, want: 401},
+		{name: "no cookie", body: "text=x", noCookie: true, want: 401},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,8 +240,8 @@ func TestPlanChatFormReply(t *testing.T) {
 			rg.replyErr = tc.err
 			req := httptest.NewRequest(http.MethodPost, "/p/app/plan/chat", strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", formType)
-			if !tc.noToken {
-				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie(testToken)})
+			if !tc.noCookie {
+				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 			}
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
@@ -280,7 +281,8 @@ func TestPlanChatFormReply(t *testing.T) {
 // page actions are when their seam is missing.
 func TestPlanChatFormReplyWithoutTheDependency(t *testing.T) {
 	rg := newRig(t, Config{})
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password:  testPasswordSeam,
 		Projects:  func() []Project { return rg.projects },
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil },
 		Sessions:  func(string) []SessionView { return nil },
@@ -292,7 +294,7 @@ func TestPlanChatFormReplyWithoutTheDependency(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/p/app/plan/chat", strings.NewReader("text=x"))
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	req.Header.Set("Content-Type", formType)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

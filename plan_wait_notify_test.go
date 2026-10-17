@@ -23,10 +23,11 @@ import (
 // would lead nowhere) and the two clash rows (a later list never wins a name
 // or a folder, as in internal/web's reviews and beingPlanned, so a record is
 // never kept under a folder the page does not mean by that name). Every row
-// also checks that no link holds a query, a fragment or the token.
+// also checks that no link holds a query or a fragment. The address handed
+// in is already webPublicURL's answer ("" while no password is set), which
+// TestWebPublicURL and TestRunDaemonWeb pin.
 func TestPlanWaitTargets(t *testing.T) {
 	const public = "https://afk.example/"
-	const token = "s3cret-token"
 	p := func(name, root string) web.Project { return web.Project{Name: name, Root: root} }
 	tests := []struct {
 		name                     string
@@ -72,8 +73,8 @@ func TestPlanWaitTargets(t *testing.T) {
 				t.Errorf("planWaitTargets = %+v, want %+v", got, tt.want)
 			}
 			for _, g := range got {
-				if strings.ContainsAny(g.Link, "?#") || strings.Contains(g.Link, token) {
-					t.Errorf("link %q holds a query, fragment or the token", g.Link)
+				if strings.ContainsAny(g.Link, "?#") {
+					t.Errorf("link %q holds a query or a fragment", g.Link)
 				}
 			}
 		})

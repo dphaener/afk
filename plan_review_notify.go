@@ -14,6 +14,7 @@ import (
 	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 // planReviewDeps is what telling the owner "the plan is ready" touches outside
@@ -27,6 +28,12 @@ type planReviewDeps struct {
 	loadMachine  func() (daemonconfig.Config, error)
 	gitCommonDir func(dir string) string
 	send         func(ctx context.Context, url string, m notify.NtfyMessage) error
+	// pageOn reports whether the web page has a password set
+	// (webpass.Exists). It is not part of ready(): nil means the page is
+	// off, so the notification still goes out, only with no link, and the
+	// other plan commands' tests that build these deps never read the real
+	// state folder.
+	pageOn func() bool
 }
 
 func (d planReviewDeps) ready() bool {
@@ -38,6 +45,7 @@ func realPlanReviewDeps() planReviewDeps {
 		stateDir:     func() (string, error) { return usagestate.Dir(usagestate.DefaultDeps()) },
 		loadProject:  projectconfig.Load,
 		loadMachine:  func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) },
+		pageOn:       func() bool { return webpass.Exists(usagestate.DefaultDeps()) },
 		gitCommonDir: resolveGitCommonDirIn,
 		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
 			return notify.Ntfy{URL: url}.Send(ctx, m)
@@ -50,16 +58,18 @@ func realPlanReviewDeps() planReviewDeps {
 const planReviewNotifyTimeout = 10 * time.Second
 
 // planReviewLink is the address of the plan's page, or "" when there is none
-// to give: the machine config could not be read, the page is off (no token),
+// to give: the machine config could not be read, the page is off (no password
+// is set, so pageOn is false),
 // or it sets no public address. Pure; sameDir answers "is this configured
 // path the project folder?", so the git lookup stays with the caller.
 //
 // The name in the address is the one the page serves the plan under. A
 // configured project is served under its configured name, which need not be
 // its folder's; a project that is only on the review list is served under the
-// name the list gave it (reviewName). The link never holds the token.
-func planReviewLink(cfg daemonconfig.Config, cfgErr error, root, reviewName string, sameDir func(configured, root string) bool) string {
-	if cfgErr != nil || webPublicURL(cfg.Web) == "" {
+// name the list gave it (reviewName). The link never holds a secret: the
+// browser signs in with the page's password.
+func planReviewLink(cfg daemonconfig.Config, cfgErr error, pageOn bool, root, reviewName string, sameDir func(configured, root string) bool) string {
+	if cfgErr != nil || webPublicURL(cfg.Web, pageOn) == "" {
 		return ""
 	}
 	for _, p := range cfg.Projects {
@@ -122,10 +132,11 @@ func notifyPlanReady(root string, deps planReviewDeps, now time.Time, stderr io.
 		summary = &s
 	}
 	machine, machineErr := deps.loadMachine()
+	pageOn := deps.pageOn != nil && deps.pageOn()
 	msg := notify.NtfyMessage{
 		Title: "Plan ready for review: " + filepath.Base(root),
 		Body:  planReviewBody(summary),
-		Click: planReviewLink(machine, machineErr, root, reviewName, func(configured, r string) bool {
+		Click: planReviewLink(machine, machineErr, pageOn, root, reviewName, func(configured, r string) bool {
 			return mainCheckout(configured, deps.gitCommonDir(configured)) == filepath.Clean(r)
 		}),
 	}

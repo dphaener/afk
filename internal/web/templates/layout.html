@@ -22,8 +22,11 @@
   <span class="app-bar__title">{{.Title}}</span>
 {{end}}
   <span class="live" data-live-status hidden>Live</span>
-{{if and .Overview .AddProject}}  <a class="icon-btn app-bar__action" href="/projects/add" aria-label="Add a project"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></a>
-{{end}}</header>
+  <div class="app-bar__actions">
+{{if and .Overview .AddProject}}    <a class="icon-btn" href="/projects/add" aria-label="Add a project"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></a>
+{{end}}    <form method="post" action="/signout"><button class="btn btn--quiet" type="submit">Sign out</button></form>
+  </div>
+</header>
 <header class="topnav">
   <a class="wordmark topnav__brand" href="/">afk</a>
   <nav class="topnav__links" aria-label="Main">
@@ -33,7 +36,8 @@
   <span class="live topnav__live" data-live-mirror hidden>Live</span>
   {{if .AddProject}}<a class="btn btn--secondary btn--sm topnav__action" href="/projects/add">Add a project</a>
   {{end}}{{if .PlanNew}}<a class="btn btn--primary btn--sm topnav__action" href="/plan/new">Plan a new project</a>
-  {{end}}</header>
+  {{end}}<form class="topnav__signout" method="post" action="/signout"><button class="btn btn--quiet btn--sm" type="submit">Sign out</button></form>
+</header>
 {{if not .Overview}}<nav class="back-row" aria-label="Back">
   <a class="icon-btn" href="{{.Back}}" aria-label="{{.BackLabel}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6"/></svg></a>
   <span class="app-bar__title">{{.Title}}</span>

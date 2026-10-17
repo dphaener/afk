@@ -376,11 +376,13 @@ func TestLoadReadError(t *testing.T) {
 	}
 }
 
-// TestLoadWeb: the non-loopback refusal rows and the ":4253" row are
-// load-bearing. They are the only thing between a typo'd bind and a page that
-// pauses the build loop for anyone on the network; ":4253" is the easy
-// mistake because Go reads it as every interface. The 5-character token row
-// also checks the error never repeats the secret.
+// TestLoadWeb: the reachable-bind rows are load-bearing. They now load with
+// no error, because the refusal of a reachable bind without a password moved
+// to the daemon (webStart), which can see the password file; a row here that
+// still refused would make that move a lie. The leftover-token rows are
+// load-bearing too: a short or spaced token from before the password must
+// load (an upgrade must not stop the daemon), set LeftoverToken, and never be
+// kept, which the Web comparison proves because Web has no field to hold it.
 func TestLoadWeb(t *testing.T) {
 	const tok = "0123456789abcdef"
 	cases := []struct {
@@ -391,29 +393,28 @@ func TestLoadWeb(t *testing.T) {
 		errNot []string
 	}{
 		{name: "no web table", toml: "", want: Web{Bind: "127.0.0.1:4253"}},
-		{name: "token with default bind", toml: "[web]\ntoken = \"" + tok + "\"\n",
-			want: Web{Bind: "127.0.0.1:4253", Token: tok}},
-		{name: "0.0.0.0 no token", toml: "[web]\nbind = \"0.0.0.0:4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
-		{name: "empty host no token", toml: "[web]\nbind = \":4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
-		{name: "ipv6 any no token", toml: "[web]\nbind = \"[::]:4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
-		{name: "hostname no token", toml: "[web]\nbind = \"myhost:4253\"\n", errHas: []string{"config.toml", "web.bind", "web.token"}},
-		{name: "0.0.0.0 with token", toml: "[web]\nbind = \"0.0.0.0:4253\"\ntoken = \"" + tok + "\"\n",
-			want: Web{Bind: "0.0.0.0:4253", Token: tok}},
-		{name: "empty host with token", toml: "[web]\nbind = \":4253\"\ntoken = \"" + tok + "\"\n",
-			want: Web{Bind: ":4253", Token: tok}},
-		{name: "ipv6 any with token", toml: "[web]\nbind = \"[::]:4253\"\ntoken = \"" + tok + "\"\n",
-			want: Web{Bind: "[::]:4253", Token: tok}},
-		{name: "hostname with token", toml: "[web]\nbind = \"myhost:4253\"\ntoken = \"" + tok + "\"\n",
-			want: Web{Bind: "myhost:4253", Token: tok}},
-		{name: "127.0.0.1 no token", toml: "[web]\nbind = \"127.0.0.1:9000\"\n", want: Web{Bind: "127.0.0.1:9000"}},
-		{name: "ipv6 loopback no token", toml: "[web]\nbind = \"[::1]:9000\"\n", want: Web{Bind: "[::1]:9000"}},
-		{name: "localhost no token", toml: "[web]\nbind = \"localhost:9000\"\n", want: Web{Bind: "localhost:9000"}},
+		{name: "leftover token with default bind", toml: "[web]\ntoken = \"" + tok + "\"\n",
+			want: Web{Bind: "127.0.0.1:4253", LeftoverToken: true}},
+		{name: "leftover short token", toml: "[web]\ntoken = \"abcde\"\n",
+			want: Web{Bind: "127.0.0.1:4253", LeftoverToken: true}},
+		{name: "leftover token with space", toml: "[web]\ntoken = \"0123456789 abcdefXYZ\"\n",
+			want: Web{Bind: "127.0.0.1:4253", LeftoverToken: true}},
+		{name: "empty token is not leftover", toml: "[web]\ntoken = \"\"\n", want: Web{Bind: "127.0.0.1:4253"}},
+		{name: "0.0.0.0 loads", toml: "[web]\nbind = \"0.0.0.0:4253\"\n", want: Web{Bind: "0.0.0.0:4253"}},
+		{name: "empty host loads", toml: "[web]\nbind = \":4253\"\n", want: Web{Bind: ":4253"}},
+		{name: "ipv6 any loads", toml: "[web]\nbind = \"[::]:4253\"\n", want: Web{Bind: "[::]:4253"}},
+		{name: "hostname loads", toml: "[web]\nbind = \"myhost:4253\"\n", want: Web{Bind: "myhost:4253"}},
+		{name: "0.0.0.0 with leftover token", toml: "[web]\nbind = \"0.0.0.0:4253\"\ntoken = \"" + tok + "\"\n",
+			want: Web{Bind: "0.0.0.0:4253", LeftoverToken: true}},
+		{name: "127.0.0.1", toml: "[web]\nbind = \"127.0.0.1:9000\"\n", want: Web{Bind: "127.0.0.1:9000"}},
+		{name: "ipv6 loopback", toml: "[web]\nbind = \"[::1]:9000\"\n", want: Web{Bind: "[::1]:9000"}},
+		{name: "localhost", toml: "[web]\nbind = \"localhost:9000\"\n", want: Web{Bind: "localhost:9000"}},
+		{name: "bad bind error never repeats a leftover token", toml: "[web]\nbind = \"127.0.0.1\"\ntoken = \"secret-abcdefXYZ\"\n",
+			errHas: []string{"config.toml", "web.bind"}, errNot: []string{"secret-abcdefXYZ"}},
 		{name: "bind without port", toml: "[web]\nbind = \"127.0.0.1\"\n", errHas: []string{"config.toml", "web.bind"}},
 		{name: "port zero", toml: "[web]\nbind = \"127.0.0.1:0\"\n", errHas: []string{"config.toml", "web.bind", "65535"}},
 		{name: "port too big", toml: "[web]\nbind = \"127.0.0.1:70000\"\n", errHas: []string{"config.toml", "web.bind", "65535"}},
 		{name: "port not a number", toml: "[web]\nbind = \"127.0.0.1:http\"\n", errHas: []string{"web.bind"}},
-		{name: "short token", toml: "[web]\ntoken = \"abcde\"\n", errHas: []string{"config.toml", "web.token"}, errNot: []string{"abcde"}},
-		{name: "token with space", toml: "[web]\ntoken = \"0123456789 abcdefXYZ\"\n", errHas: []string{"web.token", "white space"}, errNot: []string{"abcdefXYZ"}},
 		{name: "public_url ftp", toml: "[web]\npublic_url = \"ftp://x\"\n", errHas: []string{"config.toml", "web.public_url"}},
 		{name: "public_url bare host", toml: "[web]\npublic_url = \"example.com\"\n", errHas: []string{"web.public_url"}},
 		{name: "public_url with query", toml: "[web]\npublic_url = \"https://afk.example/?a=b\"\n", errHas: []string{"web.public_url"}},
@@ -448,9 +449,6 @@ func TestLoadWeb(t *testing.T) {
 			}
 			if got.Web != c.want {
 				t.Errorf("Web = %+v, want %+v", got.Web, c.want)
-			}
-			if got.Web.Enabled() != (c.want.Token != "") {
-				t.Errorf("Enabled = %v with token %q", got.Web.Enabled(), c.want.Token)
 			}
 		})
 	}

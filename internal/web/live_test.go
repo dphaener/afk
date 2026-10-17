@@ -366,7 +366,8 @@ func newLiveRig(t *testing.T, extra int) *liveRig {
 		<-rg.gate
 		return UsageRefreshResult{Outcome: UsageRefreshFailed, Text: "The reading timed out."}
 	}
-	srv, h, err := build(Config{Token: testToken}, d)
+	d.Password = testPasswordSeam
+	srv, h, err := build(Config{}, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +416,7 @@ func openStream(t *testing.T, srv *httptest.Server) *stream {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events", nil)
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -536,7 +537,7 @@ func TestEvents(t *testing.T) {
 		want := []string{"event: change", `data: {"project":"","part":"usage"}`}
 
 		req := httptest.NewRequest(http.MethodPost, "/api/usage/refresh", nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 		rec := httptest.NewRecorder()
 		rg.h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusAccepted {
@@ -582,7 +583,7 @@ func TestEvents(t *testing.T) {
 
 		stuck := newStuckWriter()
 		req := httptest.NewRequest(http.MethodGet, "/events", nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 		served := make(chan struct{})
 		go func() {
 			defer close(served)
@@ -633,7 +634,7 @@ func TestEvents(t *testing.T) {
 			openStream(t, srv).until("retry: 3000")
 		}
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/events", nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 		resp, err := srv.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -650,7 +651,7 @@ func TestEvents(t *testing.T) {
 	t.Run("no /api twin", func(t *testing.T) {
 		rg := newLiveRig(t, 0)
 		req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 		rec := httptest.NewRecorder()
 		rg.h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
