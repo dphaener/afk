@@ -273,3 +273,78 @@ func TestProjectRoundTrip(t *testing.T) {
 		t.Errorf("round trip = %q, want %q", back, withWeb)
 	}
 }
+
+// TestSetWeb: load-bearing rows are "comments and projects, no web" (the
+// table is appended and every earlier byte is kept), "bind replaced keeps its
+// comment" (the installer edits a file the owner may have annotated), "web
+// followed by another table" (a key appended after the next header would
+// silently land in the wrong table), "bad bind" and "token" (an error must
+// return the original text, and a secret never goes in config.toml) and
+// "CRLF kept". Every success row also loads through Load.
+func TestSetWeb(t *testing.T) {
+	const noWeb = "# mine\nprovider = \"x\"\n\n[[project]]\npath = \"/a/one\"\n"
+	cases := []struct {
+		name     string
+		text     string
+		key, val string
+		wantErr  string
+		wantText string // exact, when set
+		wantBind string
+		wantURL  string
+	}{
+		{"empty file", "", "bind", "0.0.0.0:4253", "", "[web]\nbind = \"0.0.0.0:4253\"\n", "0.0.0.0:4253", ""},
+		{"comments and projects, no web", noWeb, "bind", "0.0.0.0:4253", "",
+			noWeb + "\n[web]\nbind = \"0.0.0.0:4253\"\n", "0.0.0.0:4253", ""},
+		{"no final newline", "provider = \"x\"", "bind", "127.0.0.1:9", "",
+			"provider = \"x\"\n\n[web]\nbind = \"127.0.0.1:9\"\n", "127.0.0.1:9", ""},
+		{"bind replaced keeps its comment", "[web]\nbind = \"127.0.0.1:4253\" # local\npublic_url = \"https://a.example\"\n",
+			"bind", "0.0.0.0:4253", "",
+			"[web]\nbind = \"0.0.0.0:4253\" # local\npublic_url = \"https://a.example\"\n", "0.0.0.0:4253", "https://a.example"},
+		{"web followed by another table", "[web]\ntoken = \"0123456789abcdef\"\n# next\n\n[[project]]\npath = \"/a/one\"\n",
+			"bind", "0.0.0.0:4253", "",
+			"[web]\ntoken = \"0123456789abcdef\"\nbind = \"0.0.0.0:4253\"\n# next\n\n[[project]]\npath = \"/a/one\"\n", "0.0.0.0:4253", ""},
+		{"empty web table", "[web]\n\n[[project]]\npath = \"/a/one\"\n", "public_url", "https://afk.example", "",
+			"[web]\npublic_url = \"https://afk.example\"\n\n[[project]]\npath = \"/a/one\"\n", DefaultWebBind, "https://afk.example"},
+		{"public_url added", "[web]\nbind = \"127.0.0.1:4253\"\n", "public_url", "https://afk.example", "",
+			"[web]\nbind = \"127.0.0.1:4253\"\npublic_url = \"https://afk.example\"\n", "127.0.0.1:4253", "https://afk.example"},
+		{"CRLF kept", "provider = \"x\"\r\n[web]\r\nbind = \"127.0.0.1:1\" # c\r\n", "bind", "0.0.0.0:2", "",
+			"provider = \"x\"\r\n[web]\r\nbind = \"0.0.0.0:2\" # c\r\n", "0.0.0.0:2", ""},
+		{"CRLF appended", "provider = \"x\"\r\n", "bind", "0.0.0.0:2", "",
+			"provider = \"x\"\r\n\r\n[web]\r\nbind = \"0.0.0.0:2\"\r\n", "0.0.0.0:2", ""},
+		{"bad bind", noWeb, "bind", "nonsense", "not host:port", noWeb, "", ""},
+		{"bad port", noWeb, "bind", "0.0.0.0:99999", "1 to 65535", noWeb, "", ""},
+		{"bad url", noWeb, "public_url", "ftp://x.example", "http:// or https://", noWeb, "", ""},
+		{"url with fragment", noWeb, "public_url", "https://x.example/#a", "no ? or #", noWeb, "", ""},
+		{"empty value", noWeb, "bind", " ", "empty", noWeb, "", ""},
+		{"unknown key", noWeb, "colour", "red", "bind and public_url", noWeb, "", ""},
+		{"token refused", noWeb, "token", "0123456789abcdef", "bind and public_url", noWeb, "", ""},
+		{"broken file", "[web\n", "bind", "0.0.0.0:2", "mistake", "[web\n", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := SetWeb(c.text, c.key, c.val)
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, c.wantErr)
+				}
+				if got != c.text {
+					t.Fatalf("text changed on error:\n%s", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SetWeb: %v", err)
+			}
+			if c.wantText != "" && got != c.wantText {
+				t.Fatalf("text:\n%q\nwant:\n%q", got, c.wantText)
+			}
+			cfg, lerr := Load(deps(nil, map[string]string{home: got}))
+			if lerr != nil {
+				t.Fatalf("Load of the edited text: %v\n%s", lerr, got)
+			}
+			if cfg.Web.Bind != c.wantBind || cfg.Web.PublicURL != c.wantURL {
+				t.Fatalf("web = %+v, want bind %q url %q", cfg.Web, c.wantBind, c.wantURL)
+			}
+		})
+	}
+}

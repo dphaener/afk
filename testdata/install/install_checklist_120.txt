@@ -1,0 +1,19 @@
+afk install
+
+  ✓ Check that this machine is a safe place for afk
+  ○ Install the tools afk needs
+  ○ Install the agent CLI
+  ○ Sign in to the agent CLI
+  ○ Let the agent run without permission prompts
+  ○ Install the afk plugin
+  ○ Sign in to GitHub
+  ○ Set your git name and email
+  ○ Choose where projects live
+  ○ Set the web page password
+  ✗ Start the afk service
+      The service runs ~/bin/afk and it is not there.
+      To fix: Put afk in ~/bin first (the install script does this), then run afk install again.
+  ○ Check everything
+
+… Looking at this machine…
+

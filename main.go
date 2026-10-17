@@ -26,6 +26,7 @@ var subcommands = map[string]func([]string){
 	"tokens":  cmdTokens,
 	"daemon":  cmdDaemon,
 	"web":     cmdWeb,
+	"install": cmdInstall,
 	"pause":   cmdPause,
 	"resume":  cmdResume,
 	"version": cmdVersion,
@@ -173,6 +174,10 @@ Usage:
   afk <subcommand> [options]
 
 Subcommands:
+  install        Set up this machine for afk, step by step: the tools, the agent
+                 CLI and its login, GitHub, the web page and the background
+                 service. Shows a safety screen first; needs a terminal:
+                 afk install [--dry-run] [--yes]
   new <name>     Create a new afk session. On a TTY this hands off to the dashboard
                  with the session live in an embedded pane; pass --no-dash to skip the
                  dashboard and get a text pointer instead.

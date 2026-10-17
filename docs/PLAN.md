@@ -134,6 +134,7 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Web page technology | Decided 2026-10-13 (M8): hand-written JavaScript built into the binary, with no build step, no `npm` and no new Go dependency for live updates (server-sent events). Still server-rendered with `html/template`; the page works, by reloading, with JavaScript off. Phone first, and it works well on a desktop. Every screen meets WCAG 2.2 AA. |
 | Web page design | Decided 2026-10-13 (M8): redesigned from `docs/design-system.md`, which the owner makes in Claude Design (From the owner profile, a default: design tool) from `docs/design-brief.md` (T8.1). The plan wins on behaviour and the design system on looks. No component library (From the owner profile, a default). |
 | Desktop back button | Decided 2026-10-16 (M10): above 760px every page but the overview and the error page shows the phone bar's back chevron and its title in a row under the top bar, going where the phone's back button goes. Built from the design system's existing parts (`icon-btn`, the title style) with no design round. In-page "Back to …" links that only repeat it are removed; a confirm's safe button and a Cancel beside a form stay. |
+| Where afk runs, and installing it | Decided 2026-10-17 (M11): afk is an always-on runner whose agents run with permissions bypassed, so the target is **a machine set aside for it**: a cloud server, a spare computer, or a VM on the owner's laptop (Multipass). The docs say so before any install step. A laptop used every day is supported, on Linux and macOS, behind a plain "at your own risk" warning. A **Docker image was considered and set aside**: the agent must build and test the project, so the project's own packages, databases and browsers would have to live in the image or in sidecar containers, the dashboard would only work through `docker exec`, and a VM is a stronger boundary with none of those costs. Install is **`afk install`**, a guided installer built with the charm modules, started by a small bootstrap script that downloads a release binary. It writes Claude Code's `skipDangerousModePermissionPrompt` itself, with no separate prompt to accept (the owner's choice), after its own safety screen. The README is a short overview, and the reference lives in pages under `docs/`. |
 | Rules | `~/code/.claude/rules/*.md` are Rails rules and **do not apply** to this repo. T0.1 writes afk's own `CLAUDE.md`. |
 
 ---
@@ -984,6 +985,8 @@ M0 Foundation ──▶ M1 Primitives ──▶ M2 Daemon ──▶ M3 Surfaces 
  T5.1 format and lint     T5.4 extend, amend, reconcile    T5.7 approve and go
  T5.2 owner profile       T5.5 design hand-off             T5.8 prove it
  T5.3 planning session    T5.6 open-question gates
+──▶ M11 Install on a fresh machine (added 2026-10-17)
+ T11.1 releases    T11.2 install plan    T11.3 Linux    T11.4 macOS    T11.5 bootstrap    T11.6 prove it
 ```
 
 T1.1 to T1.4 are independent of each other. T2.2, T2.3 and T2.4 are independent once T2.1 is in.
@@ -3041,6 +3044,225 @@ top bar, as the phone does, so the browser's own back button is never the only w
   green.
 - Amended 2026-10-16 (T10.2 done): later tasks may assume page content has no "Back to …" link that repeats the bar's back address; the bar (`app-bar` on the phone, `back-row` on the desktop) is the only way back on the plan, plan result, cannot-be-approved confirm, plan change (none, open, unknown), new plan started, empty remove-a-project and not-offered session confirm pages. The new-plan "started" page draws its button row only when there is a chat. Every removed link matched `chromeFor`'s `Back`, so none was kept for its address. `TestInPageBackLinksRemoved` in `pages_test.go` covers each branch and the kept links; a body `<a>` whose text starts with "Back" is a content link, since the bar's buttons are icon-only. See `## T10.2` in `docs/decisions.md`.
 
+### M11 — Install on a fresh machine
+
+**Outcome:** a hobbyist with a fresh Ubuntu machine (a cloud server, a spare computer, or a Multipass VM
+on their laptop) runs one command, answers a few questions, and ends with the daemon running as a
+service and the web page's address on screen. A Mac works the same way, behind an "at your own risk"
+screen. Running it again checks every step and fixes what is missing.
+
+The owner decided on 2026-10-17 (§2, "Where afk runs, and installing it"): a machine set aside for afk is
+the target and the docs say why before any step; Docker was set aside for a VM; the installer is
+`afk install`, built with the charm modules, and it writes Claude Code's
+`skipDangerousModePermissionPrompt` itself; macOS is supported; release binaries are coming, so a
+bootstrap script can download one. `docs/install.md` is the guide each task below keeps up to date.
+
+```
+T11.1 releases ──▶ T11.5 bootstrap ──┐
+T11.2 install plan ──▶ T11.3 Linux ──▶ T11.4 macOS ──┴──▶ T11.6 prove it (owner)
+T8.18 password ──────────┘
+```
+
+#### T11.1 — Release builds and `afk version`
+- **Depends on:** —
+- **Goal:** pushing a tag `v<semver>` publishes a GitHub release holding an afk binary for linux/amd64,
+  linux/arm64, darwin/amd64 and darwin/arm64 and a SHA-256 checksums file, and `afk version` (and
+  `afk --version`) prints the version a binary was built from.
+- **Background:** the bootstrap script (T11.5) needs binaries it can download, so a hobbyist never
+  needs Go. afk has no version flag today. afk uses no cgo, and `CGO_ENABLED=0 GOOS=darwin
+  GOARCH=arm64 go build` succeeded on the VM on 2026-10-17, so every target builds on one Linux
+  runner. `CLAUDE.md` says a Go binary copied to another path on macOS arm64 is killed by the kernel;
+  whether a downloaded and extracted release binary runs, or needs `codesign --force --sign -` first,
+  has not been checked, and T11.5 depends on the answer.
+- **Scope:**
+  - `afk version` and `afk --version`: print `afk <version> (<commit>, <date>)`. The version comes from
+    `-ldflags "-X main.version=..."` in a release build; a `make install` build prints `dev` and takes
+    the commit and its date from `debug.ReadBuildInfo` (`vcs.revision`, `vcs.time`, `vcs.modified`
+    shown as `+dirty`). A pure function from (ldflags version, build settings) to the line.
+  - `.github/workflows/release.yml`: on a pushed tag matching `v*`, run `make check`, build the four
+    targets with `CGO_ENABLED=0` and the version flag, pack each as `afk_<version>_<os>_<arch>.tar.gz`
+    (holding `afk`, `LICENSE` if there is one, and `README.md`), write `checksums.txt` (`sha256sum`
+    format), and create the release with `gh release create`. A `workflow_dispatch` run with an input
+    `dry_run: true` does everything but create the release, and keeps the files as run artifacts.
+  - A job on a `macos-latest` runner that downloads the darwin/arm64 archive from the same run, extracts
+    it, runs `afk version`, and records in `docs/decisions.md` under `## T11.1` whether it ran without
+    `codesign`.
+  - Docs: `afk version` in `docs/reference.md`; a "Making a release" section in `docs/development.md`.
+- **Must not:** publish anything on a push to `main` or from a pull request; change what `make install`
+  does; add a release tool (goreleaser and the like): the workflow is plain `go build`, `tar` and `gh`.
+- **Acceptance:** table test of the version line: a release version, `dev` with a commit, `dev` with a
+  dirty tree, and no build info at all (`dev (unknown)`). A scratch build prints `dev (<this commit>…)`.
+  A `workflow_dispatch` dry run on this branch is green, its four archives and `checksums.txt` are
+  attached as artifacts, `sha256sum -c checksums.txt` passes on them, the linux/amd64 binary prints its
+  version, and the macOS job's answer is in `docs/decisions.md`. `make check` is green.
+- **Amended 2026-10-17 (T11.1 done):** later tasks may assume the following. The version is the tag without its `v` (tag `v1.2.3` gives `afk 1.2.3 (…)` and `afk_1.2.3_<os>_<arch>.tar.gz`); `scripts/release.sh <version> <dir>` builds the same four archives and `checksums.txt` locally; a hand run of `release.yml` is a dry run unless `dry_run` is off, and publishes only from a `v*` tag. The GitHub dry run and the macOS codesign answer are still the owner's to run and record, so T11.5 must not assume either answer yet.
+
+#### T11.2 — The install plan, as a pure function
+- **Depends on:** —
+- **Goal:** one pure function takes what afk found out about the machine and returns the ordered list
+  of install steps, each marked done, to do, or cannot (with the reason in plain words), and how risky
+  the machine is to run afk on.
+- **Background:** `CLAUDE.md`'s rule: anything that branches on the environment is a pure decision with
+  every branch a table row, and the probing happens in the caller. Most probes already exist: the
+  unattended-mode check (`internal/provider/unattended.go`, `UnattendedPreflight`), the plugin
+  preflight (`<cli> plugin list`), the login check behind the governor (§6.5), `internal/probe` for
+  tools on `PATH`, `internal/profile` for the project location, and T8.18's password file. The step
+  list is `docs/install.md` steps 2 to 7.
+- **Scope:** a new package `internal/install`:
+  - `Facts`: the OS and, on Linux, the distribution and version (`/etc/os-release`); the architecture;
+    whether running as root; whether this is a virtual machine or container (`systemd-detect-virt` on
+    Linux; on macOS always "no"); whether it looks like a personal computer (a desktop session, such as
+    `XDG_CURRENT_DESKTOP` or a display manager, or macOS); the package manager (`apt-get`, `brew`, or
+    none); each tool afk needs (`git`, `gh`, `jq`, `ruby`, the agent CLI) and whether it was found;
+    whether `~/bin` is on `PATH` and holds this afk; the agent CLI's login, unattended-mode setting
+    and afk plugin; the `gh` login and whether git uses it; the git name and email; the project
+    location; the web page's password and bind; whether `tailscale` is installed; and the service:
+    installed, enabled, running, and (Linux) linger.
+  - `Plan(Facts) Plan`: the risk (`dedicated`, `vm`, `personal`, or `unknown`, where unknown is treated
+    like personal), and the steps in order: safety, packages, agent CLI, agent login, unattended mode,
+    afk plugin, GitHub login, git identity, project location, web page, service, check. Each step has
+    its state, the reason for it, and, when it is "cannot", what the person should do instead (for
+    example "Run afk install as your normal user, not root" or "Install Homebrew from brew.sh, then run
+    afk install again").
+  - `Probe(Deps) Facts`: the impure side, with every command, file read and environment read injected.
+    Anything that names the agent CLI goes through `internal/provider` (§2, "No vendor lock-in").
+- **Must not:** change anything on the machine (this task only reads); call a command that can hang
+  without a timeout; name a provider outside `internal/provider`.
+- **Acceptance:** table tests of `Plan` with a row for each state of each step, and rows for the risk:
+  a cloud VM, a Multipass VM, a Linux desktop, a Mac, root (every step "cannot" with the root
+  message), no package manager, a fully installed machine (every step done). Table tests of `Probe`
+  with fakes: a missing tool, a command that times out, an unreadable settings file. `make check` is
+  green.
+- Amended 2026-10-17 (T11.2 done): later tasks may assume `internal/install` holds `Build(Facts) Plan` (the type is `Plan`, the function `Build`: twelve ordered steps and the risk) and `Probe`, which reads the machine through injected seams; every command it runs has a deadline (10 seconds by default) and a failure or timeout reads as "could not tell", never "no". On a personal machine the safety step is always "to do", so the runner counts an accepted safety screen as done itself. The macOS label is `io.github.dphaener.afk`. The work started before M11 was on `main`, from a copy of this entry. See `## T11.2` in `docs/decisions.md`.
+
+#### T11.3 — `afk install` on Linux
+- **Depends on:** T11.2, T8.18
+- **Goal:** on Ubuntu, as a normal user, `afk install` walks through every step T11.2 lists and ends
+  with the daemon running as a service and the web page's address on screen. Run again on a finished
+  machine, it says everything is in place and changes nothing.
+- **Background:** the owner asked on 2026-10-17 for a guided install with "a nice install experience"
+  built on the charm modules, because the `gh` login and others need prompting. The owner decided that
+  the unattended-mode setting is written by afk automatically. The service is `contrib/afkd.service`
+  and its `README.md` (a user unit, `KillMode=process`, `Restart=always`, a `PATH` line to fill in,
+  linger). The web page's password comes from T8.18 (`afk web password`). A `bind` other machines can
+  reach needs the password (§4, `[web]`).
+- **Scope:**
+  - `afk install [--dry-run] [--yes]`, needing a terminal (without one it says so and exits 1). It runs
+    `Probe`, shows the plan as a checklist (done steps ticked), and then works through the steps that
+    are to do, re-probing after each one. A step that fails stops the run with what happened and what to
+    do, and leaves every earlier step in place. `--dry-run` prints the plan and changes nothing.
+    `--yes` takes the default at every choice but still needs a terminal for the logins.
+  - **Safety first.** A screen before anything changes: afk runs its agents with permissions bypassed,
+    what that means, and that afk belongs on a machine set aside for it. On a machine whose risk is
+    `personal` or `unknown`, it asks the person to type `I accept the risk`, and suggests a Multipass
+    VM. Root is refused outright, with how to make a normal user.
+  - **Packages**: one confirm listing the missing packages, then `sudo apt-get install -y ...` with the
+    terminal handed over (bubbletea's exec of a child process), so `sudo` asks for its password itself.
+    The agent CLI is installed with the command its maker documents (held in `internal/provider`).
+  - **Logins**: the terminal is handed to the agent CLI's own login, then to `gh auth login`, then
+    `gh auth setup-git` runs. Each is re-probed afterwards; a login left unfinished is a failed step.
+  - **Unattended mode**: `internal/provider` writes `"skipDangerousModePermissionPrompt": true` into
+    `~/.claude/settings.json`, keeping every other key, with an atomic same-folder rename. A file that is
+    not valid JSON is not overwritten: the step fails and says how to fix the file.
+  - **Plugin** through `internal/pluginstall` (the code behind `afk plugin install --target claude`).
+  - **Git identity**: a form for the name and email, filled in from `gh api user` when it can be.
+  - **Project location**: a form, default `~/code`, created if missing, saved with `internal/profile`'s
+    `Set`.
+  - **Web page**: the password through T8.18's prompt; then a choice of how it is reached: this machine
+    only (`127.0.0.1:4253`), every address (`0.0.0.0:4253`, for a Multipass VM), or Tailscale (offered
+    when `tailscale` is installed: runs `tailscale serve --bg 4253` after a confirm and saves the address
+    it prints as `public_url`). `[web]` keys are written into `config.toml` by a text edit that keeps
+    comments, as `internal/daemonconfig` already does for `[[project]]`.
+  - **Service**: writes `~/.config/systemd/user/afkd.service` from the unit in `contrib/` (embedded),
+    with the `Environment=PATH=` line built from where the tools were actually found, then
+    `systemctl --user daemon-reload`, `enable --now afkd` and `loginctl enable-linger`. An existing unit
+    file afk did not write is shown and replaced only after a confirm.
+  - **Check**: `afk daemon status` and the usage reading, then the web page's address (and, for
+    Tailscale, the `public_url`) in large type, and what to do next: open it and press Plan a new
+    project.
+  - Docs: rewrite `docs/install.md` around `afk install`, keeping the by-hand steps as a section for
+    people who want them, and the README's Install list; `afk install` in `docs/reference.md`.
+- **Must not:** run anything as root other than through `sudo` with the terminal handed over; install
+  or change anything before the safety screen and the step's confirm (or `--yes`); put a secret in
+  `config.toml`; remove or undo anything when a step fails; skip the safety screen under `--yes`.
+- **Acceptance:** table tests of the step runner with fake commands: each step's success and failure,
+  a failure stopping the run, re-probing, `--dry-run` changing nothing, `--yes` still showing the
+  safety screen. Tests of the settings.json write: a missing file, a file with other keys (kept), a
+  file that is not JSON (left alone). Model tests of the screens at 80 and 120 columns. Against a
+  scratch build with scratch `HOME` and `XDG_*` folders and stand-in `apt-get`, `sudo`, `claude`,
+  `gh`, `systemctl` and `loginctl` on `PATH`, driven through tmux: a fresh run ends on the address
+  screen with the expected files written and commands called, and a second run reports everything
+  done. `make check` is green.
+- Amended 2026-10-17 (T11.3 done): `afk install` exists for Linux. Later tasks may rely on `install.Facts.RiskAccepted` (set by the runner after the safety screen), `install.Next`, `Verify`, `RenderUnit`, `ServicePATH` and `WebAddress`, `provider.InstallCommand`, `LoginCommand` and `WriteUnattended`, `daemonconfig.SetWeb`, and the unit's marker line `# Written by afk install`. It runs `afk web password` and `afk plugin install` itself with the terminal handed over, and under `--yes` the page is reached from this machine only. `docs/install.md` and `docs/reference.md` were not on `main` yet, so the task documented `afk install` in the README; the README split moved that text into `docs/reference.md` and rewrote `docs/install.md` around `afk install` the same day. See `## T11.3` in `docs/decisions.md`.
+
+#### T11.4 — `afk install` on macOS
+- **Depends on:** T11.3
+- **Goal:** on a Mac with Homebrew, `afk install` does what it does on Linux, with the daemon running as
+  a launchd agent.
+- **Background:** the owner decided on 2026-10-17 to support macOS. A Mac is treated as a personal
+  computer (T11.2), so the safety screen always asks for `I accept the risk`. The daemon's forced stop
+  of a stuck session is Linux-only (it needs `/proc`); on a Mac a stuck session is reported instead
+  (`docs/daemon.md`, "Linux only").
+- **Scope:**
+  - Packages through `brew install` (git, gh, jq, ruby). afk does not install Homebrew: with no `brew`,
+    the packages step is "cannot", with the address of brew.sh and "run afk install again".
+  - The service is a LaunchAgent, `~/Library/LaunchAgents/<reverse-dns id>.plist`, generated by a pure
+    function: `ProgramArguments` running `afk daemon`, `RunAtLoad`, `KeepAlive` (the daemon exits on
+    purpose when it finds a new version of itself), `AbandonProcessGroup` so session hosts outlive the
+    daemon as `KillMode=process` does on Linux, `EnvironmentVariables` with the `PATH` built as on
+    Linux, and the daemon's log in afk's state folder. Loaded with `launchctl bootstrap gui/<uid>`.
+    Read `launchd.plist(5)` for each key and record what it does in `docs/decisions.md` under
+    `## T11.4`; claim nothing about launchd that the man page does not say.
+  - The "Running as a service" docs gain a macOS section beside `contrib/README.md`'s Linux steps, and
+    `docs/install.md`'s "On macOS" section is rewritten around `afk install`.
+- **Must not:** install Homebrew; run `sudo`; change the Linux path.
+- **Acceptance:** table tests of the plist (keys, `PATH`, the log path) and of the macOS rows of the
+  step runner. On a Mac (the T11.1 macOS runner, or the owner's Mac in T11.6): `afk install --dry-run`
+  prints the plan. `make check` is green.
+- Amended 2026-10-17 (T11.4 done): `afk install` works on a Mac with Homebrew. The service is the LaunchAgent `~/Library/LaunchAgents/io.github.dphaener.afk.plist` (`RunAtLoad`, `KeepAlive`, `ThrottleInterval` 30, `AbandonProcessGroup`, the `PATH` the Linux unit gets, and both output streams to `daemon.log` in afk's state folder), marked as afk's by a comment on its second line and loaded with `launchctl bootout` and `launchctl bootstrap gui/<uid>` from a desktop login. It has not run on a real Mac: no Mac was available and T11.1's macOS job was not on the branch, so `afk install --dry-run` on a Mac is an owner check (T11.6, and the open inbox item for T11.4). See `## T11.4` in `docs/decisions.md`.
+
+#### T11.5 — The bootstrap script
+- **Depends on:** T11.1
+- **Goal:** `curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh` puts the
+  latest release's afk in `~/bin` and starts `afk install`.
+- **Background:** `afk install` cannot install afk itself, so a few lines of shell get the binary first.
+  T11.1 publishes the archives and `checksums.txt`, and records whether a downloaded macOS binary needs
+  `codesign --force --sign -` to run.
+- **Scope:** `install.sh` at the repository root, POSIX `sh`. It refuses root; detects the OS and
+  architecture (and says plainly which ones there are binaries for); finds the latest release, or the
+  one named by `AFK_VERSION`; downloads the archive and `checksums.txt` with `curl`; checks the archive
+  with `sha256sum` or `shasum -a 256` and stops on a mismatch; extracts into a temporary folder and
+  moves `afk` into `~/bin` (making it), signing it on macOS if T11.1 found that necessary; says how to
+  put `~/bin` on `PATH` when it is not; and finally runs `~/bin/afk install`, with its input taken from
+  `/dev/tty` so the installer can ask its questions although the script itself arrived on a pipe.
+  `AFK_NO_INSTALL=1` stops after placing the binary. A shell test in the style of the hook tests, with
+  stand-in `curl`, `uname` and `afk`, added to `make check`. The README's Install section leads with
+  the one-line command.
+- **Must not:** use `sudo`; write anywhere but `~/bin` and a temporary folder; run a binary whose
+  checksum did not match.
+- **Acceptance:** the shell test covers a Linux amd64 install, a macOS arm64 install, an unknown
+  architecture, a checksum mismatch (nothing written to `~/bin`), root (refused), `AFK_VERSION`, and
+  `AFK_NO_INSTALL=1`; `shellcheck install.sh` is clean. `make check` is green.
+
+#### T11.6 — Prove it on fresh machines (owner)
+- **Depends on:** T11.3, T11.4, T11.5
+- **Goal:** the one-line install works for a newcomer, on a VM and on a Mac, from nothing to a first
+  task merged.
+- **Scope:** an owner check, done by hand:
+  1. On a laptop, `multipass launch --name afk-test --cpus 2 --memory 4G --disk 30G` and
+     `multipass shell afk-test`.
+  2. Run the one-line command from the README, and answer `afk install`'s questions. Note anything
+     that was unclear, slow or wrong.
+  3. Open the web page from the laptop, press **Plan a new project**, plan something tiny (a one-page
+     static site), approve it, and wait for its first task to merge.
+  4. On a Mac, run the one-line command and `afk install` as far as the service; check that
+     `afk daemon status` says the daemon is running and that a reboot brings it back.
+  5. Answer this item with what you noted. Each problem becomes a task with `afk plan amend`.
+  6. `multipass delete --purge afk-test`.
+- **Acceptance:** on the VM, a first task of the new project merged with no step done by hand outside
+  `afk install` and the web page; on the Mac, the daemon running after a reboot; every problem noted is
+  a task in the plan.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
@@ -3078,7 +3300,10 @@ top bar, as the phone does, so the browser's own back button is never the only w
   mainly to open their sessions' terminals, which the page cannot do; T8.16 adds a folder to the build.
 - **Daemon-side write-guard and continuation enforcement**, replacing shipit's Claude-only mods.
 - Rename `.claude/worktrees/` to a provider-neutral location.
-- Open-source release: licence, install script, Homebrew tap, docs site.
+- Open-source release: licence, Homebrew tap, docs site. (The install script moved to M11, 2026-10-17.)
+- **A Docker image**: set aside 2026-10-17 in favour of a VM (see the Decisions row "Where afk runs, and
+  installing it"). Worth revisiting only as an optional extra for people who already run everything in
+  containers.
 
 ## 10. Open questions to resolve before the relevant task
 
@@ -3101,6 +3326,7 @@ top bar, as the phone does, so the browser's own back button is never the only w
 | What the 28k of extra start-up context in implementation and review agents consists of. **Answered 2026-10-11:** tools and listings the agents never use. On the T1.4 session every sub-agent started at about 35,000 tokens, and about 26,700 of a task agent's were removable: the `Artifact` tool definition (about 15,000), the skills list (5,500), `SendFeedback` (2,500) and other unused tools and connector names (3,700). Part sizes are estimated from measured character counts. The plugin's agent definitions now leave them out, and the itemised tables are in `docs/decisions.md` under `## T1.5`. | T1.5 |
 | How a subscription weights cache reads, cache writes and output against its limits. Unpublished; compare the token ledger with the usage percentages the governor records. | after T2.4 |
 | Licence for the open-source release. | before release |
+| Is the repository public, with release binaries anyone can download without logging in to GitHub? The bootstrap script cannot be tried for real until it is. The owner said on 2026-10-17 that this is "on the table soon". | T11.6 |
 
 ## 11. Definition of done (every task)
 
@@ -3110,7 +3336,11 @@ top bar, as the phone does, so the browser's own back button is never the only w
 - Nothing outside `internal/provider` names a provider.
 - Schemas: any change to a file in §4 updates §4 and, for `status.json`, the schema document, in the
   same change.
-- `README.md` updated for any user-visible command, flag or key.
+- The user docs updated for any user-visible command, flag or key: the page under `docs/` that covers it
+  (`reference.md` for a command or flag, `dashboard.md` for a key, `web.md` for the web page, `daemon.md`
+  for the build loop, `configuration.md` for a settings file), and `README.md` only when the overview or
+  the first-project path changes. Amended 2026-10-17: the README was split into those pages that day, so
+  a task written before then that says "README: …" means the page that now holds that section.
 - `docs/decisions.md` updated when the task decides something this plan didn't, and this plan amended
   in place ("Amended <date> (T… done): …") when the task changes what a later task should assume.
 - Verified against a built binary, not from reading the diff.
