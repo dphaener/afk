@@ -42,7 +42,7 @@ die() {
 	exit 1
 }
 
-# shellcheck disable=SC2317 # only called by the EXIT trap, which shellcheck cannot see
+# shellcheck disable=SC2317,SC2329 # only called by the EXIT trap, which shellcheck cannot see (SC2317 before shellcheck 0.11, SC2329 from 0.11)
 cleanup() {
 	if [ -n "$new_file" ]; then
 		rm -f "$new_file"
