@@ -79,7 +79,11 @@ func Build(f Facts) Plan {
 	switch p.Risk {
 	case RiskDedicated, RiskVM:
 		add(StepSafety, Done, "This machine is set aside for afk, so agents running here put nothing else at risk.", "")
-	default:
+	case RiskPersonal, RiskUnknown:
+		if f.RiskAccepted {
+			add(StepSafety, Done, "You accepted the risk of running afk on this machine.", "")
+			break
+		}
 		add(StepSafety, ToDo, "This looks like a computer you use every day. afk runs agents with permission prompts turned off, "+
 			"so you will be asked to type I accept the risk. A Multipass virtual machine is safer.", "")
 	}

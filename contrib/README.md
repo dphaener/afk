@@ -1,5 +1,9 @@
 # Running the afk daemon as a service
 
+`afk install` writes this unit and starts it for you, along with the rest of the
+machine setup. The steps below are the by-hand way, for a machine where you
+would rather not use it.
+
 `afkd.service` is a systemd **user** unit that keeps `afk daemon` running on a
 Linux machine. It expects the `afk` binary at `~/bin/afk`, which is where
 `make install` puts it. Install it as your normal user, not as root: the agent

@@ -1,0 +1,26 @@
+afk install
+
+  ✓ Check that this machine is a safe place for afk
+  ○ Install the tools afk needs
+  ○ Install the agent CLI
+  ○ Sign in to the agent CLI
+  ○ Let the agent run without permission prompts
+  ○ Install the afk plugin
+  ○ Sign in to GitHub
+  ○ Set your git name and email
+  ○ Choose where projects live
+  ○ Set the web page password
+  ○ Start the afk service
+  ○ Check everything
+
+Before anything changes
+
+afk runs AI agents with their permission prompts turned off. They can run any
+command, change any file and use every login on this machine without asking
+first. That is why afk belongs on a machine set aside for it: a virtual machine,
+or a computer you use for nothing else.
+
+This is a virtual machine or a container, a good place for afk.
+
+Press enter to go on, or ctrl+c to stop.
+

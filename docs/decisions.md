@@ -3522,3 +3522,46 @@ T11.2 adds `internal/install`: a pure function that turns what afk found out abo
 
 - **Checked:** table tests of `Build` and `Probe` (with fakes, including a command that runs out of time and an unreadable settings file), `make check`, and one real probe of this Linux machine through a temporary test that was deleted afterwards. It finished in about a second and changed nothing.
 - **Not checked: a Mac.** Owner check: on a Mac, once `afk install` exists (T11.3/T11.4), run `afk install --dry-run` and see that the plan reads the machine correctly, the service step in particular.
+
+## T11.3
+
+T11.3 adds `afk install`, the guided installer for Linux: it shows the install plan from T11.2 as a checklist, shows a safety screen, and then works through the steps that are still to do, checking the machine again after each one. These are the decisions the master plan left open, numbered as in the work plan's assumptions. The master plan's M11 text was not on this branch when the work started, so the session worked from a copy of the T11.3 entry and left `docs/PLAN.md` alone.
+
+### What was decided, and why
+
+- **Where the code lives (A1).** The pure parts (which step comes next, the package names, the service file's text, its `PATH` line, the web address) are in `internal/install`. Writing the agent CLI's settings file and the agent CLI's install and sign-in commands are in `internal/provider`, so no other package names the agent. The `[web]` edit of `config.toml` is in `internal/daemonconfig`, beside the `[[project]]` edits. The command, its screens and everything that touches the machine are in the root package.
+- **The safety screen counts once it is accepted (A2).** The installer remembers, for the rest of the run, that the owner accepted the risk, and tells the install plan so each time it checks the machine again. The probe itself never claims it.
+- **The safety screen always shows (A3).** Also with `--yes`. On a personal computer, or a machine afk cannot place, the owner types `I accept the risk`; on a server or a VM a key press is enough.
+- **Installing the agent CLI and signing in (A4).** afk runs the install command the agent's maker documents, as the normal user, and then the agent CLI's own sign-in, each with the terminal handed over. Both commands are held in `internal/provider`. If the CLI lands in `~/.local/bin` and that is not on `PATH`, afk adds it for the rest of the run so the next steps can find it. This was decided without the owner (it would have been asked).
+- **Packages (A5).** `sudo apt-get update`, then `sudo apt-get install -y` with the missing packages, each with the terminal handed over so `sudo` asks for its password itself. A fresh cloud machine's package list is empty, so the update comes first.
+- **The password and the plugin (A6).** The installer runs afk itself (`afk web password`, `afk plugin install`) with the terminal handed over, so the T8.18 prompt and the plugin installer are used as they are. The installer never sees the password.
+- **How the web page is reached under `--yes` (A7).** This machine only (`127.0.0.1:4253`), the least exposed choice. Every address and Tailscale are offered but never picked for the owner. This was decided without the owner (it would have been asked).
+- **A service file afk did not write (A8).** afk marks the file it writes with a comment on its first line. A file without that line is shown and replaced only if the owner says yes (the default is no), and never under `--yes`. This was decided without the owner (it would have been asked).
+- **`--dry-run` needs no terminal (A9).** It only prints, so it can run in CI (T11.4's macOS check). Every other run needs a terminal.
+- **The docs pages (A10).** `docs/install.md` and `docs/reference.md`, which the master plan says to rewrite, were not on this branch: they are part of the owner's README split, not yet committed. Making them here would collide with that work, so `afk install` is documented in `README.md` and `contrib/README.md`, and those two pages are left for the owner's split to pick up. This was decided without the owner (it would have been asked).
+- **Tests and prerequisites (A11, A12).** Tests are written in the same task as the code. Nothing had to be in place first.
+
+### Decided while building
+
+- **The runner.** The screen is one pointer model whose every slow operation (the probe, a command, a file write, a handover) carries a sequence number, and a result from an earlier number is dropped, so a late answer can never act on a screen the owner has moved past.
+- **Every step asks first.** Each step has its own yes or no question (default yes), the logins and the unattended setting included, so there is one rule the owner can predict. The git identity and project location forms count as their own confirmation. Answering no stops the run with "You said no" and undoes nothing. The questions are afk's own y/n/enter prompt, not a form, so they show in the golden files and `--yes` takes the default.
+- **The checklist is short on purpose.** It shows the reason only for the step at work and for steps that cannot be done; twelve reasons do not fit a 24-row terminal. `--dry-run` prints every reason, one line per step.
+- **Other systems fail in plain words.** Packages on anything but `apt-get`, and the service on anything but Linux, fail the step and say what to do by hand (macOS is T11.4) instead of guessing.
+- **The service commands go through the handover too.** `daemon-reload`, `enable --now` and `enable-linger` all get the terminal, because on some systems `enable-linger` asks polkit for permission. The unit is not rewritten when it already matches.
+- **A step that turns to do again stops the run.** A step done earlier in the same run that the next check finds undone ends the run instead of looping.
+- **A step that fails stops the run, and earlier steps stay.** Nothing is undone.
+- **The plugin target** is taken from the plugin installer's own constant, not typed again here.
+- **Exit 0 when `~/bin` is not on `PATH`.** The reason is shown above the address; it is advice, not a failure. The "not a terminal" message goes to stderr.
+- **The final check reads the stored usage reading only.** It never asks the agent CLI for a fresh one, because starting the agent from the installer is the daemon's job.
+- **The settings writer sorts keys.** `~/.claude/settings.json` is rewritten with its keys in alphabetical order; values are kept byte for byte, and a file that is not a JSON object (or is `null`) is never overwritten.
+- **`--dry-run` is not silent on the machine.** afk writes nothing, but the probe runs `gh auth status` and the agent CLI's login check, and those tools make their own small files in the home folder. A check that nothing was created has to leave them out of `PATH`.
+
+### What was checked, and what was not
+
+Checked on this branch, against a binary built outside `PATH`: the table tests for the plan, the helpers, the settings writer, `SetWeb` and the runner; golden files for every screen at 80 and 120 columns; `afk install --dry-run` printing the twelve steps and changing nothing; the not-a-terminal and bad-flag exits; and two end-to-end runs in a tmux terminal with a scratch home and stand-ins for `apt-get`, `sudo`, `curl`, the agent CLI, `gh`, `systemctl`, `loginctl` and `systemd-detect-virt`. The first run accepted the safety screen, answered the forms, chose "this machine only" and reached the address screen `http://127.0.0.1:4253`, leaving the settings key, `[web] bind`, the project location, and the marked unit with its `PATH` line, with the commands in the expected order. A second run reported everything in place and ran no changing command. A run where the GitHub sign-in failed stopped at that step, kept the earlier work and ran no service command.
+
+Not checked, and left to the owner: a real Ubuntu machine, a real `sudo` password prompt, real agent and GitHub sign-ins, real Tailscale (`tailscale serve`), and real systemd starting the daemon and keeping it after logout. The stand-ins prove afk runs the right commands in the right order and reads their results; they cannot prove those programs do what afk expects on a real machine.
+
+### Docs left for the owner's split
+
+`docs/install.md` and `docs/reference.md` were not on this branch (A10), so their rewrite waits for the owner's doc split. `afk install` is documented in `README.md` (the Installation section and the subcommand list) and `contrib/README.md` meanwhile.

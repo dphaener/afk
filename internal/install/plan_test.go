@@ -280,3 +280,43 @@ func TestBuildNamesNoProvider(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildRiskAccepted: load-bearing rows are root and unsupported system,
+// where the flag must change nothing (blanket cannot), and the dedicated row,
+// where the reason must stay the "set aside" one.
+func TestBuildRiskAccepted(t *testing.T) {
+	cases := []struct {
+		name     string
+		mod      func(f *Facts)
+		safety   State
+		check    State
+		reasonHa string
+	}{
+		{"personal accepted", func(f *Facts) { f.Desktop = true }, Done, Done, "accepted"},
+		{"unknown accepted", func(f *Facts) { f.Virt = VirtUnknown }, Done, Done, "accepted"},
+		{"mac accepted", func(f *Facts) { f.OS = "darwin"; f.Virt = VirtNone; f.PackageManager = "brew"; f.Service.Linger = "" }, Done, Done, "accepted"},
+		{"dedicated accepted", func(f *Facts) { f.Virt = VirtNone }, Done, Done, "set aside"},
+		{"root accepted", func(f *Facts) { f.Desktop = true; f.Root = true }, Cannot, Cannot, "cannot be set up"},
+		{"unsupported os accepted", func(f *Facts) { f.OS = "freebsd" }, Cannot, Cannot, "cannot be set up"},
+	}
+	for _, tc := range cases {
+		t.Run(strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
+			f := full()
+			tc.mod(&f)
+			f.RiskAccepted = true
+			p := Build(f)
+			s := stepOf(p, StepSafety)
+			if s.State != tc.safety || !strings.Contains(s.Reason, tc.reasonHa) {
+				t.Errorf("safety = %q (%s), want %q containing %q", s.State, s.Reason, tc.safety, tc.reasonHa)
+			}
+			if got := stepOf(p, StepCheck).State; got != tc.check {
+				t.Errorf("check = %q, want %q", got, tc.check)
+			}
+		})
+	}
+	f := full()
+	f.Desktop = true
+	if got := stepOf(Build(f), StepSafety).State; got != ToDo {
+		t.Errorf("without the flag a personal machine's safety = %q, want todo", got)
+	}
+}
