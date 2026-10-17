@@ -214,3 +214,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Leader setting**: the `leader = "<key>"` line in the `[dash]` table of `config.toml` that picks the dashboard's leader key; a key the dashboard cannot use falls back to ctrl+] with a line in the header saying what to fix.
 - **Back row**: on the web page above 760px wide, the row under the top bar holding the back chevron and the page title, as the phone bar does; absent on the overview and the error page.
 - **Web password**: the owner's password for the web page, set with `afk web password` and kept only as a salted hash in `web-password.json` in afk's state folder; it replaced the `[web] token` in T8.18.
+- **Release build**: an afk binary built by the release workflow from a `v<semver>` tag, carrying its version; a `make install` build reports `dev` instead.

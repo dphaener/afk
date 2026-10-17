@@ -28,6 +28,7 @@ var subcommands = map[string]func([]string){
 	"web":     cmdWeb,
 	"pause":   cmdPause,
 	"resume":  cmdResume,
+	"version": cmdVersion,
 	"_host":   cmdHost,
 }
 
@@ -113,6 +114,11 @@ func routeArgs(args []string, stdoutTTY bool) route {
 	}
 
 	name := args[0]
+	// `--version` is the conventional spelling, so it is an alias of the
+	// `version` subcommand rather than a second code path.
+	if name == "--version" {
+		return route{kind: routeSubcommand, name: "version", args: args[1:]}
+	}
 	if _, ok := subcommands[name]; ok {
 		return route{kind: routeSubcommand, name: name, args: args[1:]}
 	}
@@ -228,6 +234,7 @@ Subcommands:
                  afk pause [project]
   resume         Let the daemon start new tasks in a project again:
                  afk resume [project]
+  version        Show the version this binary was built from (also afk --version)
 
 Use 'afk <subcommand> --help' for subcommand options.
 

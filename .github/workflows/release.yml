@@ -1,0 +1,141 @@
+name: Release
+
+# Publishes only on a v* tag. A manual run is a dry run unless told otherwise,
+# and even then the release job requires a tag ref.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and keep the files as artifacts, publish nothing'
+        type: boolean
+        default: true
+      version:
+        description: 'Version to stamp (no leading v). Empty uses 0.0.0-dev.<commit>'
+        type: string
+        required: false
+
+# Read-only by default; only the release job may write.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.3'
+
+    # Fail early and plainly: a real release needs a tag, and a branch run with
+    # dry_run off would otherwise build everything and then skip publishing.
+    - name: Refuse a real release without a tag
+      if: github.event_name == 'workflow_dispatch' && inputs.dry_run == false && github.ref_type != 'tag'
+      run: |
+        echo "A release needs a v* tag. Run this on a tag, or leave dry_run on." >&2
+        exit 1
+
+    - name: Run checks
+      run: make check
+
+    # The tag check keeps a stray tag like "vnext" from becoming a version.
+    - name: Work out the version
+      id: ver
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+          if ! [[ $GITHUB_REF_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Tag '$GITHUB_REF_NAME' is not v<major>.<minor>.<patch>." >&2
+            exit 1
+          fi
+          version=${GITHUB_REF_NAME#v}
+        elif [ -n "$INPUT_VERSION" ]; then
+          version=$INPUT_VERSION
+        else
+          version="0.0.0-dev.${GITHUB_SHA:0:12}"
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Build the archives
+      run: scripts/release.sh "${{ steps.ver.outputs.version }}" dist
+
+    - name: Check the checksums
+      working-directory: dist
+      run: sha256sum -c checksums.txt
+
+    - name: Run the linux/amd64 binary
+      env:
+        VERSION: ${{ steps.ver.outputs.version }}
+      run: |
+        mkdir -p /tmp/afk-x
+        tar -xzf "dist/afk_${VERSION}_linux_amd64.tar.gz" -C /tmp/afk-x
+        /tmp/afk-x/afk version
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: release-files
+        path: |
+          dist/*.tar.gz
+          dist/checksums.txt
+        if-no-files-found: error
+
+  # Answers whether a downloaded darwin/arm64 binary runs without codesign.
+  macos-check:
+    needs: build
+    runs-on: macos-latest
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: release-files
+        path: dist
+
+    - name: Run the darwin/arm64 binary
+      run: |
+        mkdir x
+        tar -xzf dist/afk_*_darwin_arm64.tar.gz -C x
+        cd x
+        if ./afk version; then
+          echo "The downloaded darwin/arm64 binary runs without codesign." >> "$GITHUB_STEP_SUMMARY"
+        elif codesign --force --sign - ./afk && ./afk version; then
+          echo "The darwin/arm64 binary needs codesign --force --sign - before it runs." >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "The darwin/arm64 binary does not run, even after codesign." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+  release:
+    needs: [ build, macos-check ]
+    # Only a pushed tag, or a hand run on a tag with dry_run off. A branch or a
+    # dry run never reaches here.
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry_run == false)
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: release-files
+        path: dist
+
+    - name: Create the release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt \
+          --title "afk $GITHUB_REF_NAME" --generate-notes --verify-tag

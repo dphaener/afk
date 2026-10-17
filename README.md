@@ -50,6 +50,21 @@ Only a bare `afk` is the default action. `afk dash`'s flags are not top-level fl
 
 ---
 
+### `afk version` — Show which afk this is
+
+`afk version` prints the version this binary was built from, the commit it was built at, and the day of that commit. `afk --version` prints the same line. Release builds from the release workflow show their version number; a binary built with `make` or `make install` shows `dev` instead.
+
+```bash
+afk version
+# Release build:   afk 0.1.0 (3f9c2a1b7d4e, 2026-10-17)
+# make install:    afk dev (3f9c2a1b7d4e, 2026-10-17)
+# Uncommitted work: afk dev (3f9c2a1b7d4e+dirty, 2026-10-17)
+```
+
+`+dirty` means the source had uncommitted changes when the binary was built, so the commit alone does not describe what you are running. If the build carries no commit information at all, the line ends in `(unknown)`.
+
+---
+
 ### `afk new` — Create a new session
 
 Create an isolated afk session with a dedicated branch and worktree.
@@ -1462,6 +1477,24 @@ node --test plugins/afk/workflows/test/*.test.mjs
 # Test a dry-run (no side effects)
 ./afk new --dry-run --base main test-session
 ```
+
+### Making a release
+
+A release is a git tag. Pushing a tag `v<major>.<minor>.<patch>` starts the release workflow (`.github/workflows/release.yml`), which runs `make check`, builds the four archives (Linux and macOS, Intel and Apple silicon) and a `checksums.txt`, and publishes them as a GitHub release:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+To try the workflow without publishing anything, run it by hand with `dry_run` on. It builds the same files and keeps them as downloadable artifacts of the run, and publishes nothing:
+
+```bash
+gh workflow run release.yml --ref <branch> -f dry_run=true
+```
+
+Then download the artifacts from that run in the GitHub Actions page. To build the same archives on your own machine, run `scripts/release.sh <version> <dir>` with a version such as `0.1.0` (no leading `v`) and a new, empty folder. It writes the four archives and `checksums.txt` into that folder.
+
+The release workflow also has a macOS job that runs the darwin/arm64 binary and writes its answer to the run's summary page. If the summary says the binary needs codesign, run `codesign --force --sign - afk` on the downloaded `afk` file on your Mac before you run it.
 
 ---
 
