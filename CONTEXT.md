@@ -214,3 +214,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Leader setting**: the `leader = "<key>"` line in the `[dash]` table of `config.toml` that picks the dashboard's leader key; a key the dashboard cannot use falls back to ctrl+] with a line in the header saying what to fix.
 - **Back row**: on the web page above 760px wide, the row under the top bar holding the back chevron and the page title, as the phone bar does; absent on the overview and the error page.
 - **Web password**: the owner's password for the web page, set with `afk web password` and kept only as a salted hash in `web-password.json` in afk's state folder; it replaced the `[web] token` in T8.18.
+- **Install plan**: the ordered steps `afk install` works through (safety, packages, agent CLI, logins, unattended mode, plugin, git identity, project location, web page, service, check), each done, to do or cannot, worked out by `internal/install` from what it found on the machine.
+- **Machine risk**: how safe a machine is to run afk on: `dedicated`, `vm`, `personal` or `unknown` (treated like personal).
