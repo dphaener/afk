@@ -3095,6 +3095,7 @@ T8.18 password ──────────┘
   A `workflow_dispatch` dry run on this branch is green, its four archives and `checksums.txt` are
   attached as artifacts, `sha256sum -c checksums.txt` passes on them, the linux/amd64 binary prints its
   version, and the macOS job's answer is in `docs/decisions.md`. `make check` is green.
+- **Amended 2026-10-17 (T11.1 done):** later tasks may assume the following. The version is the tag without its `v` (tag `v1.2.3` gives `afk 1.2.3 (…)` and `afk_1.2.3_<os>_<arch>.tar.gz`); `scripts/release.sh <version> <dir>` builds the same four archives and `checksums.txt` locally; a hand run of `release.yml` is a dry run unless `dry_run` is off, and publishes only from a `v*` tag. The GitHub dry run and the macOS codesign answer are still the owner's to run and record, so T11.5 must not assume either answer yet.
 
 #### T11.2 — The install plan, as a pure function
 - **Depends on:** —

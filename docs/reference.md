@@ -16,6 +16,21 @@ Only a bare `afk` is the default action. `afk dash`'s flags are not top-level fl
 
 ---
 
+## `afk version` — Show which afk this is
+
+`afk version` prints the version this binary was built from, the commit it was built at, and the day of that commit. `afk --version` prints the same line. Release builds from the release workflow show their version number; a binary built with `make` or `make install` shows `dev` instead.
+
+```bash
+afk version
+# Release build:   afk 0.1.0 (3f9c2a1b7d4e, 2026-10-17)
+# make install:    afk dev (3f9c2a1b7d4e, 2026-10-17)
+# Uncommitted work: afk dev (3f9c2a1b7d4e+dirty, 2026-10-17)
+```
+
+`+dirty` means the source had uncommitted changes when the binary was built, so the commit alone does not describe what you are running. If the build carries no commit information at all, the line ends in `(unknown)`.
+
+---
+
 ## `afk new` — Create a new session
 
 Create an isolated afk session with a dedicated branch and worktree.

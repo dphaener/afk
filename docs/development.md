@@ -25,6 +25,24 @@ node --test plugins/afk/workflows/test/*.test.mjs
 ./afk new --dry-run --base main test-session
 ```
 
+## Making a release
+
+A release is a git tag. Pushing a tag `v<major>.<minor>.<patch>` starts the release workflow (`.github/workflows/release.yml`), which runs `make check`, builds the four archives (Linux and macOS, Intel and Apple silicon) and a `checksums.txt`, and publishes them as a GitHub release:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+To try the workflow without publishing anything, run it by hand with `dry_run` on. It builds the same files and keeps them as downloadable artifacts of the run, and publishes nothing:
+
+```bash
+gh workflow run release.yml --ref <branch> -f dry_run=true
+```
+
+Then download the artifacts from that run in the GitHub Actions page. To build the same archives on your own machine, run `scripts/release.sh <version> <dir>` with a version such as `0.1.0` (no leading `v`) and a new, empty folder. It writes the four archives and `checksums.txt` into that folder.
+
+The release workflow also has a macOS job that runs the darwin/arm64 binary and writes its answer to the run's summary page. If the summary says the binary needs codesign, run `codesign --force --sign - afk` on the downloaded `afk` file on your Mac before you run it.
+
 ---
 
 ## Architecture

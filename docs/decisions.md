@@ -3493,6 +3493,44 @@ All three checks passed with no blocker or major finding, so no critic ran. Mino
 - Five test files changed that no task's file list named: only to drop the token from the test setup and to skip the bars' sign-out forms.
 - This file and `CONTEXT.md` are written by the planner and conductor, by design.
 
+## T11.1
+
+T11.1 adds `afk version` (and `afk --version`) and a release workflow: pushing a tag `v<semver>` builds afk for linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64, writes `checksums.txt` and publishes a GitHub release. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Where the task text came from (A1).** When the session started, the T11.1 entry was only in the owner's uncommitted `docs/PLAN.md`. The session followed that text; it has since landed on `main` unchanged in substance.
+- **Where the docs went (A2).** `docs/reference.md` and `docs/development.md` were not on `main` when the session started, so the docs first went into `README.md`. Merging `main` brought the README split in, and the docs moved where the task asked: `afk version` in `docs/reference.md`, "Making a release" in `docs/development.md`.
+- **The master-plan amendment (A3).** Skipped at first, because `docs/PLAN.md` had no M11 then; added to the T11.1 entry once `main` was merged in.
+- **The version string (A4).** It is the tag without its `v`: tag `v1.2.3` gives `afk 1.2.3 (…)` and `afk_1.2.3_linux_amd64.tar.gz`.
+- **Commit and date (A5).** The first 12 characters of the commit, with `+dirty` when the tree had uncommitted changes, and the UTC day of the commit. With no build information at all the line is `afk dev (unknown)`.
+- **Trying it without publishing (A6).** A hand-started run has `dry_run` (on by default) and an optional `version`, which defaults to `0.0.0-dev.<commit>`. A release is only ever created from a `v*` tag, never from a branch, a pull request or a dry run.
+- **The build is a script (A7).** `scripts/release.sh` does the `go build`, `tar` and `sha256sum` steps, so the same build runs on a laptop and in the workflow.
+- **The macOS check (A8).** The job runs the downloaded darwin/arm64 binary without `codesign` first, and only if that fails signs it and tries again. It writes which one happened to the run's summary.
+- **The GitHub dry run was not run by this session (A9).** The session works without pushing, and the workflow only runs on GitHub. The owner runs it (see below).
+- **Arguments and tests (A10, A11, A12).** `afk version` takes no arguments; `--help` prints its usage. Tests were written with the code. Nothing had to be in place first.
+
+### Decided while building
+
+- **`afk --version` is a rewrite, not a second command.** The router turns a leading `--version` into the `version` subcommand, so the subcommand list still has one entry per command.
+- **The repo has no LICENSE file**, so the archives hold `afk` and `README.md`. The script adds `LICENSE` when one appears.
+- **A commit stamp needs a plain checkout.** A build inside a session worktree nested under the main checkout (`.claude/worktrees/...`) is stamped with the main checkout's commit, often with `+dirty`. Go does the stamping, not afk. CI and a normal clone stamp the right commit.
+
+### Checked, and not checked
+
+- **Checked locally:** the version-line table test and the routing rows pass; `scripts/release.sh 0.0.0-test <dir>` built the four archives and `checksums.txt`, `sha256sum -c` passed, and the extracted linux/amd64 binary printed `afk 0.0.0-test (...)`; bad versions and a non-empty folder are refused. The workflow file parses, and actionlint's only complaint was the `ubuntu-26.04` label that `ci.yml` already uses. `make check` was run in full: green.
+- **Not checked:** the workflow on GitHub and the macOS job (below).
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes:
+- The "Build the archives" step puts the version straight into its shell line. A hand-run `version` input is checked by the script only after the shell has read the line. Passing it through `env:`, as the next step does, would be safer.
+- This file and `CONTEXT.md` are written by the planner and conductor, by design.
+
+### Verification for the owner
+
+- **Not yet checked: does a downloaded darwin/arm64 binary run without `codesign`?** Push the branch, run `gh workflow run release.yml --ref t11-1 -f dry_run=true`, and read the `macos-check` job's summary. Record the answer here (T11.5 depends on it), and check the run's four archives and `checksums.txt` with `sha256sum -c checksums.txt`.
+
 ## T11.2
 
 T11.2 adds `internal/install`: a pure function that turns what afk found out about a machine into the ordered install steps (each done, to do, or cannot, with the reason and what to do instead) and how risky the machine is, plus a read-only probe that finds those facts out. Nothing calls it yet; `afk install` (T11.3) will. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
