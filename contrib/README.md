@@ -55,7 +55,7 @@ flood the journal. `systemctl --user stop afkd` still stops it for good.
   and the next start picks the sessions up again.
 - Sessions the daemon started are checked and restarted by it while it runs: one that stops
   answering is restarted, and one whose host is gone is started again (see "Recovering a
-  session" in the main README).
-- A project's `after_merge` command (see `[ship]` in the main README) runs with
+  session" in [`docs/daemon.md`](../docs/daemon.md)).
+- A project's `after_merge` command (see `[ship]` in [`docs/configuration.md`](../docs/configuration.md)) runs with
   the unit's `PATH`. Whatever it calls must be on the `Environment=PATH=...`
   line. For this repository that is `make`, `go` and `afk` itself.

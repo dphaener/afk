@@ -145,7 +145,7 @@ func TestPluginOldPlanMatcher(t *testing.T) {
 // TestPluginsUseNewPlanName protects the rename of /afk:plan to
 // /afk:work-plan. A prompt that still names the old command sends the agent
 // to a skill that no longer exists, and nothing fails at run time. Every text
-// file under plugins/ is checked, plus the README read from disk.
+// file under plugins/ is checked, plus the user docs (userDocs) read from disk.
 func TestPluginsUseNewPlanName(t *testing.T) {
 	check := func(name string, b []byte) {
 		if !utf8.Valid(b) || strings.IndexByte(string(b), 0) >= 0 {
@@ -174,11 +174,13 @@ func TestPluginsUseNewPlanName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk plugins: %v", err)
 	}
-	readme, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatalf("read README.md: %v", err)
+	for _, name := range userDocs {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		check(name, b)
 	}
-	check("README.md", readme)
 }
 
 // catInclude matches the include lines the Claude Code skill loader expands.

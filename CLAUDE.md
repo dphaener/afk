@@ -82,7 +82,7 @@ go test -count=1 .                           # bypass the cache
 
 `afk` manages **detached session hosts**: a session is a `claude "/afk:go --session {name}"` process running on its own PTY in its own git worktree, owned by a background `afk _host` process that outlives every UI attached to it. Quitting the dashboard or detaching from `attach` cannot end a session. That single fact drives most of the design below.
 
-Read `README.md` for the user-facing surface (flags, keybindings, exit codes, degradation matrix). What follows is the cross-file structure it doesn't cover.
+The user-facing surface is documented in `README.md` (a short overview) and the pages under `docs/` it links to: `install.md`, `web.md`, `dashboard.md` (keybindings, panels, search folders), `daemon.md`, `configuration.md`, `reference.md` (every command, flag and exit code, the session model, the degradation matrix) and `development.md`. What follows is the cross-file structure they don't cover.
 
 ### Two independent state channels
 
@@ -161,6 +161,6 @@ Every task is held to these:
 - No test touches a real session, GitHub, an agent CLI or real usage.
 - Nothing outside `internal/provider` names a provider.
 - Schemas: any change to a file in §4 updates §4 and, for `status.json`, the schema document, in the same change.
-- `README.md` updated for any user-visible command, flag or key.
+- The user docs updated for any user-visible command, flag or key: the page under `docs/` that covers it (`reference.md` for a command or flag, `dashboard.md` for a key, `web.md` for the web page, `daemon.md` for the build loop, `configuration.md` for a settings file), and `README.md` only when the overview or the first-project path changes. A task in `docs/PLAN.md` that says "README:" means that page.
 - `docs/decisions.md` updated when the task decides something the plan didn't, and the plan amended in place ("Amended <date> (T… done): …") when the task changes what a later task should assume.
 - Verified against a built binary, not from reading the diff.

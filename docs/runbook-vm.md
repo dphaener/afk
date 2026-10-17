@@ -35,8 +35,8 @@ here tries to do it for you.
 
 These were set up when the VM was built and when `afkd` was installed. This
 section only checks them. If one is missing, [`contrib/README.md`](../contrib/README.md)
-has the install steps for the service, and the main [`README.md`](../README.md)
-has the rest.
+has the install steps for the service, and [`install.md`](install.md) has the
+rest.
 
 What should already be true:
 

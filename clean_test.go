@@ -1289,6 +1289,33 @@ func readRepoFile(t *testing.T, name string) string {
 	return string(data)
 }
 
+// userDocs is every page of the user documentation. README.md was split into
+// docs/ (2026-10-17), so a guard on the documented wording must read all of
+// them: a stale sentence moved into docs/reference.md would otherwise pass a
+// check that reads README.md alone.
+var userDocs = []string{
+	"README.md",
+	"docs/install.md",
+	"docs/web.md",
+	"docs/dashboard.md",
+	"docs/daemon.md",
+	"docs/configuration.md",
+	"docs/reference.md",
+	"docs/development.md",
+}
+
+// readUserDocs returns every page of userDocs joined, for assertions about
+// what the documentation says wherever it now says it.
+func readUserDocs(t *testing.T) string {
+	t.Helper()
+	var b strings.Builder
+	for _, name := range userDocs {
+		b.WriteString(readRepoFile(t, name))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // TestReadmeDoesNotClaimSocketLivesInAfkDir is the regression for the
 // W4.T2 finding that README.md:208 and :347 claimed a scratch session's
 // socket sits inside `.afk/{name}/` alongside host.json and host.log. It
@@ -1298,14 +1325,14 @@ func readRepoFile(t *testing.T, name string) string {
 // computes, so it fails if either the old wording returns or the documented
 // directory ever stops matching the real one.
 func TestReadmeDoesNotClaimSocketLivesInAfkDir(t *testing.T) {
-	readme := readRepoFile(t, "README.md")
+	readme := readUserDocs(t)
 
 	for _, bad := range []string{
 		"`host.json`, `host.log`, and the socket are present",
 		"containing `host.json`, `host.log`, and a socket",
 	} {
 		if strings.Contains(readme, bad) {
-			t.Errorf("README.md still claims the socket lives in .afk/{name}/ alongside host.json/host.log: contains %q", bad)
+			t.Errorf("the docs still claim the socket lives in .afk/{name}/ alongside host.json/host.log: contains %q", bad)
 		}
 	}
 
@@ -1318,7 +1345,7 @@ func TestReadmeDoesNotClaimSocketLivesInAfkDir(t *testing.T) {
 		t.Fatalf("host.SocketPath's directory = %q, want a afk-<uid> prefix — README's os.TempDir()/afk-{uid}/ claim would name the wrong thing", socketDir)
 	}
 	if !strings.Contains(readme, "os.TempDir()/afk-{uid}/") {
-		t.Errorf("README.md does not document the socket's actual location (os.TempDir()/afk-{uid}/, matching host.SocketPath)")
+		t.Errorf("the docs do not document the socket's actual location (os.TempDir()/afk-{uid}/, matching host.SocketPath)")
 	}
 }
 
@@ -1332,12 +1359,12 @@ func TestReadmeDoesNotClaimSocketLivesInAfkDir(t *testing.T) {
 // the assertion now checks for the general "kind-specific" claim rather than
 // the scratch-only wording it started with.
 func TestReadmeDoesNotClaimCKeyTreatsBothKindsIdentically(t *testing.T) {
-	readme := readRepoFile(t, "README.md")
+	readme := readUserDocs(t)
 	if strings.Contains(readme, "applies the same logic to both kinds with no distinction") {
-		t.Error("README.md still claims the dashboard's c key applies identical logic to both session kinds, which is stale now that scratch sessions get their own confirmation copy")
+		t.Error("the docs still claim the dashboard's c key applies identical logic to both session kinds, which is stale now that scratch sessions get their own confirmation copy")
 	}
 	if !strings.Contains(readme, "kind-specific confirmation") {
-		t.Error("README.md does not document that the c key gives each session kind its own confirmation copy")
+		t.Error("the docs do not document that the c key gives each session kind its own confirmation copy")
 	}
 }
 

@@ -103,8 +103,8 @@ func cmdDash(args []string) {
 	// degrades to exactly the state a config that goes bad under a RUNNING
 	// dashboard produces. A --project path that is not a repo is a different
 	// case and stays a hard exit in `new`/`clean`, which are specified to
-	// reject it; `dash` instead starts on the empty state (see README's
-	// --project note).
+	// reject it; `dash` instead starts on the empty state (see docs/dashboard.md,
+	// "Launching outside a repo").
 	tmux := os.Getenv("TMUX")
 	loc := dashLocation{
 		gitCommonDir: resolveGitCommonDirIn(repo),
