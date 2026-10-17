@@ -249,7 +249,7 @@ func webCreatePlanFolder(text string) (string, error) {
 //
 // It decides again from the typed text and creates only on KindCreate. That
 // is the guard that matters: the text comes from a POST, and anyone holding
-// the token can post anything, so a path, a name with a slash, or a name
+// the page's password can post anything, so a path, a name with a slash, or a name
 // whose folder appeared since the card was drawn must make nothing. Where the
 // folder goes is decided here from the profile, never taken from the request.
 //

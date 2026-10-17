@@ -418,7 +418,7 @@ func refusalStatus(reason planchat.RefusalReason) int {
 // This handler only translates. Whether the reply may be sent is decided
 // behind Deps.PlanReply (by planchat), and it comes back as a *planchat.Refusal
 // whose own sentence is shown, with its reason beside it; deciding it here as
-// well would let the two drift apart. The token, the Origin check and the
+// well would let the two drift apart. The sign-in, the Origin check and the
 // 64 KB limit are the guard's and are not repeated.
 func (s *server) planReply(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.findChatProject(w, r)

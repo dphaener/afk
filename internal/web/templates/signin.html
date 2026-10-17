@@ -1,0 +1,19 @@
+{{define "title"}}This page is private{{end}}
+{{define "content"}}
+<p class="wordmark">afk</p>
+<h1>This page is private</h1>
+<p>Sign in with the password set by afk web password.</p>
+{{with .Notice}}<div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>{{end}}
+<form method="post" action="/signin" class="stack">
+  <input type="hidden" name="next" value="{{.Next}}">
+  <div class="field">
+    <label class="field__label" for="signin-password">Password</label>
+    <input class="input" type="password" id="signin-password" name="password" autocomplete="current-password" required{{if .FieldError}} aria-invalid="true" aria-describedby="signin-error"{{end}}>
+    {{with .FieldError}}<p class="field__error" id="signin-error" role="alert">{{.}}</p>{{end}}
+  </div>
+  <div class="btn-row">
+    <button type="submit" class="btn btn--primary">Sign in</button>
+  </div>
+</form>
+<p class="meta">Not the owner? There is nothing else here.</p>
+{{end}}

@@ -22,17 +22,15 @@ The install guide takes a fresh Ubuntu machine (or a Multipass VM on your laptop
 
 In short:
 
-1. Get an Ubuntu machine, and install `git`, `gh`, `jq`, `ruby`, Go and Claude Code.
-2. `git clone https://github.com/dphaener/afk.git && cd afk && make install`
-3. Log in to Claude Code and GitHub, accept Claude Code's unattended-mode warning once, and run `afk plugin install --target claude`.
-4. Give the web page a token in `~/.config/afk/config.toml`.
-5. Start the daemon as a service (`contrib/README.md`).
+1. Get an Ubuntu machine (or a Mac with Homebrew, at your own risk).
+2. Build afk: `git clone https://github.com/dphaener/afk.git && cd afk && make install` (needs git, Go and make).
+3. Run `afk install`. It walks you through the rest: the tools, Claude Code and its sign-in, GitHub, the web page's password and the background service, asking before each step. Run it again at any time to check and fix the machine.
 
-A guided `afk install` that does all of this for you is on the way.
+Release downloads and a one-line install command are on the way.
 
 ## Your first project, from the browser
 
-1. Open the web page and sign in with your token.
+1. Open the web page at the address `afk install` showed you, and sign in with your password.
 2. Press **Plan a new project**, give it a name, and start planning.
 3. Answer the planning agent's questions in the chat. Each one comes with options and a recommendation.
 4. Read the plan it writes, and press **Approve the plan…**.

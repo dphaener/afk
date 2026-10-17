@@ -16,6 +16,7 @@ import (
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 // TestPlanFolderCheck pins the web page's read-only folder check: what kind
@@ -231,7 +232,10 @@ func newBeingPlannedRig(t *testing.T, configured []daemon.Project) *beingPlanned
 	d.CheckPlanFolder = func(text string) web.PlanFolderCheck {
 		return webCheckPlanFolderWith(planCheckDeps(r.fake.deps(elsewhere)), text)
 	}
-	h, err := web.New(web.Config{Token: daemonTestWebToken}, d)
+	// The state deps above are zero, which would find the real state folder,
+	// so the password is handed in here and no test reads the owner's file.
+	d.Password = func() (webpass.Record, error) { return daemonTestWebRecord, nil }
+	h, err := web.New(web.Config{}, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +250,7 @@ func (r *beingPlannedRig) start(dir string) *httptest.ResponseRecorder {
 	body := `{"path": ` + jsonString(dir) + `, "confirm": true}`
 	req := httptest.NewRequest(http.MethodPost, "/api/plan/new", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+daemonTestWebToken)
+	req.AddCookie(&http.Cookie{Name: "afk_web", Value: daemonTestWebCookie()})
 	rec := httptest.NewRecorder()
 	r.handler.ServeHTTP(rec, req)
 	return rec

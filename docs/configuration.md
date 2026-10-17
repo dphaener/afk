@@ -33,7 +33,6 @@ on_unknown_usage = "run"       # "run" or "hold": what to do when the agent cann
 
 [web]
 bind = "127.0.0.1:4253"        # host:port the web page listens on (this is the default); the port is 1 to 65535
-token = "paste-a-secret-here"  # at least 16 characters, no spaces; leave it out and the page is off
 public_url = "https://afk.example"  # optional: where you open the page from; starts with http:// or https://, no ? or #
 
 [[project]]

@@ -261,6 +261,28 @@ afk notify --check
 afk notify --plan my-session --message "Test" --dry-run
 ```
 
+## `afk install` — Set up this machine
+
+```bash
+afk install [--dry-run] [--yes]
+```
+
+Guided setup for a Linux machine (Ubuntu or another system with `apt-get` and systemd) or a Mac with Homebrew (the background service is a launchd LaunchAgent). It looks at the machine, shows the twelve steps as a checklist, and does the ones that are not done yet, checking the machine again after each one.
+
+- **On a Mac,** the safety screen always asks you to type `I accept the risk`, because a Mac is a computer you use every day. The packages step runs `brew install` for the missing tools. With no Homebrew, the step tells you to install it from brew.sh and run `afk install` again: afk never installs Homebrew and never uses `sudo` on a Mac. Run `afk install` from a desktop login on the Mac, not over SSH, because the service is loaded into your desktop session.
+
+- **The safety screen comes first, every time.** afk runs agents with their permission prompts turned off, so it belongs on a machine set aside for it. On a virtual machine or a server, a key press accepts. On a computer you use every day, or one afk cannot place, you must type `I accept the risk`. Nothing changes before you accept.
+- **Each step asks first.** The default answer is yes; answering no stops the run and undoes nothing. Commands that need to talk to you (`sudo`, the agent's sign-in, `gh auth login`, `afk web password`) get the terminal until they end.
+- **A step that fails stops the run.** The steps before it stay done, and the screen says what to do. Run `afk install` again to go on.
+- **Running it again checks and fixes.** Every step is checked against the machine, and only what is missing is done. When everything is in place it says so and changes nothing.
+- **The last screen shows the web address.** You choose this machine only (`http://127.0.0.1:4253`), every address on the machine, or Tailscale. The choice is saved as `[web] bind` in `config.toml`.
+- **The service file.** On Linux afk writes `~/.config/systemd/user/afkd.service`, with a first line that marks it as afk's. On a Mac it writes `~/Library/LaunchAgents/io.github.dphaener.afk.plist`, marked by the comment on its second line (a plist cannot start with `#`), and loads it with `launchctl bootstrap`. A file without the marker is shown and replaced only if you say yes (never under `--yes`).
+- `--dry-run` prints the plan, one line per step, and changes nothing. It needs no terminal, so it works in a script or CI.
+- `--yes` takes the default answer to every question. The safety screen is still shown and still needs your answer, and the web page is set to this machine only.
+- Anything else needs a terminal: without one, `afk install` exits 1 and says so.
+
+Exit codes: 0 everything is in place, 1 a step failed or was stopped (or there was no terminal), 2 the command was written wrongly. [`contrib/README.md`](../contrib/README.md) has the by-hand way to set up the service.
+
 ## `afk plugin install` — Install the agent plugin
 
 Install the afk plugin into the agent CLIs on this machine.
@@ -702,6 +724,22 @@ start-up (the first call of each agent)
 **The ledger** is `.afk/log/tokens.jsonl` in the project's main checkout, one JSON line per task, phase, role and model. It is added to only by `--record`. Several recordings can run at once; they take turns using a lock file beside the ledger.
 
 **Exit codes:** 0 when the table was printed (or the session was already recorded), 1 when there was nothing to show or the session could not be read (no such session, it has not started, no transcript found, the agent CLI is not supported yet, or the ledger has nothing for the task), 2 when the command was written wrongly. `-h` and `--help` print the usage and exit 0.
+
+---
+
+## `afk web password` — Set the password for the web page
+
+`afk web password` sets the password that signs you in to the web page `afk daemon` serves (see [the web page](web.md)). Run it in a terminal on the machine afk runs on. It asks for the password twice without showing it, and saves only a salted hash of it, in `web-password.json` in afk's state folder, readable only by you. The password itself is never saved, and `config.toml` never holds it.
+
+```bash
+afk web password
+```
+
+- The password must be at least 8 characters, and the two answers must match. A short or mismatched one saves nothing and says why.
+- Running it again replaces the password, and every browser that was signed in is signed out.
+- A password set while `afk daemon` runs turns the page on only when the daemon next starts, so restart it. A page that is already on reads the file again on every sign-in, so changing the password needs no restart.
+- It must run in a terminal. In a script or from a pipe it refuses and saves nothing, so a password is never echoed into a log.
+- Exit codes: 0 saved, 1 nothing was saved, 2 the command was written wrongly (for example with extra words after `password`).
 
 ---
 

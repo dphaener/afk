@@ -121,7 +121,7 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Permission mode | **Passed explicitly at launch**, not left to a settings file. The daemon starts each agent in the provider's unattended mode and refuses to launch if the machine isn't set up for it. (On the VM, a user-settings default that had drifted to another mode silently changed how a task ran.) |
 | Concurrency | **One task at a time** in v1. Usage, not wall-clock, is the limit, and sequential tasks never conflict. |
 | Notifications | ntfy (plain HTTP POST) for push. Desktop toasts from forge stay as a macOS-only extra. |
-| Web surface | A small server-rendered page served by `afk daemon` (Go `net/http` + `html/template`, no JS build step). Loopback by default; protected by a shared token; meant to sit behind Tailscale or the owner's reverse proxy. |
+| Web surface | A small server-rendered page served by `afk daemon` (Go `net/http` + `html/template`, no JS build step). Loopback by default; protected by a password the owner sets with `afk web password` (T8.18; it replaced the shared token of T3.1); meant to sit behind Tailscale or the owner's reverse proxy. |
 | Config format | TOML, hand-editable: `afk.toml` committed in each project, `~/.config/afk/config.toml` per machine. |
 | One machine settings file | Decided 2026-10-13 (M6): `config.toml` is the machine's only settings file. The dashboard's project switcher lists the `[[project]]` entries the daemon builds, plus any project found under the search folders in its `[dash]` table. `config.json`, carried over from forge, is no longer read; when one is found, afk says once what to move and touches neither file. |
 | Dashboard controls | Decided 2026-10-13 (M6): `afk dash` gets pause and resume keys and an inbox count in its header. T3.2 left both out only because its scope did not list them. |
@@ -130,7 +130,7 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Leader key | Decided 2026-10-14 (M9): the leader is **ctrl+]** by default, replacing ctrl+space, which Raycast takes on the owner's Mac (and ctrl+2 and ctrl+@, the same byte, go with it). It is set with `leader = "..."` in the `[dash]` table of `config.toml`; a key the dashboard cannot use falls back to ctrl+] with a line in the header saying what to fix (the owner chose the header over refusing to start). ctrl+m, the owner's first idea, is the same byte as Enter unless the terminal and tmux report it apart, so it was not made the default; the owner uses ctrl+]. Everything else in the row above stands. |
 | What the dashboard writes | Decided 2026-10-13 (M7): besides inbox answers (T3.2) and pause and resume (T6.3), the dashboard changes afk's state only through the code of the matching command: `afk plan approve` (T7.8; approving from the web page was forbidden here, because others may reach it, and M8 lifts that: see the row "Web page as command center"), `afk project add` and `remove` for `config.toml` (T7.10), and `afk ledger set` for the ledger (T7.11). This replaces "the dashboard never writes the ledger" (T3.2) and "never writes `config.toml`" (T6.1, T6.2) for those actions only. Creating a new plan's folder and its GitHub repository (T7.5, T7.6) has no matching command and is governed by the row below. |
 | New plan in a new folder | Decided 2026-10-13 (M7): the dashboard can create the folder for a new plan. A typed name is created under the owner profile's `project location` (From the owner profile, a default: `~/code`) and made a git repository; the dashboard then asks, each time, whether to create a private GitHub repository with the owner's existing `gh` login and set it as `origin`. Never without that yes, per the profile's rule on accounts. |
-| Web page as command center | Decided 2026-10-13 (M8): the web page does everything `afk dash` does except attach to a session. It holds a planning session as a chat (the agent's messages, a reply box, a button per offered option), never as a terminal; a reply sent while the dashboard has that session open takes the session and the dashboard pane is dropped with a notice. A planning session waiting for the owner sends an ntfy notification linking to its chat. Every owner-only action the dashboard has comes to the page behind a confirm, approving a plan (T8.11) and creating a new project's folder and private GitHub repository (T8.15) included, which replaces "approving from the web page stays forbidden" (T5.7, T7.8). Of coding sessions, only autonomous ones are started from the page (T8.10), because the owner cannot talk to one there; planning sessions are started from the page and held in the chat view (T8.14, T8.15). The token and the `Origin` check of T3.1 guard all of it; the reply box is a keyboard into the planning agent, so the page stays behind Tailscale or the owner's proxy. |
+| Web page as command center | Decided 2026-10-13 (M8): the web page does everything `afk dash` does except attach to a session. It holds a planning session as a chat (the agent's messages, a reply box, a button per offered option), never as a terminal; a reply sent while the dashboard has that session open takes the session and the dashboard pane is dropped with a notice. A planning session waiting for the owner sends an ntfy notification linking to its chat. Every owner-only action the dashboard has comes to the page behind a confirm, approving a plan (T8.11) and creating a new project's folder and private GitHub repository (T8.15) included, which replaces "approving from the web page stays forbidden" (T5.7, T7.8). Of coding sessions, only autonomous ones are started from the page (T8.10), because the owner cannot talk to one there; planning sessions are started from the page and held in the chat view (T8.14, T8.15). The password sign-in (T8.18) and the `Origin` check guard all of it; the reply box is a keyboard into the planning agent, so the page stays behind Tailscale or the owner's proxy. |
 | Web page technology | Decided 2026-10-13 (M8): hand-written JavaScript built into the binary, with no build step, no `npm` and no new Go dependency for live updates (server-sent events). Still server-rendered with `html/template`; the page works, by reloading, with JavaScript off. Phone first, and it works well on a desktop. Every screen meets WCAG 2.2 AA. |
 | Web page design | Decided 2026-10-13 (M8): redesigned from `docs/design-system.md`, which the owner makes in Claude Design (From the owner profile, a default: design tool) from `docs/design-brief.md` (T8.1). The plan wins on behaviour and the design system on looks. No component library (From the owner profile, a default). |
 | Desktop back button | Decided 2026-10-16 (M10): above 760px every page but the overview and the error page shows the phone bar's back chevron and its title in a row under the top bar, going where the phone's back button goes. Built from the design system's existing parts (`icon-btn`, the title style) with no design round. In-page "Back to …" links that only repeat it are removed; a confirm's safe button and a Cancel beside a form stay. |
@@ -349,6 +349,8 @@ change when planning is resumed; `at` is when the start last succeeded, RFC 3339
 
 Amended 2026-10-14 (T8.13): `plan-waits.json` is a file in afk's state folder (beside `being-planned.json`), the planning waits the daemon has already sent a notification for. Writer: the daemon only, on each pass, through `internal/daemonstate` by atomic rename; it is written only after a send went out, so a failed send is tried again. Readers: the daemon, on each pass, which skips a wait it has recorded. Shape: `{"waits":[{"root","key","at"}]}`, the list always present and every key always written. `root` is the project's main checkout, cleaned, and the key an entry is matched by; `key` identifies the wait that was notified (the chat's state, its message count, and its last message's time and text, hashed); `at` is when the notification was sent, RFC 3339 UTC. An entry is removed when the project's planning chat reads none (its planning session is gone); it is kept while the session works or cannot be read, so a passing read failure does not notify the same wait twice. A missing or damaged file reads as an empty list.
 
+Amended 2026-10-17 (T8.18): `web-password.json` is a file in afk's state folder (beside `usage.json`). Writer: `afk web password` only, through `internal/webpass`, by a temp file and rename, mode 0600. Readers: the daemon at start (the page is on when the file exists and is a valid record), and the page on every sign-in and every cookie check, so a new password takes effect with no restart. Shape: `{"algorithm","iterations","salt","key"}`, with `algorithm` `pbkdf2-sha256`, `salt` and `key` base64 (the key is 32 bytes), `iterations` the PBKDF2 count the record was made with. No copy of the password is kept. A missing file means the page is off. A damaged or unreadable one is logged by the daemon and treated as no password.
+
 ### 4.3 Inbox — `.afk/inbox/{id}.json` (new)
 
 | Field | Meaning |
@@ -424,7 +426,7 @@ Amended 2026-10-11 (T2.1): the overlay is in. `internal/projectconfig` lays `afk
 `afk.toml` holding an `ntfy_url` must move that line to `afk.local.toml` before committing the file.
 
 Machine config `~/.config/afk/config.toml`: projects the daemon runs, governor thresholds (§6.3), web
-bind address and token, provider choice.
+bind address and public address, provider choice (the web password is in the state folder, not here).
 
 Amended 2026-10-13 (T5.7): the `[[project]]` list is edited by `afk project add` and `afk project remove`
 and by `afk plan approve`, and the running daemon reads it again on every pass. It is the only setting
@@ -486,6 +488,8 @@ token. With a token every route, `/api/` included, answers 401 without it. The t
 `Authorization: Bearer` header or `?token=`. A notification for an inbox item carries a `Click` link to
 `<public_url>/p/<project>/inbox/<id>` only when the page is on and `public_url` is set, and never the
 token.
+
+Amended 2026-10-17 (T8.18): `[web] token` is gone. A `token` key left in the file is ignored, and the daemon logs one line that names the file and says so, never its value. The page is on when the password file exists (see `web-password.json` in §4) and off otherwise; a `bind` other machines can reach with no password stops the daemon, naming `afk web password`. Sign-in is a form on each page: a right password sets the cookie `afk_web` (valid 180 days, marked `Secure` only for an `https://` `public_url`) and sends the browser back only to a local path (`next`, checked by `returnTo`). Without a valid cookie a page shows the sign-in form and every `/api/` address answers a JSON 401. `?token=`, `Authorization: Bearer` and a cookie from the token days no longer let anyone in. Five wrong passwords in a row lock sign-in for one minute, for the whole page; a try made while locked is refused and does not extend the lock. A new password signs every browser out, and `POST /signout` (the Sign out button on both bars) signs out one browser. The `Click` rule: a notification carries a `Click` link only when the page is on (a password set) and `public_url` is set, and the link never holds a password or a cookie.
 
 Amended 2026-10-13 (T5.2): `profile.toml` is the owner profile. It sits in the same folder as `config.toml` (absolute `XDG_CONFIG_HOME` or `~/.config`, the same rule). It reads `rule_files` (a list; each item an absolute path or one starting with `~/`) and `[[entry]]` tables with `topic`, `value`, `strength` (`rule` or `default`; absent reads as `default`), an optional `kind` (lower-case letters, digits and hyphens) and an optional `reason`. Topics compare with case and runs of white space ignored, and are stored as written. There is one entry per topic and kind, and a kind-specific entry beats a general one on the same topic. An unknown key is a warning. No secrets: a value that looks like a key or token is an error and is never printed. `afk profile set` is the only command that edits the file, one `[[entry]]` at a time as text so comments survive, and `afk profile init` creates it once from a commented template.
 
@@ -2899,11 +2903,7 @@ thing it does not do is attach to a session.
   wrong password is refused; the right one reaches the overview; sign out returns to the form; with
   JavaScript off the same works; an axe run on the sign-in page reports no violation. `curl` with
   `Authorization: Bearer` gets 401. `make check` is green.
-- Amended 2026-10-17: README.md was split into pages under `docs/` the same day. "README's web section"
-  in the Scope is now `docs/web.md` (its "A project from start to finish" step 1 and its Reference
-  paragraphs), and `afk web password` goes in `docs/reference.md`. Two new places also name the token
-  and change with it: `docs/install.md` step 5 ("Turn on the web page", and step 7's sign-in address)
-  and the README's Install list (step 4, "Give the web page a token").
+- Amended 2026-10-17 (T8.18 done): later tasks may assume the following. (1) The page's one secret is `web-password.json` in afk's state folder, written only by `afk web password` and read through `internal/webpass` (PBKDF2-SHA256, 600,000 rounds); the page is on when that file exists at daemon start, and an address other machines can reach with no readable password stops the daemon, `--once` included. (2) Every request without the `afk_web` cookie gets the sign-in form (JSON 401 under `/api/`); there is no token, `?token=` or Bearer header, so scripts and tests sign in with a cookie made from a record (`api_test.go` and the daemon rig have low-round helpers). (3) `web.Deps.Password` is read on every cookie check; only `POST /signin` hashes, under one mutex with the five-try lockout. (4) Both bars carry a plain sign-out form posting to `/signout`; page tests that forbid forms strip it with `noSignOut`. (5) `webPublicURL` and the notification link builders take a page-on bool. See `## T8.18` in `docs/decisions.md`.
 
 ### M9 — Choose your own leader key
 
@@ -3055,8 +3055,7 @@ The owner decided on 2026-10-17 (§2, "Where afk runs, and installing it"): a ma
 the target and the docs say why before any step; Docker was set aside for a VM; the installer is
 `afk install`, built with the charm modules, and it writes Claude Code's
 `skipDangerousModePermissionPrompt` itself; macOS is supported; release binaries are coming, so a
-bootstrap script can download one. Until this milestone is done, `docs/install.md` gives the same steps
-by hand, and each task below rewrites the part of it that it automates.
+bootstrap script can download one. `docs/install.md` is the guide each task below keeps up to date.
 
 ```
 T11.1 releases ──▶ T11.5 bootstrap ──┐
@@ -3133,6 +3132,7 @@ T8.18 password ──────────┘
   message), no package manager, a fully installed machine (every step done). Table tests of `Probe`
   with fakes: a missing tool, a command that times out, an unreadable settings file. `make check` is
   green.
+- Amended 2026-10-17 (T11.2 done): later tasks may assume `internal/install` holds `Build(Facts) Plan` (the type is `Plan`, the function `Build`: twelve ordered steps and the risk) and `Probe`, which reads the machine through injected seams; every command it runs has a deadline (10 seconds by default) and a failure or timeout reads as "could not tell", never "no". On a personal machine the safety step is always "to do", so the runner counts an accepted safety screen as done itself. The macOS label is `io.github.dphaener.afk`. The work started before M11 was on `main`, from a copy of this entry. See `## T11.2` in `docs/decisions.md`.
 
 #### T11.3 — `afk install` on Linux
 - **Depends on:** T11.2, T8.18
@@ -3192,6 +3192,7 @@ T8.18 password ──────────┘
   `gh`, `systemctl` and `loginctl` on `PATH`, driven through tmux: a fresh run ends on the address
   screen with the expected files written and commands called, and a second run reports everything
   done. `make check` is green.
+- Amended 2026-10-17 (T11.3 done): `afk install` exists for Linux. Later tasks may rely on `install.Facts.RiskAccepted` (set by the runner after the safety screen), `install.Next`, `Verify`, `RenderUnit`, `ServicePATH` and `WebAddress`, `provider.InstallCommand`, `LoginCommand` and `WriteUnattended`, `daemonconfig.SetWeb`, and the unit's marker line `# Written by afk install`. It runs `afk web password` and `afk plugin install` itself with the terminal handed over, and under `--yes` the page is reached from this machine only. `docs/install.md` and `docs/reference.md` were not on `main` yet, so the task documented `afk install` in the README; the README split moved that text into `docs/reference.md` and rewrote `docs/install.md` around `afk install` the same day. See `## T11.3` in `docs/decisions.md`.
 
 #### T11.4 — `afk install` on macOS
 - **Depends on:** T11.3
@@ -3217,6 +3218,7 @@ T8.18 password ──────────┘
 - **Acceptance:** table tests of the plist (keys, `PATH`, the log path) and of the macOS rows of the
   step runner. On a Mac (the T11.1 macOS runner, or the owner's Mac in T11.6): `afk install --dry-run`
   prints the plan. `make check` is green.
+- Amended 2026-10-17 (T11.4 done): `afk install` works on a Mac with Homebrew. The service is the LaunchAgent `~/Library/LaunchAgents/io.github.dphaener.afk.plist` (`RunAtLoad`, `KeepAlive`, `ThrottleInterval` 30, `AbandonProcessGroup`, the `PATH` the Linux unit gets, and both output streams to `daemon.log` in afk's state folder), marked as afk's by a comment on its second line and loaded with `launchctl bootout` and `launchctl bootstrap gui/<uid>` from a desktop login. It has not run on a real Mac: no Mac was available and T11.1's macOS job was not on the branch, so `afk install --dry-run` on a Mac is an owner check (T11.6, and the open inbox item for T11.4). See `## T11.4` in `docs/decisions.md`.
 
 #### T11.5 — The bootstrap script
 - **Depends on:** T11.1

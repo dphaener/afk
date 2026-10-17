@@ -22,8 +22,10 @@
 // here and not in a project's afk.toml because usage belongs to the account,
 // which every project on the machine shares.
 //
-// The [web] table (bind, token, public_url) configures the daemon's web page.
-// This package only reads and checks it; it opens no listener.
+// The [web] table (bind, public_url) configures the daemon's web page. This
+// package only reads and checks it; it opens no listener. Whether the page
+// starts at all is the daemon's choice, because it depends on the password
+// file in the state folder, which this package cannot see.
 //
 // Unknown keys are ignored: later tasks add keys to the same file, and an
 // older daemon must not refuse a file a newer one wrote.
@@ -40,7 +42,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/BurntSushi/toml"
 
@@ -126,27 +127,24 @@ func (g Governor) Thresholds() governor.Thresholds {
 // the owner asks for it.
 const DefaultWebBind = "127.0.0.1:4253"
 
-// minTokenLen is the shortest token accepted. A shorter secret is too easy to
-// guess for a page that can answer inbox items and pause the build loop.
-const minTokenLen = 16
-
 // Web is the [web] table.
 //
-// An empty Token means the page is off, not open: PLAN T3.1 requires every
-// request to carry the configured token, so with no token there is nothing a
-// request could present, and serving anyway would serve anyone.
+// It says nothing about whether the page is on. The page is protected by a
+// password whose hash lives in the state folder (internal/webpass), so the
+// daemon decides on and off from that file, not from this table.
 type Web struct {
 	// Bind is the host:port to listen on. Never empty after Load.
 	Bind string
-	// Token is the shared secret every request must carry. Empty = page off.
-	Token string
 	// PublicURL is the address the owner reaches the page at, with no
 	// trailing slash; empty when not set. Notifications link to it.
 	PublicURL string
+	// LeftoverToken is true when the file still has a non-empty [web] token,
+	// the page's secret before it used a password. It is not an error: an
+	// owner who upgrades must not find the daemon refusing to start over a
+	// line that no longer does anything. The daemon logs that the line can
+	// go. The value itself is never kept, so nothing can print it.
+	LeftoverToken bool
 }
-
-// Enabled reports whether the web page should be started.
-func (w Web) Enabled() bool { return w.Token != "" }
 
 // LoopbackBind reports whether addr (host:port) listens on this machine only.
 // It is true only for an IP literal that IsLoopback accepts, or the name
@@ -186,8 +184,7 @@ type Config struct {
 	Projects []Project
 	// Governor is always filled: absent keys carry the governor defaults.
 	Governor Governor
-	// Web is always filled: an absent table carries the default bind and no
-	// token, so the page is off.
+	// Web is always filled: an absent table carries the default bind.
 	Web Web
 	// Dash is always filled: an absent [dash] table, and a [dash] table with
 	// any bad value in it, both carry the defaults (no search folders).
@@ -275,7 +272,9 @@ type rawFile struct {
 		OnUnknownUsage string   `toml:"on_unknown_usage"`
 	} `toml:"governor"`
 	Web struct {
-		Bind      string `toml:"bind"`
+		Bind string `toml:"bind"`
+		// Token is read only so a leftover one can be reported; see
+		// Web.LeftoverToken.
 		Token     string `toml:"token"`
 		PublicURL string `toml:"public_url"`
 	} `toml:"web"`
@@ -561,11 +560,16 @@ func loadGovernor(path string, raw rawFile) (Governor, error) {
 	return g, nil
 }
 
-// loadWeb checks the [web] table. No error repeats the token: the message may
-// end up in a terminal log or a screenshot.
+// loadWeb checks the [web] table.
+//
+// It does not refuse a reachable bind any more. That refusal needs to know
+// whether a password is set, which lives in the state folder, so the daemon
+// makes it (webStart in the root package). A leftover [web] token is noted and
+// never checked: its length and spaces no longer matter, and no message
+// repeats it.
 func loadWeb(path string, raw rawFile) (Web, error) {
 	r := raw.Web
-	w := Web{Bind: DefaultWebBind, Token: r.Token}
+	w := Web{Bind: DefaultWebBind, LeftoverToken: r.Token != ""}
 	if b := strings.TrimSpace(r.Bind); b != "" {
 		w.Bind = b
 	}
@@ -575,17 +579,6 @@ func loadWeb(path string, raw rawFile) (Web, error) {
 	}
 	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
 		return Web{}, fmt.Errorf("%s: web.bind is %q, whose port is not a number from 1 to 65535; write it like \"127.0.0.1:4253\"", path, w.Bind)
-	}
-	if w.Token != "" {
-		if strings.IndexFunc(w.Token, unicode.IsSpace) >= 0 {
-			return Web{}, fmt.Errorf("%s: web.token contains white space; write a token of %d or more characters with no spaces", path, minTokenLen)
-		}
-		if len([]rune(w.Token)) < minTokenLen {
-			return Web{}, fmt.Errorf("%s: web.token is too short; write a token of at least %d characters", path, minTokenLen)
-		}
-	}
-	if w.Token == "" && !LoopbackBind(w.Bind) {
-		return Web{}, fmt.Errorf("%s: web.bind is %q, which can be reached from other machines, and web.token is not set; set web.token to a secret of at least %d characters, or bind to 127.0.0.1", path, w.Bind, minTokenLen)
 	}
 	if pu := strings.TrimSpace(r.PublicURL); pu != "" {
 		u, err := url.Parse(pu)

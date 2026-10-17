@@ -1,18 +1,16 @@
 # Installing afk
 
-This guide takes a machine from nothing to a running afk: the build daemon going, and the web page open in your browser. It takes about half an hour, most of it logging in to things.
-
-A guided installer, `afk install`, is on the way (`docs/PLAN.md`, M11). It will do steps 2 to 6 for you and ask its questions as it goes. Until it lands, the steps below are the way in.
+This guide takes a machine from nothing to a running afk: the build daemon going as a background service, and the web page open in your browser. Most of it is done by `afk install`, a guided installer that asks its questions as it goes. Allow half an hour, most of it spent signing in to things.
 
 ## Read this first: afk's agents run with permissions bypassed
 
-afk's daemon works while nobody is watching, so nobody is there to answer the agent's "may I run this command?" prompts. It therefore starts every agent with those prompts turned off (for Claude Code, `--permission-mode bypassPermissions`). An agent can run **any command** as your user: install packages, delete files, read anything your user can read, and use any login stored on the machine.
+afk's daemon works while nobody is watching, so nobody is there to answer the agent's "may I run this command?" prompts. It therefore starts every agent with those prompts turned off (for Claude Code, `--permission-mode bypassPermissions`), and `afk install` turns on the setting that allows it. An agent can run **any command** as your user: install packages, delete files, read anything your user can read, and use any login stored on the machine.
 
 So afk belongs on a machine that is there for afk and nothing else:
 
 - **No personal files, SSH keys or browser logins** that you would not hand to an agent.
 - **No production secrets.** If a project needs a paid API key for its tests, give it a key with a low spend cap.
-- **A normal user, not root.** The agent refuses its unattended mode as root, and the daemon checks for this.
+- **A normal user, not root.** The agent refuses its unattended mode as root, and `afk install` refuses to run as root.
 
 ## Where to run it
 
@@ -21,11 +19,9 @@ So afk belongs on a machine that is there for afk and nothing else:
 | **A small cloud server** (a VPS from Hetzner, DigitalOcean, Linode…) | The intended setup: always on, reachable from your phone | Isolated from your own machine |
 | **A spare computer or home server** running Ubuntu | The same, at home | Isolated, as long as nothing else of yours lives on it |
 | **A virtual machine on your laptop** (Multipass) | Trying afk out, or running it while the laptop is on | The VM is the sandbox; your laptop's files stay out of reach |
-| **Your laptop itself** | Only if you accept the risk | **Not isolated.** The agents can reach everything your user can. Do this at your own risk |
+| **Your laptop itself** (Linux or a Mac) | Only if you accept the risk | **Not isolated.** The agents can reach everything your user can. `afk install` makes you type `I accept the risk` |
 
-afk is built and tested on **Ubuntu Server 26.04**. Other Linux distributions should work with the same tools from their own package manager. macOS works too, with the differences noted below.
-
-The steps below assume Ubuntu. Run every command as your normal user.
+afk is built and tested on **Ubuntu Server 26.04**. `afk install` works on any Linux with `apt-get` and systemd, and on a Mac with Homebrew.
 
 ## 1. Get a machine
 
@@ -40,129 +36,62 @@ multipass shell afk
 
 `multipass shell afk` opens a terminal inside the VM, as its normal user `ubuntu`. Run the rest of this guide there. `multipass find` lists the Ubuntu releases it can make; pick the newest LTS.
 
-## 2. Install the tools
+## 2. Get afk
+
+Release downloads and a one-line install command are on the way. Until then, build afk from its source, which needs git, Go and make:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y git gh jq ruby golang-go make build-essential curl
-```
-
-- `git` and `gh` (the GitHub tool) let the daemon push, open pull requests and merge.
-- `jq` and `ruby` are used by afk's agent plugin.
-- `golang-go` and `make` build afk itself. afk needs Go 1.25 or newer; check with `go version`. If your release ships an older one, get Go from [go.dev/dl](https://go.dev/dl/).
-
-Then install Claude Code, the agent afk runs:
-
-```bash
-curl -fsSL https://claude.ai/install.sh | bash
-```
-
-It installs into `~/.local/bin`. If `claude --version` is not found afterwards, open a new terminal (or log in again) so that folder is on your `PATH`.
-
-## 3. Install afk
-
-```bash
+sudo apt-get install -y git golang-go make
 git clone https://github.com/dphaener/afk.git ~/afk
 cd ~/afk
 make install
 ```
 
-`make install` builds afk straight into `~/bin/afk`. Check that `~/bin` is on your `PATH`:
+afk needs Go 1.25 or newer; check with `go version`. If your release ships an older one, get Go from [go.dev/dl](https://go.dev/dl/).
 
-```bash
-afk --help
-```
-
-If the shell says `afk: command not found`, add this line to `~/.bashrc` (or `~/.zshrc`) and open a new terminal:
+`make install` builds afk straight into `~/bin/afk`. If `afk --help` then says `afk: command not found`, add this line to `~/.bashrc` (or `~/.zshrc`) and open a new terminal:
 
 ```bash
 export PATH="$HOME/bin:$PATH"
 ```
 
-## 4. Log in and set up the agent
-
-1. **Log in to Claude Code.** Run `claude`, follow its sign-in steps, then leave it with `/exit`. On a machine with no browser, it prints a link to open on another device and asks you to paste back a code.
-
-2. **Turn extra usage off** on your Claude account (the paid overage). With it on, afk starts nothing. afk keeps a share of every usage window for you (see [`afk usage`](reference.md#afk-usage--show-how-much-of-your-usage-is-spent)).
-
-3. **Accept the unattended-mode warning once.** Run the agent by hand in the mode the daemon uses, accept the warning it shows, then `/exit`:
-
-   ```bash
-   claude --permission-mode bypassPermissions
-   ```
-
-   Claude Code remembers the answer, and the daemon checks for it before it starts any task.
-
-4. **Install afk's agent plugin:**
-
-   ```bash
-   afk plugin install --target claude
-   ```
-
-   Run it again whenever you update afk, so the plugin matches the binary.
-
-5. **Log in to GitHub**, and let git use that login:
-
-   ```bash
-   gh auth login
-   gh auth setup-git
-   ```
-
-6. **Tell git who you are**, so the commits afk makes carry your name:
-
-   ```bash
-   git config --global user.name "Your Name"
-   git config --global user.email "you@example.com"
-   ```
-
-7. **Say where new projects go.** The web page's **Plan a new project** makes new folders here:
-
-   ```bash
-   mkdir -p ~/code
-   afk profile set "project location" ~/code
-   ```
-
-## 5. Turn on the web page
-
-The web page is off until you give it a token, a password-like secret of at least 16 characters. Make one:
+## 3. Run `afk install`
 
 ```bash
-openssl rand -hex 16
+afk install
 ```
 
-Put it in `~/.config/afk/config.toml` (make the folder and the file if they are not there):
+It looks at the machine, shows twelve steps as a checklist with the ones already done ticked, and works through the rest, checking the machine again after each one:
 
-```toml
-[web]
-bind = "127.0.0.1:4253"
-token = "<the token you just made>"
-```
+1. **Safety.** What running agents with permissions bypassed means. On a server or a VM a key press accepts; on a computer you use every day it asks you to type `I accept the risk`.
+2. **The tools afk needs** (git, gh, jq, ruby), with `sudo apt-get`. `sudo` asks for your password itself.
+3. **Claude Code**, the agent afk runs, with its own installer.
+4. **Signing in to Claude Code.** The terminal is handed to Claude Code's sign-in. On a machine with no browser it prints a link to open on another device and asks you to paste back a code.
+5. **Running without permission prompts.** afk turns on Claude Code's setting for it.
+6. **afk's agent plugin.**
+7. **Signing in to GitHub** with `gh auth login`, so the daemon can push, open pull requests and merge.
+8. **Your git name and email**, for the commits afk makes.
+9. **Where new projects go** (default `~/code`). The web page's **Plan a new project** makes its folders here.
+10. **The web page's password**, typed twice and never shown. afk keeps only a salted hash of it.
+11. **The background service**, so the daemon starts at boot and keeps running when you log out.
+12. **A last check**, then the web page's address in large type.
 
-`127.0.0.1` means only this machine can open the page. How you reach it from elsewhere depends on where afk runs:
+Each step asks before it changes anything; answering no stops the run and undoes nothing. A step that fails stops the run and says what to do. Run `afk install` again at any time: it checks every step and does only what is missing, so it is also the way to fix a machine. `afk install --dry-run` shows the checklist and changes nothing. Every flag is in [the command reference](reference.md#afk-install--set-up-this-machine).
 
-- **A cloud server or home server: use [Tailscale](https://tailscale.com).** Install it on the server and on your phone and computer, keep the `bind` above, and run `tailscale serve --bg 4253` on the server. It prints an `https://` address that only your own devices can open. Put that address in the same `[web]` table as `public_url = "https://..."` so notifications link to the page.
-- **A Multipass VM on your laptop:** the laptop can reach the VM directly. Set `bind = "0.0.0.0:4253"`, find the VM's address with `multipass info afk` (on the laptop), and open `http://<that address>:4253`.
+**How you reach the web page** is the one real choice it asks for:
 
-**Never put the page on the open internet as it is.** It speaks plain HTTP, and anyone with the token can drive the daemon. More in [the web page's reference](web.md#reference).
+- **This machine only** (`http://127.0.0.1:4253`). The safe default.
+- **Every address on the machine.** Use this for a Multipass VM: the laptop can reach the VM directly. Find its address with `multipass info afk` (run it on the laptop) and open `http://<that address>:4253`.
+- **Tailscale**, offered when `tailscale` is installed. The best choice for a cloud or home server: install [Tailscale](https://tailscale.com) on the server and on your phone and computer first, and afk gives the page an `https://` address that only your own devices can open.
 
-## 6. Run the daemon as a service
+**Never put the page on the open internet as it is.** It speaks plain HTTP, and anyone with the password can drive the daemon.
 
-On Linux, run the daemon as a systemd user service, so it starts at boot and keeps running when you log out. The steps are in [`contrib/README.md`](../contrib/README.md). They take two minutes. Remember the `Environment=PATH=...` line: it must include `~/bin`, `~/.local/bin` (where Claude Code is) and `/usr/bin`.
+**One thing `afk install` cannot do:** turn off extra usage (paid overage) on your Claude account. Do it in your account settings. With it on, the daemon starts nothing; afk keeps a share of every usage window for you instead (see [`afk usage`](reference.md#afk-usage--show-how-much-of-your-usage-is-spent)).
 
-To try afk before setting up the service, run it in a terminal instead. It stops when you close that terminal:
+## 4. Open the web page
 
-```bash
-afk daemon
-```
-
-## 7. Check it works
-
-```bash
-afk daemon status   # the daemon is running, with no projects yet
-afk usage           # a line for each usage window, and what afk would do
-```
-
-Then open the web page with your token on the end of its address, for example `http://127.0.0.1:4253/?token=<your token>`. Your browser remembers you after that.
+Open the address from `afk install`'s last screen and sign in with the password. Your browser remembers you for 180 days.
 
 ## Next: your first project
 
@@ -179,23 +108,44 @@ make install
 afk plugin install --target claude
 ```
 
-A daemon running as the service notices the new binary, stops between passes and is started again by systemd. Running sessions are not touched.
+The service notices the new binary, stops between passes and is started again. Running sessions are not touched. Reinstalling the plugin keeps it in step with the new binary.
 
 ## On macOS
 
-macOS works, with three differences:
+A Mac is the "your laptop itself" row above: the agents can reach your files. Run afk in a Multipass VM instead, unless you accept that risk. If you do:
 
-- Install the tools with [Homebrew](https://brew.sh): `brew install git gh jq ruby go`. Claude Code's install command is the same.
-- There is no service file for macOS yet. Run `afk daemon` in a terminal you leave open. `afk install` will add a background service.
-- A Mac you use every day is the "your laptop itself" row above: the agents can reach your files. Run afk in a Multipass VM instead, unless you accept that risk.
+- Install [Homebrew](https://brew.sh) first. afk never installs it, and never uses `sudo` on a Mac.
+- Get afk: `brew install git go`, then the `git clone` and `make install` lines from step 2.
+- Run `afk install` from a desktop login on the Mac, not over SSH: the service is a launchd agent loaded into your desktop session. Its packages step uses `brew install`.
 
-Desktop notifications (`afk notify`) work only on macOS. On Linux, use push notifications to your phone through ntfy instead (see [`afk inbox`](reference.md#afk-inbox--things-that-need-you)).
+The service's details, and how to set it up by hand, are in [`contrib/README.md`](../contrib/README.md#on-macos). Desktop notifications (`afk notify`) work only on macOS; on Linux, use push notifications to your phone through ntfy (see [`afk inbox`](reference.md#afk-inbox--things-that-need-you)).
+
+## Setting up by hand
+
+`afk install` runs ordinary commands, so you can do the same yourself. On Ubuntu:
+
+```bash
+sudo apt-get install -y git gh jq ruby
+curl -fsSL https://claude.ai/install.sh | bash     # Claude Code, into ~/.local/bin
+claude                                             # sign in, then /exit
+claude --permission-mode bypassPermissions         # accept the warning once, then /exit
+afk plugin install --target claude
+gh auth login && gh auth setup-git
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+mkdir -p ~/code && afk profile set "project location" ~/code
+afk web password
+```
+
+Then set the page's `[web] bind` in `~/.config/afk/config.toml` (see [configuration.md](configuration.md#configtoml--the-machines-settings)) and install the service with the steps in [`contrib/README.md`](../contrib/README.md). Its `Environment=PATH=...` line must include `~/bin`, `~/.local/bin` (where Claude Code is) and `/usr/bin`.
+
+To try afk without the service, run `afk daemon` in a terminal. It stops when you close that terminal.
 
 ## If something goes wrong
 
-- **The daemon starts nothing, and the inbox has a "failure" item.** The item says what is missing: the plugin, the unattended-mode warning (step 4.3), a login, or extra usage being on. Fix it and answer the item.
-- **`afk: command not found`.** `~/bin` is not on your `PATH` (step 3).
-- **The service starts but cannot find `claude`, `git` or `gh`.** The service does not read your shell's settings. Fix the `Environment=PATH=...` line (step 6).
-- **The page will not open.** Check that the daemon's log says `web page: listening on ...`: `journalctl --user -u afkd -n 20` for the service, or the terminal for a hand-run daemon. Without a token the page is off.
+- **Run `afk install` again.** It checks every step and says what is missing.
+- **The daemon starts nothing, and the inbox has a "failure" item.** The item says what is missing: the plugin, the permission-prompt setting, a login, or extra usage being on. Fix it and answer the item.
+- **`afk: command not found`.** `~/bin` is not on your `PATH` (step 2).
+- **The page will not open.** Check that the daemon's log says `web page: listening on ...`: `journalctl --user -u afkd -n 20` on Linux, `~/.local/state/afk/daemon.log` on a Mac. Without a password the page is off.
 
 For a fuller worked example of preparing a real project on an always-on machine (its own packages, its checks, a capped API key), see [`runbook-vm.md`](runbook-vm.md).

@@ -176,6 +176,6 @@ afk resume [project]
 
 `afk pause` writes `.afk/build/paused` in the project's main checkout, so the daemon starts no new task there. A task that is running finishes, and a parked task is not started again until you resume. `afk resume` removes the file, and it also clears a stopped line (see "The stopped line" in the daemon section), printing which of the two it cleared. `project` is a project name from `config.toml` or a folder; with nothing given it is the current folder's main checkout, even from inside a session's worktree.
 
-The Pause and Resume buttons on the daemon's web page (see "The web page" in the daemon section), and `ctrl+] P` and `ctrl+] U` in `afk dash`, do the same thing.
+The Pause and Resume buttons on the daemon's web page (see [the web page](web.md)), and `ctrl+] P` and `ctrl+] U` in `afk dash`, do the same thing.
 
 **Exit codes:** 0 when done (resuming a project that was not paused or stopped is still 0), 1 when the project or the config could not be used or the file could not be written or removed, 2 when the command was written wrongly.

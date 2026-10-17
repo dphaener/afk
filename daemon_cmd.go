@@ -34,6 +34,7 @@ import (
 	"github.com/dphaener/afk/internal/tokens"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 // This file is the daemon's command line and its wiring, and nothing else.
@@ -101,8 +102,8 @@ type daemonEnv struct {
 	//
 	// publicURL is the address the owner reaches the web page at, or "" when
 	// the page is off or has none. It is all of the [web] table the loop is
-	// given, and it is there for one thing: the link in a notification. The
-	// token is never handed over.
+	// given, and it is there for one thing: the link in a notification. No
+	// secret is ever handed over: the page's password stays in its file.
 	//
 	// projects is the loop's current project list (projectList.get): the
 	// planning-wait check looks at the configured projects as the loop last
@@ -221,6 +222,20 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		return 1
 	}
 	cfgPath := daemonconfig.Path(env.config)
+	// Whether the page will start is settled here, before the provider and
+	// the lock, so a reachable bind with no password is refused for
+	// `afk daemon --once` too, as Load refused a reachable bind with no token
+	// before the page used a password. The log lines are kept and printed
+	// only once this is the daemon that really runs (below): a refused lock
+	// or a single pass has no page to talk about.
+	passwordPath, _ := webpass.Path(env.state)
+	_, readErr := webpass.Read(env.state)
+	passwordSet := readErr == nil
+	webOn, webLogs, err := webStart(cfg.Web, readErr, cfgPath, passwordPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "afk daemon: %v\n", err)
+		return 1
+	}
 	prov, err := provider.Lookup(cfg.Provider)
 	if err != nil {
 		fmt.Fprintf(stderr, "afk daemon: %s sets provider = %q, which afk does not know. Use one of: %s.\n",
@@ -262,7 +277,7 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	// it follows config.toml.
 	list := &projectList{}
 	list.set(projects)
-	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, webPublicURL(cfg.Web), list.get, logf)
+	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, webPublicURL(cfg.Web, passwordSet), list.get, logf)
 	settings := daemonSettings(cfg)
 
 	if *once {
@@ -322,10 +337,13 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	// returns without ctx ever ending, and a listener left open there would
 	// keep the port from the daemon the service manager starts next.
 	//
-	// Neither log line may hold the token, and the address is the configured
-	// bind, which has none.
-	if cfg.Web.Enabled() {
-		h, err := web.New(web.Config{Token: cfg.Web.Token, PublicURL: cfg.Web.PublicURL}, daemonWebDeps(list.get, stateDir, env.state, env.now))
+	// No log line holds a secret: the address is the configured bind, and
+	// webStart's lines name the files, never a password or a leftover token.
+	for _, l := range webLogs {
+		logf("%s", l)
+	}
+	if webOn {
+		h, err := web.New(web.Config{PublicURL: cfg.Web.PublicURL}, daemonWebDeps(list.get, stateDir, env.state, env.now))
 		if err != nil {
 			fmt.Fprintf(stderr, "afk daemon: could not set up the web page: %v. Check the [web] table in %s.\n", err, cfgPath)
 			return 1
@@ -337,8 +355,6 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		}
 		defer serveDaemonWeb(ln, h, logf)()
 		logf("web page: listening on http://%s", cfg.Web.Bind)
-	} else {
-		logf("web page: off (set [web] token in %s to turn it on)", cfgPath)
 	}
 
 	logf("afk daemon started (pid %d): %d project(s), looking every %s. The project list in %s is read again on every look. The tick and everything else under [daemon], [governor], [web] and provider were read once: restart afk daemon after changing any of them.", env.pid, len(projects), cfg.Tick, cfgPath)
@@ -361,14 +377,69 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 // webPublicURL is the address a notification may link to, or "" for no link.
 // Pure.
 //
-// A public address with no token gives no link. With no token the page is
-// off (daemonconfig.Web), so the link would open nothing, and a notification
-// that leads to an error page is worse than one with only the command in it.
-func webPublicURL(w daemonconfig.Web) string {
-	if !w.Enabled() {
+// A public address with the page off gives no link: the link would open
+// nothing, and a notification that leads to an error page is worse than one
+// with only the command in it. pageOn is whether a password is set
+// (webpass.Exists), read by each caller in its own process. So a password set
+// after the daemon started gives links to a page that stays off until the
+// daemon restarts; the plan accepts that rather than have every notifier ask
+// a running daemon.
+func webPublicURL(w daemonconfig.Web, pageOn bool) string {
+	if !pageOn {
 		return ""
 	}
 	return w.PublicURL
+}
+
+// webStart decides whether the daemon starts its web page. Pure.
+//
+// readErr is webpass.Read's error: nil means a password is set, and
+// webpass.ErrNoPassword means none has been. Any other error (a damaged file,
+// one that cannot be read) counts as no password, with a log line naming the
+// file, because a page whose password cannot be checked can let no one in,
+// and the daemon must not refuse to build over it.
+//
+// With no password the page is off on a loopback bind, and on a bind other
+// machines can reach the daemon refuses to start (err). That refusal used to
+// live in daemonconfig.Load as "reachable bind and no token"; it moved here
+// because Load cannot see the state folder. It is still a refusal, not a
+// quiet "off": the owner who wrote a reachable bind meant to reach the page,
+// and a daemon that starts without it would leave them guessing why.
+//
+// A leftover [web] token adds one log line, never its value, alongside
+// whichever of the above applies: it is not an error, so an upgrade never
+// stops a daemon over a line that no longer does anything.
+//
+// The log lines are returned, not printed, so the caller prints them only on
+// the long-running path.
+func webStart(w daemonconfig.Web, readErr error, cfgPath, passwordPath string) (on bool, logs []string, err error) {
+	if passwordPath == "" {
+		passwordPath = "afk's state folder (" + webpass.FileName + ")"
+	}
+	if w.LeftoverToken {
+		logs = append(logs, fmt.Sprintf("web page: it no longer uses a token. Remove the token line from [web] in %s, and run `afk web password` if you have not set a password yet.", cfgPath))
+	}
+	if readErr == nil {
+		return true, logs, nil
+	}
+	none := errors.Is(readErr, webpass.ErrNoPassword)
+	if !daemonconfig.LoopbackBind(w.Bind) {
+		why := "no web password is set in " + passwordPath
+		if !none {
+			why = "the web password file " + passwordPath + " cannot be read"
+		}
+		return false, nil, fmt.Errorf("%s: web.bind is %q, which can be reached from other machines, and %s. Run `afk web password` to set one, or bind to 127.0.0.1", cfgPath, w.Bind, why)
+	}
+	if none {
+		return false, append(logs, "web page: off (run `afk web password` to turn it on)"), nil
+	}
+	// webpass.Read's errors already name the file; the path is added only
+	// when this one does not, so the line names it once either way.
+	why := readErr.Error()
+	if !strings.Contains(why, passwordPath) {
+		why = passwordPath + ": " + why
+	}
+	return false, append(logs, fmt.Sprintf("web page: off, because the password file cannot be read (%s). Run `afk web password` again to set a new password.", why)), nil
 }
 
 // binaryUnknownText is what the daemon's log and `afk daemon status` both say
@@ -569,8 +640,8 @@ type daemonNotifier struct {
 	logf       func(format string, args ...any)
 	// publicURL is where the owner reaches the web page, or "" for no page.
 	// When set, each notification carries a link that opens what it is about
-	// (ntfy's Click header, see notify.NtfyMessage). The link never holds the
-	// token: the browser proves itself with its cookie.
+	// (ntfy's Click header, see notify.NtfyMessage). The link never holds a
+	// secret: the browser proves itself with its sign-in cookie.
 	publicURL string
 }
 

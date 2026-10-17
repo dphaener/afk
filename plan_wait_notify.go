@@ -42,8 +42,9 @@ type planWaitTarget struct {
 // /p/{name}/plan/chat is served for a configured project and a project being
 // planned (server.findChatProject) but is a 404 for a plan that is only
 // waiting for approval, so such a project links to its plan page instead.
-// With no public address there is no link; the token is never in one
-// (notify.ChatLink and notify.PlanLink never add it).
+// With no public address there is no link, and none while the page has no
+// password (webPublicURL gives ""); a link never holds a secret
+// (notify.ChatLink and notify.PlanLink add none).
 //
 // An entry with no folder is skipped: it cannot have a planning session, and
 // filepath.Clean would turn it into "." (whatever folder the daemon runs in).
@@ -153,7 +154,7 @@ func (n planWaitNotifier) check(ctx context.Context) {
 // added while the daemon runs is looked at from the pass that first reads
 // it; the review list and the being-planned list are read from stateDir on
 // every pass, the same reads the web page makes (daemonWebDeps). publicURL
-// is webPublicURL's answer, never the token.
+// is webPublicURL's answer, "" while no password is set, and never a secret.
 func realPlanWaitNotifier(projects func() []daemon.Project, stateDir, publicURL string, now func() time.Time, logf func(string, ...any)) planWaitNotifier {
 	return planWaitNotifier{
 		targets: func() []planWaitTarget {

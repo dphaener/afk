@@ -21,21 +21,25 @@ import (
 // address) must be empty, because a link to a page that is not there is worse
 // than none; "a configured project" must use the configured name, not the
 // folder's, since that is what the page serves the plan under; "a review-only
-// project" must use the name the review list gave.
+// project" must use the name the review list gave. "a leftover token is not
+// a password" pins that the old [web] token no longer turns the page on.
 func TestPlanReviewLink(t *testing.T) {
 	const root = "/code/app"
 	same := func(configured, r string) bool { return configured == r }
-	web := daemonconfig.Web{Token: "secret-token", PublicURL: "https://afk.example"}
+	web := daemonconfig.Web{PublicURL: "https://afk.example"}
 	tests := []struct {
 		name   string
 		cfg    daemonconfig.Config
 		err    error
+		off    bool // no web password is set; every other row has one
 		review string
 		want   string
 	}{
 		{name: "no config", err: errors.New("unreadable"), review: "app"},
-		{name: "page off", cfg: daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example"}}, review: "app"},
-		{name: "no public address", cfg: daemonconfig.Config{Web: daemonconfig.Web{Token: "secret-token"}}, review: "app"},
+		{name: "page off", cfg: daemonconfig.Config{Web: web}, off: true, review: "app"},
+		{name: "a leftover token is not a password", cfg: daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example", LeftoverToken: true}},
+			off: true, review: "app"},
+		{name: "no public address", cfg: daemonconfig.Config{Web: daemonconfig.Web{}}, review: "app"},
 		{
 			name:   "a configured project",
 			cfg:    daemonconfig.Config{Web: web, Projects: []daemonconfig.Project{{Name: "other", Path: "/code/other"}, {Name: "shop", Path: root}}},
@@ -46,12 +50,12 @@ func TestPlanReviewLink(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := planReviewLink(tt.cfg, tt.err, root, tt.review, same)
+			got := planReviewLink(tt.cfg, tt.err, !tt.off, root, tt.review, same)
 			if got != tt.want {
 				t.Errorf("link = %q, want %q", got, tt.want)
 			}
-			if strings.Contains(got, "secret-token") {
-				t.Errorf("link holds the token: %q", got)
+			if strings.ContainsAny(got, "?#") {
+				t.Errorf("link holds a query: %q", got)
 			}
 		})
 	}
@@ -64,6 +68,8 @@ type reviewRig struct {
 	urls    []string
 	sendErr error
 	machine daemonconfig.Config
+	// pageOn is what the fake "is a web password set" check answers.
+	pageOn bool
 }
 
 func (r *reviewRig) deps() planReviewDeps {
@@ -72,6 +78,7 @@ func (r *reviewRig) deps() planReviewDeps {
 		loadProject:  projectconfig.Load,
 		loadMachine:  func() (daemonconfig.Config, error) { return r.machine, nil },
 		gitCommonDir: func(string) string { return "" },
+		pageOn:       func() bool { return r.pageOn },
 		send: func(_ context.Context, url string, m notify.NtfyMessage) error {
 			r.urls = append(r.urls, url)
 			r.sent = append(r.sent, m)
@@ -108,6 +115,7 @@ func TestPlanReviewNotification(t *testing.T) {
 		mode      string
 		ntfy      string
 		machine   daemonconfig.Config
+		pageOn    bool   // a web password is set
 		phase     string // phase to seed; "" means check
 		sendErr   error
 		wantSends int
@@ -117,10 +125,16 @@ func TestPlanReviewNotification(t *testing.T) {
 	}{
 		{
 			name: "new reaches review", mode: "new", ntfy: "https://ntfy.example/t",
-			machine:   daemonconfig.Config{Web: daemonconfig.Web{Token: "tok", PublicURL: "https://afk.example"}},
+			machine:   daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example"}},
+			pageOn:    true,
 			wantSends: 1, wantLink: "/plan", wantList: 1,
 		},
 		{name: "page off", mode: "new", ntfy: "https://ntfy.example/t", wantSends: 1, wantList: 1},
+		{
+			name: "an address but no password", mode: "new", ntfy: "https://ntfy.example/t",
+			machine:   daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example"}},
+			wantSends: 1, wantList: 1,
+		},
 		{
 			name: "failing sender", mode: "new", ntfy: "https://ntfy.example/t", sendErr: errors.New("connection refused"),
 			wantSends: 1, wantList: 1, wantErr: `afk plan advance: could not send the "plan ready" notification: connection refused`,
@@ -137,7 +151,7 @@ func TestPlanReviewNotification(t *testing.T) {
 			if tt.phase != "" {
 				writePlanFile(t, dir, ".afk/plan/state.json", planState(tt.phase))
 			}
-			rig := &reviewRig{state: t.TempDir(), sendErr: tt.sendErr, machine: tt.machine}
+			rig := &reviewRig{state: t.TempDir(), sendErr: tt.sendErr, machine: tt.machine, pageOn: tt.pageOn}
 			f := &planFake{}
 			deps := realLintDeps(f, dir)
 			deps.review = rig.deps()
@@ -185,9 +199,6 @@ func TestPlanReviewNotification(t *testing.T) {
 			}
 			if tt.wantLink != "" && !strings.HasSuffix(m.Click, tt.wantLink) {
 				t.Errorf("link = %q, want it to end %q", m.Click, tt.wantLink)
-			}
-			if all := m.Click + m.Body + m.Title; strings.Contains(all, "tok") && tt.machine.Web.Token != "" && strings.Contains(all, tt.machine.Web.Token) {
-				t.Errorf("the token is in the message: %q", all)
 			}
 			st, ok, err := plansession.ReadState(dir)
 			if err != nil || !ok || st.Phase != plansession.PhaseReview {

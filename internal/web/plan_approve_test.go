@@ -340,7 +340,7 @@ func TestPlanApprovePage(t *testing.T) {
 				}
 			}
 			for _, w := range tc.absent {
-				if strings.Contains(body, w) {
+				if strings.Contains(noSignOut(body), w) {
 					t.Errorf("page holds %q", w)
 				}
 			}

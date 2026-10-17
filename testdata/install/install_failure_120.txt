@@ -1,0 +1,25 @@
+afk install
+
+  ✓ Check that this machine is a safe place for afk
+▸ ○ Install the tools afk needs
+      Missing: git, gh, jq, ruby. afk will install them with apt-get.
+  ○ Install the agent CLI
+  ○ Sign in to the agent CLI
+  ○ Let the agent run without permission prompts
+  ○ Install the afk plugin
+  ○ Sign in to GitHub
+  ○ Set your git name and email
+  ○ Choose where projects live
+  ○ Set the web page password
+  ○ Start the afk service
+  ○ Check everything
+
+✗ Stopped at: Install the tools afk needs
+
+What happened
+  sudo apt-get update did not finish: exit status 100.
+
+What to do
+  Check your network connection and that your user may use sudo. The steps already done stay done; run afk install again
+  to go on.
+

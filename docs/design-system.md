@@ -776,8 +776,9 @@ composer still accepts typing, Send disabled until the agent is done. **No plann
 repository; right, the thread centred at 720px with the composer under it. Options sit side by side.
 
 ### Sign-in prompt and errors
-Sign-in: no app-bar; `wordmark`, `h1` "This page is private", one line, **Sign in** (primary), meta
+Sign-in: no app-bar; `wordmark`, `h1` "This page is private", one line, a labelled **Password** `field` (`type="password"`, `autocomplete="current-password"`; a wrong password puts `aria-invalid` on it and a `field__error` line under it), **Sign in** (primary), meta
 "Not the owner? There is nothing else here." Nothing about projects is shown.
+Bars: the phone `app-bar` and the desktop `topnav` end with a quiet **Sign out** button, a form that POSTs to `/signout`; it signs this browser out and lands on the sign-in prompt.
 Error: `wordmark`, `h1` "That didn't load", one sentence naming what failed, mono status and path,
 **Go to all projects** (primary), **Try again** (secondary). Lost connection is not a page: the `live`
 indicator turns `live--offline` and the last data stays on screen.

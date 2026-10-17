@@ -3447,3 +3447,158 @@ T10.2 removes the "Back to …" links in page content that only repeat the bar's
 - **Nothing to wait for (A2).** T10.1 had already landed.
 - **New plan started with no chat (A3).** On the new-plan page's "started" result, the button row is drawn only when there is a chat to open, so the page never ends in an empty row.
 - **One task (A4).** Templates, tests and this note are one task, because every test edit is in the same Go package.
+
+## T8.18
+
+T8.18 replaces the web page's shared token with a password: `afk web password` saves a hash of it, the page shows a sign-in form, and a sign-out button sits in the bars. The token, `?token=` and the `Authorization: Bearer` header are gone. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The hash (A1).** PBKDF2 with HMAC-SHA256 from Go's standard library, 600,000 rounds, a 16-byte random salt and a 32-byte result. It is slow and salted, which is what a stored password needs, and it adds no new module. Argon2id or scrypt would be stronger against special hardware, but both need `golang.org/x/crypto`, and for one owner's page behind Tailscale or a proxy, PBKDF2 at this count is enough.
+- **Where it is kept (A2).** A new package, `internal/webpass`, used by the command, the page and the daemon. The file is `web-password.json` in afk's state folder. It holds the method, the round count, the salt and the result, never the password. It is written with mode 0600 through a temporary file and a rename. The round count is stored in the file so tests can use a small one.
+- **The cookie (A3).** The cookie's value is worked out from the stored hash. A new password gets a new salt and so a new hash, so every browser signed in before is signed out. The value cannot be turned back into the password.
+- **Too many wrong passwords (A4).** There is one count for the whole page, because there is one owner. After 5 wrong passwords in a row, sign-in is refused for a minute, even with the right password. A right password resets the count. The count is kept in memory, so restarting the daemon clears it. Each sign-in try waits its turn, so many tries sent at once cannot all be checked before the count catches up.
+- **Addresses (A5).** Any address asked for without a valid cookie answers with the sign-in form. After a right password the browser goes back to the address it asked for, but only when that is an address on this page. Anything else goes to `/`. Sign out is a POST to `/signout`, which clears the cookie and goes back to the form.
+- **When the page is on (A6, A7).** The page is on when the password file exists. The daemon checks this when it starts. An address other machines can reach with no password stops the daemon. That check moved out of reading `config.toml`, because reading the config file cannot see the state folder. A `[web] token` left in `config.toml` is read and ignored, with one log line. A password file that cannot be read counts as no password, and the daemon's log says which file and to run `afk web password` again.
+- **Scripts (A8).** The page's scripts already fall back to a normal page load when an answer is not a page they can show, so a signed-out tab does not draw the form inside another page.
+- **Tests and prerequisites (A9, A10).** Tests are written in the same task as the code. Nothing had to be in place first.
+
+### Decided while building
+
+- **The password record is checked strictly.** Reading, writing, signing in and the cookie all use one check: the method must be PBKDF2-SHA256, the round count above 0, the salt not empty and the result exactly 32 bytes. A file that fails it gives a plain "not a valid password record" error, never a sign-in that silently always fails, and a bad record is never saved. No error quotes the file's contents.
+- **The state folder** is made with mode 0700 when it is missing. If it already exists, its mode is left alone. The password file is 0600 from the moment it is made.
+- **`/signin` can be visited directly.** With no cookie it shows the form (200). When signed in it goes to `/`.
+- **What counts toward the lockout**: only wrong passwords, and passwords over 1024 bytes. "No password set", an unreadable file and a broken form do not count, because none of them is a guess. A try while locked does not lengthen the lock, so the wait is never more than a minute from the fifth wrong try.
+- **The return address** is checked both as typed and after decoding. It is cleaned before the checks, so `/p/../api/x` also goes to `/`. It never goes to `/signin`, `/signout` or `/api`.
+- **Messages on the form.** A wrong password is shown under the field. The lockout, "no password is set" and "the file cannot be read" are shown in a notice above the form. None of them repeats what was sent or what the file holds.
+- **An unreadable password file on an address other machines can reach** stops the daemon, the same as a missing one, with a message saying the file cannot be read. The plan said to treat it as no password. Refusing keeps a reachable page from starting in a state no one can sign in to.
+- **A `[web] token` set to an empty string is not a leftover token.** Any other value is, and its value is never kept or printed.
+- **Notification links** (`afk inbox add`, plan reviews) check for the password file in their own process. In tests that check is a seam, so no test reads the real state folder.
+- **The sign-out button.** On the phone it shares the bar's actions area with the Add-a-project icon. On the desktop it is the last item in the top bar. It is a plain form, so it works the same with JavaScript off. Page tests that check a page has no form now ignore the two sign-out forms in the bars.
+
+### Checked, and not checked
+
+- **Checked against a scratch build** (never `~/bin`), with scratch state and config folders:
+  - `afk web password` saved a 0600 file holding no copy of the password, and refused a mismatch and input that was not a terminal.
+  - `afk daemon` with a leftover token logged the one line and served the sign-in form. `curl` with `Authorization: Bearer` got a JSON 401.
+  - A `0.0.0.0` bind with no password exited 1, with a message naming `afk web password`.
+  - In headless Chrome at 390 and 1280 px, with JavaScript on and off: the overview showed the form, a wrong password was refused, the right one reached the overview, Sign out returned to the form, and the sixth wrong try showed the one-minute notice.
+  - axe (WCAG 2.2 AA) found no violation on the sign-in page, empty and with the error, or on the overview, in both colour schemes.
+- **`make check` was run in full**: green.
+- **Not checked: a real phone, Tailscale or a reverse proxy.** Owner check: run `afk web password` on the VM, restart `afkd`, remove `[web] token` from `config.toml`, then sign in from the phone, tap a notification link and press Sign out.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes:
+- Five test files changed that no task's file list named: only to drop the token from the test setup and to skip the bars' sign-out forms.
+- This file and `CONTEXT.md` are written by the planner and conductor, by design.
+
+## T11.2
+
+T11.2 adds `internal/install`: a pure function that turns what afk found out about a machine into the ordered install steps (each done, to do, or cannot, with the reason and what to do instead) and how risky the machine is, plus a read-only probe that finds those facts out. Nothing calls it yet; `afk install` (T11.3) will. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Tests (A1).** Written in the same task as the code, as table tests. Nothing had to be in place first (A2). The master plan's M11 text was not on this branch when the work started, so the session worked from a copy of the T11.2 entry and left `docs/PLAN.md` alone.
+- **The agent CLI's name and its unattended setting (A3).** Two small functions in `internal/provider`, beside the provider types, so the install package never names a provider. The existing unattended check answers only yes or no; the installer must tell "not set yet, afk will set it" from "the settings file is broken, afk must not overwrite it", so the new reader gives four answers: set, not set, broken, or not supported by this agent CLI.
+- **Risk (A4).** A Mac, or any machine with a desktop session, is a personal computer. A virtual machine or container with no desktop is `vm`. No virtualisation and no desktop is `dedicated`. If the virtualisation check could not run, the risk is `unknown`, which the installer treats like personal.
+- **Step states (A5).** An unsupported system and running as root make every step "cannot", with one message. A step that waits on an earlier one stays "to do" and says what it waits for. A broken settings file, an agent CLI with no unattended mode, a problem with the project location and a missing package manager are "cannot", each with what to do instead.
+- **`~/bin` (A6).** The service runs `~/bin/afk`, so the service step is "cannot" until afk is there. `~/bin` missing from `PATH` keeps the final check "to do", with how to add it.
+- **Commands (A7).** Every command the probe runs has a deadline (10 seconds by default). A command that fails or runs out of time reads as "could not tell", never as "no".
+- **macOS service (A8).** The LaunchAgent's label is `io.github.dphaener.afk`, and the probe reads it with `launchctl print`. This is provisional: T11.4 checks it against launchd's documentation.
+- **Names (A9).** The type is `Plan` and the function is `Build`, because Go cannot give a type and a function the same name in one package.
+
+### Decided while building
+
+- **What "broken" means for the settings file.** Only a file that cannot be read, or one that is not a JSON object, is broken. A key of the wrong type reads as "not set", because the agent CLI would still show its prompt. An unknown provider name also reads as broken, with the lookup error as the reason.
+- **A wrong package manager is no package manager.** `brew` on Linux or `apt-get` on a Mac makes the packages step "cannot", the same as having none.
+- **A "cannot" always says what to do.** A broken settings file with no reason from the reader still gets a general fix.
+- **Service answers.** Matching output (`enabled`, `active`, `Linger=yes`) is yes, other output is no, and no output with an error is "could not tell", so a missing user bus is never read as a stopped service.
+- **macOS service.** When `launchctl print` fails, the agent counts as not loaded. This is provisional until T11.4.
+- **The no-provider-names rule is a test.** A test scans every Go file in `internal/install`, tests included.
+- **The final check on a personal machine.** On a Mac or a desktop the safety step is always "to do" (the risk must be accepted each run), so the final check step is never "done" there even when everything is installed. T11.3 may count an accepted safety screen as done before it works out the plan again.
+
+### Checked, and not checked
+
+- **Checked:** table tests of `Build` and `Probe` (with fakes, including a command that runs out of time and an unreadable settings file), `make check`, and one real probe of this Linux machine through a temporary test that was deleted afterwards. It finished in about a second and changed nothing.
+- **Not checked: a Mac.** Owner check: on a Mac, once `afk install` exists (T11.3/T11.4), run `afk install --dry-run` and see that the plan reads the machine correctly, the service step in particular.
+
+## T11.3
+
+T11.3 adds `afk install`, the guided installer for Linux: it shows the install plan from T11.2 as a checklist, shows a safety screen, and then works through the steps that are still to do, checking the machine again after each one. These are the decisions the master plan left open, numbered as in the work plan's assumptions. The master plan's M11 text was not on this branch when the work started, so the session worked from a copy of the T11.3 entry and left `docs/PLAN.md` alone.
+
+### What was decided, and why
+
+- **Where the code lives (A1).** The pure parts (which step comes next, the package names, the service file's text, its `PATH` line, the web address) are in `internal/install`. Writing the agent CLI's settings file and the agent CLI's install and sign-in commands are in `internal/provider`, so no other package names the agent. The `[web]` edit of `config.toml` is in `internal/daemonconfig`, beside the `[[project]]` edits. The command, its screens and everything that touches the machine are in the root package.
+- **The safety screen counts once it is accepted (A2).** The installer remembers, for the rest of the run, that the owner accepted the risk, and tells the install plan so each time it checks the machine again. The probe itself never claims it.
+- **The safety screen always shows (A3).** Also with `--yes`. On a personal computer, or a machine afk cannot place, the owner types `I accept the risk`; on a server or a VM a key press is enough.
+- **Installing the agent CLI and signing in (A4).** afk runs the install command the agent's maker documents, as the normal user, and then the agent CLI's own sign-in, each with the terminal handed over. Both commands are held in `internal/provider`. If the CLI lands in `~/.local/bin` and that is not on `PATH`, afk adds it for the rest of the run so the next steps can find it. This was decided without the owner (it would have been asked).
+- **Packages (A5).** `sudo apt-get update`, then `sudo apt-get install -y` with the missing packages, each with the terminal handed over so `sudo` asks for its password itself. A fresh cloud machine's package list is empty, so the update comes first.
+- **The password and the plugin (A6).** The installer runs afk itself (`afk web password`, `afk plugin install`) with the terminal handed over, so the T8.18 prompt and the plugin installer are used as they are. The installer never sees the password.
+- **How the web page is reached under `--yes` (A7).** This machine only (`127.0.0.1:4253`), the least exposed choice. Every address and Tailscale are offered but never picked for the owner. This was decided without the owner (it would have been asked).
+- **A service file afk did not write (A8).** afk marks the file it writes with a comment on its first line. A file without that line is shown and replaced only if the owner says yes (the default is no), and never under `--yes`. This was decided without the owner (it would have been asked).
+- **`--dry-run` needs no terminal (A9).** It only prints, so it can run in CI (T11.4's macOS check). Every other run needs a terminal.
+- **The docs pages (A10).** `docs/install.md` and `docs/reference.md`, which the master plan says to rewrite, were not on this branch: they are part of the owner's README split, not yet committed. Making them here would collide with that work, so `afk install` is documented in `README.md` and `contrib/README.md`, and those two pages are left for the owner's split to pick up. This was decided without the owner (it would have been asked).
+- **Tests and prerequisites (A11, A12).** Tests are written in the same task as the code. Nothing had to be in place first.
+
+### Decided while building
+
+- **The runner.** The screen is one pointer model whose every slow operation (the probe, a command, a file write, a handover) carries a sequence number, and a result from an earlier number is dropped, so a late answer can never act on a screen the owner has moved past.
+- **Every step asks first.** Each step has its own yes or no question (default yes), the logins and the unattended setting included, so there is one rule the owner can predict. The git identity and project location forms count as their own confirmation. Answering no stops the run with "You said no" and undoes nothing. The questions are afk's own y/n/enter prompt, not a form, so they show in the golden files and `--yes` takes the default.
+- **The checklist is short on purpose.** It shows the reason only for the step at work and for steps that cannot be done; twelve reasons do not fit a 24-row terminal. `--dry-run` prints every reason, one line per step.
+- **Other systems fail in plain words.** Packages on anything but `apt-get`, and the service on anything but Linux, fail the step and say what to do by hand (macOS is T11.4) instead of guessing.
+- **The service commands go through the handover too.** `daemon-reload`, `enable --now` and `enable-linger` all get the terminal, because on some systems `enable-linger` asks polkit for permission. The unit is not rewritten when it already matches.
+- **A step that turns to do again stops the run.** A step done earlier in the same run that the next check finds undone ends the run instead of looping.
+- **A step that fails stops the run, and earlier steps stay.** Nothing is undone.
+- **The plugin target** is taken from the plugin installer's own constant, not typed again here.
+- **Exit 0 when `~/bin` is not on `PATH`.** The reason is shown above the address; it is advice, not a failure. The "not a terminal" message goes to stderr.
+- **The final check reads the stored usage reading only.** It never asks the agent CLI for a fresh one, because starting the agent from the installer is the daemon's job.
+- **The settings writer sorts keys.** `~/.claude/settings.json` is rewritten with its keys in alphabetical order; values are kept byte for byte, and a file that is not a JSON object (or is `null`) is never overwritten.
+- **`--dry-run` is not silent on the machine.** afk writes nothing, but the probe runs `gh auth status` and the agent CLI's login check, and those tools make their own small files in the home folder. A check that nothing was created has to leave them out of `PATH`.
+
+### What was checked, and what was not
+
+Checked on this branch, against a binary built outside `PATH`: the table tests for the plan, the helpers, the settings writer, `SetWeb` and the runner; golden files for every screen at 80 and 120 columns; `afk install --dry-run` printing the twelve steps and changing nothing; the not-a-terminal and bad-flag exits; and two end-to-end runs in a tmux terminal with a scratch home and stand-ins for `apt-get`, `sudo`, `curl`, the agent CLI, `gh`, `systemctl`, `loginctl` and `systemd-detect-virt`. The first run accepted the safety screen, answered the forms, chose "this machine only" and reached the address screen `http://127.0.0.1:4253`, leaving the settings key, `[web] bind`, the project location, and the marked unit with its `PATH` line, with the commands in the expected order. A second run reported everything in place and ran no changing command. A run where the GitHub sign-in failed stopped at that step, kept the earlier work and ran no service command.
+
+Not checked, and left to the owner: a real Ubuntu machine, a real `sudo` password prompt, real agent and GitHub sign-ins, real Tailscale (`tailscale serve`), and real systemd starting the daemon and keeping it after logout. The stand-ins prove afk runs the right commands in the right order and reads their results; they cannot prove those programs do what afk expects on a real machine.
+
+### Docs left for the owner's split
+
+`docs/install.md` and `docs/reference.md` were not on this branch (A10), so their rewrite waits for the owner's doc split. `afk install` is documented in `README.md` (the Installation section and the subcommand list) and `contrib/README.md` meanwhile.
+
+## T11.4
+
+T11.4 makes `afk install` work on a Mac with Homebrew: the packages step installs the missing tools with `brew install`, and the service step writes a launchd LaunchAgent and loads it, so the daemon runs in the background as it does under systemd on Linux. The Linux path is unchanged. These are the decisions the master plan left open, numbered as in the work plan's assumptions. The master plan's M11 text was not on this branch when the work started, so the session worked from a copy of the T11.4 entry and left `docs/PLAN.md` alone.
+
+### What was decided, and why
+
+- **How the plist is made (A1).** A pure function in `internal/install` writes the plist's XML text itself, escaping every value. A plist library would be a new dependency for nine fixed keys.
+- **Which keys (A2).** The plist mirrors the Linux unit and adds nothing else: the label `io.github.dphaener.afk`; `ProgramArguments` running `~/bin/afk daemon` with the full path spelled out; `RunAtLoad`; `KeepAlive` set to true, so launchd starts the daemon again after it exits on purpose for a new version of itself; `ThrottleInterval` 30, the same wait as the Linux unit's `RestartSec=30`; `AbandonProcessGroup`, so the agent sessions outlive the daemon, as `KillMode=process` does on Linux; `EnvironmentVariables` with the `PATH` built exactly as for Linux; and the daemon's output in `daemon.log` in afk's state folder.
+- **How afk knows the file is its own (A3).** A comment on the line after the XML declaration, because a plist cannot start with `#` the way the Linux unit's marker does. A plist without it is shown and replaced only if the owner says yes, and never under `--yes`, the same rule as on Linux.
+- **Loading it (A4).** afk writes the file, then runs `launchctl bootout` (only when the agent is already loaded, so a changed file takes effect) and `launchctl bootstrap gui/<uid>`. It never uses `sudo` or the older `launchctl load`. When loading fails, afk says to run `afk install` from a desktop login on the Mac, not over SSH.
+- **The user id (A5)** comes from a new seam in the installer, so tests use a fixed one.
+- **Packages (A6).** `brew install` with the missing tools, after one yes-or-no question. afk never installs Homebrew: with no `brew` the step says to install it from brew.sh and run `afk install` again.
+- **Reading launchd's state (A7).** The probe keeps reading `launchctl print`: exit 0 means loaded, `state = running` means running. launchctl's own manual says this output is not a stable interface, but there is nothing stable to read instead, and a wrong reading makes the step fail with its reason when afk checks again, rather than pass quietly. The label `io.github.dphaener.afk`, provisional in T11.2, is kept.
+- **Checking on a Mac (A8).** No Mac was available, and the T11.1 release workflow with its macOS runner is not on this branch. The darwin build and `go vet` run here; running `afk install --dry-run` on a real Mac is left to the owner. This was decided without the owner (it would have been asked).
+- **The docs (A9).** `contrib/README.md` gains a macOS section beside the Linux steps and `README.md` covers macOS. `docs/install.md` is not on this branch, so its "On macOS" rewrite waits for the owner's doc split, as in T11.3.
+- **Tests and prerequisites (A10, A11).** Tests are written in the same task as the code, and the Linux golden screens must not change. Nothing had to be in place first.
+
+### What each launchd key does
+
+Each line below quotes or closely paraphrases launchd.plist(5) (https://keith.github.io/xcode-man-pages/launchd.plist.5.html) and nothing more.
+
+- **Label.** "This required key uniquely identifies the job to launchd." afk uses `io.github.dphaener.afk`.
+- **ProgramArguments.** It "maps to the second argument of execvp(3) and specifies the argument vector to be passed to the job when a process is spawned". With no `Program` key, the first element "may be either an absolute path, or a relative path which is resolved using _PATH_STDPATH". afk spells out the absolute path, so the lookup does not depend on a path afk does not control.
+- **RunAtLoad.** It is "used to control whether your job is launched once at the time the job is loaded". afk sets it to true so the daemon starts when the agent is bootstrapped and at each login.
+- **KeepAlive.** "The default is false and therefore only demand will start the job", and "The use of this key implicitly implies RunAtLoad". afk sets it to plain true, not the `SuccessfulExit` dictionary. `SuccessfulExit` is not used: "If true, the job will be restarted as long as the program exits and with an exit status of zero. If false, the job will be restarted in the inverse condition." The daemon exits 0 on purpose when it finds a new version of itself and must be started again, so afk wants a restart whatever the exit status.
+- **ThrottleInterval.** "By default, jobs will not be spawned more than once every 10 seconds." afk sets 30 to match the Linux unit's `RestartSec=30`.
+- **AbandonProcessGroup.** "When a job dies, launchd kills any remaining processes with the same process group ID as the job. Setting this key to true disables that behavior." afk sets it to true so the sessions the daemon started outlive it, as `KillMode=process` does on Linux.
+- **EnvironmentVariables.** It is "used to specify additional environmental variables to be set before running the job". afk sets `PATH` to the same value the Linux unit gets.
+- **StandardOutPath.** "The given path should be mapped to the job's stdout(4)." launchd creates the file if it is missing. The man page says nothing about the folder, so afk makes `daemon.log`'s folder itself before it loads the agent.
+- **StandardErrorPath.** The same for stderr. afk points both at the one `daemon.log`.
+- **launchctl print.** launchctl(1) says the output of `print` "is NOT API in any sense at all". afk still reads it (exit 0 means loaded, `state = running` means running) because there is nothing stable to read instead, and the label `io.github.dphaener.afk` that T11.2 marked provisional is kept, since nothing in this work gave a reason to change it.
+- **Not claimed.** Whether `bootout` kills processes outside the job's process group is not in the man page, so nothing here relies on it. That `launchctl bootstrap gui/<uid>` needs a desktop login, and fails over SSH, comes from community reports, not from the man page; afk's advice to run from a desktop login rests on those reports.
+
+### Verification for the owner
+
+- On a Mac with Homebrew, from a desktop login (not over SSH), run `afk install --dry-run` and check that the packages step names Homebrew and the service step names `~/Library/LaunchAgents/io.github.dphaener.afk.plist`. Then run `afk install` as far as the service, and check that `launchctl print gui/$(id -u)/io.github.dphaener.afk` shows `state = running` and that `~/.local/state/afk/daemon.log` fills.
