@@ -2,6 +2,7 @@ package install
 
 import (
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,108 @@ func AptPackages(f Facts) []string {
 		}
 	}
 	return out
+}
+
+// brewNames maps a tool the plan lists to its Homebrew formula. It is a
+// separate map from aptNames on purpose: the names are the same today, but the
+// day one differs between Ubuntu and Homebrew it is a one-line change here and
+// the apt list is not touched.
+var brewNames = map[string]string{"git": "git", "gh": "gh", "jq": "jq", "ruby": "ruby"}
+
+// BrewPackages lists the Homebrew formulae for the tools that are missing, in
+// the order of Facts.Tools. A tool with no known formula is skipped rather
+// than guessed.
+func BrewPackages(f Facts) []string {
+	var out []string
+	for _, t := range f.Tools {
+		if t.Found {
+			continue
+		}
+		if name, ok := brewNames[t.Name]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// LaunchAgentPath is where afk's launch agent file lives for a home folder.
+// The probe reads the same path, so install and probe cannot disagree.
+func LaunchAgentPath(home string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", LaunchAgentLabel+".plist")
+}
+
+// PlistMarker is the second line of a launch agent afk install wrote, right
+// after the XML declaration. It is a comment after the declaration because a
+// plist is XML and cannot start with "#"; it tells a later run its own file,
+// which it may replace, from one the owner wrote.
+const PlistMarker = "<!-- Written by afk install. afk install replaces this file when it changes. -->"
+
+// LaunchAgent is what RenderLaunchAgent needs.
+type LaunchAgent struct {
+	Program string // absolute path to the afk binary
+	PATH    string // the PATH the daemon runs with
+	LogPath string // file for the daemon's standard output and error
+}
+
+func plistString(b *bytes.Buffer, s string) {
+	// EscapeText only fails when the writer does, and a bytes.Buffer never does.
+	_ = xml.EscapeText(b, []byte(s))
+}
+
+// RenderLaunchAgent writes the launchd property list for afk daemon. Each key
+// is stated as launchd.plist(5) describes it:
+//
+//   - ProgramArguments[0] is an absolute path because launchd resolves a
+//     relative one with _PATH_STDPATH, not with the job's own PATH.
+//   - KeepAlive is plain true, not the SuccessfulExit dictionary, because the
+//     daemon exits 0 on purpose when it finds a new version of itself and must
+//     be started again.
+//   - ThrottleInterval 30 matches the Linux unit's RestartSec=30; launchd's
+//     default is 10 seconds.
+//   - AbandonProcessGroup is true because launchd otherwise kills every
+//     process left in the job's process group when the job dies, and session
+//     hosts must outlive the daemon, as with KillMode=process on Linux.
+//   - PATH is spelled out in EnvironmentVariables because a launchd job does
+//     not read the shell profile.
+//
+// Every string value is XML-escaped.
+func RenderLaunchAgent(a LaunchAgent) []byte {
+	var b bytes.Buffer
+	str := func(indent, tag, s string) {
+		b.WriteString(indent + "<" + tag + ">")
+		plistString(&b, s)
+		b.WriteString("</" + tag + ">\n")
+	}
+	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+	b.WriteString(PlistMarker + "\n")
+	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
+	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
+	b.WriteString("\t<key>Label</key>\n")
+	str("\t", "string", LaunchAgentLabel)
+	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
+	str("\t\t", "string", a.Program)
+	str("\t\t", "string", "daemon")
+	b.WriteString("\t</array>\n")
+	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
+	b.WriteString("\t<key>KeepAlive</key>\n\t<true/>\n")
+	b.WriteString("\t<key>ThrottleInterval</key>\n\t<integer>30</integer>\n")
+	b.WriteString("\t<key>AbandonProcessGroup</key>\n\t<true/>\n")
+	b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n")
+	str("\t\t", "string", a.PATH)
+	b.WriteString("\t</dict>\n")
+	b.WriteString("\t<key>StandardOutPath</key>\n")
+	str("\t", "string", a.LogPath)
+	b.WriteString("\t<key>StandardErrorPath</key>\n")
+	str("\t", "string", a.LogPath)
+	b.WriteString("</dict>\n</plist>\n")
+	return b.Bytes()
+}
+
+// LaunchAgentWrittenByAfk reports whether the second line, after the XML
+// declaration, is the marker.
+func LaunchAgentWrittenByAfk(b []byte) bool {
+	lines := bytes.SplitN(b, []byte("\n"), 3)
+	return len(lines) >= 2 && strings.TrimRight(string(lines[1]), "\r") == PlistMarker
 }
 
 // ServicePATH builds the unit's PATH. A user service does not read the shell

@@ -218,3 +218,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Machine risk**: how safe a machine is to run afk on: `dedicated`, `vm`, `personal` or `unknown` (treated like personal).
 - **Safety screen**: the first screen of `afk install`, before anything changes: it says that afk's agents run with permissions bypassed and that afk belongs on a machine set aside for it, and on a personal computer asks the owner to type `I accept the risk`.
 - **Terminal handover**: `afk install` giving the terminal to another program (`sudo`, a sign-in, `afk web password`) until it ends, so that program can ask its own questions.
+- **LaunchAgent**: the file `~/Library/LaunchAgents/io.github.dphaener.afk.plist` that `afk install` writes on a Mac so launchd runs `afk daemon` in the background while the owner is logged in; the macOS counterpart of the Linux `afkd.service` user unit.
