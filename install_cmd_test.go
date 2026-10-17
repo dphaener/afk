@@ -28,6 +28,7 @@ func strictInstallEnv(t *testing.T, terminal bool, facts install.Facts) (install
 		executable: func() (string, error) { return "/fake/afk", nil },
 		home:       "/home/u",
 		goos:       "linux",
+		uid:        func() int { return 501 },
 		getenv:     func(string) string { return "" },
 		setenv:     func(string, string) error { bad("setenv"); return nil },
 		mkdirAll:   func(string, fs.FileMode) error { bad("mkdirAll"); return nil },

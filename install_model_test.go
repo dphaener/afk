@@ -95,6 +95,8 @@ type fakeInstall struct {
 	fail    map[string]error
 	outputs map[string]string
 	effects map[string]func(*install.Facts)
+	// goos is the system the runner believes it is on; empty is linux.
+	goos string
 }
 
 func (f *fakeInstall) record(line string) error {
@@ -147,6 +149,10 @@ func (f *fakeInstall) env() installEnv {
 			return nil
 		}
 	}
+	goos := f.goos
+	if goos == "" {
+		goos = "linux"
+	}
 	cfgDeps := daemonconfig.Deps{
 		Getenv:   func(k string) string { return map[string]string{"XDG_CONFIG_HOME": fakeHome + "/.config"}[k] },
 		HomeDir:  func() (string, error) { return fakeHome, nil },
@@ -181,7 +187,8 @@ func (f *fakeInstall) env() installEnv {
 		},
 		executable: func() (string, error) { return "/fake/afk", nil },
 		home:       fakeHome,
-		goos:       "linux",
+		goos:       goos,
+		uid:        func() int { return 501 },
 		getenv:     getenv,
 		setenv: func(k, v string) error {
 			err := f.record("setenv " + k + "=" + v)
@@ -267,6 +274,14 @@ func newFakeInstall(t *testing.T) *fakeInstall {
 			"unit " + fakeHome + "/.config/systemd/user/afkd.service": func(f *install.Facts) { f.Service.Installed = install.Yes },
 			"handover systemctl --user enable --now afkd":             func(f *install.Facts) { f.Service.Enabled, f.Service.Running = install.Yes, install.Yes },
 			"handover loginctl enable-linger":                         func(f *install.Facts) { f.Service.Linger = install.Yes },
+			"handover brew install git gh jq ruby": func(f *install.Facts) {
+				for i := range f.Tools {
+					f.Tools[i].Found, f.Tools[i].Path = true, "/opt/homebrew/bin/"+f.Tools[i].Name
+				}
+			},
+			"handover launchctl bootstrap gui/501 " + macPlist: func(f *install.Facts) {
+				f.Service.Installed, f.Service.Enabled, f.Service.Running = install.Yes, install.Yes, install.Yes
+			},
 		},
 	}
 }
@@ -386,6 +401,64 @@ func freshRunLog(t *testing.T) []string {
 	}
 }
 
+// macPlist is where the runner writes afk's launch agent for fakeHome.
+const macPlist = fakeHome + "/Library/LaunchAgents/" + install.LaunchAgentLabel + ".plist"
+
+// macDoneFacts is a Mac with Homebrew where every step but the ones a row
+// changes is done. A Mac is always a personal computer, so every macOS row
+// types the safety phrase first (macPhrase); --yes never answers it.
+func macDoneFacts() install.Facts {
+	f := doneInstallFacts()
+	f.OS, f.Distro, f.DistroVersion, f.Arch, f.Virt = "darwin", "", "", "arm64", install.VirtNone
+	f.PackageManager = "brew"
+	for i := range f.Tools {
+		f.Tools[i].Path = "/opt/homebrew/bin/" + f.Tools[i].Name
+	}
+	f.Service.Linger = install.Unknown
+	return f
+}
+
+// macSetup makes the fake a Mac (macDoneFacts, goos darwin) and lets the
+// row change the facts.
+func macSetup(edit func(*install.Facts)) func(*fakeInstall) {
+	return func(f *fakeInstall) {
+		f.goos = "darwin"
+		f.facts = macDoneFacts()
+		if edit != nil {
+			edit(&f.facts)
+		}
+	}
+}
+
+// macServiceOff is a Mac whose agent is not installed or loaded.
+func macServiceOff(f *install.Facts) {
+	f.Service.Installed, f.Service.Enabled, f.Service.Running = install.No, install.No, install.No
+}
+
+// macWantPlist is the plist the runner must write for macDoneFacts with the
+// daemon's log in stateDir.
+func macWantPlist(stateDir string) string {
+	return string(install.RenderLaunchAgent(install.LaunchAgent{
+		Program: fakeHome + "/bin/afk",
+		PATH:    install.ServicePATH(macDoneFacts(), fakeHome),
+		LogPath: stateDir + "/daemon.log",
+	}))
+}
+
+// macPhrase answers the safety screen a Mac always shows.
+func macPhrase(more ...tea.Msg) []tea.Msg {
+	return append(append(keyText(riskPhrase), keyEnter), more...)
+}
+
+func macFreshServiceLog(stateDir string) []string {
+	return []string{
+		"mkdir " + fakeHome + "/Library/LaunchAgents",
+		"mkdir " + stateDir,
+		"unit " + macPlist,
+		"handover launchctl bootstrap gui/501 " + macPlist,
+	}
+}
+
 // TestInstallRunner drives whole runs through Update against the fake
 // machine. The load-bearing rows:
 //   - "fresh vm under --yes" pins the order of every command and write, and
@@ -396,6 +469,15 @@ func freshRunLog(t *testing.T) []string {
 //     still says to do, and the run must stop there instead of going on.
 //   - "--yes on a personal machine" shows the safety screen and refuses any
 //     text but the phrase; --yes never answers it.
+//   - The "mac" rows pin the macOS path: brew install with no sudo (and its
+//     decline and failure), the launch agent written under ~/Library with its
+//     log folder made first and loaded with launchctl bootstrap gui/501,
+//     bootout only when the probe found the agent loaded, no write when the
+//     file is unchanged, the same rules as Linux for a file afk did not
+//     write, the desktop-login advice when bootstrap fails, and the plist
+//     bytes (PATH and the log under the state folder, XDG_STATE_HOME
+//     honoured). No macOS row may log sudo, systemctl, loginctl or the
+//     legacy launchctl load/unload; the loop checks that for every one.
 func TestInstallRunner(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -629,6 +711,149 @@ func TestInstallRunner(t *testing.T) {
 			},
 			wantPhase: installDone, wantCode: 0, wantProbes: 2,
 		},
+		{
+			name: "mac brew installs the missing tools after a yes", yes: false,
+			setup:     macSetup(func(f *install.Facts) { f.Tools = freshInstallFacts().Tools }),
+			keys:      macPhrase(keyEnter),
+			wantLog:   func(*testing.T) []string { return []string{"handover brew install git gh jq ruby"} },
+			wantPhase: installDone, wantCode: 0, wantProbes: 2,
+		},
+		{
+			name: "mac brew declined stops before brew runs", yes: false,
+			setup:     macSetup(func(f *install.Facts) { f.Tools = freshInstallFacts().Tools }),
+			keys:      macPhrase(keyRune('n')),
+			wantLog:   func(*testing.T) []string { return nil },
+			wantPhase: installFailed, wantCode: 1, wantProbes: 1,
+			wantScreen: []string{"Stopped at: Install the tools afk needs", "You said no"},
+		},
+		{
+			name: "mac brew install failing stops the run with the todo", yes: true,
+			setup: func(f *fakeInstall) {
+				macSetup(func(f *install.Facts) { f.Tools = freshInstallFacts().Tools })(f)
+				f.fail["handover brew install git gh jq ruby"] = errors.New("exit status 1")
+			},
+			keys:      macPhrase(),
+			wantLog:   func(*testing.T) []string { return []string{"handover brew install git gh jq ruby"} },
+			wantPhase: installFailed, wantCode: 1, wantProbes: 1,
+			wantScreen: []string{"brew install git gh jq ruby did not finish", "run brew doctor"},
+		},
+		{
+			name: "mac service fresh writes the plist and bootstraps it", yes: true,
+			setup:     macSetup(macServiceOff),
+			keys:      macPhrase(),
+			wantLog:   func(*testing.T) []string { return macFreshServiceLog(fakeHome + "/.local/state/afk") },
+			wantPhase: installDone, wantCode: 0, wantProbes: 2,
+			check: func(t *testing.T, f *fakeInstall, m *installModel) {
+				got := f.files[macPlist]
+				if want := macWantPlist(fakeHome + "/.local/state/afk"); got != want {
+					t.Errorf("plist:\n%s\nwant:\n%s", got, want)
+				}
+				if !strings.Contains(got, "<string>/home/u/bin:/home/u/.local/bin:/opt/homebrew/bin:") {
+					t.Errorf("plist PATH does not hold the brew folder:\n%s", got)
+				}
+			},
+		},
+		{
+			name: "mac service confirm names the launchctl command", yes: false,
+			setup:     macSetup(macServiceOff),
+			keys:      macPhrase(),
+			wantLog:   func(*testing.T) []string { return nil },
+			wantPhase: installConfirm, wantCode: 1, wantProbes: 1,
+			wantScreen: []string{"Install and start the afk service?", "launchctl bootstrap gui/501 " + macPlist, "each time you log in"},
+		},
+		{
+			name: "mac service follows XDG_STATE_HOME for the log", yes: true,
+			setup: func(f *fakeInstall) {
+				macSetup(macServiceOff)(f)
+				f.vars["XDG_STATE_HOME"] = "/x/state"
+			},
+			keys:      macPhrase(),
+			wantLog:   func(*testing.T) []string { return macFreshServiceLog("/x/state/afk") },
+			wantPhase: installDone, wantCode: 0, wantProbes: 2,
+			check: func(t *testing.T, f *fakeInstall, m *installModel) {
+				if got, want := f.files[macPlist], macWantPlist("/x/state/afk"); got != want {
+					t.Errorf("plist:\n%s\nwant:\n%s", got, want)
+				}
+			},
+		},
+		{
+			name: "mac service already loaded with a changed plist boots out first", yes: false,
+			setup: func(f *fakeInstall) {
+				macSetup(func(f *install.Facts) { f.Service.Running = install.No })(f)
+				f.files[macPlist] = string(install.RenderLaunchAgent(install.LaunchAgent{Program: fakeHome + "/bin/afk", PATH: "/usr/bin", LogPath: "/old.log"}))
+			},
+			keys: macPhrase(keyEnter),
+			wantLog: func(*testing.T) []string {
+				return []string{
+					"mkdir " + fakeHome + "/Library/LaunchAgents",
+					"mkdir " + fakeHome + "/.local/state/afk",
+					"unit " + macPlist,
+					"handover launchctl bootout gui/501/" + install.LaunchAgentLabel,
+					"handover launchctl bootstrap gui/501 " + macPlist,
+				}
+			},
+			wantPhase: installDone, wantCode: 0, wantProbes: 2,
+			check: func(t *testing.T, f *fakeInstall, m *installModel) {
+				if got, want := f.files[macPlist], macWantPlist(fakeHome+"/.local/state/afk"); got != want {
+					t.Errorf("plist was not replaced:\n%s", got)
+				}
+			},
+		},
+		{
+			name: "mac service unchanged plist and not loaded only bootstraps", yes: true,
+			setup: func(f *fakeInstall) {
+				macSetup(func(f *install.Facts) {
+					f.Service.Enabled, f.Service.Running = install.No, install.No
+				})(f)
+				f.files[macPlist] = macWantPlist(fakeHome + "/.local/state/afk")
+			},
+			keys:      macPhrase(),
+			wantLog:   func(*testing.T) []string { return []string{"handover launchctl bootstrap gui/501 " + macPlist} },
+			wantPhase: installDone, wantCode: 0, wantProbes: 2,
+		},
+		{
+			name: "mac plist afk did not write is never replaced under --yes", yes: true,
+			setup: func(f *fakeInstall) {
+				macSetup(macServiceOff)(f)
+				f.files[macPlist] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict/></plist>\n"
+			},
+			keys:      macPhrase(),
+			wantLog:   func(*testing.T) []string { return nil },
+			wantPhase: installFailed, wantCode: 1, wantProbes: 1,
+			wantScreen: []string{"service file at " + macPlist + " that afk did not write, and --yes never replaces it"},
+		},
+		{
+			name: "mac plist afk did not write is kept on the default answer", yes: false,
+			setup: func(f *fakeInstall) {
+				macSetup(macServiceOff)(f)
+				f.files[macPlist] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict/></plist>\n"
+			},
+			keys:      macPhrase(keyEnter),
+			wantLog:   func(*testing.T) []string { return nil },
+			wantPhase: installFailed, wantCode: 1, wantProbes: 1,
+			wantScreen: []string{"The service file was left as it was."},
+		},
+		{
+			name: "mac plist afk did not write is replaced after a yes", yes: false,
+			setup: func(f *fakeInstall) {
+				macSetup(macServiceOff)(f)
+				f.files[macPlist] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict/></plist>\n"
+			},
+			keys:      macPhrase(keyRune('y')),
+			wantLog:   func(*testing.T) []string { return macFreshServiceLog(fakeHome + "/.local/state/afk") },
+			wantPhase: installDone, wantCode: 0, wantProbes: 2,
+		},
+		{
+			name: "mac bootstrap failing gives the desktop-login advice", yes: true,
+			setup: func(f *fakeInstall) {
+				macSetup(macServiceOff)(f)
+				f.fail["handover launchctl bootstrap gui/501 "+macPlist] = errors.New("exit status 5")
+			},
+			keys:      macPhrase(),
+			wantLog:   func(*testing.T) []string { return macFreshServiceLog(fakeHome + "/.local/state/afk") },
+			wantPhase: installFailed, wantCode: 1, wantProbes: 1,
+			wantScreen: []string{"Stopped at: Start the afk service", "exit status 5", "from a desktop login on this Mac, not over SSH", "launchctl print gui/501/" + install.LaunchAgentLabel},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -659,6 +884,15 @@ func TestInstallRunner(t *testing.T) {
 			for _, l := range f.log {
 				if strings.HasPrefix(l, "remove") {
 					t.Errorf("the run removed something: %s", l)
+				}
+			}
+			if f.goos == "darwin" {
+				for _, l := range f.log {
+					for _, bad := range []string{"sudo", "systemctl", "loginctl", "launchctl load", "launchctl unload"} {
+						if strings.Contains(l, bad) {
+							t.Errorf("a macOS run logged %q: %s", bad, l)
+						}
+					}
 				}
 			}
 			if tt.check != nil {

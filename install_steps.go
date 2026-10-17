@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,6 +16,7 @@ import (
 	"github.com/dphaener/afk/internal/pluginstall"
 	"github.com/dphaener/afk/internal/profile"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/usagestate"
 )
 
 // installProjectTopic is the profile topic planfolder reads the project
@@ -86,10 +88,14 @@ func (m *installModel) handoverChain(cmds [][]string, todo string, then func() t
 	})
 }
 
-// stepPackages is the only place afk uses sudo, and it never runs sudo
-// itself with captured output: the terminal is handed over so sudo asks for
-// the password in its own prompt and afk never sees it.
+// stepPackages is the only place afk uses sudo, and only on Linux. It never
+// runs sudo itself with captured output: the terminal is handed over so sudo
+// asks for the password in its own prompt and afk never sees it. On macOS
+// afk never runs sudo: Homebrew installs as the user (stepPackagesBrew).
 func (m *installModel) stepPackages() tea.Cmd {
+	if m.facts.PackageManager == "brew" {
+		return m.stepPackagesBrew()
+	}
 	pkgs := install.AptPackages(m.facts)
 	list := strings.Join(pkgs, " ")
 	if m.facts.PackageManager != "apt-get" {
@@ -109,6 +115,27 @@ func (m *installModel) stepPackages() tea.Cmd {
 				{"sudo", "apt-get", "update"},
 				append([]string{"sudo", "apt-get", "install", "-y"}, pkgs...),
 			}, "Check your network connection and that your user may use sudo.", m.stepDone)
+		})
+}
+
+// stepPackagesBrew installs the missing tools with Homebrew, with the
+// terminal handed over so brew's own output and questions reach the person.
+// afk never installs Homebrew itself: with no brew the plan marks this step
+// "cannot" and points at brew.sh, so this only runs once brew is there.
+func (m *installModel) stepPackagesBrew() tea.Cmd {
+	pkgs := install.BrewPackages(m.facts)
+	if len(pkgs) == 0 {
+		return m.stepDone()
+	}
+	list := strings.Join(pkgs, " ")
+	return m.ask("Install "+strings.Join(pkgs, ", ")+" with Homebrew?",
+		"afk will run brew install "+list+". Homebrew needs no sudo.",
+		true, func(yes bool) tea.Cmd {
+			if !yes {
+				return m.declined()
+			}
+			return m.handoverChain([][]string{append([]string{"brew", "install"}, pkgs...)},
+				"Check your network connection, then run brew doctor to see what is wrong with Homebrew.", m.stepDone)
 		})
 }
 
@@ -548,9 +575,16 @@ func (m *installModel) unitPath() string {
 const installUnitShown = 40
 
 func (m *installModel) stepService() tea.Cmd {
-	if m.env.goos != "linux" {
-		return m.failStep("afk install can only start the service on Linux so far.", "Start afk daemon by hand for now (see contrib/README.md).")
+	switch m.env.goos {
+	case "linux":
+		return m.stepServiceLinux()
+	case "darwin":
+		return m.stepServiceMac()
 	}
+	return m.failStep("afk install can only start the service on Linux so far.", "Start afk daemon by hand for now (see contrib/README.md).")
+}
+
+func (m *installModel) stepServiceLinux() tea.Cmd {
 	path := m.unitPath()
 	want := install.RenderUnit(afkdUnit, install.ServicePATH(m.facts, m.env.home))
 	old, err := m.env.readFile(path)
@@ -614,4 +648,109 @@ func (m *installModel) stepService() tea.Cmd {
 			}
 			return write()
 		})
+}
+
+// installMacLoginTodo is the advice when a launchctl command fails. That the
+// gui/<uid> domain is missing for an SSH-only login comes from community
+// reports, not from launchctl(1); it is the likeliest cause, so the advice
+// leads with it and then names the command that shows the agent's state.
+// The %d is the uid.
+const installMacLoginTodo = "Run afk install from a desktop login on this Mac, not over SSH: launchd only has a gui domain while you are logged in at the desktop. launchctl print gui/%d/" + install.LaunchAgentLabel + " shows the agent's state."
+
+// stepServiceMac writes afk's launch agent and loads it into the user's gui
+// domain with launchctl bootstrap (never load/unload, see docs/decisions.md
+// T11.4). It follows the Linux step's rules for the file: a file afk did not
+// write is never replaced under --yes and only after a yes otherwise, and an
+// unchanged file is not written again.
+//
+// An agent that is already loaded is booted out first, so the job launchd
+// runs is the one from the file just written; afk does not rely on launchd
+// noticing a changed file for a job it already holds. "Loaded" is the
+// probe's reading of launchctl print (Service.Enabled); when that reading is
+// wrong, the launchctl command or the re-probe after this step fails the
+// step with its reason, rather than it passing silently.
+func (m *installModel) stepServiceMac() tea.Cmd {
+	env := m.env
+	path := install.LaunchAgentPath(env.home)
+	stateDir, err := usagestate.Dir(usagestate.Deps{
+		Getenv:  env.getenv,
+		HomeDir: func() (string, error) { return env.home, nil },
+	})
+	if err != nil {
+		return m.failStep(fmt.Sprintf("afk could not work out its state folder: %v.", err), "Make sure HOME is set, then run afk install again.")
+	}
+	// The log goes in afk's state folder, beside usage.json. launchd.plist(5)
+	// says launchd creates the StandardOutPath file when it is missing but
+	// says nothing about its folder, so afk makes the folder.
+	logPath := filepath.Join(stateDir, "daemon.log")
+	want := install.RenderLaunchAgent(install.LaunchAgent{
+		Program: filepath.Join(env.home, "bin", "afk"),
+		PATH:    install.ServicePATH(m.facts, env.home),
+		LogPath: logPath,
+	})
+	old, err := env.readFile(path)
+	exists := err == nil
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return m.failStep(fmt.Sprintf("afk could not read %s: %v.", path, err), "")
+	}
+	uid := env.uid()
+	domain := "gui/" + strconv.Itoa(uid)
+	loaded := m.facts.Service.Enabled == install.Yes
+	var commands [][]string
+	if loaded {
+		commands = append(commands, []string{"launchctl", "bootout", domain + "/" + install.LaunchAgentLabel})
+	}
+	commands = append(commands, []string{"launchctl", "bootstrap", domain, path})
+	start := func() tea.Cmd {
+		return m.handoverChain(commands, fmt.Sprintf(installMacLoginTodo, uid), m.stepDone)
+	}
+	write := func() tea.Cmd {
+		if exists && string(old) == string(want) {
+			return start()
+		}
+		return m.async("Writing the service file…", func() installResult {
+			for _, dir := range []string{filepath.Dir(path), filepath.Dir(logPath)} {
+				if err := env.mkdirAll(dir, 0o755); err != nil {
+					return installResult{err: fmt.Errorf("afk could not make %s: %v", dir, err)}
+				}
+			}
+			if err := env.writeUnit(path, want); err != nil {
+				return installResult{err: fmt.Errorf("afk could not write %s: %v", path, err)}
+			}
+			return installResult{}
+		}, func(r installResult) tea.Cmd {
+			if r.err != nil {
+				return m.failStep(r.err.Error(), "")
+			}
+			return start()
+		})
+	}
+	if exists && !install.LaunchAgentWrittenByAfk(old) {
+		if m.yes {
+			return m.failStep("There is already a service file at "+path+" that afk did not write, and --yes never replaces it.",
+				"Move the file aside, or run afk install again without --yes to see it and choose.")
+		}
+		lines := strings.Split(strings.TrimRight(string(old), "\n"), "\n")
+		if len(lines) > installUnitShown {
+			lines = append(lines[:installUnitShown], "…")
+		}
+		return m.ask("Replace the service file that afk did not write?",
+			"This is the file now at "+path+":\n\n"+strings.Join(lines, "\n"),
+			false, func(yes bool) tea.Cmd {
+				if !yes {
+					return m.failStep("The service file was left as it was.", "Move it aside or edit it yourself.")
+				}
+				return write()
+			})
+	}
+	detail := "afk will write " + path + ", then run launchctl bootstrap " + domain + " " + path + " so launchd starts afk daemon now and each time you log in."
+	if loaded {
+		detail = "afk will write " + path + ", run launchctl bootout " + domain + "/" + install.LaunchAgentLabel + " to stop the agent that is loaded now, then run launchctl bootstrap " + domain + " " + path + " so launchd starts afk daemon now and each time you log in."
+	}
+	return m.ask("Install and start the afk service?", detail, true, func(yes bool) tea.Cmd {
+		if !yes {
+			return m.declined()
+		}
+		return write()
+	})
 }

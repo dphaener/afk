@@ -428,13 +428,14 @@ func (p *prober) linuxService(f *Facts, getenv func(string) string, euid int) {
 	f.Service.Linger = outputIs(ling, "Linger=yes")
 }
 
-// macService reads launchd. The launchctl reading is provisional until T11.4
-// checks it against launchd's documentation: `launchctl print` exiting 0 is
-// taken to mean the agent is loaded, and "state = running" in its output to
-// mean it is running. Linger has no meaning on macOS and stays Unknown.
+// macService reads launchd. launchctl(1) states that the output of `print` is
+// "NOT API", and launchctl offers nothing stable for this, so afk still reads
+// exit 0 as loaded and "state = running" in the output as running. A wrong
+// reading makes the re-probe after the service step fail it with its reason
+// rather than pass silently. Linger has no meaning on macOS and stays Unknown.
 func (p *prober) macService(f *Facts, euid int) {
 	f.Service.Linger = Unknown
-	f.Service.Installed = p.exists(filepath.Join(p.home, "Library", "LaunchAgents", LaunchAgentLabel+".plist"))
+	f.Service.Installed = p.exists(LaunchAgentPath(p.home))
 	out, err := p.run("launchctl", "print", "gui/"+strconv.Itoa(euid)+"/"+LaunchAgentLabel)
 	f.Service.Enabled = p.yesNo(err)
 	switch {

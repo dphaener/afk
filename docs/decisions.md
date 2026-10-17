@@ -3565,3 +3565,40 @@ Not checked, and left to the owner: a real Ubuntu machine, a real `sudo` passwor
 ### Docs left for the owner's split
 
 `docs/install.md` and `docs/reference.md` were not on this branch (A10), so their rewrite waits for the owner's doc split. `afk install` is documented in `README.md` (the Installation section and the subcommand list) and `contrib/README.md` meanwhile.
+
+## T11.4
+
+T11.4 makes `afk install` work on a Mac with Homebrew: the packages step installs the missing tools with `brew install`, and the service step writes a launchd LaunchAgent and loads it, so the daemon runs in the background as it does under systemd on Linux. The Linux path is unchanged. These are the decisions the master plan left open, numbered as in the work plan's assumptions. The master plan's M11 text was not on this branch when the work started, so the session worked from a copy of the T11.4 entry and left `docs/PLAN.md` alone.
+
+### What was decided, and why
+
+- **How the plist is made (A1).** A pure function in `internal/install` writes the plist's XML text itself, escaping every value. A plist library would be a new dependency for nine fixed keys.
+- **Which keys (A2).** The plist mirrors the Linux unit and adds nothing else: the label `io.github.dphaener.afk`; `ProgramArguments` running `~/bin/afk daemon` with the full path spelled out; `RunAtLoad`; `KeepAlive` set to true, so launchd starts the daemon again after it exits on purpose for a new version of itself; `ThrottleInterval` 30, the same wait as the Linux unit's `RestartSec=30`; `AbandonProcessGroup`, so the agent sessions outlive the daemon, as `KillMode=process` does on Linux; `EnvironmentVariables` with the `PATH` built exactly as for Linux; and the daemon's output in `daemon.log` in afk's state folder.
+- **How afk knows the file is its own (A3).** A comment on the line after the XML declaration, because a plist cannot start with `#` the way the Linux unit's marker does. A plist without it is shown and replaced only if the owner says yes, and never under `--yes`, the same rule as on Linux.
+- **Loading it (A4).** afk writes the file, then runs `launchctl bootout` (only when the agent is already loaded, so a changed file takes effect) and `launchctl bootstrap gui/<uid>`. It never uses `sudo` or the older `launchctl load`. When loading fails, afk says to run `afk install` from a desktop login on the Mac, not over SSH.
+- **The user id (A5)** comes from a new seam in the installer, so tests use a fixed one.
+- **Packages (A6).** `brew install` with the missing tools, after one yes-or-no question. afk never installs Homebrew: with no `brew` the step says to install it from brew.sh and run `afk install` again.
+- **Reading launchd's state (A7).** The probe keeps reading `launchctl print`: exit 0 means loaded, `state = running` means running. launchctl's own manual says this output is not a stable interface, but there is nothing stable to read instead, and a wrong reading makes the step fail with its reason when afk checks again, rather than pass quietly. The label `io.github.dphaener.afk`, provisional in T11.2, is kept.
+- **Checking on a Mac (A8).** No Mac was available, and the T11.1 release workflow with its macOS runner is not on this branch. The darwin build and `go vet` run here; running `afk install --dry-run` on a real Mac is left to the owner. This was decided without the owner (it would have been asked).
+- **The docs (A9).** `contrib/README.md` gains a macOS section beside the Linux steps and `README.md` covers macOS. `docs/install.md` is not on this branch, so its "On macOS" rewrite waits for the owner's doc split, as in T11.3.
+- **Tests and prerequisites (A10, A11).** Tests are written in the same task as the code, and the Linux golden screens must not change. Nothing had to be in place first.
+
+### What each launchd key does
+
+Each line below quotes or closely paraphrases launchd.plist(5) (https://keith.github.io/xcode-man-pages/launchd.plist.5.html) and nothing more.
+
+- **Label.** "This required key uniquely identifies the job to launchd." afk uses `io.github.dphaener.afk`.
+- **ProgramArguments.** It "maps to the second argument of execvp(3) and specifies the argument vector to be passed to the job when a process is spawned". With no `Program` key, the first element "may be either an absolute path, or a relative path which is resolved using _PATH_STDPATH". afk spells out the absolute path, so the lookup does not depend on a path afk does not control.
+- **RunAtLoad.** It is "used to control whether your job is launched once at the time the job is loaded". afk sets it to true so the daemon starts when the agent is bootstrapped and at each login.
+- **KeepAlive.** "The default is false and therefore only demand will start the job", and "The use of this key implicitly implies RunAtLoad". afk sets it to plain true, not the `SuccessfulExit` dictionary. `SuccessfulExit` is not used: "If true, the job will be restarted as long as the program exits and with an exit status of zero. If false, the job will be restarted in the inverse condition." The daemon exits 0 on purpose when it finds a new version of itself and must be started again, so afk wants a restart whatever the exit status.
+- **ThrottleInterval.** "By default, jobs will not be spawned more than once every 10 seconds." afk sets 30 to match the Linux unit's `RestartSec=30`.
+- **AbandonProcessGroup.** "When a job dies, launchd kills any remaining processes with the same process group ID as the job. Setting this key to true disables that behavior." afk sets it to true so the sessions the daemon started outlive it, as `KillMode=process` does on Linux.
+- **EnvironmentVariables.** It is "used to specify additional environmental variables to be set before running the job". afk sets `PATH` to the same value the Linux unit gets.
+- **StandardOutPath.** "The given path should be mapped to the job's stdout(4)." launchd creates the file if it is missing. The man page says nothing about the folder, so afk makes `daemon.log`'s folder itself before it loads the agent.
+- **StandardErrorPath.** The same for stderr. afk points both at the one `daemon.log`.
+- **launchctl print.** launchctl(1) says the output of `print` "is NOT API in any sense at all". afk still reads it (exit 0 means loaded, `state = running` means running) because there is nothing stable to read instead, and the label `io.github.dphaener.afk` that T11.2 marked provisional is kept, since nothing in this work gave a reason to change it.
+- **Not claimed.** Whether `bootout` kills processes outside the job's process group is not in the man page, so nothing here relies on it. That `launchctl bootstrap gui/<uid>` needs a desktop login, and fails over SSH, comes from community reports, not from the man page; afk's advice to run from a desktop login rests on those reports.
+
+### Verification for the owner
+
+- On a Mac with Homebrew, from a desktop login (not over SSH), run `afk install --dry-run` and check that the packages step names Homebrew and the service step names `~/Library/LaunchAgents/io.github.dphaener.afk.plist`. Then run `afk install` as far as the service, and check that `launchctl print gui/$(id -u)/io.github.dphaener.afk` shows `state = running` and that `~/.local/state/afk/daemon.log` fills.

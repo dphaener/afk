@@ -1,6 +1,9 @@
 package install
 
 import (
+	"bytes"
+	"encoding/xml"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -148,6 +151,139 @@ func TestWebAddress(t *testing.T) {
 		t.Run(strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
 			if got := WebAddress(tc.bind, tc.pub, tc.ip); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBrewPackages: load-bearing are the order (Facts.Tools order, not
+// alphabetical) and the skipped unknown tool, which must not become a guess.
+func TestBrewPackages(t *testing.T) {
+	unknown := full()
+	unknown.Tools = append(unknown.Tools, Tool{Name: "mystery"})
+	cases := []struct {
+		name string
+		f    Facts
+		want string
+	}{
+		{"none missing", full(), ""},
+		{"some missing in order", without(without(full(), "ruby"), "gh"), "gh,ruby"},
+		{"unknown tool skipped", unknown, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := strings.Join(BrewPackages(c.f), ","); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestLaunchAgentPath(t *testing.T) {
+	want := "/Users/me/Library/LaunchAgents/io.github.dphaener.afk.plist"
+	if got := LaunchAgentPath("/Users/me"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// plistTokens flattens a rendered plist into its element starts and text, failing on
+// malformed XML, so a test can check keys and values in order.
+func plistTokens(t *testing.T, b []byte) []string {
+	t.Helper()
+	d := xml.NewDecoder(bytes.NewReader(b))
+	d.Strict = true
+	var out []string
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
+			return out
+		}
+		if err != nil {
+			t.Fatalf("not well-formed XML: %v\n%s", err, b)
+		}
+		switch v := tok.(type) {
+		case xml.StartElement:
+			out = append(out, "<"+v.Name.Local)
+		case xml.CharData:
+			if s := strings.TrimSpace(string(v)); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+}
+
+// TestRenderLaunchAgent: load-bearing are the escaping rows (a PATH and a log
+// path holding & and < must stay well-formed and round-trip), the program
+// before "daemon", and the marker on line 2.
+func TestRenderLaunchAgent(t *testing.T) {
+	plain := LaunchAgent{Program: "/Users/me/bin/afk", PATH: "/Users/me/bin:/usr/bin", LogPath: "/Users/me/.local/state/afk/daemon.log"}
+	odd := LaunchAgent{Program: "/Users/me/bin/afk", PATH: "/a&b:/c<d>", LogPath: "/x&y/<log>.log"}
+	cases := []struct {
+		name string
+		a    LaunchAgent
+	}{{"plain", plain}, {"escaped", odd}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := RenderLaunchAgent(c.a)
+			toks := plistTokens(t, out)
+			joined := strings.Join(toks, "\n")
+			want := []string{
+				"Label\n<string\n" + LaunchAgentLabel,
+				"ProgramArguments\n<array\n<string\n" + c.a.Program + "\n<string\ndaemon",
+				"RunAtLoad\n<true",
+				"KeepAlive\n<true",
+				"ThrottleInterval\n<integer\n30",
+				"AbandonProcessGroup\n<true",
+				"EnvironmentVariables\n<dict\n<key\nPATH\n<string\n" + c.a.PATH,
+				"StandardOutPath\n<string\n" + c.a.LogPath,
+				"StandardErrorPath\n<string\n" + c.a.LogPath,
+			}
+			for _, w := range want {
+				if !strings.Contains(joined, w) {
+					t.Errorf("missing %q in\n%s", w, joined)
+				}
+			}
+			lines := strings.Split(string(out), "\n")
+			if lines[0] != `<?xml version="1.0" encoding="UTF-8"?>` || lines[1] != PlistMarker {
+				t.Errorf("first lines: %q", lines[:2])
+			}
+			if !strings.HasSuffix(string(out), "</plist>\n") {
+				t.Errorf("no trailing newline")
+			}
+			if strings.Contains(string(out), "ProcessType") || strings.Contains(string(out), "WorkingDirectory") {
+				t.Errorf("extra keys")
+			}
+		})
+	}
+	t.Run("raw characters are escaped", func(t *testing.T) {
+		out := string(RenderLaunchAgent(odd))
+		if strings.Contains(out, "/a&b") || strings.Contains(out, "c<d>") {
+			t.Errorf("unescaped value in\n%s", out)
+		}
+	})
+}
+
+// TestLaunchAgentWrittenByAfk: load-bearing are the Apple-style plist without
+// the marker (the owner's file, never replaced silently) and marker on line 1
+// (the declaration must come first, so that is not ours).
+func TestLaunchAgentWrittenByAfk(t *testing.T) {
+	decl := `<?xml version="1.0" encoding="UTF-8"?>`
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"rendered", string(RenderLaunchAgent(LaunchAgent{Program: "/p", PATH: "/b", LogPath: "/l"})), true},
+		{"apple style without marker", decl + "\n<!DOCTYPE plist>\n<plist/>\n", false},
+		{"marker on line 1", PlistMarker + "\n" + decl + "\n", false},
+		{"empty", "", false},
+		{"declaration only", decl, false},
+		{"crlf", decl + "\r\n" + PlistMarker + "\r\n<plist/>\r\n", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := LaunchAgentWrittenByAfk([]byte(c.in)); got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
 			}
 		})
 	}

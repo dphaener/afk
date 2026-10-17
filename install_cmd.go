@@ -58,15 +58,19 @@ type installEnv struct {
 	executable func() (string, error)
 	home       string
 	goos       string
-	getenv     func(string) string
-	setenv     func(key, value string) error
-	stat       func(string) (fs.FileInfo, error)
-	mkdirAll   func(string, fs.FileMode) error
-	readFile   func(string) ([]byte, error)
+	// uid is the user id, for launchctl's gui/<uid> domain on macOS. It is a
+	// seam so no test reads the real one.
+	uid      func() int
+	getenv   func(string) string
+	setenv   func(key, value string) error
+	stat     func(string) (fs.FileInfo, error)
+	mkdirAll func(string, fs.FileMode) error
+	readFile func(string) ([]byte, error)
 	// writeText replaces a settings file atomically, keeping its mode
 	// (profile.Write); used for profile.toml and config.toml.
 	writeText func(path string, data []byte) error
-	// writeUnit replaces the systemd unit atomically, mode 0644.
+	// writeUnit replaces the service file (the systemd unit, or the launchd
+	// agent on macOS) atomically, mode 0644.
 	writeUnit func(path string, data []byte) error
 	// writeUnattended turns the agent CLI's permission prompts off.
 	writeUnattended func() error
@@ -93,6 +97,7 @@ func realInstallEnv() installEnv {
 		executable: os.Executable,
 		home:       home,
 		goos:       runtime.GOOS,
+		uid:        os.Getuid,
 		getenv:     os.Getenv,
 		setenv:     os.Setenv,
 		stat:       os.Stat,
@@ -100,7 +105,8 @@ func realInstallEnv() installEnv {
 		readFile:   os.ReadFile,
 		writeText:  profile.Write,
 		// daemon_cmd.go's writer: temp file and rename, mode 0644, so
-		// systemd never reads a half-written unit on its next reload.
+		// systemd never reads a half-written unit on its next reload, and
+		// launchd never a half-written plist.
 		writeUnit: writeFileAtomic,
 		writeUnattended: func() error {
 			return provider.WriteUnattended("", provider.DefaultUnattendedWriteDeps(home))

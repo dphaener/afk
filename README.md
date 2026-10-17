@@ -21,7 +21,7 @@ This creates a binary `afk` in the current directory.
 
 ### Set up a whole machine with `afk install`
 
-On a Linux machine you want afk to run on, `afk install` does the setup for you, one step at a time: the tools afk needs, the agent CLI and its sign-in, the setting that lets the agent run without permission prompts, the afk plugin, the GitHub sign-in, your git name and email, where your projects live, the web page password and the background service. See [`afk install`](#afk-install--set-up-this-machine) for the details.
+On a Linux machine (`apt-get`, systemd) or a Mac (Homebrew, launchd) you want afk to run on, `afk install` does the setup for you, one step at a time: the tools afk needs, the agent CLI and its sign-in, the setting that lets the agent run without permission prompts, the afk plugin, the GitHub sign-in, your git name and email, where your projects live, the web page password and the background service. See [`afk install`](#afk-install--set-up-this-machine) for the details.
 
 ### Install the agent plugin
 
@@ -498,14 +498,16 @@ afk notify --plan my-session --message "Test" --dry-run
 afk install [--dry-run] [--yes]
 ```
 
-Guided setup for a Linux machine (Ubuntu or another system with `apt-get` and systemd). It looks at the machine, shows the twelve steps as a checklist, and does the ones that are not done yet, checking the machine again after each one. macOS is not covered yet.
+Guided setup for a Linux machine (Ubuntu or another system with `apt-get` and systemd) or a Mac with Homebrew (the background service is a launchd LaunchAgent). It looks at the machine, shows the twelve steps as a checklist, and does the ones that are not done yet, checking the machine again after each one.
+
+- **On a Mac,** the safety screen always asks you to type `I accept the risk`, because a Mac is a computer you use every day. The packages step runs `brew install` for the missing tools. With no Homebrew, the step tells you to install it from brew.sh and run `afk install` again: afk never installs Homebrew and never uses `sudo` on a Mac. Run `afk install` from a desktop login on the Mac, not over SSH, because the service is loaded into your desktop session.
 
 - **The safety screen comes first, every time.** afk runs agents with their permission prompts turned off, so it belongs on a machine set aside for it. On a virtual machine or a server, a key press accepts. On a computer you use every day, or one afk cannot place, you must type `I accept the risk`. Nothing changes before you accept.
 - **Each step asks first.** The default answer is yes; answering no stops the run and undoes nothing. Commands that need to talk to you (`sudo`, the agent's sign-in, `gh auth login`, `afk web password`) get the terminal until they end.
 - **A step that fails stops the run.** The steps before it stay done, and the screen says what to do. Run `afk install` again to go on.
 - **Running it again checks and fixes.** Every step is checked against the machine, and only what is missing is done. When everything is in place it says so and changes nothing.
 - **The last screen shows the web address.** You choose this machine only (`http://127.0.0.1:4253`), every address on the machine, or Tailscale. The choice is saved as `[web] bind` in `config.toml`.
-- **The service file.** afk writes `~/.config/systemd/user/afkd.service`, with a first line that marks it as afk's. A file without that line is shown and replaced only if you say yes.
+- **The service file.** On Linux afk writes `~/.config/systemd/user/afkd.service`, with a first line that marks it as afk's. On a Mac it writes `~/Library/LaunchAgents/io.github.dphaener.afk.plist`, marked by the comment on its second line (a plist cannot start with `#`), and loads it with `launchctl bootstrap`. A file without the marker is shown and replaced only if you say yes (never under `--yes`).
 - `--dry-run` prints the plan, one line per step, and changes nothing. It needs no terminal, so it works in a script or CI.
 - `--yes` takes the default answer to every question. The safety screen is still shown and still needs your answer, and the web page is set to this machine only.
 - Anything else needs a terminal: without one, `afk install` exits 1 and says so.
