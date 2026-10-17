@@ -3492,3 +3492,33 @@ T8.18 replaces the web page's shared token with a password: `afk web password` s
 All three checks passed with no blocker or major finding, so no critic ran. Minor notes:
 - Five test files changed that no task's file list named: only to drop the token from the test setup and to skip the bars' sign-out forms.
 - This file and `CONTEXT.md` are written by the planner and conductor, by design.
+
+## T11.2
+
+T11.2 adds `internal/install`: a pure function that turns what afk found out about a machine into the ordered install steps (each done, to do, or cannot, with the reason and what to do instead) and how risky the machine is, plus a read-only probe that finds those facts out. Nothing calls it yet; `afk install` (T11.3) will. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Tests (A1).** Written in the same task as the code, as table tests. Nothing had to be in place first (A2). The master plan's M11 text was not on this branch when the work started, so the session worked from a copy of the T11.2 entry and left `docs/PLAN.md` alone.
+- **The agent CLI's name and its unattended setting (A3).** Two small functions in `internal/provider`, beside the provider types, so the install package never names a provider. The existing unattended check answers only yes or no; the installer must tell "not set yet, afk will set it" from "the settings file is broken, afk must not overwrite it", so the new reader gives four answers: set, not set, broken, or not supported by this agent CLI.
+- **Risk (A4).** A Mac, or any machine with a desktop session, is a personal computer. A virtual machine or container with no desktop is `vm`. No virtualisation and no desktop is `dedicated`. If the virtualisation check could not run, the risk is `unknown`, which the installer treats like personal.
+- **Step states (A5).** An unsupported system and running as root make every step "cannot", with one message. A step that waits on an earlier one stays "to do" and says what it waits for. A broken settings file, an agent CLI with no unattended mode, a problem with the project location and a missing package manager are "cannot", each with what to do instead.
+- **`~/bin` (A6).** The service runs `~/bin/afk`, so the service step is "cannot" until afk is there. `~/bin` missing from `PATH` keeps the final check "to do", with how to add it.
+- **Commands (A7).** Every command the probe runs has a deadline (10 seconds by default). A command that fails or runs out of time reads as "could not tell", never as "no".
+- **macOS service (A8).** The LaunchAgent's label is `io.github.dphaener.afk`, and the probe reads it with `launchctl print`. This is provisional: T11.4 checks it against launchd's documentation.
+- **Names (A9).** The type is `Plan` and the function is `Build`, because Go cannot give a type and a function the same name in one package.
+
+### Decided while building
+
+- **What "broken" means for the settings file.** Only a file that cannot be read, or one that is not a JSON object, is broken. A key of the wrong type reads as "not set", because the agent CLI would still show its prompt. An unknown provider name also reads as broken, with the lookup error as the reason.
+- **A wrong package manager is no package manager.** `brew` on Linux or `apt-get` on a Mac makes the packages step "cannot", the same as having none.
+- **A "cannot" always says what to do.** A broken settings file with no reason from the reader still gets a general fix.
+- **Service answers.** Matching output (`enabled`, `active`, `Linger=yes`) is yes, other output is no, and no output with an error is "could not tell", so a missing user bus is never read as a stopped service.
+- **macOS service.** When `launchctl print` fails, the agent counts as not loaded. This is provisional until T11.4.
+- **The no-provider-names rule is a test.** A test scans every Go file in `internal/install`, tests included.
+- **The final check on a personal machine.** On a Mac or a desktop the safety step is always "to do" (the risk must be accepted each run), so the final check step is never "done" there even when everything is installed. T11.3 may count an accepted safety screen as done before it works out the plan again.
+
+### Checked, and not checked
+
+- **Checked:** table tests of `Build` and `Probe` (with fakes, including a command that runs out of time and an unreadable settings file), `make check`, and one real probe of this Linux machine through a temporary test that was deleted afterwards. It finished in about a second and changed nothing.
+- **Not checked: a Mac.** Owner check: on a Mac, once `afk install` exists (T11.3/T11.4), run `afk install --dry-run` and see that the plan reads the machine correctly, the service step in particular.

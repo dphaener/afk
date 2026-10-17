@@ -69,7 +69,7 @@ func (claude) UnattendedPreflight(d UnattendedDeps) (bool, string) {
 	if d.ReadFile == nil {
 		return false, steps
 	}
-	data, err := d.ReadFile(filepath.Join(d.Home, ".claude", "settings.json"))
+	data, err := d.ReadFile(claudeSettingsPath(d.Home))
 	if err != nil {
 		return false, "Could not read ~/.claude/settings.json, so the unattended-mode warning has not been accepted. " + steps
 	}
@@ -83,6 +83,13 @@ func (claude) UnattendedPreflight(d UnattendedDeps) (bool, string) {
 		return false, "The unattended-mode warning has not been accepted yet. " + steps
 	}
 	return true, ""
+}
+
+// claudeSettingsPath is where the agent CLI keeps the setting that remembers
+// the unattended-mode warning. UnattendedPreflight and ReadUnattendedSetting
+// both read it, so the path lives in one place.
+func claudeSettingsPath(home string) string {
+	return filepath.Join(home, ".claude", "settings.json")
 }
 
 const noUnattended = "This provider has no unattended mode afk knows, so afk cannot run it from the daemon. Use the default provider for daemon runs."
