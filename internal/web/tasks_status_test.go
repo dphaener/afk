@@ -20,7 +20,8 @@ import (
 // over the rig's tasks plan: what a daemon that cannot set a status serves.
 func noSeamHandler(t *testing.T, rg *rig) http.Handler {
 	t.Helper()
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password:  testPasswordSeam,
 		Projects:  func() []Project { return rg.projects },
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return rg.tasks, rg.ledger, nil },
 		Sessions:  func(string) []SessionView { return nil },
@@ -193,7 +194,7 @@ func TestStatusSheet(t *testing.T) {
 		rg.useTasksPlan()
 		h := noSeamHandler(t, rg)
 		req := httptest.NewRequest("GET", "/p/app/tasks/T2.2", nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {
@@ -208,7 +209,7 @@ func TestStatusSheet(t *testing.T) {
 			{"GET", "/p/app/tasks/T2.2/status"},
 		} {
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("confirm=yes&status=pending"))
-			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 			req.Header.Set("Content-Type", formType)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
@@ -288,7 +289,7 @@ func TestTaskStatusPage(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(noOwnScript(body), w) {
+				if strings.Contains(noOwnScript(noSignOut(body)), w) {
 					t.Errorf("must not contain %q", w)
 				}
 			}

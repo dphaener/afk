@@ -27,6 +27,7 @@ import (
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 // This file joins the web page (internal/web) to `afk daemon`: the real
@@ -120,7 +121,12 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		AddBeingPlanned:  webAddBeingPlanned(stateDir, configured, now, planSessionGone),
 		PlanChat:         webPlanChat(now),
 		PlanReply:        webPlanReply(now),
-		Now:              now,
+		// Read again on every check, never cached, so a password set with
+		// `afk web password` while the daemon runs takes effect on the next
+		// request and signs every old browser out. It is the same file
+		// webStart looked at when the daemon started.
+		Password: func() (webpass.Record, error) { return webpass.Read(st) },
+		Now:      now,
 	}
 }
 

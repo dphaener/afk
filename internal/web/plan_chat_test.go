@@ -90,7 +90,8 @@ func TestPlanChat(t *testing.T) {
 // TestPlanChatWithoutTheDependency pins the message for a page built with no
 // reader: the owner is told, in words, not given an empty chat.
 func TestPlanChatWithoutTheDependency(t *testing.T) {
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password:  testPasswordSeam,
 		Projects:  func() []Project { return []Project{{Name: "app", Root: t.TempDir()}} },
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil },
 		Sessions:  func(string) []SessionView { return nil },
@@ -102,7 +103,7 @@ func TestPlanChatWithoutTheDependency(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/p/app/plan/chat", nil)
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	m := decode(t, rec)
@@ -136,7 +137,7 @@ func TestPlanChatRefusals(t *testing.T) {
 			rg := newRig(t, Config{})
 			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
 			if tc.auth {
-				req.Header.Set("Authorization", "Bearer "+testToken)
+				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 			}
 			rec := httptest.NewRecorder()
 			rg.h.ServeHTTP(rec, req)
@@ -291,7 +292,7 @@ func TestPlanChatPage(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(body, w) {
+				if strings.Contains(noSignOut(body), w) {
 					t.Errorf("must not contain %q", w)
 				}
 			}

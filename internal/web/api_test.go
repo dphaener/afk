@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,11 +25,42 @@ import (
 	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
-// testToken is long and unusual so that "the token is not in the body" can
-// be checked with a plain substring search.
-const testToken = "tok-4f9a1c77d2e84b0a9c3d5e6f70812345"
+// testPassword is the rig's password. It is long and unusual so that "the
+// password is not in the answer" can be checked with a plain substring
+// search.
+const testPassword = "pw-4f9a1c77d2e84b0a9c3d5e6f70812345"
+
+// testIterations keeps the tests' PBKDF2 cheap; the real count is
+// webpass.DefaultIterations, and nothing in this package depends on it.
+const testIterations = 1000
+
+// testRecord is the rig's stored password record, and otherRecord one made
+// from another password with another salt: a record from before a password
+// change. Both use a fixed salt so every run is the same.
+var (
+	testRecord  = mustRecord(testPassword, 7)
+	otherRecord = mustRecord("pw-ffffffffffffffffffffffffffffffff", 9)
+)
+
+func mustRecord(password string, saltByte byte) webpass.Record {
+	rec, err := webpass.New(password, bytes.NewReader(bytes.Repeat([]byte{saltByte}, 16)), testIterations)
+	if err != nil {
+		panic(err)
+	}
+	return rec
+}
+
+// testPasswordSeam is Deps.Password for the tests that build a server of
+// their own: the rig's record, always readable.
+func testPasswordSeam() (webpass.Record, error) { return testRecord, nil }
+
+// goodCookie is the cookie value a right password earns under testRecord,
+// and otherCookie the one a browser kept from before a password change.
+func goodCookie() string  { return testRecord.CookieValue() }
+func otherCookie() string { return otherRecord.CookieValue() }
 
 // The inbox ids the rig hands out, in order.
 const (
@@ -52,7 +84,28 @@ func dump(v any) string {
 // rig is one handler over two temp-folder projects with fake dependencies.
 // Nothing here opens a port, runs a command or reads a real project.
 type rig struct {
-	t       *testing.T
+	t *testing.T
+	// passwordRec and passwordErr are what the fake Deps.Password answers,
+	// and passwordCalls counts its calls (atomic: sign-ins run in parallel
+	// in one test). passwordMu guards the two answers, which a test may
+	// change after New.
+	passwordMu    sync.Mutex
+	passwordRec   webpass.Record
+	passwordErr   error
+	passwordCalls atomic.Int32
+	// clock is the rig's Deps.Now as nanoseconds after testNow. It is
+	// atomic because the live stream and the usage refresher read the clock
+	// from their own goroutines; advance moves it.
+	clock atomic.Int64
+	// projectCalls counts calls of Deps.Projects, so a test can prove the
+	// sign-in form, drawn for requests that have not signed in, reads no
+	// project list.
+	projectCalls atomic.Int32
+	// onPassword, when set, runs inside every call of the fake
+	// Deps.Password (a test watching how many sign-ins are inside it at
+	// once).
+	onPassword func()
+
 	h       http.Handler
 	root    string // project "app"
 	other   string // project "my app", which has nothing in it
@@ -318,9 +371,7 @@ func newRig(t *testing.T, cfg Config) *rig {
 	rg.usageOK = true
 	rg.rows = rigRows(rg)
 
-	if cfg.Token == "" {
-		cfg.Token = testToken
-	}
+	rg.passwordRec = testRecord
 	rg.refreshResult = UsageRefreshResult{Outcome: UsageRefreshed, Text: "Usage read: 41% of the session used."}
 	done := SessionActionResult{Outcome: SessionActionDone, Text: "Done."}
 	rg.cleanResult, rg.restartResult, rg.labelResult, rg.newResult = done, done, done, done
@@ -333,7 +384,10 @@ func newRig(t *testing.T, cfg Config) *rig {
 	rg.addProjectResult = ProjectEditResult{Outcome: ProjectAdded, Name: "shop", Root: rg.fresh, Text: "Added shop (" + rg.fresh + ") to afk's project list."}
 	rg.removeProjectResult = ProjectEditResult{Outcome: ProjectRemoved, Name: "my app", Root: rg.other, Text: "Removed my app from afk's project list."}
 	srv, h, err := build(cfg, Deps{
-		Projects:     func() []Project { return rg.projects },
+		Projects: func() []Project {
+			rg.projectCalls.Add(1)
+			return rg.projects
+		},
 		Reviews:      func() []Project { return rg.reviews },
 		BeingPlanned: func() []BeingPlannedView { return rg.beingPlanned },
 		ReadPlan: func(root string) (string, []byte, error) {
@@ -475,7 +529,16 @@ func newRig(t *testing.T, cfg Config) *rig {
 			}
 			return rg.refreshResult
 		},
-		Now: func() time.Time { return testNow },
+		Now: func() time.Time { return testNow.Add(time.Duration(rg.clock.Load())) },
+		Password: func() (webpass.Record, error) {
+			rg.passwordCalls.Add(1)
+			if rg.onPassword != nil {
+				rg.onPassword()
+			}
+			rg.passwordMu.Lock()
+			defer rg.passwordMu.Unlock()
+			return rg.passwordRec, rg.passwordErr
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -552,11 +615,11 @@ func (rg *rig) seedOwnerTask() {
 	}
 }
 
-// do sends one request with the bearer token and returns the recorder.
+// do sends one request with the rig's cookie and returns the recorder.
 func (rg *rig) do(method, path, contentType, body string) *httptest.ResponseRecorder {
 	rg.t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -1091,7 +1154,7 @@ func TestAnswer(t *testing.T) {
 				if !tc.noLength {
 					req.ContentLength = int64(len(body))
 				}
-				req.Header.Set("Authorization", "Bearer "+testToken)
+				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 				if tc.ctype != "" {
 					req.Header.Set("Content-Type", tc.ctype)
 				}
@@ -1464,8 +1527,8 @@ func TestAPIPlan(t *testing.T) {
 					t.Errorf("body = %s, want {\"error\": ...}", rec.Body.String())
 				}
 			}
-			if strings.Contains(rec.Body.String(), testToken) {
-				t.Errorf("the answer contains the token")
+			if strings.Contains(rec.Body.String(), testPassword) || strings.Contains(rec.Body.String(), goodCookie()) {
+				t.Errorf("the answer contains the password or the cookie")
 			}
 			if tc.check != nil {
 				tc.check(t, rg, m)
@@ -1474,20 +1537,19 @@ func TestAPIPlan(t *testing.T) {
 	}
 }
 
-// TestPlanRouteNeedsTheToken says for the plan view what the walk of the
-// route table (TestAuthEveryRouteNeedsTheToken) proves for every route. It
+// TestPlanRouteNeedsASignIn says for the plan view what the walk of the
+// route table (TestAuthEveryRouteNeedsACookie) proves for every route. It
 // is repeated by name because a plan waiting for approval is the one thing
 // the page shows about a project the machine config does not list, and
-// because nobody may read a plan, approved or not, without the token.
-func TestPlanRouteNeedsTheToken(t *testing.T) {
+// because nobody may read a plan, approved or not, without signing in.
+func TestPlanRouteNeedsASignIn(t *testing.T) {
 	for _, target := range []string{"/api/p/app/plan", "/api/p/draft/plan", "/p/app/plan", "/p/draft/plan", "/api/p/nothing-here/plan"} {
 		for _, bad := range []struct {
 			name string
 			req  authReq
 		}{
-			{"no token", authReq{target: target}},
-			{"wrong bearer", authReq{target: target, bearer: otherToken}},
-			{"wrong cookie", authReq{target: target, cookie: goodCookie(otherToken)}},
+			{"no cookie", authReq{target: target}},
+			{"cookie from before a password change", authReq{target: target, cookie: otherCookie()}},
 		} {
 			t.Run(target+" "+bad.name, func(t *testing.T) {
 				rg := newRig(t, Config{})
@@ -1496,7 +1558,7 @@ func TestPlanRouteNeedsTheToken(t *testing.T) {
 					t.Fatalf("status = %d, want 401\n%s", rec.Code, rec.Body.String())
 				}
 				if rg.planReads != 0 {
-					t.Errorf("the plan was read for a request without the token")
+					t.Errorf("the plan was read for a request without a sign-in")
 				}
 				body := rec.Body.String()
 				if strings.Contains(body, "Draft plan") || strings.Contains(body, "Which colour?") {
@@ -1568,7 +1630,8 @@ func TestPlanNoCacheBetweenRequests(t *testing.T) {
 // it were the real one.
 func TestPlanWithoutAReader(t *testing.T) {
 	root := t.TempDir()
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password:  testPasswordSeam,
 		Projects:  func() []Project { return []Project{{Name: "app", Root: root}} },
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil },
 		Sessions:  func(string) []SessionView { return nil },
@@ -1577,7 +1640,7 @@ func TestPlanWithoutAReader(t *testing.T) {
 		Resume:    func(string) error { return nil },
 	})
 	must(t, err)
-	rec := authReq{target: "/api/p/app/plan", bearer: testToken}.send(h)
+	rec := authReq{target: "/api/p/app/plan", cookie: goodCookie()}.send(h)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d\n%s", rec.Code, rec.Body.String())
 	}
@@ -1585,7 +1648,7 @@ func TestPlanWithoutAReader(t *testing.T) {
 		t.Errorf("view = %s", dump(m))
 	}
 	// With no review list either, the overview has an empty one, not null.
-	if rv, ok := decode(t, authReq{target: "/api/", bearer: testToken}.send(h))["reviews"].([]any); !ok || len(rv) != 0 {
+	if rv, ok := decode(t, authReq{target: "/api/", cookie: goodCookie()}.send(h))["reviews"].([]any); !ok || len(rv) != 0 {
 		t.Errorf("reviews is not an empty list")
 	}
 }
@@ -1653,4 +1716,14 @@ func TestConfirmed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// advance moves the rig's clock on by d.
+func (rg *rig) advance(d time.Duration) { rg.clock.Add(int64(d)) }
+
+// setPassword changes what the fake Deps.Password answers.
+func (rg *rig) setPassword(rec webpass.Record, err error) {
+	rg.passwordMu.Lock()
+	defer rg.passwordMu.Unlock()
+	rg.passwordRec, rg.passwordErr = rec, err
 }

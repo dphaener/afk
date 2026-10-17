@@ -12,14 +12,14 @@ import (
 )
 
 // projectPost sends a POST to path the way the page or the API would: the API
-// with the bearer and a JSON body, the page with the cookie and a form.
+// with the cookie and a JSON body, the page with the cookie and a form.
 func (rg *rig) projectPost(path, ctype, body string) *httptest.ResponseRecorder {
 	rg.t.Helper()
 	if isAPI(path) {
 		return rg.do(http.MethodPost, path, ctype, body)
 	}
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie(testToken)})
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	req.Header.Set("Content-Type", ctype)
 	rec := httptest.NewRecorder()
 	rg.h.ServeHTTP(rec, req)

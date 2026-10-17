@@ -230,7 +230,7 @@ func TestPlanNewNeedsTheConfirm(t *testing.T) {
 				rec = rg.do(http.MethodPost, tc.path, tc.ctype, tc.body)
 			} else {
 				req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
-				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie(testToken)})
+				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 				req.Header.Set("Content-Type", tc.ctype)
 				rec = httptest.NewRecorder()
 				rg.h.ServeHTTP(rec, req)
@@ -553,7 +553,8 @@ func TestPlanNewOverviewLinks(t *testing.T) {
 		}
 	})
 	t.Run("not offered", func(t *testing.T) {
-		_, h, err := build(Config{Token: testToken}, Deps{
+		_, h, err := build(Config{}, Deps{
+			Password:  testPasswordSeam,
 			LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil }, Sessions: func(string) []SessionView { return nil },
 			Usage: func() (usagestate.File, bool) { return usagestate.File{}, false },
 			Pause: func(string) error { return nil }, Resume: func(string) error { return nil },
@@ -561,7 +562,7 @@ func TestPlanNewOverviewLinks(t *testing.T) {
 		must(t, err)
 		get := func(path string) *httptest.ResponseRecorder {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
-			req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie(testToken)})
+			req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			return rec

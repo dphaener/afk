@@ -36,11 +36,11 @@ var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|conf
 func noOwnScript(body string) string { return ownScript.ReplaceAllString(body, "") }
 
 // pageDo sends one request with the cookie, the way a browser that has
-// already visited with ?token= does.
+// signed in does.
 func (rg *rig) pageDo(method, path, body string) *httptest.ResponseRecorder {
 	rg.t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie(testToken)})
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	if body != "" {
 		req.Header.Set("Content-Type", formType)
 	}
@@ -227,12 +227,12 @@ func TestPages(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(body, w) {
+				if strings.Contains(noSignOut(body), w) {
 					t.Errorf("page contains %q, which it should not", w)
 				}
 			}
-			if strings.Contains(body, testToken) {
-				t.Errorf("the page contains the token")
+			if strings.Contains(body, testPassword) {
+				t.Errorf("the page contains the password")
 			}
 			if !strings.Contains(body, `name="viewport"`) || strings.Contains(strings.ToLower(noOwnScript(body)), "<script") {
 				t.Errorf("page must have the viewport tag and no script tag")
@@ -435,28 +435,25 @@ func TestPageErrors(t *testing.T) {
 	}
 }
 
-// TestPageTokenVisit: a ?token= visit on a page sets the cookie and goes to
-// the same address without the token; another query value survives. A page
-// with no token gets the self-contained 401 page.
-func TestPageTokenVisit(t *testing.T) {
+// TestPageSignInForm: a page asked for without a cookie gets the sign-in
+// form at its own address, an old token query visit included now that the
+// token is gone: no cookie is handed out and nothing redirects.
+// Load-bearing: the token query row, the old way in, which must open nothing.
+func TestPageSignInForm(t *testing.T) {
 	rg := newRig(t, Config{})
-	req := httptest.NewRequest("GET", "/p/app?token="+url.QueryEscape(testToken)+"&x=1", nil)
-	rec := httptest.NewRecorder()
-	rg.h.ServeHTTP(rec, req)
-	if rec.Code != 303 {
-		t.Fatalf("status = %d, want 303", rec.Code)
-	}
-	if loc := rec.Header().Get("Location"); loc != "/p/app?x=1" {
-		t.Errorf("Location = %q, want /p/app?x=1", loc)
-	}
-	if !strings.Contains(strings.Join(rec.Header().Values("Set-Cookie"), ";"), cookieName+"="+goodCookie(testToken)) {
-		t.Errorf("cookie not set: %v", rec.Header().Values("Set-Cookie"))
-	}
-
-	rec = httptest.NewRecorder()
-	rg.h.ServeHTTP(rec, httptest.NewRequest("GET", "/p/app", nil))
-	if rec.Code != 401 || !strings.Contains(rec.Body.String(), "?token=") || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
-		t.Errorf("no-token page: %d %q\n%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	for _, target := range []string{"/p/app", "/p/app?" + url.Values{"token": {"anything"}, "x": {"1"}}.Encode()} {
+		rec := httptest.NewRecorder()
+		rg.h.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		body := rec.Body.String()
+		if rec.Code != 401 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
+			t.Errorf("%s: %d %q", target, rec.Code, rec.Header().Get("Content-Type"))
+		}
+		if !strings.Contains(body, `action="/signin"`) || !strings.Contains(body, `type="password"`) {
+			t.Errorf("%s: not the sign-in form\n%s", target, body)
+		}
+		if setCookie(rec) != nil || rec.Header().Get("Location") != "" {
+			t.Errorf("%s: a cookie or a redirect was handed out", target)
+		}
 	}
 }
 
@@ -764,8 +761,8 @@ func TestPlanPage(t *testing.T) {
 					t.Errorf("page contains %q, which it should not\n%s", w, body)
 				}
 			}
-			if strings.Contains(body, testToken) {
-				t.Errorf("the page contains the token")
+			if strings.Contains(body, testPassword) {
+				t.Errorf("the page contains the password")
 			}
 			if !strings.Contains(body, `name="viewport"`) || strings.Contains(strings.ToLower(noOwnScript(body)), "<script") {
 				t.Errorf("page must have the viewport tag and no script tag")
@@ -861,7 +858,7 @@ func TestPlanPageApproveArea(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(noOwnScript(body), w) {
+				if strings.Contains(noOwnScript(noSignOut(body)), w) {
 					t.Errorf("page contains %q, which it should not", w)
 				}
 			}
@@ -943,9 +940,10 @@ func TestPlanPageRendersThisRepositorysPlan(t *testing.T) {
 
 // TestPageLayout requests every HTML page and checks it is drawn inside the
 // new layout: class="afk" on the body, the hashed afk.css and page.css, no
-// inline style, and (except the error page and the refusal) both bars.
+// inline style, and (except the error page and the sign-in form) both bars.
 //
-// Load-bearing rows: "refused" and "error" (the two pages that stand alone,
+// Load-bearing rows: "refused" (the sign-in form) and "error" (the two pages
+// that stand alone,
 // and the only ones a broken request reaches, so they must still wear the
 // design), and "plan waiting for approval" (its back button must go to /,
 // since the project page answers 404 for a plan that is not built yet). The
@@ -953,10 +951,10 @@ func TestPlanPageRendersThisRepositorysPlan(t *testing.T) {
 // until it has a row.
 func TestPageLayout(t *testing.T) {
 	tests := []struct {
-		name    string
-		page    string
-		path    string
-		noToken bool
+		name     string
+		page     string
+		path     string
+		noCookie bool
 		// form, when set, makes the row a page POST with that body: the
 		// plan approve's result page is only ever the answer to one.
 		form     string
@@ -992,7 +990,7 @@ func TestPageLayout(t *testing.T) {
 		{name: "remove a project", page: "project_remove", path: "/projects/remove", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/" aria-current="true"`, navTitle: "Remove a project"},
 		{name: "remove a project, confirm", page: "project_remove_confirm", path: "/projects/remove/confirm?name=app", status: 200, bars: true, back: `href="/projects/remove" aria-label="Back to the project list"`, navTitle: "Remove a project"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
-		{name: "refused", path: "/p/app", noToken: true, status: 401},
+		{name: "refused", page: "signin", path: "/p/app", noCookie: true, status: 401},
 	}
 	covered := map[string]bool{}
 	for _, tc := range tests {
@@ -1011,7 +1009,7 @@ func TestPageLayout(t *testing.T) {
 			rg := newRig(t, Config{})
 			rg.seedInbox()
 			var rec *httptest.ResponseRecorder
-			if tc.noToken {
+			if tc.noCookie {
 				rec = httptest.NewRecorder()
 				rg.h.ServeHTTP(rec, httptest.NewRequest("GET", tc.path, nil))
 			} else if tc.form != "" {
@@ -1037,6 +1035,12 @@ func TestPageLayout(t *testing.T) {
 			hasBars := strings.Contains(body, `class="app-bar`) && strings.Contains(body, `class="topnav"`)
 			if hasBars != tc.bars {
 				t.Errorf("bars drawn = %v, want %v", hasBars, tc.bars)
+			}
+			// A page without bars has no sign-out button; a page with them has
+			// exactly one form per bar, posting to /signout. An unsigned
+			// browser reaching a bare page must not be offered one either.
+			if n := strings.Count(body, `action="/signout"`); (tc.bars && n != 2) || (!tc.bars && n != 0) {
+				t.Errorf("%d sign-out forms, want %d", n, map[bool]int{true: 2, false: 0}[tc.bars])
 			}
 			if !tc.bars {
 				if strings.Contains(body, "app-bar") || strings.Contains(body, "topnav") || strings.Contains(body, "data-live-status") {
@@ -1074,10 +1078,10 @@ func TestPageLayout(t *testing.T) {
 
 // TestDesktopBackRow checks the desktop back row on every page chromeFor
 // knows: it holds the phone bar's back address, spoken name and title, and is
-// absent from the overview and the bare error page.
+// absent from the overview, the bare error page and the sign-in form.
 //
-// Load-bearing rows: "overview" and "error" (no row: the overview is the top,
-// the error page has no bars), "plan waiting for approval" (back to /, since
+// Load-bearing rows: "overview", "error" and "sign-in" (no row: the overview
+// is the top, the error page and the sign-in form have no bars), "plan waiting for approval" (back to /, since
 // the project page answers 404 for a plan not built yet) and "item" (back to
 // the project's inbox). The row list is compared with pageNames, so a page
 // added later fails here until it has a row.
@@ -1115,6 +1119,8 @@ func TestDesktopBackRow(t *testing.T) {
 		{name: "remove a project", page: "project_remove", path: "/projects/remove", status: 200, back: "/", label: "Back to all projects", title: "Remove a project"},
 		{name: "remove a project confirm", page: "project_remove_confirm", path: "/projects/remove/confirm?name=app", status: 200, back: "/projects/remove", label: "Back to the project list", title: "Remove a project"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
+		// A wrong password redraws the sign-in form, which has no bars.
+		{name: "sign-in", page: "signin", path: "/signin", form: "password=wrong-wrong", status: 401},
 	}
 	covered := map[string]bool{}
 	for _, tc := range tests {
@@ -1415,7 +1421,7 @@ func TestConfirmPage(t *testing.T) {
 	tests := []struct {
 		name       string
 		path       string
-		noToken    bool
+		noCookie   bool
 		setup      func(rg *rig)
 		wantStatus int
 		wantIn     []string
@@ -1431,13 +1437,13 @@ func TestConfirmPage(t *testing.T) {
 		{name: "unknown project", path: "/p/nope/confirm/pause", wantStatus: 404, wantIn: []string{"That didn't load"}},
 		{name: "plan waiting has no confirm", path: "/p/draft/confirm/pause", wantStatus: 404},
 		{name: "api twin does not exist", path: "/api/p/app/confirm/pause", wantStatus: 404, wantNot: []string{"Pause app?"}},
-		{name: "no token", path: "/p/app/confirm/pause", noToken: true, wantStatus: 401, wantNot: []string{"Pause app?", "/p/app"}},
+		{name: "no cookie", path: "/p/app/confirm/pause", noCookie: true, wantStatus: 401, wantNot: []string{"Pause app?", `action="/p/app`}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
 			var rec *httptest.ResponseRecorder
-			if tc.noToken {
+			if tc.noCookie {
 				rec = httptest.NewRecorder()
 				rg.h.ServeHTTP(rec, httptest.NewRequest("GET", tc.path, nil))
 			} else {
@@ -1500,10 +1506,11 @@ func TestProjectPageConfirm(t *testing.T) {
 				}
 			}
 			for _, s := range tc.wantNot {
-				if strings.Contains(body, s) {
+				if strings.Contains(noSignOut(body), s) {
 					t.Errorf("must not contain %q", s)
 				}
 			}
+			body = noSignOut(body)
 			if last := strings.LastIndex(body, "data-live="); last >= 0 {
 				for _, tag := range []string{"<dialog", "<form", "<input", "<textarea"} {
 					if i := strings.Index(body, tag); i >= 0 && i < last {
@@ -1940,7 +1947,8 @@ func TestOverviewEmpty(t *testing.T) {
 // escaped in the page and in the JSON).
 func TestOverviewEdges(t *testing.T) {
 	t.Run("no rows seam", func(t *testing.T) {
-		h, err := New(Config{Token: testToken}, Deps{
+		h, err := New(Config{}, Deps{
+			Password:  testPasswordSeam,
 			Projects:  func() []Project { return []Project{{Name: "app", Root: t.TempDir()}} },
 			LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) { return nil, ledger.Ledger{}, nil },
 			Sessions:  func(string) []SessionView { return nil },
@@ -1951,11 +1959,11 @@ func TestOverviewEdges(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		rec := authReq{target: "/", cookie: goodCookie(testToken)}.send(h)
+		rec := authReq{target: "/", cookie: goodCookie()}.send(h)
 		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "No projects yet") {
 			t.Fatalf("status %d, want 200 with the empty state\n%s", rec.Code, rec.Body.String())
 		}
-		m := decode(t, authReq{target: "/api/", bearer: testToken}.send(h))
+		m := decode(t, authReq{target: "/api/", cookie: goodCookie()}.send(h))
 		if rows, ok := m["rows"].([]any); !ok || len(rows) != 0 {
 			t.Errorf("rows = %s, want an empty array", dump(m["rows"]))
 		}
@@ -2189,7 +2197,8 @@ func TestItemPageFor(t *testing.T) {
 func TestProjectPageNilDeps(t *testing.T) {
 	root := t.TempDir()
 	must(t, daemonstate.Pause(root, testNow))
-	h, err := New(Config{Token: testToken}, Deps{
+	h, err := New(Config{}, Deps{
+		Password: testPasswordSeam,
 		Projects: func() []Project { return []Project{{Name: "app", Root: root}} },
 		LoadBuild: func(string) ([]masterplan.Task, ledger.Ledger, error) {
 			return planTasks("T1.1", "T1.2"), ledger.Ledger{Tasks: []ledger.Entry{{ID: "T1.1", Status: ledger.Done}}}, nil
@@ -2204,7 +2213,7 @@ func TestProjectPageNilDeps(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	req := httptest.NewRequest("GET", "/p/app", nil)
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -2323,3 +2332,64 @@ func TestUsagePage(t *testing.T) {
 		})
 	}
 }
+
+// TestSignOutButtons checks where the sign-out form sits: once inside each
+// bar (phone and top), a plain post with no data-enhance (submit.js would
+// otherwise take it over, and signing out must work the same without
+// JavaScript), and nowhere on the sign-in page.
+//
+// Load-bearing rows: "phone bar" and "top bar" (one form in each, so a
+// template edit that drops or doubles one fails), "no data-enhance" (the
+// native post), and "sign-in page" (the form must not be offered to someone
+// who is not signed in).
+func TestSignOutButtons(t *testing.T) {
+	rg := newRig(t, Config{})
+	rec := rg.pageDo("GET", "/", "")
+	body := rec.Body.String()
+	phone := body[strings.Index(body, `<header class="app-bar`):strings.Index(body, `<header class="topnav">`)]
+	top := body[strings.Index(body, `<header class="topnav">`):]
+	top = top[:strings.Index(top, "</header>")]
+	form := regexp.MustCompile(`<form[^>]*action="/signout"[^>]*>`)
+	for _, tc := range []struct {
+		name string
+		part string
+		want string
+	}{
+		{"phone bar", phone, `class="btn btn--quiet" type="submit">Sign out`},
+		{"top bar", top, `class="btn btn--quiet btn--sm" type="submit">Sign out`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forms := form.FindAllString(tc.part, -1)
+			if len(forms) != 1 || !strings.Contains(forms[0], `method="post"`) {
+				t.Fatalf("sign-out forms = %q, want one post form", forms)
+			}
+			if !strings.Contains(tc.part, tc.want) {
+				t.Errorf("missing button %q", tc.want)
+			}
+		})
+	}
+	t.Run("no data-enhance", func(t *testing.T) {
+		for _, f := range form.FindAllString(body, -1) {
+			if strings.Contains(f, "data-enhance") {
+				t.Errorf("sign-out form is enhanced: %s", f)
+			}
+		}
+	})
+	t.Run("sign-in page", func(t *testing.T) {
+		out := httptest.NewRecorder()
+		rg.h.ServeHTTP(out, httptest.NewRequest("GET", "/signin", nil))
+		if strings.Contains(out.Body.String(), "/signout") {
+			t.Errorf("the sign-in page offers sign-out")
+		}
+	})
+}
+
+// noSignOut drops the bars' sign-out forms from a page. The older page tests
+// assert that a page holds no form (or no post form) of its own, and the bars
+// now carry two sign-out forms on every page that has bars; TestSignOutButtons
+// is where those are checked.
+func noSignOut(body string) string {
+	return signOutForm.ReplaceAllString(body, "")
+}
+
+var signOutForm = regexp.MustCompile(`(?s)<form[^>]*action="/signout"[^>]*>.*?</form>`)

@@ -390,7 +390,7 @@ func TestPlanChangePageGET(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(body, w) {
+				if strings.Contains(noSignOut(body), w) {
 					t.Errorf("must not contain %q", w)
 				}
 			}
@@ -444,7 +444,7 @@ func TestPlanChangeRefusalRedraw(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(body, w) {
+				if strings.Contains(noSignOut(body), w) {
 					t.Errorf("must not contain %q", w)
 				}
 			}

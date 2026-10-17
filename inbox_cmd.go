@@ -16,6 +16,8 @@ import (
 	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/session"
+	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 // inboxNotifyTimeout bounds the one push notification `afk inbox add` sends.
@@ -45,6 +47,11 @@ type inboxEnv struct {
 	// thing from it: the web page's public address and this project's name
 	// there, to put a link in the notification (inboxItemLink).
 	loadMachine func() (daemonconfig.Config, error)
+	// pageOn reports whether the web page has a password set
+	// (webpass.Exists), which is what turns the page on. Nil means off, so a
+	// test that leaves it unset never builds a link to a page that is not
+	// there, and never reads the real state folder.
+	pageOn func() bool
 }
 
 // cmdInbox implements `afk inbox`.
@@ -67,6 +74,7 @@ func cmdInbox(args []string) {
 			return notify.Ntfy{URL: url}.Send(ctx, m)
 		},
 		loadMachine: func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) },
+		pageOn:      func() bool { return webpass.Exists(usagestate.DefaultDeps()) },
 	}))
 }
 
@@ -479,7 +487,8 @@ func runInboxAdd(args []string, projDefault string, env inboxEnv) int {
 	// extra, most machines have no config.toml at all, and the item and its
 	// notification must go out exactly as they do without one.
 	machine, machineErr := env.loadMachine()
-	msg.Click = inboxItemLink(machine, machineErr, project, item.ID, func(configured, root string) bool {
+	pageOn := env.pageOn != nil && env.pageOn()
+	msg.Click = inboxItemLink(machine, machineErr, pageOn, project, item.ID, func(configured, root string) bool {
 		return mainCheckout(configured, env.gitCommonDir(configured)) == filepath.Clean(root)
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), inboxNotifyTimeout)
@@ -524,7 +533,8 @@ func inboxNotification(item inbox.Item, ntfyURL string) (notify.NtfyMessage, boo
 
 // inboxItemLink is the address of an item's page on the web page `afk daemon`
 // serves, or "" when there is none to give: the machine config could not be
-// read, it sets no public address, the page is off (no token), or none of its
+// read, it sets no public address, the page is off (no password is set, so
+// pageOn is false), or none of its
 // projects is the folder the item was written in. Pure; sameDir is asked
 // "is this configured path the project folder root?", so the git lookup that
 // answers it stays with the caller.
@@ -534,10 +544,10 @@ func inboxNotification(item inbox.Item, ntfyURL string) (notify.NtfyMessage, boo
 // first configured project that matches wins, because that is the one the
 // daemon keeps when two entries name the same checkout (daemonProjects).
 //
-// The link never holds the token. A browser that has opened the page once
-// proves itself with its cookie.
-func inboxItemLink(cfg daemonconfig.Config, cfgErr error, root, id string, sameDir func(configured, root string) bool) string {
-	if cfgErr != nil || webPublicURL(cfg.Web) == "" {
+// The link never holds a secret. A browser that has signed in once proves
+// itself with its cookie; one that has not is shown the sign-in form.
+func inboxItemLink(cfg daemonconfig.Config, cfgErr error, pageOn bool, root, id string, sameDir func(configured, root string) bool) string {
+	if cfgErr != nil || webPublicURL(cfg.Web, pageOn) == "" {
 		return ""
 	}
 	for _, p := range cfg.Projects {

@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
@@ -13,11 +14,11 @@ const wantCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; styl
 
 // TestStatic walks the static route: the current address serves the file with
 // the exact policy, the immutable cache header and a JavaScript type; a wrong
-// hash, an unknown name and a request without the token do not.
+// hash, an unknown name and a request without a cookie do not.
 //
 // Load-bearing rows: "stale hash" and "unknown file" (404 with no-store, so a
 // browser never keeps a miss for a year, and so nothing outside the embedded
-// folder can be reached), "no token" (the files are behind the same guard as
+// folder can be reached), "no cookie" (the files are behind the same guard as
 // every page) and "current hash" (the CSP and the immutable header together,
 // since the immutable header replaces the guard's no-store).
 func TestStatic(t *testing.T) {
@@ -32,22 +33,22 @@ func TestStatic(t *testing.T) {
 	tests := []struct {
 		name      string
 		path      string
-		token     bool
+		cookie    bool
 		status    int
 		cache     string
 		typePrefx string
 	}{
-		{name: "current hash", path: cur, token: true, status: 200, cache: "public, max-age=31536000, immutable", typePrefx: "text/javascript; charset=utf-8"},
-		{name: "stale hash", path: "/static/000000000000/live.js", token: true, status: 404, cache: "no-store"},
-		{name: "unknown file", path: "/static/" + hash + "/nope.js", token: true, status: 404, cache: "no-store"},
-		{name: "a folder is not a file", path: "/static/" + hash + "/", token: true, status: 404, cache: "no-store"},
-		{name: "no token", path: cur, token: false, status: 401, cache: "no-store"},
+		{name: "current hash", path: cur, cookie: true, status: 200, cache: "public, max-age=31536000, immutable", typePrefx: "text/javascript; charset=utf-8"},
+		{name: "stale hash", path: "/static/000000000000/live.js", cookie: true, status: 404, cache: "no-store"},
+		{name: "unknown file", path: "/static/" + hash + "/nope.js", cookie: true, status: 404, cache: "no-store"},
+		{name: "a folder is not a file", path: "/static/" + hash + "/", cookie: true, status: 404, cache: "no-store"},
+		{name: "no cookie", path: cur, cookie: false, status: 401, cache: "no-store"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", tt.path, nil)
-			if tt.token {
-				req.Header.Set("Authorization", "Bearer "+testToken)
+			if tt.cookie {
+				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 			}
 			rec := httptest.NewRecorder()
 			rg.h.ServeHTTP(rec, req)
@@ -95,22 +96,22 @@ func TestStaticAfkCSS(t *testing.T) {
 	tests := []struct {
 		name   string
 		path   string
-		token  bool
+		cookie bool
 		status int
 		cache  string
 	}{
-		{name: "current hash", path: cur, token: true, status: 200, cache: "public, max-age=31536000, immutable"},
-		{name: "wrong hash", path: "/static/000000000000/afk.css", token: true, status: 404, cache: "no-store"},
-		// The refusal page links this sheet, so it is served without the
-		// token at its current address (see TestStaticRefusedPageStyles).
-		{name: "no token", path: cur, token: false, status: 200, cache: "public, max-age=31536000, immutable"},
-		{name: "no token, wrong hash", path: "/static/000000000000/afk.css", token: false, status: 401, cache: "no-store"},
+		{name: "current hash", path: cur, cookie: true, status: 200, cache: "public, max-age=31536000, immutable"},
+		{name: "wrong hash", path: "/static/000000000000/afk.css", cookie: true, status: 404, cache: "no-store"},
+		// The sign-in form links this sheet, so it is served without the
+		// cookie at its current address (see TestStaticRefusedPageStyles).
+		{name: "no cookie", path: cur, cookie: false, status: 200, cache: "public, max-age=31536000, immutable"},
+		{name: "no cookie, wrong hash", path: "/static/000000000000/afk.css", cookie: false, status: 401, cache: "no-store"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", tt.path, nil)
-			if tt.token {
-				req.Header.Set("Authorization", "Bearer "+testToken)
+			if tt.cookie {
+				req.AddCookie(&http.Cookie{Name: cookieName, Value: goodCookie()})
 			}
 			rec := httptest.NewRecorder()
 			rg.h.ServeHTTP(rec, req)
@@ -142,12 +143,12 @@ func TestStaticAfkCSS(t *testing.T) {
 	}
 }
 
-// TestStaticRefusedPageStyles covers the one exemption from the token: the
-// two stylesheets the refusal page links, at their current addresses, so the
-// page a browser without the token shows has the design's look.
+// TestStaticRefusedPageStyles covers the one exemption from the cookie: the
+// two stylesheets the sign-in form links, at their current addresses, so the
+// page a browser without a cookie shows has the design's look.
 //
-// Load-bearing rows: "afk.css" and "page.css" (served without the token, or
-// the refusal page is unstyled in a real browser, which no handler test
+// Load-bearing rows: "afk.css" and "page.css" (served without a cookie, or
+// the sign-in form is unstyled in a real browser, which no handler test
 // would notice), and every refused row: live.js, a stale hash, an unknown
 // name, a POST and a stylesheet's name under another hash must still get the
 // refusal, so the exemption is two exact addresses and not a folder.
@@ -158,7 +159,7 @@ func TestStaticRefusedPageStyles(t *testing.T) {
 	refused := refusedRec.Body.String()
 	links := regexp.MustCompile(`<link rel="stylesheet" href="(/static/[0-9a-f]{12}/(afk|page)\.css)">`).FindAllStringSubmatch(refused, -1)
 	if len(links) != 2 {
-		t.Fatalf("the refusal page links %d stylesheets, want afk.css and page.css:\n%s", len(links), refused)
+		t.Fatalf("the sign-in form links %d stylesheets, want afk.css and page.css:\n%s", len(links), refused)
 	}
 	afkCSS, pageCSS := links[0][1], links[1][1]
 	livePage := rg.pageDo("GET", "/usage", "").Body.String()
@@ -193,7 +194,7 @@ func TestStaticRefusedPageStyles(t *testing.T) {
 				t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
 			}
 			if setCookie(rec) != nil {
-				t.Errorf("a request without the token was handed a cookie")
+				t.Errorf("a request without a cookie was handed a cookie")
 			}
 			if tt.status == 200 && rec.Header().Get("Content-Type") != "text/css; charset=utf-8" {
 				t.Errorf("Content-Type = %q, want text/css", rec.Header().Get("Content-Type"))

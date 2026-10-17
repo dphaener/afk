@@ -671,7 +671,7 @@ func TestSessionConfirmPages(t *testing.T) {
 				}
 			}
 			for _, w := range tc.notWant {
-				if strings.Contains(body, w) {
+				if strings.Contains(noSignOut(body), w) {
 					t.Errorf("holds %q", w)
 				}
 			}

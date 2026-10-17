@@ -5,13 +5,16 @@
 //
 // Three rules hold for everything in the package.
 //
-// Every route needs the token. One middleware wraps the whole mux and nothing
-// is exempt, not even a "not found" answer, because the page can answer inbox
-// questions and pause a build: anyone who can reach the port without the
-// token must learn nothing and change nothing. The one thing served without
-// it is the two stylesheets the refusal page itself links (see
-// isRefusedPageStyle in auth.go), which hold nothing but looks. New refuses an empty token for
-// the same reason, so a server with no secret cannot be built by mistake.
+// Every route needs a sign-in. One middleware wraps the whole mux and
+// nothing is exempt, not even a "not found" answer, because the page can
+// answer inbox questions and pause a build: anyone who can reach the port
+// without the cookie a right password earns must learn nothing and change
+// nothing. The only things served without it are the sign-in form and its
+// POST, and the two stylesheets the form links (see isRefusedPageStyle in
+// auth.go), which hold nothing but looks. The password record is read
+// through Deps.Password on every check, and New refuses a server without
+// that seam, so a server with no way to check a sign-in cannot be built by
+// mistake.
 //
 // Handlers read the files fresh on every request and keep no cache. The
 // daemon, the sessions and the `afk` commands rewrite those files all the
@@ -31,8 +34,6 @@ package web
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -47,6 +48,7 @@ import (
 	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpass"
 )
 
 // Project is one project the page shows. Name is what appears in addresses
@@ -60,9 +62,6 @@ type Project struct {
 // Config is the part of the machine's [web] settings the handlers need. The
 // bind address is not here: this package never opens a port.
 type Config struct {
-	// Token is the secret every request must prove it knows. Never empty in
-	// a built server (New refuses it).
-	Token string
 	// PublicURL is the address the owner's browser uses for the page, or
 	// empty. It decides two things: whether the cookie is marked Secure, and
 	// which other origin a form may be posted from (see sameOrigin).
@@ -365,6 +364,13 @@ type Deps struct {
 	RemoveProject func(name string) ProjectEditResult
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
+	// Password reads the page's password record (webpass.Read on the
+	// state folder). It is called on every cookie check and every sign-in,
+	// never cached, so a password set while the daemon runs takes effect on
+	// the next request and signs every old browser out. webpass.ErrNoPassword
+	// means none is set, and then nobody can sign in. New refuses a nil
+	// Password.
+	Password func() (webpass.Record, error)
 	// Ticker starts the clock the live-change stream's reader runs on (see
 	// live.go) and returns its channel and the function that stops it. It is
 	// here so a test can decide exactly when the reader looks at the files,
@@ -476,20 +482,13 @@ const (
 // requests cannot fill memory.
 const maxBody = 64 << 10
 
-// server holds what New was given plus values worked out once from the
-// token. Nothing in it changes after New except hub and refresher, which
-// guard themselves, so requests share it safely, and none of it is read from
+// server holds what New was given plus values worked out once from it.
+// Nothing in it changes after New except hub, refresher, lock, offered and
+// pending, which guard themselves, so requests share it safely, and none of it is read from
 // a project's files: that is the "no cache" rule.
 type server struct {
 	cfg Config
 	d   Deps
-	// tokenSum is the SHA-256 of the token and cookieSum the SHA-256 of the
-	// value the cookie must hold. A candidate is hashed and compared with
-	// these (see sameSecret).
-	tokenSum  [sha256.Size]byte
-	cookieSum [sha256.Size]byte
-	// cookieValue is what a `?token=` visit stores in the browser.
-	cookieValue string
 	// publicOrigin is the scheme and host of cfg.PublicURL, lower-cased, or
 	// empty.
 	publicOrigin string
@@ -510,9 +509,11 @@ type server struct {
 	refresher *usageRefresher
 	// assets are the embedded static files by name, hashed once in New.
 	assets map[string]asset
-	// refusedPage is the page that refuses a request without the token,
-	// built once in New from the stylesheets' addresses (refusedPageFor).
-	refusedPage []byte
+	// lock counts wrong passwords (see lockout in auth.go). It changes after
+	// New too, because "the last five sign-ins were wrong" exists nowhere
+	// else; it is kept in memory only, so restarting the daemon clears it,
+	// and it holds no password and no file's contents.
+	lock *lockout
 	// offered is the folders this server has just made and asked the GitHub
 	// question about, still waiting for the answer (see plan_new_github.go).
 	// It is the third thing that changes after New, because "this form made
@@ -538,7 +539,7 @@ type route struct {
 }
 
 // routes is every address the server answers. Tests walk it to prove that
-// each one refuses a request without the token, so a route added here is
+// each one refuses a request without a good cookie, so a route added here is
 // covered by that test without anyone remembering to add a row.
 var routes = []route{
 	{http.MethodGet, "/{$}", (*server).overview},
@@ -597,8 +598,8 @@ var routes = []route{
 	{http.MethodPost, "/p/{project}/resume", (*server).resume},
 }
 
-// New builds the handler for the page. It returns an error when the token is
-// empty or a dependency is missing, so the caller finds out at start-up and
+// New builds the handler for the page. It returns an error when a
+// dependency is missing (the password seam included), so the caller finds out at start-up and
 // not on the first request.
 func New(cfg Config, d Deps) (http.Handler, error) {
 	_, h, err := build(cfg, d)
@@ -608,10 +609,9 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 // build is New that also hands back the server, so a test can wait for a
 // background usage reading to finish (usageRefresher.wait) before it ends.
 func build(cfg Config, d Deps) (*server, http.Handler, error) {
-	if cfg.Token == "" {
-		return nil, nil, errors.New("the web page needs a token; set [web] token in config.toml")
-	}
 	switch {
+	case d.Password == nil:
+		return nil, nil, errors.New("the web page was given no way to read its password (Password)")
 	case d.LoadBuild == nil:
 		return nil, nil, errors.New("the web page was given no way to read the plan and ledger (LoadBuild)")
 	case d.Sessions == nil:
@@ -625,10 +625,7 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 		d.Now = time.Now
 	}
 
-	s := &server{cfg: cfg, d: d}
-	s.cookieValue = cookieValueFor(cfg.Token)
-	s.tokenSum = sha256.Sum256([]byte(cfg.Token))
-	s.cookieSum = sha256.Sum256([]byte(s.cookieValue))
+	s := &server{cfg: cfg, d: d, lock: &lockout{}}
 	s.secure = strings.HasPrefix(cfg.PublicURL, "https://")
 	if u, err := url.Parse(cfg.PublicURL); err == nil && u.Scheme != "" && u.Host != "" {
 		s.publicOrigin = strings.ToLower(u.Scheme + "://" + u.Host)
@@ -639,7 +636,6 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 		return nil, nil, err
 	}
 	s.assets = assets
-	s.refusedPage = []byte(refusedPageFor(s.assetURL("afk.css"), s.assetURL("page.css")))
 	pages, err := parsePages(s.assetURL)
 	if err != nil {
 		return nil, nil, err
@@ -656,13 +652,19 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	// The live-change stream is not in routes: it has no JSON form, so it
 	// must not get an /api twin. guard still wraps it like everything else.
 	mux.HandleFunc("GET /events", s.events)
+	// The sign-in and sign-out are page addresses only: routes would give
+	// them /api twins, and a sign-in has no JSON form. GET and POST /signin
+	// are the guard's one exemption from the cookie (see guard).
+	mux.HandleFunc("GET "+signInPath, s.signInPage)
+	mux.HandleFunc("POST "+signInPath, s.signIn)
+	mux.HandleFunc("POST "+signOutPath, s.signOut)
 	// The planning chat and its reply are not in routes, because the page's
 	// POST is not the API's: the API takes JSON and answers JSON, the page
 	// takes its forms' fields and answers with a redirect or the screen
 	// again. One handler cannot serve both the way routes' entries do. The
 	// GET is one handler for both (planChat), registered here beside the
 	// POSTs so the four chat addresses are read together; auth_test.go
-	// checks each needs the token, since routes' own walk does not see them.
+	// checks each needs a sign-in, since routes' own walk does not see them.
 	mux.HandleFunc("GET /api/p/{project}/plan/chat", s.planChat)
 	mux.HandleFunc("POST /api/p/{project}/plan/chat", s.planReply)
 	mux.HandleFunc("GET /p/{project}/plan/chat", s.planChat)
@@ -703,21 +705,6 @@ func (s *server) register(mux *http.ServeMux, prefix string) {
 			rt.handle(s, w, r)
 		})
 	}
-}
-
-// cookieValueFor is what the cookie holds for a token: the lowercase hex
-// SHA-256 of "afk-web:" and the token.
-//
-// It is a hash and not the token because a cookie is the easiest thing to
-// lose: it sits in the browser's store, is sent on every request and shows
-// up in a proxy's logs. Whoever gets hold of the hash can use the page until
-// the token is changed, but cannot read the token out of it, and the token
-// is also what `Authorization: Bearer` and `?token=` accept. The fixed prefix
-// keeps the value from being the plain SHA-256 of the token, which a person
-// might also have computed and stored somewhere else.
-func cookieValueFor(token string) string {
-	sum := sha256.Sum256([]byte("afk-web:" + token))
-	return hex.EncodeToString(sum[:])
 }
 
 // isAPI reports whether the path is under /api, where every answer is JSON.
