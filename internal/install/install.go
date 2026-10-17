@@ -137,6 +137,12 @@ type Facts struct {
 	Tailscale   bool
 
 	Service ServiceFacts
+
+	// RiskAccepted is set by the caller after the person has passed the safety
+	// screen in this run, never by Probe. It is held in memory for one run on
+	// purpose: nothing on disk may say "this machine is safe", so every run
+	// of a personal machine asks again.
+	RiskAccepted bool
 }
 
 // Step is one line of the plan. Fix is only filled for Cannot.

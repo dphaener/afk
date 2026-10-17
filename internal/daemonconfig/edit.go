@@ -243,3 +243,202 @@ func RemoveProject(text string, nameOrPath string) (newText string, removed bool
 	}
 	return newText, true, nil
 }
+
+// errUnsafeWebEdit is what SetWeb returns when it cannot prove its own
+// result. The caller still has the original text, so nothing is lost.
+var errUnsafeWebEdit = errors.New("afk could not edit the [web] part of config.toml safely, so nothing was changed; set bind or public_url under [web] by hand in an editor")
+
+// isWebHeader reports whether line is the [web] table header, ignoring spaces
+// and a trailing comment.
+func isWebHeader(line string) bool {
+	t := strings.TrimSpace(line)
+	if i := strings.Index(t, "#"); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	return t == "[web]"
+}
+
+// assignmentRest returns, for a line of the form `key = value ...`, the byte
+// offsets where the value starts and where it ends (the trailing spaces and
+// comment, if any, begin there). ok is false when the line does not assign
+// key. Only a single-line basic or literal string, or a bare value, is
+// understood; anything stranger fails the re-parse check in SetWeb rather
+// than being guessed at here.
+func assignmentRest(line, key string) (start, end int, ok bool) {
+	t := strings.TrimLeft(line, " \t")
+	lead := len(line) - len(t)
+	if !strings.HasPrefix(t, key) {
+		return 0, 0, false
+	}
+	i := lead + len(key)
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	if i >= len(line) || line[i] != '=' {
+		return 0, 0, false
+	}
+	i++
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	start = i
+	switch {
+	case i < len(line) && line[i] == '"':
+		for i++; i < len(line) && line[i] != '"'; i++ {
+			if line[i] == '\\' {
+				i++
+			}
+		}
+		if i < len(line) {
+			i++
+		}
+	case i < len(line) && line[i] == '\'':
+		for i++; i < len(line) && line[i] != '\''; i++ {
+		}
+		if i < len(line) {
+			i++
+		}
+	default:
+		for i < len(line) && line[i] != '#' && line[i] != '\r' && line[i] != '\n' {
+			i++
+		}
+		for i > start && (line[i-1] == ' ' || line[i-1] == '\t') {
+			i--
+		}
+	}
+	if i > len(line) {
+		i = len(line)
+	}
+	return start, i, true
+}
+
+// SetWeb sets bind or public_url inside the [web] table of config text. It
+// is pure: text in, text out, and it never writes a file. Any other key is an
+// error, and so is token: a secret must never be written to config.toml.
+//
+// The value is checked with the rules Load applies to [web], so an edit never
+// produces a file Load would refuse. An existing assignment of the key is
+// replaced in place, keeping its trailing comment and line ending; otherwise
+// the line goes at the end of the [web] table (before the comments that
+// introduce the next table), and with no [web] table a new one is appended.
+//
+// As with AddProject the result is parsed again and must be the old file with
+// only that key changed, holding the new value; if not, the original text
+// comes back with an error about [web].
+func SetWeb(text, key, value string) (newText string, err error) {
+	if key != "bind" && key != "public_url" {
+		return text, fmt.Errorf("afk only sets bind and public_url under [web], not %q", key)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return text, fmt.Errorf("the [web] %s is empty; give a value", key)
+	}
+	check := rawFile{}
+	if key == "bind" {
+		check.Web.Bind = value
+	} else {
+		check.Web.PublicURL = value
+	}
+	if _, verr := loadWeb("config.toml", check); verr != nil {
+		return text, verr
+	}
+	var oldRaw rawFile
+	if _, derr := toml.Decode(text, &oldRaw); derr != nil {
+		return text, fmt.Errorf("config.toml has a mistake in it, fix it first: %w", derr)
+	}
+
+	nl := "\n"
+	if strings.Contains(text, "\r\n") {
+		nl = "\r\n"
+	}
+	newLine := key + " = " + quote(value)
+	lines := strings.SplitAfter(text, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	web := -1
+	for i, l := range lines {
+		if isWebHeader(l) {
+			web = i
+			break
+		}
+	}
+
+	var b strings.Builder
+	switch {
+	case web < 0:
+		n := len(lines)
+		for n > 0 && strings.TrimSpace(lines[n-1]) == "" {
+			n--
+		}
+		for _, l := range lines[:n] {
+			b.WriteString(l)
+		}
+		if n > 0 {
+			if lineEnding(lines[n-1]) == "" {
+				b.WriteString(nl)
+			}
+			b.WriteString(nl)
+		}
+		b.WriteString("[web]" + nl + newLine + nl)
+	default:
+		end, last := len(lines), web
+		for i := web + 1; i < len(lines); i++ {
+			if isHeader(lines[i]) {
+				end = i
+				break
+			}
+		}
+		replaced := -1
+		for i := web + 1; i < end; i++ {
+			t := strings.TrimSpace(lines[i])
+			if t != "" && !strings.HasPrefix(t, "#") {
+				last = i
+			}
+			if replaced < 0 {
+				if _, _, ok := assignmentRest(lines[i], key); ok {
+					replaced = i
+				}
+			}
+		}
+		for i, l := range lines {
+			switch {
+			case i == replaced:
+				s, e, _ := assignmentRest(l, key)
+				b.WriteString(l[:s] + quote(value) + l[e:])
+			case replaced < 0 && i == last:
+				b.WriteString(l)
+				if lineEnding(l) == "" {
+					b.WriteString(nl)
+				}
+				b.WriteString(newLine + nl)
+			default:
+				b.WriteString(l)
+			}
+		}
+	}
+	newText = b.String()
+
+	var newRaw rawFile
+	if _, derr := toml.Decode(newText, &newRaw); derr != nil {
+		return text, errUnsafeWebEdit
+	}
+	got := &newRaw.Web.Bind
+	if key == "public_url" {
+		got = &newRaw.Web.PublicURL
+	}
+	if *got != value {
+		return text, errUnsafeWebEdit
+	}
+	// Blank the edited key on both sides: everything else must be equal.
+	*got = ""
+	if key == "bind" {
+		oldRaw.Web.Bind = ""
+	} else {
+		oldRaw.Web.PublicURL = ""
+	}
+	if !reflect.DeepEqual(oldRaw, newRaw) {
+		return text, errUnsafeWebEdit
+	}
+	return newText, nil
+}

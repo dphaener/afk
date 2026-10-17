@@ -19,6 +19,10 @@ go build -o afk .
 
 This creates a binary `afk` in the current directory.
 
+### Set up a whole machine with `afk install`
+
+On a Linux machine you want afk to run on, `afk install` does the setup for you, one step at a time: the tools afk needs, the agent CLI and its sign-in, the setting that lets the agent run without permission prompts, the afk plugin, the GitHub sign-in, your git name and email, where your projects live, the web page password and the background service. See [`afk install`](#afk-install--set-up-this-machine) for the details.
+
 ### Install the agent plugin
 
 The afk workflow itself (`/afk:go`, `/afk:work-plan`, `/afk:master-plan`, `/afk:execute`, `/afk:review`, the conductor, and its hooks) is an agent plugin that ships in this repo under `plugins/` and is embedded in the binary. Install it with the command below, which asks which of your agent CLIs to install into:
@@ -487,6 +491,26 @@ afk notify --check
 # Preview the assembled toast without sending
 afk notify --plan my-session --message "Test" --dry-run
 ```
+
+### `afk install` — Set up this machine
+
+```bash
+afk install [--dry-run] [--yes]
+```
+
+Guided setup for a Linux machine (Ubuntu or another system with `apt-get` and systemd). It looks at the machine, shows the twelve steps as a checklist, and does the ones that are not done yet, checking the machine again after each one. macOS is not covered yet.
+
+- **The safety screen comes first, every time.** afk runs agents with their permission prompts turned off, so it belongs on a machine set aside for it. On a virtual machine or a server, a key press accepts. On a computer you use every day, or one afk cannot place, you must type `I accept the risk`. Nothing changes before you accept.
+- **Each step asks first.** The default answer is yes; answering no stops the run and undoes nothing. Commands that need to talk to you (`sudo`, the agent's sign-in, `gh auth login`, `afk web password`) get the terminal until they end.
+- **A step that fails stops the run.** The steps before it stay done, and the screen says what to do. Run `afk install` again to go on.
+- **Running it again checks and fixes.** Every step is checked against the machine, and only what is missing is done. When everything is in place it says so and changes nothing.
+- **The last screen shows the web address.** You choose this machine only (`http://127.0.0.1:4253`), every address on the machine, or Tailscale. The choice is saved as `[web] bind` in `config.toml`.
+- **The service file.** afk writes `~/.config/systemd/user/afkd.service`, with a first line that marks it as afk's. A file without that line is shown and replaced only if you say yes.
+- `--dry-run` prints the plan, one line per step, and changes nothing. It needs no terminal, so it works in a script or CI.
+- `--yes` takes the default answer to every question. The safety screen is still shown and still needs your answer, and the web page is set to this machine only.
+- Anything else needs a terminal: without one, `afk install` exits 1 and says so.
+
+Exit codes: 0 everything is in place, 1 a step failed or was stopped (or there was no terminal), 2 the command was written wrongly. `contrib/README.md` has the by-hand way to set up the service.
 
 ### `afk plugin install` — Install the agent plugin
 

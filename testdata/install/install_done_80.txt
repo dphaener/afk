@@ -1,0 +1,30 @@
+afk install
+
+  ✓ Check that this machine is a safe place for afk
+  ✓ Install the tools afk needs
+  ✓ Install the agent CLI
+  ✓ Sign in to the agent CLI
+  ✓ Let the agent run without permission prompts
+  ✓ Install the afk plugin
+  ✓ Sign in to GitHub
+  ✓ Set your git name and email
+  ✓ Choose where projects live
+  ✓ Set the web page password
+  ✓ Start the afk service
+  ✓ Check everything
+
+Everything is in place. Nothing was changed.
+
+afk daemon is running.
+No usage reading yet. The first one comes once the daemon runs.
+
+The web page is at:
+╭─────────────────────────────╮
+│                             │
+│    http://127.0.0.1:4253    │
+│                             │
+╰─────────────────────────────╯
+
+Open it in a browser, sign in with the web page password, and press Plan a new
+project.
+
