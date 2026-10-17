@@ -59,12 +59,26 @@ hook-test: ## Run the plugin hook shell tests
 		bash "$$t" || exit 1; \
 	done
 
+.PHONY: install-script-test
+install-script-test: ## Run the install.sh shell test and shellcheck
+# shellcheck is optional on a laptop but required in CI: GitHub's runners ship
+# it and set CI, so a missing one there means the lint silently stopped running.
+	bash scripts/install.test.sh
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		echo "shellcheck install.sh"; \
+		shellcheck install.sh; \
+	elif [ -n "$$CI" ]; then \
+		echo "shellcheck is required in CI and is not installed"; exit 1; \
+	else \
+		echo "shellcheck not installed; skipped"; \
+	fi
+
 .PHONY: web-js-test
 web-js-test: ## Run the web page script tests (node --test)
 	node --test internal/web/jstest/*.test.mjs
 
 .PHONY: check
-check: fmt-check vet test plugin-test hook-test web-js-test ## Everything CI runs
+check: fmt-check vet test plugin-test hook-test install-script-test web-js-test ## Everything CI runs
 
 .PHONY: clean
 clean: ## Remove the locally built binary
