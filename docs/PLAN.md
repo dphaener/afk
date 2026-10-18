@@ -3327,7 +3327,7 @@ T8.18 password ──────────┘
 | What the 28k of extra start-up context in implementation and review agents consists of. **Answered 2026-10-11:** tools and listings the agents never use. On the T1.4 session every sub-agent started at about 35,000 tokens, and about 26,700 of a task agent's were removable: the `Artifact` tool definition (about 15,000), the skills list (5,500), `SendFeedback` (2,500) and other unused tools and connector names (3,700). Part sizes are estimated from measured character counts. The plugin's agent definitions now leave them out, and the itemised tables are in `docs/decisions.md` under `## T1.5`. | T1.5 |
 | How a subscription weights cache reads, cache writes and output against its limits. Unpublished; compare the token ledger with the usage percentages the governor records. | after T2.4 |
 | Licence for the open-source release. | before release |
-| Is the repository public, with release binaries anyone can download without logging in to GitHub? The bootstrap script cannot be tried for real until it is. The owner said on 2026-10-17 that this is "on the table soon". | T11.6 |
+| Is the repository public, with release binaries anyone can download without logging in to GitHub? The bootstrap script cannot be tried for real until it is. The owner said on 2026-10-17 that this is "on the table soon". **Answered 2026-10-18:** The repo is now public | T11.6 |
 
 ## 11. Definition of done (every task)
 
