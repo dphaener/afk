@@ -3264,6 +3264,149 @@ T8.18 password ──────────┘
   `afk install` and the web page; on the Mac, the daemon running after a reboot; every problem noted is
   a task in the plan.
 
+### M12 — Releases publish themselves
+
+**Outcome:** every merge to `main` that changes the binary publishes a GitHub release on its own, the
+first one `v0.1.0`, so the one-line install in the README finds a binary to download. Nobody has to
+remember to push a tag.
+
+The owner reported on 2026-10-19 that `install.sh` fails because there are no published binaries. A
+survey that day found the release workflow (T11.1) is sound but has never been started: it runs only on
+a pushed `v*` tag, and no tag was ever pushed. A hand-started dry run on `main` (run 39302858785) was
+green; the darwin/arm64 binary ran on the macOS runner **without** `codesign`; the version line read
+`afk 0.0.0-dev.66672bd7fd3a (66672bd7fd3a+dirty, 2026-10-18)` although `main` was clean; and GitHub
+warned that the workflow's actions target the deprecated Node.js 20 runtime. The owner then decided
+(§2, "Releases"): a release on every merge to `main` that changes the binary, the bump read from the
+commit messages, the MIT licence, and `0.1.0` as the first version.
+
+```
+T12.1 clean builds ──┐
+T12.2 licence ───────┼──▶ T12.4 release on every merge
+T12.3 next version ──┘
+```
+
+#### T12.1 — Clean release builds
+- **Depends on:** —
+- **Goal:** a release build from a clean checkout prints a version line with no `+dirty`, the release
+  workflow's actions no longer run on the deprecated Node.js 20, and the macOS codesign answer T11.1
+  left open is recorded.
+- **Background:** the version line comes from `version.go`: `+dirty` is `vcs.modified` in
+  `debug.ReadBuildInfo`, which Go sets when the work tree has changes at build time. In
+  `.github/workflows/release.yml` the build job runs `make check` and then `scripts/release.sh` in the
+  same checkout, so something before the build (most likely a file `make check` writes or leaves
+  behind) modifies the tree. The dry run on 2026-10-19 (run 39302858785) printed
+  `afk 0.0.0-dev.66672bd7fd3a (66672bd7fd3a+dirty, 2026-10-18)`, and its macOS job ran the
+  darwin/arm64 binary without `codesign`.
+- **Scope:**
+  - Find what leaves the tree modified (reproduce locally: a fresh clone, `make check`, then
+    `git status --porcelain`) and fix the cause: a file that should be ignored goes in `.gitignore`; a
+    tracked file that a step rewrites stops being rewritten. Do not hide it by building with
+    `-buildvcs=false` or by stripping `+dirty` in `scripts/release.sh`, because `+dirty` must stay true
+    for a real hand build of a changed tree.
+  - `scripts/release.sh` refuses to build when `git status --porcelain` is not empty, with a plain
+    message naming the changed files, so a dirty release can never be published again.
+  - Move every action in `release.yml` and `ci.yml` to the newest major version whose runtime is not
+    Node.js 20 (check each action's own release notes for the runtime; claim nothing you have not read).
+  - `docs/decisions.md` under `## T11.1`: the dry run's answer, that a downloaded darwin/arm64 binary
+    runs without `codesign` (run 39302858785, 2026-10-19). `docs/development.md` "Making a release":
+    drop the sentence telling the reader to run `codesign` if the summary says so, and say the binary
+    was found to run without it.
+- **Must not:** change what `make install` builds or where; change the version line's format.
+- **Acceptance:** in a fresh clone of this branch, `make check` followed by `git status --porcelain`
+  prints nothing, and `scripts/release.sh 0.0.0-check <new empty dir>` then builds a linux/amd64 binary
+  whose `afk version` has no `+dirty`. `scripts/release.sh` run with an uncommitted change refuses and
+  names the file (a shell test in `make check`). `gh workflow run release.yml --ref <this branch> -f
+  dry_run=true` is green, its log shows no `+dirty` in the linux/amd64 or darwin/arm64 version lines,
+  and it shows no Node.js 20 deprecation warning. `make check` is green.
+
+#### T12.2 — The MIT licence
+- **Depends on:** —
+- **Goal:** the repository carries the MIT licence, and every release archive holds it.
+- **Background:** the owner chose MIT on 2026-10-19 (§2, "Releases"). The copyright holder is Darin
+  Haener, the owner's name. `scripts/release.sh` already copies `LICENSE` into each archive when the
+  file exists.
+- **Scope:** `LICENSE` at the repository root with the standard MIT text, `Copyright (c) 2026 Darin
+  Haener`. A "Licence" line in `README.md` naming MIT and linking the file. In this plan, answer the
+  Open questions row "Licence for the open-source release" (`**Answered 2026-10-19:** MIT.`) and
+  remove "licence" from the Deferred line on the open-source release.
+- **Must not:** add licence headers to source files.
+- **Acceptance:** `scripts/release.sh 0.0.0-check <new empty dir>` builds archives that each list
+  `LICENSE` (`tar -tzf`), and the file matches the MIT text published at opensource.org. `make check`
+  is green.
+
+#### T12.3 — Decide the next version
+- **Depends on:** —
+- **Goal:** one command, given the commit range of a push to `main`, prints either `skip` (nothing in
+  the binary changed) or the next version to publish, worked out from the last release tag and the
+  commit messages.
+- **Background:** the owner decided on 2026-10-19 (§2, "Releases"): a push that changes nothing in the
+  binary makes no release; the bump comes from the commit messages, which in this repository follow
+  `type(scope): Subject` (`feat(install): …`, `fix(install): …`, `docs(plan): …`). Pull requests may be
+  merged with a merge commit, a squash or a rebase, so the command reads every commit in the range, not
+  only the newest. T11.1 forbids a release tool such as goreleaser, so this is a small Go program.
+- **Scope:** a Go program at `scripts/nextversion/` (a `package main` with its logic in a pure function
+  and its table tests beside it; it lives under `scripts/` so it is not part of the afk binary).
+  - The pure function takes the last release version (or none), the commit messages in the range
+    (subject and body), and the paths the range changed, and returns `skip` or a version. The rules:
+    - **Skip** when no changed path is in the binary. In the binary: a `.go` file, `go.mod`, `go.sum`,
+      or anything under `plugins/`, `contrib/` or `internal/` (they are compiled or embedded in). Not:
+      `docs/`, the root's `*.md` files, `install.sh`, `scripts/`, `.github/`, `testdata/` at the root.
+    - **No release yet**: `0.1.0`, whatever the commits say.
+    - **Otherwise**: a breaking change (a `!` before the colon, as in `feat!:` or `feat(x)!:`, or a
+      body line starting `BREAKING CHANGE:`) raises the major and zeroes the rest; else any commit whose
+      type is `feat` raises the minor and zeroes the patch; else the patch goes up by one. A commit
+      whose subject does not follow the form counts as a patch. Merge commits (`Merge pull request …`,
+      `Merge branch …`) are ignored for the bump.
+  - The program's impure side: `go run ./scripts/nextversion <from-sha> <to-sha>` finds the last tag
+    matching `v<major>.<minor>.<patch>` reachable from `<to-sha>`, reads the commits and the changed
+    paths of the range with `git`, and prints one line: `skip` or the version without its `v`. A
+    `<from-sha>` of all zeros (a push that created the branch) means the whole history.
+- **Must not:** read or write anything but git and standard output; call the network; create a tag.
+- **Acceptance:** table tests of the pure function, with rows for: only docs changed (skip), a `.go`
+  file changed with a `fix` (patch), a `feat` among `fix`es (minor), `feat!:` (major), a `BREAKING
+  CHANGE:` body (major), no release yet (`0.1.0`), only merge commits plus a `chore` (patch), a subject
+  with no type (patch), a `plugins/` file with a `docs` commit (patch: the plugin is embedded). A test
+  of the git side against a scratch repository made in a temporary folder. `make check` is green.
+
+#### T12.4 — Release on every merge to main
+- **Depends on:** T12.1, T12.2, T12.3
+- **Goal:** a push to `main` that changes the binary tags the next version and publishes a release
+  with the four archives and `checksums.txt`; a push that does not publishes nothing; and a tag pushed
+  by hand still publishes as it does today.
+- **Background:** the owner decided on 2026-10-19 (§2, "Releases") that releases happen on every merge,
+  which reverses T11.1's "never publish on a push to `main`". A tag created with the workflow's own
+  `GITHUB_TOKEN` does not start another workflow run (GitHub's documented rule for that token), so the
+  run that decides to release must also build and publish; it cannot push a tag and wait for the tag
+  run. `install.sh` (T11.5) finds the newest release through the `/releases/latest` redirect, so once
+  one exists the one-line install works with no change to it.
+- **Scope:**
+  - `scripts/release-decide.sh <from-sha> <to-sha>`: prints `skip` when `<to-sha>` already carries a
+    `v*` tag, and otherwise what `go run ./scripts/nextversion <from-sha> <to-sha>` prints.
+  - `.github/workflows/release.yml` also runs on a push to `main`. A first job checks out with full
+    history and tags, runs `scripts/release-decide.sh "${{ github.event.before }}" "$GITHUB_SHA"`,
+    and outputs the version or `skip`; every later job is skipped on `skip`, and the run's summary says
+    why in one line. On a version, the existing build and macOS jobs run with it, and the release job
+    creates `v<version>` on that commit with `gh release create --target "$GITHUB_SHA"`.
+  - A hand-started dry run on any branch also runs the decide job, against the last tag and the
+    branch's head, and writes the version it would publish (or `skip`) to the summary.
+  - A pushed `v*` tag keeps working as today, and a push to `main` whose commit already carries a
+    `v*` tag (one the owner pushed by hand) does not publish a second release.
+  - `concurrency` so that two pushes to `main` in quick succession release one after the other, never
+    at once and never cancelling each other.
+  - `docs/development.md` "Making a release": releases are automatic on a merge that changes the
+    binary, with the bump rules from T12.3; a hand tag is how to choose a version yourself (such as
+    `v1.0.0`). `docs/install.md` and the README's Install section: no change unless they say a release
+    may not exist yet.
+- **Must not:** publish from a pull request; push to `main`; change `install.sh`; add a release tool.
+- **Acceptance:** a shell test of `scripts/release-decide.sh` in `make check`, against a scratch
+  repository, covering `skip` (only docs changed), a version, and a commit that already carries a `v*`
+  tag (`skip`). `gh workflow run release.yml --ref <this branch> -f dry_run=true` is green and its
+  summary names the version it would publish (`0.1.0`, as no release exists yet). `make check` is green.
+- **Note:** the release itself happens only after this task merges, which the ship step's checks cannot
+  see. Say in `docs/decisions.md` under `## T12.4` how to confirm it: `gh release list` shows `v0.1.0`
+  with four archives and `checksums.txt`, and `AFK_NO_INSTALL=1` with the one-line install puts a
+  working `afk` in `~/bin`.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
