@@ -3627,8 +3627,9 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
   dashboard or the web page; the agent helps run it. Record in `docs/decisions.md` under `## T13.8`:
   the bug, the fix task's id, whether it ran next, whether the planning agent ended by itself, and
   anything that went wrong. Fixes that the run shows are needed become `(fix)` tasks themselves.
-- **Acceptance:** the fix task is `done` in `afk tasks`; `afk list` shows no `master-plan` session after
-  the summary was printed; `docs/decisions.md` has the `## T13.8` entry.
+- **Acceptance:** the fix task is `done` in `afk tasks`; once the summary was printed, the dashboard
+  shows the `master-plan` session as ended, with no hand-run clean; `docs/decisions.md` has the
+  `## T13.8` entry.
 
 ## 9. Deferred / later
 
