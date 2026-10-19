@@ -1428,6 +1428,48 @@ func TestLoadChanges(t *testing.T) {
 	}
 }
 
+// TestLoadSummary: the "present" row is load-bearing because it fails when
+// Load stops reading the file; the blank and directory rows pin that a summary
+// that is not usable reads as "" and raises no problem.
+func TestLoadSummary(t *testing.T) {
+	const state = `{"mode":"new","phase":"review","updated_at":"2026-10-13T00:00:00Z"}`
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		want  string
+	}{
+		{name: "present, kept verbatim", setup: func(t *testing.T, dir string) {
+			writeFile(t, filepath.Join(dir, SummaryFile), "## Summary\n\n1. One\n")
+		}, want: "## Summary\n\n1. One\n"},
+		{name: "missing", setup: func(*testing.T, string) {}, want: ""},
+		{name: "blank", setup: func(t *testing.T, dir string) {
+			writeFile(t, filepath.Join(dir, SummaryFile), "  \n")
+		}, want: ""},
+		{name: "a folder named summary.md", setup: func(t *testing.T, dir string) {
+			if err := os.MkdirAll(filepath.Join(dir, SummaryFile), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := t.TempDir()
+			writeFile(t, StatePath(project), state)
+			tt.setup(t, Dir(project))
+			f := Load(project, "")
+			if f.Summary != tt.want {
+				t.Errorf("Load().Summary = %q, want %q", f.Summary, tt.want)
+			}
+			if f.StateProblem != "" || len(f.QuestionProblems) != 0 {
+				t.Errorf("Load() raised a problem: %+v", f)
+			}
+		})
+	}
+	if SummaryFile != "summary.md" {
+		t.Errorf("SummaryFile = %q; the skill's text names summary.md", SummaryFile)
+	}
+}
+
 // tree lists every file and empty folder under root, as slash paths relative
 // to it, sorted. It is how the Archive rows say what ended up where.
 func tree(t *testing.T, root string) []string {

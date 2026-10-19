@@ -1278,6 +1278,10 @@ func printPlanDryRun(w io.Writer, v planDryRunView) {
 // session included), 1 a session file is damaged or the project could not be
 // read, 2 the command was written wrongly.
 //
+// At the review phase it also prints the summary the session saved in
+// .afk/plan/summary.md (see planSummaryToShow), so the owner can read it after
+// the session has ended.
+//
 // It only reads. In particular it never turns a folder into a repository:
 // asking where a session stands must be safe to do anywhere.
 func runPlanStatus(args []string, stdout, stderr io.Writer, deps planDeps) int {
@@ -1302,6 +1306,9 @@ func runPlanStatus(args []string, stdout, stderr io.Writer, deps planDeps) int {
 		fmt.Fprintln(stdout, "There is no planning session here. Run `afk plan` in this folder to start one.")
 	} else {
 		printPlanStatus(stdout, status)
+		if summary := planSummaryToShow(status, files.Summary); summary != "" {
+			fmt.Fprintf(stdout, "Summary (.afk/plan/%s):\n%s", plansession.SummaryFile, summary)
+		}
 	}
 	for _, problem := range status.Problems {
 		fmt.Fprintf(stdout, "Problem: %s\n", problem)
@@ -1310,6 +1317,19 @@ func runPlanStatus(args []string, stdout, stderr io.Writer, deps planDeps) int {
 		return 1
 	}
 	return 0
+}
+
+// planSummaryToShow is the text `afk plan status` prints under its status
+// lines, or "" for none. Only the decided phase `review` shows it: the summary
+// belongs to the finished draft, and at an earlier phase (a session pulled back
+// because a file went missing, or one still working) it would describe work
+// that is no longer there. A blank summary shows nothing. The text is kept as
+// written, with exactly one newline at the end.
+func planSummaryToShow(status plansession.Status, summary string) string {
+	if status.Phase != plansession.PhaseReview || strings.TrimSpace(summary) == "" {
+		return ""
+	}
+	return strings.TrimRight(summary, "\n") + "\n"
 }
 
 // printPlanStatus prints the three lines both status and advance show. When a

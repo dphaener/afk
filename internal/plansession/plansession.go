@@ -198,6 +198,11 @@ const (
 	YesFile = "yes"
 )
 
+// SummaryFile is the review summary every session mode writes before it
+// prints it. It is exported because `afk plan status` names it in its output,
+// and because every mode's `review` phase writes it.
+const SummaryFile = "summary.md"
+
 // archiveDir is the folder inside Dir that holds the sessions that are over.
 const archiveDir = "archive"
 
@@ -502,6 +507,12 @@ type Files struct {
 	// Changes is changes.md, which only a session that changes a plan writes.
 	Changes bool
 
+	// Summary is the text of summary.md exactly as written, and "" when the
+	// file is missing, blank (only white space) or cannot be read. A missing
+	// summary is never an error and never a Problem, and it gates nothing: it
+	// is there for the owner to read after the session has ended.
+	Summary string
+
 	// QuestionsPresent is true when questions.jsonl exists, even when empty.
 	QuestionsPresent bool
 	Questions        []Question
@@ -562,6 +573,9 @@ func Load(project, planPath string) Files {
 	f.Slices = notBlank(filepath.Join(dir, slicesFile))
 	f.Critic = notBlank(filepath.Join(dir, criticFile))
 	f.Changes = notBlank(filepath.Join(dir, ChangesFile))
+	if data, err := os.ReadFile(filepath.Join(dir, SummaryFile)); err == nil && len(bytes.TrimSpace(data)) > 0 {
+		f.Summary = string(data)
+	}
 	f.DesignBrief = notBlank(filepath.Join(project, filepath.FromSlash(DesignBriefFile)))
 
 	questionsPath := filepath.Join(dir, questionsFile)

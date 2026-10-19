@@ -16,7 +16,7 @@ You are planning a whole project with its owner. The owner is a hobbyist who wil
 
 ## The session's files
 
-They all live in `.afk/plan/` in the project's main checkout. The folder is ignored by git. A session that writes a new plan uses the first six; `changes.md` and `yes` belong to a session that changes a plan that exists.
+They all live in `.afk/plan/` in the project's main checkout. The folder is ignored by git. A session that writes a new plan uses the first six and `summary.md`; `changes.md` and `yes` belong to a session that changes a plan that exists, which also writes `summary.md`.
 
 | File | Holds | Written by |
 |---|---|---|
@@ -26,6 +26,7 @@ They all live in `.afk/plan/` in the project's main checkout. The folder is igno
 | `questions.jsonl` | One line per question asked, with its answer once given | You, in the `rounds` phase: a line when a question is asked, the same line rewritten when it is answered. |
 | `slices.md` | The task breakdown the owner confirmed | You, in the `slices` phase, after the owner confirms it. |
 | `critic.md` | The critic's findings on the draft and what was done about each | You, in the `check` phase. |
+| `summary.md` | The summary printed at `review` | You, in the `review` phase, of every mode, before printing it. |
 | `changes.md` | Every change made to a plan that exists, one line each | You, in the change modes (`extend`, `amend`, `reconcile`), in the `draft` phase and after each later patch. |
 | `yes` | Nothing. Its being there means the owner does not want to be asked to confirm an amendment | `afk plan amend --yes`. Never you. |
 

@@ -539,6 +539,7 @@ and `master-plan` are refused as names for ordinary sessions. `internal/plansess
 | `questions.jsonl` | the planning session | One line per question. |
 | `slices.md` | the planning session | The task breakdown the owner confirms before the draft. |
 | `critic.md` | the planning session | The critic's findings on the draft and what was done about each. |
+| `summary.md` | the planning session, at `review`, in every mode | The summary it prints at `review`, written before it is printed; `afk plan status` prints it at `review`. |
 
 `state.json` holds `mode` (`new`, `extend`, `amend` or `reconcile`), `phase` (the furthest phase the
 session was allowed to reach) and `updated_at` (RFC 3339, UTC). An unknown key, mode or phase is
@@ -596,6 +597,11 @@ daemon is building. Approve commits only the project's documents, by path: the p
 `CLAUDE.md` (whichever exist), with the subject `docs(plan): Approve the master plan`. It then pushes
 the current branch to `origin` unless `[planning] via_pr` is set, there is no origin or the checkout is
 on no branch.
+
+Amended 2026-10-19 (T13.1): every mode's session writes `summary.md` at `review` before printing it.
+`afk plan status` prints it under its status lines when the phase is `review` and the file is not blank.
+A missing or blank file means no summary and is never an error, and the file gates nothing. It is
+archived with the rest of the session's files when the next change session starts.
 
 ---
 
@@ -3496,6 +3502,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
 - **Acceptance:** table tests in `internal/plansession` for a summary that is there, missing and blank;
   a test of `afk plan status` output at `review` with and without the file; `make check` green; a built
   binary's `afk plan status` in a scratch repository at `review` prints the file.
+- Amended 2026-10-19 (T13.1 done): `plansession.SummaryFile` (`summary.md`) and `Files.Summary` (the text, `""` when missing, blank or unreadable) exist; `afk plan status` prints `Summary (.afk/plan/summary.md):` and the text after `Waiting for:` only when the decided phase is `review` (pure helper `planSummaryToShow`); `afk plan advance` output is unchanged. The new-plan and change-mode `review` prompts write the file before printing, and `session.md` lists it.
 
 #### T13.2 — Approving a plan ends its planning agent
 - **Depends on:** —
