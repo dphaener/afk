@@ -3692,3 +3692,21 @@ T12.2 adds the MIT licence the owner chose on 2026-10-19. These are the decision
 - **Where the README says it (A2).** A short `## Licence` section at the end of `README.md`, linking `LICENSE`.
 - **The older T11.1 note (A3).** The T11.1 section above says the repo has no `LICENSE` file. It stays: it records what was true when T11.1 was done.
 - **Tests and prerequisites (A4, A5).** No new automated test, because only text files change; the release script was run to check that every archive holds `LICENSE`. Nothing had to be in place first.
+
+## T12.3
+
+T12.3 adds `scripts/nextversion`, the small Go program that says whether a push to `main` should make a release and which version. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Two more folders count as the binary (A1).** Besides `plugins/`, `contrib/` and `internal/`, the root `.claude-plugin/` and `.agents/` folders count, because `plugin_assets.go` embeds them into afk. A change there changes what `afk plugin install` writes.
+- **Which release is the last one (A2).** The highest `v<major>.<minor>.<patch>` tag that the pushed commit contains, not simply the nearest one, so an older tag on a merged branch can never pull the version backwards. Tags of any other shape are ignored.
+- **What the range covers (A3).** Every commit between the two commits, including the commits of a merged branch, and every path the range changed. A renamed file counts under both its old and new name. A push that created the branch (an all-zero start) covers the whole history.
+- **Reading commit messages (A4).** `Feat:` counts the same as `feat:`, `BREAKING-CHANGE:` the same as `BREAKING CHANGE:`, and `Merge remote-tracking branch …` is ignored like the other merge subjects.
+- **Errors (A5).** A git failure prints one plain line on standard error and exits 1, with nothing on standard output, so the release workflow can never mistake an error for a version.
+- **Tests and prerequisites (A6, A7).** Tests were written first; the git side is tested with real git in a temporary folder, shut off from the owner's git settings. Nothing had to be in place first.
+- **Docs (A8).** No user page changes here: T12.4 explains automatic releases in `docs/development.md` when it wires this program into the release workflow.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. `make check` was run in full, with shellcheck: green. Minor notes: this section and the `CONTEXT.md` line are written by the planner and conductor, by design; a bad commit id's error line carries git's own hint text, which is noisy but still one line on standard error.
