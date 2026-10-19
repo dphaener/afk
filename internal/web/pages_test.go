@@ -644,7 +644,7 @@ func TestPlanPage(t *testing.T) {
 			setup:   func(rg *rig) { rg.reviews = append(rg.reviews, Project{Name: "app-2", Root: rg.root}) },
 			notWant: []string{"Waiting for approval"}},
 		{name: "review-only project", path: "/p/draft/plan", status: 200,
-			want:    []string{"Plan: draft", `<h1 id="draft-plan">Draft plan</h1>`, "A plan nobody has approved yet.", `badge--error">`, `href="/" aria-label="Back to all projects"`},
+			want:    []string{"Plan · draft", `<h1 id="draft-plan">Draft plan</h1>`, "A plan nobody has approved yet.", `badge--error">`, `href="/" aria-label="Back to all projects"`},
 			notWant: []string{`href="/p/draft"`, "Back to the overview", "Waiting for approval", "run afk plan approve"}},
 		{name: "project name with a space", path: "/p/my%20app/plan", status: 200,
 			want: []string{"Plan: my app", `href="/p/my%20app"`, "Problem: The plan could not be read"}},
@@ -967,8 +967,8 @@ func TestPageLayout(t *testing.T) {
 		{name: "overview", page: "overview", path: "/", status: 200, bars: true, current: `href="/" aria-current="page"`},
 		{name: "usage", page: "usage", path: "/usage", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/usage" aria-current="page"`, navTitle: "Usage"},
 		{name: "project", page: "project", path: "/p/app", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/" aria-current="true"`, navTitle: "app"},
-		{name: "plan", page: "plan", path: "/p/app/plan", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Plan: app"},
-		{name: "plan waiting for approval", page: "plan", path: "/p/draft/plan", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, navTitle: "Plan: draft"},
+		{name: "plan", page: "plan", path: "/p/app/plan", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Plan · app"},
+		{name: "plan waiting for approval", page: "plan", path: "/p/draft/plan", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, navTitle: "Plan · draft"},
 		{name: "item", page: "item", path: "/p/app/inbox/" + idBlocking, status: 200, bars: true, back: `href="/p/app/inbox" aria-label="Back to the inbox of app"`, navTitle: "Which database?"},
 		{name: "inbox", page: "inbox", path: "/p/app/inbox", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Inbox"},
 		{name: "tasks", page: "tasks", path: "/p/app/tasks", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Tasks"},
@@ -1098,8 +1098,8 @@ func TestDesktopBackRow(t *testing.T) {
 		{name: "overview", page: "overview", path: "/", status: 200},
 		{name: "usage", page: "usage", path: "/usage", status: 200, back: "/", label: "Back to all projects", title: "Usage"},
 		{name: "project", page: "project", path: "/p/app", status: 200, back: "/", label: "Back to all projects", title: "app"},
-		{name: "plan", page: "plan", path: "/p/app/plan", status: 200, back: "/p/app", label: "Back to app", title: "Plan: app"},
-		{name: "plan waiting for approval", page: "plan", path: "/p/draft/plan", status: 200, back: "/", label: "Back to all projects", title: "Plan: draft"},
+		{name: "plan", page: "plan", path: "/p/app/plan", status: 200, back: "/p/app", label: "Back to app", title: "Plan · app"},
+		{name: "plan waiting for approval", page: "plan", path: "/p/draft/plan", status: 200, back: "/", label: "Back to all projects", title: "Plan · draft"},
 		{name: "inbox", page: "inbox", path: "/p/app/inbox", status: 200, back: "/p/app", label: "Back to app", title: "Inbox"},
 		{name: "item", page: "item", path: "/p/app/inbox/" + idBlocking, status: 200, back: "/p/app/inbox", label: "Back to the inbox of app", title: "Which database?"},
 		{name: "tasks", page: "tasks", path: "/p/app/tasks", status: 200, back: "/p/app", label: "Back to app", title: "Tasks"},
@@ -1144,10 +1144,11 @@ func TestDesktopBackRow(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.status)
 			}
 			body := rec.Body.String()
-			start := strings.Index(body, `<nav class="back-row"`)
+			const open = `<nav class="app-bar app-bar--back app-bar--desktop" aria-label="Back">`
+			start := strings.Index(body, `<nav class="app-bar app-bar--back app-bar--desktop"`)
 			if tc.back == "" {
-				if start >= 0 || strings.Contains(body, "back-row") {
-					t.Errorf("the page holds a back row")
+				if start >= 0 || strings.Contains(body, "app-bar--desktop") {
+					t.Errorf("the page holds a desktop back bar")
 				}
 				return
 			}
@@ -1162,7 +1163,7 @@ func TestDesktopBackRow(t *testing.T) {
 			row = row[:end]
 			// A labelled nav landmark, not a bare div: axe's region rule wants
 			// all content inside a landmark, and the top bar's nav is "Main".
-			if w := `<nav class="back-row" aria-label="Back">`; !strings.HasPrefix(row, w) {
+			if w := open; !strings.HasPrefix(row, w) {
 				t.Errorf("the back row does not open with %q:\n%s", w, row)
 			}
 			if w := `href="` + tc.back + `" aria-label="` + tc.label + `"`; !strings.Contains(row, w) {
@@ -1173,6 +1174,10 @@ func TestDesktopBackRow(t *testing.T) {
 			}
 			if strings.Index(body, `<header class="topnav">`) > start {
 				t.Errorf("the back row is not under the top bar")
+			}
+			// No page but the planning chat, seeded below, has a meta line.
+			if strings.Contains(row, `<span class="meta">`) {
+				t.Errorf("the back bar holds a meta line it should not:\n%s", row)
 			}
 		})
 	}
@@ -1287,7 +1292,7 @@ func TestInPageBackLinksRemoved(t *testing.T) {
 				t.Fatalf("status = %d, want %d\n%s", res.rec.Code, tc.status, res.rec.Body.String())
 			}
 			body := res.rec.Body.String()
-			for _, bar := range []string{`<nav class="back-row"`, `class="app-bar`} {
+			for _, bar := range []string{`<nav class="app-bar app-bar--back app-bar--desktop"`, `class="app-bar`} {
 				if !strings.Contains(body, bar) {
 					t.Errorf("the page lacks the bar %q", bar)
 				}
@@ -1310,16 +1315,60 @@ func TestInPageBackLinksRemoved(t *testing.T) {
 	}
 }
 
-// TestBackRowHiddenOnPhone checks page.css hides the desktop back row at the
-// phone breakpoint, so the phone keeps exactly one back button.
-func TestBackRowHiddenOnPhone(t *testing.T) {
-	css, err := staticFiles.ReadFile("static/page.css")
-	if err != nil {
-		t.Fatalf("the binary holds no page.css: %v", err)
+// TestDesktopBarMeta checks the planning chat's desktop bar carries its mode
+// and phase line as meta, the one page that has one. The row is load-bearing:
+// the bar sits outside the live regions, so the line is drawn on the render.
+func TestDesktopBarMeta(t *testing.T) {
+	rg := newRig(t, Config{})
+	rg.planStatus[rg.root] = PlanStatus{Known: true, Session: true, Mode: plansession.ModeNew, Phase: plansession.PhaseRounds, Problems: []string{}}
+	body := rg.pageDo(http.MethodGet, "/p/app/plan/chat", "").Body.String()
+	start := strings.Index(body, `<nav class="app-bar app-bar--back app-bar--desktop"`)
+	if start < 0 {
+		t.Fatalf("the chat page has no desktop bar")
 	}
-	re := regexp.MustCompile(`@media \(max-width: 760px\)\s*\{\s*\.back-row\s*\{\s*display:\s*none;`)
-	if !re.Match(css) {
-		t.Errorf("page.css does not hide .back-row at max-width 760px")
+	row := body[start:]
+	row = row[:strings.Index(row, "</nav>")]
+	if w := `<span class="meta">New plan · Rounds</span>`; !strings.Contains(row, w) {
+		t.Errorf("the desktop bar lacks %q:\n%s", w, row)
+	}
+}
+
+// TestDesktopBarStyles checks the style sheets: page.css hides the desktop
+// bar at 760px and below and the phone bar (not the desktop one) above it,
+// afk.css holds the design's desktop rules, and no .back-row is left. The
+// min-width row is load-bearing: a plain .app-bar rule there hides the new
+// bar on the desktop, where it is the only way back.
+func TestDesktopBarStyles(t *testing.T) {
+	read := func(name string) string {
+		b, err := staticFiles.ReadFile("static/" + name)
+		if err != nil {
+			t.Fatalf("the binary holds no %s: %v", name, err)
+		}
+		return string(b)
+	}
+	page, afk := read("page.css"), read("afk.css")
+	tests := []struct {
+		name string
+		css  string
+		re   string
+	}{
+		{name: "hidden on the phone", css: page, re: `@media \(max-width: 760px\)\s*\{\s*\.app-bar--desktop\s*\{\s*display:\s*none;`},
+		{name: "phone bar hidden on the desktop only", css: page, re: `@media \(min-width: 761px\)\s*\{\s*\.app-bar:not\(\.app-bar--desktop\)\s*\{\s*display:\s*none;`},
+		{name: "static and 52px", css: afk, re: `\.app-bar--desktop\s*\{\s*position:\s*static;\s*min-height:\s*52px;`},
+		{name: "title does not grow", css: afk, re: `\.app-bar--desktop \.app-bar__title\s*\{\s*flex:\s*0 1 auto;`},
+		{name: "meta margin", css: afk, re: `\.app-bar--desktop \.meta\s*\{\s*margin-left:\s*var\(--space-2\);`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !regexp.MustCompile(tc.re).MatchString(tc.css) {
+				t.Errorf("the style sheet does not match %s", tc.re)
+			}
+		})
+	}
+	for name, css := range map[string]string{"page.css": page, "afk.css": afk} {
+		if strings.Contains(css, "back-row") {
+			t.Errorf("%s still mentions back-row", name)
+		}
 	}
 }
 
@@ -1344,9 +1393,9 @@ func TestChromeFor(t *testing.T) {
 		{name: "project", page: "project", view: ProjectView{ProjectSummary: ProjectSummary{Name: "my app"}}, method: "GET", path: "/p/my app",
 			want: chrome{Title: "my app", Nav: "projects", Current: "true", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
 		{name: "plan", page: "plan", view: PlanView{Project: "my app"}, method: "GET", path: "/p/my app/plan",
-			want: chrome{Title: "Plan: my app", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
+			want: chrome{Title: "Plan · my app", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
 		{name: "plan waiting", page: "plan", view: PlanView{Project: "draft", WaitingForApproval: true}, method: "GET", path: "/p/draft/plan",
-			want: chrome{Title: "Plan: draft", Nav: "projects", Current: "true", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
+			want: chrome{Title: "Plan · draft", Nav: "projects", Current: "true", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
 		{name: "item", page: "item", view: ItemView{Project: "my app", Item: inbox.Item{Title: "Which?"}}, method: "GET", path: "/p/my app/inbox/x",
 			want: chrome{Title: "Which?", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/inbox", BackLabel: "Back to the inbox of my app"}},
 		{name: "inbox", page: "inbox", view: InboxView{Project: "my app"}, method: "GET", path: "/p/my app/inbox",
@@ -1365,8 +1414,8 @@ func TestChromeFor(t *testing.T) {
 			want: chrome{Title: "Restart", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/sessions/t1-2", BackLabel: "Back to t1-2"}},
 		{name: "new session, form step", page: "session_confirm", view: SessionConfirmView{Project: "my app", Back: "/p/my%20app/sessions"}, method: "GET", path: "/p/my app/sessions/new",
 			want: chrome{Title: "New session", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app/sessions", BackLabel: "Back to the sessions of my app"}},
-		{name: "planning chat", page: "plan_chat", view: ChatView{Chat: planchat.Chat{Project: "my app"}}, method: "GET", path: "/p/my app/plan/chat",
-			want: chrome{Title: "Planning my app", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
+		{name: "planning chat", page: "plan_chat", view: ChatView{Chat: planchat.Chat{Project: "my app"}, Page: chatPage{Sub: "New plan · Rounds"}}, method: "GET", path: "/p/my app/plan/chat",
+			want: chrome{Title: "Planning my app", Meta: "New plan · Rounds", Nav: "projects", Current: "true", Projects: 3, Back: "/p/my%20app", BackLabel: "Back to my app"}},
 		{name: "plan a new project", page: "plan_new", view: NewPlanPageView{Kind: "form"}, method: "GET", path: "/plan/new",
 			want: chrome{Title: "Plan a new project", Nav: "projects", Current: "true", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
 		{name: "add a project", page: "project_add", view: ProjectAddPageView{}, method: "GET", path: "/projects/add",

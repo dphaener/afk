@@ -577,7 +577,7 @@ func wantSignInForm(t *testing.T, body, wantNext string) {
 	if n := len(signInStylesheet.FindAllString(body, -1)); n != 2 {
 		t.Errorf("the form links %d of its two stylesheets:\n%s", n, body)
 	}
-	for _, banned := range []string{"<script", "app-bar", "topnav", "back-row", "my app", "data-live"} {
+	for _, banned := range []string{"<script", "app-bar", "topnav", "app-bar--desktop", "my app", "data-live"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("the sign-in form holds %q:\n%s", banned, body)
 		}
