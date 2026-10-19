@@ -3432,9 +3432,7 @@ T9.2 lets the owner set the dashboard's leader with `leader = "<key>"` in the `[
 
 T10.1 adds a back row under the desktop top bar. These are the decisions the master plan left open, made while planning the task (2026-10-16), numbered as in the work plan's assumptions.
 
-- **Reuse, no design round.** The row reuses the phone bar's back `icon-btn`, its chevron and its `app-bar__title`, by the owner's choice, with no new design. `.back-row` is layout glue in `page.css`, not a new component, so a later reconcile against `docs/design-system.md` must not read it as a stray one.
-- **Markup (A1).** A `<nav class="back-row" aria-label="Back">` holds the back link and a `<span>` for the title, not a heading, so the page's own `<h1>` stays the only heading. The row is a labelled nav landmark, not a bare div, because axe's region rule wants all content inside a landmark (the top bar's nav is labelled "Main", so the labels differ).
-- **Layout (A2).** A flex row aligned to the 48rem page column, not sticky, with no border, using only values `afk.css` and `page.css` already define. It is hidden at 760px and below, where the phone bar has the one back button. It is absent from the overview and the bare error page.
+- The `.back-row` this task built was replaced by T10.3; see `## T10.3`.
 - **Tests (A3, A4).** A table test renders every page `chromeFor` knows and checks the row on each, written in the same task as the change. A second test checks `page.css` hides the row at the phone width.
 - **Nothing to wait for (A5).** No other task had to land first.
 
@@ -3447,6 +3445,18 @@ T10.2 removes the "Back to …" links in page content that only repeat the bar's
 - **Nothing to wait for (A2).** T10.1 had already landed.
 - **New plan started with no chat (A3).** On the new-plan page's "started" result, the button row is drawn only when there is a chat to open, so the page never ends in an empty row.
 - **One task (A4).** Templates, tests and this note are one task, because every test edit is in the same Go package.
+
+## T10.3
+
+T10.3 draws the desktop back row as the design system's desktop app bar. These are the decisions made while building the task (2026-10-19), numbered as in the work plan's assumptions.
+
+- **The bar as the design draws it.** The desktop back bar is `app-bar app-bar--back app-bar--desktop` under the `topnav`, with the same back button, title and optional meta as the row T10.1 built, on the same pages and to the same back address. The design's three `.app-bar--desktop` rules are in `afk.css`, and `page.css` shows the bar above 760px only. The `.back-row` markup and rule are gone.
+- **A nav, not a header (A1).** The design draws the bar as a `header`. It stays a `<nav aria-label="Back">`, so it is still a labelled landmark, and it adds no second visible banner to the page. Only the classes carry the design's look.
+- **The chat's meta (A2, A3).** The planning chat's meta is its existing mode and phase line, "New plan · Rounds". `chromeFor` sets it in a new `chrome.Meta` field from the chat page's sub line, so the bar shows the same words as the page, and an empty line draws no meta. The choice is pure, so a table test can check each row.
+- **The meta does not update live (A4).** The bar sits outside the live-update regions, so its meta changes on a reload or after a form post, like the rest of the bar. Making it live would need JavaScript, which this task leaves alone.
+- **The design-system text (A5).** The new desktop-bar text was an uncommitted edit to `docs/design-system.md` in the main checkout. Its desktop-bar parts were brought into this branch with this task. The sign-in changes that follow-up 2 sends back were left out.
+- **The plan page's title (A6).** The plan page's bar title is "Plan · <project>". Its own `<title>` and `<h1>` still say "Plan: <project>", since this task changed only the bar title.
+- **For the owner to check.** No browser run had a live planning session, so the chat's meta was checked by tests only. During a planning chat, open its chat page at 1280px wide and check the bar shows the phase line beside "Planning <project>".
 
 ## T8.18
 

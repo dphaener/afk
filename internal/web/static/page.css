@@ -16,17 +16,11 @@
 body.afk { margin: 0; }
 
 /* One bar per width, at the design's 760 px breakpoint (afk.css's split). */
-@media (min-width: 761px) { .app-bar { display: none; } }
+@media (min-width: 761px) { .app-bar:not(.app-bar--desktop) { display: none; } }
 @media (max-width: 760px) { .topnav { display: none; } }
-/* The desktop's way back. The top bar has no back button, so on a desktop
-   browser the only way back was the browser's own. This row reuses the
-   phone bar's parts (its back icon-btn and app-bar__title), so it is layout
-   glue here, not a new component. Hidden at phone width, where the phone bar
-   already has the one back button. */
-.back-row { display: flex; align-items: center; gap: var(--space-2);
-  width: 100%; max-width: 48rem; margin: 0 auto;
-  padding: var(--space-2) var(--space-4) 0 var(--space-1); }
-@media (max-width: 760px) { .back-row { display: none; } }
+/* The desktop back bar is the desktop's way back; at phone width the sticky
+   phone bar is the one way back, so this one hides. */
+@media (max-width: 760px) { .app-bar--desktop { display: none; } }
 .app-bar .live { margin-left: auto; }
 .topnav__live { margin-left: auto; }
 /* The top bar's Plan a new project sits at the right end. The live mirror

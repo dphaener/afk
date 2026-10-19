@@ -118,6 +118,10 @@
 .app-bar--back { padding-left: var(--space-1); }
 .app-bar__title { flex: 1; min-width: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .app-bar__actions { display: flex; align-items: center; gap: var(--space-1); }
+/* app-bar on desktop: sits under topnav, not sticky, back button lines up with the 24px content edge */
+.app-bar--desktop { position: static; min-height: 52px; padding: var(--space-1) var(--space-5) var(--space-1) var(--space-3); gap: var(--space-2); }
+.app-bar--desktop .app-bar__title { flex: 0 1 auto; }
+.app-bar--desktop .meta { margin-left: var(--space-2); }
 .wordmark { font-family: var(--font-mono); font-weight: var(--weight-semibold); font-size: var(--text-lg); letter-spacing: -0.02em; }
 
 /* ───────── live-status ───────── */

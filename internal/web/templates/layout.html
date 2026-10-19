@@ -38,9 +38,10 @@
   {{end}}{{if .PlanNew}}<a class="btn btn--primary btn--sm topnav__action" href="/plan/new">Plan a new project</a>
   {{end}}<form class="topnav__signout" method="post" action="/signout"><button class="btn btn--quiet btn--sm" type="submit">Sign out</button></form>
 </header>
-{{if not .Overview}}<nav class="back-row" aria-label="Back">
+{{if not .Overview}}<nav class="app-bar app-bar--back app-bar--desktop" aria-label="Back">
   <a class="icon-btn" href="{{.Back}}" aria-label="{{.BackLabel}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6"/></svg></a>
   <span class="app-bar__title">{{.Title}}</span>
+  {{with .Meta}}<span class="meta">{{.}}</span>{{end}}
 </nav>
 {{end}}{{end}}{{end}}
 <main class="page{{if .Chrome.Bare}} page--alone{{end}}">
