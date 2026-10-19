@@ -43,7 +43,9 @@ gh workflow run release.yml --ref <branch> -f dry_run=true
 
 Then download the artifacts from that run in the GitHub Actions page. To build the same archives on your own machine, run `scripts/release.sh <version> <dir>` with a version such as `0.1.0` (no leading `v`) and a new, empty folder. It writes the four archives and `checksums.txt` into that folder.
 
-The release workflow also has a macOS job that runs the darwin/arm64 binary and writes its answer to the run's summary page. If the summary says the binary needs codesign, run `codesign --force --sign - afk` on the downloaded `afk` file on your Mac before you run it.
+The script refuses to build when the checkout has uncommitted changes, and it lists them, because those changes would make the binaries say `+dirty`. Commit or remove them first.
+
+The release workflow also has a macOS job that runs the darwin/arm64 binary and writes its answer to the run's summary page. On 2026-10-19 the darwin/arm64 binary was found to run without `codesign`, so you do not need to sign the downloaded `afk` file on your Mac.
 
 ---
 

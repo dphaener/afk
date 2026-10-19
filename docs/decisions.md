@@ -3529,7 +3529,7 @@ All three checks passed with no blocker or major finding, so no critic ran. Mino
 
 ### Verification for the owner
 
-- **Not yet checked: does a downloaded darwin/arm64 binary run without `codesign`?** Push the branch, run `gh workflow run release.yml --ref t11-1 -f dry_run=true`, and read the `macos-check` job's summary. Record the answer here (T11.5 depends on it), and check the run's four archives and `checksums.txt` with `sha256sum -c checksums.txt`.
+- **Answered 2026-10-19: a downloaded darwin/arm64 binary runs without `codesign`.** The dry run on 2026-10-19 (run 39302858785) ran the downloaded darwin/arm64 binary without `codesign`, and it worked. T11.5 depends on this answer. The check of the four archives and `checksums.txt` with `sha256sum -c checksums.txt` is still for the owner.
 
 ## T11.2
 
@@ -3663,3 +3663,21 @@ All three checks passed with no blocker or major finding, so no critic ran. `mak
 
 - **The one-line command needs a release.** No `v*` tag has been pushed yet, so `curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh` stops with "could not find the latest afk release" until one is. After tagging, run it on a fresh Multipass VM and on a Mac (T11.6).
 - **CI must have shellcheck.** If the first CI run fails with "shellcheck is required in CI and is not installed", add an `apt-get install -y shellcheck` step to `.github/workflows/ci.yml`.
+
+## T12.1
+
+T12.1 makes release builds clean: the release workflow's dry run of 2026-10-19 printed `+dirty` for darwin/arm64 although `main` was clean. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The cause (found while planning).** `make check` leaves a fresh clone clean. The dirt came from `scripts/release.sh` itself: it built the four targets one by one and wrote each archive into its output folder as it went, and the workflow's output folder, `dist`, sits inside the checkout and was not ignored. After the first archive (linux/amd64) landed there, Go saw an untracked file and stamped every later build as modified. The run log agrees: its linux/amd64 line was clean, its darwin/arm64 line was not.
+- **The fix (A1).** `/dist/` is ignored, the script builds all four binaries before it writes any archive, and it refuses to archive any binary whose build stamp says the tree was modified. The last check means a dirty release cannot be published whatever changed the tree, while a hand build of a changed tree still says `+dirty`.
+- **Outside a git checkout (A2).** `scripts/release.sh` refuses, because it cannot show the tree is clean.
+- **The test (A3).** `scripts/release.test.sh` builds a tiny Go program in scratch git repositories and runs from a new `release-script-test` target in `make check`, with shellcheck, the same way `install.sh` is tested.
+- **The actions.** Each one moves to its newest major, read from that action's own `action.yml` on 2026-10-19: checkout, setup-go, setup-node and upload-artifact to v7, download-artifact to v8, all on Node.js 24. `ruby/setup-ruby@v1` stays: its moving `v1` tag already runs on Node.js 24.
+- **The GitHub dry run (A4).** Not run by this session: an autonomous session does not push, and the workflow only runs on GitHub. The owner runs it (below).
+- **Tests and prerequisites (A5, A6).** Tests were written with the code. Nothing had to be in place first.
+
+### Verification for the owner
+
+- **The GitHub dry run.** Push the branch and run `gh workflow run release.yml --ref t12-1 -f dry_run=true`. Check that it is green, that the linux/amd64 and darwin/arm64 version lines have no `+dirty`, and that the run shows no Node.js 20 deprecation warning. Locally, a fresh clone built all four binaries clean into an in-tree `dist/`, and `make check` was green.

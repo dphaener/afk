@@ -24,15 +24,15 @@ jobs:
   build:
     runs-on: ubuntu-26.04
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: go.mod
 
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '22'
 
@@ -86,7 +86,7 @@ jobs:
         tar -xzf "dist/afk_${VERSION}_linux_amd64.tar.gz" -C /tmp/afk-x
         /tmp/afk-x/afk version
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: release-files
         path: |
@@ -99,7 +99,7 @@ jobs:
     needs: build
     runs-on: macos-latest
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         name: release-files
         path: dist
@@ -127,7 +127,7 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         name: release-files
         path: dist

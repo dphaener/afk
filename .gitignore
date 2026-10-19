@@ -51,3 +51,8 @@ afk.local.toml
 # The provider test fixtures are committed (overrides a global ".claude/"
 # ignore, which matches at any depth and would silently drop new fixture files)
 !/internal/provider/testdata/claude-home/.claude/
+
+# The release workflow's output folder (scripts/release.sh <version> dist).
+# Unignored inside the checkout, the first archive made every later build
+# stamp +dirty.
+/dist/

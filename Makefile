@@ -77,8 +77,21 @@ install-script-test: ## Run the install.sh shell test and shellcheck
 web-js-test: ## Run the web page script tests (node --test)
 	node --test internal/web/jstest/*.test.mjs
 
+.PHONY: release-script-test
+release-script-test: ## Run the release.sh shell test and shellcheck
+# Optional locally, required in CI, as for install-script-test.
+	bash scripts/release.test.sh
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		echo "shellcheck release.sh release.test.sh"; \
+		shellcheck scripts/release.sh scripts/release.test.sh; \
+	elif [ -n "$$CI" ]; then \
+		echo "shellcheck is required in CI and is not installed"; exit 1; \
+	else \
+		echo "shellcheck not installed; skipped"; \
+	fi
+
 .PHONY: check
-check: fmt-check vet test plugin-test hook-test install-script-test web-js-test ## Everything CI runs
+check: fmt-check vet test plugin-test hook-test install-script-test release-script-test web-js-test ## Everything CI runs
 
 .PHONY: clean
 clean: ## Remove the locally built binary
