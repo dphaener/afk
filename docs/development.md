@@ -29,13 +29,32 @@ make install-script-test   # install.sh's shell test, then shellcheck
 
 ## Making a release
 
-A release is a git tag. Pushing a tag `v<major>.<minor>.<patch>` starts the release workflow (`.github/workflows/release.yml`), which runs `make check`, builds the four archives (Linux and macOS, Intel and Apple silicon) and a `checksums.txt`, and publishes them as a GitHub release:
+Releases are automatic. A merge to `main` that changes the binary publishes a new release on its own. The release workflow (`.github/workflows/release.yml`) runs `make check`, builds the four archives (Linux and macOS, Intel and Apple silicon) and a `checksums.txt`, and publishes them as a GitHub release named `afk v<version>`.
+
+**What counts as the binary.** A push starts a release only when it changes the binary: a `.go` file outside `scripts/`, `go.mod`, `go.sum`, or anything under `plugins/`, `contrib/`, `internal/`, `.claude-plugin/` or `.agents/`. A push that touches only docs, the plan, scripts or workflows publishes nothing.
+
+**How the version is chosen.** The version comes from the commit messages since the last release:
+
+- No release yet: `0.1.0`.
+- A breaking change raises the major. That is a `!` before the colon (`feat!: ...`) or a `BREAKING CHANGE:` line in the commit body.
+- A `feat` commit raises the minor.
+- Anything else, including a subject with no type, raises the patch.
+
+Merge commits are skipped, and the commits they bring in are read.
+
+**A commit that already carries a tag.** If the merge commit already has a `v*` tag, the push makes no second release. The tag is the release.
+
+**Choosing a version by hand.** Push a tag yourself, and the release workflow publishes that version on the tagged commit:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v1.0.0 && git push origin v1.0.0
 ```
 
-To try the workflow without publishing anything, run it by hand with `dry_run` on. It builds the same files and keeps them as downloadable artifacts of the run, and publishes nothing:
+To see what a push to `main` would publish without pushing, run `scripts/release-decide.sh <from-sha> <to-sha>` with the commit before the push and the commit after it. It prints the version, or `skip` when nothing in the binary changed or the commit already has a tag.
+
+**Several pushes in a row.** Pushes to `main` release one after another. A release that is waiting is never cancelled by a newer push, so every merge that changes the binary gets its own release.
+
+**Trying the workflow without publishing.** Run it by hand with `dry_run` on. It builds the same files and keeps them as downloadable artifacts of the run, publishes nothing, and writes the version it would publish (or that it would publish nothing) to the run's summary page:
 
 ```bash
 gh workflow run release.yml --ref <branch> -f dry_run=true

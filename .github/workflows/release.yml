@@ -1,9 +1,12 @@
 name: Release
 
-# Publishes only on a v* tag. A manual run is a dry run unless told otherwise,
-# and even then the release job requires a tag ref.
+# Releases on a merge to main that changes the binary (the decide job reads the
+# bump from the commit messages), and on a v* tag pushed by hand. A manual run
+# is a dry run unless told otherwise, and even then publishing needs a tag ref.
+# Never runs for a pull request: a release is only ever cut from main or a tag.
 on:
   push:
+    branches: [ main ]
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
@@ -16,12 +19,121 @@ on:
         type: string
         required: false
 
+# Pushes to main release one after another. queue: max keeps every pending
+# push; GitHub's default single queue cancels a waiting run when a newer one
+# arrives, which would drop that push's bump. cancel-in-progress would kill a
+# release half-way through publishing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
 # Read-only by default; only the release job may write.
 permissions:
   contents: read
 
 jobs:
+  # The one place the version is worked out. Its own checkout, with full
+  # history and tags for nextversion, is never shared with build.
+  decide:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.decide.outputs.version }}
+      publish: ${{ steps.decide.outputs.publish }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+
+    # Fail early and plainly: a real release needs a tag, and a branch run with
+    # dry_run off would otherwise build everything and then skip publishing.
+    - name: Refuse a real release without a tag
+      if: github.event_name == 'workflow_dispatch' && inputs.dry_run == false && github.ref_type != 'tag'
+      run: |
+        echo "A release needs a v* tag. Run this on a tag, or leave dry_run on." >&2
+        exit 1
+
+    # Values from the event go through env, never into the script text.
+    - name: Work out the version
+      id: decide
+      env:
+        BEFORE: ${{ github.event.before }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+          # The tag check keeps a stray tag like "vnext" from becoming a version.
+          if ! [[ $GITHUB_REF_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Tag '$GITHUB_REF_NAME' is not v<major>.<minor>.<patch>." >&2
+            exit 1
+          fi
+          version=${GITHUB_REF_NAME#v}
+          tag=$GITHUB_REF_NAME
+          if [ "$GITHUB_EVENT_NAME" = "push" ] || [ "$DRY_RUN" = "false" ]; then
+            publish=true
+            echo "Publishing $tag." >> "$GITHUB_STEP_SUMMARY"
+          else
+            publish=false
+            echo "Dry run: this run would publish $tag." >> "$GITHUB_STEP_SUMMARY"
+          fi
+        elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          # A failure here fails the job: an error must never read as a version.
+          answer=$(scripts/release-decide.sh "$BEFORE" "$GITHUB_SHA")
+          if [ "$answer" = "skip" ]; then
+            version=skip
+            tag=
+            publish=false
+            echo "No release: nothing in the binary changed, or this commit already carries a v* tag." >> "$GITHUB_STEP_SUMMARY"
+          else
+            version=$answer
+            tag="v$answer"
+            publish=true
+            echo "Publishing $tag on $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+          fi
+        else
+          # A hand-started run on a branch: measure from the last release this
+          # commit contains, the same idea of "last release" nextversion uses.
+          base_tag=$(git tag --merged HEAD --list 'v*' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)
+          if [ -n "$base_tag" ]; then
+            base=$(git rev-list -n1 "$base_tag")
+          else
+            base=0000000000000000000000000000000000000000
+          fi
+          answer=$(scripts/release-decide.sh "$base" "$GITHUB_SHA")
+          if [ "$answer" = "skip" ]; then
+            echo "This run would publish nothing (skip)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "This run would publish $answer." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # A dry run stays a dry run: the build is stamped as before.
+          if [ -n "$INPUT_VERSION" ]; then
+            version=$INPUT_VERSION
+          else
+            version="0.0.0-dev.${GITHUB_SHA:0:12}"
+          fi
+          tag=
+          publish=false
+        fi
+        {
+          echo "version=$version"
+          echo "publish=$publish"
+          echo "tag=$tag"
+        } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: decide
+    # A push to main that changes nothing in the binary stops here; macos-check
+    # and release are skipped with it.
+    if: needs.decide.outputs.version != 'skip'
     runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@v7
@@ -41,38 +153,13 @@ jobs:
       with:
         ruby-version: '3.3'
 
-    # Fail early and plainly: a real release needs a tag, and a branch run with
-    # dry_run off would otherwise build everything and then skip publishing.
-    - name: Refuse a real release without a tag
-      if: github.event_name == 'workflow_dispatch' && inputs.dry_run == false && github.ref_type != 'tag'
-      run: |
-        echo "A release needs a v* tag. Run this on a tag, or leave dry_run on." >&2
-        exit 1
-
     - name: Run checks
       run: make check
 
-    # The tag check keeps a stray tag like "vnext" from becoming a version.
-    - name: Work out the version
-      id: ver
-      env:
-        INPUT_VERSION: ${{ inputs.version }}
-      run: |
-        if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-          if ! [[ $GITHUB_REF_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "Tag '$GITHUB_REF_NAME' is not v<major>.<minor>.<patch>." >&2
-            exit 1
-          fi
-          version=${GITHUB_REF_NAME#v}
-        elif [ -n "$INPUT_VERSION" ]; then
-          version=$INPUT_VERSION
-        else
-          version="0.0.0-dev.${GITHUB_SHA:0:12}"
-        fi
-        echo "version=$version" >> "$GITHUB_OUTPUT"
-
     - name: Build the archives
-      run: scripts/release.sh "${{ steps.ver.outputs.version }}" dist
+      env:
+        VERSION: ${{ needs.decide.outputs.version }}
+      run: scripts/release.sh "$VERSION" dist
 
     - name: Check the checksums
       working-directory: dist
@@ -80,7 +167,7 @@ jobs:
 
     - name: Run the linux/amd64 binary
       env:
-        VERSION: ${{ steps.ver.outputs.version }}
+        VERSION: ${{ needs.decide.outputs.version }}
       run: |
         mkdir -p /tmp/afk-x
         tar -xzf "dist/afk_${VERSION}_linux_amd64.tar.gz" -C /tmp/afk-x
@@ -119,10 +206,10 @@ jobs:
         fi
 
   release:
-    needs: [ build, macos-check ]
-    # Only a pushed tag, or a hand run on a tag with dry_run off. A branch or a
-    # dry run never reaches here.
-    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry_run == false)
+    needs: [ decide, build, macos-check ]
+    # decide says publish only for a pushed tag, a hand run on a tag with
+    # dry_run off, or a push to main that changed the binary.
+    if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-26.04
     permissions:
       contents: write
@@ -132,10 +219,19 @@ jobs:
         name: release-files
         path: dist
 
+    # On a main push the tag does not exist yet, so --target makes it on this
+    # commit. A tag made with this run's token starts no new run, which is why
+    # this run builds and publishes the release itself.
     - name: Create the release
       env:
         GH_TOKEN: ${{ github.token }}
         GH_REPO: ${{ github.repository }}
+        TAG: ${{ needs.decide.outputs.tag }}
       run: |
-        gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt \
-          --title "afk $GITHUB_REF_NAME" --generate-notes --verify-tag
+        if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+          gh release create "$TAG" dist/*.tar.gz dist/checksums.txt \
+            --title "afk $TAG" --generate-notes --verify-tag
+        else
+          gh release create "$TAG" dist/*.tar.gz dist/checksums.txt \
+            --title "afk $TAG" --generate-notes --target "$GITHUB_SHA"
+        fi

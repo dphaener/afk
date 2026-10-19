@@ -3710,3 +3710,22 @@ T12.3 adds `scripts/nextversion`, the small Go program that says whether a push 
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. `make check` was run in full, with shellcheck: green. Minor notes: this section and the `CONTEXT.md` line are written by the planner and conductor, by design; a bad commit id's error line carries git's own hint text, which is noisy but still one line on standard error.
+
+## T12.4
+
+T12.4 makes a merge to `main` that changes the binary publish a release on its own. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **What a hand-started run compares against (A1).** A dry run on a branch asks "what would this publish?" from the last release: the highest `v<major>.<minor>.<patch>` tag the branch contains, or the whole history when there is none. That is the same "last release" `scripts/nextversion` uses.
+- **Pushes wait their turn (A2).** The workflow's `concurrency` uses `queue: max` with `cancel-in-progress: false`. GitHub's default keeps only one waiting run and cancels it when a newer one arrives, which would lose that push's version bump; with `queue: max` up to 100 runs wait and each runs in order.
+- **A failed decision stops the run (A3).** If `scripts/nextversion` fails, `scripts/release-decide.sh` prints nothing on standard output and exits non-zero, so the workflow fails instead of reading an error as a version.
+- **One place works out the version (A4).** A new first job, `decide`, works out the version for every kind of run (a push to `main`, a pushed tag, a hand-started run); the build and release jobs read it from there.
+- **Dry runs stay dry runs (A5).** A hand-started run still builds with the version you type, or a `0.0.0-dev.<commit>` one; the version it would publish only goes on its summary page.
+- **Tests (A6, A7).** `scripts/release-decide.test.sh` runs the real script and the real `nextversion` in scratch repositories, from `make check`. The workflow itself only runs on GitHub, so this session checked it by reading it and parsing it.
+- **Prerequisites (A8).** None: T12.1, T12.2 and T12.3 are merged.
+
+### Verification for the owner
+
+- **The dry run.** Push the branch and run `gh workflow run release.yml --ref t12-4 -f dry_run=true`. It should be green, and its summary should say it would publish `0.1.0`.
+- **The first release.** It happens only once this task is merged. Then `gh release list` should show `v0.1.0`, and `gh release view v0.1.0` should list four archives and `checksums.txt`. Running the one-line install with `AFK_NO_INSTALL=1` (`curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | AFK_NO_INSTALL=1 sh`) should put a working `afk` in `~/bin` (`~/bin/afk version` prints `afk 0.1.0 …`).

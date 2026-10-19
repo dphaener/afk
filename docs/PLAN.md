@@ -3415,6 +3415,7 @@ T12.3 next version ──┘
   see. Say in `docs/decisions.md` under `## T12.4` how to confirm it: `gh release list` shows `v0.1.0`
   with four archives and `checksums.txt`, and `AFK_NO_INSTALL=1` with the one-line install puts a
   working `afk` in `~/bin`.
+- Amended 2026-10-19 (T12.4 done): `release.yml` now starts with a `decide` job that works out the version for every run (push to `main` via `scripts/release-decide.sh`, a pushed tag, a hand run) and outputs `version`/`publish`/`tag`; `build` is skipped on `skip` and `release` runs only on `publish == 'true'`, creating `v<version>` with `--target` on a main push. Concurrency is `release-${{ github.ref }}` with `queue: max`. The first release happens on this task's merge; nothing in `install.sh` changed.
 
 ## 9. Deferred / later
 

@@ -78,12 +78,13 @@ web-js-test: ## Run the web page script tests (node --test)
 	node --test internal/web/jstest/*.test.mjs
 
 .PHONY: release-script-test
-release-script-test: ## Run the release.sh shell test and shellcheck
+release-script-test: ## Run the release.sh and release-decide.sh shell tests and shellcheck
 # Optional locally, required in CI, as for install-script-test.
 	bash scripts/release.test.sh
+	bash scripts/release-decide.test.sh
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		echo "shellcheck release.sh release.test.sh"; \
-		shellcheck scripts/release.sh scripts/release.test.sh; \
+		echo "shellcheck release.sh release.test.sh release-decide.sh release-decide.test.sh"; \
+		shellcheck scripts/release.sh scripts/release.test.sh scripts/release-decide.sh scripts/release-decide.test.sh; \
 	elif [ -n "$$CI" ]; then \
 		echo "shellcheck is required in CI and is not installed"; exit 1; \
 	else \
