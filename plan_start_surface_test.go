@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/session"
 )
@@ -38,6 +39,9 @@ import (
 //   - "new, open session ...": a new-plan request reopens a session that is
 //     open and never reseeds its answers.
 //   - "no plan": a mode never starts a session for a project with no plan.
+//   - "finished agent waiting is ended, then extend starts" and "...that
+//     cannot be ended is refused": the stop comes before the spawn, and a
+//     failed stop starts nothing; "...still replying keeps the refusal".
 //   - "reason has no command name": every refusal is the command's sentence
 //     without the "afk plan <mode>: " in front.
 func TestStartPlanForSurface(t *testing.T) {
@@ -269,6 +273,34 @@ func TestStartPlanForSurface(t *testing.T) {
 		},
 		{
 			name: "agent of the finished session still running", setup: planWithFinishedChange, fake: planFake{alive: true},
+			req:         planSurfaceRequest{Mode: plansession.ModeExtend},
+			wantOutcome: planSurfaceRefused, wantReason: "its agent is still running",
+			unchanged: true,
+		},
+		{
+			name: "finished agent waiting is ended, then extend starts", setup: planFinishedWithSummary,
+			fake:         planFake{alive: true, chat: planchat.StateWaitingForText},
+			req:          planSurfaceRequest{Mode: plansession.ModeExtend},
+			wantOutcome:  planSurfaceStarted,
+			wantArchived: filepath.Join("{dir}", ".afk", "plan", "archive", "20261013T090000Z"),
+			wantCalls:    []string{"stop", "log plan_session_ended", "spawn marker extend/brief"},
+			wantFiles: map[string]string{
+				".afk/plan/state.json":            stateFor("extend"),
+				archive + plansession.SummaryFile: "Added T1.3.\n",
+			},
+		},
+		{
+			name: "finished agent that cannot be ended is refused", setup: planFinishedWithSummary,
+			fake:        planFake{alive: true, chat: planchat.StateWaitingForText, stopErr: errors.New("permission denied")},
+			req:         planSurfaceRequest{Mode: plansession.ModeExtend},
+			wantOutcome: planSurfaceRefused,
+			wantReason:  "its agent could not be ended: permission denied.\nRun `afk clean --project {dir} " + session.PlanSessionName + "`",
+			wantCalls:   []string{"stop"},
+			unchanged:   true,
+		},
+		{
+			name: "finished agent still replying keeps the refusal", setup: planFinishedWithSummary,
+			fake:        planFake{alive: true, chat: planchat.StateWorking},
 			req:         planSurfaceRequest{Mode: plansession.ModeExtend},
 			wantOutcome: planSurfaceRefused, wantReason: "its agent is still running",
 			unchanged: true,

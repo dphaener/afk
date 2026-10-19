@@ -605,6 +605,8 @@ Amended 2026-10-19 (T13.1): every mode's session writes `summary.md` at `review`
 A missing or blank file means no summary and is never an error, and the file gates nothing. It is
 archived with the rest of the session's files when the next change session starts.
 
+Amended 2026-10-19 (T13.3): `internal/planend.Decide` ends a finished change session's agent (summary saved, chat waiting, host alive) from the daemon's planning hook and from `decidePlanStart` (`OldAgentEnds` / `EndOldAgent`), with `session.StopHost`; `.afk/plan/` is untouched; each end is a `plan_session_ended` line in `.afk/log/decisions.jsonl`.
+
 ---
 
 ## 5. The build loop
@@ -3551,6 +3553,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
   `decidePlanStart` with fakes. `make check` green. With a built binary and a stand-in planning host at
   `review` with a summary and a waiting chat, `afk daemon --once` (scratch state home) ends the host,
   and `afk plan extend` in another scratch repository in the same state starts without the refusal.
+- Amended 2026-10-19 (T13.3 done): `internal/planend.Decide(Input) Decision` (state, summary text, `planchat.State`, host alive; `planend.Rule` is the log rule) ends only a finished extend, amend or reconcile session; T13.5 should treat a finished `fix` session the same by adding it to the change modes there. The daemon's `PlanWaits` hook now runs the wait notifier and then `planEnder.check` (`plan_end_hook.go`), and `decidePlanStart` takes `OldAgentEnds` and returns `EndOldAgent`, acted on by `endFinishedPlanAgent` in `runPlanRequest` and `startPlanForSurface`; a failed stop starts nothing. Each end is a `plan_session_ended` decision line. The by-hand order is `afk clean --project <root> master-plan`; T13.2's lines still give the refused `afk clean master-plan --project` order.
 
 #### T13.4 — Fix tasks run next
 - **Depends on:** —

@@ -14,8 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planchat"
+	"github.com/dphaener/afk/internal/planend"
 	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectconfig"
@@ -87,6 +90,17 @@ type planDeps struct {
 	// leader reads the dashboard's leader key from config.toml (best effort,
 	// "" for the default); nil means the default.
 	leader func() string
+	// planChat reads the state of the planning chat (a transcript read). It
+	// is only asked about a finished session whose host is alive. nil means
+	// the state is unknown, and an unknown chat is never ended.
+	planChat func(root string) planchat.State
+	// stopPlanHost stops the planning host, as `afk plan approve` does. nil
+	// means this caller cannot end an agent, so OldAgentEnds stays false and
+	// the old refusal stands.
+	stopPlanHost func(root string) (session.HostStop, error)
+	// logDecision appends one entry to the project's decision log; nil means
+	// nothing is logged.
+	logDecision func(root string, e decisionlog.Entry) error
 }
 
 func realPlanDeps() planDeps {
@@ -114,6 +128,19 @@ func realPlanDeps() planDeps {
 		now:        time.Now,
 		review:     realPlanReviewDeps(),
 		leader:     startupLeader,
+		// Built per call so the home folder webPlanChat resolves is only
+		// looked up when a finished session's agent is there to ask about.
+		planChat: func(root string) planchat.State {
+			return webPlanChat(time.Now)("", root).State
+		},
+		// Stderr is discarded for the reason realApproveDeps gives: a warning
+		// must never be written into a terminal the dashboard owns.
+		stopPlanHost: func(root string) (session.HostStop, error) {
+			return session.StopHost(root, session.PlanSessionName, session.CleanDeps{Stderr: io.Discard})
+		},
+		logDecision: func(root string, e decisionlog.Entry) error {
+			return decisionlog.Append(decisionlog.Path(root), e)
+		},
 		ask: func(prompt string) (string, error) {
 			fmt.Fprint(os.Stdout, prompt)
 			line, err := stdin.ReadString('\n')
@@ -323,6 +350,10 @@ type planStartInput struct {
 	// PlanArgvErr is the provider's refusal to run a planning session, nil
 	// when it can.
 	PlanArgvErr error
+	// OldAgentEnds: planend.Decide said the running agent belongs to a
+	// finished change session that has saved its summary and is waiting, so
+	// it may be ended. Only ever true together with HostAlive.
+	OldAgentEnds bool
 }
 
 // planStartAction is the decision. InitRepo, Archive and SeedState say what a
@@ -336,6 +367,11 @@ type planStartAction struct {
 	SeedState bool
 	Reattach  bool
 	AskMode   bool
+	// EndOldAgent: a start first ends the finished session's agent; in a dry
+	// run, it would. It is also set on the question and the refusals that
+	// follow the decision to end, so that a bare `afk plan` which asks for a
+	// mode and decides again still carries it.
+	EndOldAgent bool
 }
 
 // decidePlanStart is the whole decision of `afk plan` and of the three
@@ -358,6 +394,13 @@ type planStartAction struct {
 //     a start the real command then refuses would be a lie. That includes the
 //     agent of a finished session that is still running: a second host would
 //     be started beside it under the same name.
+//   - That refusal guards against a second host beside a live one, not
+//     against the agent itself. When the agent belongs to a finished change
+//     session that has saved its summary and is waiting for the owner
+//     (OldAgentEnds, planend.Decide), it is ended first instead and the rest
+//     is decided as if its host were gone. An agent that is still talking,
+//     or one whose state cannot be read, keeps the refusal: ending it would
+//     cut off work the owner has not seen.
 //   - The dry run comes before the terminal checks, because a dry run asks no
 //     questions and is what a script or an agent uses to see what would
 //     happen. On a project with a plan and no mode it says that the real
@@ -374,6 +417,17 @@ func decidePlanStart(in planStartInput) planStartAction {
 	asked := in.Mode != ""
 	open := in.HasState && !in.Finished
 	canChange := in.PlanExists && !open
+	endOld := canChange && in.HostAlive && in.OldAgentEnds
+	if endOld {
+		// in is a copy: the caller's facts still say the host is alive.
+		in.HostAlive = false
+	}
+	// mark is applied to every action after the host-busy refusal, the only
+	// ones that can follow a decision to end the old agent.
+	mark := func(a planStartAction) planStartAction {
+		a.EndOldAgent = endOld
+		return a
+	}
 	would := planStartAction{
 		InitRepo: !in.IsRepo && !in.HostAlive,
 		// A mode start always seeds: it only gets this far with no session
@@ -396,21 +450,21 @@ func decidePlanStart(in planStartInput) planStartAction {
 	case canChange && in.HostAlive:
 		return planStartAction{Kind: planRefuseHostBusy}
 	case canChange && !asked && in.DryRun:
-		return planStartAction{Kind: planDryRun, AskMode: true}
+		return mark(planStartAction{Kind: planDryRun, AskMode: true})
 	case canChange && !asked && !in.Terminal:
-		return planStartAction{Kind: planRefuseNeedsMode}
+		return mark(planStartAction{Kind: planRefuseNeedsMode})
 	case canChange && !asked:
-		return planStartAction{Kind: planChooseMode}
+		return mark(planStartAction{Kind: planChooseMode})
 	case in.DryRun:
 		would.Kind = planDryRun
-		return would
+		return mark(would)
 	case !in.Terminal:
-		return planStartAction{Kind: planRefuseNoTerminal}
+		return mark(planStartAction{Kind: planRefuseNoTerminal})
 	case in.HostAlive:
-		return planStartAction{Kind: planAttach, Reattach: true}
+		return mark(planStartAction{Kind: planAttach, Reattach: true})
 	default:
 		would.Kind = planStart
-		return would
+		return mark(would)
 	}
 }
 
@@ -807,6 +861,16 @@ func runPlanRequest(req planRequest, stdout, stderr io.Writer, deps planDeps) in
 	case planAttach:
 		return finishPlanAttach(stdout, stderr, project.Root, false, deps)
 	case planStart:
+		if action.EndOldAgent {
+			failed, logErr := endFinishedPlanAgent(project.Root, deps)
+			if failed != "" {
+				fmt.Fprintf(stderr, "%s: %s\n", req.cmd, failed)
+				return 1
+			}
+			if logErr != nil {
+				fmt.Fprintf(stderr, "%s: warning: the earlier planning session's agent was ended, but that could not be written to the decision log: %v\n", req.cmd, logErr)
+			}
+		}
 		archived, failed := startPlanSession(project, action, seed, spec, deps)
 		if failed != "" {
 			fmt.Fprintf(stderr, "%s: %s\n", req.cmd, failed)
@@ -881,6 +945,8 @@ func lookAtPlanProject(providerName, projectFlag, mode string, dryRun bool, term
 		status:      plansession.Decide(files),
 		planArgvErr: planArgvErr,
 	}
+	finished := files.HasState && plansession.Finished(files.State)
+	alive := deps.hostAlive(project.Root)
 	look.in = planStartInput{
 		DryRun:       dryRun,
 		Mode:         mode,
@@ -888,14 +954,74 @@ func lookAtPlanProject(providerName, projectFlag, mode string, dryRun bool, term
 		HasState:     files.HasState,
 		StateDamaged: files.StateProblem != "",
 		Recorded:     files.State.Phase,
-		Finished:     files.HasState && plansession.Finished(files.State),
+		Finished:     finished,
 		HasOldFiles:  planFolderHasFiles(project.Root),
 		PlanExists:   files.PlanExists,
-		HostAlive:    deps.hostAlive(project.Root),
+		HostAlive:    alive,
 		Terminal:     terminal(),
 		PlanArgvErr:  planArgvErr,
+		OldAgentEnds: alive && finished && deps.stopPlanHost != nil &&
+			oldPlanAgentEnds(project.Root, files, deps),
 	}
 	return look, planStop{}
+}
+
+// oldPlanAgentEnds asks planend.Decide whether the running agent of a
+// finished session may be ended. The caller only asks for a finished session
+// whose host is alive, because reading the chat means reading the agent's
+// transcript, and every other session is refused or resumed without it. A
+// caller with no chat reader gives an unknown chat, which is never ended.
+func oldPlanAgentEnds(root string, files plansession.Files, deps planDeps) bool {
+	chat := planchat.StateUnknown
+	if deps.planChat != nil {
+		chat = deps.planChat(root)
+	}
+	return planend.Decide(planend.Input{
+		HasState:  files.HasState,
+		State:     files.State,
+		Summary:   files.Summary,
+		Chat:      chat,
+		HostAlive: true,
+	}).End
+}
+
+// endFinishedPlanAgent ends the agent of a finished change session before a
+// new session starts in its place, for `afk plan` and the dashboard alike. It
+// returns the refusal sentence when the agent could not be ended ("" when it
+// was, or was already gone), with no command name in front, and separately
+// the error of a decision-log write that failed. A log that cannot be written
+// is not a reason to refuse: the agent is already ended by then, and the
+// caller prints the error where it has somewhere to print it.
+//
+// A host that turns out to be gone already (HostGone) is not logged: nothing
+// was ended, and the start goes on exactly as it would have with no host.
+func endFinishedPlanAgent(root string, deps planDeps) (failed string, logErr error) {
+	// --project goes before the name: afk clean parses its flags with Go's
+	// flag package, which stops at the first word, so a flag after the name
+	// is refused as a second session name.
+	refuse := func(err error) string {
+		return fmt.Sprintf("the earlier planning session is finished, but its agent could not be ended: %v.\nRun `afk clean --project %s %s`, then run this command again. Nothing was started.",
+			err, root, session.PlanSessionName)
+	}
+	if deps.stopPlanHost == nil {
+		return refuse(errors.New("afk cannot stop it from here")), nil
+	}
+	stopped, err := deps.stopPlanHost(root)
+	if err != nil {
+		return refuse(err), nil
+	}
+	if stopped != session.HostStopped || deps.logDecision == nil {
+		return "", nil
+	}
+	return "", deps.logDecision(root, decisionlog.Entry{
+		At:       deps.now().UTC().Format(time.RFC3339),
+		Session:  session.PlanSessionName,
+		Kind:     "plan_session_ended",
+		Question: "end the finished planning session's agent?",
+		Chosen:   "ended",
+		ChosenBy: decisionlog.ChosenByPolicy,
+		Rule:     planend.Rule,
+	})
 }
 
 // planOpenPhase is the phase an open session is said to be at: the phase its
@@ -1219,6 +1345,9 @@ type planDryRunView struct {
 func printPlanDryRun(w io.Writer, v planDryRunView) {
 	action := v.action
 	fmt.Fprintf(w, "Project: %s\n", v.project.Root)
+	if action.EndOldAgent {
+		fmt.Fprintf(w, "Would first end the agent of the earlier planning session, which is finished: its summary is saved in .afk/plan/%s and it is waiting for you.\n", plansession.SummaryFile)
+	}
 	if action.AskMode {
 		fmt.Fprintf(w, "This project already has a plan at %s, so `afk plan` would ask how you want to change it, and start nothing until you answer.\n", v.planPath)
 		fmt.Fprintf(w, "To say it on the command line, run one of:\n%s", planModeCommands)

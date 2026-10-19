@@ -157,20 +157,8 @@ func (n planWaitNotifier) check(ctx context.Context) {
 // is webPublicURL's answer, "" while no password is set, and never a secret.
 func realPlanWaitNotifier(projects func() []daemon.Project, stateDir, publicURL string, now func() time.Time, logf func(string, ...any)) planWaitNotifier {
 	return planWaitNotifier{
-		targets: func() []planWaitTarget {
-			got := projects()
-			configured := make([]web.Project, 0, len(got))
-			for _, p := range got {
-				configured = append(configured, web.Project{Name: p.Name, Root: p.Root})
-			}
-			views := webBeingPlanned(daemonstate.ReadBeingPlanned(stateDir), planSessionGone)
-			being := make([]web.Project, 0, len(views))
-			for _, v := range views {
-				being = append(being, web.Project{Name: v.Name, Root: v.Root})
-			}
-			return planWaitTargets(configured, webReviews(daemonstate.ReadReviews(stateDir), configured), being, publicURL)
-		},
-		chat: webPlanChat(now),
+		targets: planTargetsFrom(projects, stateDir, publicURL),
+		chat:    webPlanChat(now),
 		address: func(root string) string {
 			cfg, err := projectconfig.Load(root)
 			if err != nil {
@@ -185,5 +173,25 @@ func realPlanWaitNotifier(projects func() []daemon.Project, stateDir, publicURL 
 		stateDir: stateDir,
 		now:      now,
 		logf:     logf,
+	}
+}
+
+// planTargetsFrom builds the function that lists the projects whose planning
+// session the daemon looks at on each pass. The wait notifier and the planning
+// ender share it so both look at exactly the projects the web page lists, in
+// the same precedence (planWaitTargets).
+func planTargetsFrom(projects func() []daemon.Project, stateDir, publicURL string) func() []planWaitTarget {
+	return func() []planWaitTarget {
+		got := projects()
+		configured := make([]web.Project, 0, len(got))
+		for _, p := range got {
+			configured = append(configured, web.Project{Name: p.Name, Root: p.Root})
+		}
+		views := webBeingPlanned(daemonstate.ReadBeingPlanned(stateDir), planSessionGone)
+		being := make([]web.Project, 0, len(views))
+		for _, v := range views {
+			being = append(being, web.Project{Name: v.Name, Root: v.Root})
+		}
+		return planWaitTargets(configured, webReviews(daemonstate.ReadReviews(stateDir), configured), being, publicURL)
 	}
 }
