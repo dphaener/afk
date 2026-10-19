@@ -3350,10 +3350,12 @@ T12.3 next version ──┘
   and its table tests beside it; it lives under `scripts/` so it is not part of the afk binary).
   - The pure function takes the last release version (or none), the commit messages in the range
     (subject and body), and the paths the range changed, and returns `skip` or a version. The rules:
-    - **Skip** when no changed path is in the binary. In the binary: a `.go` file, `go.mod`, `go.sum`,
-      or anything under `plugins/`, `contrib/` or `internal/` (they are compiled or embedded in). Not:
-      `docs/`, the root's `*.md` files, `install.sh`, `scripts/`, `.github/`, `testdata/` at the root.
-    - **No release yet**: `0.1.0`, whatever the commits say.
+    - **No release yet**: `0.1.0`, whatever the commits say and whatever paths changed, so the merge
+      that switches automatic releases on publishes the first one.
+    - **Skip** when no changed path is in the binary. In the binary: a `.go` file outside `scripts/`,
+      `go.mod`, `go.sum`, or anything under `plugins/`, `contrib/` or `internal/` (they are compiled or
+      embedded in). Not: `docs/`, the root's `*.md` files, `install.sh`, anything under `scripts/` (its
+      `.go` files included), `.github/`, `testdata/` at the root.
     - **Otherwise**: a breaking change (a `!` before the colon, as in `feat!:` or `feat(x)!:`, or a
       body line starting `BREAKING CHANGE:`) raises the major and zeroes the rest; else any commit whose
       type is `feat` raises the minor and zeroes the patch; else the patch goes up by one. A commit
