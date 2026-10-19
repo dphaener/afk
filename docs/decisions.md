@@ -3757,3 +3757,24 @@ T13.1 makes every planning session save the summary it prints at `review` to `.a
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. Minor notes: this section and the `CONTEXT.md` line are written by the planner and conductor, by design; one full `make check` run hit a timing failure in `internal/host` (`TestSendInputReachesARealChild`), which this change does not touch and which passed when run again.
+
+## T13.2
+
+T13.2 makes approving a new plan end its planning agent, from `afk plan approve`, the dashboard and the web page alike. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **One stop, the same as `afk clean` (A1).** `internal/session` gets an exported `StopHost` that runs the same steps `afk clean master-plan` uses to stop a host (ask it to exit, then SIGTERM, then SIGKILL) and removes the same three files (the socket, `host.json`, `host.log`), but never the session's folder. So `.afk/master-plan/planning` and everything in `.afk/plan/` stay. T13.3 can use the same function.
+- **Only a finished approve stops it (A2).** The stop runs once, after every step, and only when the run ends approved. A refused or failed run, and a second approve of a plan already approved, leave the agent alone: the task says "after `approved` is written".
+- **What you see (A3, A4).** The last line becomes "The planning session has ended.", whether the agent was running or had already gone. If it cannot be stopped, the plan is still approved and the exit code is still 0, and one `Note:` line says to run `afk clean master-plan --project <folder>`. The dashboard's and the web page's notice say the same.
+- **No stray output (A5).** Warnings from removing the host's files are dropped, so nothing is written over the dashboard's screen.
+- **Docs (A6).** `docs/reference.md`, `docs/dashboard.md` and `docs/web.md`. The note in `afk plan` about a finished change session's agent stays for T13.3.
+- **Tests and prerequisites (A7, A8).** Table tests written with the code, with a fake stopper; nothing had to be in place first.
+
+### Decided while building
+
+- **A missing stop seam says nothing.** If the code that stops the host is not given to approve, approve treats the stop as not tried and adds no line, instead of crashing. Every real caller and every test sets it.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. The minor notes: this section was written by the planner and is in no task's file list, by design, and the missing-seam case above stays silent.

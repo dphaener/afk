@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/plansession"
+	"github.com/dphaener/afk/internal/session"
 )
 
 // surface runs the entry point on the rig, as the dashboard would: the
@@ -463,6 +465,97 @@ func TestRunPlanApprovePrintsTheSurface(t *testing.T) {
 			}
 			if ledger.Exists(a.root) != ledger.Exists(b.root) {
 				t.Errorf("the two runs left different ledgers")
+			}
+		})
+	}
+}
+
+// TestApproveStopsThePlanningHost pins when approve ends the planning
+// session's host and what it says. Load-bearing rows:
+//   - "stop fails": the plan is still approved, the code is still 0, phase
+//     approved is on disk, .afk/plan/ is unchanged, and one Note line on
+//     stderr names the command that ends the session by hand. A failed stop
+//     must never read as a failed approval.
+//   - "refused" and "already approved": the stopper is never called, so an
+//     approve that changed nothing leaves the agent alone.
+//   - "host running" and "already gone": both say the session has ended; the
+//     owner cannot tell them apart and does not need to.
+func TestApproveStopsThePlanningHost(t *testing.T) {
+	tests := []struct {
+		name        string
+		phase       string // "" seeds nothing, so the gate refuses
+		stop        session.HostStop
+		stopErr     error
+		wantOutcome approveOutcome
+		wantHost    approvePlanHostOutcome
+		wantCalls   int
+		wantStdout  string
+		wantStderr  string
+	}{
+		{name: "host running and stopped", phase: plansession.PhaseReview, stop: session.HostStopped,
+			wantOutcome: approveApproved, wantHost: approvePlanHostEnded, wantCalls: 1,
+			wantStdout: "The planning session has ended.\n"},
+		{name: "host already gone", phase: plansession.PhaseReview, stop: session.HostGone,
+			wantOutcome: approveApproved, wantHost: approvePlanHostGone, wantCalls: 1,
+			wantStdout: "The planning session has ended.\n"},
+		{name: "stop fails", phase: plansession.PhaseReview, stopErr: errors.New("stopping host process (pid 7): did not exit\nmore."),
+			wantOutcome: approveApproved, wantHost: approvePlanHostFailed, wantCalls: 1,
+			wantStderr: "Note: the planning session could not be ended (stopping host process (pid 7): did not exit). End it by hand with: afk clean master-plan --project "},
+		{name: "refused", phase: "", wantOutcome: approveRefused, wantCalls: 0},
+		{name: "already approved", phase: plansession.PhaseApproved, wantOutcome: approveAlreadyApproved, wantCalls: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newApproveRig(t)
+			if tt.phase != "" {
+				r.seed(plansession.ModeNew, tt.phase)
+			}
+			r.stop, r.stopErr = tt.stop, tt.stopErr
+			planBefore := map[string]string{}
+			for _, f := range []string{"brief.md", "survey.md", "slices.md", "critic.md", "questions.jsonl"} {
+				if tt.phase != "" {
+					planBefore[f] = r.read(".afk/plan/" + f)
+				}
+			}
+			res := r.surface(nil)
+			if res.Outcome != tt.wantOutcome {
+				t.Fatalf("outcome %q, want %q; lines %+v", res.Outcome, tt.wantOutcome, res.Lines)
+			}
+			if len(r.stopRoots) != tt.wantCalls {
+				t.Fatalf("stopper called %d times, want %d", len(r.stopRoots), tt.wantCalls)
+			}
+			if tt.wantCalls == 1 && r.stopRoots[0] != r.root {
+				t.Errorf("stopper called with %q, want the project root %q", r.stopRoots[0], r.root)
+			}
+			if res.PlanHost.Outcome != tt.wantHost {
+				t.Errorf("PlanHost outcome %q, want %q", res.PlanHost.Outcome, tt.wantHost)
+			}
+			if tt.wantOutcome == approveApproved {
+				if res.Code != 0 {
+					t.Errorf("code %d, want 0", res.Code)
+				}
+				if got := r.phase(); got != plansession.PhaseApproved {
+					t.Errorf("phase on disk %q, want approved", got)
+				}
+				for f, want := range planBefore {
+					if got := r.read(".afk/plan/" + f); got != want {
+						t.Errorf("%s changed", f)
+					}
+				}
+			}
+			if tt.wantStdout != "" && !strings.HasSuffix(stdoutOf(res), tt.wantStdout) {
+				t.Errorf("stdout does not end with %q:\n%s", tt.wantStdout, stdoutOf(res))
+			}
+			if tt.wantStderr != "" {
+				got := stderrOf(res)
+				if want := tt.wantStderr + r.root + "\n"; got != want {
+					t.Errorf("stderr = %q, want %q", got, want)
+				}
+			}
+			if tt.wantHost == approvePlanHostEnded || tt.wantHost == approvePlanHostGone {
+				if stderrOf(res) != "" {
+					t.Errorf("unexpected stderr %q", stderrOf(res))
+				}
 			}
 		})
 	}

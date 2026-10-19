@@ -14,6 +14,7 @@ import (
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/profile"
+	"github.com/dphaener/afk/internal/session"
 )
 
 // TestApproveThenDaemonStartsTheFirstTask is the acceptance test for "approve
@@ -128,6 +129,7 @@ func TestApproveThenDaemonStartsTheFirstTask(t *testing.T) {
 		ledgerInit:    ledger.Init,
 		writeState:    plansession.WriteState,
 		daemonRunning: func(string) bool { return true },
+		stopPlanHost:  func(string) (session.HostStop, error) { return session.HostGone, nil },
 	}
 	var approveOut, approveErr bytes.Buffer
 	if code := runPlanApprove(nil, &approveOut, &approveErr, approve); code != 0 {

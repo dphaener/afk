@@ -3525,6 +3525,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
   stopped; host already gone; stop fails (approval stands, the by-hand line is printed). `make check`
   green. With a built binary in a scratch repository and a stand-in planning host, `afk plan approve`
   leaves no `master-plan` host running.
+- Amended 2026-10-19 (T13.2 done): `session.StopHost(worktree, name, CleanDeps) (HostStop, error)` is exported from `internal/session/clean.go` (the ladder and file removal `afk clean` uses, never the session folder; `HostGone` or `HostStopped`), and `terminateCleanHost` calls it; T13.3 should stop the host with it. `approveDeps.stopPlanHost` runs it once, only on a run that ends approved, and `approveResult.PlanHost` records `ended`, `gone` or `failed`; a failure leaves the approval and exit 0 and prints one `Note:` line naming `afk clean master-plan --project <root>`. `planRefuseHostBusy` and `docs/reference.md`'s note about a finished change session's agent are unchanged for T13.3.
 
 #### T13.3 — A finished change session's agent ends once it goes quiet
 - **Depends on:** T13.1
