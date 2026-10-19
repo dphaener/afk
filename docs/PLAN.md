@@ -3045,6 +3045,41 @@ top bar, as the phone does, so the browser's own back button is never the only w
   green.
 - Amended 2026-10-16 (T10.2 done): later tasks may assume page content has no "Back to …" link that repeats the bar's back address; the bar (`app-bar` on the phone, `back-row` on the desktop) is the only way back on the plan, plan result, cannot-be-approved confirm, plan change (none, open, unknown), new plan started, empty remove-a-project and not-offered session confirm pages. The new-plan "started" page draws its button row only when there is a chat. Every removed link matched `chromeFor`'s `Back`, so none was kept for its address. `TestInPageBackLinksRemoved` in `pages_test.go` covers each branch and the kept links; a body `<a>` whose text starts with "Back" is a content link, since the bar's buttons are icon-only. See `## T10.2` in `docs/decisions.md`.
 
+#### T10.3 — The desktop back bar in the design system's shape
+- **Depends on:** T10.2 (both edit `internal/web`, and tasks in one Go package collide at merge)
+- **Goal:** the desktop's way back is the design system's `app-bar app-bar--back app-bar--desktop` under the
+  `topnav`, drawn as `docs/design-system.md` draws it (`topnav (desktop)` and the `.app-bar--desktop` rules),
+  in place of T10.1's `.back-row`. It goes where it goes today, on the same pages, with the same spoken names.
+- **Background:** T10.1 built the row from the phone bar's parts with no design round. The owner has since
+  had the design system draw it: not sticky, `min-height: 52px`, the back button lined up with the 24px
+  content edge, the title, and optional meta. On the desktop the plan page's title is "Plan · <project>" and
+  the planning chat's bar shows the phase as meta. The plan wins on behaviour and the design system on looks,
+  so only the looks change.
+- **Scope:** in `internal/web/templates/layout.html`, replace the `<nav class="back-row">` with the design's
+  `app-bar app-bar--back app-bar--desktop` under the `topnav`: the same back `icon-btn` (`.Back`,
+  `.BackLabel`, the same chevron svg), the title from `.Title`, and a `meta` when the page has one. Add the
+  design's `.app-bar--desktop` rules to `internal/web/static/afk.css` as the design system gives them, and
+  remove `.back-row` from `page.css`; `page.css` keeps the desktop bar shown above 760px and hidden at 760px
+  and below (the phone `app-bar` stays the one way back there), and the phone bar stays sticky. The plan
+  page's title becomes "Plan · <project>" (in `chromeFor`, so both bars say it). The planning chat page gives
+  the desktop bar its phase as meta. Keep the bar inside a landmark, as T10.1's nav was, so axe's region
+  rule still passes. Update `TestDesktopBackRow`, `TestBackRowHiddenOnPhone` and any test that looked for
+  `back-row` or "Plan: ". Replace the `.back-row` lines under `## T10.1` in `docs/decisions.md` with a
+  `## T10.3` entry saying the row now follows the design system.
+- **Must not:** change `chromeFor`'s addresses or spoken names; show the bar on the overview or a `Bare`
+  page; change `topnav`'s links, actions or the Sign out form; change the JSON API; add JavaScript for it
+  (the bar works with JavaScript off); add a colour, size or spacing value the design system does not give.
+- **Acceptance:** the table test renders every page `chromeFor` knows and checks that the desktop bar has
+  the classes `app-bar app-bar--back app-bar--desktop`, the right `href`, `aria-label` and title on every
+  page but the overview and the error page, and is absent on those two; a row checks the planning chat's
+  bar carries the phase as meta, and one checks the plan page's title is "Plan · <project>". A test checks
+  `page.css` hides the desktop bar at 760px and below and no `.back-row` rule is left. Against a scratch
+  build serving the page, in headless Chrome at 1280px wide: a project page, a task page and the usage page
+  each show the back chevron in a bar that does not stick when the page scrolls, with its left edge on the
+  content's 24px edge, and following it reaches the address `chromeFor` names; at 390px wide each page shows
+  exactly one back button (the phone bar's). An axe run on a project page at 1280px reports no new
+  violation. `make check` is green.
+
 ### M11 — Install on a fresh machine
 
 **Outcome:** a hobbyist with a fresh Ubuntu machine (a cloud server, a spare computer, or a Multipass VM
