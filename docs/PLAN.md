@@ -3369,7 +3369,9 @@ T12.3 next version ──┘
 - **Acceptance:** table tests of the pure function, with rows for: only docs changed (skip), a `.go`
   file changed with a `fix` (patch), a `feat` among `fix`es (minor), `feat!:` (major), a `BREAKING
   CHANGE:` body (major), no release yet (`0.1.0`), only merge commits plus a `chore` (patch), a subject
-  with no type (patch), a `plugins/` file with a `docs` commit (patch: the plugin is embedded). A test
+  with no type (patch), a `plugins/` file with a `docs` commit (patch: the plugin is embedded), only a
+  `scripts/nextversion/` Go file changed (skip), and no release yet with only `scripts/` and `.github/`
+  changed (`0.1.0`). A test
   of the git side against a scratch repository made in a temporary folder. `make check` is green.
 
 #### T12.4 — Release on every merge to main
