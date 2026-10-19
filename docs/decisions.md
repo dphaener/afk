@@ -3681,3 +3681,14 @@ T12.1 makes release builds clean: the release workflow's dry run of 2026-10-19 p
 ### Verification for the owner
 
 - **The GitHub dry run.** Push the branch and run `gh workflow run release.yml --ref t12-1 -f dry_run=true`. Check that it is green, that the linux/amd64 and darwin/arm64 version lines have no `+dirty`, and that the run shows no Node.js 20 deprecation warning. Locally, a fresh clone built all four binaries clean into an in-tree `dist/`, and `make check` was green.
+
+## T12.2
+
+T12.2 adds the MIT licence the owner chose on 2026-10-19. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The licence text (A1).** `LICENSE` uses the layout GitHub and choosealicense.com publish: a "MIT License" title, then `Copyright (c) 2026 Darin Haener`, with plain ASCII quotes. The wording is the same as the text at opensource.org, and GitHub recognises this layout as MIT on the repository page.
+- **Where the README says it (A2).** A short `## Licence` section at the end of `README.md`, linking `LICENSE`.
+- **The older T11.1 note (A3).** The T11.1 section above says the repo has no `LICENSE` file. It stays: it records what was true when T11.1 was done.
+- **Tests and prerequisites (A4, A5).** No new automated test, because only text files change; the release script was run to check that every archive holds `LICENSE`. Nothing had to be in place first.

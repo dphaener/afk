@@ -70,3 +70,7 @@ The dashboard is also the only place to watch an agent work live or type into it
 | [Developing afk](docs/development.md) | Building, testing and how the code is laid out |
 
 afk began as a copy of the forge-cli project, renamed; see [`docs/provenance.md`](docs/provenance.md).
+
+## Licence
+
+afk is released under the MIT licence; see [LICENSE](LICENSE).

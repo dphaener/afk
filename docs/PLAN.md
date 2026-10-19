@@ -3336,6 +3336,7 @@ T12.3 next version ──┘
 - **Acceptance:** `scripts/release.sh 0.0.0-check <new empty dir>` builds archives that each list
   `LICENSE` (`tar -tzf`), and the file matches the MIT text published at opensource.org. `make check`
   is green.
+- Amended 2026-10-19 (T12.2 done): `LICENSE` (MIT, `Copyright (c) 2026 Darin Haener`, GitHub's layout) is at the root, so `scripts/release.sh` now puts it in every archive with no script change; T12.4 needs nothing more for the licence.
 
 #### T12.3 — Decide the next version
 - **Depends on:** —
@@ -3451,7 +3452,7 @@ T12.3 next version ──┘
   mainly to open their sessions' terminals, which the page cannot do; T8.16 adds a folder to the build.
 - **Daemon-side write-guard and continuation enforcement**, replacing shipit's Claude-only mods.
 - Rename `.claude/worktrees/` to a provider-neutral location.
-- Open-source release: licence, Homebrew tap, docs site. (The install script moved to M11, 2026-10-17.)
+- Open-source release: Homebrew tap, docs site. (The install script moved to M11, 2026-10-17.)
 - **A Docker image**: set aside 2026-10-17 in favour of a VM (see the Decisions row "Where afk runs, and
   installing it"). Worth revisiting only as an optional extra for people who already run everything in
   containers.
