@@ -3375,6 +3375,7 @@ T12.3 next version ──┘
   `scripts/nextversion/` Go file changed (skip), and no release yet with only `scripts/` and `.github/`
   changed (`0.1.0`). A test
   of the git side against a scratch repository made in a temporary folder. `make check` is green.
+- Amended 2026-10-19 (T12.3 done): `go run ./scripts/nextversion <from-sha> <to-sha>` prints `skip` or the version (no `v`) on stdout and exits 0; a git failure prints one line on stderr, nothing on stdout, and exits 1 (bad usage exits 2), so T12.4's `release-decide.sh` must check the exit status. The root `.claude-plugin/` and `.agents/` also count as the binary (embedded by `plugin_assets.go`), and the last release is the highest strict `vX.Y.Z` tag merged into `<to-sha>`.
 
 #### T12.4 — Release on every merge to main
 - **Depends on:** T12.1, T12.2, T12.3
