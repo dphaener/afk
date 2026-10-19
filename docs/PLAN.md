@@ -3328,9 +3328,9 @@ T12.3 next version ──┘
   Haener, the owner's name. `scripts/release.sh` already copies `LICENSE` into each archive when the
   file exists.
 - **Scope:** `LICENSE` at the repository root with the standard MIT text, `Copyright (c) 2026 Darin
-  Haener`. A "Licence" line in `README.md` naming MIT and linking the file. In this plan, answer the
-  Open questions row "Licence for the open-source release" (`**Answered 2026-10-19:** MIT.`) and
-  remove "licence" from the Deferred line on the open-source release.
+  Haener`. A "Licence" line in `README.md` naming MIT and linking the file. In this plan, remove
+  "licence" from the Deferred line on the open-source release (the Open questions row is already
+  answered).
 - **Must not:** add licence headers to source files.
 - **Acceptance:** `scripts/release.sh 0.0.0-check <new empty dir>` builds archives that each list
   `LICENSE` (`tar -tzf`), and the file matches the MIT text published at opensource.org. `make check`
