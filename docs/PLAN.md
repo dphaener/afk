@@ -3018,6 +3018,7 @@ top bar, as the phone does, so the browser's own back button is never the only w
 - Amended 2026-10-16 (T10.1 done): later tasks may assume the desktop back row is `<nav class="back-row" aria-label="Back">` in `layout.html`, right after the `topnav` header, inside the `{{if not .Bare}}` block and only when not `.Overview`, holding the same back `icon-btn` (`.Back`, `.BackLabel`) and `<span class="app-bar__title">{{.Title}}</span>`; `page.css` hides it at 760px and below. It is a labelled nav, not a div, because axe's region rule needs every element in a landmark. `TestDesktopBackRow` and `TestBackRowHiddenOnPhone` in `pages_test.go` cover it; T10.2's tests can check "the bar's back button is still there" against either bar. See `## T10.1` in `docs/decisions.md`.
 
 - Amended 2026-10-16: "every page but the overview" in the Goal means every page but the overview and the error page; the error page is `Bare` and draws no bars, as the Scope and Acceptance already say.
+- Amended 2026-10-19: the design system now draws this row as `app-bar app-bar--back app-bar--desktop` (design-system reconcile); T10.3 rebuilds the `.back-row` in that shape, with the same addresses, names and pages.
 #### T10.2 — Remove the in-page back links that only repeat it
 - **Depends on:** T10.1 (both edit `internal/web`, and tasks in one Go package collide at merge)
 - **Goal:** a "Back to …" link in a page's content that goes where the bar's back button goes and does
