@@ -3080,6 +3080,7 @@ top bar, as the phone does, so the browser's own back button is never the only w
   content's 24px edge, and following it reaches the address `chromeFor` names; at 390px wide each page shows
   exactly one back button (the phone bar's). An axe run on a project page at 1280px reports no new
   violation. `make check` is green.
+- Amended 2026-10-19 (T10.3 done): later tasks may assume the desktop back bar is `<nav class="app-bar app-bar--back app-bar--desktop" aria-label="Back">` in `layout.html`, right after the `topnav` header, on the same pages as T10.1's row (no `.back-row` is left); it holds the back `icon-btn`, `<span class="app-bar__title">` and, when `chrome.Meta` is set, `<span class="meta">`. `chrome.Meta` is new: `chromeFor` sets it only for the planning chat, to the chat's mode and phase line. The plan page's bar title is "Plan · <project>" (its `<title>` and `<h1>` still say "Plan: "). `page.css` hides `.app-bar:not(.app-bar--desktop)` above 760px and `.app-bar--desktop` at 760px and below; the design's three `.app-bar--desktop` rules are in `afk.css`, and their design-system text is now committed. `TestDesktopBackRow`, `TestDesktopBarMeta` and `TestDesktopBarStyles` in `pages_test.go` cover it. See `## T10.3` in `docs/decisions.md`.
 
 ### M11 — Install on a fresh machine
 

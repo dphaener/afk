@@ -119,6 +119,10 @@ type chrome struct {
 	// Title is the phone bar's title; Back and BackLabel are its back
 	// button's address and its spoken name (the button is an icon only).
 	Title, Back, BackLabel string
+	// Meta is the desktop bar's optional meta line (the design system's
+	// app-bar--desktop). Only the planning chat sets it, to its mode and
+	// phase; "" draws no meta.
+	Meta string
 	// Nav is the top bar's current item, "projects" or "usage", and Current
 	// is the aria-current value to give it: "page" when the page is that
 	// item's own address, "true" when it is a page under it (a project, a
@@ -159,7 +163,7 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 	case ProjectView:
 		c.Title = v.Name
 	case PlanView:
-		c.Title = "Plan: " + v.Project
+		c.Title = "Plan · " + v.Project
 		// A plan waiting for approval has no project page to go back to:
 		// findProject answers 404 for it.
 		if !v.WaitingForApproval {
@@ -200,6 +204,7 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 		c.Back, c.BackLabel = v.Back, "Back to the plan of "+v.Project
 	case ChatView:
 		c.Title = "Planning " + v.Project
+		c.Meta = v.Page.Sub
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
 	case ChangePageView:
 		c.Title = "Change the plan"
