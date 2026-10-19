@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ui"
 )
 
@@ -63,6 +64,12 @@ func approvedText(r approveResult) string {
 		b.WriteString(" A running afk daemon starts the first ready task within a few seconds.")
 	} else {
 		b.WriteString(" No afk daemon seems to be running. Start it with afk daemon, and it starts the first ready task.")
+	}
+	switch r.PlanHost.Outcome {
+	case approvePlanHostEnded, approvePlanHostGone:
+		b.WriteString(" The planning session has ended.")
+	case approvePlanHostFailed:
+		fmt.Fprintf(&b, " The planning session could not be ended (%s). Run afk clean %s --project %s to end it.", firstLine(r.PlanHost.Err), session.PlanSessionName, r.Root)
 	}
 	switch r.Push.Outcome {
 	case approvePushViaPR:

@@ -47,6 +47,13 @@ func TestApproveResultText(t *testing.T) {
 			[]string{"pull requests"}, nil},
 		{"approved no branch", approved(func(r *approveResult) { r.Push.Outcome = approvePushNoBranch }),
 			[]string{"not on a branch"}, nil},
+		{"approved host ended", approved(func(r *approveResult) { r.PlanHost.Outcome = approvePlanHostEnded }),
+			[]string{"No afk daemon seems to be running. Start it with afk daemon, and it starts the first ready task. The planning session has ended."}, []string{"could not be ended"}},
+		{"approved host gone", approved(func(r *approveResult) { r.PlanHost.Outcome = approvePlanHostGone }),
+			[]string{"The planning session has ended."}, []string{"could not be ended"}},
+		{"approved host stop failed", approved(func(r *approveResult) {
+			r.PlanHost = approvePlanHost{Outcome: approvePlanHostFailed, Err: errors.New("\nstopping host process (pid 7): stuck\nmore")}
+		}), []string{"The planning session could not be ended (stopping host process (pid 7): stuck). Run afk clean master-plan --project /p to end it."}, []string{"has ended", "more"}},
 		{"already approved", approveResult{Outcome: approveAlreadyApproved},
 			[]string{"The plan is already approved. Nothing was changed."}, nil},
 		{"refused lint errors", approveResult{Outcome: approveRefused, Reason: "The plan has 2 errors"},

@@ -17,6 +17,7 @@ import (
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 )
 
@@ -119,6 +120,11 @@ type approveRig struct {
 	cfg      *projectRig
 	failStep approveStep
 	daemon   bool
+	// stop is what the fake stopPlanHost answers; stopRoots records the
+	// project root of each call.
+	stop      session.HostStop
+	stopErr   error
+	stopRoots []string
 }
 
 func newApproveRig(t *testing.T) *approveRig {
@@ -185,6 +191,10 @@ func (r *approveRig) deps() approveDeps {
 			return plansession.WriteState(root, s)
 		},
 		daemonRunning: func(string) bool { return r.daemon },
+		stopPlanHost: func(root string) (session.HostStop, error) {
+			r.stopRoots = append(r.stopRoots, root)
+			return r.stop, r.stopErr
+		},
 	}
 }
 
@@ -532,7 +542,7 @@ func TestPlanApproveHappyPath(t *testing.T) {
 		fmt.Sprintf("Approved the plan at docs/PLAN.md: %s in %s, %s for you to do, %s.",
 			plural(sum.Tasks, "task"), plural(sum.Milestones, "milestone"), plural(sum.OwnerTasks, "task"), plural(sum.OpenQuestions, "open question")),
 		"A running afk daemon starts the first ready task within a few seconds.",
-		"afk clean master-plan",
+		"The planning session has ended.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout missing %q:\n%s", want, out)

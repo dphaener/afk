@@ -404,6 +404,8 @@ Otherwise it does five things, in this order, and prints a line for each one tha
 4. Adds the project to the projects the daemon builds, as `afk project add` does.
 5. Marks the planning session `approved`, and takes the plan off the list of plans waiting for approval.
 
+Once the planning session is marked `approved`, approve also ends the planning session's agent, the `master-plan` session, the way `afk clean master-plan` does. It stops the agent and prints "The planning session has ended." It keeps `.afk/plan/` and the `master-plan` folder, so nothing you planned is lost. A session that is already gone is fine. If the agent cannot be stopped, the plan is still approved and the command still exits 0; a `Note:` line on stderr says to run `afk clean master-plan --project <folder>` by hand.
+
 Run it again whenever you like. Each step is done only if it is not done already, so a second run after a full one changes nothing ("The plan is already approved"), and a run that stopped half way (git refused the commit, the disk was full) is finished by running it again. When a step fails, the message names it, says what was done in this run and what is left, and the plan stays at `review` until the last step is done.
 
 When it pushes: after a commit it pushes the current branch to `origin` (never forced). It does not push when the repository has no `origin` or is on no branch, and a failed push is a note with the command to run by hand, never a failure of the approval. With `[planning] via_pr = true` in `afk.toml` it does not push at all, since a push to the base branch can be a deploy: the commit goes out with the first task's pull request.

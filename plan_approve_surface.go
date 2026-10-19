@@ -65,6 +65,30 @@ type approvePush struct {
 	Err error
 }
 
+// approvePlanHostOutcome is what happened to the planning session's host
+// after the plan was approved.
+type approvePlanHostOutcome string
+
+const (
+	// approvePlanHostNotAttempted: the run did not end approved, or the stop
+	// seam is not set. The zero value.
+	approvePlanHostNotAttempted approvePlanHostOutcome = ""
+	// approvePlanHostEnded: a host was running and was stopped.
+	approvePlanHostEnded approvePlanHostOutcome = "ended"
+	// approvePlanHostGone: nothing was running.
+	approvePlanHostGone approvePlanHostOutcome = "gone"
+	// approvePlanHostFailed: a live host could not be stopped. The plan is
+	// still approved.
+	approvePlanHostFailed approvePlanHostOutcome = "failed"
+)
+
+// approvePlanHost is the stop of the planning session's host.
+type approvePlanHost struct {
+	Outcome approvePlanHostOutcome
+	// Err is why the host could not be stopped (approvePlanHostFailed only).
+	Err error
+}
+
 // approveCounts is the checker's summary of the approved plan, read as the
 // closing line reads it. Read is false when the plan could not be read again
 // at the end (the line then has no counts) and on every outcome but approved,
@@ -111,6 +135,9 @@ type approveResult struct {
 	// finished (approveApproved only). Advisory, as daemonRunning is.
 	DaemonRunning bool
 	Push          approvePush
+	// PlanHost is what became of the planning session's host (approveApproved
+	// only; approvePlanHostNotAttempted otherwise).
+	PlanHost approvePlanHost
 	// Lines is the command's output, in the order it is printed.
 	Lines []approveLine
 }
@@ -241,6 +268,24 @@ func approvePlanForSurface(projectFlag string, deps approveDeps) approveResult {
 		}
 	}
 
+	// The stop runs last, after `approved` is on disk, so nothing it does can
+	// undo the approval. Were approve ever run from inside the planning agent
+	// itself, stopping the host would end that very process, but only after
+	// the approval is written (the prompt forbids the agent from approving,
+	// phases-late.md). A nil seam is "not attempted" rather than a panic, so
+	// a caller that has no host to stop (none in the tree today) says nothing.
+	if deps.stopPlanHost != nil {
+		stopped, err := deps.stopPlanHost(root)
+		switch {
+		case err != nil:
+			res.PlanHost = approvePlanHost{Outcome: approvePlanHostFailed, Err: err}
+		case stopped == session.HostStopped:
+			res.PlanHost.Outcome = approvePlanHostEnded
+		default:
+			res.PlanHost.Outcome = approvePlanHostGone
+		}
+	}
+
 	res.Outcome = approveApproved
 	res.Done = steps
 	run.reportApproved(planPath)
@@ -286,5 +331,11 @@ func (a *approveRun) reportApproved(planPath string) {
 	} else {
 		a.res.say("No afk daemon seems to be running. Start it with afk daemon, and it starts the first ready task.")
 	}
-	a.res.say("The planning session is no longer needed. You can close it with afk clean %s.", session.PlanSessionName)
+	switch a.res.PlanHost.Outcome {
+	case approvePlanHostEnded, approvePlanHostGone:
+		a.res.say("The planning session has ended.")
+	case approvePlanHostFailed:
+		a.res.warn("Note: the planning session could not be ended (%s). End it by hand with: afk clean %s --project %s",
+			firstLine(a.res.PlanHost.Err), session.PlanSessionName, a.root)
+	}
 }

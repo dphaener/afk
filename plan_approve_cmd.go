@@ -18,6 +18,7 @@ import (
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/usagestate"
 )
@@ -173,6 +174,11 @@ type approveDeps struct {
 	// the state folder. It is advisory (a process id can be reused) and only
 	// chooses between two closing sentences.
 	daemonRunning func(stateDir string) bool
+	// stopPlanHost ends the planning session's host (the master-plan
+	// session) once the plan is approved, keeping its folder. It is a seam so
+	// no test starts or signals a real process, and so a failure to stop can
+	// be scripted: it must never undo the approval.
+	stopPlanHost func(root string) (session.HostStop, error)
 }
 
 func realApproveDeps() approveDeps {
@@ -191,6 +197,12 @@ func realApproveDeps() approveDeps {
 		daemonRunning: func(stateDir string) bool {
 			pid, _, ok := daemonstate.ReadMachine(stateDir)
 			return ok && host.Alive(pid)
+		},
+		// Stderr is discarded: a warning about a file that could not be
+		// removed must never be written to a terminal the dashboard owns.
+		// withDefaults fills the rest.
+		stopPlanHost: func(root string) (session.HostStop, error) {
+			return session.StopHost(root, session.PlanSessionName, session.CleanDeps{Stderr: io.Discard})
 		},
 	}
 }

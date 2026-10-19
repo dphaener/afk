@@ -1357,39 +1357,73 @@ var (
 // confirmed dead — proceeding past that point is exactly the failure mode
 // this step exists to prevent.
 func terminateCleanHost(d CleanDeps, sess Session) error {
-	worktreeMetaDir := filepath.Join(sess.WorktreePath, ".afk", sess.Name)
+	_, err := StopHost(sess.WorktreePath, sess.Name, d)
+	return err
+}
+
+// HostStop says what StopHost found.
+type HostStop int
+
+const (
+	// HostGone means nothing was running: no host.json, an unreadable one, or
+	// a pid that is no longer alive.
+	HostGone HostStop = iota
+	// HostStopped means a live host was stopped.
+	HostStopped
+)
+
+// StopHost ends the `afk _host` process of session name in worktree, with the
+// ladder `afk clean` uses (socket Exit, then SIGTERM, then SIGKILL), and
+// removes the socket, host.json and host.log it leaves behind. It never
+// removes the session folder or any other file.
+//
+// It exists because approving a plan (T13.2), and later the daemon's end of a
+// finished change session (T13.3), must end the agent the way `afk clean`
+// does while keeping the session folder: `.afk/master-plan/planning` and
+// `.afk/plan/` must survive. terminateCleanHost calls it, so there is one
+// ladder.
+//
+// d.Alive is an advisory signal-0, as for clean: pids get recycled, so a
+// true answer can be a false positive. A caller may pass a partly filled
+// CleanDeps. An error is returned only when a live host could not be
+// confirmed dead; the files are then left in place.
+func StopHost(worktree, name string, d CleanDeps) (HostStop, error) {
+	d = d.withDefaults()
+	worktreeMetaDir := filepath.Join(worktree, ".afk", name)
 	metaPath := filepath.Join(worktreeMetaDir, "host.json")
 	logPath := filepath.Join(worktreeMetaDir, "host.log")
 
-	meta, err := host.ReadMeta(sess.WorktreePath, sess.Name)
+	meta, err := host.ReadMeta(worktree, name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return HostGone, nil
 		}
 		// Unparseable (or unreadable) host.json. Deriving the socket path
 		// rather than reading it back is the whole reason this case can be
 		// cleaned up at all; if even that fails, removeIfExists tolerates the
 		// empty path and the other two files still go.
-		socket, serr := host.SocketPath(sess.WorktreePath, sess.Name)
+		socket, serr := host.SocketPath(worktree, name)
 		if serr != nil {
 			socket = ""
 		}
 		removeIfExists(d.Stderr, socket)
 		removeIfExists(d.Stderr, metaPath)
 		removeIfExists(d.Stderr, logPath)
-		return nil
+		return HostGone, nil
 	}
 
+	result := HostGone
 	if d.Alive(meta.PID) {
 		if err := stopLiveHost(d, meta.PID, meta.Socket); err != nil {
-			return fmt.Errorf("stopping host process (pid %d): %w", meta.PID, err)
+			return HostGone, fmt.Errorf("stopping host process (pid %d): %w", meta.PID, err)
 		}
+		result = HostStopped
 	}
 
 	removeIfExists(d.Stderr, meta.Socket)
 	removeIfExists(d.Stderr, metaPath)
 	removeIfExists(d.Stderr, logPath)
-	return nil
+	return result, nil
 }
 
 // stopLiveHost escalates from a graceful socket Exit to signals, confirming
