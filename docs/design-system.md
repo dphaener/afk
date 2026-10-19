@@ -136,6 +136,11 @@ Holds the `wordmark` on Overview, otherwise back + title + `live`.
 
 ### topnav (desktop)
 Desktop replacement for app-bar. Parts `topnav__links`, `topnav__link` (`aria-current="page"` = current).
+Every desktop screen below the home screen keeps the phone's back navigation: an `app-bar app-bar--back
+app-bar--desktop` sits under the `topnav` with the same back `icon-btn` (same chevron, same
+`aria-label` "Back to …", same target as on the phone), the page title, and optional meta. On desktop it is
+not sticky and its back button lines up with the 24px content edge. The home screen (Overview) has no
+back button, the same as on the phone.
 
 ### live
 The quiet "this page updates by itself" signal, top right.
@@ -672,6 +677,11 @@ a.row:focus-visible { outline-offset: -2px; border-radius: 0; }
 .step.is-done .step__dot { background: var(--ok); border-color: var(--ok); }
 .step.is-current { color: var(--text); font-weight: var(--weight-semibold); }
 .step.is-current .step__dot { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+
+/* app-bar on desktop: sits under topnav, not sticky, back button lines up with the 24px content edge */
+.app-bar--desktop { position: static; min-height: 52px; padding: var(--space-1) var(--space-5) var(--space-1) var(--space-3); gap: var(--space-2); }
+.app-bar--desktop .app-bar__title { flex: 0 1 auto; }
+.app-bar--desktop .meta { margin-left: var(--space-2); }
 ```
 
 ---
@@ -758,7 +768,7 @@ Session: `tid` + status + verdict badges, `h2` title, `kv` (phase, started, labe
 **Phone.** Checker `card` first: badge, `stats` (tasks, milestones, errors, warnings), `finding` list
 (errors first), then **Approve the plan…**. With errors the button is absent and a `notice--error`
 takes its place: "Fix 2 errors before approving. Ask the agent in the chat." Below, the plan as `prose`.
-**Desktop.** `split`: checker on the left (sticky reading aid, findings link to their lines), plan on the
+**Desktop.** `topnav`, then the back bar (back to the project, title "Plan · recipe-box"). `split`: checker on the left (sticky reading aid, findings link to their lines), plan on the
 right at 68ch. Approve opens a centred `confirm-sheet`: "Approve the plan for recipe-box?" — "afk starts
 building 18 tasks in 4 milestones, beginning with T1.1. The checker found 0 errors and 2 warnings."
 **Not yet** (focused) / **Approve and start**.
@@ -772,13 +782,12 @@ Picking an option sends it as the owner's reply and marks it `is-chosen`.
 States: **agent working** — `live--working` in the bar, `working` line where the next message will appear,
 composer still accepts typing, Send disabled until the agent is done. **No planning session** — `empty`
 "No planning session" + one line, and Extend / Amend / Reconcile buttons.
-**Desktop.** `split`: left column with `steps` (brief, rounds, slices, draft, check, review), folder and
+**Desktop.** `topnav`, then the back bar (back to the project, title "Planning recipe-box", phase as meta). `split`: left column with `steps` (brief, rounds, slices, draft, check, review), folder and
 repository; right, the thread centred at 720px with the composer under it. Options sit side by side.
 
 ### Sign-in prompt and errors
-Sign-in: no app-bar; `wordmark`, `h1` "This page is private", one line, a labelled **Password** `field` (`type="password"`, `autocomplete="current-password"`; a wrong password puts `aria-invalid` on it and a `field__error` line under it), **Sign in** (primary), meta
+Sign-in: no app-bar; `wordmark`, `h1` "This page is private", one line, **Sign in** (primary), meta
 "Not the owner? There is nothing else here." Nothing about projects is shown.
-Bars: the phone `app-bar` and the desktop `topnav` end with a quiet **Sign out** button, a form that POSTs to `/signout`; it signs this browser out and lands on the sign-in prompt.
 Error: `wordmark`, `h1` "That didn't load", one sentence naming what failed, mono status and path,
 **Go to all projects** (primary), **Try again** (secondary). Lost connection is not a page: the `live`
 indicator turns `live--offline` and the last data stays on screen.
