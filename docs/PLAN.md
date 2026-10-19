@@ -3318,6 +3318,7 @@ T12.3 next version ──┘
   names the file (a shell test in `make check`). `gh workflow run release.yml --ref <this branch> -f
   dry_run=true` is green, its log shows no `+dirty` in the linux/amd64 or darwin/arm64 version lines,
   and it shows no Node.js 20 deprecation warning. `make check` is green.
+- Amended 2026-10-19 (T12.1 done): the `+dirty` came from `scripts/release.sh` itself (archives written into the unignored in-tree `dist/` between builds), not from `make check`; `/dist/` is now ignored, the script builds every binary before archiving, refuses a changed tree and refuses any binary stamped `vcs.modified=true`, and `make check` runs `release-script-test`. Actions are now checkout/setup-go/setup-node/upload-artifact@v7 and download-artifact@v8. T12.4's workflow edits start from these tags, and its decide job must leave the tree clean before `scripts/release.sh` runs.
 
 #### T12.2 — The MIT licence
 - **Depends on:** —

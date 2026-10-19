@@ -29,13 +29,36 @@ if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
 fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+# Go stamps every binary with vcs.modified from the state of the checkout, and
+# the version line shows that as "+dirty". A release built from a changed tree
+# would say so on every user's machine, so refuse before building anything and
+# name the files. This runs before the output folder is created, so a refusal
+# leaves nothing behind.
+if ! changed=$(git -C "$root" status --porcelain 2>/dev/null); then
+  echo "A release must be built from a git checkout, and '$root' is not one." >&2
+  exit 1
+fi
+if [ -n "$changed" ]; then
+  echo "The tree has uncommitted changes, so the binaries would say +dirty:" >&2
+  echo "$changed" >&2
+  echo "Commit or remove them, then run this again." >&2
+  exit 1
+fi
+
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
 cd "$root"
-for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+targets=(linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
+
+# Build every binary before writing any archive. When the output folder sits
+# inside the checkout, the first archive is an untracked file, and Go would
+# stamp every later build vcs.modified=true (the 2026-10-19 dry run showed
+# +dirty on darwin/arm64 for this reason).
+for target in "${targets[@]}"; do
   os=${target%/*}
   arch=${target#*/}
   dir="$stage/${os}_${arch}"
@@ -45,6 +68,18 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
   # out of the binary so the same source gives the same bytes anywhere.
   CGO_ENABLED=0 GOOS=$os GOARCH=$arch \
     go build -trimpath -ldflags "-s -w -X main.version=$version" -o "$dir/afk" .
+  # Whatever changed the tree mid-run, a dirty binary is never archived.
+  if go version -m "$dir/afk" | grep -q 'vcs.modified=true'; then
+    echo "The $target binary was stamped as modified (+dirty), so nothing was archived." >&2
+    echo "Something changed the tree during the build; check git status." >&2
+    exit 1
+  fi
+done
+
+for target in "${targets[@]}"; do
+  os=${target%/*}
+  arch=${target#*/}
+  dir="$stage/${os}_${arch}"
   files=(afk)
   if [ -f LICENSE ]; then cp LICENSE "$dir/"; files+=(LICENSE); fi
   cp README.md "$dir/"; files+=(README.md)
@@ -54,4 +89,4 @@ done
 
 # Run from inside out-dir so the names are bare and `sha256sum -c` works there.
 (cd "$out" && sha256sum afk_"${version}"_*.tar.gz > checksums.txt)
-echo "Built $(ls "$out" | wc -l) files in $out"
+echo "Built $(find "$out" -maxdepth 1 -type f | wc -l) files in $out"
