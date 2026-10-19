@@ -764,7 +764,9 @@ func TestPlanProjectIsTheMainCheckout(t *testing.T) {
 // "pulled back" (the phase is the earlier unfinished one, and the line says
 // what was recorded); "damaged state" and "question problem" (exit 1, each
 // problem on its own line); "check counts plan errors" (the checker's count
-// reaches the decision).
+// reaches the decision); "review prints the summary" (printed under the phase
+// lines), the blank, missing, earlier-phase and pulled-back rows (never
+// printed: a stale summary must not read as the current draft).
 func TestPlanStatus(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -773,6 +775,7 @@ func TestPlanStatus(t *testing.T) {
 		args     []string
 		wantCode int
 		want     []string
+		wantNot  []string // must not appear on stdout
 		wantErr  string
 	}{
 		{
@@ -835,6 +838,51 @@ func TestPlanStatus(t *testing.T) {
 			wantCode: 1,
 			want:     []string{"Phase: brief\n", "Problem: line 1"},
 		},
+		{
+			name: "review prints the summary",
+			setup: func(t *testing.T, dir string) {
+				planAtReview(t, dir)
+				writePlanFile(t, dir, ".afk/plan/summary.md", "Milestones: 1\nThe changes: added T1.2\n")
+			},
+			want: []string{"Phase: review\n", "Summary (.afk/plan/summary.md):\nMilestones: 1\nThe changes: added T1.2\n"},
+		},
+		{
+			name: "review without a summary file",
+			setup: func(t *testing.T, dir string) {
+				planAtReview(t, dir)
+			},
+			want:    []string{"Phase: review\n"},
+			wantNot: []string{"Summary"},
+		},
+		{
+			name: "review with a blank summary",
+			setup: func(t *testing.T, dir string) {
+				planAtReview(t, dir)
+				writePlanFile(t, dir, ".afk/plan/summary.md", "  \n\n")
+			},
+			want:    []string{"Phase: review\n"},
+			wantNot: []string{"Summary"},
+		},
+		{
+			name: "summary not shown before review",
+			setup: func(t *testing.T, dir string) {
+				writePlanFile(t, dir, ".afk/plan/state.json", planState(plansession.PhaseSurvey))
+				writePlanFile(t, dir, ".afk/plan/brief.md", "a brief\n")
+				writePlanFile(t, dir, ".afk/plan/summary.md", "old summary\n")
+			},
+			want:    []string{"Phase: survey\n"},
+			wantNot: []string{"Summary", "old summary"},
+		},
+		{
+			name: "summary not shown when pulled back from review",
+			setup: func(t *testing.T, dir string) {
+				planAtReview(t, dir)
+				os.Remove(filepath.Join(dir, ".afk/plan/survey.md"))
+				writePlanFile(t, dir, ".afk/plan/summary.md", "old summary\n")
+			},
+			want:    []string{"Phase: survey (the session had reached review"},
+			wantNot: []string{"Summary", "old summary"},
+		},
 		{name: "unknown flag", args: []string{"--bogus"}, wantCode: 2, wantErr: planStatusUsageLine},
 		{name: "unexpected word", args: []string{"now"}, wantCode: 2, wantErr: `unexpected word "now"`},
 	}
@@ -854,6 +902,11 @@ func TestPlanStatus(t *testing.T) {
 			for _, want := range tt.want {
 				if !strings.Contains(so.String(), want) {
 					t.Errorf("stdout missing %q:\n%s", want, so.String())
+				}
+			}
+			for _, not := range tt.wantNot {
+				if strings.Contains(so.String(), not) {
+					t.Errorf("stdout has %q:\n%s", not, so.String())
 				}
 			}
 			if tt.wantErr != "" && !strings.Contains(se.String(), tt.wantErr) {
@@ -1009,6 +1062,14 @@ func planWithFinishedChange(t *testing.T, dir string) {
 	writePlanFile(t, dir, ".afk/plan/state.json", `{"mode":"amend","phase":"review","updated_at":"2026-10-12T00:00:00Z"}`)
 	writePlanFile(t, dir, ".afk/plan/brief.md", "the earlier request\n")
 	writePlanFile(t, dir, ".afk/plan/changes.md", "- added T1.3\n")
+}
+
+// planAtReview is planWithFinishedChange plus the survey, which an amend
+// session's gates need so that Decide leaves it at review.
+func planAtReview(t *testing.T, dir string) {
+	t.Helper()
+	planWithFinishedChange(t, dir)
+	writePlanFile(t, dir, ".afk/plan/survey.md", "a survey\n")
 }
 
 // TestRunPlanMode pins `afk plan extend`, `amend` and `reconcile`: what each

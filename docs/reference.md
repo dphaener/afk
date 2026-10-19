@@ -369,7 +369,7 @@ A change session is finished when it reaches `review`: its changes are already i
 
 **Leaving and coming back.** Leave with ctrl-\. The session keeps running in the background and what it has saved is kept in `.afk/plan/`. Run `afk plan` again to come back: it reattaches to a running session, or starts a fresh agent on the saved state if the session has stopped. Opening it from the dashboard does the same.
 
-**`afk plan status`** prints the session's mode, its phase, what it is waiting for, and one `Problem:` line for each damaged file. It only reads. With no planning session it says so and tells you to run `afk plan`.
+**`afk plan status`** prints the session's mode, its phase, what it is waiting for, and one `Problem:` line for each damaged file. At `review` it also prints the summary the session saved in `.afk/plan/summary.md`, so the summary can be read after the session has ended. It only reads. With no planning session it says so and tells you to run `afk plan`.
 
 **`afk plan advance`** moves the session to the next phase once the current phase's work is saved, and says what is missing when it is not. It is the command the planning session itself runs when a phase is done; you rarely need it. The agent never writes the phase by hand, so it cannot skip a step.
 

@@ -3739,3 +3739,21 @@ T12.4 makes a merge to `main` that changes the binary publish a release on its o
 
 - **The dry run.** Push the branch and run `gh workflow run release.yml --ref t12-4 -f dry_run=true`. It should be green, and its summary should say it would publish `0.1.0`.
 - **The first release.** It happens only once this task is merged. Then `gh release list` should show `v0.1.0`, and `gh release view v0.1.0` should list four archives and `checksums.txt`. Running the one-line install with `AFK_NO_INSTALL=1` (`curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | AFK_NO_INSTALL=1 sh`) should put a working `afk` in `~/bin` (`~/bin/afk version` prints `afk 0.1.0 …`).
+
+## T13.1
+
+T13.1 makes every planning session save the summary it prints at `review` to `.afk/plan/summary.md`, and makes `afk plan status` print that file at `review`. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **What afk keeps of the file (A1).** `internal/plansession` keeps the summary's text as written, or nothing when the file is missing or holds only white space.
+- **A file that cannot be read is no summary (A2).** The task says a missing summary is never an error, and the summary gates nothing, so a damaged one does not add a `Problem:` line or make `afk plan status` exit 1.
+- **Where it is printed (A3).** After the `Waiting for:` line and before any `Problem:` line, under a line naming the file, `Summary (.afk/plan/summary.md):`, so you know where to find it.
+- **Only at `review` (A4).** Not at `approved`, and not when a session recorded at `review` has been pulled back to an earlier phase because a file went missing: then the summary describes work that is no longer there.
+- **`afk plan advance` is unchanged (A5).** Only `afk plan status` prints the summary.
+- **Tests and prerequisites (A6, A7).** Table tests written with the code; nothing had to be in place first.
+- **Coming back to `review` (A8).** The session writes the file again each time it prints the summary, so the file always matches the last thing it printed.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. Minor notes: this section and the `CONTEXT.md` line are written by the planner and conductor, by design; one full `make check` run hit a timing failure in `internal/host` (`TestSendInputReachesARealChild`), which this change does not touch and which passed when run again.

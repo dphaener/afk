@@ -76,9 +76,9 @@ Write `.afk/plan/critic.md`: every finding the critic reported, in its words, an
 
 ## Phase `review` — hand the draft to the owner
 
-No file. The session stops here for the owner.
+First write the whole summary, items 1 to 5 below and exactly the text you are about to print, with the Write tool to `.afk/plan/summary.md`, overwriting any earlier one. Then print the same text. `afk plan status` shows this file at `review`, so the owner can read the summary after the session has ended. Running `afk plan` again comes back to this point and writes it again. The session stops here for the owner.
 
-Print, in this order:
+The summary, in this order:
 
 1. The output of `afk plan lint --summary`, as it is. Its lines are the only counts you give: milestones, tasks, owner tasks, open questions, errors, warnings.
 2. The open questions, each with the tasks that need it, read from the plan's Open questions table.

@@ -18,7 +18,7 @@ The rules of the session all still hold. In these three modes the phase prompts 
   ```
 
   This file is the gate of the `draft` phase and the record the owner reads at the end. A change that is not in it was not made, as far as a resumed session can tell, and would be made twice.
-- **The session ends at `review`**, with the summary from `afk plan lint --summary`. There is nothing to approve: each change was in the plan (or in its pull request) the moment its command succeeded.
+- **The session ends at `review`**, with the summary from `afk plan lint --summary`, which you save to `.afk/plan/summary.md` and print. There is nothing to approve: each change was in the plan (or in its pull request) the moment its command succeeded.
 - **There is no `model` phase.** A new term the change brings in is settled with the owner where the mode asks its questions and added to `CONTEXT.md` with Edit, as the `model` phase describes.
 - **The project's other files are left alone.** `afk.toml`, `.gitignore`, `AGENTS.md` and `CLAUDE.md` were written when the plan was first drafted; a change session does not write them again.
 
@@ -174,7 +174,7 @@ An empty list is written as "none". Mark each item as either a **choice** for th
 
 ## Phase `review` in these modes
 
-No file. Print, in this order:
+First write the whole summary, items 1 to 5 below and exactly the text you are about to print, with the Write tool to `.afk/plan/summary.md`, overwriting any earlier one. Then print the same text. `afk plan status` shows this file at `review`, so the owner can read the summary after the session has ended, and coming back to this point writes it again. The summary, in this order:
 
 1. The output of `afk plan lint --summary`, as it is. Its lines are the only counts you give.
 2. The changes, read from `.afk/plan/changes.md`, each in one plain line.
