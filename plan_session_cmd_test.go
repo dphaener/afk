@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/masterplan"
+	"github.com/dphaener/afk/internal/planchat"
+	"github.com/dphaener/afk/internal/planend"
 	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/provider"
@@ -34,6 +37,19 @@ type planFake struct {
 	// holds the questions. A question past the last answer gets "".
 	answers []string
 	asked   []string
+	// chat is what the planning chat reads as ("" is neither waiting state,
+	// so the old agent is never ended); chatReads counts the reads, which
+	// stand for a transcript read.
+	chat      planchat.State
+	chatReads int
+	// stopErr fails the host stop; stopGone makes it find no host. Either way
+	// the stop is recorded as "stop" in calls.
+	stopErr  error
+	stopGone bool
+	// logErr fails the decision-log write; logged holds the entries written,
+	// each also recorded as "log <kind>" in calls.
+	logErr error
+	logged []decisionlog.Entry
 }
 
 var planFakeNow = time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
@@ -75,6 +91,28 @@ func (f *planFake) deps(cwd string) planDeps {
 		},
 		lintErrors: func([]byte) int { return f.lint },
 		now:        func() time.Time { return planFakeNow },
+		planChat: func(string) planchat.State {
+			f.chatReads++
+			return f.chat
+		},
+		stopPlanHost: func(string) (session.HostStop, error) {
+			f.calls = append(f.calls, "stop")
+			if f.stopErr != nil {
+				return session.HostGone, f.stopErr
+			}
+			if f.stopGone {
+				return session.HostGone, nil
+			}
+			return session.HostStopped, nil
+		},
+		logDecision: func(_ string, e decisionlog.Entry) error {
+			f.calls = append(f.calls, "log "+e.Kind)
+			if f.logErr != nil {
+				return f.logErr
+			}
+			f.logged = append(f.logged, e)
+			return nil
+		},
 		ask: func(prompt string) (string, error) {
 			f.asked = append(f.asked, prompt)
 			if len(f.asked) > len(f.answers) {
@@ -232,6 +270,15 @@ func TestRoutePlanArgs(t *testing.T) {
 //     mode; only a plan with no open session leads to the question.
 //   - "new folder": the one row with both InitRepo and SeedState.
 //   - "resume": a start that must not seed, or it would reset the phase.
+//   - "extend, finished agent waits": the host-busy refusal gives way to a
+//     start that ends the agent first, seeded as if the host were gone; and
+//     "extend, host alive" (OldAgentEnds false) keeps the refusal, so an
+//     agent planend did not clear is never ended.
+//   - "bare, finished agent waits": the question carries EndOldAgent, so the
+//     decision made again after the answer still ends the agent; its dry-run
+//     and no-terminal neighbours carry it too.
+//   - "finished agent waits, host gone" and "...on an open session": the flag
+//     alone ends nothing; it needs a live host and a plan that can change.
 func TestDecidePlanStart(t *testing.T) {
 	refusal := errors.New("no planning with this agent")
 	base := planStartInput{IsRepo: true, Terminal: true}
@@ -374,6 +421,55 @@ func TestDecidePlanStart(t *testing.T) {
 			in.PlanExists = true
 			in.StateDamaged = true
 		}), planStartAction{Kind: planRefuseDamaged}},
+
+		{"extend, finished agent waits", finished(func(in *planStartInput) {
+			in.Mode = plansession.ModeExtend
+			in.HostAlive = true
+			in.OldAgentEnds = true
+		}), planStartAction{Kind: planStart, SeedState: true, Archive: true, EndOldAgent: true}},
+		{"extend, finished agent waits, folder is not a repository", finished(func(in *planStartInput) {
+			in.Mode = plansession.ModeExtend
+			in.IsRepo = false
+			in.HostAlive = true
+			in.OldAgentEnds = true
+		}), planStartAction{Kind: planStart, InitRepo: true, SeedState: true, Archive: true, EndOldAgent: true}},
+		{"extend, finished agent waits, dry run", finished(func(in *planStartInput) {
+			in.Mode = plansession.ModeExtend
+			in.HostAlive = true
+			in.OldAgentEnds = true
+			in.DryRun = true
+		}), planStartAction{Kind: planDryRun, SeedState: true, Archive: true, EndOldAgent: true}},
+		{"extend, finished agent waits, no terminal", finished(func(in *planStartInput) {
+			in.Mode = plansession.ModeExtend
+			in.HostAlive = true
+			in.OldAgentEnds = true
+			in.Terminal = false
+		}), planStartAction{Kind: planRefuseNoTerminal, EndOldAgent: true}},
+		{"bare, finished agent waits", finished(func(in *planStartInput) { in.HostAlive = true; in.OldAgentEnds = true }),
+			planStartAction{Kind: planChooseMode, EndOldAgent: true}},
+		{"bare, finished agent waits, dry run", finished(func(in *planStartInput) {
+			in.HostAlive = true
+			in.OldAgentEnds = true
+			in.DryRun = true
+		}), planStartAction{Kind: planDryRun, AskMode: true, EndOldAgent: true}},
+		{"bare, finished agent waits, no terminal", finished(func(in *planStartInput) {
+			in.HostAlive = true
+			in.OldAgentEnds = true
+			in.Terminal = false
+		}), planStartAction{Kind: planRefuseNeedsMode, EndOldAgent: true}},
+		{"finished agent waits, host gone", finished(func(in *planStartInput) { in.Mode = plansession.ModeExtend; in.OldAgentEnds = true }),
+			planStartAction{Kind: planStart, SeedState: true, Archive: true}},
+		{"finished agent waits, on an open session", open(func(in *planStartInput) {
+			in.Mode = plansession.ModeAmend
+			in.HostAlive = true
+			in.OldAgentEnds = true
+		}), planStartAction{Kind: planRefuseInProgress}},
+		{"finished agent waits, provider refuses", finished(func(in *planStartInput) {
+			in.Mode = plansession.ModeExtend
+			in.HostAlive = true
+			in.OldAgentEnds = true
+			in.PlanArgvErr = refusal
+		}), planStartAction{Kind: planRefuseProvider}},
 
 		{"dry run, new folder", planStartInput{DryRun: true, Terminal: true},
 			planStartAction{Kind: planDryRun, InitRepo: true, SeedState: true}},
@@ -2010,5 +2106,202 @@ func TestPlanReconcileDesignFixture(t *testing.T) {
 	writePlanFile(t, project, "docs/design-followup-1.md", planFixture(t, "design-followup-1.md"))
 	if out := run(followup); out != "docs/design-followup-2.md\n" {
 		t.Errorf("next-followup after the first prompt = %q, want docs/design-followup-2.md", out)
+	}
+}
+
+// planFinishedWithSummary is planWithFinishedChange with the summary the
+// session saved before it printed it: the shape planend may end.
+func planFinishedWithSummary(t *testing.T, dir string) {
+	t.Helper()
+	planWithFinishedChange(t, dir)
+	writePlanFile(t, dir, ".afk/plan/"+plansession.SummaryFile, "Added T1.3.\n")
+}
+
+// TestRunPlanEndsAFinishedAgent pins what `afk plan` and the mode commands do
+// when the planning host of a finished change session is still running.
+//
+// Load-bearing rows:
+//   - "ends then starts": the stop and its log entry come before the spawn,
+//     so a second host is never started beside the first.
+//   - "stop fails": exit 1, the refusal names `afk clean master-plan`, and
+//     nothing is spawned or written.
+//   - "agent still replying" and "no summary": the old refusal stands and the
+//     stop is never called, so an agent planend did not clear is never ended.
+//   - "open session is never asked about": no transcript is read for a
+//     session that is not finished.
+//   - "bare afk plan asks, then ends": the decision made again after the
+//     answer still ends the agent.
+func TestRunPlanEndsAFinishedAgent(t *testing.T) {
+	const ended = "log plan_session_ended"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		fake  planFake
+		// args[0] is the mode, "" for a bare `afk plan`.
+		args          []string
+		wantCode      int
+		wantErr       []string
+		wantOut       []string
+		wantCalls     []string
+		wantLogged    int
+		wantChatReads int
+		unchanged     bool
+	}{
+		{
+			name: "ends then starts", setup: planFinishedWithSummary,
+			fake:       planFake{tty: true, alive: true, chat: planchat.StateWaitingForText},
+			args:       []string{"extend"},
+			wantCalls:  []string{"stop", ended, "spawn marker extend/brief", "attach started"},
+			wantLogged: 1, wantChatReads: 1,
+		},
+		{
+			name: "waiting for a choice also ends", setup: planFinishedWithSummary,
+			fake:       planFake{tty: true, alive: true, chat: planchat.StateWaitingForChoice},
+			args:       []string{"amend", "a second change"},
+			wantCalls:  []string{"stop", ended, "spawn marker amend/brief", "attach started"},
+			wantLogged: 1, wantChatReads: 1,
+		},
+		{
+			name: "stop fails", setup: planFinishedWithSummary,
+			fake:     planFake{tty: true, alive: true, chat: planchat.StateWaitingForText, stopErr: errors.New("permission denied")},
+			args:     []string{"extend"},
+			wantCode: 1,
+			wantErr: []string{"its agent could not be ended: permission denied.",
+				"Run `afk clean --project {dir} " + session.PlanSessionName + "`, then run this command again. Nothing was started."},
+			wantCalls: []string{"stop"}, wantChatReads: 1, unchanged: true,
+		},
+		{
+			name: "host already gone is not logged", setup: planFinishedWithSummary,
+			fake:          planFake{tty: true, alive: true, chat: planchat.StateWaitingForText, stopGone: true},
+			args:          []string{"extend"},
+			wantCalls:     []string{"stop", "spawn marker extend/brief", "attach started"},
+			wantChatReads: 1,
+		},
+		{
+			name: "log fails is a warning", setup: planFinishedWithSummary,
+			fake:          planFake{tty: true, alive: true, chat: planchat.StateWaitingForText, logErr: errors.New("disk full")},
+			args:          []string{"extend"},
+			wantErr:       []string{"warning: the earlier planning session's agent was ended, but that could not be written to the decision log: disk full"},
+			wantCalls:     []string{"stop", ended, "spawn marker extend/brief", "attach started"},
+			wantChatReads: 1,
+		},
+		{
+			name: "agent still replying", setup: planFinishedWithSummary,
+			fake:     planFake{tty: true, alive: true, chat: planchat.StateWorking},
+			args:     []string{"extend"},
+			wantCode: 1, wantErr: []string{"the earlier planning session is finished, but its agent is still running"},
+			wantChatReads: 1, unchanged: true,
+		},
+		{
+			name: "chat unknown", setup: planFinishedWithSummary,
+			fake:     planFake{tty: true, alive: true, chat: planchat.StateUnknown},
+			args:     []string{"extend"},
+			wantCode: 1, wantErr: []string{"its agent is still running"},
+			wantChatReads: 1, unchanged: true,
+		},
+		{
+			name: "no summary", setup: planWithFinishedChange,
+			fake:     planFake{tty: true, alive: true, chat: planchat.StateWaitingForText},
+			args:     []string{"extend"},
+			wantCode: 1, wantErr: []string{"its agent is still running"},
+			wantChatReads: 1, unchanged: true,
+		},
+		{
+			name: "host not alive reads no chat", setup: planFinishedWithSummary,
+			fake:      planFake{tty: true, chat: planchat.StateWaitingForText},
+			args:      []string{"extend"},
+			wantCalls: []string{"spawn marker extend/brief", "attach started"},
+		},
+		{
+			name: "open session is never asked about",
+			setup: func(t *testing.T, dir string) {
+				writePlanFile(t, dir, "docs/PLAN.md", "# Plan\n")
+				writePlanFile(t, dir, ".afk/plan/state.json", `{"mode":"amend","phase":"draft","updated_at":"2026-10-12T00:00:00Z"}`)
+				writePlanFile(t, dir, ".afk/plan/"+plansession.SummaryFile, "Added T1.3.\n")
+			},
+			fake:      planFake{tty: true, alive: true, chat: planchat.StateWaitingForText},
+			args:      []string{""},
+			wantCalls: []string{"attach running"},
+		},
+		{
+			name: "dry run ends nothing", setup: planFinishedWithSummary,
+			fake: planFake{alive: true, chat: planchat.StateWaitingForText},
+			args: []string{"extend", "--dry-run"},
+			wantOut: []string{"Would first end the agent of the earlier planning session, which is finished: its summary is saved in .afk/plan/summary.md",
+				"Would start a new planning session (mode: extend)", "This was a dry run. Nothing was changed."},
+			wantChatReads: 1, unchanged: true,
+		},
+		{
+			name: "bare dry run says it would end and ask", setup: planFinishedWithSummary,
+			fake:          planFake{tty: true, alive: true, chat: planchat.StateWaitingForText},
+			args:          []string{"", "--dry-run"},
+			wantOut:       []string{"Would first end the agent", "would ask how you want to change it"},
+			wantChatReads: 1, unchanged: true,
+		},
+		{
+			name: "bare afk plan asks, then ends", setup: planFinishedWithSummary,
+			fake:       planFake{tty: true, alive: true, chat: planchat.StateWaitingForText, answers: []string{"1"}},
+			args:       []string{""},
+			wantCalls:  []string{"stop", ended, "spawn marker extend/brief", "attach started"},
+			wantLogged: 1, wantChatReads: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.setup(t, dir)
+			before := folderFiles(t, dir)
+			f := tt.fake
+			f.commonDir = filepath.Join(dir, ".git")
+			var so, se bytes.Buffer
+			var code int
+			if tt.args[0] == "" {
+				code = runPlanSession(tt.args[1:], &so, &se, f.deps(dir))
+			} else {
+				code = runPlanMode(tt.args[0], tt.args[1:], &so, &se, f.deps(dir))
+			}
+			if code != tt.wantCode {
+				t.Fatalf("exit = %d, want %d; stdout: %s stderr: %s", code, tt.wantCode, so.String(), se.String())
+			}
+			for _, want := range tt.wantErr {
+				if want = strings.ReplaceAll(want, "{dir}", dir); !strings.Contains(se.String(), want) {
+					t.Errorf("stderr missing %q:\n%s", want, se.String())
+				}
+			}
+			for _, want := range tt.wantOut {
+				if !strings.Contains(so.String(), want) {
+					t.Errorf("stdout missing %q:\n%s", want, so.String())
+				}
+			}
+			if !reflect.DeepEqual(f.calls, tt.wantCalls) {
+				t.Errorf("calls = %v, want %v", f.calls, tt.wantCalls)
+			}
+			if f.chatReads != tt.wantChatReads {
+				t.Errorf("chat read %d times, want %d", f.chatReads, tt.wantChatReads)
+			}
+			if len(f.logged) != tt.wantLogged {
+				t.Fatalf("logged %d entries, want %d: %+v", len(f.logged), tt.wantLogged, f.logged)
+			}
+			for _, e := range f.logged {
+				want := decisionlog.Entry{
+					At:       "2026-10-13T09:00:00Z",
+					Session:  session.PlanSessionName,
+					Kind:     "plan_session_ended",
+					Question: "end the finished planning session's agent?",
+					Chosen:   "ended",
+					ChosenBy: decisionlog.ChosenByPolicy,
+					Rule:     planend.Rule,
+				}
+				if !reflect.DeepEqual(e, want) {
+					t.Errorf("logged %+v, want %+v", e, want)
+				}
+				if err := decisionlog.Validate(e); err != nil {
+					t.Errorf("the entry would be refused by the log: %v", err)
+				}
+			}
+			if after := folderFiles(t, dir); tt.unchanged && !reflect.DeepEqual(before, after) {
+				t.Errorf("the project was changed:\nbefore %v\nafter  %v", before, after)
+			}
+		})
 	}
 }

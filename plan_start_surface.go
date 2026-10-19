@@ -166,6 +166,14 @@ func startPlanForSurface(req planSurfaceRequest, deps planDeps) planSurfaceResul
 		if err != nil {
 			return refuse(fmt.Sprintf("%v\nNothing was started.", err))
 		}
+		if action.EndOldAgent {
+			// A decision-log failure is dropped here: the dashboard owns the
+			// terminal, so there is nowhere to print it, and the agent is
+			// already ended, so it is no reason to refuse the start.
+			if failed, _ := endFinishedPlanAgent(root, deps); failed != "" {
+				return refuse(failed)
+			}
+		}
 		archived, failed := startPlanSession(look.project, action, planSeed{Mode: req.Mode, Brief: brief}, spec, deps)
 		result.Archived = archived
 		if failed != "" {

@@ -225,3 +225,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Release decision**: what `scripts/release-decide.sh <from-sha> <to-sha>` prints for the release workflow: `skip` when the commit already carries a `v*` tag, otherwise the next version.
 - **Desktop back bar**: the back row in the design system's shape since T10.3, `app-bar app-bar--back app-bar--desktop` under the top bar: the back chevron, the page title and optional meta (the planning chat's phase), not sticky.
 - **Review summary**: what a planning session prints when it reaches `review`, saved first to `.afk/plan/summary.md` so `afk plan status` can print it again after the session has ended.
+- **Finished change session's agent**: the agent of an extend, amend or reconcile planning session that has reached `review`, saved its summary and is waiting for the owner; afk ends it (the daemon on its next pass, or the next `afk plan`) so it never blocks the next session.

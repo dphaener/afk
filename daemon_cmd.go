@@ -821,11 +821,19 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 	// asks the same two.
 	usage := realUsageSource(p, st, gov, now, logf)
 	login := realLoginSource(p, st, gov, now, logf)
+	// One hook runs the planning-session work of a pass: the wait notifier
+	// first, so the owner still gets the one "waiting for you" notification
+	// (it carries the summary's first line), then the ender, which stops a
+	// finished change session's agent. Both ride daemon.Deps.PlanWaits, so
+	// both run while paused, once per pass in Run and once at the end of Once.
 	var planWaits func(context.Context)
 	if stateDir, err := usagestate.Dir(st); err != nil {
 		logf("warning: afk's state folder cannot be found, so no \"planning session is waiting\" notification will be sent: %v", err)
 	} else {
-		planWaits = realPlanWaitNotifier(projects, stateDir, publicURL, now, logf).check
+		planWaits = composePlanHooks(
+			realPlanWaitNotifier(projects, stateDir, publicURL, now, logf).check,
+			realPlanEnder(projects, stateDir, now, logf).check,
+		)
 	}
 	return daemon.Deps{
 		Now: now,

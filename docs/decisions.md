@@ -3778,3 +3778,24 @@ T13.2 makes approving a new plan end its planning agent, from `afk plan approve`
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. The minor notes: this section was written by the planner and is in no task's file list, by design, and the missing-seam case above stays silent.
+
+## T13.3
+
+T13.3 ends the agent of a finished change session (extend, amend or reconcile, at `review`, with its summary saved and waiting for you) without you doing anything, from the daemon and from the next `afk plan`. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **One small decision of its own (A1).** A new package, `internal/planend`, holds the end-or-leave decision, beside the one that decides the "waiting for you" notification, so each stays about one thing.
+- **You are told first, then it ends (A2).** On a daemon pass the "planning session is waiting" notification runs first and the end second, from the same once-per-pass hook. So you still get one message when a change session finishes, with the first line of its summary, and the hook already runs while the daemon is paused. A notification that fails to send does not hold the end back; the summary is still in `afk plan status`.
+- **`afk plan` asks the same decision (A3).** When a new change session would have been refused because the finished one's agent is still running, afk asks the decision; if it says end, the old agent is ended and the new session starts. `--dry-run` says it would end the agent.
+- **A failed end starts nothing (A4).** If the old agent cannot be ended, nothing is started, because a second planning host must never run beside the first; the message says to run `afk clean --project <folder> master-plan`.
+- **Every end is logged (A5).** The daemon and `afk plan` both add a `plan_session_ended` line to `.afk/log/decisions.jsonl`.
+- **Tests and prerequisites (A6, A7).** Table tests written first, with fakes; nothing had to be in place first.
+
+### Scope ideas
+
+- The messages and docs T13.2 added for a failed stop say `afk clean master-plan --project <folder>`, an order `afk clean` refuses. They should say `afk clean --project <folder> master-plan`. Logged in the inbox, not changed here.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. The minor notes: this section and the `CONTEXT.md` line are written by the planner and conductor, by design; the by-hand `afk clean` line puts `--project` first because that is the order afk accepts.
