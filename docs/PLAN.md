@@ -3454,6 +3454,182 @@ T12.3 next version ──┘
   working `afk` in `~/bin`.
 - Amended 2026-10-19 (T12.4 done): `release.yml` now starts with a `decide` job that works out the version for every run (push to `main` via `scripts/release-decide.sh`, a pushed tag, a hand run) and outputs `version`/`publish`/`tag`; `build` is skipped on `skip` and `release` runs only on `publish == 'true'`, creating `v<version>` with `--target` on a main push. Concurrency is `release-${{ github.ref }}` with `queue: max`. The first release happens on this task's merge; nothing in `install.sh` changed.
 
+### M13 — Fix a bug from a planning session, and planning sessions that end themselves
+
+**Outcome:** the owner describes a bug with `afk plan fix` (or from the dashboard or the web page), a
+planning session reproduces it, finds its cause and adds one fix task that the daemon builds next; and
+no planning session is left running once it is finished, so the next one starts without a hand-run
+`afk clean master-plan`.
+
+The owner asked on 2026-10-19: "Add a bug fix planning mode, and a way to exit the planning mode once it
+is done and execution starts so the planning session doesn't stick around and block further sessions."
+A survey that day found that nothing ends a planning session: `afk plan approve` only prints "You can
+close it with afk clean master-plan", the `master-plan` host and its agent stay, and the next
+`afk plan <mode>` is refused with "the earlier planning session is finished, but its agent is still
+running" (`planRefuseHostBusy` in `plan_session_cmd.go`, shared by the dashboard and the web page
+through `startPlanForSurface`). The daemon itself is not blocked. The owner then decided (§2, "Bug
+fixes" and "Planning sessions end themselves").
+
+```
+T13.1 summary file ──▶ T13.3 change session ends ──┐
+T13.2 approve ends it ─────────────────────────────┼──────────────▶ T13.8 prove it
+T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashboard ─┤
+          T13.3 ────────┘                    └─▶ T13.7 web page ──┘
+```
+
+#### T13.1 — Save the review summary to a file
+- **Depends on:** —
+- **Goal:** every planning session, of every mode, saves the summary it prints at `review` to
+  `.afk/plan/summary.md` before printing it, and `afk plan status` at `review` prints that file, so the
+  summary outlives the agent that wrote it.
+- **Scope:**
+  - The master-plan prompts (`plugins/afk/skills/master-plan/prompts/`, the late phases and the modes
+    prompt): at `review`, write the summary with Write to `.afk/plan/summary.md` first, then print the
+    same text. Keep the prompts under their size cap.
+  - `internal/plansession`: read `summary.md` (missing means none, never an error) and expose it;
+    `afk plan status` prints it under the phase line when the phase is `review` and the file is not
+    blank.
+  - §4.8 of this plan: a row for `summary.md` and an Amended line. The OpenCode port has no master-plan
+    skill, so it needs no change.
+  - `docs/reference.md` for `afk plan status`.
+- **Must not:** add a gate to `review`; change `state.json`.
+- **Acceptance:** table tests in `internal/plansession` for a summary that is there, missing and blank;
+  a test of `afk plan status` output at `review` with and without the file; `make check` green; a built
+  binary's `afk plan status` in a scratch repository at `review` prints the file.
+
+#### T13.2 — Approving a plan ends its planning agent
+- **Depends on:** —
+- **Goal:** `afk plan approve`, and the dashboard's and the web page's approve (which share its code in
+  `plan_approve_surface.go`), end the `master-plan` agent once the plan is approved, instead of telling
+  the owner to run `afk clean master-plan`.
+- **Scope:**
+  - After `approved` is written, stop the `master-plan` host the way `afk clean master-plan` does,
+    leaving `.afk/plan/` and the `planning` marker's meaning untouched (the files are archived by the
+    next session, as today). A host that is already gone is fine. A failure to stop it does not undo
+    the approval: say in one plain line what to run by hand.
+  - The message at `plan_approve_surface.go:289` becomes "The planning session has ended." (or the
+    by-hand line above).
+  - A dashboard pane or web chat showing that session sees it end as it does for any ended session.
+  - `docs/reference.md` (`afk plan approve`), `docs/dashboard.md`, `docs/web.md` where they say to clean.
+- **Must not:** remove `.afk/plan/`; end any session other than `master-plan`.
+- **Acceptance:** table tests of the approve flow with a fake host stopper covering: host running and
+  stopped; host already gone; stop fails (approval stands, the by-hand line is printed). `make check`
+  green. With a built binary in a scratch repository and a stand-in planning host, `afk plan approve`
+  leaves no `master-plan` host running.
+
+#### T13.3 — A finished change session's agent ends once it goes quiet
+- **Depends on:** T13.1
+- **Goal:** a change session (extend, amend, reconcile) at `review`, with `summary.md` saved and its
+  agent waiting for the owner, has its agent ended without the owner doing anything; and `afk plan`
+  never refuses because such an agent is still running.
+- **Scope:**
+  - A pure decision (beside `planwait`, or in `internal/plansession`): given the session's state, whether
+    `summary.md` is there, the chat's state (`planchat`: waiting for text or for a choice) and whether
+    the host is alive, return end or leave. End only when all of: the session is finished, the summary
+    is saved, the agent is waiting, the host is alive.
+  - The daemon's once-per-pass hook (beside `plan_wait_notify.go`) runs it for each project and stops
+    the host the way `afk clean master-plan` does. It runs while the daemon is paused, as the wait
+    notification does. Each end is a line in `.afk/log/decisions.jsonl`.
+  - `decidePlanStart` (`plan_session_cmd.go`): where it would refuse with `planRefuseHostBusy` and the
+    same decision says end, end the old agent and carry on starting the new session, so this works with
+    no daemon. When the decision says leave (the agent is still talking), keep the refusal.
+  - A finished `new` session is left to T13.2.
+  - `docs/daemon.md` and `docs/reference.md`; §4.8 Amended line.
+- **Must not:** end a session that is not finished, or one whose agent is mid-reply; touch `.afk/plan/`.
+- **Acceptance:** a table test of the decision with every input a row, its comment naming the
+  load-bearing rows (unfinished, summary missing, agent replying). Tests of the daemon hook and of
+  `decidePlanStart` with fakes. `make check` green. With a built binary and a stand-in planning host at
+  `review` with a summary and a waiting chat, `afk daemon --once` (scratch state home) ends the host,
+  and `afk plan extend` in another scratch repository in the same state starts without the refusal.
+
+#### T13.4 — Fix tasks run next
+- **Depends on:** —
+- **Goal:** a task whose title carries `(fix)` is chosen by the daemon ahead of every other ready task,
+  and the plan format and the checker know the marker.
+- **Scope:**
+  - `internal/masterplan`: a `Fix` flag on a task, read from a bracketed `(fix)` in its title, matched
+    the way `(owner)` is (case and spaces inside the brackets do not matter). A title may not be both;
+    `afk plan lint` reports a task marked both as an error.
+  - `internal/nexttask`: among ready tasks, the first fix task in file order wins; otherwise the order
+    is as today. A fix task still waits for its `Depends on` and for open questions that name it.
+  - `afk tasks` shows `(fix)` tasks as they are titled; no new column.
+  - The master-plan format (`plugins/afk/skills/master-plan/` `plan-format.md`): the marker, its
+    meaning and the lint rule. `docs/reference.md` and `docs/daemon.md`.
+- **Must not:** change how owner tasks are chosen or skipped.
+- **Acceptance:** table tests in `internal/masterplan` (marker forms, both markers) and
+  `internal/nexttask`, the latter's comment naming the load-bearing rows (a fix task later in the file
+  beats an earlier ready task; a fix task that is not ready does not); a `planlint` row for the error;
+  `make check` green; `afk plan lint` on a scratch plan with a `(fix) (owner)` task exits 1.
+
+#### T13.5 — The `fix` planning mode
+- **Depends on:** T13.3, T13.4
+- **Goal:** `afk plan fix "what is broken"` starts a planning session that reproduces the bug, finds its
+  cause, shows the owner one `(fix)` task and, on a yes, adds it to the plan's standing Fixes milestone,
+  where the daemon builds it next.
+- **Scope:**
+  - `internal/plansession`: the mode `fix`, with the phases `brief`, `survey`, `draft`, `check`,
+    `review` and the gates of `amend` (`changes.md` for `draft`, no critic). It is a change session:
+    it needs a plan, is finished at `review`, and is never approved. `--yes` writes `.afk/plan/yes` as
+    for amend.
+  - `plan_session_cmd.go`, `plan_start_surface.go`: `afk plan fix [--yes] "TEXT"` saves the text as the
+    brief, as `afk plan amend` does; the bare `afk plan` mode chooser offers it.
+  - A `fix` section in the master-plan modes prompt:
+    - `survey`: read the brief, the code and logs it points at, and `afk tasks`; reproduce the bug with
+      the project's own commands, and write to `survey.md` the steps that show it, what was seen, the
+      cause (file and line) and the task whose change brought it in, if one can be told. The session
+      changes no code file. When it cannot reproduce the bug it asks the owner, in plain words, for what
+      is missing.
+    - `draft`: one task, titled `<what is fixed> (fix)`, whose Acceptance names a test that fails today
+      and passes after the fix. Its id comes from `afk plan next-id`. It goes in the milestone titled
+      exactly `Fixes`: when the plan has none, the first fix creates it with
+      `afk plan insert --new-milestone` (outcome: "bugs found after a task shipped are fixed"); later
+      ones use `--milestone <its number>`. Show the entry and wait for a yes unless `.afk/plan/yes`
+      exists. Then an Amended line on the task that caused it, when the survey named one and it is not
+      running or shipping. `changes.md` lists every command.
+    - `review`: as for the other change modes, `summary.md` included (T13.1).
+  - §4.8 and the master-plan format: the mode, its path and the Fixes milestone. `docs/reference.md`.
+  - `plugins/afk-opencode/PROVENANCE.md`: a line in the lag note for the `fix` mode.
+- **Must not:** let the session edit any file but the plan (through the plan commands) and
+  `.afk/plan/`; add a critic.
+- **Acceptance:** table tests in `internal/plansession` for the `fix` path and its gates; a routing test
+  for `afk plan fix` with and without text and `--yes`; the prompt size test passes; `make check` green.
+  In a scratch repository with a plan, a built binary's `afk plan fix "x"` writes the brief and
+  `state.json` with mode `fix`; with stand-in files at each phase, `afk plan advance` walks it to
+  `review`.
+
+#### T13.6 — Start a bug fix from the dashboard
+- **Depends on:** T13.5
+- **Goal:** the leader's actions dialog offers "Fix a bug" beside extend, amend and reconcile, asks for
+  the description and starts the `fix` session, held in the dashboard like the other planning sessions.
+- **Scope:** `internal/ui/planstart.go` (a `PlanMode` and the form, the same shape as amend's, with its
+  `--yes` choice), `dash_plan.go`, the leader's key list; `docs/dashboard.md`.
+- **Acceptance:** `internal/ui` table tests for the new action and its form, in the style of the amend
+  ones; the leader golden updated; `make check` green; driven through tmux against a built binary in a
+  scratch project, the action starts a session whose `state.json` says `fix`.
+
+#### T13.7 — Start a bug fix from the web page
+- **Depends on:** T13.5
+- **Goal:** the page's plan-change form offers "Fix a bug" with a description box, and the session it
+  starts is held in the chat view like the other change modes.
+- **Scope:** `internal/web/plan_change.go` and its template, built from the design system's existing
+  parts with no design round; the same `Origin` check, sign-in and confirm as amend; `docs/web.md`.
+- **Must not:** add a component the design system does not have.
+- **Acceptance:** `internal/web` table tests for the form and the POST (accepted, empty description,
+  refused origin); the page's JS tests if it changes JS; `make check` green; in headless Chrome against
+  a built daemon on a scratch project, the form starts a `fix` session, the chat view opens, and axe
+  reports no WCAG 2.2 AA violation on the form.
+
+#### T13.8 — Prove it on a real bug (owner + agent)
+- **Depends on:** T13.2, T13.3, T13.6, T13.7
+- **Goal:** one real bug in a project afk builds goes from `afk plan fix` to a merged fix, and no
+  planning agent is left running at the end.
+- **Scope:** the owner names a bug (in afk or another project) and starts the session from the
+  dashboard or the web page; the agent helps run it. Record in `docs/decisions.md` under `## T13.8`:
+  the bug, the fix task's id, whether it ran next, whether the planning agent ended by itself, and
+  anything that went wrong. Fixes that the run shows are needed become `(fix)` tasks themselves.
+- **Acceptance:** the fix task is `done` in `afk tasks`; `afk list` shows no `master-plan` session after
+  the summary was printed; `docs/decisions.md` has the `## T13.8` entry.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
