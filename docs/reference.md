@@ -348,13 +348,14 @@ afk plan [--project DIR] [--provider NAME] [--dry-run]
 afk plan extend [--project DIR] [--provider NAME] [--dry-run]
 afk plan amend [--project DIR] [--provider NAME] [--dry-run] [--yes] "<what>"
 afk plan reconcile [--project DIR] [--provider NAME] [--dry-run] FILE
+afk plan fix [--project DIR] [--dry-run] [--provider NAME] [--yes] "<what is broken>"
 afk plan status [--project DIR]
 afk plan advance [--project DIR]
 ```
 
 - **It needs a terminal.** The session asks you questions, so with no terminal on stdin and stdout `afk plan` starts nothing and exits 1.
 - **An empty folder is turned into a git repository.** A folder that is not a git repository yet gets `git init` and nothing else. The session writes the `.gitignore` itself, in the draft phase.
-- **A project that already has a plan gets a question, not a new plan.** An open planning session is always resumed. With none open, `afk plan` on a terminal asks which change you want (type `1`, `2` or `3`, or the word `extend`, `amend` or `reconcile`), and any other answer starts nothing and exits 1. Without a terminal it lists the three commands and exits 1. A session that reached `review` is finished: when a new change starts, the finished session's files are moved to `.afk/plan/archive/<time>/` and afk says so. A new change session ends a finished change session's agent first when that session's summary is saved and it is waiting for you; `--dry-run` says it would end the agent. If that agent is still replying, or the earlier session is a new plan that is not approved yet, `afk plan` still refuses and says to run `afk clean master-plan`. If ending the agent fails, nothing is started and afk says what to run.
+- **A project that already has a plan gets a question, not a new plan.** An open planning session is always resumed. With none open, `afk plan` on a terminal asks which change you want (type `1`, `2`, `3` or `4`, or the word `extend`, `amend`, `reconcile` or `fix`), and any other answer starts nothing and exits 1. Without a terminal it lists the four commands and exits 1. A session that reached `review` is finished: when a new change starts, the finished session's files are moved to `.afk/plan/archive/<time>/` and afk says so. A new change session ends a finished change session's agent first when that session's summary is saved and it is waiting for you; `--dry-run` says it would end the agent. If that agent is still replying, or the earlier session is a new plan that is not approved yet, `afk plan` still refuses and says to run `afk clean master-plan`. If ending the agent fails, nothing is started and afk says what to run.
 - `--project DIR` — The project to plan. Defaults to the current directory. From inside a session's worktree it reaches the project's main checkout, where `.afk/plan/` lives.
 - `--provider NAME` — The agent to run: `claude`, `codex` or `opencode`. Planning sessions work with the default agent only for now; any other prints that and exits 1. An unknown name exits 2.
 - `--dry-run` — Print what would happen (the project, whether it would run `git init`, whether the session would start, resume or be reattached, and the command it runs) and change nothing.
@@ -364,6 +365,7 @@ afk plan advance [--project DIR]
 - **`afk plan extend`** adds a milestone. For when the project has grown a new part. The session asks what the milestone is for, then follows the phases `brief`, `survey`, `rounds`, `slices`, `draft`, `check`, `review`. It is the only change with a critic: `critic.md` must exist before `check` passes.
 - **`afk plan amend "<what>"`** adds, splits or replaces one task. For a small change you can put in a sentence; the sentence is saved as the brief. The phases are `brief`, `survey`, `draft`, `check`, `review`, with no questions round. The session shows you the entry and asks you to confirm it before adding it; `--yes` skips that confirmation. `--yes` does not remove the need for a terminal.
 - **`afk plan reconcile FILE`** brings the plan in line with a document, such as a design system. `FILE` must be a file inside the project folder (a relative path is looked for in the folder you typed it in, then in the project). The phases are `brief`, `survey`, `rounds`, `draft`, `check`, `review`; the questions round may have no question at all. A reconcile that finds nothing to change still writes one line to `changes.md`. When the document is a design system and it disagrees with the plan in ways that need your decision, the follow-up prompts are saved as `docs/design-followup-<n>.md`, numbered from 1.
+- **`afk plan fix "<what is broken>"`** reproduces the bug, finds its cause and adds one `(fix)` task to the plan's `Fixes` milestone. The first fix creates that milestone. The session shows you the entry and waits for your yes; `--yes` skips the wait. The daemon builds the task next, ahead of other ready tasks. The phases are `brief`, `survey`, `draft`, `check`, `review`, with no questions round and no critic. It needs a terminal, as the other change commands do, and the session changes no code file, only the plan.
 
 A change session is finished when it reaches `review`: its changes are already in the plan. With `[planning] via_pr = true` (see `afk plan patch` below) they are in a pull request until it is merged. `afk plan status` shows the session's mode and phase.
 
@@ -394,7 +396,7 @@ When a new plan reaches `review`, afk also notes it on a list of plans waiting f
 afk plan approve [--project DIR]
 ```
 
-It refuses, and changes nothing, when there is no planning session; when the session is a change session (`extend`, `amend`, `reconcile`: its changes are already in the plan); when the session is not at `review`; when the checker reports errors in the plan (run `afk plan lint`); when the daemon could not build from the project as it is; when the folder is not a git repository; when the plan is outside the project folder; or when afk's `config.toml` cannot be read. Each refusal says why and ends with "Nothing was changed."
+It refuses, and changes nothing, when there is no planning session; when the session is a change session (`extend`, `amend`, `reconcile`, `fix`: its changes are already in the plan); when the session is not at `review`; when the checker reports errors in the plan (run `afk plan lint`); when the daemon could not build from the project as it is; when the folder is not a git repository; when the plan is outside the project folder; or when afk's `config.toml` cannot be read. Each refusal says why and ends with "Nothing was changed."
 
 Otherwise it does five things, in this order, and prints a line for each one that changed something:
 
@@ -412,9 +414,9 @@ When it pushes: after a commit it pushes the current branch to `origin` (never f
 
 A running `afk daemon` picks the project up within a few seconds, and starts its first ready task without a restart. The closing lines say whether a daemon appears to be running or tell you to start one with `afk daemon`.
 
-**Where the files are.** The session's state is in `.afk/plan/` in the project's main checkout: `state.json`, `brief.md`, `survey.md`, `questions.jsonl`, `slices.md` and `critic.md`, and in a change session also `changes.md` (the changes made, one line each; its content is the gate for leaving `draft`) and, for `amend --yes`, an empty file named `yes`. `archive/` holds the files of earlier, finished sessions (see `docs/PLAN.md` section 4.8). The agent itself runs as a session named `master-plan`, with its own folder `.afk/master-plan/`, so it shows in the dashboard under that name. Cleaning that session does not delete the planning state.
+**Where the files are.** The session's state is in `.afk/plan/` in the project's main checkout: `state.json`, `brief.md`, `survey.md`, `questions.jsonl`, `slices.md` and `critic.md`, and in a change session also `changes.md` (the changes made, one line each; its content is the gate for leaving `draft`) and, for `amend --yes` or `fix --yes`, an empty file named `yes`. `archive/` holds the files of earlier, finished sessions (see `docs/PLAN.md` section 4.8). The agent itself runs as a session named `master-plan`, with its own folder `.afk/master-plan/`, so it shows in the dashboard under that name. Cleaning that session does not delete the planning state.
 
-**Exit codes.** `afk plan` and the three change commands: 0 you left the session (or the dry run printed), 1 the session could not be started here (no terminal, no plan to change, a session already open, an agent that cannot plan, or a project with a plan and no mode chosen), 2 the command was written wrongly, 10 the session was opened somewhere else, 11 the session ended, 12 it is not running. `afk plan status`: 0 printed, 1 one of the session's files is damaged, 2 bad usage. `afk plan advance`: 0 moved, 1 refused, 2 bad usage. `afk plan approve`: 0 approved, or already approved; 1 refused, or a step failed; 2 bad usage.
+**Exit codes.** `afk plan` and the four change commands (`extend`, `amend`, `reconcile`, `fix`): 0 you left the session (or the dry run printed), 1 the session could not be started here (no terminal, no plan to change, a session already open, an agent that cannot plan, or a project with a plan and no mode chosen), 2 the command was written wrongly, 10 the session was opened somewhere else, 11 the session ended, 12 it is not running. `afk plan status`: 0 printed, 1 one of the session's files is damaged, 2 bad usage. `afk plan advance`: 0 moved, 1 refused, 2 bad usage. `afk plan approve`: 0 approved, or already approved; 1 refused, or a step failed; 2 bad usage.
 
 ## `afk plan lint` — Check a master plan
 
@@ -449,7 +451,7 @@ Warnings: 14
 
 ## `afk plan patch` — Change a plan by a guarded patch
 
-Change the master plan one checked step at a time. The planning session uses these commands to extend, amend or reconcile a plan, and you can use them to edit a plan by hand with the same checks.
+Change the master plan one checked step at a time. The planning session uses these commands to extend, amend, reconcile or fix a plan, and you can use them to edit a plan by hand with the same checks.
 
 ```bash
 afk plan patch [--project DIR] --old FILE --new FILE [--message TEXT]
@@ -523,7 +525,7 @@ Show every task in the project's master plan, with its status and what it is sti
 afk tasks [--project DIR]
 ```
 
-To check a plan for mistakes before the daemon reads it, run `afk plan lint`. To change a plan that exists, see `afk plan extend`, `amend` and `reconcile` (above) and `afk plan patch`.
+To check a plan for mistakes before the daemon reads it, run `afk plan lint`. To change a plan that exists, see `afk plan extend`, `amend`, `reconcile` and `fix` (above) and `afk plan patch`.
 
 A master plan is a markdown file where each task is a heading that starts with its id, followed by a `- **Depends on:**` line:
 

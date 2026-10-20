@@ -105,6 +105,17 @@ func TestStartPlanForSurface(t *testing.T) {
 			absent: []string{".afk/plan/yes"},
 		},
 		{
+			name: "fix writes the brief word for word", setup: plan,
+			req:         planSurfaceRequest{Mode: plansession.ModeFix, Text: "afk tasks  crashes on an empty plan"},
+			wantOutcome: planSurfaceStarted,
+			wantCalls:   []string{"spawn marker fix/brief"},
+			wantFiles: map[string]string{
+				".afk/plan/state.json": stateFor("fix"),
+				".afk/plan/brief.md":   "afk tasks  crashes on an empty plan\n",
+			},
+			absent: []string{".afk/plan/yes"},
+		},
+		{
 			name: "reconcile names the document in the brief", setup: planAndDoc,
 			req:         planSurfaceRequest{Mode: plansession.ModeReconcile, Text: "docs/design-system.md"},
 			wantOutcome: planSurfaceStarted,
@@ -359,6 +370,12 @@ func TestStartPlanForSurface(t *testing.T) {
 			name: "amend with blank text", setup: plan,
 			req:         planSurfaceRequest{Mode: plansession.ModeAmend, Text: "  "},
 			wantOutcome: planSurfaceRefused, wantReason: "You did not say what to change.", wantRoot: "-",
+			unchanged: true,
+		},
+		{
+			name: "fix with blank text", setup: plan,
+			req:         planSurfaceRequest{Mode: plansession.ModeFix, Text: "  "},
+			wantOutcome: planSurfaceRefused, wantReason: "You did not say what is broken.", wantRoot: "-",
 			unchanged: true,
 		},
 		{

@@ -227,7 +227,7 @@ func TestPlanUsageNamesTheCommand(t *testing.T) {
 	for _, want := range []string{
 		planSessionUsageLine, planStatusUsageLine, planAdvanceUsageLine, "--dry-run",
 		planApproveUsageLine, "approve is your \"go\"", "creates the task ledger", "Running it\nagain is safe", "--provider NAME", "needs a terminal",
-		planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine, "--yes", ".afk/plan/archive/",
+		planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine, planFixUsageLine, "Fixes milestone", "--yes", ".afk/plan/archive/",
 		planPatchUsageLine, planInsertUsageLine, planDependUsageLine, planNextIDUsageLine,
 		"--new-milestone", "--message TEXT", "Nothing was changed.", "afk-plan-changes",
 		"afk plan lint", "afk plan check", "--project", "--reason", "done|failed", "Exit codes: 0", "1 the plan", "2 the command",

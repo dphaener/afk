@@ -37,18 +37,20 @@ const (
 	planExtendUsageLine    = "afk plan extend [--project DIR] [--dry-run] [--provider NAME]"
 	planAmendUsageLine     = "afk plan amend [--project DIR] [--dry-run] [--provider NAME] [--yes] \"<what>\""
 	planReconcileUsageLine = "afk plan reconcile [--project DIR] [--dry-run] [--provider NAME] FILE"
+	planFixUsageLine       = "afk plan fix [--project DIR] [--dry-run] [--provider NAME] [--yes] \"<what is broken>\""
 )
 
-// planModeCommands is the three ways to change a plan that exists, one to a
+// planModeCommands is the four ways to change a plan that exists, one to a
 // line. Every message that sends the owner to them prints this one text, so
 // the commands cannot be listed differently in two places.
 const planModeCommands = "  afk plan extend             add a milestone\n" +
 	"  afk plan amend \"<what>\"     add, split or replace one task\n" +
-	"  afk plan reconcile FILE     bring the plan in line with a document\n"
+	"  afk plan reconcile FILE     bring the plan in line with a document\n" +
+	"  afk plan fix \"<what>\"       find the cause of a bug and add a task that fixes it\n"
 
 // planBriefFile is the brief's name inside the planning folder. The brief is
-// the session's own file in a new or extend session; `afk plan amend` and
-// `afk plan reconcile` write it themselves, because there the owner's request
+// the session's own file in a new or extend session; `afk plan amend`,
+// `afk plan reconcile` and `afk plan fix` write it themselves, because there the owner's request
 // is on the command line and asking for it again would be asking twice. It
 // must stay the name internal/plansession reads for the brief gate.
 const planBriefFile = "brief.md"
@@ -231,7 +233,7 @@ const (
 	// planRouteApprove is `afk plan approve`: the owner's "go" for a reviewed
 	// plan. It is in plan_approve_cmd.go.
 	planRouteApprove
-	// planRouteMode is `afk plan extend`, `amend` or `reconcile`: a planning
+	// planRouteMode is `afk plan extend`, `amend`, `reconcile` or `fix`: a planning
 	// session that changes a plan that exists. The word is the mode.
 	planRouteMode
 	// The four below change a plan (or, for next-id, read it) without a
@@ -270,7 +272,7 @@ func routePlanArgs(args []string) planRoute {
 		return planRouteAdvance
 	case "approve":
 		return planRouteApprove
-	case plansession.ModeExtend, plansession.ModeAmend, plansession.ModeReconcile:
+	case plansession.ModeExtend, plansession.ModeAmend, plansession.ModeReconcile, plansession.ModeFix:
 		return planRouteMode
 	case "patch":
 		return planRoutePatch
@@ -324,7 +326,7 @@ const (
 type planStartInput struct {
 	DryRun bool
 	// Mode is the mode asked for on the command line or in answer to the
-	// question: extend, amend or reconcile. "" is a bare `afk plan`.
+	// question: extend, amend, reconcile or fix. "" is a bare `afk plan`.
 	Mode string
 	// IsRepo: the folder is inside a git repository.
 	IsRepo bool
@@ -374,12 +376,12 @@ type planStartAction struct {
 	EndOldAgent bool
 }
 
-// decidePlanStart is the whole decision of `afk plan` and of the three
+// decidePlanStart is the whole decision of `afk plan` and of the four
 // commands that start a change session, first match wins. Pure.
 //
 // Three words are used below. A session is open when it has a state and is
-// not finished. A mode is asked for when the command was extend, amend or
-// reconcile (or the owner picked one of them). The plan can be changed when
+// not finished. A mode is asked for when the command was extend, amend,
+// reconcile or fix (or the owner picked one of them). The plan can be changed when
 // it exists and no session is open.
 //
 // The order is the point:
@@ -661,11 +663,11 @@ type planRequest struct {
 	// cmd is the command as the owner typed it ("afk plan amend"), for the
 	// start of every message.
 	cmd, usageLine string
-	// mode is extend, amend or reconcile; "" is a bare `afk plan`.
+	// mode is extend, amend, reconcile or fix; "" is a bare `afk plan`.
 	mode              string
 	project, provider string
 	dryRun, yes       bool
-	// text is what `amend` was asked to change; file is the document
+	// text is what `amend` was asked to change or `fix` was told is broken; file is the document
 	// `reconcile` was given, as typed.
 	text, file string
 }
@@ -704,7 +706,7 @@ func runPlanSession(args []string, stdout, stderr io.Writer, deps planDeps) int 
 }
 
 // planModeUsageLine is the usage line of the command that starts a mode, ""
-// for a word that is not one of the three.
+// for a word that is not one of the four.
 func planModeUsageLine(mode string) string {
 	switch mode {
 	case plansession.ModeExtend:
@@ -713,19 +715,21 @@ func planModeUsageLine(mode string) string {
 		return planAmendUsageLine
 	case plansession.ModeReconcile:
 		return planReconcileUsageLine
+	case plansession.ModeFix:
+		return planFixUsageLine
 	}
 	return ""
 }
 
-// runPlanMode implements `afk plan extend`, `afk plan amend "<what>"` and
-// `afk plan reconcile FILE`: start a planning session that changes the plan
+// runPlanMode implements `afk plan extend`, `afk plan amend "<what>"`,
+// `afk plan reconcile FILE` and `afk plan fix "<what>"`: start a planning session that changes the plan
 // the project already has. Exit codes are those of `afk plan`.
 //
 // Flags are accepted before, between and after the words, for the reason
 // runPlanCheck gives: Go's flag package stops at the first word, and
 // `afk plan amend "add an export" --yes` is the order people type.
 //
-// --yes exists for amend only, so on the other two it is an unknown flag and
+// --yes exists for amend and fix only, so on the other two it is an unknown flag and
 // not a flag that is silently ignored.
 func runPlanMode(mode string, args []string, stdout, stderr io.Writer, deps planDeps) int {
 	usageLine := planModeUsageLine(mode)
@@ -740,7 +744,7 @@ func runPlanMode(mode string, args []string, stdout, stderr io.Writer, deps plan
 	providerFlag := flags.String("provider", "", "Agent the session runs: "+strings.Join(provider.Names(), "|"))
 	dryRun := flags.Bool("dry-run", false, "Print what would happen and change nothing")
 	yes := new(bool)
-	if mode == plansession.ModeAmend {
+	if mode == plansession.ModeAmend || mode == plansession.ModeFix {
 		flags.BoolVar(yes, "yes", false, "Do not ask for confirmation before the change is made")
 	}
 	flags.Usage = func() {
@@ -788,6 +792,11 @@ func runPlanMode(mode string, args []string, stdout, stderr io.Writer, deps plan
 		if strings.TrimSpace(req.text) == "" {
 			return usage("say what to change, in quotes. For example: afk plan amend \"add a task that exports CSV\".")
 		}
+	case plansession.ModeFix:
+		req.text = strings.Join(words, " ")
+		if strings.TrimSpace(req.text) == "" {
+			return usage("say what is broken, in quotes. For example: afk plan fix \"afk tasks crashes on an empty plan\".")
+		}
 	case plansession.ModeReconcile:
 		if len(words) != 1 || strings.TrimSpace(words[0]) == "" {
 			return usage("expected one file, the document to bring the plan in line with, but got %d word(s).", len(words))
@@ -797,7 +806,7 @@ func runPlanMode(mode string, args []string, stdout, stderr io.Writer, deps plan
 	return runPlanRequest(req, stdout, stderr, deps)
 }
 
-// runPlanRequest is the body of `afk plan` and of the three mode commands:
+// runPlanRequest is the body of `afk plan` and of the four mode commands:
 // look at the project, decide (decidePlanStart), and do what was decided.
 //
 // A bare `afk plan` on a project with a plan asks which change is wanted and
@@ -911,7 +920,7 @@ type planStop struct {
 	usage bool
 }
 
-// lookAtPlanProject is the looking that `afk plan`, the three mode commands
+// lookAtPlanProject is the looking that `afk plan`, the four mode commands
 // and the dashboard's entry point (startPlanForSurface) share: the provider,
 // the project, its planning files and the facts decidePlanStart reads, in the
 // order the commands have always looked. Sharing it is what keeps the
@@ -1074,13 +1083,13 @@ func planRefusal(kind planStartKind, look planLook) string {
 	}
 }
 
-// planBrief is the brief a start in mode writes: amend's text word for word
+// planBrief is the brief a start in mode writes: amend's and fix's text word for word
 // with a line break at the end, reconcile's one sentence naming the document,
 // and "" for the modes whose session asks for the brief itself. It returns
 // resolveReconcileFile's error for a document it cannot use.
 func planBrief(mode, text, file, cwd, root string) (string, error) {
 	switch mode {
-	case plansession.ModeAmend:
+	case plansession.ModeAmend, plansession.ModeFix:
 		if !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
@@ -1128,8 +1137,8 @@ func planFolderHasFiles(root string) bool {
 // in as the matching command would have. It returns the exit code to stop
 // with (0 to go on).
 //
-// An answer that is empty or not one of the three starts nothing. Guessing
-// would be worse than stopping: the three modes ask for different things, and
+// An answer that is empty or not one of the four starts nothing. Guessing
+// would be worse than stopping: the four modes ask for different things, and
 // a session started in the wrong one has to be finished or cleaned away
 // before the right one can start.
 func choosePlanMode(req *planRequest, planPath string, stderr io.Writer, deps planDeps) int {
@@ -1150,7 +1159,8 @@ func choosePlanMode(req *planRequest, planPath string, stderr io.Writer, deps pl
 		"  1) add a milestone (extend)\n"+
 		"  2) add, split or replace one task (amend)\n"+
 		"  3) bring the plan in line with a document (reconcile)\n"+
-		"Type 1, 2 or 3 and press Enter: ", planPath)))
+		"  4) fix a bug (fix)\n"+
+		"Type 1, 2, 3 or 4 and press Enter: ", planPath)))
 	switch strings.ToLower(answer) {
 	case "1", plansession.ModeExtend:
 		req.mode = plansession.ModeExtend
@@ -1166,10 +1176,16 @@ func choosePlanMode(req *planRequest, planPath string, stderr io.Writer, deps pl
 			return nothing("You did not name a document.")
 		}
 		req.mode = plansession.ModeReconcile
+	case "4", plansession.ModeFix:
+		req.text = ask("What is broken? Say it in a sentence: ")
+		if strings.TrimSpace(req.text) == "" {
+			return nothing("You did not say what is broken.")
+		}
+		req.mode = plansession.ModeFix
 	case "":
 		return nothing("You did not pick one.")
 	default:
-		return nothing(fmt.Sprintf("%q is not one of the three choices.", answer))
+		return nothing(fmt.Sprintf("%q is not one of the four choices.", answer))
 	}
 	req.cmd = "afk plan " + req.mode
 	req.usageLine = planModeUsageLine(req.mode)

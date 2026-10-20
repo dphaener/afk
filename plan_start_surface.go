@@ -34,7 +34,7 @@ const planSurfaceNew = plansession.ModeNew
 
 // planSurfaceRequest is one request from the dashboard.
 type planSurfaceRequest struct {
-	// Mode is extend, amend or reconcile, planSurfaceNew to start a new plan,
+	// Mode is extend, amend, reconcile or fix, planSurfaceNew to start a new plan,
 	// or planSurfaceResume to open the session that is already open and
 	// nothing else.
 	Mode string
@@ -43,7 +43,7 @@ type planSurfaceRequest struct {
 	// planSurfaceNew it is the folder the owner typed, so "~" and "~/..." are
 	// expanded with the home folder first.
 	Project string
-	// Text is amend's sentence or reconcile's document path, relative to the
+	// Text is amend's or fix's sentence or reconcile's document path, relative to the
 	// project. Extend and resume ignore it.
 	Text string
 	// provider is the agent's name. The dashboard never sets it, so a session
@@ -89,7 +89,7 @@ type planSurfaceResult struct {
 //     project root). The dashboard's own folder is wherever it was started
 //     from and means nothing to the owner who typed the path.
 //   - The yes marker is never written. It is the owner's agreement to an
-//     amend given in advance on the command line; a form in the dashboard
+//     amend or fix given in advance on the command line; a form in the dashboard
 //     does not ask for it, so the session asks before it changes the plan.
 //
 // A new-plan request is looked at as a bare start (mode ""), not as a mode:
@@ -112,6 +112,10 @@ func startPlanForSurface(req planSurfaceRequest, deps planDeps) planSurfaceResul
 	case plansession.ModeAmend:
 		if strings.TrimSpace(req.Text) == "" {
 			return refused("You did not say what to change. Nothing was started.")
+		}
+	case plansession.ModeFix:
+		if strings.TrimSpace(req.Text) == "" {
+			return refused("You did not say what is broken. Nothing was started.")
 		}
 	case plansession.ModeReconcile:
 		if strings.TrimSpace(req.Text) == "" {

@@ -27,8 +27,8 @@ They all live in `.afk/plan/` in the project's main checkout. The folder is igno
 | `slices.md` | The task breakdown the owner confirmed | You, in the `slices` phase, after the owner confirms it. |
 | `critic.md` | The critic's findings on the draft and what was done about each | You, in the `check` phase. |
 | `summary.md` | The summary printed at `review` | You, in the `review` phase, of every mode, before printing it. |
-| `changes.md` | Every change made to a plan that exists, one line each | You, in the change modes (`extend`, `amend`, `reconcile`), in the `draft` phase and after each later patch. |
-| `yes` | Nothing. Its being there means the owner does not want to be asked to confirm an amendment | `afk plan amend --yes`. Never you. |
+| `changes.md` | Every change made to a plan that exists, one line each | You, in the change modes (`extend`, `amend`, `reconcile`, `fix`), in the `draft` phase and after each later patch. |
+| `yes` | Nothing. Its being there means the owner does not want to be asked to confirm an amendment | `afk plan amend --yes` or `afk plan fix --yes`. Never you. |
 
 Do not create any other file in `.afk/plan/`. Notes for yourself go in the conversation; anything the owner decided goes in one of the files you write. The folder may also hold `archive/`, where `afk plan` moved the files of earlier, finished sessions; leave it alone and do not read it as part of this session.
 
@@ -38,7 +38,7 @@ Do not create any other file in `.afk/plan/`. Notes for yourself go in the conve
 
 The phases, in order: `brief`, `survey`, `model`, `rounds`, `slices`, `draft`, `check`, `review`. A project with an interface has one more, `design`, between `check` and `review`: `brief`, `survey`, `model`, `rounds`, `slices`, `draft`, `check`, `design`, `review`. `afk plan advance` decides which path the session takes, from the recorded answer to round one's interface question; you never choose, and a project with no interface never sees the phase. Each phase is described in the phase prompts that follow.
 
-That is the path of a session that writes a new plan (the mode `new`). The three change modes, `extend`, `amend` and `reconcile`, work on a plan that exists and take a shorter path, which the modes prompt gives phase by phase. `afk plan status` prints the mode; follow the path of the mode it prints.
+That is the path of a session that writes a new plan (the mode `new`). The four change modes, `extend`, `amend`, `reconcile` and `fix`, work on a plan that exists and take a shorter path, which the modes prompt gives phase by phase. `afk plan status` prints the mode; follow the path of the mode it prints.
 
 ## Starting and resuming
 

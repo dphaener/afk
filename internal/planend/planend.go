@@ -33,7 +33,8 @@ type Decision struct {
 // checks picks the most useful reason, not a different outcome: the host is
 // checked first because with no agent there is nothing to say about the rest.
 //
-// The mode is compared against the three change modes rather than "not new"
+// The mode is compared against the four change modes (extend, amend,
+// reconcile and fix) rather than "not new"
 // so a mode added later is left alone until someone decides it may be ended.
 func Decide(in Input) Decision {
 	if !in.HostAlive {
@@ -43,7 +44,7 @@ func Decide(in Input) Decision {
 		return Decision{Reason: "there is no planning session state"}
 	}
 	switch in.State.Mode {
-	case plansession.ModeExtend, plansession.ModeAmend, plansession.ModeReconcile:
+	case plansession.ModeExtend, plansession.ModeAmend, plansession.ModeReconcile, plansession.ModeFix:
 	case plansession.ModeNew:
 		return Decision{Reason: "a new session is ended by afk plan approve"}
 	default:

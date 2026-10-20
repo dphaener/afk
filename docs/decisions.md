@@ -3816,3 +3816,18 @@ T13.4 lets a task carry `(fix)` in its title so the daemon builds it ahead of ev
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. The one minor note was that the quality check left `make check` and a built-binary run to others; both were run before the commit: `make check` is green, and `afk plan lint` on a scratch plan with a `(fix) (owner)` task exits 1 naming `fix-and-owner`, and exits 0 once only `(fix)` remains.
+
+## T13.5
+
+T13.5 adds `afk plan fix`, a planning session that reproduces a bug, finds its cause and adds one `(fix)` task to the plan's `Fixes` milestone. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **Fix is choice 4 (A1).** When you type `afk plan` with a plan in place, the list gains `4) fix a bug (fix)` after reconcile, and asks what is broken, as amend asks what to change. The first three choices keep their numbers.
+- **The dashboard and web page can already start one underneath (A2).** The shared code they use to start a planning session accepts a fix with its text, the same as amend, so T13.6 and T13.7 only add the buttons. Starting from there never skips the confirm (`--yes` is the command's alone).
+- **No plugin version bump (A3).** The prompt change follows T13.1 and T13.4, which changed the same skill without one.
+- **Tests and prerequisites (A4, A5).** Table tests written first; nothing had to be in place first.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. The minor notes: the quality check ran the touched packages' tests rather than the whole suite (`make check` was run in full before the commit and is green); a few new comment lines run long; and the dashboard, the web page and `docs/web.md` still name only extend, amend and reconcile, which T13.6 and T13.7 change. This section and the two `CONTEXT.md` lines were written by the planner and conductor, by design.

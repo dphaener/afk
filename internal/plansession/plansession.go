@@ -6,7 +6,7 @@
 // exists. Its files live in `.afk/plan/` in the project's main checkout and
 // are listed in docs/PLAN.md, M5, "The plan session's files": state.json,
 // brief.md, survey.md, questions.jsonl, slices.md and critic.md. A session
-// that changes a plan (the extend, amend and reconcile modes) adds two more:
+// that changes a plan (the extend, amend, reconcile and fix modes) adds two more:
 // changes.md, the list of changes it made, and the empty marker `yes`. The
 // files of a session that is over are kept under `.afk/plan/archive/`.
 //
@@ -80,25 +80,27 @@ var Phases = []string{
 	PhaseDraft, PhaseCheck, PhaseDesign, PhaseReview, PhaseApproved,
 }
 
-// The modes of a planning session: writing a new plan, or one of the three
+// The modes of a planning session: writing a new plan, or one of the four
 // ways of changing an existing one.
 const (
 	ModeNew       = "new"
 	ModeExtend    = "extend"
 	ModeAmend     = "amend"
 	ModeReconcile = "reconcile"
+	ModeFix       = "fix"
 )
 
 // Modes is every mode state.json may hold.
-var Modes = []string{ModeNew, ModeExtend, ModeAmend, ModeReconcile}
+var Modes = []string{ModeNew, ModeExtend, ModeAmend, ModeReconcile, ModeFix}
 
 // PhasesFor is the path a session in the given mode walks, in order.
 //
-// The three modes that change a plan leave out what they do not need. None
+// The four modes that change a plan leave out what they do not need. None
 // has `model` or `design`: the project's terms and its looks were settled
 // when the plan was first written. Only `extend` breaks work into tasks, so
 // only it has `slices`. `amend` has no `rounds` either: it changes one task,
-// and what the owner wants is already in the brief. None reaches `approved`,
+// and what the owner wants is already in the brief. `fix` has the same path:
+// the bug is in the brief, and the survey reproduces it. None reaches `approved`,
 // because each change is in the plan as soon as it is made; there is no
 // draft waiting to be approved, and the session is over at `review` (see
 // Finished).
@@ -113,7 +115,7 @@ func PhasesFor(mode string) []string {
 	switch mode {
 	case ModeExtend:
 		return []string{PhaseBrief, PhaseSurvey, PhaseRounds, PhaseSlices, PhaseDraft, PhaseCheck, PhaseReview}
-	case ModeAmend:
+	case ModeAmend, ModeFix:
 		return []string{PhaseBrief, PhaseSurvey, PhaseDraft, PhaseCheck, PhaseReview}
 	case ModeReconcile:
 		return []string{PhaseBrief, PhaseSurvey, PhaseRounds, PhaseDraft, PhaseCheck, PhaseReview}
@@ -121,11 +123,11 @@ func PhasesFor(mode string) []string {
 	return append([]string(nil), Phases...)
 }
 
-// changesPlan reports whether the mode is one of the three that change a plan
+// changesPlan reports whether the mode is one of the four that change a plan
 // that exists. It is the one test every mode-dependent branch uses, so a mode
 // afk does not know is treated as `new` everywhere or nowhere.
 func changesPlan(mode string) bool {
-	return mode == ModeExtend || mode == ModeAmend || mode == ModeReconcile
+	return mode == ModeExtend || mode == ModeAmend || mode == ModeReconcile || mode == ModeFix
 }
 
 // Finished reports whether a session has nothing left to do: it is approved,
@@ -188,7 +190,7 @@ const (
 // marker, and it tells the owner where the list of changes is.
 const (
 	// ChangesFile lists every change the session made to the plan. It is the
-	// `draft` gate of the three change modes: the plan exists before such a
+	// `draft` gate of the four change modes: the plan exists before such a
 	// session starts, so "the plan exists" proves nothing there.
 	ChangesFile = "changes.md"
 	// YesFile is an empty marker that says the owner already agreed to the
@@ -1039,7 +1041,7 @@ func waitingWhenComplete(phase string, f Files) string {
 	return ""
 }
 
-// waitingInChangeMode is waitingWhenComplete for the three modes that change
+// waitingInChangeMode is waitingWhenComplete for the four modes that change
 // a plan. The phase that follows is looked up on the mode's path, so the
 // sentence cannot name a phase the mode leaves out.
 func waitingInChangeMode(phase string, f Files) string {
