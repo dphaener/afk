@@ -3874,3 +3874,30 @@ T14.1 makes afk mark a folder it has just created for a new plan as trusted in t
 - **Everything else is kept as it was (A4).** Only the one trust flag for the one folder changes. Every other value is written back unchanged; the order of the top-level keys may change, which the CLI does not care about.
 - **A failed write does not stop the plan (A5).** The folder stays, the planning session starts as before, and nothing extra is shown. If the session then waits at the trust question, the chat's existing sentence (T8.17) already says to answer it in `afk dash` or with `afk attach`.
 - **How the work was split, tests, prerequisites (A6–A8).** The settings write first, then one task for both forms (they share a Go package) beside a docs task. Table tests written first. Nothing had to be in place first.
+
+## T13.8
+
+T13.8 proves the `fix` planning mode on a real bug. The owner ran the bug fix; this task only read what the run left and wrote it down. The facts below come from the files the run left (the plan folder in the main checkout, the decision log, the ledger and `afk tasks`, git history); the owner's answer is quoted where it speaks.
+
+### What this task decided, and why
+
+- **The owner runs the bug fix (A1).** An attended planning session and a daemon merge cannot run inside a task session, so T13.8 parked on one blocking inbox item (yengcj) until the owner reported.
+- **Files decide the facts (A2).** The owner's whole answer was "It worked great" (via the web page, 2026-10-20 01:35 UTC). It did not name the bug, the surface or the fix task, so those come from the files. Where the two disagree, the files win.
+- **Faults become `(fix)` tasks, not fixes here (A3).** The run showed no new fault, so none was added.
+- **Documents only (A4, A5).** No code or test changed. Main was merged into the branch first so the fix task's own appends to `docs/decisions.md` and `docs/PLAN.md` are present.
+
+### The run
+
+- **The bug.** Starting a plan for a new project folder stopped the agent at its "do you trust this folder?" screen, so the planning chat stayed empty until someone answered in a terminal. The owner's brief said exactly that.
+- **How it was started.** `afk plan fix`, as a `fix` planning session (`.afk/plan/state.json` says mode `fix`). The owner did not say whether they used the dashboard or the web page, and no file records it, so this entry does not claim one.
+- **The fix task.** T14.1, "Folders afk creates for a new plan skip the agent's trust prompt (fix)", in the new milestone M14, committed to the plan as `d6d3ca2` at 18:34 local (01:34 UTC) with no dependencies.
+- **Did it run next?** Yes. The daemon launched T14.1 at 01:34:07 UTC, three seconds after the plan commit, in session t14-1, ahead of everything else that was ready (T13.8 was parked).
+- **Did it merge?** Yes. T14.1 shipped as pull request #88 (`2cd5197`), the deploy was healthy at 01:55 UTC, and `afk tasks` shows T14.1 `done`.
+- **Did the planning agent end by itself?** Yes. The summary was saved at 01:34:16 UTC and the decision log has a `plan_session_ended` line at 01:34:32 UTC, 16 seconds later, chosen by policy under the T13.3 rule. Nobody ran `afk clean`.
+- **Faults.** None were reported or found. The owner's answer names no complaint, the log shows no failed step between the plan and the merge, and the only restart (the daemon replacing itself when its program file changed) is the designed path.
+
+### What is still open
+
+- Inbox item 7e6wuu (a non-blocking note that T13.8 would wait) was never answered; it can be closed.
+- Inbox item vbkr6s (should afk pre-trust new folders) is T14.1's answer and is still open for the owner to close.
+- T14.1 itself has not been tried by the owner on a phone or in the dashboard against a real new folder; its acceptance ran against a scratch settings file.
