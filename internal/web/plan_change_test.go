@@ -11,9 +11,10 @@ import (
 
 // TestChangeRefusal is the pure part of the change POST's checks. Load-bearing
 // rows: "new" (a new plan is started from the dashboard; accepting it here
-// would start a second plan over a built one), the blank amend and reconcile
-// rows (the seam must never be asked to amend nothing), and "extend with text"
-// (extend takes no text, so none of it is a refusal).
+// would start a second plan over a built one), the blank amend, reconcile and
+// fix rows (the seam must never be asked to amend or fix nothing), "fix too
+// long" (the 5000-character limit holds for fix as for amend), and "extend
+// with text" (extend takes no text, so none of it is a refusal).
 func TestChangeRefusal(t *testing.T) {
 	tests := []struct {
 		name, mode, text, want string
@@ -22,11 +23,14 @@ func TestChangeRefusal(t *testing.T) {
 		{"extend with text", "extend", "ignored", ""},
 		{"amend", "amend", "Add a CSV export task.", ""},
 		{"reconcile", "reconcile", "docs/design-system.md", ""},
-		{"new", "new", "", "Nothing started: new is not a way to change a plan. Use extend, amend or reconcile."},
-		{"empty mode", "", "x", "Nothing started:  is not a way to change a plan. Use extend, amend or reconcile."},
-		{"unknown mode", "delete", "x", "Nothing started: delete is not a way to change a plan. Use extend, amend or reconcile."},
+		{"new", "new", "", "Nothing started: new is not a way to change a plan. Use extend, amend, reconcile or fix."},
+		{"empty mode", "", "x", "Nothing started:  is not a way to change a plan. Use extend, amend, reconcile or fix."},
+		{"unknown mode", "delete", "x", "Nothing started: delete is not a way to change a plan. Use extend, amend, reconcile or fix."},
 		{"blank amend", "amend", "", "Nothing started: say what to change in the plan."},
 		{"blank reconcile", "reconcile", "", "Nothing started: name the document to reconcile the plan with, as a path inside the project."},
+		{"fix", "fix", "The export button does nothing.", ""},
+		{"blank fix", "fix", "", "Nothing started: say what is broken."},
+		{"fix too long", "fix", strings.Repeat("é", 5001), "Nothing started: that is too long. Keep it under 5000 characters."},
 		{"too long", "amend", strings.Repeat("é", 5001), "Nothing started: that is too long. Keep it under 5000 characters."},
 		{"at the limit", "amend", strings.Repeat("é", 5000), ""},
 	}
@@ -47,11 +51,13 @@ func changeForm(mode, text string) string {
 	return v.Encode()
 }
 
-// TestPlanChangeStarts is load-bearing for the three modes: each reaches the
+// TestPlanChangeStarts is load-bearing for the four modes: each reaches the
 // seam once with the project's own root, the mode and the trimmed text (extend
 // sends none), and the page answers a 303 to the chat with the matching toast
 // code while the API answers 200 JSON naming the chat. The "resumed" rows
-// prove a resumed session is answered like a started one.
+// prove a resumed session is answered like a started one. "fix trimmed" is
+// the one row that proves the fourth mode reaches the seam as "fix" with its
+// description, rather than being refused or sent as another mode.
 func TestPlanChangeStarts(t *testing.T) {
 	tests := []struct {
 		name, mode, text, sent, outcome string
@@ -60,6 +66,7 @@ func TestPlanChangeStarts(t *testing.T) {
 		{"extend drops text", "extend", "ignored", "", PlanStartStarted},
 		{"amend trimmed", "amend", "  Add a CSV export task.  ", "Add a CSV export task.", PlanStartStarted},
 		{"reconcile", "reconcile", "docs/design-system.md", "docs/design-system.md", PlanStartStarted},
+		{"fix trimmed", "fix", "  The export button does nothing.  ", "The export button does nothing.", PlanStartStarted},
 		{"resumed", "amend", "Add a thing", "Add a thing", PlanStartResumed},
 	}
 	for _, tc := range tests {
@@ -153,7 +160,8 @@ func TestPlanChangeSeamRefusals(t *testing.T) {
 // the page itself must turn away with a 400 and zero seam calls, because the
 // seam would start a real planning agent. The "new" and unknown-mode rows
 // keep a hand-written request from starting anything the three buttons do
-// not offer; the blank rows keep an amend or reconcile from starting empty.
+// not offer; the blank rows keep an amend, reconcile or fix from starting
+// empty.
 func TestPlanChangeRefusesBeforeTheSeam(t *testing.T) {
 	tests := []struct {
 		name, mode, text, want string
@@ -165,6 +173,8 @@ func TestPlanChangeRefusesBeforeTheSeam(t *testing.T) {
 		{"whitespace amend", "amend", "    ", "say what to change in the plan"},
 		{"blank reconcile", "reconcile", "", "name the document to reconcile"},
 		{"whitespace reconcile", "reconcile", "  ", "name the document to reconcile"},
+		{"blank fix", "fix", "", "say what is broken"},
+		{"whitespace fix", "fix", "   ", "say what is broken"},
 		{"too long", "amend", strings.Repeat("x", 5001), "too long"},
 	}
 	for _, tc := range tests {
@@ -283,7 +293,8 @@ func TestPlanChatToasts(t *testing.T) {
 // nothing is posted), "no plan" (no form either), and "text is escaped" (the
 // sentence is the owner's, shown back to them inside a page). "no plan" is
 // listed before "open session" to show the order: a project with no plan
-// never gets a chat link.
+// never gets a chat link. The fix rows are load-bearing for their titles: a
+// fix must never be drawn under amend's "Amend the plan" heading.
 func TestChangePageFor(t *testing.T) {
 	plan := changeState{HasPlan: true}
 	open := changeState{HasPlan: true, Open: true, OpenMode: "amend", OpenPhase: "draft"}
@@ -298,9 +309,9 @@ func TestChangePageFor(t *testing.T) {
 		{name: "open session", mode: "amend", text: "x", given: true, st: open,
 			want: ChangePageView{Kind: changeKindOpen, Title: "Change the plan", Message: "A planning session is already open (amend, draft).", Text: "x"}},
 		{name: "unknown mode", mode: "new", st: plan,
-			want: ChangePageView{Kind: changeKindUnknown, Title: "Change the plan", Message: "Nothing started: new is not a way to change a plan. Use extend, amend or reconcile."}},
+			want: ChangePageView{Kind: changeKindUnknown, Title: "Change the plan", Message: "Nothing started: new is not a way to change a plan. Use extend, amend, reconcile or fix."}},
 		{name: "no mode", mode: "", st: plan,
-			want: ChangePageView{Kind: changeKindUnknown, Title: "Change the plan", Message: "Nothing started:  is not a way to change a plan. Use extend, amend or reconcile."}},
+			want: ChangePageView{Kind: changeKindUnknown, Title: "Change the plan", Message: "Nothing started:  is not a way to change a plan. Use extend, amend, reconcile or fix."}},
 		{name: "extend", mode: "extend", text: "ignored", given: true, st: plan,
 			want: ChangePageView{Kind: changeKindConfirm, Title: "Extend the plan for app?", Lede: "A planning agent reads the plan and asks you what to add. Its chat opens next."}},
 		{name: "amend, first visit", mode: "amend", st: plan,
@@ -313,6 +324,12 @@ func TestChangePageFor(t *testing.T) {
 			want: ChangePageView{Kind: changeKindForm, Title: "Reconcile the plan for app", Label: "Document to reconcile with", Hint: "A path inside the project, such as docs/design-system.md.", FieldError: "Name a document."}},
 		{name: "amend with text", mode: "amend", text: "  Add a CSV export.  ", given: true, st: plan,
 			want: ChangePageView{Kind: changeKindConfirm, Title: "Amend the plan for app?", Lede: "A planning agent reads what you wrote, makes the change with you and opens its chat next.", Label: "What should change?", Textarea: true, Text: "Add a CSV export."}},
+		{name: "fix, first visit", mode: "fix", st: plan,
+			want: ChangePageView{Kind: changeKindForm, Title: "Fix a bug in app", Label: "What is broken?", Textarea: true}},
+		{name: "fix, blank text", mode: "fix", text: "  ", given: true, st: plan,
+			want: ChangePageView{Kind: changeKindForm, Title: "Fix a bug in app", Label: "What is broken?", Textarea: true, FieldError: "Say what is broken."}},
+		{name: "fix with text", mode: "fix", text: "  The export button does nothing.  ", given: true, st: plan,
+			want: ChangePageView{Kind: changeKindConfirm, Title: "Fix a bug in app?", Lede: "A planning agent reads what you wrote, finds the bug with you, adds one fix task to the plan and opens its chat next.", Label: "What is broken?", Textarea: true, Text: "The export button does nothing."}},
 		{name: "reconcile with text", mode: "reconcile", text: "docs/design-system.md", given: true, st: plan,
 			want: ChangePageView{Kind: changeKindConfirm, Title: "Reconcile the plan for app with docs/design-system.md?", Lede: "A planning agent reads that document and asks you what to change in the plan. Its chat opens next.", Label: "Document to reconcile with", Hint: "A path inside the project, such as docs/design-system.md.", Text: "docs/design-system.md"}},
 	}
@@ -332,7 +349,9 @@ func TestChangePageFor(t *testing.T) {
 // TestPlanChangePageGET is load-bearing for three things: a GET never reaches
 // the seam (a link someone was sent must not start a planning agent), a blank
 // text draws the field error with no POST form, and the owner's text is
-// escaped in both the card and the hidden field.
+// escaped in both the card and the hidden field. The fix rows prove the
+// fourth mode gets a text area (not reconcile's path box, the switch's
+// default) and a confirm card that posts mode=fix.
 func TestPlanChangePageGET(t *testing.T) {
 	tests := []struct {
 		name, path string
@@ -360,6 +379,16 @@ func TestPlanChangePageGET(t *testing.T) {
 		{name: "amend card escapes", path: "/p/app/plan/change?mode=amend&text=" + url.QueryEscape(`<script>alert(1)</script> "q"`), status: 200,
 			want:    []string{"Amend the plan for app?", `<p class="session-quote">&lt;script&gt;alert(1)&lt;/script&gt; &#34;q&#34;</p>`, `name="text" value="&lt;script&gt;alert(1)&lt;/script&gt; &#34;q&#34;"`, `name="confirm" value="yes"`},
 			notWant: []string{"<script>alert"}},
+		{name: "fix form", path: "/p/app/plan/change?mode=fix", status: 200,
+			want:    []string{"Fix a bug in app", `name="mode" value="fix"`, "What is broken?", `<textarea class="textarea" id="change-text" name="text"`, ">Continue</button>"},
+			notWant: []string{`method="post"`, "field__error", `name="confirm"`, "Amend the plan", "input--mono"}},
+		{name: "blank fix text", path: "/p/app/plan/change?mode=fix&text=+", status: 200,
+			want:    []string{`<p class="field__error" id="change-error" role="alert">Say what is broken.</p>`},
+			notWant: []string{`method="post"`, `name="confirm"`}},
+		{name: "fix card", path: "/p/app/plan/change?mode=fix&text=" + url.QueryEscape("The export button does nothing."), status: 200,
+			want: []string{"Fix a bug in app?", "finds the bug with you, adds one fix task to the plan",
+				`<form method="post" action="/p/app/plan/change"`, `name="mode" value="fix"`, `name="confirm" value="yes"`,
+				`name="text" value="The export button does nothing."`, ">Start planning</button>"}},
 		{name: "reconcile card", path: "/p/app/plan/change?mode=reconcile&text=docs/design-system.md", status: 200,
 			want: []string{"Reconcile the plan for app with docs/design-system.md?", `name="text" value="docs/design-system.md"`}},
 		{name: "unknown mode", path: "/p/app/plan/change?mode=new", status: 400,
@@ -404,7 +433,8 @@ func TestPlanChangePageGET(t *testing.T) {
 // TestPlanChangeRefusalRedraw is load-bearing: a refused POST answers 400
 // with the change page again, the refusal's sentence above it, the typed text
 // still in place, and, when the refusal is that a session is open, the link
-// to its chat and no form to try again.
+// to its chat and no form to try again. "blank fix shows the field error"
+// proves a fix refusal redraws the fix form, not amend's.
 func TestPlanChangeRefusalRedraw(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -422,6 +452,9 @@ func TestPlanChangeRefusalRedraw(t *testing.T) {
 		{name: "blank amend shows the field error", form: changeForm("amend", ""),
 			want:    []string{`<div class="notice__body">Nothing started: say what to change in the plan.</div>`, `<p class="field__error" id="change-error" role="alert">Say what to change.</p>`},
 			notWant: []string{`method="post"`}},
+		{name: "blank fix shows the field error", form: changeForm("fix", ""),
+			want:    []string{`<div class="notice__body">Nothing started: say what is broken.</div>`, `<p class="field__error" id="change-error" role="alert">Say what is broken.</p>`, "Fix a bug in app"},
+			notWant: []string{`method="post"`, "Amend the plan"}},
 		{name: "unknown mode says it once", form: changeForm("delete", "x"),
 			want: []string{"delete is not a way to change a plan"}, notWant: []string{"Start planning"}},
 		{name: "missing confirm", form: "mode=amend&text=" + url.QueryEscape("Keep me"),

@@ -44,7 +44,7 @@ type PlanStatus struct {
 	// Damaged is true when the planning session's state file is there but
 	// cannot be read as one.
 	Damaged bool `json:"damaged"`
-	// Mode is the session's mode (new, extend, amend, reconcile) and Phase
+	// Mode is the session's mode (new, extend, amend, reconcile, fix) and Phase
 	// its effective phase, the one afk plan status reports.
 	Mode  string `json:"mode"`
 	Phase string `json:"phase"`

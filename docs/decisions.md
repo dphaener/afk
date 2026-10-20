@@ -3846,3 +3846,18 @@ T13.6 adds "fix a bug" to the dashboard's actions dialog, beside extend, amend a
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. The minor notes: the help line is shorter than the work plan's wording ("Find and fix a bug; asks what is broken"), the 120-column actions picture now scrolls "approve the plan" below the fold, and a few comment lines are wrapped unevenly. This section was written by the planner and conductor, by design.
+
+## T13.7
+
+T13.7 adds "Fix a bug" to the web page's plan changes, beside extend, amend and reconcile. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **The words (A1).** The project screen's row is "Fix a bug" ("Find and fix a bug; asks what is broken."). The form asks "What is broken?" in a text area, as amend asks what should change; a blank answer redraws it with "Say what is broken.", and the API refuses it with "Nothing started: say what is broken." The confirm card is titled "Fix a bug in {project}?" and says the planning agent finds the bug with you, adds one fix task and opens its chat next. The words follow the dashboard's (T13.6).
+- **The chat names it (A2).** A fix session's chat says "Fixing a bug" under its title, rather than the bare mode word.
+- **How the work was split (A3).** All of the page's code changes were one task, because tasks editing one Go package get in each other's way when their tests run; the docs were a second task alongside it.
+- **Tests and prerequisites (A4, A5).** Table tests written first, in the shape of amend's rows; nothing had to be in place first, since T13.5's start code already accepts a fix.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. The minor notes: this section was not in either task's file list (it was written by the planner and conductor, by design); the page task ran on a stronger model tier than it needed; and one comment line in `summary.go` is longer than the comments around it. In headless Chrome, axe found no WCAG 2.2 AA violation on the fix form or its confirm card, and Start planning opened the chat of a `fix` session.

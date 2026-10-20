@@ -12,7 +12,8 @@ import (
 
 // This file is the page's way to start a planning session that changes a
 // plan that is already being built (T8.14): the web twin of `afk plan
-// extend`, `afk plan amend "<what>"` and `afk plan reconcile FILE`.
+// extend`, `afk plan amend "<what>"`, `afk plan reconcile FILE` and, since
+// T13.7, `afk plan fix "<what is broken>"`.
 //
 // The package starts nothing itself. Deps.StartPlan is the root package's
 // print-free entry point (the one the dashboard uses), which re-reads the
@@ -57,7 +58,7 @@ const (
 	PlanStartRefused = "refused"
 )
 
-// planChangeTextLimit is the longest amend sentence or reconcile path the
+// planChangeTextLimit is the longest amend or fix sentence or reconcile path the
 // page accepts, in characters. It is the same limit the new-session
 // description has (T8.10), so the pages agree on what "too long" means.
 const planChangeTextLimit = 5000
@@ -69,11 +70,14 @@ const (
 	changeExtend    = "extend"
 	changeAmend     = "amend"
 	changeReconcile = "reconcile"
+	// changeFix plans one bug fix task from the owner's description. It
+	// takes a sentence like amend, so it shares amend's shape on this page.
+	changeFix = "fix"
 )
 
 // validChangeMode reports whether mode is one the page can start.
 func validChangeMode(mode string) bool {
-	return mode == changeExtend || mode == changeAmend || mode == changeReconcile
+	return mode == changeExtend || mode == changeAmend || mode == changeReconcile || mode == changeFix
 }
 
 // PlanChangeView is the API's answer to a change. Every key is always
@@ -95,18 +99,20 @@ type PlanChangeView struct {
 func changeRefusal(mode, text string) string {
 	switch {
 	case !validChangeMode(mode):
-		return "Nothing started: " + mode + " is not a way to change a plan. Use extend, amend or reconcile."
+		return "Nothing started: " + mode + " is not a way to change a plan. Use extend, amend, reconcile or fix."
 	case mode == changeAmend && text == "":
 		return "Nothing started: say what to change in the plan."
 	case mode == changeReconcile && text == "":
 		return "Nothing started: name the document to reconcile the plan with, as a path inside the project."
+	case mode == changeFix && text == "":
+		return "Nothing started: say what is broken."
 	case utf8.RuneCountInString(text) > planChangeTextLimit:
 		return "Nothing started: that is too long. Keep it under 5000 characters."
 	}
 	return ""
 }
 
-// planChange is the change POST: what `afk plan extend|amend|reconcile`
+// planChange is the change POST: what `afk plan extend|amend|reconcile|fix`
 // does, through Deps.StartPlan, with the project's own root. Nothing reaches
 // the seam without the confirm in the body, and the root, the mode list and
 // the confirm never come from the query.
@@ -301,28 +307,44 @@ func changePageFor(project, mode, text string, textGiven bool, st changeState) C
 		return v
 	case changeAmend:
 		v.Label, v.Textarea = "What should change?", true
+	case changeFix:
+		v.Label, v.Textarea = "What is broken?", true
 	default:
 		v.Label, v.Hint = "Document to reconcile with", "A path inside the project, such as docs/design-system.md."
 	}
 	if text == "" {
+		// Each mode names its own title and field error. An if-chain with
+		// amend as the fallthrough would title a fix form "Amend", so every
+		// text mode is spelled out.
 		v.Kind = changeKindForm
-		v.Title = "Amend the plan for " + project
-		if mode == changeReconcile {
+		switch mode {
+		case changeAmend:
+			v.Title = "Amend the plan for " + project
+			if textGiven {
+				v.FieldError = "Say what to change."
+			}
+		case changeFix:
+			v.Title = "Fix a bug in " + project
+			if textGiven {
+				v.FieldError = "Say what is broken."
+			}
+		default:
 			v.Title = "Reconcile the plan for " + project
-		}
-		if textGiven {
-			v.FieldError = "Say what to change."
-			if mode == changeReconcile {
+			if textGiven {
 				v.FieldError = "Name a document."
 			}
 		}
 		return v
 	}
 	v.Kind = changeKindConfirm
-	if mode == changeAmend {
+	switch mode {
+	case changeAmend:
 		v.Title = "Amend the plan for " + project + "?"
 		v.Lede = "A planning agent reads what you wrote, makes the change with you and opens its chat next."
-	} else {
+	case changeFix:
+		v.Title = "Fix a bug in " + project + "?"
+		v.Lede = "A planning agent reads what you wrote, finds the bug with you, adds one fix task to the plan and opens its chat next."
+	default:
 		v.Title = "Reconcile the plan for " + project + " with " + text + "?"
 		v.Lede = "A planning agent reads that document and asks you what to change in the plan. Its chat opens next."
 	}

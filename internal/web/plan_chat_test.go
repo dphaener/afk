@@ -216,7 +216,8 @@ func TestPlanChatJSONUnchanged(t *testing.T) {
 //   - "working": the working line, data-working="true" for the live bar,
 //     and the composer disabled with its sentence;
 //   - "waiting for text": the only state whose composer takes a reply;
-//   - "none": the empty block and no form at all;
+//   - "none": the empty block and no form at all, and the four ways to
+//     start a session, Fix a bug among them;
 //   - "unknown": the problem in a notice, never a reply box that works.
 func TestPlanChatPage(t *testing.T) {
 	multi := chatFixture(planchat.StateWaitingForChoice)
@@ -240,7 +241,8 @@ func TestPlanChatPage(t *testing.T) {
 			want: []string{`<div class="empty">`, "No planning session", "Start one to change the plan:",
 				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=extend">Extend</a>`,
 				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=amend">Amend</a>`,
-				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=reconcile">Reconcile</a>`},
+				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=reconcile">Reconcile</a>`,
+				`<a class="btn btn--secondary" href="/p/app/plan/change?mode=fix">Fix a bug</a>`},
 			notWant: []string{"later", "afk dash", "<form", "data-working", `class="working"`, "The planning session&rsquo;s overview"}},
 		{name: "working", chat: chatFixture(planchat.StateWorking),
 			want: []string{`data-project="app" data-working="true">`, `<p class="working"><span class="working__dots" aria-hidden="true">`, "The agent is working</p>",
@@ -372,7 +374,8 @@ func TestPlanChatPageEscapes(t *testing.T) {
 // nothing after), "approved after review" (a mode whose list stops at review
 // shows every step done), "damaged state" (no line and no steps, rather than
 // a guess), "unknown mode shown as written", "a state this page does not
-// know" (drawn as unknown, with a disabled composer), "recommended first"
+// know" (drawn as unknown, with a disabled composer), "fix session in
+// words" (a fix session reads "Fixing a bug", not the raw word fix), "recommended first"
 // (the agent's order otherwise), and "pending question left out of the
 // thread".
 func TestChatPageFor(t *testing.T) {
@@ -398,6 +401,12 @@ func TestChatPageFor(t *testing.T) {
 				}
 				if pg.Sub != "Amending the plan · Draft" {
 					t.Errorf("Sub = %q", pg.Sub)
+				}
+			}},
+		{name: "fix session in words", in: chatPageInput{Chat: chatFixture(planchat.StateWorking), Status: status(plansession.ModeFix, plansession.PhaseSurvey)},
+			check: func(t *testing.T, pg chatPage) {
+				if pg.Sub != "Fixing a bug · Survey" {
+					t.Errorf("Sub = %q, want %q", pg.Sub, "Fixing a bug · Survey")
 				}
 			}},
 		{name: "approved after review", in: chatPageInput{Chat: chatFixture(planchat.StateWorking), Status: status(plansession.ModeExtend, plansession.PhaseApproved)},
@@ -489,7 +498,7 @@ func TestChatPageFor(t *testing.T) {
 	}
 }
 
-// TestPlanChatEmptyStateWithoutAPlan is load-bearing: with no plan the three
+// TestPlanChatEmptyStateWithoutAPlan is load-bearing: with no plan the four
 // buttons would lead to a page that can only say there is nothing to change,
 // so the empty state says that itself and offers none.
 func TestPlanChatEmptyStateWithoutAPlan(t *testing.T) {
