@@ -480,14 +480,15 @@ type Deps struct {
 	// two it found. It has NO default either, and a nil one is answered the
 	// same way.
 	ResumeBuild func(root string) (ResumeResult, error)
-	// StartPlan is the seam behind the dashboard's four plan actions
+	// StartPlan is the seam behind the dashboard's five plan actions
 	// (planstart.go): it starts a change session on the project at root the
 	// way `afk plan <mode>` does, short of taking the terminal, and returns
 	// what happened. mode is PlanModeExtend, PlanModeAmend, PlanModeReconcile,
-	// PlanModeNew (root is then the folder as the owner typed it, and the
+	// PlanModeFix, PlanModeNew (root is then the folder as the owner typed it, and the
 	// start behaves as bare `afk plan` there) or PlanModeResume (open a
 	// planning session that is already open, never start one); text is
-	// amend's sentence or reconcile's path, as typed.
+	// amend's sentence, reconcile's path or fix's description of what is
+	// broken, as typed.
 	// Every refusal comes back as a PlanRefused result in the command's own
 	// words, so it has no error return.
 	//
@@ -1596,7 +1597,8 @@ type Model struct {
 
 	// planTextInput is inputPlanText's field, on labelInput's terms: only
 	// read or updated while m.modal == inputPlanText. planTextMode is the
-	// form's purpose (PlanModeAmend, PlanModeReconcile or PlanModeNew);
+	// form's purpose (PlanModeAmend, PlanModeReconcile, PlanModeFix or
+	// PlanModeNew);
 	// planTextRoot and planTextGen are the project it was opened for,
 	// captured at open on labelTarget's invariant, so a submit after a project
 	// switch is refused rather than sent to the wrong project. The new-plan
@@ -3747,6 +3749,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openPlanTextForm(PlanModeAmend)
 	case actionPlanReconcile:
 		return m.openPlanTextForm(PlanModeReconcile)
+	case actionPlanFix:
+		return m.openPlanTextForm(PlanModeFix)
 	case actionPlanNew:
 		return m.openPlanNewForm()
 	case actionPlanCheck:

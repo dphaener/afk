@@ -3831,3 +3831,18 @@ T13.5 adds `afk plan fix`, a planning session that reproduces a bug, finds its c
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. The minor notes: the quality check ran the touched packages' tests rather than the whole suite (`make check` was run in full before the commit and is green); a few new comment lines run long; and the dashboard, the web page and `docs/web.md` still name only extend, amend and reconcile, which T13.6 and T13.7 change. This section and the two `CONTEXT.md` lines were written by the planner and conductor, by design.
+
+## T13.6
+
+T13.6 adds "fix a bug" to the dashboard's actions dialog, beside extend, amend and reconcile. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **No "skip the confirm" choice in the form (A1).** The master plan asked for amend's form "with its `--yes` choice", but the dashboard's amend form has no such choice, and the shared start code never skips the confirm (T13.5). So the fix form matches amend's exactly, and you say yes to the drafted task in the planning pane.
+- **Reached by name, with no key of its own (A2).** Like the other plan actions it has no letter: the dashboard is short of free ones, and `f` already moves the keyboard to the pane. For the same reason the row is found by typing `a bug` in the actions dialog: a typed `fix` would start with `f` and move the keyboard instead.
+- **The form's words (A3).** It is titled "Fix a bug" and asks "What is broken? Say it in a sentence." A blank answer keeps it open with "Type what is broken first, or press esc to cancel."
+- **Tests and prerequisites (A4, A5).** Table tests written first, the leader pictures updated and a new pair for the fix form; nothing had to be in place first.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. The minor notes: the help line is shorter than the work plan's wording ("Find and fix a bug; asks what is broken"), the 120-column actions picture now scrolls "approve the plan" below the fold, and a few comment lines are wrapped unevenly. This section was written by the planner and conductor, by design.

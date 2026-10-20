@@ -1,7 +1,8 @@
-// planstart.go is the dashboard's four plan actions: extend the plan, amend
+// planstart.go is the dashboard's five plan actions: extend the plan, amend
 // the plan and reconcile the plan with a document, each of which starts a
 // change session on the active project the way `afk plan extend`, `afk plan
-// amend` and `afk plan reconcile` do (T7.3), and "start a new plan", which
+// amend` and `afk plan reconcile` do (T7.3), "fix a bug", which starts the
+// `afk plan fix` session on it (T13.6), and "start a new plan", which
 // starts a planning session in a folder the owner types the way bare
 // `afk plan` does there and moves the dashboard to that project (T7.4). Each
 // opens the planning session in the agent pane.
@@ -52,6 +53,7 @@ const (
 	PlanModeExtend    = "extend"
 	PlanModeAmend     = "amend"
 	PlanModeReconcile = "reconcile"
+	PlanModeFix       = "fix"
 	PlanModeNew       = "new"
 )
 
@@ -93,11 +95,11 @@ type PlanStartResult struct {
 	Archive string
 }
 
-// planStartUnavailableNotice is what the three actions say when the seam is
+// planStartUnavailableNotice is what the four change actions say when the seam is
 // not wired. `afk dash` always wires it, so the owner should never read this;
 // it exists so a dashboard built without it answers with a sentence and not
 // a nil-function panic, as buildPauseUnavailableNotice does.
-const planStartUnavailableNotice = "Starting a plan change is not available in this dashboard. Use afk plan extend, amend or reconcile in a terminal."
+const planStartUnavailableNotice = "Starting a plan change is not available in this dashboard. Use afk plan extend, amend, reconcile or fix in a terminal."
 
 // planNewUnavailableNotice is planStartUnavailableNotice for "start a new
 // plan", which the terminal does with bare `afk plan` rather than a mode.
@@ -112,6 +114,7 @@ const planNoProjectNotice = "No project is open, so there is no plan to change."
 const (
 	planAmendQuestion     = "What do you want to change? Say it in a sentence."
 	planReconcileQuestion = "Which document? Give its path inside the project."
+	planFixQuestion       = "What is broken? Say it in a sentence."
 	planNewQuestion       = "Which folder? A full path or ~/..., or a new project's name."
 )
 
@@ -127,12 +130,14 @@ const planNewNameNote = "A name is made into a folder under your project locatio
 const (
 	planAmendEmpty     = "Type a sentence first, or press esc to cancel."
 	planReconcileEmpty = "Type the document's path first, or press esc to cancel."
+	planFixEmpty       = "Type what is broken first, or press esc to cancel."
 	planNewEmpty       = "Type the folder or the new project's name, or press esc to cancel."
 )
 
-// planVerbs is the word each change mode's notice uses. The new mode has no
-// entry: "to start the plan" reads wrongly, so its notices are worded on
-// their own (submitPlanText, planOpenedNotice).
+// planVerbs is the word each change mode's notice uses. The new and fix
+// modes have no entry: "to start the plan" and "to fix the plan" read
+// wrongly (a fix mends the code, not the plan), so their notices are worded
+// on their own (submitPlanText, planStartingNotice, planOpenedNotice).
 var planVerbs = map[string]string{
 	PlanModeExtend:    "extend",
 	PlanModeAmend:     "amend",
@@ -269,8 +274,9 @@ func (m Model) startPlanExtend() (tea.Model, tea.Cmd) {
 	return m, m.planStartCmd(m.planRoot(), PlanModeExtend, "")
 }
 
-// openPlanTextForm is "amend the plan" and "reconcile the plan with a
-// document": a one-line form asking for the sentence or the path, on the
+// openPlanTextForm is "amend the plan", "reconcile the plan with a
+// document" and "fix a bug": a one-line form asking for the sentence, the
+// path or what is broken, on the
 // label form's pattern (openLabelForm). The root and the project generation
 // are captured now, because the text typed is about the project on screen
 // now; a project switch while the form is up makes submitPlanText refuse.
@@ -284,10 +290,14 @@ func (m Model) openPlanTextForm(mode string) (tea.Model, tea.Cmd) {
 	m.planTextGen = m.projectGen
 	m.planTextNote = ""
 	in := textinput.New()
-	if mode == PlanModeReconcile {
+	switch mode {
+	case PlanModeReconcile:
 		in.Placeholder = "a path, such as docs/design.md"
 		in.CharLimit = 1024
-	} else {
+	case PlanModeFix:
+		in.Placeholder = "one sentence about what is broken"
+		in.CharLimit = 1024
+	default:
 		in.Placeholder = "one sentence about the change"
 		in.CharLimit = 1024
 	}
@@ -369,6 +379,8 @@ func (m Model) submitPlanText() (tea.Model, tea.Cmd) {
 			m.planTextNote = planReconcileEmpty
 		case PlanModeNew:
 			m.planTextNote = planNewEmpty
+		case PlanModeFix:
+			m.planTextNote = planFixEmpty
 		default:
 			m.planTextNote = planAmendEmpty
 		}
@@ -392,8 +404,18 @@ func (m Model) submitPlanText() (tea.Model, tea.Cmd) {
 		// at the folder as bare `afk plan` does, which takes no brief.
 		return m.startPlanNewIn(text)
 	}
-	m.notify(notifyInfo, "Starting a planning session to "+planVerbs[mode]+" the plan…")
+	m.notify(notifyInfo, planStartingNotice(mode))
 	return m, m.planStartCmd(root, mode, text)
+}
+
+// planStartingNotice is the line shown while a change mode's start runs.
+// Fix is worded on its own, as planVerbs says; every other mode keeps the
+// "<verb> the plan" wording it always had.
+func planStartingNotice(mode string) string {
+	if mode == PlanModeFix {
+		return "Starting a planning session to fix a bug…"
+	}
+	return "Starting a planning session to " + planVerbs[mode] + " the plan…"
 }
 
 // cancelPlanText is the form's esc: it closes with nothing started.
@@ -572,6 +594,8 @@ func planOpenedNotice(mode string, res PlanStartResult) string {
 	}
 	text := "Started a planning session to " + planVerbs[mode] + " the plan."
 	switch {
+	case mode == PlanModeFix:
+		text = "Started a planning session to fix a bug."
 	case mode == PlanModeNew && res.Root != "":
 		text = "Started a planning session for a new plan in " + res.Root + "."
 	case planVerbs[mode] == "":
@@ -698,6 +722,8 @@ func (m Model) planTextDialog() dialog {
 		title, question = "Reconcile the plan", planReconcileQuestion
 	case PlanModeNew:
 		title, question = "Start a new plan", planNewQuestion
+	case PlanModeFix:
+		title, question = "Fix a bug", planFixQuestion
 	}
 	lines := []string{theme.statusLine.Render(question)}
 	if m.planTextMode == PlanModeNew && m.deps.PlanFolder != nil {

@@ -114,8 +114,8 @@ const (
 	// modePrecedence is above all three.
 	inputLeader
 	// inputPlanText is the plan actions' one-line form (planstart.go): amend
-	// asks for a sentence, reconcile for a document's path, and "start a new
-	// plan" for a folder. It is the label
+	// asks for a sentence, reconcile for a document's path, "fix a bug" for
+	// what is broken, and "start a new plan" for a folder. It is the label
 	// prompt's shape — a textinput, so unclaimed keys reach the component —
 	// with a purpose (Model.planTextMode) instead of a session.
 	inputPlanText
@@ -611,11 +611,12 @@ const (
 	// (toggleFullHelp): ctrl+] ? from anywhere, and esc on the list while
 	// the full help is shown (guarded on routeConds.helpShown).
 	actionHelp
-	// The four plan actions (planstart.go). They have no key after the
+	// The five plan actions (planstart.go). They have no key after the
 	// leader: the dialog reaches them by name only (leaderTable).
 	actionPlanExtend    // startPlanExtend
 	actionPlanAmend     // openPlanTextForm(amend)
 	actionPlanReconcile // openPlanTextForm(reconcile)
+	actionPlanFix       // openPlanTextForm(fix): "fix a bug" (T13.6)
 	actionPlanNew       // openPlanNewForm: start a new plan in a folder
 	// actionPlanCheck is "check the plan" (T7.7): openPlanCheck shows the
 	// plan checker's result from the last plan status read. By name only,
@@ -773,6 +774,8 @@ func (a modeAction) String() string {
 		return "plan-amend"
 	case actionPlanReconcile:
 		return "plan-reconcile"
+	case actionPlanFix:
+		return "plan-fix"
 	case actionPlanNew:
 		return "plan-new"
 	case actionPlanCheck:

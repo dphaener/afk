@@ -220,6 +220,9 @@ var leaderTable = []leaderEntry{
 	{key: "", action: actionPlanExtend, reach: reachList},
 	{key: "", action: actionPlanAmend, reach: reachList},
 	{key: "", action: actionPlanReconcile, reach: reachList},
+	// "fix a bug" (T13.6) is by name for the same reasons, and f is focus's
+	// key besides. It opens the same form amend does, so it is a list action.
+	{key: "", action: actionPlanFix, reach: reachList},
 	// "start a new plan" (T7.4) is by name for the same reasons. It is a list
 	// action because it opens a form, and a start moves the dashboard to the
 	// folder's project and the keyboard to its planning pane.
@@ -301,6 +304,7 @@ var leaderNames = map[modeAction]string{
 	actionPlanExtend:    "extend the plan",
 	actionPlanAmend:     "amend the plan",
 	actionPlanReconcile: "reconcile the plan with a document",
+	actionPlanFix:       "fix a bug",
 	actionPlanNew:       "start a new plan",
 	actionPlanCheck:     "check the plan",
 	actionPlanApprove:   "approve the plan",
@@ -334,6 +338,7 @@ var leaderHelp = map[modeAction]string{
 	actionPlanExtend:    "Start a planning session that adds work to the plan",
 	actionPlanAmend:     "Change the plan; asks what to change in a sentence",
 	actionPlanReconcile: "Fit the plan to a document; asks for its path",
+	actionPlanFix:       "Find and fix a bug; asks what is broken",
 	actionPlanNew:       "Plan a project that has no plan; asks for its folder or a new name",
 	// "errors" is the word this row is found by. Its name cannot be typed:
 	// c is clean's key and runs it from an empty query, and "plan" starts
@@ -637,7 +642,7 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 		case !c.canFocus:
 			return "nothing to focus on the right"
 		}
-	case actionNewSession, actionScratch, actionPlanExtend, actionPlanAmend, actionPlanReconcile:
+	case actionNewSession, actionScratch, actionPlanExtend, actionPlanAmend, actionPlanReconcile, actionPlanFix:
 		// The plan actions are dimmed for nothing else. Whether a change
 		// session may start (a plan exists, none is open, the agent can plan)
 		// is the start's own decision, and its refusal is shown in its own

@@ -821,6 +821,11 @@ func leaderActionCases() map[modeAction]leaderActionCase {
 			ran: func(_, a Model, _ tea.Cmd) bool {
 				return a.modal == inputPlanText && a.planTextMode == PlanModeReconcile
 			}},
+		// "fix a bug" (T13.6) is reached by "a bug": its name starts with f,
+		// focus's key, and "broken" with b, build's, either of which would
+		// run that action from an empty query.
+		actionPlanFix: {setup: planList, mode: inputNormal, old: press('a'), query: "a bug",
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputPlanText && a.planTextMode == PlanModeFix }},
 		// "start a new plan" (T7.4) is reached by its full name: its first
 		// letter, s, is no leader key, so the whole name filters down to it.
 		actionPlanNew: {setup: planList, mode: inputNormal, old: press('s'), query: "start a new plan",

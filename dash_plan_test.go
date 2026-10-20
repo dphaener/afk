@@ -51,6 +51,37 @@ func TestDashPlanAdapter(t *testing.T) {
 	}
 }
 
+// TestDashStartPlanMode pins that the adapter hands the mode and the text to
+// the entry point unchanged, so "fix a bug" reaches startPlanForSurface as
+// mode fix with the owner's sentence. Load-bearing rows: "fix" (the new mode
+// must arrive as fix, not be mapped to amend or refused) and "amend" (the
+// existing mode the adapter already passed through, which the new action must
+// not change). The name starts with TestDashStartPlan so that -run pattern
+// selects it.
+func TestDashStartPlanMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		text string
+	}{
+		{"fix", "fix", "the export button does nothing"},
+		{"amend", "amend", "say it"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got planSurfaceRequest
+			start := func(req planSurfaceRequest, _ planDeps) planSurfaceResult {
+				got = req
+				return planSurfaceResult{}
+			}
+			dashStartPlanWith(start, planDeps{}, "/proj", tt.mode, tt.text)
+			if got.Mode != tt.mode || got.Project != "/proj" || got.Text != tt.text {
+				t.Errorf("request = %+v, want mode %q, project /proj, text %q", got, tt.mode, tt.text)
+			}
+		})
+	}
+}
+
 // TestDashPlanDepsSetsSeam checks dashDeps wires StartPlan; left nil, the
 // three actions would say the feature is not available.
 func TestDashPlanDepsSetsSeam(t *testing.T) {

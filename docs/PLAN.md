@@ -3634,6 +3634,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
 - **Acceptance:** `internal/ui` table tests for the new action and its form, in the style of the amend
   ones; the leader golden updated; `make check` green; driven through tmux against a built binary in a
   scratch project, the action starts a session whose `state.json` says `fix`.
+- Amended 2026-10-19 (T13.6 done): the dashboard's actions dialog has a by-name row "fix a bug" (`actionPlanFix`, `ui.PlanModeFix = "fix"`) that opens amend's one-line form ("What is broken? Say it in a sentence.") and calls `Deps.StartPlan` with mode `fix`; there is no `--yes` choice. Its query is `a bug`, because a typed `f` runs focus and `b` build. T13.7 is unaffected.
 
 #### T13.7 — Start a bug fix from the web page
 - **Depends on:** T13.5
