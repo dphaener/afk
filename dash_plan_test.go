@@ -218,17 +218,59 @@ func TestDashPlanFolderDepsSetsSeams(t *testing.T) {
 // the location itself is never created.
 func TestDashPlanCreateFolder(t *testing.T) {
 	loc := t.TempDir()
-	if err := dashCreatePlanFolder(filepath.Join(loc, "demo")); err != nil {
+	create := func(p string) error {
+		return planfolder.Create(p, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn)
+	}
+	noTrust := func(string) error { return nil }
+	if err := dashCreatePlanFolderWith(create, noTrust, filepath.Join(loc, "demo")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(loc, "demo", ".git")); err != nil {
 		t.Errorf(".git missing: %v", err)
 	}
-	if err := dashCreatePlanFolder(filepath.Join(loc, "missing", "demo")); err == nil {
+	if err := dashCreatePlanFolderWith(create, noTrust, filepath.Join(loc, "missing", "demo")); err == nil {
 		t.Error("creating under a missing location succeeded, want an error")
 	}
 	if _, err := os.Stat(filepath.Join(loc, "missing")); err == nil {
 		t.Error("the location folder was created")
+	}
+}
+
+// TestDashCreatePlanFolderTrust pins when the new folder is marked trusted.
+//
+// Load-bearing rows:
+//   - "create ok": trust runs once with the folder path.
+//   - "create fails": trust never runs, and the create error comes back.
+//   - "trust fails": nil comes back, because the folder exists and planning
+//     must start anyway.
+func TestDashCreatePlanFolderTrust(t *testing.T) {
+	createErr := errors.New("git: not found")
+	trustErr := errors.New("no settings file")
+	tests := []struct {
+		name      string
+		createErr error
+		trustErr  error
+		wantErr   error
+		wantTrust int
+	}{
+		{name: "create ok", wantTrust: 1},
+		{name: "create fails", createErr: createErr, wantErr: createErr},
+		{name: "trust fails", trustErr: trustErr, wantTrust: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var trusted []string
+			err := dashCreatePlanFolderWith(
+				func(string) error { return tt.createErr },
+				func(p string) error { trusted = append(trusted, p); return tt.trustErr },
+				"/loc/demo")
+			if err != tt.wantErr {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+			if len(trusted) != tt.wantTrust || (len(trusted) == 1 && trusted[0] != "/loc/demo") {
+				t.Errorf("trust calls = %v, want %d for /loc/demo", trusted, tt.wantTrust)
+			}
+		})
 	}
 }
 

@@ -240,7 +240,7 @@ func webCheckPlanFolderWith(deps planDeps, text string) web.PlanFolderCheck {
 // a new project by name, make its folder under the profile's project
 // location and turn it into a git repository.
 func webCreatePlanFolder(text string) (string, error) {
-	return webCreatePlanFolderWith(webProfileLocation, os.Stat, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn, text)
+	return webCreatePlanFolderWith(webProfileLocation, os.Stat, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn, trustNewPlanFolder, text)
 }
 
 // webCreatePlanFolderWith is webCreatePlanFolder with the location, the stat
@@ -257,7 +257,13 @@ func webCreatePlanFolder(text string) (string, error) {
 // itself is never created. A failure removes nothing (planfolder.Create); the
 // path returned is the folder left on disk, or "" when mkdir itself failed
 // and nothing was made, so the page never claims a folder that is not there.
-func webCreatePlanFolderWith(location func() planfolder.Location, stat func(string) (fs.FileInfo, error), mkdir, gitInit func(string) error, text string) (string, error) {
+//
+// Only when mkdir and git init both succeeded is the new folder marked
+// trusted in the agent CLI. afk just made it, so that grants nothing the owner
+// did not ask for, and it spares the planning session the CLI's trust
+// question (T14.1 reverses T8.17 decision A1 for these folders only). A trust
+// failure is ignored so it can never stop the plan.
+func webCreatePlanFolderWith(location func() planfolder.Location, stat func(string) (fs.FileInfo, error), mkdir, gitInit, trust func(string) error, text string) (string, error) {
 	name := strings.TrimSpace(text)
 	if !planfolder.IsName(name) {
 		return "", fmt.Errorf("%s is a path, and only a plain project name makes a new folder. Nothing was created.", name)
@@ -282,6 +288,9 @@ func webCreatePlanFolderWith(location func() planfolder.Location, stat func(stri
 	}, gitInit)
 	if !made {
 		return "", err
+	}
+	if err == nil {
+		_ = trust(d.Path)
 	}
 	return d.Path, err
 }

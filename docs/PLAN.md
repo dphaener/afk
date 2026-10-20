@@ -3715,6 +3715,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
     making a new folder through the dashboard or the web page's new-plan path leaves
     `hasTrustDialogAccepted: true` for that folder and every other key unchanged, and the agent CLI
     started there on a pty shows no "Quick safety check" screen.
+- Amended 2026-10-19 (T14.1 done): `provider.TrustFolder(name, folder, provider.TrustDeps)` (internal/provider/trust.go) is the one writer of the trust flag, returning `provider.ErrTrustUnsupported` for non-default agents; it keys the folder by its symlink-resolved absolute path and may reorder the file's top-level keys. Both new-plan create paths call it through `trustNewPlanFolder` in dash_plan.go, and `webCreatePlanFolderWith` now takes a `trust` function after `gitInit`.
 
 ## 9. Deferred / later
 
