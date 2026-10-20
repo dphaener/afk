@@ -3660,6 +3660,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
 - **Acceptance:** the fix task is `done` in `afk tasks`; once the summary was printed, the dashboard
   shows the `master-plan` session as ended, with no hand-run clean; `docs/decisions.md` has the
   `## T13.8` entry.
+- Amended 2026-10-20 (T13.8 done): the `fix` mode was proven on a real bug: T14.1 (fix), pre-trusting folders afk creates for a new plan, was added to the new milestone M14 — Fixes, launched three seconds after its plan commit ahead of other ready work, and merged as pull request #88; the planning agent ended itself 16 seconds after its summary was saved (a `plan_session_ended` line), with no `afk clean`. The run showed no new fault, so no further `(fix)` task was added. Later tasks may rely on the fix flow end to end; the starting surface was not recorded. See `## T13.8` in `docs/decisions.md`.
 
 ### M14 — Fixes
 
