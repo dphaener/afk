@@ -3661,6 +3661,61 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
   shows the `master-plan` session as ended, with no hand-run clean; `docs/decisions.md` has the
   `## T13.8` entry.
 
+### M14 — Fixes
+
+**Outcome:** bugs found after a task shipped are fixed.
+
+#### T14.1 — Folders afk creates for a new plan skip the agent's trust prompt (fix)
+- **Depends on:** —
+- **Goal:** when the dashboard's or the web page's new-plan form makes a new project folder, afk
+  records that folder as trusted in the agent CLI's own settings before the planning session starts, so
+  the session opens straight into the conversation and the owner never has to go to a terminal to say
+  yes.
+- **Background:** reproduced 2026-10-19 with Claude Code 2.1.304 (`.afk/plan/survey.md` of that fix
+  session). A brand-new git repository stops the CLI before any conversation at "Quick safety check: Is
+  this a project you created or one you trust?", whose default is "No, exit"; the planning chat stays
+  empty and the owner must answer in `afk dash` or `afk attach`. The CLI decides from
+  `projects["<folder>"].hasTrustDialogAccepted` in `$CLAUDE_CONFIG_DIR/.claude.json` (default
+  `~/.claude.json`): with that set to `true` beforehand the same start opened at the input prompt, and a
+  control run without it showed the question. Trust is per repository, so a new repo under a trusted
+  `~/code` still asks. Cause in afk: `planfolder.Create` (internal/planfolder/planfolder.go:173), called
+  by `dashCreatePlanFolder` (dash_plan.go:126) and `webCreatePlanFolderWith` (daemon_web_plan.go:260),
+  makes the folder and runs `git init` and nothing records trust. This reverses T8.17 decision A1
+  (afk never writes the trust record), which the owner asked for in inbox item vbkr6s.
+- **Scope:**
+  - `internal/provider`: a way to mark one folder trusted, implemented for the default provider and
+    "not supported" (a no-op the caller ignores) for the others. It re-reads the settings file, sets
+    only that one key for that one folder (the folder's absolute path, as the CLI keys it), keeps every
+    other key and value as it was, and writes with a same-directory atomic rename keeping the file's
+    mode. It honours `CLAUDE_CONFIG_DIR`. A file that is missing, unreadable or not valid JSON is left
+    untouched and returned as an error. The file's location and key are named only here.
+  - `dash_plan.go` and `daemon_web_plan.go`: after `planfolder.Create` succeeds, mark the new folder
+    trusted. A failure does not stop the plan: the folder stays, the planning session starts as today,
+    and the T8.17 "may be waiting at a question in its terminal" message still covers it.
+  - Only folders afk itself creates. A folder the owner names that already exists (`KindUse`), and
+    `afk plan` run by hand in a folder, are left as they are.
+  - `docs/decisions.md`: a `## T14.1` section saying afk now pre-trusts the folders it creates, why
+    (inbox vbkr6s, this fix) and what it does when the write fails, and noting T8.17 A1 is reversed for
+    those folders. `docs/web.md` and `docs/dashboard.md` where they describe the new-plan form and the
+    trust prompt; `docs/runbook-vm.md`'s trust row if it now reads wrong.
+- **Must not:** write the settings file in any test (tests use a temp file through an injected path);
+  change any key but the one trust flag; trust any folder afk did not just create; name the provider
+  outside `internal/provider`.
+- **Acceptance:**
+  - A test that fails today and passes after the fix: a table test of the folder-creation path in
+    `dash_plan.go` and `daemon_web_plan.go` (injected create and trust functions) whose rows show the
+    new folder is marked trusted after `planfolder.Create` succeeds, nothing is trusted when creation
+    fails or the folder already existed, and a trust failure still returns the created folder.
+  - Table tests in `internal/provider` against a temp settings file: the key is added for a new folder,
+    other projects and top-level keys survive byte-equal in value, an existing folder entry keeps its
+    other fields, `CLAUDE_CONFIG_DIR` is honoured, and a missing or broken file is left untouched with
+    an error. The test comment names the load-bearing rows.
+  - `make check` green.
+  - Against a built binary with a scratch `CLAUDE_CONFIG_DIR` holding a copy of the settings file:
+    making a new folder through the dashboard or the web page's new-plan path leaves
+    `hasTrustDialogAccepted: true` for that folder and every other key unchanged, and the agent CLI
+    started there on a pty shows no "Quick safety check" screen.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
