@@ -3799,3 +3799,20 @@ T13.3 ends the agent of a finished change session (extend, amend or reconcile, a
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. The minor notes: this section and the `CONTEXT.md` line are written by the planner and conductor, by design; the by-hand `afk clean` line puts `--project` first because that is the order afk accepts.
+
+## T13.4
+
+T13.4 lets a task carry `(fix)` in its title so the daemon builds it ahead of every other ready task, and makes `afk plan lint` refuse a task marked both `(fix)` and `(owner)`. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **`(fix; note)` is allowed (A1).** The marker is read exactly like `(owner)`: `(fix)` or `(fix; …)`, any case, spaces inside the brackets allowed. Words like `(fixes)`, `(fix up)` or `(prefix)` are ordinary prose and mark nothing.
+- **Started work still goes first (A2).** A fix task beats every other task that is waiting to start, but a task already running, or a parked task whose questions you have answered, still goes first: it has a session waiting and the plan already says it goes first.
+- **A method, like owner (A3).** The flag is `Task.Fix()`, beside `Task.Owner()`; nothing else needed a new field.
+- **No plugin version bump (A4).** The master-plan format document is reference text; T13.1 changed the same skill without one.
+- **The plan's contract is amended (A5).** §5.1 (the marker and the lint error) and §5.2 (the order) each get an Amended line, so T13.5 builds on them.
+- **Tests and prerequisites (A6, A7).** Table tests written first; nothing had to be in place first.
+
+### The review
+
+All three checks passed with no blocker or major finding, so no critic ran. The one minor note was that the quality check left `make check` and a built-binary run to others; both were run before the commit: `make check` is green, and `afk plan lint` on a scratch plan with a `(fix) (owner)` task exits 1 naming `fix-and-owner`, and exits 0 once only `(fix)` remains.

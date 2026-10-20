@@ -323,6 +323,42 @@ func TestTaskOwner(t *testing.T) {
 	}
 }
 
+// TestTaskFix: the "(fixes)", "(fix up)" and "(prefix)" rows are load-bearing.
+// Each is ordinary prose that happens to contain the letters "fix"; reading
+// any of them as a fix task would let an ordinary task jump every other ready
+// task in the daemon. The "both markers" row, a title carrying "(owner)" and
+// "(fix)", must report both: planlint's fix-and-owner rule depends on seeing
+// the two markers together.
+func TestTaskFix(t *testing.T) {
+	tests := []struct {
+		name      string
+		title     string
+		wantFix   bool
+		wantOwner bool
+	}{
+		{"fix alone", "Stop the reminder (fix)", true, false},
+		{"capitalised", "Stop the reminder (Fix)", true, false},
+		{"spaces inside bracket", "Stop the reminder ( FIX )", true, false},
+		{"fix with note", "T13.5 — Stop the reminder (fix; regression from T4.2)", true, false},
+		{"fixes", "Stop the reminder (fixes)", false, false},
+		{"fix up", "Stop the reminder (fix up)", false, false},
+		{"prefix", "Stop the reminder (prefix)", false, false},
+		{"no brackets", "fix the reminder", false, false},
+		{"both markers", "Thing (owner) (fix)", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := Task{Title: tt.title}
+			if got := task.Fix(); got != tt.wantFix {
+				t.Errorf("Fix() for %q = %v, want %v", tt.title, got, tt.wantFix)
+			}
+			if got := task.Owner(); got != tt.wantOwner {
+				t.Errorf("Owner() for %q = %v, want %v", tt.title, got, tt.wantOwner)
+			}
+		})
+	}
+}
+
 // TestDesignSystem: the "Design system (owner + agent)" and "Design system"
 // rows are load-bearing. Each is a task the owner must not be asked to do:
 // the first is an agent's, the second has no owner bracket at all. Reading

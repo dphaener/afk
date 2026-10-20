@@ -147,6 +147,12 @@ func ruleRows() []ruleRow {
 			good: base, at: "| Which colour?", task: "T9.9",
 		},
 		{
+			rule: RuleFixAndOwner, level: LevelError,
+			bad:  swap("#### T1.2 — Second", "#### T1.2 — Second (fix) (owner)"),
+			good: swap("#### T1.2 — Second", "#### T1.2 — Second (fix)"),
+			at:   "#### T1.2", task: "T1.2",
+		},
+		{
 			rule: RuleDependsNoTaskID, level: LevelWarning,
 			bad:  swap("- **Depends on:** T1.1\n", "- **Depends on:** M1 as available\n"),
 			good: base, at: "#### T1.2", task: "T1.2",
@@ -193,7 +199,7 @@ func render(fs []Finding) []string {
 	return out
 }
 
-// TestLintRules has, for each of the eleven rules, a plan on which the rule
+// TestLintRules has, for each of the twelve rules, a plan on which the rule
 // fires and the same plan with only the fix, on which it does not. Every row
 // is load-bearing in the same way: the "fails" half pins the level, line and
 // task a caller will print, and the "passes" half is what stops a rule from
@@ -240,8 +246,8 @@ func TestLintRules(t *testing.T) {
 			t.Errorf("rule %s has no row", rule)
 		}
 	}
-	if len(Rules) != 11 {
-		t.Errorf("len(Rules) = %d, want 11", len(Rules))
+	if len(Rules) != 12 {
+		t.Errorf("len(Rules) = %d, want 12", len(Rules))
 	}
 }
 

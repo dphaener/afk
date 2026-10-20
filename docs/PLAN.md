@@ -636,6 +636,11 @@ Amended 2026-10-13 (T5.6): the daemon reads a third thing from the plan, the Ope
 table under that heading with a "Needed by" column), through `masterplan.Questions`, the same reader
 `afk plan lint` uses. A row is open until its Question cell holds `**Answered <date>:** <answer>`.
 
+Amended 2026-10-19 (T13.4): a task whose title carries `(fix)` or `(fix; …)` (case does not matter, spaces
+inside the brackets are allowed) is a fix task, read through `masterplan.Task.Fix()`; the title stays as
+written. `(fixes)`, `(fix up)` and `(prefix)` are ordinary prose. A title carrying both `(fix)` and
+`(owner)` is a lint error, `fix-and-owner`, which `afk plan lint` reports and exits 1 on.
+
 ### 5.2 Next task (pure function)
 
 Inputs: parsed tasks, ledger, open inbox items. Output: one task id, or a reason there is none.
@@ -658,6 +663,12 @@ item per row (`Open question: …`, found again by its body's first line) and pa
 the same way, before the owner rule. A held task whose items are all answered gets `question_answered`: the
 daemon writes each answer into its row through a guarded plan patch and sets the task from `parked` to
 `pending`, never `running`. A row answered by hand closes its item. A row that names no task holds nothing.
+
+Amended 2026-10-19 (T13.4): a fix task (§5.1) that is ready goes ahead of plan order but behind started work. The
+choice is: in-progress (running or shipping) first, then a parked task whose items are all answered, then the
+first ready fix task in file order, then the first ready task in plan order. A ready fix task with unmet
+dependencies is not ready and does not win. Open-question holds are unchanged: they still come after the choice,
+in `decideNext`, so a held fix task is parked like any other.
 
 ### 5.3 One task
 
@@ -3573,6 +3584,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
   `internal/nexttask`, the latter's comment naming the load-bearing rows (a fix task later in the file
   beats an earlier ready task; a fix task that is not ready does not); a `planlint` row for the error;
   `make check` green; `afk plan lint` on a scratch plan with a `(fix) (owner)` task exits 1.
+- Amended 2026-10-19 (T13.4 done): `masterplan.Task.Fix()` reads `(fix)` or `(fix; …)` (case and inner spaces ignored, like `Owner()`); `nexttask.Next` picks the first ready fix task in file order after in-progress work and an answered parked task and before plan order, with no new `Decision` field; open-question holds stay in the daemon's `decideNext`. `afk plan lint` has a twelfth rule, the error `fix-and-owner`. T13.5's draft can title its task `<what is fixed> (fix)` and rely on this order.
 
 #### T13.5 — The `fix` planning mode
 - **Depends on:** T13.3, T13.4

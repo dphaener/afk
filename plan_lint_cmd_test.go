@@ -55,6 +55,14 @@ const lintCmdWarn = `# Demo
 - **Depends on:** none
 `
 
+// lintCmdFixOwner marks one task both (fix) and (owner), an error (line 3).
+const lintCmdFixOwner = `# Demo
+
+#### T1.1 — First (fix) (owner)
+
+- **Depends on:** none
+`
+
 // lintCmdBad depends on a task that does not exist (line 3).
 const lintCmdBad = `# Demo
 
@@ -107,6 +115,8 @@ func TestPlanLintExitCodes(t *testing.T) {
 			want: 0, wantOut: []string{"warning:", "0 errors, "}},
 		{name: "unknown dependency", plan: lintCmdBad, args: func(p string) []string { return []string{"--project", p} },
 			want: 1, wantOut: []string{":3: error: T1.1: ", "[unknown-dependency]", "1 error, "}},
+		{name: "fix and owner", plan: lintCmdFixOwner, args: func(p string) []string { return []string{"--project", p} },
+			want: 1, wantOut: []string{":3: error: T1.1: ", "[fix-and-owner]"}},
 		{name: "file given", plan: lintCmdClean, extraFile: lintCmdClean, args: func(p string) []string { return []string{filepath.Join(p, "other.md")} },
 			want: 0, wantOut: []string{"other.md: no problems found"}},
 		{name: "file relative to cwd", plan: lintCmdClean, extraFile: lintCmdBad, args: func(string) []string { return []string{"other.md"} },

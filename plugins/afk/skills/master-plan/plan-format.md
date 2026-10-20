@@ -93,6 +93,12 @@ A title that carries `(owner)` or `(owner; …)` marks an **owner task**: someth
 the brackets are allowed. `(owner + agent)` is an ordinary task that an agent does with the owner's help,
 and prose such as `(owner approval)` is ordinary too.
 
+A title that carries `(fix)` or `(fix; …)` marks a **fix task**: a bug fix that a `fix` planning session
+adds to the plan. Case does not matter and spaces inside the brackets are allowed; prose such as `(fixes)`
+or `(fix up)` is ordinary. The daemon picks the first ready fix task in file order ahead of the other ready
+tasks. It still waits for the task's `Depends on` line, and an open question that names it still holds it.
+A title may not carry both `(fix)` and `(owner)`: an agent builds the first and the owner does the second.
+
 One owner task has a fixed title: `Design system (owner)`, the task in which the owner makes the design
 system in their design tool and saves it at `docs/design-system.md`. A project with an interface has it
 in its first milestone, and every task that builds part of the interface depends on it. The planning
@@ -217,6 +223,7 @@ errors and warnings.
 | `unknown-dependency` | error | A task depends on an id that is not a task in the plan. |
 | `dependency-cycle` | error | Tasks depend on each other in a loop. Only the first cycle is reported. |
 | `open-question-unknown-task` | error | An open row's "Needed by" names a task that is not in the plan. |
+| `fix-and-owner` | error | A task title carries both `(fix)` and `(owner)`. Keep one marker. |
 | `depends-no-task-id` | warning | A `Depends on` line has text but no task id, so it is read as no dependencies. |
 | `missing-task-field` | warning | A task has no Goal, Scope or Acceptance. One warning per task, naming what is missing. |
 | `missing-section` | warning | A required section, or the "How to use" paragraph, is missing. |

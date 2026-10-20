@@ -48,6 +48,7 @@ const (
 	RuleUnknownDependency       = "unknown-dependency"
 	RuleDependencyCycle         = "dependency-cycle"
 	RuleOpenQuestionUnknownTask = "open-question-unknown-task"
+	RuleFixAndOwner             = "fix-and-owner"
 	RuleDependsNoTaskID         = "depends-no-task-id"
 	RuleMissingTaskField        = "missing-task-field"
 	RuleMissingSection          = "missing-section"
@@ -64,6 +65,7 @@ var Rules = []string{
 	RuleUnknownDependency,
 	RuleDependencyCycle,
 	RuleOpenQuestionUnknownTask,
+	RuleFixAndOwner,
 	RuleDependsNoTaskID,
 	RuleMissingTaskField,
 	RuleMissingSection,
@@ -223,6 +225,17 @@ func Lint(data []byte) Report {
 		add(LevelError, o.Tasks[index[cyc[0]]].Line, cyc[0], RuleDependencyCycle,
 			"These tasks wait for each other in a loop, so none of them can start: %s. Remove one of these dependencies.",
 			strings.Join(cyc, " -> "))
+	}
+
+	// A fix task is built by an agent and an owner task is done by the owner,
+	// so a title with both markers asks for two opposite things and the
+	// daemon would have to guess which one wins.
+	for _, t := range o.Tasks {
+		if t.Fix() && t.Owner() {
+			add(LevelError, t.Line, t.ID, RuleFixAndOwner,
+				"%s is marked both (fix) and (owner). A fix task is built by an agent; an owner task is yours to do. Keep one marker.",
+				t.ID)
+		}
 	}
 
 	for _, t := range o.Tasks {
