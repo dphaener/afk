@@ -9,6 +9,7 @@ import (
 	"github.com/dphaener/afk/internal/ghrepo"
 	"github.com/dphaener/afk/internal/planfolder"
 	"github.com/dphaener/afk/internal/profile"
+	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/ui"
@@ -121,10 +122,45 @@ func dashPlanFolderWith(location func() planfolder.Location, stat func(string) (
 	return out
 }
 
-// dashCreatePlanFolder makes the folder and the git repository in it. mkdir is
-// os.Mkdir, never MkdirAll, so the project location itself is never created.
+// dashCreatePlanFolder makes the folder and the git repository in it, then
+// marks the new folder trusted in the agent CLI. mkdir is os.Mkdir, never
+// MkdirAll, so the project location itself is never created.
 func dashCreatePlanFolder(path string) error {
-	return planfolder.Create(path, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn)
+	return dashCreatePlanFolderWith(
+		func(p string) error {
+			return planfolder.Create(p, func(p string) error { return os.Mkdir(p, 0o755) }, gitInitIn)
+		},
+		trustNewPlanFolder, path)
+}
+
+// dashCreatePlanFolderWith is dashCreatePlanFolder with the create and trust
+// steps passed in, so a test never writes the real agent settings file.
+//
+// The folder was just made by afk, so trusting it grants nothing the owner did
+// not ask for; without the mark the planning session stops at the agent CLI's
+// trust question before any conversation (T14.1, which reverses T8.17
+// decision A1 for these folders only). A trust failure is ignored: the folder
+// stays and planning starts as before, and the "may be waiting at a question
+// in its terminal" sentence still covers it. Trust is never recorded when
+// create fails.
+func dashCreatePlanFolderWith(create, trust func(path string) error, path string) error {
+	if err := create(path); err != nil {
+		return err
+	}
+	_ = trust(path)
+	return nil
+}
+
+// trustNewPlanFolder marks a folder afk has just made as trusted by the
+// default provider. The dashboard and the web page share it so the two
+// surfaces cannot disagree. A home directory that cannot be found is a trust
+// failure like any other; callers ignore the error.
+func trustNewPlanFolder(path string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return provider.TrustFolder(provider.Default, path, provider.DefaultTrustDeps(home))
 }
 
 // dashGitHubOffer finds out whether the dashboard should ask about a GitHub

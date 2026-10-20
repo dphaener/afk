@@ -415,6 +415,9 @@ func TestWebCheckPlanFolderNames(t *testing.T) {
 //     sentence says so and that nothing was removed.
 //   - "mkdir fails": nothing was made, so no path is returned and git init is
 //     never run.
+//   - "new name": the new folder is marked trusted, once, with its path; every
+//     refusal and failure row leaves trust uncalled.
+//   - "trust fails": the path is still returned and there is no error.
 func TestWebCreatePlanFolder(t *testing.T) {
 	initErr := errors.New("git: not found")
 	tests := []struct {
@@ -424,6 +427,9 @@ func TestWebCreatePlanFolder(t *testing.T) {
 		setup    func(t *testing.T, loc string)
 		mkdirErr error
 		initErr  error
+		trustErr error
+		// wantTrust is whether trust is called with {loc}/demo.
+		wantTrust bool
 		// wantPath may hold {loc}; "" means none.
 		wantPath  string
 		wantErr   []string // each may hold {loc}; nil means no error
@@ -432,8 +438,9 @@ func TestWebCreatePlanFolder(t *testing.T) {
 		// wantDir is whether {loc}/demo is on disk afterwards.
 		wantDir bool
 	}{
-		{name: "new name", text: "demo", wantPath: "{loc}/demo", wantMkdir: true, wantInit: true, wantDir: true},
-		{name: "new name, spaces trimmed", text: " demo ", wantPath: "{loc}/demo", wantMkdir: true, wantInit: true, wantDir: true},
+		{name: "new name", text: "demo", wantPath: "{loc}/demo", wantMkdir: true, wantInit: true, wantDir: true, wantTrust: true},
+		{name: "trust fails", text: "demo", trustErr: errors.New("no settings file"), wantPath: "{loc}/demo", wantMkdir: true, wantInit: true, wantDir: true, wantTrust: true},
+		{name: "new name, spaces trimmed", text: " demo ", wantPath: "{loc}/demo", wantMkdir: true, wantInit: true, wantDir: true, wantTrust: true},
 		{name: "a full path", text: "{loc}/demo", wantErr: []string{"only a plain project name makes a new folder", "Nothing was created."}},
 		{name: "a ~ path", text: "~/demo", wantErr: []string{"is a path", "Nothing was created."}},
 		{name: "a path out of the location", text: "../demo", wantErr: []string{"is a path"}},
@@ -477,7 +484,17 @@ func TestWebCreatePlanFolder(t *testing.T) {
 				return tt.initErr
 			}
 
-			path, err := webCreatePlanFolderWith(func() planfolder.Location { return location }, os.Stat, mkdir, gitInit, sub(tt.text))
+			var trusted []string
+			trust := func(p string) error {
+				trusted = append(trusted, p)
+				return tt.trustErr
+			}
+
+			path, err := webCreatePlanFolderWith(func() planfolder.Location { return location }, os.Stat, mkdir, gitInit, trust, sub(tt.text))
+
+			if tt.wantTrust != (len(trusted) == 1 && trusted[0] == filepath.Join(loc, "demo")) || len(trusted) > 1 {
+				t.Errorf("trust calls = %v, want one for %s: %v", trusted, filepath.Join(loc, "demo"), tt.wantTrust)
+			}
 
 			if path != sub(tt.wantPath) {
 				t.Errorf("path = %q, want %q", path, sub(tt.wantPath))

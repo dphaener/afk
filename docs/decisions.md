@@ -3861,3 +3861,16 @@ T13.7 adds "Fix a bug" to the web page's plan changes, beside extend, amend and 
 ### The review
 
 All three checks passed with no blocker or major finding, so no critic ran. The minor notes: this section was not in either task's file list (it was written by the planner and conductor, by design); the page task ran on a stronger model tier than it needed; and one comment line in `summary.go` is longer than the comments around it. In headless Chrome, axe found no WCAG 2.2 AA violation on the fix form or its confirm card, and Start planning opened the chat of a `fix` session.
+
+## T14.1
+
+T14.1 makes afk mark a folder it has just created for a new plan as trusted in the agent CLI's own settings, before the planning session starts. A brand-new git repository otherwise stops the session at the CLI's "do you trust this folder?" screen before any conversation exists, so the planning chat stays empty until someone answers it in a terminal. The owner asked for this in inbox item vbkr6s, and it reverses T8.17 decision A1 ("afk never writes the trust record") for these folders only. Folders the owner names that already exist, and `afk plan` run by hand, are left as they are. These are the decisions the master plan left open, numbered as in the work plan's assumptions.
+
+### What was decided, and why
+
+- **A plain function, not a new provider method (A1).** The trust write sits beside the unattended-mode write that `afk install` already does, in the same shape. Agents other than the default answer "not supported", and the callers ignore that.
+- **The folder is keyed by its real path (A2).** The CLI keys its record by the folder it runs in, and the system reports that folder with links resolved, so afk resolves links too and falls back to the plain absolute path when it cannot.
+- **Odd files are left alone (A3).** A missing settings file, one that is not valid JSON, or one whose project list or folder entry is not an object is never rewritten: it may be the owner's only copy. A missing project list inside a good file is added.
+- **Everything else is kept as it was (A4).** Only the one trust flag for the one folder changes. Every other value is written back unchanged; the order of the top-level keys may change, which the CLI does not care about.
+- **A failed write does not stop the plan (A5).** The folder stays, the planning session starts as before, and nothing extra is shown. If the session then waits at the trust question, the chat's existing sentence (T8.17) already says to answer it in `afk dash` or with `afk attach`.
+- **How the work was split, tests, prerequisites (A6–A8).** The settings write first, then one task for both forms (they share a Go package) beside a docs task. Table tests written first. Nothing had to be in place first.
