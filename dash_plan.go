@@ -14,8 +14,9 @@ import (
 	"github.com/dphaener/afk/internal/ui"
 )
 
-// dashStartPlan is the dashboard's three plan actions. It runs the same start
-// path `afk plan extend|amend|reconcile` run, through startPlanForSurface, so a
+// dashStartPlan is the dashboard's plan actions: extend, amend, reconcile and
+// fix. It runs the same start path `afk plan extend|amend|reconcile|fix` run,
+// through startPlanForSurface, so a
 // refusal reads as the command's words and a start writes the command's files.
 // internal/ui cannot import this package, so it only sees a function of plain
 // strings and its own result type.

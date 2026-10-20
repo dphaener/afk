@@ -32,9 +32,9 @@
 │         │    extend the plan                     — Start a planning session that adds work to the plan     │         │
 │         │    amend the plan                      — Change the plan; asks what to change in a sentence      │         │
 │         │    reconcile the plan with a document  — Fit the plan to a document; asks for its path           │         │
+│         │    fix a bug                           — Find and fix a bug; asks what is broken                 │         │
 │         │    start a new plan                    — starting a plan is not available here                   │         │
 │         │    check the plan                      — checking the plan is not available here                 │         │
-│         │    approve the plan                    — approving is not available here                         │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
 ╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
 enter run · ↑/↓ move · type filter · esc close · ctrl+] close, or pass it to the agent

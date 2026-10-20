@@ -206,11 +206,13 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"extend needs a project", actionPlanExtend, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project is open"},
 		{"amend needs a project", actionPlanAmend, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project is open"},
 		{"reconcile needs a project", actionPlanReconcile, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project is open"},
+		{"fix needs a project", actionPlanFix, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project is open"},
 		// Nothing else dims them: no build, no selection, no pane. Whether a
 		// change session may start is the start's own answer.
 		{"extend runs with only a project", actionPlanExtend, leaderConds{hasActiveProject: true}, ""},
 		{"amend runs with only a project", actionPlanAmend, leaderConds{hasActiveProject: true}, ""},
 		{"reconcile runs with only a project", actionPlanReconcile, leaderConds{hasActiveProject: true}, ""},
+		{"fix runs with only a project", actionPlanFix, leaderConds{hasActiveProject: true}, ""},
 		// "start a new plan" types its folder, so it runs with no project
 		// at all; only a missing seam dims it.
 		{"new plan runs with no project", actionPlanNew, leaderConds{canStartPlan: true}, ""},
@@ -350,6 +352,8 @@ func TestLeaderTableIsTheDecidedTable(t *testing.T) {
 		{"", actionPlanExtend},
 		{"", actionPlanAmend},
 		{"", actionPlanReconcile},
+		// T13.6: by name only, no key after the leader (f is focus's).
+		{"", actionPlanFix},
 		// T7.4: by name only, no key after the leader.
 		{"", actionPlanNew},
 		// T7.7: by name only, no key after the leader.

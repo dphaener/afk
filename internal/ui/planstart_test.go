@@ -143,6 +143,12 @@ func TestPlanStartActionsCallTheSeamOnce(t *testing.T) {
 		{"reconcile by its full name with restart dimmed", "reconcile the plan with a document", "docs/a.md", planCall{"/projects/api", PlanModeReconcile, "docs/a.md"}, true},
 		// Spaces around the text are the field's, not the owner's.
 		{"amend text is trimmed", "amend", "  Rename the CLI.  ", planCall{"/projects/api", PlanModeAmend, "Rename the CLI."}, false},
+		// T13.6: fix is reached by "a bug": its name starts with f, focus's
+		// key, and "broken" with b, build's, either of which would run that
+		// action from an empty query instead of filtering.
+		{"fix", "a bug", "The export button does nothing.", planCall{"/projects/api", PlanModeFix, "The export button does nothing."}, false},
+		{"fix by its help line", "asks what is broken", "Search crashes.", planCall{"/projects/api", PlanModeFix, "Search crashes."}, false},
+		{"fix text is trimmed", "a bug", "  Login hangs.  ", planCall{"/projects/api", PlanModeFix, "Login hangs."}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -209,6 +215,9 @@ func TestPlanStartEmptyTextIsRefusedInTheForm(t *testing.T) {
 		{"blank path", "document", "  ", planReconcileEmpty},
 		{"empty folder", "start a new plan", "", planNewEmpty},
 		{"blank folder", "start a new plan", "   ", planNewEmpty},
+		// T13.6: fix has its own note, saying what is broken is missing.
+		{"empty fix", "a bug", "", planFixEmpty},
+		{"blank fix", "a bug", "   ", planFixEmpty},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,7 +255,7 @@ func TestPlanStartEmptyTextIsRefusedInTheForm(t *testing.T) {
 
 // TestPlanStartFormEscCancels: esc closes either form with nothing called.
 func TestPlanStartFormEscCancels(t *testing.T) {
-	for _, q := range []string{"amend", "document"} {
+	for _, q := range []string{"amend", "document", "a bug"} {
 		t.Run(q, func(t *testing.T) {
 			m, rec := planModel(t, sess("a"))
 			m, _ = runPlanAction(t, m, q)
@@ -301,6 +310,11 @@ func TestPlanStartResults(t *testing.T) {
 		{name: "started with an archive", listed: true,
 			reply: PlanStartResult{Outcome: PlanStarted, Root: "/projects/api", Archive: "/projects/api/.afk/plan-archive/2026-10-14"},
 			mode:  PlanModeReconcile, wantPane: true, wantText: "moved to /projects/api/.afk/plan-archive/2026-10-14"},
+		// T13.6: fix's notices are worded on their own, never "to  the plan".
+		{name: "fix started", listed: true, reply: PlanStartResult{Outcome: PlanStarted, Root: "/projects/api"},
+			mode: PlanModeFix, wantPane: true, wantText: "Started a planning session to fix a bug."},
+		{name: "fix refused in the seam's words", reply: PlanStartResult{Outcome: PlanRefused, Reason: "You did not say what is broken.", Root: "/projects/api"},
+			mode: PlanModeFix, wantText: "You did not say what is broken."},
 		{name: "resumed", listed: true, reply: PlanStartResult{Outcome: PlanResumed, Root: "/projects/api"},
 			mode: PlanModeResume, wantPane: true, wantText: "already open"},
 		{name: "stale project", listed: true, reply: PlanStartResult{Outcome: PlanStarted, Root: "/projects/api"},
@@ -461,7 +475,7 @@ func TestPlanStartOpenSessionOffer(t *testing.T) {
 // TestPlanStartWithoutTheSeam: a dashboard built with no StartPlan answers
 // each action with a sentence and calls nothing, as PauseBuild's nil does.
 func TestPlanStartWithoutTheSeam(t *testing.T) {
-	for _, q := range []string{"extend", "amend", "document"} {
+	for _, q := range []string{"extend", "amend", "document", "a bug"} {
 		t.Run(q, func(t *testing.T) {
 			m, _ := planModel(t, sess("a"))
 			m.deps.StartPlan = nil
@@ -1966,4 +1980,64 @@ func TestPaneLeadIsSaidOnce(t *testing.T) {
 			t.Errorf("notice = %q, want the arrival worded as before (%q)", m.status, want)
 		}
 	})
+}
+
+// TestPlanFixForm covers what "fix a bug" (T13.6) adds over amend's form.
+// Load-bearing rows: "opens the form" (the dialog must ask what is broken,
+// under its own title, or the owner cannot tell it from amend), "starting
+// notice" (fix has no planVerbs entry, so without its own wording the line
+// would read "to  the plan"), and "project switch" (the description was typed
+// for the project on screen, so a switch must start nothing, as amend's does).
+func TestPlanFixForm(t *testing.T) {
+	cases := []struct {
+		name     string
+		switched bool
+	}{
+		{"opens the form and starts with its own notice", false},
+		{"project switch while open starts nothing", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rec := planModel(t, sess("a"))
+			m, _ = runPlanAction(t, m, "a bug")
+			if m.modal != inputPlanText || m.planTextMode != PlanModeFix {
+				t.Fatalf("modal=%v mode=%q, want the fix form", m.modal, m.planTextMode)
+			}
+			screen := render(m)
+			for _, want := range []string{"Fix a bug", planFixQuestion} {
+				if !strings.Contains(screen, want) {
+					t.Errorf("the form does not show %q", want)
+				}
+			}
+			if m.planTextInput.Placeholder != "one sentence about what is broken" {
+				t.Errorf("placeholder = %q", m.planTextInput.Placeholder)
+			}
+			m = typeText(t, m, "The export button does nothing.")
+			if tc.switched {
+				m.projectGen++
+			}
+			m, cmd := update(t, m, keyEnter)
+			if tc.switched {
+				if cmd != nil {
+					if _, ok := cmd().(planStartedMsg); ok {
+						t.Fatal("the submit started a session after a project switch")
+					}
+				}
+				if len(rec.calls) != 0 {
+					t.Fatalf("seam called %d times, want 0", len(rec.calls))
+				}
+				if m.modal != inputNormal || !strings.Contains(m.status, "project changed") {
+					t.Fatalf("modal=%v status=%q, want the form closed with a notice", m.modal, m.status)
+				}
+				return
+			}
+			if m.status != "Starting a planning session to fix a bug…" {
+				t.Errorf("status = %q, want fix's own starting notice", m.status)
+			}
+			planStarted(t, cmd)
+			if len(rec.calls) != 1 || rec.calls[0] != (planCall{"/projects/api", PlanModeFix, "The export button does nothing."}) {
+				t.Fatalf("calls = %+v, want one fix call with the sentence", rec.calls)
+			}
+		})
+	}
 }

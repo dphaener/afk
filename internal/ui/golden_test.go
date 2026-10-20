@@ -657,8 +657,9 @@ func TestGoldenTaskTokens(t *testing.T) {
 
 // TestGoldenPlanStart pins the plan actions' screens (T7.3): the amend form
 // at both sizes, reached the way a person reaches it (ctrl+], "amend",
-// enter) with a sentence typed; the reconcile form after a blank enter, so
-// the line saying what is missing is framed; and the open-it offer raised
+// enter) with a sentence typed, and the fix form the same way (T13.6); the
+// reconcile form after a blank enter, so the line saying what is missing is
+// framed; and the open-it offer raised
 // when a planning session is already open. The seam is a stand-in that only
 // answers; nothing here starts anything.
 func TestGoldenPlanStart(t *testing.T) {
@@ -680,6 +681,24 @@ func TestGoldenPlanStart(t *testing.T) {
 				t.Fatal("the amend action did not open the form")
 			}
 			m = typeText(t, m, "Add a search page.")
+			assertGolden(t, size.name, render(m))
+		})
+	}
+	// T13.6: the fix form at both sizes, reached by "a bug" (its name
+	// starts with f, focus's key), with a sentence typed.
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-80x24-plan-fix", 80, 24},
+		{"dash-120x40-plan-fix", 120, 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m, _ := runPlanAction(t, withSeam(t, size.w, size.h, PlanStartResult{}), "a bug")
+			if m.modal != inputPlanText || m.planTextMode != PlanModeFix {
+				t.Fatal("the fix action did not open the form")
+			}
+			m = typeText(t, m, "The export button does nothing.")
 			assertGolden(t, size.name, render(m))
 		})
 	}
