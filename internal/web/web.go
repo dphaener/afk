@@ -289,9 +289,10 @@ type Deps struct {
 	// button and the approve POST is not found.
 	ApprovePlan func(root string) PlanApproveResult
 	// StartPlan starts a planning session that changes the plan of the
-	// project at root: mode is extend, amend or reconcile, and text the amend
-	// sentence or the reconcile path (empty for extend). It is the root's
-	// print-free entry point beside `afk plan extend|amend|reconcile`, and it
+	// project at root: mode is extend, amend, reconcile or fix, and text the
+	// amend or fix sentence or the reconcile path (empty for extend). It is
+	// the root's print-free entry point beside `afk plan
+	// extend|amend|reconcile|fix`, and it
 	// refuses in the command's own words. Nil means this page cannot start
 	// one, and the change address is not found.
 	StartPlan func(root, mode, text string) PlanStartResult
@@ -555,7 +556,7 @@ var routes = []route{
 	// Approving the plan: what `afk plan approve` does, behind the confirm,
 	// through Deps.ApprovePlan and nothing else (see plan_approve.go).
 	{http.MethodPost, "/p/{project}/plan/approve", (*server).planApprove},
-	// Changing the plan: what `afk plan extend|amend|reconcile` does, behind
+	// Changing the plan: what `afk plan extend|amend|reconcile|fix` does, behind
 	// the confirm, through Deps.StartPlan and nothing else (see
 	// plan_change.go).
 	{http.MethodPost, "/p/{project}/plan/change", (*server).planChange},

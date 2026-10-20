@@ -73,7 +73,7 @@ type chatPage struct {
 	// their boxes so a refusal never costs them their words.
 	Error       string
 	Text, Other string
-	// HasPlan is whether the empty state offers the three buttons; Start
+	// HasPlan is whether the empty state offers the four buttons; Start
 	// holds them, the same rows the project page's Change the plan section
 	// draws.
 	HasPlan bool
@@ -117,7 +117,7 @@ type chatPageInput struct {
 	// Error, Text and Other come from a refused form post (see chatPage).
 	Error, Text, Other string
 	// HasPlan is whether the project has a plan to change; the empty state
-	// offers the three ways to start a session only then.
+	// offers the four ways to start a session only then.
 	HasPlan bool
 }
 
@@ -246,6 +246,7 @@ var chatModeWords = map[string]string{
 	plansession.ModeExtend:    "Extending the plan",
 	plansession.ModeAmend:     "Amending the plan",
 	plansession.ModeReconcile: "Reconciling the plan",
+	plansession.ModeFix:       "Fixing a bug",
 }
 
 // chatSub is the line under the title: "New plan · Rounds". A mode afk does

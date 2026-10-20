@@ -64,7 +64,9 @@ func (rg *rig) seedScript() {
 // Load-bearing rows: "usage with no reading" (a sentence, not an empty
 // table, so no reading is not read as zero percent), "project with a space
 // in its name" (links must be escaped and still resolve), and "answered
-// item" (shows the answer and where it came from, with no form).
+// item" (shows the answer and where it came from, with no form). "project
+// offers the four plan changes" is load-bearing for the Fix a bug row (T13.7):
+// without it the page has no way in to the fix form.
 func TestPages(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -97,11 +99,12 @@ func TestPages(t *testing.T) {
 			`<a class="nav-item" href="/usage"><span>Usage</span></a>`,
 			`<dt>Folder</dt><dd class="path">`, "<dt>Repository</dt><dd>None set</dd>",
 		}, notWant: []string{"Which database?", ">Chat<", "A planning session is open", "There is no plan to change yet."}},
-		{name: "project offers the three plan changes", path: "/p/app", want: []string{
+		{name: "project offers the four plan changes", path: "/p/app", want: []string{
 			`<h2 class="section-head__title" id="change-title">Change the plan</h2>`, `id="project-change" data-live="planning" data-project="app"`,
 			`<a class="row" href="/p/app/plan/change?mode=extend">`, `<span class="row__title">Extend</span>`, "Add new work to the plan.",
 			`<a class="row" href="/p/app/plan/change?mode=amend">`, `<span class="row__title">Amend</span>`, "Change one thing in the plan, in your words.",
 			`<a class="row" href="/p/app/plan/change?mode=reconcile">`, `<span class="row__title">Reconcile</span>`, "Bring the plan in line with a document, such as a design system.",
+			`<a class="row" href="/p/app/plan/change?mode=fix">`, `<span class="row__title">Fix a bug</span>`, "Find and fix a bug; asks what is broken.",
 		}, notWant: []string{"Open its chat", "<textarea"}},
 		{name: "project with a session open says so instead", setup: func(rg *rig) {
 			must(rg.t, plansession.WriteState(rg.root, plansession.State{Mode: "amend", Phase: "draft", UpdatedAt: "2026-10-12T11:00:00Z"}))

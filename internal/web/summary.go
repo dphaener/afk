@@ -921,7 +921,7 @@ func blockingHeadline(items []inbox.Item) string {
 }
 
 // changeSection is the project page's Change the plan section: either the
-// three action rows, or the one sentence that says why there are none.
+// four action rows (extend, amend, reconcile, fix), or the one sentence that says why there are none.
 type changeSection struct {
 	// Message is set when there are no rows: no plan, or a session open.
 	Message string
@@ -951,5 +951,6 @@ func changeSectionFor(project string, hasPlan, open bool, st plansession.State) 
 		{"Extend", "Add new work to the plan.", href + changeExtend},
 		{"Amend", "Change one thing in the plan, in your words.", href + changeAmend},
 		{"Reconcile", "Bring the plan in line with a document, such as a design system.", href + changeReconcile},
+		{"Fix a bug", "Find and fix a bug; asks what is broken.", href + changeFix},
 	}}
 }

@@ -1099,6 +1099,53 @@ func TestAuthPostOrigin(t *testing.T) {
 	}
 }
 
+// TestAuthPostOriginFix is the cross-site check on a fix POST (T13.7):
+// starting a planning agent from another site's page must be refused before
+// Deps.StartPlan is asked, on both the page and the API address.
+//
+// Load-bearing rows:
+//   - "page fix from another site" and "api fix from another site": 403 with
+//     a signed-in cookie and a complete fix body, and no seam call. The body
+//     is one the seam would accept, so the refusal can only be the Origin.
+//   - "page fix from the same host" and "api fix from the same host": the
+//     same body is started, proving the refused rows are not refused for
+//     some other reason.
+func TestAuthPostOriginFix(t *testing.T) {
+	fix := url.Values{"confirm": {"yes"}, "mode": {"fix"}, "text": {"The export button does nothing."}}
+	tests := []struct {
+		name, target, origin string
+		wantStatus           int
+	}{
+		{"page fix from another site", "/p/app/plan/change", "https://other.example", http.StatusForbidden},
+		{"api fix from another site", "/api/p/app/plan/change", "https://other.example", http.StatusForbidden},
+		{"page fix from the same host", "/p/app/plan/change", "http://afk.local:4253", http.StatusSeeOther},
+		{"api fix from the same host", "/api/p/app/plan/change", "http://afk.local:4253", http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			rg.startResult = PlanStartResult{Outcome: PlanStartStarted}
+			rec := authReq{method: http.MethodPost, target: tc.target, cookie: goodCookie(), host: "afk.local:4253", origin: tc.origin, form: fix}.send(rg.h)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d\n%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			wantCalls := 0
+			if tc.wantStatus != http.StatusForbidden {
+				wantCalls = 1
+			}
+			if len(rg.startCalls) != wantCalls {
+				t.Fatalf("start calls = %v, want %d", rg.startCalls, wantCalls)
+			}
+			if wantCalls == 1 && strings.Join(rg.startCalls[0], "|") != rg.root+"|fix|The export button does nothing." {
+				t.Errorf("start call = %q, want a fix with the description", rg.startCalls[0])
+			}
+			if tc.wantStatus == http.StatusForbidden && !strings.Contains(rec.Body.String(), "another site") {
+				t.Errorf("refusal does not say another site:\n%s", rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestAuthOriginDoesNotApplyToGET: the check is for requests that change
 // something. A GET with a foreign Origin (a link followed from another site)
 // must still be served, or notification links would break.

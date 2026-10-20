@@ -3647,6 +3647,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
   refused origin); the page's JS tests if it changes JS; `make check` green; in headless Chrome against
   a built daemon on a scratch project, the form starts a `fix` session, the chat view opens, and axe
   reports no WCAG 2.2 AA violation on the form.
+- Amended 2026-10-19 (T13.7 done): the web page's plan-change flow has a fourth mode, `fix` (`changeFix` in `internal/web/plan_change.go`): `?mode=fix` asks "What is broken?" in a text area, then amend's confirm card ("Fix a bug in {project}?"); a blank description is refused before the seam ("Nothing started: say what is broken."; the page's field error is "Say what is broken."). The project screen and the chat's empty state show a fourth row, "Fix a bug", and a fix session's chat subtitle is "Fixing a bug". The unknown-mode sentence now ends "Use extend, amend, reconcile or fix." No JS, CSS or root-package change; `docs/web.md` and `docs/reference.md` name four modes. T13.8 can start a fix from either surface.
 
 #### T13.8 — Prove it on a real bug (owner + agent)
 - **Depends on:** T13.2, T13.3, T13.6, T13.7
