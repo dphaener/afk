@@ -29,7 +29,7 @@ func cmdPlan(args []string) {
 	case planRouteApprove:
 		os.Exit(runPlanApprove(args[1:], os.Stdout, os.Stderr, realApproveDeps()))
 	case planRouteMode:
-		// The word is the mode: extend, amend or reconcile.
+		// The word is the mode: extend, amend, reconcile or fix.
 		os.Exit(runPlanMode(args[0], args[1:], os.Stdout, os.Stderr, realPlanDeps()))
 	case planRoutePatch:
 		os.Exit(runPlanPatch(args[1:], os.Stdout, os.Stderr, realPlanPatchDeps()))
@@ -76,6 +76,7 @@ Usage:
   %s
   %s
   %s
+  %s
   afk plan lint [--project DIR] [--json] [--summary] [FILE]
   afk plan check [--project DIR] [--reason TEXT] <session> <task-id> done|failed
 
@@ -86,8 +87,8 @@ draft of the master plan. It needs a terminal, because it asks you questions.
 A folder that is not a git repository yet is turned into one. Leave with
 ctrl-\ and run afk plan again to come back: the session keeps running, and
 what it has saved is kept in .afk/plan/. On a project that already has a plan
-and no planning session open, afk plan asks which of the three changes below
-you want; without a terminal it lists the three commands and exits 1.
+and no planning session open, afk plan asks which of the four changes below
+you want; without a terminal it lists the four commands and exits 1.
   --provider NAME  the agent to run (%s); planning sessions
                    work with the default agent only for now
   --dry-run        print what would happen and change nothing
@@ -95,7 +96,7 @@ Exit codes: 0 you left the session (or the dry run printed), 1 the session
 could not be started here, 2 the command was written wrongly, 10 the session
 was opened somewhere else, 11 the session ended, 12 it is not running.
 
-extend, amend and reconcile start a planning session that changes the plan the
+extend, amend, reconcile and fix start a planning session that changes the plan the
 project already has. They take --project, --provider and --dry-run and have the
 exit codes of afk plan. Each needs a terminal, refuses a project with no plan
 (run afk plan first), and refuses while another planning session is open (run
@@ -107,6 +108,9 @@ moved to .afk/plan/archive/ first, so nothing is overwritten.
                     confirm it first
   reconcile  brings the plan in line with a document, such as a design
              system. FILE must be a file inside the project folder.
+  fix        finds the cause of a bug and adds one task that fixes it, to the
+             plan's Fixes milestone. Say what is broken in quotes.
+             --yes  the session adds the task without asking you to confirm it
 
 status prints the planning session's mode, its phase and what it is waiting
 for. It only reads. Exit codes: 0 printed, 1 one of the session's files is
@@ -183,7 +187,7 @@ nothing the second time. A task already marked failed keeps its first reason.
 
 Exit codes: 0 done (or nothing to do), 1 the plan or the task was not found,
 2 the command was written wrongly.
-`, planSessionUsageLine, planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine,
+`, planSessionUsageLine, planExtendUsageLine, planAmendUsageLine, planReconcileUsageLine, planFixUsageLine,
 		planStatusUsageLine, planAdvanceUsageLine, planApproveUsageLine,
 		planPatchUsageLine, planInsertUsageLine, planDependUsageLine, planNextIDUsageLine,
 		planNextFollowupUsageLine,

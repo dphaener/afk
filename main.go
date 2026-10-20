@@ -198,7 +198,8 @@ Subcommands:
                  afk plan [--project DIR] [--provider NAME] [--dry-run]
                  On a project that has a plan, 'afk plan extend' adds a milestone,
                  'afk plan amend "<what>"' adds, splits or replaces one task and
-                 'afk plan reconcile FILE' brings the plan in line with a document
+                 'afk plan reconcile FILE' brings the plan in line with a document and
+                 'afk plan fix "<what is broken>"' adds a task that fixes a bug
   plan patch     Change a master plan by a guarded patch: the old text must be in
                  the plan exactly once, and nothing is written if the change would
                  add a checker error or alter a task that is running:

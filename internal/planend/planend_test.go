@@ -34,6 +34,8 @@ func TestDecide(t *testing.T) {
 		{"extend waiting for text", func(*Input) {}, true, "the change session is finished, its summary is saved and its agent is waiting for you"},
 		{"amend waiting for text", func(i *Input) { i.State = st(plansession.ModeAmend, plansession.PhaseReview) }, true, ""},
 		{"reconcile waiting for text", func(i *Input) { i.State = st(plansession.ModeReconcile, plansession.PhaseReview) }, true, ""},
+		{"fix waiting for text", func(i *Input) { i.State = st(plansession.ModeFix, plansession.PhaseReview) }, true, ""},
+		{"fix at draft", func(i *Input) { i.State = st(plansession.ModeFix, plansession.PhaseDraft) }, false, "the session is not finished"},
 		{"extend waiting for choice", func(i *Input) { i.Chat = planchat.StateWaitingForChoice }, true, ""},
 		{"no state", func(i *Input) { i.HasState = false; i.State = plansession.State{} }, false, "there is no planning session state"},
 		{"new at review", func(i *Input) { i.State = st(plansession.ModeNew, plansession.PhaseReview) }, false, "a new session is ended by afk plan approve"},

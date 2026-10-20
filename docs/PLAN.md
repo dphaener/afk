@@ -607,6 +607,8 @@ archived with the rest of the session's files when the next change session start
 
 Amended 2026-10-19 (T13.3): `internal/planend.Decide` ends a finished change session's agent (summary saved, chat waiting, host alive) from the daemon's planning hook and from `decidePlanStart` (`OldAgentEnds` / `EndOldAgent`), with `session.StopHost`; `.afk/plan/` is untouched; each end is a `plan_session_ended` line in `.afk/log/decisions.jsonl`.
 
+Amended 2026-10-19 (T13.5): `state.json`'s `mode` may also be `fix` (`afk plan fix`). Its path is amend's: `brief`, `survey`, `draft`, `check`, `review`, with `changes.md` as the `draft` gate and no critic. It is a change session finished at `review` and never approved. `afk plan fix --yes` writes `yes`, as amend does, and `planend` ends it like the other change modes. Its one task goes in the milestone titled `Fixes`, which the first fix creates.
+
 ---
 
 ## 5. The build loop
@@ -1604,7 +1606,7 @@ read in full on 2026-10-13) and the one that wrote this plan. What they showed:
 
 | File | Holds |
 |---|---|
-| `state.json` | `{mode: new\|extend\|amend\|reconcile, phase, updated_at}` |
+| `state.json` | `{mode: new\|extend\|amend\|reconcile\|fix, phase, updated_at}` |
 | `brief.md` | The owner's request, word for word. Never edited after it is saved. |
 | `survey.md` | What was read before asking anything, and the profile entries that apply. |
 | `questions.jsonl` | One line per question: `{id, round, kind: product\|setup, question, options, recommended, answer, answered_at}` |
@@ -3621,6 +3623,7 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
   In a scratch repository with a plan, a built binary's `afk plan fix "x"` writes the brief and
   `state.json` with mode `fix`; with stand-in files at each phase, `afk plan advance` walks it to
   `review`.
+- Amended 2026-10-19 (T13.5 done): `plansession.ModeFix` (`"fix"`) is in `Modes`, walks amend's path and gates through `changesPlan`, and `planend.Decide` ends a finished fix session. `afk plan fix [--yes] "TEXT"` routes like amend (blank text is a usage error, exit 2); the bare `afk plan` chooser offers `4) fix a bug (fix)`. `startPlanForSurface` already accepts `plansession.ModeFix` with a required text ("You did not say what is broken.") and never writes `yes`, so T13.6 and T13.7 only add their keys and forms; their own mode constants and the "extend, amend or reconcile" strings in `internal/ui`, `internal/web` and `docs/web.md` are unchanged. The fix section is in `prompts/modes.md`.
 
 #### T13.6 — Start a bug fix from the dashboard
 - **Depends on:** T13.5

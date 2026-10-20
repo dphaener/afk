@@ -619,6 +619,7 @@ func TestReadState(t *testing.T) {
 		{name: "damaged file: phase is a number", content: `{"mode":"new","phase":3}`, wantErr: "must each be text"},
 		{name: "unknown key", content: `{"mode":"new","phase":"brief","step":2}`, wantErr: `has a key afk does not know: "step"`},
 		{name: "unknown key: wrong case", content: `{"mode":"new","Phase":"brief"}`, wantErr: `has a key afk does not know: "Phase"`},
+		{name: "fix mode", content: `{"mode":"fix","phase":"survey","updated_at":""}`, want: State{ModeFix, PhaseSurvey, ""}, wantOK: true},
 		{name: "unknown mode", content: `{"mode":"rewrite","phase":"brief"}`, wantErr: `has the mode "rewrite", which afk does not know`},
 		{name: "missing mode", content: `{"phase":"brief"}`, wantErr: "has no mode"},
 		{name: "unknown phase", content: `{"mode":"new","phase":"polish"}`, wantErr: `has the phase "polish", which afk does not know`},
@@ -1021,6 +1022,7 @@ func TestPhasesFor(t *testing.T) {
 		{ModeExtend, []string{PhaseBrief, PhaseSurvey, PhaseRounds, PhaseSlices, PhaseDraft, PhaseCheck, PhaseReview}},
 		{ModeAmend, []string{PhaseBrief, PhaseSurvey, PhaseDraft, PhaseCheck, PhaseReview}},
 		{ModeReconcile, []string{PhaseBrief, PhaseSurvey, PhaseRounds, PhaseDraft, PhaseCheck, PhaseReview}},
+		{ModeFix, []string{PhaseBrief, PhaseSurvey, PhaseDraft, PhaseCheck, PhaseReview}},
 		// A mode afk does not know takes the full path, which skips nothing.
 		{"rewrite", Phases},
 		{"", Phases},
@@ -1043,7 +1045,7 @@ func TestPhasesFor(t *testing.T) {
 	}
 }
 
-// TestDecideChangeModes is the phase decision for the three modes that change
+// TestDecideChangeModes is the phase decision for the four modes that change
 // a plan. Every row of TestDecide is a `new` session and is load-bearing as
 // it stands: those rows are the proof that a new session did not change, so
 // the change modes have this table of their own and that one is not edited.
@@ -1096,11 +1098,16 @@ func TestDecideChangeModes(t *testing.T) {
 		{"reconcile reached draft", completeIn(ModeReconcile, PhaseDraft), PhaseDraft, "on to checking the plan", ""},
 		{"reconcile reached check", completeIn(ModeReconcile, PhaseCheck), PhaseCheck, "The plan passes the checker; ", ""},
 		{"reconcile reached review", completeIn(ModeReconcile, PhaseReview), PhaseReview, "session is finished", ""},
+		{"fix reached survey goes on to the change", completeIn(ModeFix, PhaseSurvey), PhaseSurvey, "on to changing the plan", ""},
+		{"fix reached check", completeIn(ModeFix, PhaseCheck), PhaseCheck, "The plan passes the checker; `afk plan advance` moves the session on to the summary", ""},
+		{"fix reached review", completeIn(ModeFix, PhaseReview), PhaseReview, "session is finished and the changes are in the plan", ""},
 
 		// The draft gate: the list of changes, never the plan's existence.
 		{"extend held back at draft: plan is there but changes.md is not", withIn(ModeExtend, PhaseReview, func(f *Files) { f.Changes = false }), PhaseDraft, ".afk/plan/changes.md is missing or empty", ""},
 		{"amend held back at draft: plan is there but changes.md is not", withIn(ModeAmend, PhaseReview, func(f *Files) { f.Changes = false }), PhaseDraft, ".afk/plan/changes.md is missing or empty", ""},
 		{"reconcile held back at draft: plan is there but changes.md is not", withIn(ModeReconcile, PhaseReview, func(f *Files) { f.Changes = false }), PhaseDraft, ".afk/plan/changes.md is missing or empty", ""},
+		{"fix held back at draft: plan is there but changes.md is not", withIn(ModeFix, PhaseReview, func(f *Files) { f.Changes = false }), PhaseDraft, ".afk/plan/changes.md is missing or empty", ""},
+		{"fix at draft with no changes.md waits for it", withIn(ModeFix, PhaseDraft, func(f *Files) { f.Changes = false }), PhaseDraft, "changes made to the plan have not been listed yet", ""},
 		{"amend at draft with no changes.md waits for it", withIn(ModeAmend, PhaseDraft, func(f *Files) { f.Changes = false }), PhaseDraft, "changes made to the plan have not been listed yet", ""},
 
 		// The other gates hold a change session back as they hold a new one.
@@ -1113,6 +1120,7 @@ func TestDecideChangeModes(t *testing.T) {
 		{"extend held back at slices", withIn(ModeExtend, PhaseReview, func(f *Files) { f.Slices = false }), PhaseSlices, "slices.md is missing or empty", ""},
 		{"extend held back at check: critic.md missing", withIn(ModeExtend, PhaseReview, func(f *Files) { f.Critic = false }), PhaseCheck, "critic.md is missing or empty", ""},
 		{"amend held back at check: plan has errors", withIn(ModeAmend, PhaseReview, func(f *Files) { f.PlanErrors = 2 }), PhaseCheck, "2 errors", ""},
+		{"fix held back at check: plan has errors", withIn(ModeFix, PhaseReview, func(f *Files) { f.PlanErrors = 2 }), PhaseCheck, "2 errors", ""},
 		{"reconcile held back at check: plan has errors", withIn(ModeReconcile, PhaseReview, func(f *Files) { f.PlanErrors = 1 }), PhaseCheck, "1 error that", ""},
 
 		// A file of a phase the mode leaves out never holds it back.
@@ -1120,6 +1128,9 @@ func TestDecideChangeModes(t *testing.T) {
 			f.QuestionsPresent, f.Questions, f.Slices, f.Critic = false, nil, false, false
 		}), PhaseReview, "session is finished", ""},
 		{"reconcile does not wait for questions, slices or the critic", withIn(ModeReconcile, PhaseReview, func(f *Files) {
+			f.QuestionsPresent, f.Questions, f.Slices, f.Critic = false, nil, false, false
+		}), PhaseReview, "session is finished", ""},
+		{"fix does not wait for questions, slices or the critic", withIn(ModeFix, PhaseReview, func(f *Files) {
 			f.QuestionsPresent, f.Questions, f.Slices, f.Critic = false, nil, false, false
 		}), PhaseReview, "session is finished", ""},
 		{"a change session does not wait for the plan file", withIn(ModeAmend, PhaseReview, func(f *Files) { f.PlanExists = false }), PhaseReview, "session is finished", ""},
@@ -1172,7 +1183,7 @@ func TestDecideChangeModes(t *testing.T) {
 // where the session is. It also holds that every waiting sentence exists, so
 // a phase added to a path cannot be left with nothing to say.
 func TestDecideChangeModesNeverPastRecorded(t *testing.T) {
-	for _, mode := range []string{ModeExtend, ModeAmend, ModeReconcile} {
+	for _, mode := range []string{ModeExtend, ModeAmend, ModeReconcile, ModeFix} {
 		for _, phase := range PhasesFor(mode) {
 			t.Run(mode+" "+phase, func(t *testing.T) {
 				got := Decide(completeIn(mode, phase))
@@ -1206,7 +1217,7 @@ func TestDecideChangeModesNeverPastRecorded(t *testing.T) {
 //   - The "review refuses" rows. A change session ends at `review`; an
 //     Advance that returned the next phase of Phases there would record
 //     `approved`, which the mode's path does not have.
-//   - "check with no critic.md" for amend and reconcile against the same row
+//   - "check with no critic.md" for amend, reconcile and fix against the same row
 //     for extend: the critic is extend's alone.
 //   - The "with an interface" rows and "recorded at design". The design phase
 //     is a new session's: a change session whose project has an interface
@@ -1256,6 +1267,10 @@ func TestAdvanceChangeModes(t *testing.T) {
 		{"amend: check, gate met", completeIn(ModeAmend, PhaseCheck), PhaseReview, ""},
 		{"amend: check, plan has errors", withIn(ModeAmend, PhaseCheck, func(f *Files) { f.PlanErrors = 1 }), "", "1 error that"},
 		{"amend: check with no critic.md", withIn(ModeAmend, PhaseCheck, func(f *Files) { f.Critic = false }), PhaseReview, ""},
+		{"fix: draft, the plan exists but no changes.md", withIn(ModeFix, PhaseDraft, func(f *Files) { f.Changes = false }), "", "The draft phase is not finished. The changes made to the plan have not been listed yet: .afk/plan/changes.md is missing or empty."},
+		{"fix: check with no critic.md", withIn(ModeFix, PhaseCheck, func(f *Files) { f.Critic = false }), PhaseReview, ""},
+		{"fix: check, plan has errors", withIn(ModeFix, PhaseCheck, func(f *Files) { f.PlanErrors = 1 }), "", "1 error that"},
+		{"fix: review refuses", completeIn(ModeFix, PhaseReview), "", "session is finished and the changes are in the plan"},
 		{"amend: review refuses", completeIn(ModeAmend, PhaseReview), "", "session is finished and the changes are in the plan"},
 
 		// reconcile: brief, survey, rounds, draft, check, review.
@@ -1328,7 +1343,7 @@ func TestAdvanceChangeModes(t *testing.T) {
 // must be the mode's path, in order, and the refusal must come at `review`.
 // It is the one test that would catch Advance and PhasesFor disagreeing.
 func TestAdvanceWalksEachPath(t *testing.T) {
-	for _, mode := range []string{ModeExtend, ModeAmend, ModeReconcile} {
+	for _, mode := range []string{ModeExtend, ModeAmend, ModeReconcile, ModeFix} {
 		t.Run(mode, func(t *testing.T) {
 			f := completeIn(mode, PhaseBrief)
 			walked := []string{f.State.Phase}
@@ -1347,9 +1362,11 @@ func TestAdvanceWalksEachPath(t *testing.T) {
 	}
 }
 
-// TestFinished covers every mode at `review` and at `approved`.
+// TestFinished covers every mode at `review` and at `approved`. The fix
+// rows are load-bearing: a fix session is finished at `review` (a later fix
+// must be able to start) and not before it.
 //
-// The load-bearing pair is "new at review" against the three change modes at
+// The load-bearing pair is "new at review" against the four change modes at
 // `review`. A new session at `review` holds a draft nobody has approved; if
 // it read as finished, starting a change would archive it and the draft's
 // session would be gone. A change session at `review` that did not read as
@@ -1367,6 +1384,8 @@ func TestFinished(t *testing.T) {
 		{"new at approved", State{Mode: ModeNew, Phase: PhaseApproved}, true},
 		{"extend at approved", State{Mode: ModeExtend, Phase: PhaseApproved}, true},
 		{"amend at approved", State{Mode: ModeAmend, Phase: PhaseApproved}, true},
+		{"fix at review", State{Mode: ModeFix, Phase: PhaseReview}, true},
+		{"fix at check", State{Mode: ModeFix, Phase: PhaseCheck}, false},
 		{"reconcile at approved", State{Mode: ModeReconcile, Phase: PhaseApproved}, true},
 
 		{"new at check", State{Mode: ModeNew, Phase: PhaseCheck}, false},
@@ -1678,7 +1697,8 @@ func TestArchive(t *testing.T) {
 //     error must name the phase it is really at.
 //   - "lint errors": Decide reports `check` for these, so only an explicit
 //     test tells the owner to run `afk plan lint`.
-//   - the three change sessions: their review is the end of the path, and
+//   - the four change sessions (fix included, so a fix session is not
+//     approvable): their review is the end of the path, and
 //     approving would look like it worked while there is nothing to approve.
 //   - "already approved": makes a second run of the command harmless, and
 //     it is the one row where a recorded phase beyond review is not an error.
@@ -1701,6 +1721,7 @@ func TestApprove(t *testing.T) {
 		{"extend session", completeIn(ModeExtend, PhaseReview), "", "extend mode"},
 		{"amend session", completeIn(ModeAmend, PhaseReview), "", "amend mode"},
 		{"reconcile session", completeIn(ModeReconcile, PhaseReview), "", "reconcile mode"},
+		{"fix session", completeIn(ModeFix, PhaseReview), "", "fix mode"},
 		{"unknown recorded phase", complete("polish"), "", `the phase "polish"`},
 	}
 	for _, tt := range tests {

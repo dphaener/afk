@@ -227,3 +227,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Review summary**: what a planning session prints when it reaches `review`, saved first to `.afk/plan/summary.md` so `afk plan status` can print it again after the session has ended.
 - **Finished change session's agent**: the agent of an extend, amend or reconcile planning session that has reached `review`, saved its summary and is waiting for the owner; afk ends it (the daemon on its next pass, or the next `afk plan`) so it never blocks the next session.
 - **Fix task**: a master-plan task whose title carries `(fix)` or `(fix; …)`, added by a bug-fix planning session; the daemon builds a ready one ahead of every other ready task, and a task may not be both a fix task and an owner task.
+- **Fix mode**: the fifth planning mode, `afk plan fix "what is broken"`: a change session that reproduces a bug, finds its cause and adds one fix task to the plan, and changes no code itself.
+- **Fixes milestone**: the standing milestone titled exactly `Fixes` that holds every fix task; the first `afk plan fix` creates it, and later fixes are added at its end.

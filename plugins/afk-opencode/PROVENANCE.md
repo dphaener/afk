@@ -65,6 +65,8 @@ earlier forge behaviour in these areas:
   are part of the binary and work for any agent.
 - the `PreToolUse` hook for questions (plugin version 5.7.4): the port has no `PreToolUse` hook (it has
   no hooks directory), so the web page cannot answer a planning question in a session run by the port.
+- the `fix` planning mode (T13.5): the port has no master-plan skill, so `afk plan fix` sessions need
+  `plugins/afk`; the binary's plan commands work for any agent.
 
 The resync is deferred (`docs/PLAN.md` §9). Until then, do not use this port for sessions
 that rely on the behaviour above.

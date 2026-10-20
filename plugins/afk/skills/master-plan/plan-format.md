@@ -98,6 +98,8 @@ adds to the plan. Case does not matter and spaces inside the brackets are allowe
 or `(fix up)` is ordinary. The daemon picks the first ready fix task in file order ahead of the other ready
 tasks. It still waits for the task's `Depends on` line, and an open question that names it still holds it.
 A title may not carry both `(fix)` and `(owner)`: an agent builds the first and the owner does the second.
+Fix tasks live in a standing milestone titled exactly `Fixes`, created by the first `afk plan fix` with the
+outcome "bugs found after a task shipped are fixed"; later fixes are added at its end.
 
 One owner task has a fixed title: `Design system (owner)`, the task in which the owner makes the design
 system in their design tool and saves it at `docs/design-system.md`. A project with an interface has it

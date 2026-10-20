@@ -219,6 +219,9 @@ func TestRoutePlanArgs(t *testing.T) {
 		{"amend", []string{"amend", "add a task"}, planRouteMode},
 		{"amend with a flag", []string{"amend", "--yes", "add a task"}, planRouteMode},
 		{"reconcile", []string{"reconcile", "docs/design-system.md"}, planRouteMode},
+		{"fix", []string{"fix", "afk tasks crashes"}, planRouteMode},
+		{"fix with --yes", []string{"fix", "--yes", "afk tasks crashes"}, planRouteMode},
+		{"fix with no text", []string{"fix"}, planRouteMode},
 		{"patch", []string{"patch", "--old", "a", "--new", "b"}, planRoutePatch},
 		{"insert", []string{"insert", "--after", "T1.1", "--entry", "e"}, planRouteInsert},
 		{"depend", []string{"depend", "T1.2", "T1.1"}, planRouteDepend},
@@ -1168,7 +1171,7 @@ func planAtReview(t *testing.T, dir string) {
 	writePlanFile(t, dir, ".afk/plan/survey.md", "a survey\n")
 }
 
-// TestRunPlanMode pins `afk plan extend`, `amend` and `reconcile`: what each
+// TestRunPlanMode pins `afk plan extend`, `amend`, `reconcile` and `fix`: what each
 // seeds, and that every refusal leaves the project byte for byte as it was.
 //
 // Load-bearing rows:
@@ -1184,7 +1187,11 @@ func planAtReview(t *testing.T, dir string) {
 //     run again once the cause is fixed.
 //   - "dry run writes nothing": a dry run that seeded a state would make the
 //     next real command a refusal ("a session is already open").
-//   - "extend rejects --yes": --yes belongs to amend only and is not
+//   - "fix writes the brief word for word", "fix --yes writes the marker" and
+//     "fix with no text": fix is amend's twin on the command line, so the
+//     bug report reaches the brief unchanged, --yes is the owner's advance yes,
+//     and a blank report is a usage error that writes nothing.
+//   - "extend rejects --yes": --yes belongs to amend and fix only and is not
 //     silently accepted elsewhere.
 func TestRunPlanMode(t *testing.T) {
 	const archive = ".afk/plan/archive/20261013T090000Z/"
@@ -1231,6 +1238,19 @@ func TestRunPlanMode(t *testing.T) {
 			args:      []string{"amend", "rename the export task", "--yes"},
 			wantCalls: []string{"spawn marker amend/brief", "attach started"},
 			wantFiles: map[string]string{".afk/plan/brief.md": "rename the export task\n", ".afk/plan/yes": ""},
+		},
+		{
+			name: "fix writes the brief word for word", setup: plan, fake: planFake{tty: true},
+			args:      []string{"fix", "afk tasks  crashes,", "on an empty plan"},
+			wantCalls: []string{"spawn marker fix/brief", "attach started"},
+			wantFiles: map[string]string{".afk/plan/brief.md": "afk tasks  crashes, on an empty plan\n"},
+			absent:    []string{".afk/plan/yes"},
+		},
+		{
+			name: "fix --yes writes the marker", setup: plan, fake: planFake{tty: true},
+			args:      []string{"fix", "afk tasks crashes", "--yes"},
+			wantCalls: []string{"spawn marker fix/brief", "attach started"},
+			wantFiles: map[string]string{".afk/plan/brief.md": "afk tasks crashes\n", ".afk/plan/yes": ""},
 		},
 		{
 			name: "amend, flags between and the project named from elsewhere", setup: plan, fake: planFake{tty: true},
@@ -1366,6 +1386,16 @@ func TestRunPlanMode(t *testing.T) {
 			wantCode: 2, wantErr: "say what to change", unchanged: true,
 		},
 		{
+			name: "fix with no text", setup: plan, fake: planFake{tty: true},
+			args:     []string{"fix"},
+			wantCode: 2, wantErr: "Usage: " + planFixUsageLine, unchanged: true,
+		},
+		{
+			name: "fix with blank text", setup: plan, fake: planFake{tty: true},
+			args:     []string{"fix", "  ", ""},
+			wantCode: 2, wantErr: `say what is broken, in quotes. For example: afk plan fix "afk tasks crashes on an empty plan".`, unchanged: true,
+		},
+		{
 			name: "reconcile with no file", setup: plan, fake: planFake{tty: true},
 			args:     []string{"reconcile"},
 			wantCode: 2, wantErr: "Usage: " + planReconcileUsageLine, unchanged: true,
@@ -1464,7 +1494,7 @@ func TestRunPlanMode(t *testing.T) {
 // it asks, and then does what the matching command does.
 //
 // Load-bearing rows: "empty answer", "unknown answer" and "amend with no
-// text" (nothing is started and nothing is written; the three commands are
+// text" (nothing is started and nothing is written; the four commands are
 // listed, so the owner is not left guessing); "2 then the text" (the second
 // answer is the brief, word for word); "3 then a missing file" (the answer is
 // checked exactly as the command's argument is).
@@ -1483,7 +1513,10 @@ func TestPlanChoosesAMode(t *testing.T) {
 		{"2 then the text", []string{"2", "add a task that  exports CSV"}, 0, "", "amend/brief", "add a task that  exports CSV\n", 2},
 		{"3 then the file", []string{"3", " docs/design-system.md "}, 0, "", "reconcile/brief", "Reconcile the plan with docs/design-system.md.\n", 2},
 		{"empty answer", []string{""}, 1, "You did not pick one. Nothing was started.", "", "", 1},
-		{"unknown answer", []string{"4"}, 1, `"4" is not one of the three choices. Nothing was started.`, "", "", 1},
+		{"4 then the text", []string{"4", "afk tasks  crashes"}, 0, "", "fix/brief", "afk tasks  crashes\n", 2},
+		{"fix then the text", []string{" Fix ", "afk tasks crashes"}, 0, "", "fix/brief", "afk tasks crashes\n", 2},
+		{"4 then nothing", []string{"4", "  "}, 1, "You did not say what is broken. Nothing was started.", "", "", 2},
+		{"unknown answer", []string{"5"}, 1, `"5" is not one of the four choices. Nothing was started.`, "", "", 1},
 		{"amend with no text", []string{"2", "  "}, 1, "You did not say what to change. Nothing was started.", "", "", 2},
 		{"reconcile with no file", []string{"3", ""}, 1, "You did not name a document. Nothing was started.", "", "", 2},
 		{"3 then a missing file", []string{"3", "missing.md"}, 1, "the file missing.md was not found", "", "", 2},
@@ -1504,7 +1537,7 @@ func TestPlanChoosesAMode(t *testing.T) {
 				t.Fatalf("asked %d question(s), want %d: %q", len(f.asked), tt.wantAsked, f.asked)
 			}
 			for _, want := range []string{"already has a plan at " + filepath.Join(dir, "docs", "PLAN.md"),
-				"1) add a milestone (extend)", "2) add, split or replace one task (amend)", "3) bring the plan in line with a document (reconcile)"} {
+				"1) add a milestone (extend)", "2) add, split or replace one task (amend)", "3) bring the plan in line with a document (reconcile)", "4) fix a bug (fix)", "Type 1, 2, 3 or 4"} {
 				if !strings.Contains(f.asked[0], want) {
 					t.Errorf("the question is missing %q:\n%s", want, f.asked[0])
 				}
@@ -1520,9 +1553,9 @@ func TestPlanChoosesAMode(t *testing.T) {
 					t.Errorf("a run that started nothing made outside calls: %v", f.calls)
 				}
 				// The file refusal is the command's own message; the others
-				// list the three commands.
+				// list the four commands.
 				if !strings.Contains(tt.wantErr, "missing.md") && !strings.Contains(se.String(), planModeCommands) {
-					t.Errorf("stderr does not list the three commands:\n%s", se.String())
+					t.Errorf("stderr does not list the four commands:\n%s", se.String())
 				}
 				return
 			}
@@ -1598,7 +1631,7 @@ func TestPlanWithAPlanAsksNothingWithoutATerminalOrInADryRun(t *testing.T) {
 // refusal tells the owner to run `afk plan`, so `afk plan` must take them
 // there.
 func TestPlanResumesAnOpenChangeSession(t *testing.T) {
-	for _, mode := range []string{plansession.ModeExtend, plansession.ModeAmend, plansession.ModeReconcile} {
+	for _, mode := range []string{plansession.ModeExtend, plansession.ModeAmend, plansession.ModeReconcile, plansession.ModeFix} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			writePlanFile(t, dir, "docs/PLAN.md", "# Plan\n")

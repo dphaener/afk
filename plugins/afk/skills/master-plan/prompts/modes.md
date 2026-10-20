@@ -1,8 +1,8 @@
-# Changing a Plan That Exists: extend, amend, reconcile
+# Changing a Plan That Exists: extend, amend, reconcile, fix
 
-`afk plan status` prints the session's mode on its first line. This prompt applies when the mode is `extend`, `amend` or `reconcile`: the project already has a master plan, and the session changes it. When the mode is `new`, skip this prompt; the phase prompts above are the whole session.
+`afk plan status` prints the session's mode on its first line. This prompt applies when the mode is `extend`, `amend`, `reconcile` or `fix`: the project already has a master plan, and the session changes it. When the mode is `new`, skip this prompt; the phase prompts above are the whole session.
 
-The rules of the session all still hold. In these three modes the phase prompts above apply only where this prompt says "as in a new session"; everything else about a phase is given here.
+The rules of the session all still hold. In these four modes the phase prompts above apply only where this prompt says "as in a new session"; everything else about a phase is given here.
 
 ## What is different in these modes
 
@@ -169,6 +169,29 @@ An empty list is written as "none". Mark each item as either a **choice** for th
 - Name the follow-up file to the owner, add a line for it to `changes.md`, and say that running `afk plan reconcile` on the design system again, once it is updated, finishes the job.
 
 **`check`.** Run `afk plan lint`. Fix every error with `afk plan patch` and add a line to `changes.md` for each. Then run `afk plan advance`.
+
+---
+
+## Mode `fix` — one bug reproduced and one fix task added
+
+Phases, in order: `brief`, `survey`, `draft`, `check`, `review`. There are no rounds and no critic. The session changes no code file; it adds one task to the plan, and the build loop builds that task next.
+
+**`brief`.** `afk plan fix` already saved the owner's words in `.afk/plan/brief.md`. Read it, do not rewrite it, and run `afk plan advance`.
+
+**`survey`.** Read the brief, the code and logs it points at, and the output of `afk tasks`. Reproduce the bug with the project's own commands: its tests, its build, the binary. Write `.afk/plan/survey.md`: the steps that show the bug, what was seen, the cause (file and line), and the task whose change brought it in, if that can be told. **Change no code file** in this session, not to try a fix and not to add a test. Anything written to try things goes in the `mktemp -d` scratch folder outside the project. When you cannot reproduce the bug, ask the owner in plain words for what is missing (AskUserQuestion), and write what was tried in `survey.md` either way. Run `afk plan advance`.
+
+**`draft`.** Write one task, titled `<what is fixed> (fix)`. Its Acceptance names a test that fails today and passes after the fix; its Scope points at the cause from the survey. It goes in the milestone titled exactly `Fixes`:
+
+- **The plan has no `Fixes` milestone**: the first fix creates it. The entry file holds the heading `### M<next number> — Fixes`, the outcome "bugs found after a task shipped are fixed", and the task under it, with the id `T<that number>.1` (the one id not from `next-id`, as for extend's new milestone). Run `afk plan insert --new-milestone --entry FILE`.
+- **It has one**: get the id with `afk plan next-id --milestone <its number>` and run `afk plan insert --milestone <its number> --entry FILE`.
+
+Show the entry and ask the owner for a yes, as in `amend`; skip the question when `.afk/plan/yes` exists (never create or remove that file). Then, when the survey named the task that caused the bug and `afk tasks` shows that task is not running or shipping, add an Amended line on it naming the fix task, with `afk plan patch`. Write each command to `.afk/plan/changes.md` as it succeeds. Run `afk plan advance`.
+
+**`check`.** As in `amend`: run `afk plan lint`, fix every error with `afk plan patch` and add a line to `changes.md` for each, then run `afk plan advance`.
+
+**`review`.** The shared section below applies, `summary.md` included.
+
+Edit no file but the plan (through the plan commands) and those under `.afk/plan/`.
 
 ---
 
