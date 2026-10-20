@@ -9,6 +9,9 @@
 // the decision free of the filesystem is what lets every rule be a row in one
 // table test, with no project on disk.
 //
+// A ready fix task (docs/PLAN.md §2 "Bug fixes") is chosen ahead of other
+// ready tasks, but after started work and an answered parked task.
+//
 // The rules lean towards not starting. Anything this package cannot show to
 // be finished (a superseded task with no replacements, a replacement the plan
 // does not know, replacements that name each other in a loop) counts as
@@ -185,11 +188,14 @@ func Unmet(task masterplan.Task, l ledger.Ledger) []string {
 //     checked again; they were met when it first ran. A parked task naming no
 //     items is never chosen here, because there is nothing whose answering
 //     could release it; only a change to the ledger can.
-//  3. The first pending task with every dependency satisfied is chosen.
-//  4. Every task is done or superseded: ReasonAllDone.
-//  5. A task is parked: ReasonWaitingOnOwner.
-//  6. A task is failed: ReasonBlockedByFailed.
-//  7. Otherwise ReasonStuck.
+//  3. The first pending fix task (masterplan.Task.Fix) with every dependency
+//     satisfied is chosen, ahead of every other ready task. Open questions
+//     hold a chosen fix task later, in the daemon, as for any task.
+//  4. The first pending task with every dependency satisfied is chosen.
+//  5. Every task is done or superseded: ReasonAllDone.
+//  6. A task is parked: ReasonWaitingOnOwner.
+//  7. A task is failed: ReasonBlockedByFailed.
+//  8. Otherwise ReasonStuck.
 //
 // A plan with no tasks is ReasonAllDone.
 func Next(tasks []masterplan.Task, l ledger.Ledger, openItems func(id string) bool) Decision {
@@ -215,7 +221,7 @@ func choose(tasks []masterplan.Task, l ledger.Ledger, openItems func(id string) 
 	open := func(id string) bool { return openItems == nil || openItems(id) }
 
 	var inProgress, parked, failed, pending []string
-	var answered, ready string
+	var answered, ready, readyFix string
 	var waitingOn []string
 	finished := 0
 	for _, t := range tasks {
@@ -242,6 +248,9 @@ func choose(tasks []masterplan.Task, l ledger.Ledger, openItems func(id string) 
 			if ready == "" && len(m.unmet(t)) == 0 {
 				ready = t.ID
 			}
+			if readyFix == "" && t.Fix() && len(m.unmet(t)) == 0 {
+				readyFix = t.ID
+			}
 		case ledger.Done, ledger.Superseded:
 			finished++
 		}
@@ -252,6 +261,11 @@ func choose(tasks []masterplan.Task, l ledger.Ledger, openItems func(id string) 
 		return Decision{Reason: ReasonInProgress, InProgress: inProgress}
 	case answered != "":
 		return Decision{Task: answered}
+	// A ready fix task goes ahead of plan order but behind started work:
+	// a bug the owner reported should not wait behind the queue, yet it must
+	// not cut in front of a task already begun or one the owner just answered.
+	case readyFix != "":
+		return Decision{Task: readyFix}
 	case ready != "":
 		return Decision{Task: ready}
 	// Counted, not inferred from the other lists being empty: a status this

@@ -61,6 +61,18 @@ var ownerMarkerRE = regexp.MustCompile(`(?i)\(\s*owner\s*(\)|;)`)
 // them as owner tasks would leave agent work undone.
 func (t Task) Owner() bool { return ownerMarkerRE.MatchString(t.Title) }
 
+// fixMarkerRE matches a bracketed marker that is exactly "(fix)" or starts
+// "(fix;", ignoring case and allowing spaces the way ownerMarkerRE does.
+var fixMarkerRE = regexp.MustCompile(`(?i)\(\s*fix\s*(\)|;)`)
+
+// Fix reports whether the task is a bug fix: its title carries "(fix)" or
+// "(fix; ...)", as in "T13.5 — Stop the duplicate reminder (fix; regression
+// from T4.2)". A fix task is what a fix planning session adds, and the daemon
+// picks a ready one ahead of every other ready task (docs/PLAN.md §2, "Bug
+// fixes"), so the match must be unmistakable. "(fixes)", "(fix up)" and
+// "(prefix)" are prose, and a task that read as a fix would jump the queue.
+func (t Task) Fix() bool { return fixMarkerRE.MatchString(t.Title) }
+
 // DesignSystemFile is where the owner saves the design system the design tool
 // hands back. It is written into the plan's design task and the daemon's item
 // for that task, so both name the same file.

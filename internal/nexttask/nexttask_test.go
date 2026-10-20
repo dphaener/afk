@@ -678,3 +678,48 @@ func TestNextOwner(t *testing.T) {
 		})
 	}
 }
+
+// TestNextFix: a ready fix task beats every other ready task (docs/PLAN.md
+// §2 "Bug fixes"). The load-bearing rows are "later fix beats earlier ready
+// task", which is the whole feature, and "fix with an unmet dependency does
+// not win", because a fix jumping its own dependency would start work before
+// what it builds on has landed. The in-progress and answered-parked rows pin
+// the fix rule below started work.
+func TestNextFix(t *testing.T) {
+	fix := func(id string, deps ...string) masterplan.Task {
+		return masterplan.Task{ID: id, Title: "Repair " + id + " (fix)", DependsOn: deps}
+	}
+	fixOwner := masterplan.Task{ID: "T9.9", Title: "Repair (fix) (owner)"}
+	tests := []struct {
+		name   string
+		tasks  []masterplan.Task
+		ledger ledger.Ledger
+		open   func(string) bool
+		want   Decision
+	}{
+		{"later fix beats earlier ready task", []masterplan.Task{task("T1.1"), fix("T1.2")},
+			ledger.Ledger{}, nil, Decision{Task: "T1.2"}},
+		{"fix with an unmet dependency does not win", []masterplan.Task{task("T1.1"), task("T1.0"), fix("T1.2", "T1.0")},
+			ledger.Ledger{Tasks: []ledger.Entry{entry("T1.0", ledger.Failed)}}, nil, Decision{Task: "T1.1"}},
+		{"first of two ready fixes wins", []masterplan.Task{task("T1.1"), fix("T1.2"), fix("T1.3")},
+			ledger.Ledger{}, nil, Decision{Task: "T1.2"}},
+		{"fix with its dependency done wins", []masterplan.Task{task("T1.1"), task("T1.0"), fix("T1.2", "T1.0")},
+			ledger.Ledger{Tasks: []ledger.Entry{entry("T1.0", ledger.Done)}}, nil, Decision{Task: "T1.2"}},
+		{"in progress beats a ready fix", []masterplan.Task{task("T1.1"), fix("T1.2")},
+			ledger.Ledger{Tasks: []ledger.Entry{entry("T1.1", ledger.Running)}}, nil,
+			Decision{Reason: ReasonInProgress, InProgress: []string{"T1.1"}}},
+		{"parked and answered beats a ready fix", []masterplan.Task{task("T1.1"), fix("T1.2")},
+			ledger.Ledger{Tasks: []ledger.Entry{parked("T1.1", "i1")}}, openOnly(),
+			Decision{Task: "T1.1"}},
+		{"fix that is also owner is chosen with Owner", []masterplan.Task{task("T1.1"), fixOwner},
+			ledger.Ledger{}, nil, Decision{Task: "T9.9", Owner: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Next(tt.tasks, tt.ledger, tt.open)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Next = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
