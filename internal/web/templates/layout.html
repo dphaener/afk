@@ -21,6 +21,7 @@
 <script src="{{asset "submit.js"}}" defer></script>
 <script src="{{asset "chat.js"}}" defer></script>
 <script src="{{asset "sw-register.js"}}" defer></script>
+<script src="{{asset "notifications.js"}}" defer></script>
 {{end}}</head>
 <body class="afk">
 <div class="shell">
@@ -34,7 +35,8 @@
 {{end}}
   <span class="live" data-live-status hidden>Live</span>
   <div class="app-bar__actions">
-{{if and .Overview .AddProject}}    <a class="icon-btn" href="/projects/add" aria-label="Add a project"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></a>
+{{if and .Overview .Notifications}}    <a class="icon-btn" href="/notifications" aria-label="Notifications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></a>
+{{end}}{{if and .Overview .AddProject}}    <a class="icon-btn" href="/projects/add" aria-label="Add a project"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></a>
 {{end}}    <form method="post" action="/signout"><button class="btn btn--quiet" type="submit">Sign out</button></form>
   </div>
 </header>
@@ -43,7 +45,8 @@
   <nav class="topnav__links" aria-label="Main">
     <a class="topnav__link" href="/"{{if eq .Nav "projects"}} aria-current="{{.Current}}"{{end}}>Projects <span class="count count--quiet">{{.Projects}}</span></a>
     <a class="topnav__link" href="/usage"{{if eq .Nav "usage"}} aria-current="{{.Current}}"{{end}}>Usage</a>
-  </nav>
+{{if .Notifications}}    <a class="topnav__link" href="/notifications"{{if eq .Nav "notifications"}} aria-current="{{.Current}}"{{end}}>Notifications</a>
+{{end}}  </nav>
   <span class="live topnav__live" data-live-mirror hidden>Live</span>
   {{if .AddProject}}<a class="btn btn--secondary btn--sm topnav__action" href="/projects/add">Add a project</a>
   {{end}}{{if .PlanNew}}<a class="btn btn--primary btn--sm topnav__action" href="/plan/new">Plan a new project</a>

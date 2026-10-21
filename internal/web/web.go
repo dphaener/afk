@@ -36,6 +36,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -51,6 +52,7 @@ import (
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/webpass"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // Project is one project the page shows. Name is what appears in addresses
@@ -374,6 +376,18 @@ type Deps struct {
 	// means none is set, and then nobody can sign in. New refuses a nil
 	// Password.
 	Password func() (webpass.Record, error)
+	// PushDir is afk's state folder on this machine, where push-key.json
+	// (afk's VAPID key) and push-devices.json (the signed-up devices) live.
+	// The page reads and writes them through internal/webpush directly, as
+	// `afk daemon` does, so both always mean the same files. Empty means push
+	// is off: GET /notifications and every /api/push address answer 404.
+	PushDir string
+	// PushSend sends one notification to one device (webpush.Sender.Send in
+	// real use, with the key from PushDir). It is a seam so a test never
+	// reaches a real push service. Nil also means push is off. gone is true
+	// when the push service says the subscription is over for good; it is
+	// not an error.
+	PushSend func(ctx context.Context, sub webpush.Subscription, p webpush.Payload, o webpush.Options) (gone bool, err error)
 	// Ticker starts the clock the live-change stream's reader runs on (see
 	// live.go) and returns its channel and the function that stops it. It is
 	// here so a test can decide exactly when the reader looks at the files,
@@ -551,6 +565,9 @@ var routes = []route{
 	// Deps.RefreshUsage. A POST of its own, so GET /usage stays a read that
 	// can never start one, and POST /usage stays not found.
 	{http.MethodPost, "/usage/refresh", (*server).refreshUsage},
+	// The Notifications page: machine-wide, like Usage. Its three JSON
+	// POSTs are not here (see build and push.go).
+	{http.MethodGet, "/notifications", (*server).notifications},
 	{http.MethodGet, "/p/{project}", (*server).project},
 	// The plan view. A plan on the review list, whose project is not a
 	// configured one yet, is served here too (findPlanProject).
@@ -672,6 +689,15 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("POST /api/p/{project}/plan/chat", s.planReply)
 	mux.HandleFunc("GET /p/{project}/plan/chat", s.planChat)
 	mux.HandleFunc("POST /p/{project}/plan/chat", s.planChatReply)
+	// The push sign-up, sign-off and test are JSON only: a push subscription
+	// is made by the browser's PushManager, which no form can reach, so they
+	// have no page twin and stay out of routes, which would give them one.
+	// guard covers them like every other POST (the cookie, then checkPost's
+	// Origin check and size limit); auth_test.go checks each needs a sign-in,
+	// since routes' own walk does not see them.
+	mux.HandleFunc("POST /api/push/subscribe", s.pushSubscribe)
+	mux.HandleFunc("POST /api/push/unsubscribe", s.pushUnsubscribe)
+	mux.HandleFunc("POST /api/push/test", s.pushTest)
 	// The confirm page behind Pause and Resume is HTML only, so it stays out
 	// of routes for the same reason.
 	mux.HandleFunc("GET /p/{project}/confirm/{action}", s.confirm)
@@ -725,8 +751,8 @@ func isAPI(path string) bool {
 }
 
 // respond is the one place a handler's answer is written. name says which
-// view this is ("overview", "usage", "project", "plan", "inbox", "item",
-// "tasks", "task", "error").
+// view this is ("overview", "usage", "notifications", "project", "plan",
+// "inbox", "item", "tasks", "task", "error").
 // A path under /api gets the view as JSON. Any other path gets the page
 // named by name, except that a successful POST redirects (see redirectAfter)
 // so that reloading the page they land on does not send the form again.

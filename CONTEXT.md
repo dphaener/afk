@@ -235,3 +235,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Device list**: `push-devices.json`, every push subscription signed up on this machine, with a label naming the browser and system.
 - **Web app manifest**: the file `/manifest.webmanifest` that tells a browser the page can be installed as an app: its name, its icons, its colours and the address it opens at.
 - **Service worker**: a small script (`/sw.js`) the browser keeps for an installed page; afk's does nothing yet and caches nothing, and T15.5 gives it the push handler.
+- **Notifications page**: `/notifications`, the machine-wide web page where the owner turns notifications on or off for the device they are using and sends a test; reached from the bell on the phone bar and Notifications on the top bar.
+- **This device card**: the Notifications page's card showing whether the device in hand gets notifications (on, off, blocked, or a note saying what it needs first: an `https://` address, the iPhone home screen, or another browser).
+- **Send test**: the This device card's button that sends one push to this device only, to prove notifications arrive.

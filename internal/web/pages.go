@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "error", "signin"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "notifications", "error", "signin"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -120,14 +120,16 @@ type chrome struct {
 	// button's address and its spoken name (the button is an icon only).
 	Title, Back, BackLabel string
 	// Meta is the desktop bar's optional meta line (the design system's
-	// app-bar--desktop). Only the planning chat sets it, to its mode and
-	// phase; "" draws no meta.
+	// app-bar--desktop). The planning chat sets it to its mode and phase,
+	// and the Notifications page to the line saying it is machine-wide; ""
+	// draws no meta.
 	Meta string
-	// Nav is the top bar's current item, "projects" or "usage", and Current
-	// is the aria-current value to give it: "page" when the page is that
-	// item's own address, "true" when it is a page under it (a project, a
-	// plan, an item), because aria-current="page" on a link to / would tell
-	// a screen reader the owner is on / when they are not.
+	// Nav is the top bar's current item, "projects", "usage" or
+	// "notifications", and Current is the aria-current value to give it:
+	// "page" when the page is that item's own address, "true" when it is a
+	// page under it (a project, a plan, an item), because
+	// aria-current="page" on a link to / would tell a screen reader the
+	// owner is on / when they are not.
 	Nav, Current string
 	// Projects is the number beside Projects in the top bar.
 	Projects int
@@ -148,6 +150,11 @@ type chrome struct {
 	// and Remove a project (canAddProject, canRemoveProject), set by
 	// renderPage for the same reason as PlanNew.
 	AddProject, RemoveProject bool
+	// Notifications is whether the bars link to the Notifications page
+	// (the Overview's bell and the top bar's link): only when push is on
+	// (pushOn), since the page answers 404 otherwise. Set by renderPage for
+	// the same reason as PlanNew.
+	Notifications bool
 }
 
 // chromeFor works out the bars for a page from its name and view, the
@@ -160,6 +167,11 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 		c.Overview, c.Title, c.Current = true, "All projects", "page"
 	case UsageView:
 		c.Title, c.Nav, c.Current = "Usage", "usage", "page"
+	case NotificationsView:
+		// Machine-wide like Usage: its own nav item, back to all projects,
+		// and the desktop bar's meta says it is not about one project.
+		c.Title, c.Nav, c.Current = "Notifications", "notifications", "page"
+		c.Meta = "For this whole afk, not one project"
 	case ProjectView:
 		c.Title = v.Name
 	case PlanView:
@@ -279,6 +291,7 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		ch.PlanNew = !ch.Bare && s.canPlanNew()
 		ch.AddProject = !ch.Bare && s.canAddProject()
 		ch.RemoveProject = !ch.Bare && s.canRemoveProject()
+		ch.Notifications = !ch.Bare && s.pushOn()
 		if _, isOverview := view.(OverviewView); isOverview && r.Method == http.MethodGet {
 			ch.Toast = projectToast(r.URL.Query().Get("done"))
 		}

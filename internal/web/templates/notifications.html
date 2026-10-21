@@ -1,0 +1,80 @@
+{{define "title"}}Notifications{{end}}
+{{define "content"}}
+<div class="notifications">
+<h1>Notifications</h1>
+<p>For this whole afk, not one project. afk sends a notification when something needs you, to every device signed up below.</p>
+<div class="notifications__grid">
+{{- /* The card is one live region, so a change of state the script draws
+       (turned on, turned off, blocked) is announced. Without a key there is
+       nothing the script could do, so the card then carries no
+       data-push-card and the script leaves it alone. */}}
+<section class="card push-card" aria-labelledby="push-device-title" aria-live="polite"{{if not .KeyError}} data-push-card data-public-key="{{.PublicKey}}"{{end}}>
+  <div class="section-head">
+    <h2 class="h3" id="push-device-title">This device</h2>
+    <span class="badge badge--off" data-push-badge>Off</span>
+  </div>
+{{- with .KeyError}}
+  <p>{{$.Label}} doesn't get notifications from afk.</p>
+  <div class="notice notice--error" role="alert"><div class="notice__body">{{.}}</div></div>
+{{- else}}
+  <div class="notice notice--info" data-push-nojs><div class="notice__body">Turning notifications on needs JavaScript. Turn JavaScript on for this page, then reload it.</div></div>
+  <div class="stack" data-push-state="on" hidden>
+    <p>{{.Label}} gets notifications from afk.</p>
+    <div class="btn-row">
+      <button type="button" class="btn btn--secondary" data-push-test>Send test</button>
+      <button type="button" class="btn btn--secondary" data-push-off>Turn off</button>
+    </div>
+  </div>
+  <div class="stack" data-push-state="off" hidden>
+    <p>{{.Label}} doesn't get notifications from afk. Turn them on to hear when something needs you.</p>
+    <div class="btn-row">
+      <button type="button" class="btn btn--primary" data-push-on>Turn on for this device</button>
+    </div>
+    <p class="meta">Your browser will ask first. Choose Allow.</p>
+  </div>
+  <div class="stack" data-push-state="https" hidden>
+    <p>{{.Label}} doesn't get notifications from afk.</p>
+    <div class="notice notice--attention"><div class="notice__body">
+      <span class="notice__title">Notifications need an https:// address</span>
+      <p>This page is open at an <code>http://</code> address. Browsers only allow notifications on https://.</p>
+      <p><a href="https://github.com/dphaener/afk/blob/main/docs/web.md#install-it-as-an-app">Set up the https address (docs)</a></p>
+    </div></div>
+  </div>
+  <div class="stack" data-push-state="homescreen" hidden>
+    <p>{{.Label}} doesn't get notifications from afk.</p>
+    <div class="notice notice--info"><div class="notice__body">
+      <span class="notice__title">Add afk to your home screen first</span>
+      <p>On iPhone and iPad, notifications work only when afk is opened from the home screen.</p>
+      <ol class="notice__steps">
+        <li>Tap Share <svg class="inline-icon" role="img" aria-label="Share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M8 11H6v10h12V11h-2"/></svg> in Safari's toolbar.</li>
+        <li>Tap Add to Home Screen, then Add.</li>
+        <li>Open afk from the home screen and come back to this page.</li>
+      </ol>
+    </div></div>
+  </div>
+  <div class="stack" data-push-state="blocked" hidden>
+    <p>{{.Label}} doesn't get notifications from afk.</p>
+    <div class="notice notice--attention"><div class="notice__body">
+      <span class="notice__title">Your browser has blocked notifications from afk</span>
+      <p>afk can't ask again. To allow them:</p>
+      <ol class="notice__steps">
+        <li>Open the site settings: the icon at the left of the address bar.</li>
+        <li>Set Notifications to Allow.</li>
+        <li>Reload this page, then turn notifications on.</li>
+      </ol>
+      <p>On iPhone or iPad: Settings, then Notifications, then afk, then Allow Notifications.</p>
+    </div></div>
+    <div class="btn-row">
+      <button type="button" class="btn btn--secondary" data-push-recheck>Check again</button>
+    </div>
+  </div>
+  <div class="stack" data-push-state="unsupported" hidden>
+    <div class="notice notice--info"><div class="notice__body">This browser can't get notifications from afk. Open afk in a current Chrome, Edge, Firefox or Safari.</div></div>
+  </div>
+{{- end}}
+</section>
+{{- /* The signed-up devices list (T15.6) is drawn in this second column. */}}
+<div class="notifications__devices" id="push-devices"></div>
+</div>
+</div>
+{{end}}

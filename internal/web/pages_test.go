@@ -24,12 +24,13 @@ import (
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 const idScript = "kmn345"
 
-// ownScript is the script tags every page carries: the hashed live.js, confirm.js, submit.js, chat.js and sw-register.js.
-var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit|chat|sw-register)\.js" defer></script>`)
+// ownScript is the script tags every page carries: the hashed live.js, confirm.js, submit.js, chat.js, sw-register.js and notifications.js.
+var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit|chat|sw-register|notifications)\.js" defer></script>`)
 
 // noOwnScript removes that tag, so the tests that look for injected markup
 // still see any other script tag a hostile text managed to open.
@@ -992,6 +993,7 @@ func TestPageLayout(t *testing.T) {
 		{name: "add a project", page: "project_add", path: "/projects/add", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/" aria-current="true"`, navTitle: "Add a project"},
 		{name: "remove a project", page: "project_remove", path: "/projects/remove", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/" aria-current="true"`, navTitle: "Remove a project"},
 		{name: "remove a project, confirm", page: "project_remove_confirm", path: "/projects/remove/confirm?name=app", status: 200, bars: true, back: `href="/projects/remove" aria-label="Back to the project list"`, navTitle: "Remove a project"},
+		{name: "notifications", page: "notifications", path: "/notifications", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/notifications" aria-current="page"`, navTitle: "Notifications"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", page: "signin", path: "/p/app", noCookie: true, status: 401},
 	}
@@ -1010,6 +1012,9 @@ func TestPageLayout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
+			// Push on, as the daemon always has it, so the Notifications
+			// page answers and every page's bars carry its link.
+			rg.withPush()
 			rg.seedInbox()
 			var rec *httptest.ResponseRecorder
 			if tc.noCookie {
@@ -1097,6 +1102,8 @@ func TestDesktopBackRow(t *testing.T) {
 		status int
 		// back is empty when the page has no row.
 		back, label, title string
+		// meta is the bar's meta line, empty for none.
+		meta string
 	}{
 		{name: "overview", page: "overview", path: "/", status: 200},
 		{name: "usage", page: "usage", path: "/usage", status: 200, back: "/", label: "Back to all projects", title: "Usage"},
@@ -1121,6 +1128,7 @@ func TestDesktopBackRow(t *testing.T) {
 		{name: "add a project", page: "project_add", path: "/projects/add", status: 200, back: "/", label: "Back to all projects", title: "Add a project"},
 		{name: "remove a project", page: "project_remove", path: "/projects/remove", status: 200, back: "/", label: "Back to all projects", title: "Remove a project"},
 		{name: "remove a project confirm", page: "project_remove_confirm", path: "/projects/remove/confirm?name=app", status: 200, back: "/projects/remove", label: "Back to the project list", title: "Remove a project"},
+		{name: "notifications", page: "notifications", path: "/notifications", status: 200, back: "/", label: "Back to all projects", title: "Notifications", meta: "For this whole afk, not one project"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		// A wrong password redraws the sign-in form, which has no bars.
 		{name: "sign-in", page: "signin", path: "/signin", form: "password=wrong-wrong", status: 401},
@@ -1137,6 +1145,7 @@ func TestDesktopBackRow(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
+			rg.withPush()
 			rg.seedInbox()
 			method := "GET"
 			if tc.form != "" {
@@ -1178,8 +1187,13 @@ func TestDesktopBackRow(t *testing.T) {
 			if strings.Index(body, `<header class="topnav">`) > start {
 				t.Errorf("the back row is not under the top bar")
 			}
-			// No page but the planning chat, seeded below, has a meta line.
-			if strings.Contains(row, `<span class="meta">`) {
+			// No page here but Notifications has a meta line (the planning
+			// chat's is in TestDesktopBarMeta, seeded).
+			if tc.meta != "" {
+				if w := `<span class="meta">` + tc.meta + `</span>`; !strings.Contains(row, w) {
+					t.Errorf("the back row lacks %q:\n%s", w, row)
+				}
+			} else if strings.Contains(row, `<span class="meta">`) {
 				t.Errorf("the back bar holds a meta line it should not:\n%s", row)
 			}
 		})
@@ -1273,6 +1287,7 @@ func TestInPageBackLinksRemoved(t *testing.T) {
 		{name: "plan confirm, available", status: 200, kept: false, back: `href="/p/app/plan" aria-label="Back to the plan of app"`,
 			do:   get(func(rg *rig) { rg.planStatus[rg.root] = approvable() }, "/p/app/plan/approve"),
 			want: []string{`href="/p/app/plan" autofocus>`, "Approve and start"}},
+		{name: "notifications", do: get(func(rg *rig) { rg.withPush() }, "/notifications"), status: 200, back: `href="/" aria-label="Back to all projects"`},
 		{name: "session action", status: 200, back: `href="/p/app/sessions/finished" aria-label="Back to finished"`,
 			do: func(t *testing.T) result {
 				rg := actionRig(t)
@@ -1379,7 +1394,8 @@ func TestDesktopBarStyles(t *testing.T) {
 // waiting" (back to /, never to a project page that is a 404), "item" (back
 // to the project's inbox, the name path-escaped), "error" (bare: no bars,
 // with Try again from retryPath) and "usage" (the only page whose own
-// address is a nav item besides the overview).
+// address is a nav item besides the overview, with "notifications", whose
+// meta line is the only one besides the chat's).
 func TestChromeFor(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1427,6 +1443,8 @@ func TestChromeFor(t *testing.T) {
 			want: chrome{Title: "Remove a project", Nav: "projects", Current: "true", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
 		{name: "remove a project, confirm", page: "project_remove_confirm", view: ProjectRemoveConfirmView{Name: "app"}, method: "GET", path: "/projects/remove/confirm",
 			want: chrome{Title: "Remove a project", Nav: "projects", Current: "true", Projects: 3, Back: "/projects/remove", BackLabel: "Back to the project list"}},
+		{name: "notifications", page: "notifications", view: NotificationsView{Label: "Firefox on Linux"}, method: "GET", path: "/notifications",
+			want: chrome{Title: "Notifications", Meta: "For this whole afk, not one project", Nav: "notifications", Current: "page", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
 		{name: "error", page: "error", view: ErrorView{Status: 404}, method: "GET", path: "/p/nope",
 			want: chrome{Bare: true, Status: 404, Path: "/p/nope", Retry: "/p/nope"}},
 		{name: "error after a POST", page: "error", view: ErrorView{Status: 400}, method: "POST", path: "/p/app/inbox/x/answer",
@@ -2445,3 +2463,203 @@ func noSignOut(body string) string {
 }
 
 var signOutForm = regexp.MustCompile(`(?s)<form[^>]*action="/signout"[^>]*>.*?</form>`)
+
+// pushPanel is the markup of one state panel of the Notifications page's
+// This device card, from its opening tag to the next panel or the card's end,
+// or "" when the page has no such panel.
+func pushPanel(body, state string) string {
+	start := strings.Index(body, `data-push-state="`+state+`"`)
+	if start < 0 {
+		return ""
+	}
+	start = strings.LastIndex(body[:start], "<")
+	rest := body[start:]
+	end := len(rest)
+	open := strings.Index(rest, ">")
+	if i := strings.Index(rest[open:], `data-push-state="`); i >= 0 {
+		end = strings.LastIndex(rest[:open+i], "<")
+	}
+	if i := strings.Index(rest, "</section>"); i >= 0 && i < end {
+		end = i
+	}
+	return rest[:end]
+}
+
+// TestNotificationsPage checks the Notifications page as drawn, and its two
+// links in the bars.
+//
+// Load-bearing rows:
+//   - "every state panel": the script only shows and hides these panels, so
+//     a panel missing here is a state the owner can reach and see nothing
+//     in. Each starts hidden, so no state shows before the script chose it.
+//   - "no-JS notice": it is the only thing that tells a browser without
+//     JavaScript why nothing works, so it must be visible as served.
+//   - "damaged key": no turn-on button and no data-push-card, so the script
+//     never offers to sign up with a key that does not exist.
+//   - "bell without Add a project" and "push off, no links": the bell is
+//     drawn on its own condition, not inside Add a project's, and neither link
+//     leads to the 404 the page is when push is off.
+func TestNotificationsPage(t *testing.T) {
+	const firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0"
+	phoneBar := func(body string) string {
+		return body[strings.Index(body, `<header class="app-bar`):strings.Index(body, `<header class="topnav">`)]
+	}
+	topBar := func(body string) string {
+		top := body[strings.Index(body, `<header class="topnav">`):]
+		return top[:strings.Index(top, "</header>")]
+	}
+	const bell = `<a class="icon-btn" href="/notifications" aria-label="Notifications">`
+	const navLink = `<a class="topnav__link" href="/notifications"`
+	tests := []struct {
+		name  string
+		path  string
+		push  bool
+		setup func(t *testing.T, rg *rig, f *pushFake)
+		check func(t *testing.T, f *pushFake, body string)
+	}{
+		{name: "key and label", path: "/notifications", push: true,
+			check: func(t *testing.T, f *pushFake, body string) {
+				key, err := webpush.LoadOrCreateKey(f.dir, nil, testNow)
+				must(t, err)
+				for _, w := range []string{
+					`data-push-card data-public-key="` + key.PublicKey() + `"`,
+					`aria-live="polite"`,
+					"Firefox on Linux gets notifications from afk.",
+					"Firefox on Linux doesn't get notifications from afk. Turn them on to hear when something needs you.",
+					`<span class="badge badge--off" data-push-badge>Off</span>`,
+					`<h2 class="h3" id="push-device-title">This device</h2>`,
+					"For this whole afk, not one project. afk sends a notification when something needs you, to every device signed up below.",
+				} {
+					if !strings.Contains(body, w) {
+						t.Errorf("the page lacks %q", w)
+					}
+				}
+			}},
+		{name: "every state panel", path: "/notifications", push: true,
+			check: func(t *testing.T, f *pushFake, body string) {
+				panels := map[string][]string{
+					"on": {`<button type="button" class="btn btn--secondary" data-push-test>Send test</button>`,
+						`<button type="button" class="btn btn--secondary" data-push-off>Turn off</button>`},
+					"off": {`<button type="button" class="btn btn--primary" data-push-on>Turn on for this device</button>`,
+						`<p class="meta">Your browser will ask first. Choose Allow.</p>`},
+					"https": {`notice notice--attention`, "Notifications need an https:// address",
+						"Browsers only allow notifications on https://.",
+						`<a href="https://github.com/dphaener/afk/blob/main/docs/web.md#install-it-as-an-app">Set up the https address (docs)</a>`},
+					"homescreen": {`notice notice--info`, "Add afk to your home screen first",
+						"On iPhone and iPad, notifications work only when afk is opened from the home screen.",
+						`<ol class="notice__steps">`, `<svg class="inline-icon" role="img" aria-label="Share"`,
+						"Tap Add to Home Screen, then Add.", "Open afk from the home screen and come back to this page."},
+					"blocked": {`notice notice--attention`, "Your browser has blocked notifications from afk",
+						"afk can't ask again. To allow them:", `<ol class="notice__steps">`,
+						"Open the site settings: the icon at the left of the address bar.", "Set Notifications to Allow.",
+						"Reload this page, then turn notifications on.",
+						"On iPhone or iPad: Settings, then Notifications, then afk, then Allow Notifications.",
+						`<button type="button" class="btn btn--secondary" data-push-recheck>Check again</button>`},
+					"unsupported": {`notice notice--info`,
+						"This browser can't get notifications from afk. Open afk in a current Chrome, Edge, Firefox or Safari."},
+				}
+				for state, words := range panels {
+					p := pushPanel(body, state)
+					if p == "" {
+						t.Errorf("no %s panel", state)
+						continue
+					}
+					if open := p[:strings.Index(p, ">")]; !strings.HasSuffix(open, " hidden") {
+						t.Errorf("the %s panel is not hidden as served: %s", state, open)
+					}
+					for _, w := range words {
+						if !strings.Contains(p, w) {
+							t.Errorf("the %s panel lacks %q:\n%s", state, w, p)
+						}
+					}
+				}
+				for _, state := range []string{"https", "homescreen", "blocked", "unsupported"} {
+					if strings.Contains(pushPanel(body, state), "<button") && state != "blocked" {
+						t.Errorf("the %s panel offers a button", state)
+					}
+					if strings.Contains(pushPanel(body, state), "data-push-on") {
+						t.Errorf("the %s panel offers Turn on", state)
+					}
+				}
+			}},
+		{name: "no-JS notice", path: "/notifications", push: true,
+			check: func(t *testing.T, f *pushFake, body string) {
+				w := `<div class="notice notice--info" data-push-nojs><div class="notice__body">Turning notifications on needs JavaScript. Turn JavaScript on for this page, then reload it.</div></div>`
+				if !strings.Contains(body, w) {
+					t.Errorf("the page lacks the visible no-JS notice %q", w)
+				}
+				if !regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/notifications\.js" defer></script>`).MatchString(body) {
+					t.Errorf("the page does not load notifications.js")
+				}
+			}},
+		{name: "damaged key", path: "/notifications", push: true,
+			setup: func(t *testing.T, rg *rig, f *pushFake) {
+				must(t, os.WriteFile(f.dir+"/"+webpush.KeyFileName, []byte("not a key"), 0o600))
+			},
+			check: func(t *testing.T, f *pushFake, body string) {
+				if !strings.Contains(body, `<div class="notice notice--error" role="alert"><div class="notice__body">Notifications cannot be turned on`) {
+					t.Errorf("the key error is not an error notice")
+				}
+				for _, bad := range []string{"data-push-card", "data-push-on", "data-push-nojs", "data-push-state"} {
+					if strings.Contains(body, bad) {
+						t.Errorf("a page with no key holds %q", bad)
+					}
+				}
+			}},
+		{name: "bell without Add a project", path: "/", push: true,
+			setup: func(t *testing.T, rg *rig, f *pushFake) { rg.srv.d.AddProject = nil },
+			check: func(t *testing.T, f *pushFake, body string) {
+				if !strings.Contains(phoneBar(body), bell) {
+					t.Errorf("the overview's phone bar has no bell:\n%s", phoneBar(body))
+				}
+				if strings.Contains(phoneBar(body), `href="/projects/add"`) {
+					t.Errorf("Add a project shows with AddProject off")
+				}
+			}},
+		{name: "no bell off the overview", path: "/usage", push: true,
+			check: func(t *testing.T, f *pushFake, body string) {
+				if strings.Contains(phoneBar(body), bell) {
+					t.Errorf("the usage page's phone bar has the bell")
+				}
+			}},
+		{name: "topnav link current on its page", path: "/notifications", push: true,
+			check: func(t *testing.T, f *pushFake, body string) {
+				w := navLink + ` aria-current="page">Notifications</a>`
+				if !strings.Contains(topBar(body), w) {
+					t.Errorf("the top bar lacks %q:\n%s", w, topBar(body))
+				}
+				if i, j := strings.Index(topBar(body), `href="/usage"`), strings.Index(topBar(body), navLink); i < 0 || j < i {
+					t.Errorf("the Notifications link is not after Usage")
+				}
+			}},
+		{name: "topnav link not current elsewhere", path: "/usage", push: true,
+			check: func(t *testing.T, f *pushFake, body string) {
+				if w := navLink + `>Notifications</a>`; !strings.Contains(topBar(body), w) {
+					t.Errorf("the top bar lacks %q:\n%s", w, topBar(body))
+				}
+			}},
+		{name: "push off, no links", path: "/",
+			check: func(t *testing.T, f *pushFake, body string) {
+				if strings.Contains(body, `href="/notifications"`) {
+					t.Errorf("a page links to /notifications with push off")
+				}
+			}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			var f *pushFake
+			if tc.push {
+				f = rg.withPush()
+			}
+			if tc.setup != nil {
+				tc.setup(t, rg, f)
+			}
+			rec := pushReq{method: http.MethodGet, path: tc.path, ua: firefox}.send(rg.h)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body.String())
+			}
+			tc.check(t, f, rec.Body.String())
+		})
+	}
+}

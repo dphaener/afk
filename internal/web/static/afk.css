@@ -276,6 +276,18 @@ a.row:focus-visible { outline-offset: -2px; border-radius: 0; }
 .notice--ok { background: var(--ok-soft); }
 .notice--ok svg { color: var(--ok); }
 
+/* ───────── notifications: device state badges, steps inside a notice, inline glyph ───────── */
+.badge--on { background: var(--ok-soft); color: var(--ok); }
+.badge--off { background: var(--idle-soft); color: var(--idle); }
+.badge--blocked { background: var(--attn-soft); color: var(--attn); }
+.badge--this-device { background: var(--accent-soft); color: var(--accent); }
+.badge--this-device::before { display: none; }
+.notice a { color: var(--accent); font-weight: var(--weight-semibold); }
+.notice__steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: var(--space-2); }
+.notice__steps li { padding-left: 2px; }
+.inline-icon { display: inline; width: 1.15em; height: 1.15em; vertical-align: -0.2em; }
+.notice .inline-icon { width: 1.15em; height: 1.15em; margin: 0; color: inherit; }
+
 /* ───────── key/value + stats ───────── */
 .kv { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
 .kv dt { color: var(--text-3); }
