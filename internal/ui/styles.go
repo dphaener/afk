@@ -3,8 +3,9 @@
 // detection at render time), so they live in one place and are shared by the
 // list view, the detail panels, and the chrome (header/help/status lines).
 //
-// Colors are adaptive where it matters so the dashboard is legible on both
-// light and dark terminals. Nothing here reads or writes files or processes.
+// Every colour is a token of one palette.Theme (docs/dash-design.md §1), so a
+// theme swap restyles the whole screen at once. Nothing here reads or writes
+// files or processes.
 package ui
 
 import (
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/help"
+	"github.com/charmbracelet/colorprofile"
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"charm.land/lipgloss/v2"
@@ -20,9 +22,20 @@ import (
 )
 
 // styleSet is the full palette of styles the views draw from. A single
-// package-level instance (theme) is built once at init; it carries no mutable
-// state, so sharing it across the model is safe.
+// package-level instance (theme) is built from one palette.Theme (useTheme); it
+// carries no mutable state, so sharing it across the model is safe.
 type styleSet struct {
+	// tokens is the theme this set was built from. View reads its bg to
+	// paint the ground (fillBackground), so the ground and every style
+	// always come from the same theme.
+	tokens palette.Theme
+	// flat says the terminal has 16 colours or fewer (paintsGround false), so
+	// the parts leave a pane's interior on the terminal's own background
+	// instead of painting panel (§1). It is false for a set newStyleSet
+	// returns, which is what every test that builds a set for a theme wants;
+	// useThemeFor sets it from the dashboard's colour profile.
+	flat bool
+
 	header      lipgloss.Style
 	headerCount lipgloss.Style
 	errorText   lipgloss.Style
@@ -82,6 +95,11 @@ type styleSet struct {
 	// descriptions and separators muted, so a help line reads as key→meaning
 	// pairs instead of one grey run of words.
 	helpStyles help.Styles
+	// statusHelpStyles is helpStyles for the status bar (§3.2): the same
+	// bold accent keys, with their words in strip-fg because the bar is
+	// filled with strip and muted words would sink into it. The overlays'
+	// help lines keep helpStyles, since they sit on the ground, not a strip.
+	statusHelpStyles help.Styles
 
 	// phaseBadges maps each lifecycle phase to a colored badge style. Unknown
 	// or empty phases fall back to phaseUnknown.
@@ -120,18 +138,29 @@ type toastKindStyle struct {
 	marker string
 }
 
-// theme is the shared style set, built for a dark terminal until the terminal
-// reports otherwise (applyTheme). It is a package variable rather than a Model
-// field because every renderer in the package reads it, including pure
-// helpers with no Model in reach; the one writer is Update's
-// tea.BackgroundColorMsg case, on the program's single goroutine.
-var theme = newStyleSet(palette.Dark)
+// theme is the shared style set, built from tide until New applies the theme
+// the owner chose ([dash] theme, checkTheme) or the terminal's background
+// answer picks paper. It is a package variable rather than a Model field
+// because every renderer in the package reads it, including pure helpers with
+// no Model in reach; the writers are New (once, before anything renders) and
+// Update's tea.BackgroundColorMsg case, both on the program's single goroutine.
+var theme = newStyleSet(palette.Tide)
 
-// applyTheme rebuilds theme for a light or dark terminal background. Called
-// once, when the terminal answers tea.RequestBackgroundColor; a terminal that
-// never answers keeps the dark set, which is the one the palette was drawn for.
-func applyTheme(isDark bool) {
-	theme = newStyleSet(palette.For(isDark))
+// useTheme rebuilds theme from t. It is the one writer of theme, so whatever
+// chose t (the setting, or the background answer when the setting is unset)
+// cannot leave the package holding a half-built set.
+func useTheme(t palette.Theme) {
+	theme = newStyleSet(t)
+}
+
+// useThemeFor is useTheme for a terminal with colour profile p: the set is
+// marked flat when the terminal cannot show the theme's grounds (16 colours or
+// fewer, paintsGround), so the panes leave their interiors unpainted the way
+// paintGround leaves the frame. The Model calls this one; useTheme stays for
+// the tests that only need a theme.
+func useThemeFor(t palette.Theme, p colorprofile.Profile) {
+	useTheme(t)
+	theme.flat = !paintsGround(p)
 }
 
 // scratchPhaseKey is the pseudo-phase key phaseBadge/phaseBadgePlain look up
@@ -140,11 +169,19 @@ func applyTheme(isDark bool) {
 // failed), so it shares the same map and helpers without a separate code path.
 const scratchPhaseKey = "scratch"
 
-func newStyleSet(p palette.Scheme) styleSet {
+// newStyleSet builds every dashboard style from one theme's tokens
+// (docs/dash-design.md §1). Each style takes the token whose MEANING matches
+// its job, not the hue it used to have: borders line (accent when focused),
+// body fg, quiet text muted, decoration faint, needs-you need, errors bad,
+// afk-is-working work, done done, ids and branches meta, the selection
+// sel/sel-fg. That one rule is what lets four themes share this function: a
+// theme only ever says what each meaning looks like.
+func newStyleSet(t palette.Theme) styleSet {
+	c := func(hex string) color.Color { return lipgloss.Color(hex) }
 	badge := func(fg, bg string) lipgloss.Style {
 		return lipgloss.NewStyle().
-			Foreground(lipgloss.Color(fg)).
-			Background(lipgloss.Color(bg)).
+			Foreground(c(fg)).
+			Background(c(bg)).
 			Bold(true).
 			Padding(0, 1)
 	}
@@ -152,7 +189,7 @@ func newStyleSet(p palette.Scheme) styleSet {
 	// the padded badge (its bg color reused as the plain fg), just narrower.
 	badgePlain := func(fg string) lipgloss.Style {
 		return lipgloss.NewStyle().
-			Foreground(lipgloss.Color(fg)).
+			Foreground(c(fg)).
 			Bold(true)
 	}
 	// toastBoxOf builds one kind's toast border: rounded and padded like
@@ -161,29 +198,32 @@ func newStyleSet(p palette.Scheme) styleSet {
 	toastBoxOf := func(border string) lipgloss.Style {
 		return lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(border)).
+			BorderForeground(c(border)).
 			Padding(0, 1)
 	}
 
 	return styleSet{
+		tokens: t,
+		// The header badge is the top bar's [ afk ] badge of §3.1: on-accent
+		// text on accent, the one pairing every theme guarantees reads.
 		header: lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color(p.White)).
-			Background(lipgloss.Color(p.HeaderAccent)).
+			Foreground(c(t.OnAccent)).
+			Background(c(t.Accent)).
 			Padding(0, 1),
-		headerCount: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-		errorText:   lipgloss.NewStyle().Foreground(lipgloss.Color(p.Error)).Bold(true),
+		headerCount: lipgloss.NewStyle().Foreground(c(t.Muted)),
+		errorText:   lipgloss.NewStyle().Foreground(c(t.Bad)).Bold(true),
 
 		listBox: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(p.Border)).
+			BorderForeground(c(t.Line)).
 			Padding(0, 1),
 		listBoxFocused: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(p.HeaderAccent)).
+			BorderForeground(c(t.Accent)).
 			Padding(0, 1),
 		detailBox: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(p.Border)).
+			BorderForeground(c(t.Line)).
 			Padding(0, 1),
 		// detailBoxFocused is detailBox's accent pair (W3.T1): the border
 		// listBoxStyle/paneBoxStyle already blur toward when THEIR surface
@@ -194,189 +234,212 @@ func newStyleSet(p palette.Scheme) styleSet {
 		// renders takes up exactly the same space.
 		detailBoxFocused: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(p.HeaderAccent)).
+			BorderForeground(c(t.Accent)).
 			Padding(0, 1),
 		// modalBox is the floating overlay (modal.go). Its border is the accent
 		// the focused surface wears (listBoxFocused, paneBoxFocused): a modal
 		// owns the keyboard while it is up, and the border is how the frame
-		// says so. Same padding as detailBox so contentW arithmetic is shared.
+		// says so (§3.8). Same padding as detailBox so contentW arithmetic is
+		// shared.
 		modalBox: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(p.HeaderAccent)).
+			BorderForeground(c(t.Accent)).
 			Padding(0, 1),
 		// toastKinds gives renderToast a distinct look per notificationKind.
-		// info gets the neutral border listBox/detailBox already wear (a
-		// single warning-hue border was all the corner notice had before
-		// kinds existed, back when severity was not a thing it could
-		// express) and plain text, no marker — it is the zero value, so
-		// every toast call written before kinds existed renders as this
-		// entry. success/warn/error each pair a coloured border with the
-		// matching bold text colour (the same fg-only, bold pairing
-		// verdictOK/verdictBad already use for "this is a severity, not
-		// decoration") and a marker glyph from the same set views.go's
-		// task/verdict rows use (✓/✗) plus ⚠ for warn.
+		// info gets the neutral line border listBox/detailBox already wear
+		// and plain text, no marker — it is the zero value, so every toast
+		// call written before kinds existed renders as this entry.
+		// success/warn/error each pair a coloured border with the matching
+		// bold text colour, taken by meaning: done for success, need for a
+		// warning (there is something for you to do), bad for an error. The
+		// marker glyphs come from the same set views.go's task/verdict rows
+		// use (✓/✗) plus ⚠ for warn.
 		toastKinds: [4]toastKindStyle{
 			notifyInfo: {
-				box:  toastBoxOf(p.Border),
+				box:  toastBoxOf(t.Line),
 				text: lipgloss.NewStyle(),
 			},
 			notifySuccess: {
-				box:    toastBoxOf(p.Success),
-				text:   lipgloss.NewStyle().Foreground(lipgloss.Color(p.Success)).Bold(true),
+				box:    toastBoxOf(t.Done),
+				text:   lipgloss.NewStyle().Foreground(c(t.Done)).Bold(true),
 				marker: "✓",
 			},
 			notifyWarn: {
-				box:    toastBoxOf(p.Warning),
-				text:   lipgloss.NewStyle().Foreground(lipgloss.Color(p.Warning)).Bold(true),
+				box:    toastBoxOf(t.Need),
+				text:   lipgloss.NewStyle().Foreground(c(t.Need)).Bold(true),
 				marker: "⚠",
 			},
 			notifyError: {
-				box:    toastBoxOf(p.Error),
-				text:   lipgloss.NewStyle().Foreground(lipgloss.Color(p.Error)).Bold(true),
+				box:    toastBoxOf(t.Bad),
+				text:   lipgloss.NewStyle().Foreground(c(t.Bad)).Bold(true),
 				marker: "✗",
 			},
 		},
-		// The accent border (p.HeaderAccent — the same accent
-		// internal/prompt's focused-field border and internal/session's arrow
-		// use, per prompt/theme.go's doc) marks the surface that owns keyboard
-		// input: paneBoxFocused while keys route to the hosted child,
-		// listBoxFocused while they route to the dashboard, detailBoxFocused
-		// (above) while they route to the focused detail pane. Blurred boxes
-		// share p.Border, the same neutral gray as detailBox.
+		// The accent border marks the surface that owns keyboard input
+		// (§3.3: only one pane has the keyboard at a time): paneBoxFocused
+		// while keys route to the hosted child, listBoxFocused while they
+		// route to the dashboard, detailBoxFocused (above) while they route
+		// to the focused detail pane. Blurred boxes share line.
 		// Focused/blurred pairs must keep identical border and padding
 		// geometry — renderPane's wrap-width math (contentW + 2) assumes it.
 		paneBox: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(p.Border)).
+			BorderForeground(c(t.Line)).
 			Padding(0, 1),
 		paneBoxFocused: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color(p.HeaderAccent)).
+			BorderForeground(c(t.Accent)).
 			Padding(0, 1),
-		// p.Emphasis is also panelTitle's color (below) — the pane's
-		// title bar and the detail pane's section titles are the same kind of
-		// thing (the name of an active content region), so they now share
-		// one hue instead of the pane title carrying a one-off magenta ("213")
-		// that meant nothing anywhere else in the palette.
-		paneTitle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(p.Emphasis)),
+		// paneTitle, boxTitle and panelTitle name an active content region,
+		// so they share one hue, accent, the colour that marks where to look.
+		paneTitle: lipgloss.NewStyle().Bold(true).Foreground(c(t.Accent)),
 
 		rowSelected: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(p.White)).
-			Background(lipgloss.Color(p.SelectionBg)).
+			Foreground(c(t.SelFg)).
+			Background(c(t.Sel)).
 			Bold(true),
 		rowNormal: lipgloss.NewStyle(),
-		// rowCursor paints the selected row's left rail (cursorRail, views.go).
-		// Foreground only: SGR is additive, so the rail's own sequence leaves
-		// rowSelected's background in place under the half of the cell the
-		// glyph does not fill, and a background here would only repeat it.
-		// p.HeaderAccent is the accent the focused list box's border already
-		// wears, so the rail and the frame around it agree on which colour
-		// means "your keys go here".
-		rowCursor:   lipgloss.NewStyle().Foreground(lipgloss.Color(p.HeaderAccent)),
+		// rowCursor paints the Build tab's cursor marker (buildtab.go).
+		// Foreground only: SGR is additive, so the marker's own sequence
+		// leaves rowSelected's background in place under the half of the
+		// cell the glyph does not fill, and a background here would only
+		// repeat it. accent is the colour a focused box's border already
+		// wears, so the marker and the frame around it agree on which colour
+		// means "your keys go here". The session list's and the all-projects
+		// screen's rail is not drawn with it: their selected rows are the
+		// row part's, all sel-fg (rowMarker, views.go).
+		rowCursor:   lipgloss.NewStyle().Foreground(c(t.Accent)),
 		sessionName: lipgloss.NewStyle().Bold(true),
-		hostRunning: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Success)),
-		hostStopped: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-		branch:      lipgloss.NewStyle().Foreground(lipgloss.Color(p.Branch)),
+		// A running host is afk at work (§3.6's ◐ colour), a stopped one is
+		// quiet.
+		hostRunning: lipgloss.NewStyle().Foreground(c(t.Work)),
+		hostStopped: lipgloss.NewStyle().Foreground(c(t.Muted)),
+		branch:      lipgloss.NewStyle().Foreground(c(t.Meta)),
+		// awaiting is the needs-you badge: on-accent bold text on need, the
+		// same pairing as §3.7's alert bar.
 		awaiting: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(p.Black)).
-			Background(lipgloss.Color(p.Warning)).
+			Foreground(c(t.OnAccent)).
+			Background(c(t.Need)).
 			Bold(true).
 			Padding(0, 1),
 		// awaitingFlag is the one-cell form of awaiting: the session row's flag
 		// column has no room for a padded badge, and a foreground-only dot
 		// keeps the column from bleeding a background into its neighbours.
-		awaitingFlag:  lipgloss.NewStyle().Foreground(lipgloss.Color(p.Warning)).Bold(true),
-		columnCaption: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)).Bold(true),
+		awaitingFlag:  lipgloss.NewStyle().Foreground(c(t.Need)).Bold(true),
+		columnCaption: lipgloss.NewStyle().Foreground(c(t.Muted)).Bold(true),
 		// boxTitle is the label labelBorders sets into a box's top edge. It is
 		// brighter than the border it interrupts so the eye finds it, and bold
 		// rather than underlined because an underline under a border glyph
 		// row reads as a second rule.
-		boxTitle: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Emphasis)).Bold(true),
-		// boxTitleStrong is renderList's session-box title only: the active
-		// project's name is now the frame's primary identifier (the one label
-		// that says which project you are looking at), so it outweighs
-		// boxTitle's accent hue rather than sharing the same weight as a
-		// detail pane or a modal's title. A sibling style, not a change to
-		// boxTitle itself, is what keeps every other labelBorders caller
-		// rendering byte-identically.
+		boxTitle: lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+		// boxTitleStrong was renderList's session-box title: the active
+		// project's name is the frame's primary identifier, so it outweighed
+		// boxTitle's accent hue. Since T16.1 the session list and the
+		// all-projects screen name themselves in the pane part's title strip
+		// (parts.go), whose bold strip-fg on strip does that job, so no screen
+		// draws with it now; labelBordersStyled keeps accepting it for a box
+		// that wants a stronger title on a plain edge.
 		//
-		// p.Strongest, NOT p.White. This label lands straight on the
-		// terminal background with no background of its own, and
-		// palette.Light.White is "#ffffff" — white-on-white, the frame's
-		// primary identifier rendered invisible on a light terminal. Every
-		// other p.White in this file pairs it with a Background
-		// (header/HeaderAccent, rowSelected/SelectionBg) and is fine;
-		// this one cannot. TestTitleStylesStayReadableOnBothSchemes pins it.
-		boxTitleStrong: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Strongest)).Bold(true),
-		staleText:      lipgloss.NewStyle().Foreground(lipgloss.Color(p.Error)).Italic(true),
-		dim:            lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-		panelTitle:     lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(p.Emphasis)),
+		// fg, NOT sel-fg or on-accent. This label lands straight on the
+		// painted ground with no background of its own, and those two are
+		// foregrounds for text on sel or accent: paper's on-accent is
+		// "#ffffff", which on paper's near-white bg would make the frame's
+		// primary identifier invisible. fg is the one text token every theme
+		// sets against bg. TestTitleStylesStayReadableOnEveryTheme pins it.
+		boxTitleStrong: lipgloss.NewStyle().Foreground(c(t.Fg)).Bold(true),
+		staleText:      lipgloss.NewStyle().Foreground(c(t.Bad)).Italic(true),
+		dim:            lipgloss.NewStyle().Foreground(c(t.Muted)),
+		panelTitle:     lipgloss.NewStyle().Bold(true).Underline(true).Foreground(c(t.Accent)),
 
-		taskComplete:   lipgloss.NewStyle().Foreground(lipgloss.Color(p.Success)),
-		taskFailed:     lipgloss.NewStyle().Foreground(lipgloss.Color(p.Error)),
-		taskPending:    lipgloss.NewStyle().Foreground(lipgloss.Color(p.Pending)),
-		diffFileHeader: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Emphasis)).Bold(true),
-		diffHunkHeader: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-		diffAdded:      lipgloss.NewStyle().Foreground(lipgloss.Color(p.Success)),
-		diffRemoved:    lipgloss.NewStyle().Foreground(lipgloss.Color(p.Error)),
-		waveHeading:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(p.Gold)),
+		taskComplete: lipgloss.NewStyle().Foreground(c(t.Done)),
+		taskFailed:   lipgloss.NewStyle().Foreground(c(t.Bad)),
+		// A pending task is a quiet state (§3.6's ○ row), so muted: faint
+		// is decoration only and a task's name must stay readable.
+		taskPending:    lipgloss.NewStyle().Foreground(c(t.Muted)),
+		diffFileHeader: lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+		diffHunkHeader: lipgloss.NewStyle().Foreground(c(t.Muted)),
+		diffAdded:      lipgloss.NewStyle().Foreground(c(t.Done)),
+		diffRemoved:    lipgloss.NewStyle().Foreground(c(t.Bad)),
+		// A wave heading names a group of task ids, and ids are meta.
+		waveHeading: lipgloss.NewStyle().Bold(true).Foreground(c(t.Meta)),
 
-		verdictOK:  lipgloss.NewStyle().Foreground(lipgloss.Color(p.Success)).Bold(true),
-		verdictBad: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Error)).Bold(true),
+		verdictOK:  lipgloss.NewStyle().Foreground(c(t.Done)).Bold(true),
+		verdictBad: lipgloss.NewStyle().Foreground(c(t.Bad)).Bold(true),
 
-		statusLine: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Warning)),
-		helpLine:   lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-		spinner:    lipgloss.NewStyle().Foreground(lipgloss.Color(p.HeaderAccent)),
+		// statusLine backs attachpane.go's status row and the confirm and
+		// label dialogs' notes: words asking for the owner's attention.
+		statusLine: lipgloss.NewStyle().Foreground(c(t.Need)),
+		helpLine:   lipgloss.NewStyle().Foreground(c(t.Muted)),
+		// The spinner says afk is working on something.
+		spinner: lipgloss.NewStyle().Foreground(c(t.Work)),
+		// §3.7: a progress bar's done part is done and its rest is faint.
+		// The blend keeps its two slots (bubbles/progress takes a gradient)
+		// but both ends are done, so the fill is one colour.
 		progressBlend: [2]color.Color{
-			lipgloss.Color(p.HeaderAccent),
-			lipgloss.Color(p.Success),
+			c(t.Done),
+			c(t.Done),
 		},
-		progressEmpty: lipgloss.Color(p.Pending),
+		progressEmpty: c(t.Faint),
+		// Keys are bold accent and their words muted (§3.2); the separators
+		// are decoration, so faint.
 		helpStyles: help.Styles{
-			Ellipsis:       lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-			ShortKey:       lipgloss.NewStyle().Foreground(lipgloss.Color(p.Emphasis)).Bold(true),
-			ShortDesc:      lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-			ShortSeparator: lipgloss.NewStyle().Foreground(lipgloss.Color(p.Border)),
-			FullKey:        lipgloss.NewStyle().Foreground(lipgloss.Color(p.Emphasis)).Bold(true),
-			FullDesc:       lipgloss.NewStyle().Foreground(lipgloss.Color(p.Muted)),
-			FullSeparator:  lipgloss.NewStyle().Foreground(lipgloss.Color(p.Border)),
+			Ellipsis:       lipgloss.NewStyle().Foreground(c(t.Muted)),
+			ShortKey:       lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+			ShortDesc:      lipgloss.NewStyle().Foreground(c(t.Muted)),
+			ShortSeparator: lipgloss.NewStyle().Foreground(c(t.Faint)),
+			FullKey:        lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+			FullDesc:       lipgloss.NewStyle().Foreground(c(t.Muted)),
+			FullSeparator:  lipgloss.NewStyle().Foreground(c(t.Faint)),
+		},
+		// On the status bar's strip fill the words are strip-fg and the
+		// separators muted: faint is chosen to recede on the ground and
+		// all but vanishes on strip.
+		statusHelpStyles: help.Styles{
+			Ellipsis:       lipgloss.NewStyle().Foreground(c(t.StripFg)),
+			ShortKey:       lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+			ShortDesc:      lipgloss.NewStyle().Foreground(c(t.StripFg)),
+			ShortSeparator: lipgloss.NewStyle().Foreground(c(t.Muted)),
+			FullKey:        lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+			FullDesc:       lipgloss.NewStyle().Foreground(c(t.StripFg)),
+			FullSeparator:  lipgloss.NewStyle().Foreground(c(t.Muted)),
 		},
 
+		// The phase badges take §3.6's colours: every phase where afk is at
+		// work is work, done is done, failed is bad. A scratch (one-off)
+		// session is quiet, so muted; an unknown phase gets the neutral line.
 		phaseBadges: map[string]lipgloss.Style{
-			"planning":      badge(p.White, p.PhasePlanningBg),
-			"executing":     badge(p.Black, p.PhaseExecutingBg),
-			"reviewing":     badge(p.Black, p.PhaseReviewingBg),
-			"fixing":        badge(p.White, p.PhaseFixingBg),
-			"done":          badge(p.Black, p.PhaseDoneBg),
-			"failed":        badge(p.White, p.PhaseFailedBg),
-			scratchPhaseKey: badge(p.White, p.ScratchBg),
+			"planning":      badge(t.OnAccent, t.Work),
+			"executing":     badge(t.OnAccent, t.Work),
+			"reviewing":     badge(t.OnAccent, t.Work),
+			"fixing":        badge(t.OnAccent, t.Work),
+			"done":          badge(t.OnAccent, t.Done),
+			"failed":        badge(t.OnAccent, t.Bad),
+			scratchPhaseKey: badge(t.OnAccent, t.Muted),
 		},
-		phaseUnknown: badge(p.White, p.Border),
+		phaseUnknown: badge(t.Fg, t.Line),
 
 		phaseBadgesPlain: map[string]lipgloss.Style{
-			"planning":      badgePlain(p.PhasePlanningBg),
-			"executing":     badgePlain(p.PhaseExecutingBg),
-			"reviewing":     badgePlain(p.PhaseReviewingBg),
-			"fixing":        badgePlain(p.PhaseFixingBg),
-			"done":          badgePlain(p.PhaseDoneBg),
-			"failed":        badgePlain(p.PhaseFailedBg),
-			scratchPhaseKey: badgePlain(p.ScratchBg),
+			"planning":      badgePlain(t.Work),
+			"executing":     badgePlain(t.Work),
+			"reviewing":     badgePlain(t.Work),
+			"fixing":        badgePlain(t.Work),
+			"done":          badgePlain(t.Done),
+			"failed":        badgePlain(t.Bad),
+			scratchPhaseKey: badgePlain(t.Muted),
 		},
-		phaseUnknownPlain: badgePlain(p.Border),
+		// muted rather than the padded form's line: plain, the label IS the
+		// coloured thing, and line is too close to the ground to read.
+		phaseUnknownPlain: badgePlain(t.Muted),
 
-		// Both hues are borrowed from the phase palette on purpose rather
-		// than added to it: a fault row never carries a phase badge, so the
-		// two can never appear on the same line and be confused for each
-		// other. Red for a session whose worktree died under it, amber for a
-		// worktree that was never afk's to begin with — the same
-		// severity ordering the phase badges already use.
+		// A session whose worktree died under it broke (bad); a worktree that
+		// was never afk's is yours to deal with (need) — §3.6's meanings.
 		faultBadges: map[string]lipgloss.Style{
-			brokenBadgeLabel: badge(p.White, p.PhaseFailedBg),
-			orphanBadgeLabel: badge(p.Black, p.Warning),
+			brokenBadgeLabel: badge(t.OnAccent, t.Bad),
+			orphanBadgeLabel: badge(t.OnAccent, t.Need),
 		},
 		faultBadgesPlain: map[string]lipgloss.Style{
-			brokenBadgeLabel: badgePlain(p.PhaseFailedBg),
-			orphanBadgeLabel: badgePlain(p.Warning),
+			brokenBadgeLabel: badgePlain(t.Bad),
+			orphanBadgeLabel: badgePlain(t.Need),
 		},
 	}
 }
@@ -438,28 +501,6 @@ const (
 	orphanBadgeLabel = "ORPHAN"
 )
 
-// faultBadge renders a worktree-side fault row's badge. Unlike phaseBadge it
-// has no fallback and returns "" for a label it does not hold: its callers
-// only ever pass the two constants above, and a silent fallback here would
-// paint a fault row with a phase verdict (see faultBadges' own comment).
-func (s styleSet) faultBadge(label string) string {
-	st, ok := s.faultBadges[label]
-	if !ok {
-		return ""
-	}
-	return st.Render(label)
-}
-
-// faultBadgePlain is faultBadge's narrow-width form, on the same
-// no-background/no-padding trade renderRow already makes for phase badges.
-func (s styleSet) faultBadgePlain(label string) string {
-	st, ok := s.faultBadgesPlain[label]
-	if !ok {
-		return ""
-	}
-	return st.Render(label)
-}
-
 // phaseBadge renders a colored badge for a lifecycle phase, falling back to a
 // neutral badge for empty/unknown phases (e.g. a stale status file).
 func (s styleSet) phaseBadge(phase string) string {
@@ -509,8 +550,13 @@ var phaseAbbrev = map[string]string{
 // with (BROKEN, ORPHAN) were already uppercase. Foreground-only because a
 // background badge in a fixed-width column paints its padding too, and the
 // padded form is what phaseBadge is for (the detail header still uses it).
-// Unknown or empty phases render UNKNOWN / UNKN in the neutral hue, the same
-// fallback phaseBadge makes.
+// Unknown or empty phases render UNKNOWN / UNKN.
+//
+// The colour is the phase's §3.6 colour from stateLook, the one mapping every
+// screen draws states with (parts.go), so the PHASE column and the detail
+// header cannot disagree about what a phase means. An empty phase is a status
+// file that could not be read, which §3.6 counts as broken (bad); a phase this
+// afk does not know is quiet.
 func (s styleSet) phaseText(phase string, abbrev bool) string {
 	label := strings.ToUpper(phase)
 	if phase == "" {
@@ -523,11 +569,7 @@ func (s styleSet) phaseText(phase string, abbrev bool) string {
 			label = "UNKN"
 		}
 	}
-	st, ok := s.phaseBadgesPlain[phase]
-	if !ok {
-		st = s.phaseUnknownPlain
-	}
-	return st.Render(label)
+	return s.stateStyle(stateSession, phase).Bold(true).Render(label)
 }
 
 // faultAbbrev is faultText's short form of the two worktree-fault labels.
@@ -539,11 +581,15 @@ var faultAbbrev = map[string]string{
 // faultText is phaseText's counterpart for a fault row's PHASE column. Like
 // faultBadge it returns "" for a label it does not hold rather than falling
 // back to a phase hue (see faultBadges' comment for why).
+//
+// The colour is the fault's §3.6 colour from stateLook (BROKEN broke, ORPHAN
+// is yours to do); faultBadgesPlain is only asked whether the label is one of
+// the two.
 func (s styleSet) faultText(label string, abbrev bool) string {
-	st, ok := s.faultBadgesPlain[label]
-	if !ok {
+	if _, ok := s.faultBadgesPlain[label]; !ok {
 		return ""
 	}
+	st := s.stateStyle(stateFault, label).Bold(true)
 	if abbrev {
 		label = faultAbbrev[label]
 	}

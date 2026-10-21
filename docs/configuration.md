@@ -11,7 +11,7 @@ afk reads a few plain TOML files. You can edit each by hand.
 
 ## `config.toml` — The machine's settings
 
-**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is the machine's only settings file: it also holds the dashboard's `[dash]` table (see [Multi-project support](dashboard.md#multi-project-support)), which the daemon ignores. The owner profile, `profile.toml`, lives in the same folder (see [`afk profile`](#afk-profile--how-you-build-and-host-things) below). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build, says so once, and waits: it starts with no projects and picks up one added by `afk project add` or `afk plan approve`. `afk daemon --once` with no project prints that and exits 0. Keys it does not know are ignored.
+**Machine config.** The daemon reads `config.toml` in afk's config folder (`$XDG_CONFIG_HOME/afk/config.toml` when that is an absolute path, otherwise `~/.config/afk/config.toml`). It is the machine's only settings file: it also holds the dashboard's `[dash]` table, which sets its search folders, leader key and colour theme (see [Multi-project support](dashboard.md#multi-project-support)); the daemon ignores that table. The owner profile, `profile.toml`, lives in the same folder (see [`afk profile`](#afk-profile--how-you-build-and-host-things) below). A missing file is not an error, but with no `[[project]]` the daemon has nothing to build, says so once, and waits: it starts with no projects and picks up one added by `afk project add` or `afk plan approve`. `afk daemon --once` with no project prints that and exits 0. Keys it does not know are ignored.
 
 ```toml
 # ~/.config/afk/config.toml
@@ -43,7 +43,7 @@ name = "my-app"                # optional; defaults to the folder name
 path = "/srv/another-app"
 ```
 
-The `[dash]` table, the dashboard's search folders, is described in [dashboard.md](dashboard.md#config-file).
+The `[dash]` table, the dashboard's search folders, leader key and colour theme (`tide`, `fjord`, `paper` or `phosphor`), is described in [dashboard.md](dashboard.md#config-file).
 
 ---
 

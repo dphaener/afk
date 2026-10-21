@@ -6686,22 +6686,40 @@ func TestRenderRowAwaitingInputBadge(t *testing.T) {
 		{"failed shows no badge", withPhase("a", state.PhaseFailed, true, true), false},
 	}
 
-	// The flag is asserted in its STYLED form: the awaiting dot shares its
-	// glyph with hostRunningGlyph and only the colour (theme.awaitingFlag) and
-	// the column tell them apart, so a stripped Contains would match the
-	// liveness dot on every running row.
+	// The flag is asserted in its STYLED form on an unselected row: the
+	// awaiting dot is the same glyph an ORPHAN row's state wears, and only the
+	// colour (theme.awaitingFlag) and the column tell them apart. On the
+	// selected row every word is sel-fg (§3.5), so there it is the flag
+	// column's glyph (rowFlagShown).
 	flag := theme.awaitingFlag.Render(awaitingGlyph)
 	m := testModel()
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, selected := range []bool{false, true} {
 				row := m.renderRow(tc.s, selected, 60)
-				if got := strings.Contains(row, flag); got != tc.want {
+				if got := rowFlagShown(t, row, flag, awaitingGlyph, selected); got != tc.want {
 					t.Errorf("selected=%v: awaiting flag shown=%v, want %v: %q", selected, got, tc.want, row)
 				}
 			}
 		})
 	}
+}
+
+// rowFlagShown reports whether a session row shows the flag whose styled
+// form is styled and whose glyph is glyph. An unselected row must show the
+// styled form, the flag's own colour. A selected row is redrawn in sel-fg on
+// sel (the row part, §3.5), so there the flag is its glyph in the flag column,
+// the row's last cell, and the flag's own colour must be gone: a selected row
+// that kept it would be a word on the selection not in sel-fg.
+func rowFlagShown(t *testing.T, row, styled, glyph string, selected bool) bool {
+	t.Helper()
+	if !selected {
+		return strings.Contains(row, styled)
+	}
+	if strings.Contains(row, styled) {
+		t.Errorf("selected row kept the flag's own colour instead of sel-fg: %q", row)
+	}
+	return strings.HasSuffix(strings.TrimRight(xansi.Strip(row), " "), glyph)
 }
 
 func TestFormBaseFilterAcceptsInput(t *testing.T) {
@@ -7703,8 +7721,8 @@ func TestDetailScrollKeysMoveTheViewportOffsetByExpectedAmounts(t *testing.T) {
 		t.Fatalf("fixture geometry drifted: bodyHeight = %d at 100x24, want 22", bodyHeight)
 	}
 	rows, readout := detailRowBudget(bodyHeight, m.detailViewport.TotalLineCount())
-	if !readout || rows != bodyHeight-boxBorderCells-1 {
-		t.Fatalf("fixture broken: detailRowBudget = (%d, %v), want (%d, true) for an overflowing body", rows, readout, bodyHeight-boxBorderCells-1)
+	if !readout || rows != bodyHeight-boxBorderCells-paneStripRows-1 {
+		t.Fatalf("fixture broken: detailRowBudget = (%d, %v), want (%d, true) for an overflowing body", rows, readout, bodyHeight-boxBorderCells-paneStripRows-1)
 	}
 	if got := m.detailViewport.Height(); got != rows {
 		t.Fatalf("Model viewport Height = %d after WindowSizeMsg, want the frame's %d rows", got, rows)
@@ -13078,13 +13096,13 @@ func TestRenderRowAutonomousFlag(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, selected := range []bool{false, true} {
 				row := renderSessionRow(tc.s, selected, 60, now)
-				if got := strings.Contains(row, auto); got != tc.wantAuto {
+				if got := rowFlagShown(t, row, auto, autonomousGlyph, selected); got != tc.wantAuto {
 					t.Errorf("selected=%v: autonomous glyph shown=%v, want %v: %q", selected, got, tc.wantAuto, row)
 				}
-				if got := strings.Contains(row, wedged); got != tc.wantW {
+				if got := rowFlagShown(t, row, wedged, wedgedGlyph, selected); got != tc.wantW {
 					t.Errorf("selected=%v: wedged glyph shown=%v, want %v: %q", selected, got, tc.wantW, row)
 				}
-				if got := strings.Contains(row, awaiting); got != tc.wantAw {
+				if got := rowFlagShown(t, row, awaiting, awaitingGlyph, selected); got != tc.wantAw {
 					t.Errorf("selected=%v: awaiting flag shown=%v, want %v: %q", selected, got, tc.wantAw, row)
 				}
 				if w := lipgloss.Width(strings.TrimRight(row, " ")); w > 60 {

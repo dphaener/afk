@@ -1,11 +1,11 @@
  afk Dashboard                             inbox 1 · 1 blocking  ctrl+] i: inbox
-╭─ Sessions ─────────────────╮╭─ Build ────────────────────────────────────────╮
+╭────────────────────────────╮╭────────────────────────────────────────────────╮
+│ Sessions                   ││ Build                                          │
 │     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff   B… │
 │                            ││ ────────────────────────────────────────────── │
-│ ▌ ● feat-auth      EXEC  ● ││ 1/7 done · T1.2: executing                     │
-│   ● Billing v2     REVW    ││ paused: U or afk resume starts it again        │
-│   ● fix-login-red… PLAN  ● ││ 1 item needs you · ctrl+] i: inbox             │
-│   ○ feat-search    DONE    ││                                                │
+│ ▌ ◐ feat-auth      EXEC  ● ││ 1/7 done · T1.2: executing                     │
+│   ◐ Billing v2     REVW    ││ paused: U or afk resume starts it again        │
+│   ◐ fix-login-red… PLAN  ● ││ 1 item needs you · ctrl+] i: inbox             │
 │ ╭─ Set the task's status? ─────────────────────────────────────────────────╮ │
 │ │                                                                          │ │
 │ │ T2.3 Login redirect                                                      │ │
@@ -21,4 +21,4 @@
 │                            ││                                                │
 │                            ││                                                │
 ╰────────────────────────────╯╰──────────────────────────── esc: back to list ─╯
-y set · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit
+y set · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit              

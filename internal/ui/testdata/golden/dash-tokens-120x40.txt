@@ -1,17 +1,17 @@
  afk Dashboard                                                                     inbox 1 · 1 blocking  ctrl+] i: inbox
-╭─ Sessions ────────────────────────────────╮╭─ Build ─────────────────────────────────────────────────────────────────╮
+╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                  ││ Build                                                                   │
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff   Build       tab/1-6: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ 1/7 done · T1.2: executing                                              │
-│   ● Billing v2          REVIEWING   7/7   ││ paused: U or afk resume starts it again                                 │
-│   ● fix-login-redirect  PLANNING      – ● ││ 1 item needs you · ctrl+] i: inbox                                      │
-│   ○ feat-search         DONE        5/5   ││                                                                         │
-│   ● scratch-1           SCRATCH       –   ││   T1.1  done      Session model         PR #12 · 4c30e4a                │
-│   ○ old-migration       BROKEN        –   ││ › T1.2  running   Auth middleware       feat-auth · executing           │
+│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ 1/7 done · T1.2: executing                                              │
+│   ◐ Billing v2          REVIEWING   7/7   ││ paused: U or afk resume starts it again                                 │
+│   ◐ fix-login-redirect  PLANNING      – ● ││ 1 item needs you · ctrl+] i: inbox                                      │
+│   ✓ feat-search         DONE        5/5   ││                                                                         │
+│   ◐ scratch-1           SCRATCH       –   ││   T1.1  done      Session model         PR #12 · 4c30e4a                │
+│   ✕ old-migration       BROKEN        –   ││ › T1.2  running   Auth middleware       feat-auth · executing           │
 │                                           ││   T2.1  shipping  Billing totals        ci running · PR #14             │
 │                                           ││   T2.2  parked    Legacy sessions       waiting on you: q-3             │
 │                                           ││   T2.3  failed    Login redirect        attempt 2                       │
-│                                           ││   T3.1  pending   Search index          waiting for T2.1                │
 │         ╭─ Tokens ─────────────────────────────────────────────────────────────────────────────────────────╮         │
 │         │ Task T1.2                                                                                        │         │
 │         │     phase        role    model  calls   input  output  cache write  cache read  weighted   share │         │
@@ -37,4 +37,4 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 ╰───────────────────────────────────────────╯╰───────────────────────────────────────────────────── esc: back to list ─╯
-↑/k up · ↓/j down · pgup page up · pgdn page down · home top · end bottom · esc close · ctrl+c quit
+↑/k up · ↓/j down · pgup page up · pgdn page down · home top · end bottom · esc close · ctrl+c quit                     

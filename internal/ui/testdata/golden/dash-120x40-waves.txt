@@ -1,17 +1,17 @@
  afk Dashboard                                                                                                          
-╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
+╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                  ││ feat-auth                                                               │
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ Wave 1: Foundations                                                     │
-│   ● Billing v2          REVIEWING   7/7   ││   ✓ W1.T1 Add session model                                             │
-│   ● fix-login-redirect  PLANNING      – ● ││   ✓ W1.T2 Wire auth middleware                                          │
-│   ○ feat-search         DONE        5/5   ││   ✓ W1.T3 Seed admin user                                               │
-│   ● scratch-1           SCRATCH       –   ││ Wave 2: Migration                                                       │
-│   ○ old-migration       BROKEN        –   ││   ○ W2.T1 Migrate legacy sessions                                       │
+│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ Wave 1: Foundations                                                     │
+│   ◐ Billing v2          REVIEWING   7/7   ││   ✓ W1.T1 Add session model                                             │
+│   ◐ fix-login-redirect  PLANNING      – ● ││   ✓ W1.T2 Wire auth middleware                                          │
+│   ✓ feat-search         DONE        5/5   ││   ✓ W1.T3 Seed admin user                                               │
+│   ◐ scratch-1           SCRATCH       –   ││ Wave 2: Migration                                                       │
+│   ✕ old-migration       BROKEN        –   ││   ○ W2.T1 Migrate legacy sessions                                       │
 │                                           ││   ○ W2.T2 Add logout endpoint                                           │
 │                                           ││   ○ W2.T3 Rotate refresh tokens                                         │
 │                                           ││   ○ W2.T4 Remove legacy table                                           │
-│                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │

@@ -1,13 +1,14 @@
  afk Dashboard                                                                                                          
-╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
+╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                  ││ feat-auth                                                               │
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ vs main: +412/-88 across 9 file(s)                                      │
-│   ● Billing v2          REVIEWING   7/7   ││                                                                         │
-│   ● fix-login-redirect  PLANNING      – ● ││ internal/auth/user.go                                                   │
-│   ○ feat-search         DONE        5/5   ││ index abc1234..def5678 100644                                           │
-│   ● scratch-1           SCRATCH       –   ││ --- a/internal/auth/user.go                                             │
-│   ○ old-migration       BROKEN        –   ││ +++ b/internal/auth/user.go                                             │
+│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ vs main: +412/-88 across 9 file(s)                                      │
+│   ◐ Billing v2          REVIEWING   7/7   ││                                                                         │
+│   ◐ fix-login-redirect  PLANNING      – ● ││ internal/auth/user.go                                                   │
+│   ✓ feat-search         DONE        5/5   ││ index abc1234..def5678 100644                                           │
+│   ◐ scratch-1           SCRATCH       –   ││ --- a/internal/auth/user.go                                             │
+│   ✕ old-migration       BROKEN        –   ││ +++ b/internal/auth/user.go                                             │
 │                                           ││ @@ -10,7 +10,9 @@ func Authenticate(token string) (*User, error) {      │
 │                                           ││     if token == "" {                                                    │
 │                                           ││         return nil, ErrMissingToken                                     │
@@ -27,7 +28,6 @@
 │                                           ││  package auth                                                           │
 │                                           ││ -const sessionTTL = 15 * time.Minute                                    │
 │                                           ││ +const sessionTTL = 30 * time.Minute                                    │
-│                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │

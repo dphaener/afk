@@ -1,14 +1,14 @@
- afk Dashboard 
-╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
-│     NAME╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮: switch │
-│         │ type to filter, or press an action's key                                                         │──────── │
-│ ▌ ● feat│                                                                                                  │         │
-│   ● Bill│ n  new session                         — Start a new session from a plan or a branch             │ng       │
-│   ● fix-│ o  one-off session                     — Start a one-off session with no plan                    │         │
-│   ○ feat│ p  switch project                      — Switch to another project                               │         │
-│   ● scra│ A  all projects                        — this dashboard was started without the project reader   │         │
-│   ○ old-│ +  add a project                       — adding a project is not available here                  │         │
-│         │ -  remove the project                  — removing a project is not available here                │         │
+ afk Dashboard                                                                                                          
+╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
+│ Sessions╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
+│     NAME│ type to filter, or press an action's key                                                         │: switch │
+│         │                                                                                                  │──────── │
+│ ▌ ◐ feat│ n  new session                         — Start a new session from a plan or a branch             │         │
+│   ◐ Bill│ o  one-off session                     — Start a one-off session with no plan                    │ng       │
+│   ◐ fix-│ p  switch project                      — Switch to another project                               │         │
+│   ✓ feat│ A  all projects                        — this dashboard was started without the project reader   │         │
+│   ◐ scra│ +  add a project                       — adding a project is not available here                  │         │
+│   ✕ old-│ -  remove the project                  — removing a project is not available here                │         │
 │         │ c  clean session                       — Clean the selected session and its worktree             │         │
 │         │ r  restart agent                       — only a stopped or stuck agent can be restarted          │         │
 │         │ l  edit label                          — Give the selected session a display label               │         │
@@ -37,4 +37,4 @@
 │         │    check the plan                      — checking the plan is not available here                 │         │
 │         ╰──────────────────────────────────────────── key runs · enter runs · type to filter · esc closes ─╯         │
 ╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
-enter run · ↑/↓ move · type filter · esc close · ctrl+] close, or pass it to the agent
+enter run · ↑/↓ move · type filter · esc close · ctrl+] close, or pass it to the agent                                  

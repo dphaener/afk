@@ -25,15 +25,15 @@ import (
 // then its state and why.
 const allProjectsWideWidth = 100
 
-// allProjectsTitle is the box's top-edge label.
+// allProjectsTitle is the name in the box's title strip.
 const allProjectsTitle = "All projects"
 
 // Column widths of the wide layout. The label column fits the longest state
-// word ("waiting on you", "held for usage"); the name column is as wide as
-// the longest name, up to allProjectsNameMax, so a long name is cut rather
-// than pushing every detail off the line.
+// word ("waiting on you", "held for usage") after its §3.6 glyph and a space;
+// the name column is as wide as the longest name, up to allProjectsNameMax,
+// so a long name is cut rather than pushing every detail off the line.
 const (
-	allProjectsLabelW   = 14
+	allProjectsLabelW   = 16
 	allProjectsNameMax  = 24
 	allProjectsGap      = "  "
 	allProjectsExtrasMx = 48
@@ -139,11 +139,13 @@ func allProjectsLinesPerRow(termWidth int) int {
 	return 2
 }
 
-// allProjectsBox is the content size of the screen's box: the full body less
-// the border and the padding (sidebarContentWidth's arithmetic).
+// allProjectsBox is the content size of the screen's pane: the full body less
+// the border and the padding (sidebarContentWidth's arithmetic), and less the
+// pane's title strip row (paneStripRows), which renderAllProjects' pane draws
+// above the rows.
 func (m Model) allProjectsBox() (contentW, contentH int) {
 	listOuter, mainOuter, bodyHeight := m.layoutDims()
-	return sidebarContentWidth(listOuter + mainOuter), max(bodyHeight-boxBorderCells, 1)
+	return sidebarContentWidth(listOuter + mainOuter), max(bodyHeight-boxBorderCells-paneStripRows, 1)
 }
 
 // allProjectsPage is how many projects fit on screen at once, which is both
@@ -191,13 +193,20 @@ func (m Model) renderAllProjects() string {
 			hint = fmt.Sprintf("%d–%d of %d", start+1, end, len(m.allProjectsRows))
 		}
 	}
-	if len(lines) > contentH {
-		lines = lines[:contentH]
-	}
-	box := sizedBox(theme.listBoxFocused, contentW+2, contentH).
-		MaxHeight(contentH + boxBorderCells).
-		Render(strings.Join(lines, "\n"))
-	return labelBordersStyled(box, theme.listBoxFocused, allProjectsTitle, hint, theme.boxTitleStrong)
+	// The pane part cuts the lines to contentH and draws them inside one
+	// cell of padding and the border, with the interior painted panel and the
+	// selected row filled to the border (§3.5). The title and the scroll
+	// position are its title strip, the first inner row. The screen has the
+	// keyboard whenever it is up, so the pane is always the focused one.
+	return theme.pane(allProjectsTitle, hint, strings.Join(lines, "\n"),
+		paneOuterWidth(contentW), contentH+paneStripRows+boxBorderCells, true)
+}
+
+// allProjectsState is a row's state as §3.6 draws it: the glyph and the
+// state's word in its colour, from stateLook, the one mapping every screen
+// uses. The word is the row's label, as before.
+func allProjectsState(r projectrows.Row) string {
+	return theme.renderState(stateProject, r.Label)
 }
 
 // allProjectsColumns sizes the wide layout's name and extras columns from
@@ -216,17 +225,22 @@ func allProjectsColumns(rows []projectrows.Row, width int) (nameW, extrasW int) 
 
 // allProjectsWideLine is one project on one line: marker, name, done/total,
 // state, detail, then the inbox counts and the plan flag.
+//
+// The state's glyph (allProjectsState) costs two cells, which come out of the
+// progress column (six cells still hold "99/120") and the gap after it (one
+// space, then the glyph), so the reason keeps the width it had before the
+// glyph was drawn and is not cut any sooner.
 func allProjectsWideLine(r projectrows.Row, selected bool, nameW, extrasW, width int) string {
-	const progW = 7
-	fixed := rowMarkerCells + nameW + len(allProjectsGap) + progW + len(allProjectsGap) + allProjectsLabelW + len(allProjectsGap)
+	const progW = 6
+	fixed := rowMarkerCells + nameW + len(allProjectsGap) + progW + 1 + allProjectsLabelW + len(allProjectsGap)
 	detailW := width - fixed
 	if extrasW > 0 {
 		detailW -= extrasW + len(allProjectsGap)
 	}
 	detailW = max(detailW, 1)
 	plain := padRight(truncate(r.Name, nameW), nameW) + allProjectsGap +
-		padLeft(allProjectsProgress(r), progW) + allProjectsGap +
-		padRight(r.Label, allProjectsLabelW) + allProjectsGap +
+		padLeft(allProjectsProgress(r), progW) + " " +
+		padRight(allProjectsState(r), allProjectsLabelW) + allProjectsGap +
 		padRight(truncate(r.Detail, detailW), detailW)
 	if extrasW > 0 {
 		plain += allProjectsGap + truncate(allProjectsExtras(r), extrasW)
@@ -235,31 +249,37 @@ func allProjectsWideLine(r projectrows.Row, selected bool, nameW, extrasW, width
 }
 
 // allProjectsNarrowLines is one project on two lines: the name, done/total,
-// counts and plan flag; then, indented under the name, the state and why.
+// counts and plan flag; then, under the name, the state's glyph and word, and
+// why.
 func allProjectsNarrowLines(r projectrows.Row, selected bool, width int) []string {
 	first := r.Name + allProjectsGap + allProjectsProgress(r)
 	if x := allProjectsExtras(r); x != "" {
 		first += allProjectsGap + x
 	}
-	second := "  " + r.Label + " · " + r.Detail
+	// The state's glyph takes the indent's first cell, so the state's word
+	// and the reason keep the columns they had before the glyph was drawn.
+	second := allProjectsState(r) + " · " + r.Detail
 	return []string{
 		allProjectsStyleLine(rowMarker(selected)+truncate(first, width-rowMarkerCells), r, selected, width),
 		allProjectsStyleLine(rowMarker(selected)+truncate(second, width-rowMarkerCells), r, selected, width),
 	}
 }
 
-// allProjectsStyleLine paints a row line: the selection bar across the whole
-// box for the cursor's row, the attention colour for a row that needs the
-// owner, and nothing for the rest. The text was cut before it was styled, so
-// the style cannot change where the ellipsis falls.
+// allProjectsStyleLine paints a row line: the cursor's row is the row part's
+// selection (§3.5: sel edge to edge, every word on it sel-fg, the state's
+// colour included), a row that needs the owner wears the attention colour,
+// and the rest are left as they are. The text was cut before it was styled,
+// so the style cannot change where the ellipsis falls.
 func allProjectsStyleLine(line string, r projectrows.Row, selected bool, width int) string {
 	switch {
 	case selected:
-		return theme.rowSelected.Width(width).Render(spanStyle(line, theme.rowSelected))
+		return theme.row(line, width, true, "")
 	case r.NeedsOwner:
 		// The foreground-only form: the padded badge style would add cells
-		// and wrap a line already cut to the box.
-		return theme.awaitingFlag.Render(line)
+		// and wrap a line already cut to the box. spanStyle carries it past
+		// the state's own colour (allProjectsState), so the words after the
+		// state are still in the attention colour.
+		return theme.awaitingFlag.Render(spanStyle(line, theme.awaitingFlag))
 	}
 	return line
 }

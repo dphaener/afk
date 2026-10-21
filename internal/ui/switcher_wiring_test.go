@@ -549,8 +549,13 @@ func TestSwitcherCountsForTheActiveProject(t *testing.T) {
 				// can't silently swap which one this test reads. The overlay's
 				// own rows start with the box's left edge (`│`), which must stay
 				// eligible — it is a candidate row, not chrome to skip.
+				//
+				// Since T16.1 the name is on the list pane's title strip, its
+				// first inner row ("│ alpha …"), so that row is skipped too;
+				// the overlay is centred, so its row never starts there.
 				stripped := xansi.Strip(line)
-				if strings.HasPrefix(stripped, "╭") || strings.HasPrefix(stripped, "╰") {
+				if strings.HasPrefix(stripped, "╭") || strings.HasPrefix(stripped, "╰") ||
+					strings.HasPrefix(stripped, "│ alpha ") {
 					continue
 				}
 				if strings.Contains(line, "alpha") {

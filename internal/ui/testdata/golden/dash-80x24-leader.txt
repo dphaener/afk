@@ -1,5 +1,5 @@
- afk Dashboard 
-╭─ Sessions ─────────────────╮╭─ feat-auth ────────────────────────────────────╮
+ afk Dashboard                                                                  
+╭────────────────────────────╮╭────────────────────────────────────────────────╮
 │ ╭─ actions ────────────────────────────────────────────────────────────────╮ │
 │ │ type to filter, or press an action's key                                 │ │
 │ │                                                                          │ │
@@ -21,4 +21,4 @@
 │ │ R  refresh usage                       — this dashboard cannot read usa… │ │
 │ ╰──────────────────── key runs · enter runs · type to filter · esc closes ─╯ │
 ╰────────────────────────────╯╰─ enter: focus view · ctrl+] c: clean · ctrl+… ─╯
-enter run · ↑/↓ move · type filter · esc close …
+enter run · ↑/↓ move · type filter · esc close …                                

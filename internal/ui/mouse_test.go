@@ -134,10 +134,15 @@ func TestPaneTitleBlockReproducesLegacyTitles(t *testing.T) {
 	}
 }
 
-// TestRenderPaneOutputUnchangedForFittingTitle is the byte-identity check on the
-// whole box, not just the title: it re-composes renderPane's pre-conversion body
-// and asserts the live renderPane still produces exactly that.
-func TestRenderPaneOutputUnchangedForFittingTitle(t *testing.T) {
+// TestRenderPaneKeepsGeometryWithTitleStrip pins what the T16.1 redraw must
+// not move: the pane box is the size, row for row and cell for cell, of the
+// box renderPane drew before its title became a strip, the title's words are
+// on its first inner row, and the emulator's first row starts at the same
+// column (border plus one cell of padding), which is where paneContentOrigin
+// puts every mouse event and the cursor. The strip's fill is checked too: the
+// title row wears strip out of focus and accent in focus (§3.3), and carries
+// it out to the border.
+func TestRenderPaneKeepsGeometryWithTitleStrip(t *testing.T) {
 	fp := newFakePane("SCREEN-BODY")
 	m := testModel(sess("a"))
 	m.pane = fp
@@ -151,19 +156,37 @@ func TestRenderPaneOutputUnchangedForFittingTitle(t *testing.T) {
 		}
 
 		contentW, _ := paneContentDims(mainOuter, bodyHeight)
-		legacyTitleText := "▶ " + m.paneName
+		hint := "[enter focus view]"
+		fill := "48;2;22;39;74" // tide's strip
 		if focused {
-			legacyTitleText += "  [focused · ctrl+] \\ back to list]"
-		} else {
-			legacyTitleText += "  [enter focus view]"
+			hint = "[focused · ctrl+] \\ back to list]"
+			fill = "48;2;99;179;242" // tide's accent
 		}
 		legacy := sizedBox(m.paneBoxStyle(), contentW+2, bodyHeight-boxBorderCells).
 			MaxHeight(bodyHeight).
 			Render(lipgloss.JoinVertical(lipgloss.Left,
-				theme.paneTitle.Render(legacyTitleText), fp.render))
+				theme.paneTitle.Render("▶ a  "+hint), fp.render))
 
-		if got := m.renderPane(mainOuter, bodyHeight); got != legacy {
-			t.Errorf("renderPane changed for focused=%v\n got: %q\nwant: %q", focused, got, legacy)
+		got := m.renderPane(mainOuter, bodyHeight)
+		gotLines, legacyLines := strings.Split(got, "\n"), strings.Split(legacy, "\n")
+		if len(gotLines) != len(legacyLines) {
+			t.Fatalf("focused=%v: pane box is %d rows, want the legacy %d", focused, len(gotLines), len(legacyLines))
+		}
+		for i := range gotLines {
+			if gw, lw := lipgloss.Width(gotLines[i]), lipgloss.Width(legacyLines[i]); gw != lw {
+				t.Errorf("focused=%v: row %d is %d cells, want the legacy %d", focused, i, gw, lw)
+			}
+		}
+		title := xansi.Strip(gotLines[1])
+		if !strings.HasPrefix(title, "│ ▶ a ") || !strings.Contains(title, hint) {
+			t.Errorf("focused=%v: title row = %q, want \"▶ a\" and %q", focused, title, hint)
+		}
+		if body := xansi.Strip(gotLines[2]); !strings.HasPrefix(body, "│ SCREEN-BODY") {
+			t.Errorf("focused=%v: emulator row = %q, want it at the legacy column", focused, body)
+		}
+		inner := gotLines[1][strings.Index(gotLines[1], "│")+len("│") : strings.LastIndex(gotLines[1], "│")]
+		if at, ok := bgActiveAtEveryCell(inner, fill); !ok {
+			t.Errorf("focused=%v: the title strip's fill %s stops at byte %d: %q", focused, fill, at, inner)
 		}
 	}
 }

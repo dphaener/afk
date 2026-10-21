@@ -1,16 +1,16 @@
  afk Dashboard                                                                                                          
-╭─ All projects ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ All projects                                                                                                         │
 │ 5 need you                                                                                                           │
 │                                                                                                                      │
-│ ▌ beta         2/6  paused          Paused: no new task will start until you resume …  2 in inbox, 1 holds a task up │
-│   gamma          -  gone            The project folder does not exist. Check its pat…                                │
-│   delta          -  can't read      reading /p/delta/.afk/build/ledger.json: invalid…                                │
-│   epsilon        -  no plan         This project has no master plan to build.          plan waiting for approval     │
-│   eta          1/4  waiting on you  a task is parked until you answer its inbox item…  1 in inbox, 1 holds a task up │
-│   alpha        3/8  running         W1.T2 Add the parser: executing                                                  │
-│   zeta         5/5  finished        Every task is done.                                                              │
-│   repo         0/3  held for usage  nothing new is started, because of the usage lim…                                │
-│                                                                                                                      │
+│ ▌ beta        2/6 ○ paused          Paused: no new task will start until you resume …  2 in inbox, 1 holds a task up │
+│   gamma         - ✕ gone            The project folder does not exist. Check its pat…                                │
+│   delta         - ✕ can't read      reading /p/delta/.afk/build/ledger.json: invalid…                                │
+│   epsilon       - ○ no plan         This project has no master plan to build.          plan waiting for approval     │
+│   eta         1/4 ● waiting on you  a task is parked until you answer its inbox item…  1 in inbox, 1 holds a task up │
+│   alpha       3/8 ◐ running         W1.T2 Add the parser: executing                                                  │
+│   zeta        5/5 ✓ finished        Every task is done.                                                              │
+│   repo        0/3 ○ held for usage  nothing new is started, because of the usage lim…                                │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

@@ -1142,23 +1142,29 @@ func TestPrintSessionsScratchWorktreeColumn(t *testing.T) {
 	}
 }
 
-// scratchPhaseIdentity is the (phase key, badge fg, badge bg) triple this
-// package's scratch rendering must match against internal/ui's copy.
+// scratchPhaseIdentity is what this package's scratch rendering must still
+// share with internal/ui's copy: the phase key, the word both surfaces show
+// for a one-off session.
+//
+// It used to carry the scratch badge's (fg, bg) colour pair as well. T16.1
+// gave the dashboard its own colour themes (internal/palette's Theme, chosen
+// by [dash] theme), so internal/ui now builds its scratch badge from theme
+// tokens while afk clean, a terminal prompt, keeps palette.Scheme's colours
+// unchanged (T16.1 A1/A2: Scheme stays for prompt, clean and install). The two
+// surfaces no longer share a colour vocabulary, so a colour comparison could
+// only fail or be rigged to pass; the word is what an owner reads across both
+// and is what still has to agree.
 type scratchPhaseIdentity struct {
 	key string
-	fg  string
-	bg  string
 }
 
 // parseUIScratchPhaseIdentity extracts internal/ui's scratchPhaseKey literal
-// and the (fg, bg) badge() arguments its phaseBadges map pairs with that key,
 // by parsing internal/ui/styles.go directly rather than importing it.
 //
-// internal/ui is off-limits to edit in this fix cycle and scratchPhaseKey is
-// unexported by design (see its doc comment there), so no shared Go symbol
-// is reachable from this package. Static parsing is what W4.T3's fix
-// instruction asks for when package boundaries genuinely prevent a single
-// source of truth: a test that fails when the two copies drift apart.
+// scratchPhaseKey is unexported by design (see its doc comment there), so no
+// shared Go symbol is reachable from this package. Static parsing is what
+// W4.T3's fix instruction asked for when package boundaries genuinely prevent
+// a single source of truth: a test that fails when the two copies drift apart.
 func parseUIScratchPhaseIdentity(t *testing.T) scratchPhaseIdentity {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -1175,39 +1181,18 @@ func parseUIScratchPhaseIdentity(t *testing.T) scratchPhaseIdentity {
 
 	var id scratchPhaseIdentity
 	ast.Inspect(f, func(n ast.Node) bool {
-		if spec, ok := n.(*ast.ValueSpec); ok {
-			for i, name := range spec.Names {
-				if name.Name == "scratchPhaseKey" && i < len(spec.Values) {
-					if lit, ok := spec.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-						if v, err := strconv.Unquote(lit.Value); err == nil {
-							id.key = v
-						}
-					}
-				}
-			}
-			return true
-		}
-		kv, ok := n.(*ast.KeyValueExpr)
+		spec, ok := n.(*ast.ValueSpec)
 		if !ok {
 			return true
 		}
-		keyIdent, ok := kv.Key.(*ast.Ident)
-		if !ok || keyIdent.Name != "scratchPhaseKey" {
-			return true
-		}
-		call, ok := kv.Value.(*ast.CallExpr)
-		if !ok || len(call.Args) != 2 {
-			return true
-		}
-		fnIdent, ok := call.Fun.(*ast.Ident)
-		if !ok || fnIdent.Name != "badge" {
-			return true
-		}
-		fgSel, ok1 := call.Args[0].(*ast.SelectorExpr)
-		bgSel, ok2 := call.Args[1].(*ast.SelectorExpr)
-		if ok1 && ok2 {
-			id.fg = fgSel.Sel.Name
-			id.bg = bgSel.Sel.Name
+		for i, name := range spec.Names {
+			if name.Name == "scratchPhaseKey" && i < len(spec.Values) {
+				if lit, ok := spec.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					if v, err := strconv.Unquote(lit.Value); err == nil {
+						id.key = v
+					}
+				}
+			}
 		}
 		return true
 	})
@@ -1215,62 +1200,7 @@ func parseUIScratchPhaseIdentity(t *testing.T) scratchPhaseIdentity {
 	if id.key == "" {
 		t.Fatalf("%s: scratchPhaseKey constant not found", srcPath)
 	}
-	if id.fg == "" || id.bg == "" {
-		t.Fatalf("%s: phaseBadges[scratchPhaseKey]'s badge(fg, bg) call not found", srcPath)
-	}
 	return id
-}
-
-// parseCleanScratchBadgeArgs extracts the (fg, bg) palette identifiers
-// cleanPhaseBadgeScratch was constructed with, by parsing clean.go itself —
-// kept symmetric with parseUIScratchPhaseIdentity rather than read off the
-// already-built lipgloss.Style value, which exposes no accessor for the
-// colors it was given.
-func parseCleanScratchBadgeArgs(t *testing.T) (fg, bg string) {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller(0) failed")
-	}
-	srcPath := filepath.Join(filepath.Dir(thisFile), "clean.go")
-
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, srcPath, nil, 0)
-	if err != nil {
-		t.Fatalf("parsing %s: %v", srcPath, err)
-	}
-
-	ast.Inspect(f, func(n ast.Node) bool {
-		spec, ok := n.(*ast.ValueSpec)
-		if !ok {
-			return true
-		}
-		for i, name := range spec.Names {
-			if name.Name != "cleanPhaseBadgeScratch" || i >= len(spec.Values) {
-				continue
-			}
-			call, ok := spec.Values[i].(*ast.CallExpr)
-			if !ok || len(call.Args) != 2 {
-				continue
-			}
-			fnIdent, ok := call.Fun.(*ast.Ident)
-			if !ok || fnIdent.Name != "cleanBadgeStyle" {
-				continue
-			}
-			fgSel, ok1 := call.Args[0].(*ast.SelectorExpr)
-			bgSel, ok2 := call.Args[1].(*ast.SelectorExpr)
-			if ok1 && ok2 {
-				fg = fgSel.Sel.Name
-				bg = bgSel.Sel.Name
-			}
-		}
-		return true
-	})
-
-	if fg == "" || bg == "" {
-		t.Fatalf("%s: cleanPhaseBadgeScratch's cleanBadgeStyle(fg, bg) call not found", srcPath)
-	}
-	return fg, bg
 }
 
 // readRepoFile reads a file at path relative to the repo root (the directory
@@ -1369,22 +1299,18 @@ func TestReadmeDoesNotClaimCKeyTreatsBothKindsIdentically(t *testing.T) {
 }
 
 // TestScratchPhaseIdentityMatchesInternalUI is the W4.T3 drift guard: root
-// clean.go's scratchPhaseLabel and cleanPhaseBadgeScratch were hand-copied
-// from internal/ui's unexported scratchPhaseKey and its badge color pairing,
-// with nothing enforcing the two stay in sync — exactly the drift risk this
-// task existed to eliminate. This parses both files and compares the literal
-// values directly, so an edit to either side's scratch word or badge colors
-// fails this test instead of silently drifting from the other.
+// clean.go's scratchPhaseLabel was hand-copied from internal/ui's unexported
+// scratchPhaseKey, with nothing else enforcing the two stay in sync. This
+// parses internal/ui/styles.go and compares the literal directly, so an edit
+// to either side's scratch word fails this test instead of silently drifting.
+//
+// It no longer compares the badge colours: since T16.1 the dashboard takes
+// its colours from its theme and afk clean keeps palette.Scheme's, on purpose
+// (scratchPhaseIdentity's doc says why).
 func TestScratchPhaseIdentityMatchesInternalUI(t *testing.T) {
 	ui := parseUIScratchPhaseIdentity(t)
 	if scratchPhaseLabel != ui.key {
 		t.Errorf("scratchPhaseLabel = %q, internal/ui's scratchPhaseKey = %q — must name the scratch phase identically",
 			scratchPhaseLabel, ui.key)
-	}
-
-	fg, bg := parseCleanScratchBadgeArgs(t)
-	if fg != ui.fg || bg != ui.bg {
-		t.Errorf("cleanPhaseBadgeScratch built with (fg=%s, bg=%s), internal/ui pairs scratchPhaseKey with (fg=%s, bg=%s) — badge colors must match",
-			fg, bg, ui.fg, ui.bg)
 	}
 }

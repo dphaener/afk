@@ -46,11 +46,12 @@ type viewer interface {
 // mouse-mode declaration that used to be a returned tea.Cmd.
 func render(v viewer) string { return xansi.Strip(v.View().Content) }
 
-// selectionBg is the SGR parameter run the dark scheme's palette.SelectionBg
-// renders to, which is what assertHighlightSpansRow looks for. It is spelled
-// out rather than derived from theme so that a palette edit dropping the
-// background fails these assertions instead of quietly making them vacuous.
-const selectionBg = "48;2;43;47;61"
+// selectionBg is the SGR parameter run tide's sel token (#1e4b86) renders to,
+// which is what assertHighlightSpansRow looks for; tide is the theme a
+// zero-Deps test draws with. It is spelled out rather than derived from theme
+// so that a theme edit dropping the background fails these assertions instead
+// of quietly making them vacuous.
+const selectionBg = "48;2;30;75;134"
 
 // assertHighlightSpansRow fails unless the selection background is in force at
 // every printable cell of line, and line is exactly width cells wide. Shared by

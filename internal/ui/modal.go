@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 )
 
 // modalMargin is how many cells a modal keeps clear of each terminal edge, so
@@ -61,7 +62,36 @@ func renderModalBox(title, hint, body string, contentW, contentH int) string {
 // Compositor.Render trims trailing whitespace from every row (ultraviolet's
 // TrimSpace), which is why the composited frame's lines can be shorter than
 // the plain frame's; the renderer clears to end of line either way.
-func composeModal(frame, box string, width, height int) string {
+//
+// The frame is dimmed (dimFrame, overlayDim) before the box goes on, so every
+// overlay sits on a pushed-back screen (docs/dash-design.md §3.9) and the box
+// itself keeps its full colours. Dimming lives here rather than at each call
+// site so no overlay can forget it; composeToast does not dim, because a toast
+// is news about the screen, not something that takes the keyboard from it.
+// profile is the terminal's colour profile (Deps.ColorProfile): at 16 colours
+// the dimming is the faint attribute instead of a blend.
+func composeModal(frame, box string, width, height int, profile colorprofile.Profile) string {
+	return layModal(dimFrame(frame, theme.tokens, overlayDim, profile), box, width, height)
+}
+
+// composeModalOver is composeModal for a box laid over a frame that already
+// holds an overlay (a dialog over the switcher). Dimming the whole frame
+// again would push the screen under the first overlay a second 70% toward bg
+// (about 91% in all), so the pushed-back screen would look different with a
+// dialog up than without. Instead only the first overlay's box, which the
+// dialog now sits on, is dimmed, and the screen under it keeps the one dim it
+// already has: every layer under the top one is dimmed exactly once (§3.9).
+//
+// under is the first overlay's box as it was laid on frame, so its position
+// is recomputed the way composeModal placed it.
+func composeModalOver(frame, under, box string, width, height int, profile colorprofile.Profile) string {
+	frame = layModal(frame, dimFrame(under, theme.tokens, overlayDim, profile), width, height)
+	return layModal(frame, box, width, height)
+}
+
+// layModal centres box over frame with no dimming: composeModal's placement,
+// shared with composeModalOver so the two cannot place a box differently.
+func layModal(frame, box string, width, height int) string {
 	x := max(0, (width-lipgloss.Width(box))/2)
 	y := max(0, (height-lipgloss.Height(box))/2)
 	return lipgloss.NewCompositor(
