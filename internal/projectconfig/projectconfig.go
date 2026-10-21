@@ -1,8 +1,8 @@
 // Package projectconfig reads the project file, afk.toml, and the private
 // afk.local.toml laid over it (docs/PLAN.md section 4.6).
 //
-// It understands three things: the top-level plan key (the master plan's
-// path), the ntfy address under [notify], and the [ship] table that tells the
+// It understands the top-level plan key (the master plan's path), the
+// [planning] table, and the [ship] table that tells the
 // daemon how to merge and deploy, including the optional after_merge command
 // it runs in the main checkout after a merge (docs/PLAN.md T2.2a). Every other key and table ([policy], an
 // unknown key inside [ship], anything unknown) is ignored on purpose: other
@@ -33,7 +33,7 @@ import (
 const FileName = "afk.toml"
 
 // LocalFileName is the private overlay beside FileName. It is git-ignored and
-// holds values that must not be committed, such as the ntfy topic.
+// holds private project settings that must not be committed.
 const LocalFileName = "afk.local.toml"
 
 // DefaultPlan is the master plan path used when the file or the plan key is absent.
@@ -43,8 +43,6 @@ const DefaultPlan = "docs/PLAN.md"
 type Config struct {
 	// Plan is the master plan path, relative to the project root, cleaned.
 	Plan string
-	// Notify is the [notify] table.
-	Notify Notify
 	// Ship is the [ship] table, with defaults filled in for absent keys.
 	Ship Ship
 	// Planning is the [planning] table. The table is named planning and not
@@ -133,12 +131,6 @@ func (s Ship) EnvPattern() *regexp.Regexp {
 	return re
 }
 
-// Notify is the [notify] table.
-type Notify struct {
-	// NtfyURL is the ntfy address, trimmed. Empty means none is configured.
-	NtfyURL string
-}
-
 // PlanPath returns the master plan's path under root.
 func (c Config) PlanPath(root string) string {
 	return filepath.Join(root, filepath.FromSlash(c.Plan))
@@ -147,15 +139,13 @@ func (c Config) PlanPath(root string) string {
 // file mirrors the TOML layout. It declares only what Config carries; the
 // decoder skips every other key without complaint. Fields are pointers or
 // any so a key that is absent differs from one set to an empty value: the
-// overlay needs that, because a local ntfy_url = "" must beat a committed
-// address.
+// overlay needs that, because a local value that is empty must beat a
+// committed one. A [notify] table, left over from an older afk, is not named
+// here, so the decoder skips it and nothing is reported.
 type file struct {
 	// Plan is decoded as any so a wrong type is reported by us, with advice,
 	// rather than as a decoder message. nil means the key is absent.
-	Plan   any `toml:"plan"`
-	Notify struct {
-		NtfyURL *string `toml:"ntfy_url"`
-	} `toml:"notify"`
+	Plan any `toml:"plan"`
 	Ship struct {
 		Base               *string `toml:"base"`
 		MergeMethod        *string `toml:"merge_method"`
@@ -179,11 +169,10 @@ type file struct {
 // over the first key by key (docs/PLAN.md section 4.6): a key present in the
 // local file wins, even when empty; a key absent from it keeps the committed
 // value. Either file may be missing. With both missing, or without a plan
-// key in either, the plan is the default; a missing ntfy_url gives an empty
-// address.
+// key in either, the plan is the default.
 //
 // The local file exists because the committed one is shared: a private value
-// such as the ntfy topic belongs in the git-ignored afk.local.toml.
+// belongs in the git-ignored afk.local.toml.
 //
 // Each file is checked on its own, so an error names the file the bad value
 // came from. The plan path must stay inside the project. The daemon reads and
@@ -206,9 +195,6 @@ func Load(root string) (Config, error) {
 		if f.plan != nil {
 			cfg.Plan = *f.plan
 		}
-		if f.ntfy != nil {
-			cfg.Notify.NtfyURL = *f.ntfy
-		}
 		f.ship.apply(&cfg.Ship)
 		if f.viaPR != nil {
 			cfg.Planning.ViaPR = *f.viaPR
@@ -220,7 +206,6 @@ func Load(root string) (Config, error) {
 // checked holds one file's validated values; nil means the key was absent.
 type checked struct {
 	plan *string
-	ntfy *string
 	ship shipKeys
 	// viaPR is [planning] via_pr; nil means absent.
 	viaPR *bool
@@ -351,8 +336,7 @@ func readFile(path string) (*checked, error) {
 
 	var raw file
 	if _, err := toml.Decode(string(data), &raw); err != nil {
-		// The ntfy address may carry a password, so this message must not
-		// repeat a value. The decoder's error is "toml: line N (last key
+		// A value may be a secret, so this message must not repeat one. The decoder's error is "toml: line N (last key
 		// "k"): <message>" (ParseError.Error), and the type-mismatch message
 		// names types, not values (MetaData.badtype). Its syntax messages
 		// are not audited here; TestLoad's "broken toml" row checks only
@@ -367,15 +351,6 @@ func readFile(path string) (*checked, error) {
 			return nil, err
 		}
 		out.plan = &plan
-	}
-	if raw.Notify.NtfyURL != nil {
-		ntfy := strings.TrimSpace(*raw.Notify.NtfyURL)
-		if ntfy != "" {
-			if err := checkURL(filepath.Base(path), ntfy); err != nil {
-				return nil, err
-			}
-		}
-		out.ntfy = &ntfy
 	}
 	ship, err := checkShip(filepath.Base(path), &raw)
 	if err != nil {
@@ -419,19 +394,4 @@ func checkPlan(path string, v any) (string, error) {
 		return "", fmt.Errorf("%s: plan %q is the project folder, not a file. Change it to the master plan file's path.", path, s)
 	}
 	return filepath.ToSlash(clean), nil
-}
-
-// checkURL requires an http or https address with a host. The error never
-// repeats the address: url.Parse echoes its input, and the address may carry a
-// password.
-func checkURL(name, raw string) error {
-	bad := name + ": [notify] ntfy_url must be a web address that starts with http:// or https:// and names a server, for example https://ntfy.sh/my-topic"
-	u, err := url.Parse(raw)
-	if err != nil {
-		return errors.New(bad)
-	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return errors.New(bad)
-	}
-	return nil
 }

@@ -64,7 +64,6 @@ type rig struct {
 
 	notified []inbox.Item
 	urgent   []inbox.Item
-	idle     []string
 	logs     []string
 
 	shipFn   func(ShipRequest) ship.Outcome
@@ -435,10 +434,9 @@ func (r *rig) deps() Deps {
 			})
 			return len(res.Lines), err
 		},
-		Notify:     func(_ Project, it inbox.Item) { r.notified = append(r.notified, it) },
-		NotifyIdle: func(_ Project, title, body string) { r.idle = append(r.idle, title+"\n"+body) },
-		Log:        func(format string, args ...any) { r.logs = append(r.logs, fmt.Sprintf(format, args...)) },
-		Clean:      r.clean,
+		Notify: func(_ Project, it inbox.Item) { r.notified = append(r.notified, it) },
+		Log:    func(format string, args ...any) { r.logs = append(r.logs, fmt.Sprintf(format, args...)) },
+		Clean:  r.clean,
 	}
 	if !r.noUrgent {
 		d.NotifyUrgent = func(_ Project, it inbox.Item) { r.urgent = append(r.urgent, it) }
@@ -1066,9 +1064,9 @@ func TestTickShipNilKeepsShipping(t *testing.T) {
 	if after := r.ledgerText(); after != before {
 		t.Errorf("the ledger changed with no shipper:\n%s", after)
 	}
-	if len(r.launches) != 1 || len(r.items()) != 0 || len(r.notified) != 0 || len(r.idle) != 0 || len(r.cleans) != 0 {
-		t.Errorf("launches %d, items %d, notified %d, idle %d, cleans %d; want 1, 0, 0, 0, 0",
-			len(r.launches), len(r.items()), len(r.notified), len(r.idle), len(r.cleans))
+	if len(r.launches) != 1 || len(r.items()) != 0 || len(r.notified) != 0 || len(r.cleans) != 0 {
+		t.Errorf("launches %d, items %d, notified %d, cleans %d; want 1, 0, 0, 0",
+			len(r.launches), len(r.items()), len(r.notified), len(r.cleans))
 	}
 }
 
@@ -1246,13 +1244,10 @@ func TestTickParkAndUnpark(t *testing.T) {
 	}
 
 	// Parked for an hour: no stall is raised about a question the owner has
-	// already been sent, and the idle notice goes out once.
+	// already been sent.
 	st = r.ticks(12, 5*time.Minute)
 	if st.Kind != string(ActIdle) || !strings.Contains(st.Reason, q.ID) {
 		t.Errorf("state while parked = %+v", st)
-	}
-	if len(r.idle) != 1 || !strings.Contains(r.idle[0], "waiting on you") {
-		t.Errorf("idle notices = %v, want exactly one", r.idle)
 	}
 	if n := len(r.items()); n != 1 {
 		t.Errorf("items = %d, want only the question", n)
@@ -1606,17 +1601,14 @@ func TestTickLaunchError(t *testing.T) {
 	t.Logf("launch-failure item %s: %s", it.ID, it.Body)
 	r.wantDecisions("launch", "task_failed")
 
-	// What is left depends on the failed task: the loop goes idle, says so
-	// once, and launches nothing more.
+	// What is left depends on the failed task: the loop goes idle and
+	// launches nothing more.
 	st = r.ticks(20, 5*time.Second)
 	if st.Kind != string(ActIdle) || !strings.Contains(st.Reason, "blocked by failed") {
 		t.Errorf("state afterwards = %+v", st)
 	}
 	if len(r.launches) != 1 || len(r.items()) != 1 || len(r.notified) != 1 {
 		t.Errorf("launches %d, items %d, notified %d; want 1 each", len(r.launches), len(r.items()), len(r.notified))
-	}
-	if len(r.idle) != 1 || !strings.Contains(r.idle[0], "blocked by a failed task") {
-		t.Errorf("idle notices = %v, want exactly one", r.idle)
 	}
 	r.wantDecisions("launch", "task_failed")
 }

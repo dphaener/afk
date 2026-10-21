@@ -511,21 +511,9 @@ pushed; section 6 is where you push and merge it.
    ```
 
    `.afk/` is where afk keeps the ledger, the inbox and each session's notes.
-   `afk.local.toml` is the next step.
+   `afk.local.toml` is for private project settings; none are needed here.
 
-4. Create `afk.local.toml` next to `afk.toml`, in the main checkout, for the
-   phone notifications. This is an owner step, because the topic is yours:
-
-   ```toml
-   [notify]
-   ntfy_url = "https://ntfy.sh/<your-topic>"
-   ```
-
-   An ntfy topic works as a password: anyone who knows it can read and post to
-   it. `afk.toml` is committed and this file is not, so the address goes here
-   and never in `afk.toml`.
-
-5. In `.github/workflows/ci.yml`, change `runs-on: ubuntu-latest` to
+4. In `.github/workflows/ci.yml`, change `runs-on: ubuntu-latest` to
    `runs-on: ubuntu-26.04` on **all four jobs** (`scan_ruby`, `scan_js`, `lint`
    and `test`). The reason: afk only merges when CI is green, and each session
    checks its work on the VM first. With the same Ubuntu in both places, a
@@ -546,14 +534,14 @@ pushed; section 6 is where you push and merge it.
 
    afk never merges a pull request that has no checks.
 
-6. Commit on the branch. Do not push yet:
+5. Commit on the branch. Do not push yet:
 
    ```bash
    git add afk.toml .gitignore .github/workflows/ci.yml
    git commit -m "chore(afk): Add afk config and pin CI to Ubuntu 26.04"
    ```
 
-7. **Seed the ledger.** The ledger is afk's record of where each task stands.
+6. **Seed the ledger.** The ledger is afk's record of where each task stands.
    Nebari is part built, so afk has to be told what is already done. Tasks up
    to and including T4.3 are built:
 
@@ -572,7 +560,7 @@ pushed; section 6 is where you push and merge it.
 
    Expect `T4.2: done → superseded (replaced by T4.2a, T4.2b)`.
 
-8. Check the result:
+7. Check the result:
 
    ```bash
    afk tasks --project ~/code/nebari
@@ -855,7 +843,7 @@ when you are there to watch.
 
 | What you see | Why | What to do |
 |---|---|---|
-| An inbox item titled `This project has no task list yet`, and nothing starts | The project has no ledger file, so afk cannot tell a new project from a part-built one | Run the two `afk ledger` commands in section 5, step 7. The item closes by itself once the ledger exists |
+| An inbox item titled `This project has no task list yet`, and nothing starts | The project has no ledger file, so afk cannot tell a new project from a part-built one | Run the two `afk ledger` commands in section 5, step 6. The item closes by itself once the ledger exists |
 | An inbox item titled `No checks ran on the pull request for <task>` | GitHub showed no CI check on the pull request within five minutes. The workflow does not run on pull requests, or the runner name in `runs-on` does not exist | Check the top of `.github/workflows/ci.yml` has `pull_request:` and the jobs say `runs-on: ubuntu-26.04`. Fix it on `main`, then answer the item; afk waits another five minutes. Or merge the pull request yourself and run `afk ledger set <task> done` |
 | `afk daemon status` shows a `Stopped:` line and no new task starts | A merge happened, but the deploy did not answer healthy within `deploy_timeout`. afk stops the whole project so nothing is built on a broken deploy | Look at the deploy in Coolify. Fix it or roll it back. When `https://nebari.haener.cloud/up` answers healthy, run `afk resume nebari`. Answering the inbox item does not clear the stop; only `afk resume` does |
 | A task parks with an item naming a variable such as `S3_BUCKET` | The branch adds a line that `required_env_pattern` matches: a new required variable in the compose file | Set the variable in Coolify, then answer the item. The ship carries on from where it stopped |

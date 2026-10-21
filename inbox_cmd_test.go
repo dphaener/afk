@@ -2,23 +2,17 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/notify"
-	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/webpush"
 )
 
@@ -26,17 +20,11 @@ import (
 // are written out so a row can name the item it expects.
 var inboxTestIDs = []string{"aaaaaa", "bbbbbb", "cccccc", "dddddd", "eeeeee", "ffffff"}
 
-const inboxTestURL = "https://ntfy.example/afk-topic"
-
-type inboxSend struct {
-	url string
-	msg notify.NtfyMessage
-}
-
 // inboxFixture is one hermetic `afk inbox` world: a temp folder standing in
 // for the project's main checkout, a clock that moves one minute per reading
 // (so list order is decided by time, not by the id), scripted ids and fakes
-// for git, the glob, afk.toml and the notification.
+// for git, the glob and the machine config. Push is off unless a test wires
+// pushDir and pushSend (TestRunInboxAddPush).
 type inboxFixture struct {
 	t       *testing.T
 	project string
@@ -44,14 +32,8 @@ type inboxFixture struct {
 	stdout  bytes.Buffer
 	stderr  bytes.Buffer
 
-	ntfyURL   string
-	configErr error
-	sendErr   error
-	statuses  []string
-
-	sends       []inboxSend
-	configRoots []string
-	globs       []string
+	statuses []string
+	globs    []string
 
 	// machine and machineErr are what the fake machine config read answers;
 	// machineLoads counts the reads. A new fixture has no machine config, as
@@ -59,9 +41,6 @@ type inboxFixture struct {
 	machine      daemonconfig.Config
 	machineErr   error
 	machineLoads int
-	// pageOn is what the fake "is a web password set" check answers. A new
-	// fixture has none, so its page is off.
-	pageOn bool
 }
 
 func newInboxFixture(t *testing.T) *inboxFixture {
@@ -88,22 +67,10 @@ func newInboxFixture(t *testing.T) *inboxFixture {
 			f.globs = append(f.globs, pattern)
 			return f.statuses, nil
 		},
-		loadConfig: func(root string) (projectconfig.Config, error) {
-			f.configRoots = append(f.configRoots, root)
-			if f.configErr != nil {
-				return projectconfig.Config{}, f.configErr
-			}
-			return projectconfig.Config{Notify: projectconfig.Notify{NtfyURL: f.ntfyURL}}, nil
-		},
-		send: func(_ context.Context, url string, m notify.NtfyMessage) error {
-			f.sends = append(f.sends, inboxSend{url: url, msg: m})
-			return f.sendErr
-		},
 		loadMachine: func() (daemonconfig.Config, error) {
 			f.machineLoads++
 			return f.machine, f.machineErr
 		},
-		pageOn: func() bool { return f.pageOn },
 	}
 	return f
 }
@@ -163,27 +130,19 @@ func wantContains(t *testing.T, what, got string, fragments []string) {
 }
 
 // TestRunInbox drives the whole command over argv rows and checks the exit
-// code, what was printed, the item files on disk and how many notifications
-// went out.
+// code, what was printed and the item files on disk. Push is off here; what
+// an add sends is TestRunInboxAddPush's.
 //
 // Load-bearing rows:
 //
-//   - (a) "blocking item with an address sends once": the one thing the
-//     notification exists for. Exactly once, because a retry or a second call
-//     would buzz the owner's phone twice for one parked task.
-//   - (b) "no address sends nothing": most projects have no afk.toml, and
-//     that must be silence with exit 0, not a warning on every add.
-//   - (c) "send error still exits 0" and (d) "afk.toml error still exits 0":
-//     the caller is an agent about to park on the item. A non-zero exit after
-//     the file is written would tell it the item was not recorded.
+//   - (a) "blocking item is written whole": every field the agent gave lands
+//     in the file, with nothing on stderr.
 //   - (e) "from a linked worktree the item lands in the main checkout": the
 //     reason mainCheckout exists. Written into the worktree's own .afk/, the
 //     item would be invisible to the owner and deleted with the worktree.
 //   - (f) "neither block flag" and "both block flags": there is no safe
 //     default, so a forgotten flag is exit 2 with nothing written.
 //
-// "non-blocking question with an address sends nothing" pins the other side
-// of (a): assumed answers arrive by the dozen and must not notify.
 // "--project is used as given" pins that a named folder is not replaced by
 // its main checkout.
 func TestRunInbox(t *testing.T) {
@@ -201,37 +160,22 @@ func TestRunInbox(t *testing.T) {
 		wantStderr []string
 		// emptyStderr asserts nothing at all was printed to stderr.
 		emptyStderr bool
-		wantSends   int
 		// wantFiles is the item files expected in the project's main
 		// checkout after the command.
 		wantFiles []string
 		check     func(t *testing.T, f *inboxFixture)
 	}{
-		// --- add: notification ---
+		// --- add ---
 		{
-			name:        "(a) blocking item with an address sends once",
-			setup:       func(t *testing.T, f *inboxFixture) { f.ntfyURL = inboxTestURL },
+			name:        "(a) blocking item is written whole",
 			args:        []string{"add", "--kind", "env_var", "--title", "Set STRIPE_KEY", "--body", "The deploy needs it.", "--task", "T4.3", "--block"},
 			wantExit:    0,
 			wantStdout:  []string{"Added inbox item aaaaaa."},
 			emptyStderr: true,
-			wantSends:   1,
 			wantFiles:   []string{"aaaaaa.json"},
 			check: func(t *testing.T, f *inboxFixture) {
-				got := f.sends[0]
-				want := inboxSend{url: inboxTestURL, msg: notify.NtfyMessage{
-					Title:    "afk: Set STRIPE_KEY",
-					Body:     "The deploy needs it.\n\nafk inbox show aaaaaa (T4.3)",
-					Priority: 4,
-				}}
-				if got != want {
-					t.Errorf("send = %+v, want %+v", got, want)
-				}
-				if len(f.configRoots) != 1 || f.configRoots[0] != f.project {
-					t.Errorf("afk.toml read from %v, want only %s", f.configRoots, f.project)
-				}
 				it := readInboxItem(t, f.project, "aaaaaa")
-				if !it.Blocking || it.Kind != "env_var" || it.Task != "T4.3" || it.Body != "The deploy needs it." {
+				if !it.Blocking || it.Kind != "env_var" || it.Task != "T4.3" || it.Body != "The deploy needs it." || it.Title != "Set STRIPE_KEY" {
 					t.Errorf("item = %+v", it)
 				}
 				if it.CreatedAt != "2026-10-11T09:01:00Z" {
@@ -240,43 +184,8 @@ func TestRunInbox(t *testing.T) {
 			},
 		},
 		{
-			name:        "(b) no address sends nothing",
-			args:        blockingAdd,
-			wantExit:    0,
-			wantStdout:  []string{"Added inbox item aaaaaa."},
-			emptyStderr: true,
-			wantSends:   0,
-			wantFiles:   []string{"aaaaaa.json"},
-		},
-		{
-			name: "(c) send error still exits 0",
-			setup: func(t *testing.T, f *inboxFixture) {
-				f.ntfyURL = inboxTestURL
-				f.sendErr = errors.New("could not reach https://ntfy.example/afk-topic: connection refused")
-			},
-			args:       blockingAdd,
-			wantExit:   0,
-			wantStdout: []string{"Added inbox item aaaaaa."},
-			wantStderr: []string{"the item was added, but the notification could not be sent", "connection refused"},
-			wantSends:  1,
-			wantFiles:  []string{"aaaaaa.json"},
-		},
-		{
-			name: "(d) afk.toml error still exits 0",
-			setup: func(t *testing.T, f *inboxFixture) {
-				f.configErr = errors.New("afk.toml: [notify] ntfy_url must be a web address")
-			},
-			args:       blockingAdd,
-			wantExit:   0,
-			wantStdout: []string{"Added inbox item aaaaaa."},
-			wantStderr: []string{"the item was added, but afk.toml could not be read, so no notification was sent", "ntfy_url must be a web address"},
-			wantSends:  0,
-			wantFiles:  []string{"aaaaaa.json"},
-		},
-		{
 			name: "(e) from a linked worktree the item lands in the main checkout",
 			setup: func(t *testing.T, f *inboxFixture) {
-				f.ntfyURL = inboxTestURL
 				worktree := t.TempDir()
 				f.env.cwd = worktree
 				// The fixture's gitCommonDir already answers with the main
@@ -286,53 +195,32 @@ func TestRunInbox(t *testing.T) {
 			args:       blockingAdd,
 			wantExit:   0,
 			wantStdout: []string{"Added inbox item aaaaaa."},
-			wantSends:  1,
 			wantFiles:  []string{"aaaaaa.json"},
 			check: func(t *testing.T, f *inboxFixture) {
 				if _, err := os.Stat(filepath.Join(f.env.cwd, ".afk")); !os.IsNotExist(err) {
 					t.Errorf("the worktree got a .afk folder (stat err = %v); nothing may be written there", err)
 				}
-				if len(f.configRoots) != 1 || f.configRoots[0] != f.project {
-					t.Errorf("afk.toml read from %v, want the main checkout %s", f.configRoots, f.project)
-				}
 			},
 		},
 		{
 			name:       "(f) neither block flag",
-			setup:      func(t *testing.T, f *inboxFixture) { f.ntfyURL = inboxTestURL },
 			args:       []string{"add", "--kind", "env_var", "--title", "x"},
 			wantExit:   2,
 			wantStderr: []string{"say whether this item stops the task: add --block (the task waits for the owner) or --no-block (the task carries on).", "Nothing was added"},
 		},
 		{
 			name:       "(f) both block flags",
-			setup:      func(t *testing.T, f *inboxFixture) { f.ntfyURL = inboxTestURL },
 			args:       []string{"add", "--kind", "env_var", "--title", "x", "--block", "--no-block"},
 			wantExit:   2,
 			wantStderr: []string{"say whether this item stops the task"},
 		},
 		{
-			name:        "non-blocking question with an address sends nothing",
-			setup:       func(t *testing.T, f *inboxFixture) { f.ntfyURL = inboxTestURL },
+			name:        "non-blocking question with an assumed answer",
 			args:        []string{"add", "--kind", "question", "--title", "Which queue?", "--assumed", "sidekiq", "--no-block"},
 			wantExit:    0,
 			wantStdout:  []string{"Added inbox item aaaaaa."},
 			emptyStderr: true,
-			wantSends:   0,
 			wantFiles:   []string{"aaaaaa.json"},
-		},
-		{
-			name:      "non-blocking env_var with an address sends at priority 3",
-			setup:     func(t *testing.T, f *inboxFixture) { f.ntfyURL = inboxTestURL },
-			args:      []string{"add", "--kind", "env_var", "--title", "Set SENTRY_DSN", "--no-block"},
-			wantExit:  0,
-			wantSends: 1,
-			wantFiles: []string{"aaaaaa.json"},
-			check: func(t *testing.T, f *inboxFixture) {
-				if got := f.sends[0].msg; got.Priority != 3 || got.Body != "afk inbox show aaaaaa" {
-					t.Errorf("message = %+v", got)
-				}
-			},
 		},
 
 		// --- add: where and what ---
@@ -350,9 +238,6 @@ func TestRunInbox(t *testing.T) {
 				named := filepath.Join(f.env.cwd, "named")
 				if got := inboxItemFiles(t, named); len(got) != 1 {
 					t.Errorf("item files under --project folder = %v, want one", got)
-				}
-				if len(f.configRoots) != 1 || f.configRoots[0] != named {
-					t.Errorf("afk.toml read from %v, want %s", f.configRoots, named)
 				}
 			},
 		},
@@ -507,7 +392,6 @@ func TestRunInbox(t *testing.T) {
 		},
 		{
 			name:       "add with an unknown kind",
-			setup:      func(t *testing.T, f *inboxFixture) { f.ntfyURL = inboxTestURL },
 			args:       []string{"add", "--kind", "nonsense", "--title", "x", "--block"},
 			wantExit:   2,
 			wantStderr: []string{`afk inbox add: "nonsense" is not a kind of inbox item`},
@@ -527,7 +411,6 @@ func TestRunInbox(t *testing.T) {
 		{
 			name: "add when the folder cannot be written",
 			setup: func(t *testing.T, f *inboxFixture) {
-				f.ntfyURL = inboxTestURL
 				// .afk as a plain file makes MkdirAll fail for any user,
 				// root included.
 				if err := os.WriteFile(filepath.Join(f.project, ".afk"), []byte("x"), 0o644); err != nil {
@@ -822,7 +705,7 @@ func TestRunInbox(t *testing.T) {
 			name:       "--help",
 			args:       []string{"--help"},
 			wantExit:   0,
-			wantStderr: []string{"afk inbox — things that need", "afk inbox add --kind KIND", "external_action", "ntfy_url", "Exit codes:"},
+			wantStderr: []string{"afk inbox — things that need", "afk inbox add --kind KIND", "external_action", "signed up on afk's web page", "Exit codes:"},
 		},
 		{
 			name:       "-h",
@@ -856,9 +739,9 @@ func TestRunInbox(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, f)
 			}
-			// Setup may have added items and sent for them; only the
-			// command under test is counted.
-			f.sends, f.configRoots, f.globs = nil, nil, nil
+			// Setup may have added items; only the command under test's
+			// globs are counted.
+			f.globs = nil
 
 			args := tt.args
 			if tt.argsFn != nil {
@@ -876,9 +759,6 @@ func TestRunInbox(t *testing.T) {
 			if tt.wantExit != 0 && f.stdout.Len() != 0 {
 				t.Errorf("a failed command printed to stdout:\n%s", f.stdout.String())
 			}
-			if len(f.sends) != tt.wantSends {
-				t.Errorf("notifications sent = %d, want %d", len(f.sends), tt.wantSends)
-			}
 			got := inboxItemFiles(t, f.project)
 			if strings.Join(got, ",") != strings.Join(tt.wantFiles, ",") {
 				t.Errorf("item files in the main checkout = %v, want %v", got, tt.wantFiles)
@@ -893,152 +773,67 @@ func TestRunInbox(t *testing.T) {
 // TestInboxNotification is the "should this item notify, and with what
 // message" table.
 //
-// Load-bearing rows: "no address" (silence even for the loudest item, since
-// most projects have no afk.toml), "non-blocking question" (never notifies
-// even with an address) and "body and task" (the exact message shape: body,
-// blank line, the show command, the task in brackets). The priorities
-// themselves are notify.NtfyPriority's table and are tested there; the rows
-// here only prove this function passes kind and blocking through unchanged.
+// Load-bearing rows: "non-blocking question" (never notifies) and "body and
+// task" (the exact message shape: body, blank line, the show command, the
+// task in brackets). Which kinds notify is notify.ItemNotifies' table and is
+// tested there; the rows here only prove this function passes kind and
+// blocking through unchanged.
 func TestInboxNotification(t *testing.T) {
 	cases := []struct {
 		name     string
 		item     inbox.Item
-		url      string
 		wantSend bool
-		want     notify.NtfyMessage
+		want     notify.Message
 	}{
-		{
-			name:     "no address",
-			item:     inbox.Item{ID: "aaaaaa", Kind: "failure", Blocking: true, Title: "CI failed twice"},
-			url:      "",
-			wantSend: false,
-		},
 		{
 			name:     "non-blocking question",
 			item:     inbox.Item{ID: "aaaaaa", Kind: "question", Title: "Which queue?", Assumed: "sidekiq"},
-			url:      inboxTestURL,
 			wantSend: false,
 		},
 		{
 			name:     "non-blocking notice",
 			item:     inbox.Item{ID: "aaaaaa", Kind: "notice", Title: "Idea"},
-			url:      inboxTestURL,
 			wantSend: false,
 		},
 		{
 			name:     "blocking question",
 			item:     inbox.Item{ID: "aaaaaa", Kind: "question", Blocking: true, Title: "Which queue?"},
-			url:      inboxTestURL,
 			wantSend: true,
-			want:     notify.NtfyMessage{Title: "afk: Which queue?", Body: "afk inbox show aaaaaa", Priority: 4},
+			want:     notify.Message{Title: "afk: Which queue?", Body: "afk inbox show aaaaaa"},
 		},
 		{
-			name:     "blocking failure is the loudest",
+			name:     "blocking failure",
 			item:     inbox.Item{ID: "aaaaaa", Kind: "failure", Blocking: true, Title: "CI failed twice"},
-			url:      inboxTestURL,
 			wantSend: true,
-			want:     notify.NtfyMessage{Title: "afk: CI failed twice", Body: "afk inbox show aaaaaa", Priority: 5},
+			want:     notify.Message{Title: "afk: CI failed twice", Body: "afk inbox show aaaaaa"},
 		},
 		{
-			name:     "non-blocking verification is quiet",
+			name:     "non-blocking verification",
 			item:     inbox.Item{ID: "aaaaaa", Kind: "verification", Title: "Check the PDF"},
-			url:      inboxTestURL,
 			wantSend: true,
-			want:     notify.NtfyMessage{Title: "afk: Check the PDF", Body: "afk inbox show aaaaaa", Priority: 2},
+			want:     notify.Message{Title: "afk: Check the PDF", Body: "afk inbox show aaaaaa"},
 		},
 		{
 			name:     "body and task",
 			item:     inbox.Item{ID: "bbbbbb", Kind: "env_var", Blocking: true, Title: "Set STRIPE_KEY", Body: "The deploy needs it.", Task: "T4.3"},
-			url:      inboxTestURL,
 			wantSend: true,
-			want:     notify.NtfyMessage{Title: "afk: Set STRIPE_KEY", Body: "The deploy needs it.\n\nafk inbox show bbbbbb (T4.3)", Priority: 4},
+			want:     notify.Message{Title: "afk: Set STRIPE_KEY", Body: "The deploy needs it.\n\nafk inbox show bbbbbb (T4.3)"},
 		},
 		{
 			name:     "task without a body",
 			item:     inbox.Item{ID: "bbbbbb", Kind: "external_action", Title: "Approve DNS", Task: "T4.2a"},
-			url:      inboxTestURL,
 			wantSend: true,
-			want:     notify.NtfyMessage{Title: "afk: Approve DNS", Body: "afk inbox show bbbbbb (T4.2a)", Priority: 3},
+			want:     notify.Message{Title: "afk: Approve DNS", Body: "afk inbox show bbbbbb (T4.2a)"},
 		},
 	}
 	for _, tt := range cases {
 		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
-			got, send := inboxNotification(tt.item, tt.url)
+			got, send := inboxNotification(tt.item)
 			if send != tt.wantSend {
 				t.Fatalf("send = %v, want %v", send, tt.wantSend)
 			}
 			if got != tt.want {
 				t.Errorf("message = %+v, want %+v", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestInboxItemLink pins the link `afk inbox add` puts in its notification.
-//
-// Load-bearing rows:
-//   - "config could not be read", "no public address" and "no project is this
-//     folder" are the three ways to have no link, and each must be an empty
-//     string and nothing else: the notification then goes out as it always
-//     did.
-//   - "the name is the configured one": the page serves a project under its
-//     name in the machine config, so a link built from the folder's name
-//     would open "no such project".
-//   - "two entries for one checkout": the daemon keeps the first, so the link
-//     must use the first.
-//   - "an address but no password": the page is off, and a link would open
-//     nothing. "a leftover token is not a password" pins that the old [web]
-//     token no longer turns the page on.
-//
-// No link ever holds the leftover token or any query string.
-func TestInboxItemLink(t *testing.T) {
-	const token = "tok-3f9a1c7e5b2d4a68"
-	on := daemonconfig.Web{PublicURL: "https://afk.example"}
-	projects := []daemonconfig.Project{
-		{Name: "blog", Path: "/p/blog"},
-		{Name: "my app", Path: "/p/app-folder"},
-		{Name: "again", Path: "/wt/app-session"},
-	}
-	// sameDir stands in for the main-checkout lookup: /wt/app-session is a
-	// worktree of /p/app-folder.
-	sameDir := func(configured, root string) bool {
-		if configured == "/wt/app-session" {
-			configured = "/p/app-folder"
-		}
-		return configured == root
-	}
-	cases := []struct {
-		name   string
-		cfg    daemonconfig.Config
-		cfgErr error
-		// off is a row whose page has no password; every other row has one.
-		off  bool
-		root string
-		want string
-	}{
-		{name: "the name is the configured one", cfg: daemonconfig.Config{Web: on, Projects: projects},
-			root: "/p/app-folder", want: "https://afk.example/p/my%20app/inbox/abc234"},
-		{name: "two entries for one checkout", cfg: daemonconfig.Config{Web: on, Projects: projects[1:]},
-			root: "/p/app-folder", want: "https://afk.example/p/my%20app/inbox/abc234"},
-		{name: "found through a worktree's path", cfg: daemonconfig.Config{Web: on, Projects: projects[2:]},
-			root: "/p/app-folder", want: "https://afk.example/p/again/inbox/abc234"},
-		{name: "no project is this folder", cfg: daemonconfig.Config{Web: on, Projects: projects}, root: "/p/elsewhere"},
-		{name: "no projects at all", cfg: daemonconfig.Config{Web: on}, root: "/p/app-folder"},
-		{name: "config could not be read", cfg: daemonconfig.Config{Web: on, Projects: projects},
-			cfgErr: errors.New("config.toml: not valid TOML"), root: "/p/app-folder"},
-		{name: "no public address", cfg: daemonconfig.Config{Web: daemonconfig.Web{}, Projects: projects}, root: "/p/app-folder"},
-		{name: "an address but no password", cfg: daemonconfig.Config{Web: on, Projects: projects}, off: true, root: "/p/app-folder"},
-		{name: "a leftover token is not a password", cfg: daemonconfig.Config{Web: daemonconfig.Web{PublicURL: "https://afk.example", LeftoverToken: true}, Projects: projects},
-			off: true, root: "/p/app-folder"},
-	}
-	for _, tt := range cases {
-		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
-			got := inboxItemLink(tt.cfg, tt.cfgErr, !tt.off, tt.root, "abc234", sameDir)
-			if got != tt.want {
-				t.Errorf("link = %q, want %q", got, tt.want)
-			}
-			if strings.Contains(got, token) || strings.ContainsAny(got, "?#") {
-				t.Errorf("link %q holds the token or a query", got)
 			}
 		})
 	}
@@ -1075,236 +870,16 @@ func TestRunInboxWritesTheFourteenKeys(t *testing.T) {
 	}
 }
 
-// TestRunInboxRealConfigAndSender wires the real afk.toml reader and the real
-// ntfy sender through runInbox against a local test server. The table test
-// fakes both, so this is the only test that would catch the command passing
-// the wrong folder to the reader or the wrong address to the sender.
-//
-// Load-bearing: exactly one POST with Priority 4 for a blocking env_var item,
-// and no request at all when the project has no afk.toml.
-func TestRunInboxRealConfigAndSender(t *testing.T) {
-	type request struct {
-		method, path, priority, title, body, click string
-	}
-	var (
-		mu       sync.Mutex
-		requests []request
-	)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		requests = append(requests, request{r.Method, r.URL.Path, r.Header.Get("Priority"), r.Header.Get("Title"), string(body), r.Header.Get("Click")})
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	wire := func(f *inboxFixture) {
-		f.env.loadConfig = projectconfig.Load
-		f.env.send = func(ctx context.Context, url string, m notify.NtfyMessage) error {
-			return notify.Ntfy{URL: url, Client: srv.Client()}.Send(ctx, m)
-		}
-	}
-	args := []string{"add", "--kind", "env_var", "--title", "Set STRIPE_KEY", "--body", "The deploy needs it.", "--block"}
-
-	t.Run("afk.toml_with_an_address_posts_once", func(t *testing.T) {
-		f := newInboxFixture(t)
-		wire(f)
-		toml := "plan = \"docs/PLAN.md\"\n\n[notify]\nntfy_url = \"" + srv.URL + "/afk-test\"\n"
-		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if code := f.run(args...); code != 0 {
-			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
-		}
-		if f.stderr.Len() != 0 {
-			t.Errorf("stderr should be empty:\n%s", f.stderr.String())
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if len(requests) != 1 {
-			t.Fatalf("requests = %d, want exactly 1: %+v", len(requests), requests)
-		}
-		// No machine config, so no Click header: the last field is empty.
-		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa", ""}
-		if requests[0] != want {
-			t.Errorf("request = %+v, want %+v", requests[0], want)
-		}
-	})
-
-	// The link reaches ntfy as its Click header when the machine config has
-	// a web page with a public address and lists this project. The project
-	// is listed by a worktree's path on purpose: the daemon serves it from
-	// the main checkout under the configured name, so the match has to go
-	// through the same main-checkout lookup (the fixture's fake git says
-	// every folder belongs to the project's checkout).
-	t.Run("machine_config_names_the_project_so_the_link_is_sent", func(t *testing.T) {
-		mu.Lock()
-		requests = nil
-		mu.Unlock()
-
-		f := newInboxFixture(t)
-		wire(f)
-		f.machineErr = nil
-		f.pageOn = true
-		f.machine = daemonconfig.Config{
-			Web: daemonconfig.Web{PublicURL: "https://afk.example"},
-			Projects: []daemonconfig.Project{
-				{Name: "my app", Path: filepath.Join(t.TempDir(), "a-session-worktree")},
-			},
-		}
-		toml := "[notify]\nntfy_url = \"" + srv.URL + "/afk-test\"\n"
-		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if code := f.run(args...); code != 0 {
-			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
-		}
-		if f.stderr.Len() != 0 {
-			t.Errorf("stderr should be empty:\n%s", f.stderr.String())
-		}
-		if got := f.stdout.String(); got != "Added inbox item aaaaaa.\n" {
-			t.Errorf("stdout = %q, want only the added line", got)
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if len(requests) != 1 {
-			t.Fatalf("requests = %d, want exactly 1: %+v", len(requests), requests)
-		}
-		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa",
-			"https://afk.example/p/my%20app/inbox/aaaaaa"}
-		if requests[0] != want {
-			t.Errorf("request = %+v, want %+v", requests[0], want)
-		}
-	})
-
-	// The same machine config with no web password set: the page is off, so
-	// the notification goes out with no link at all. This is the run seen
-	// from the command; pageOn is the one thing that differs from the row
-	// above.
-	t.Run("no_web_password_sends_no_link", func(t *testing.T) {
-		mu.Lock()
-		requests = nil
-		mu.Unlock()
-
-		f := newInboxFixture(t)
-		wire(f)
-		f.machineErr = nil
-		f.machine = daemonconfig.Config{
-			Web: daemonconfig.Web{PublicURL: "https://afk.example"},
-			Projects: []daemonconfig.Project{
-				{Name: "my app", Path: filepath.Join(t.TempDir(), "a-session-worktree")},
-			},
-		}
-		toml := "[notify]\nntfy_url = \"" + srv.URL + "/afk-test\"\n"
-		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if code := f.run(args...); code != 0 {
-			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa", ""}
-		if len(requests) != 1 || requests[0] != want {
-			t.Errorf("requests = %+v, want exactly %+v", requests, want)
-		}
-	})
-
-	// A machine config that cannot be read changes nothing the owner sees:
-	// same exit, same output, same notification, only no link.
-	t.Run("broken_machine_config_is_silent", func(t *testing.T) {
-		mu.Lock()
-		requests = nil
-		mu.Unlock()
-
-		f := newInboxFixture(t)
-		wire(f)
-		f.machineErr = errors.New("config.toml: web.bind is not host:port")
-		toml := "[notify]\nntfy_url = \"" + srv.URL + "/afk-test\"\n"
-		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if code := f.run(args...); code != 0 {
-			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
-		}
-		if f.stderr.Len() != 0 {
-			t.Errorf("stderr should be empty:\n%s", f.stderr.String())
-		}
-		if got := f.stdout.String(); got != "Added inbox item aaaaaa.\n" {
-			t.Errorf("stdout = %q, want only the added line", got)
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		want := request{"POST", "/afk-test", "4", "afk: Set STRIPE_KEY", "The deploy needs it.\n\nafk inbox show aaaaaa", ""}
-		if len(requests) != 1 || requests[0] != want {
-			t.Errorf("requests = %+v, want exactly %+v", requests, want)
-		}
-	})
-
-	t.Run("no_afk.toml_posts_nothing", func(t *testing.T) {
-		mu.Lock()
-		requests = nil
-		mu.Unlock()
-
-		f := newInboxFixture(t)
-		wire(f)
-		if code := f.run(args...); code != 0 {
-			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
-		}
-		if f.stderr.Len() != 0 {
-			t.Errorf("stderr should be empty:\n%s", f.stderr.String())
-		}
-		if got := inboxItemFiles(t, f.project); len(got) != 1 {
-			t.Errorf("item files = %v, want one", got)
-		}
-		// With nothing to send there is no link to build, so the machine
-		// config is not read at all.
-		if f.machineLoads != 0 {
-			t.Errorf("the machine config was read %d times for an item that sends nothing, want never", f.machineLoads)
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if len(requests) != 0 {
-			t.Errorf("requests = %+v, want none", requests)
-		}
-	})
-
-	t.Run("server_gone_still_exits_0", func(t *testing.T) {
-		gone := httptest.NewServer(http.NotFoundHandler())
-		url := gone.URL
-		gone.Close()
-
-		f := newInboxFixture(t)
-		f.env.loadConfig = projectconfig.Load
-		f.env.send = func(ctx context.Context, url string, m notify.NtfyMessage) error {
-			return notify.Ntfy{URL: url}.Send(ctx, m)
-		}
-		toml := "[notify]\nntfy_url = \"" + url + "/afk-test\"\n"
-		if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if code := f.run(args...); code != 0 {
-			t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
-		}
-		if !strings.Contains(f.stderr.String(), "the item was added, but the notification could not be sent") {
-			t.Errorf("stderr missing the warning:\n%s", f.stderr.String())
-		}
-		if got := inboxItemFiles(t, f.project); len(got) != 1 {
-			t.Errorf("item files = %v, want one", got)
-		}
-	})
-}
-
 // TestRunInboxAddPush drives `afk inbox add` with a fake push send and a temp
 // device list. Load-bearing rows: "blocking item pushes once per device"
-// (the whole point, with the item's path, tag and the ntfy title and body),
-// "non-blocking kinds do not push" (assumed answers arrive by the dozen),
-// "blocking item with no ntfy_url still pushes" (push does not hang off the
-// ntfy path), "project not in config.toml warns" (the path needs the name the
-// page serves), "send error warns and exits 0" (the caller is an agent that
-// must not re-add the item) and "public_url set keeps a path" (a push url
-// that is a full address is refused by the payload check).
+// (the whole point, with the item's path, tag, title and body), "non-blocking
+// kinds do not push" (assumed answers arrive by the dozen), "a leftover
+// ntfy_url changes nothing" (afk.toml is not read for notifications any more,
+// so an old setting neither blocks the push nor prints a word), "project not
+// in config.toml warns" (the path needs the name the page serves), "send
+// error warns and exits 0" (the caller is an agent that must not re-add the
+// item) and "public_url set keeps a path" (a push url that is a full address
+// is refused by the payload check).
 func TestRunInboxAddPush(t *testing.T) {
 	const epA, epB = "https://push.example/secret-a", "https://push.example/secret-b"
 	blocking := []string{"add", "--kind", "question", "--title", "Need a key", "--body", "Which one?", "--task", "T4.3", "--block"}
@@ -1325,7 +900,7 @@ func TestRunInboxAddPush(t *testing.T) {
 	}{
 		{
 			name: "blocking item pushes once per device", endpoints: []string{epA, epB}, args: blocking,
-			setup: func(f *inboxFixture, r *pushRig) { listed(f); f.ntfyURL = inboxTestURL }, wantCalls: 2, emptyStderr: true,
+			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, wantCalls: 2, emptyStderr: true,
 			check: func(t *testing.T, f *inboxFixture, r *pushRig) {
 				want := webpush.Payload{Title: "afk: Need a key", Body: "Which one?\n\nafk inbox show aaaaaa (T4.3)", URL: "/p/my%20app/inbox/aaaaaa", Tag: "afk-item-aaaaaa"}
 				for i, p := range r.pays {
@@ -1333,24 +908,18 @@ func TestRunInboxAddPush(t *testing.T) {
 						t.Errorf("call %d: payload %+v options %+v, want %+v", i, p, r.opts[i], want)
 					}
 				}
-				if len(f.sends) != 1 {
-					t.Errorf("ntfy sends = %d, want 1", len(f.sends))
-				}
 			},
 		},
 		{
-			name: "blocking item with no ntfy_url still pushes", endpoints: []string{epA}, args: blocking,
-			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, wantCalls: 1, emptyStderr: true,
-			check: func(t *testing.T, f *inboxFixture, r *pushRig) {
-				if len(f.sends) != 0 {
-					t.Errorf("ntfy sends = %d, want 0", len(f.sends))
+			name: "a leftover ntfy_url changes nothing", endpoints: []string{epA}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) {
+				listed(f)
+				toml := "[notify]\nntfy_url = 5\n"
+				if err := os.WriteFile(filepath.Join(f.project, "afk.toml"), []byte(toml), 0o644); err != nil {
+					f.t.Fatal(err)
 				}
 			},
-		},
-		{
-			name: "blocking item with an unreadable afk.toml still pushes", endpoints: []string{epA}, args: blocking,
-			setup: func(f *inboxFixture, r *pushRig) { listed(f); f.configErr = errors.New("bad toml") }, wantCalls: 1,
-			wantStderr: []string{"afk.toml could not be read"},
+			wantCalls: 1, emptyStderr: true,
 		},
 		{
 			name: "question non-blocking does not push", endpoints: []string{epA},
@@ -1419,7 +988,6 @@ func TestRunInboxAddPush(t *testing.T) {
 			setup: func(f *inboxFixture, r *pushRig) {
 				listed(f)
 				f.machine.Web.PublicURL = "https://afk.example.com"
-				f.pageOn = true
 			},
 			wantCalls: 1, emptyStderr: true,
 			check: func(t *testing.T, f *inboxFixture, r *pushRig) {

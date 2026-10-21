@@ -434,6 +434,8 @@ Amended 2026-10-11 (T2.1): the overlay is in. `internal/projectconfig` lays `afk
 `.gitignore` now lists `afk.local.toml` and no longer lists `afk.toml`. A project that already has an
 `afk.toml` holding an `ntfy_url` must move that line to `afk.local.toml` before committing the file.
 
+Amended 2026-10-21 (T15.8): [notify] ntfy_url is no longer read; a file that still has it loads as before and nothing is logged. Push (T15.7) is the only phone notification.
+
 Machine config `~/.config/afk/config.toml`: projects the daemon runs, governor thresholds (§6.3), web
 bind address and public address, provider choice (the web password is in the state folder, not here).
 
@@ -3987,6 +3989,8 @@ and the things that block on them arrive as native notifications from it; ntfy i
   - `make check` green.
   - Against a built binary: a blocking `afk inbox add` sends push and makes no request to the old
     `ntfy_url` (pointed at a local listener that records requests).
+
+- Amended 2026-10-21 (T15.8 done): ntfy is gone. Push messages are `notify.Message` (title and body only) built by `notify.InboxMessage` in `internal/notify/message.go`; which inbox items notify is `notify.ItemNotifies(kind, blocking)`; links are the `…Path` builders (the `…Link` builders and `public_url` in notifications are gone). The plan-ready notice is gone (`recordPlanReady` only writes the review list), the idle notice and `internal/daemon`'s `NotifyIdle` are gone, and `afk inbox add` no longer reads `afk.toml`. A planning wait is recorded once at least one device got it. The non-blocking "afk cannot run this project" item now reaches the inbox only. See `## T15.8` in `docs/decisions.md`.
 
 #### T15.9 — Prove it on phones and computers (owner + agent)
 - **Depends on:** T15.6, T15.8, T15.10

@@ -86,8 +86,8 @@ type planDeps struct {
 	// ask prints a question and returns the line the owner typed, without its
 	// line break. It is only called when both stdin and stdout are a terminal.
 	ask func(prompt string) (string, error)
-	// review is what the "plan ready for review" notification uses; the zero
-	// value sends nothing.
+	// review is where a new plan reaching review is put on the review list;
+	// the zero value records nothing.
 	review planReviewDeps
 	// leader reads the dashboard's leader key from config.toml (best effort,
 	// "" for the default); nil means the default.
@@ -1536,9 +1536,10 @@ func runPlanAdvance(args []string, stdout, stderr io.Writer, deps planDeps) int 
 	fmt.Fprintf(stdout, "Phase: %s → %s\n", old, next)
 	fmt.Fprintf(stdout, "Waiting for: %s\n", plansession.Decide(files).Waiting)
 	// Only a new plan reaching review asks for the owner's read. The three
-	// modes that change a plan have their own commands and no notification.
+	// modes that change a plan have their own commands and never join the
+	// review list.
 	if files.State.Mode == plansession.ModeNew && next == plansession.PhaseReview {
-		notifyPlanReady(project.Root, deps.review, deps.now(), stderr)
+		recordPlanReady(project.Root, deps.review, deps.now(), stderr)
 	}
 	return 0
 }

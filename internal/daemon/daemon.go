@@ -17,7 +17,6 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
-	"github.com/dphaener/afk/internal/nexttask"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/state"
@@ -301,7 +300,7 @@ type RelaunchRequest struct {
 
 // Deps is every call the loop makes outside the project's plain files. Now,
 // LoadBuild, Sessions, Preflight, Launch and RecordTokens must be set; Notify,
-// NotifyIdle, NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt,
+// NotifyUrgent, Log, LedgerExists, Stopped, Ship, SendPrompt,
 // Restart, Relaunch, Clean, Usage, Login, StopSession, RateLimited,
 // TurnFailed, ReadPlan, PatchPlan and PlanWaits may be nil.
 //
@@ -338,9 +337,6 @@ type Deps struct {
 	// handed the stored item, id included, so the sender can build the same
 	// text `afk inbox add` sends. Best effort: it returns nothing.
 	Notify func(p Project, it inbox.Item)
-	// NotifyIdle is the one notification with no item behind it: the build
-	// has stopped moving and only the owner can restart it.
-	NotifyIdle func(p Project, title, body string)
 	// Log takes one line for the daemon's own log.
 	Log func(format string, args ...any)
 	// LedgerExists reports whether the project has a ledger file, damaged or
@@ -1038,14 +1034,6 @@ func (t *pass) save(st daemonstate.State) daemonstate.State {
 	if err := daemonstate.WriteState(t.p.Root, st); err != nil {
 		t.d.logf("%s: %v", t.p.Name, err)
 		return st
-	}
-	if st.Kind == string(ActIdle) && t.d.NotifyIdle != nil {
-		switch {
-		case strings.HasPrefix(st.Reason, string(nexttask.ReasonWaitingOnOwner)):
-			t.d.NotifyIdle(t.p, fmt.Sprintf("%s is waiting on you", t.p.Name), st.Reason)
-		case strings.HasPrefix(st.Reason, string(nexttask.ReasonBlockedByFailed)):
-			t.d.NotifyIdle(t.p, fmt.Sprintf("%s is blocked by a failed task", t.p.Name), st.Reason)
-		}
 	}
 	t.governorChanged(prev, had, st)
 	return st

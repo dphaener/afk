@@ -14,17 +14,10 @@ import (
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/notify"
-	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
-	"github.com/dphaener/afk/internal/webpass"
 	"github.com/dphaener/afk/internal/webpush"
 )
-
-// inboxNotifyTimeout bounds the one push notification `afk inbox add` sends.
-// The command is typed by agents running unattended, so a server that never
-// answers must cost seconds, not the session.
-const inboxNotifyTimeout = 10 * time.Second
 
 // inboxEnv is everything `afk inbox` takes from the outside world. cmdInbox
 // fills it with the real things; tests fill it with a temp folder, a fixed
@@ -40,19 +33,12 @@ type inboxEnv struct {
 	// run in dir, or "" outside a git repo.
 	gitCommonDir func(dir string) string
 	// repoRoot is the top folder of the worktree dir is in, or "".
-	repoRoot   func(dir string) string
-	glob       func(pattern string) ([]string, error)
-	loadConfig func(root string) (projectconfig.Config, error)
-	send       func(ctx context.Context, url string, m notify.NtfyMessage) error
+	repoRoot func(dir string) string
+	glob     func(pattern string) ([]string, error)
 	// loadMachine reads the machine's config.toml. `afk inbox add` wants one
-	// thing from it: the web page's public address and this project's name
-	// there, to put a link in the notification (inboxItemLink).
+	// thing from it: this project's name there, which is the name the web
+	// page serves it under, for the path a push opens (inboxProjectName).
 	loadMachine func() (daemonconfig.Config, error)
-	// pageOn reports whether the web page has a password set
-	// (webpass.Exists), which is what turns the page on. Nil means off, so a
-	// test that leaves it unset never builds a link to a page that is not
-	// there, and never reads the real state folder.
-	pageOn func() bool
 	// pushDir finds the state folder holding push-devices.json, and pushSend
 	// sends one web push (the same function the web page's test button uses).
 	// Nil pushSend means push is off, so a test that leaves them unset never
@@ -76,14 +62,9 @@ func cmdInbox(args []string) {
 		gitCommonDir: resolveGitCommonDirIn,
 		repoRoot:     resolveCwdRepoRoot,
 		glob:         filepath.Glob,
-		loadConfig:   projectconfig.Load,
-		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
-			return notify.Ntfy{URL: url}.Send(ctx, m)
-		},
-		loadMachine: func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) },
-		pageOn:      func() bool { return webpass.Exists(usagestate.DefaultDeps()) },
-		pushDir:     func() (string, error) { return usagestate.Dir(usagestate.DefaultDeps()) },
-		pushSend:    inboxPushSend,
+		loadMachine:  func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) },
+		pushDir:      func() (string, error) { return usagestate.Dir(usagestate.DefaultDeps()) },
+		pushSend:     inboxPushSend,
 	}))
 }
 
@@ -129,8 +110,8 @@ the agent went ahead with) only goes with --no-block.
 
 Items live in .afk/inbox/ in the project's main folder, even when the command
 runs inside a session's worktree. They are written by this command, not by hand.
-When afk.toml in that folder has [notify] ntfy_url, adding an item that needs
-the owner also sends a push notification there.
+Adding an item that stops the task also sends a notification to the devices
+signed up on afk's web page, when the project is in config.toml.
 
 Exit codes: 0 done, 1 the item was not found, was already answered, or a file
 could not be read or written, 2 the command was written wrongly.
@@ -493,43 +474,9 @@ func runInboxAdd(args []string, projDefault string, env inboxEnv) int {
 	// happens. The caller is usually an agent that is about to park on this
 	// item: a non-zero exit would tell it the item was not recorded, and it
 	// would add it again or carry on without it.
-	//
-	// The push to signed-up devices comes before the ntfy path because it
-	// does not depend on it: no ntfy_url (or an unreadable afk.toml) ends the
-	// ntfy part early, and a device list is no reason to stay quiet.
 	inboxPush(item, project, env)
-
-	cfg, err := env.loadConfig(project)
-	if err != nil {
-		fmt.Fprintf(env.stderr, "afk inbox add: the item was added, but afk.toml could not be read, so no notification was sent: %v\n", err)
-		return 0
-	}
-	msg, ok := inboxNotification(item, cfg.Notify.NtfyURL)
-	if !ok {
-		return 0
-	}
-	// The machine config is read only now, when a notification is really
-	// going out, and whatever goes wrong with it is silent: the link is an
-	// extra, most machines have no config.toml at all, and the item and its
-	// notification must go out exactly as they do without one.
-	machine, machineErr := env.loadMachine()
-	pageOn := env.pageOn != nil && env.pageOn()
-	msg.Click = inboxItemLink(machine, machineErr, pageOn, project, item.ID, func(configured, root string) bool {
-		return mainCheckout(configured, env.gitCommonDir(configured)) == filepath.Clean(root)
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), inboxNotifyTimeout)
-	defer cancel()
-	if err := env.send(ctx, cfg.Notify.NtfyURL, msg); err != nil {
-		fmt.Fprintf(env.stderr, "afk inbox add: the item was added, but the notification could not be sent: %v\n", err)
-	}
 	return 0
 }
-
-// inboxPushPlaceholderURL stands in for ntfy_url when the message is built
-// for push. notify.InboxMessage returns nothing without an address, but the
-// title and body must be exactly the ones ntfy sends, so the one builder is
-// reused and the address it is given is never used.
-const inboxPushPlaceholderURL = "unused"
 
 // inboxPush sends a blocking item to every signed-up device. Items that do
 // not stop a task are not pushed: assumed answers arrive by the dozen. It
@@ -547,7 +494,7 @@ func inboxPush(item inbox.Item, project string, env inboxEnv) {
 	if len(webpush.ReadDevices(dir)) == 0 {
 		return
 	}
-	msg, ok := inboxNotification(item, inboxPushPlaceholderURL)
+	msg, ok := inboxNotification(item)
 	if !ok {
 		return
 	}
@@ -612,33 +559,8 @@ func inboxInferSession(env inboxEnv) string {
 }
 
 // inboxNotification decides whether a newly added item sends a push
-// notification. The rules live in notify.InboxMessage so the build loop shares
-// them; this adapts an inbox.Item to it.
-func inboxNotification(item inbox.Item, ntfyURL string) (notify.NtfyMessage, bool) {
-	return notify.InboxMessage(item.ID, item.Task, item.Kind, item.Title, item.Body, item.Blocking, ntfyURL)
-}
-
-// inboxItemLink is the address of an item's page on the web page `afk daemon`
-// serves, or "" when there is none to give: the machine config could not be
-// read, it sets no public address, the page is off (no password is set, so
-// pageOn is false), or none of its
-// projects is the folder the item was written in. Pure; sameDir is asked
-// "is this configured path the project folder root?", so the git lookup that
-// answers it stays with the caller.
-//
-// The project's name in the address has to be the name the daemon serves it
-// under, which is the name in the machine config and not the folder's. The
-// first configured project that matches wins, because that is the one the
-// daemon keeps when two entries name the same checkout (daemonProjects).
-//
-// The link never holds a secret. A browser that has signed in once proves
-// itself with its cookie; one that has not is shown the sign-in form.
-func inboxItemLink(cfg daemonconfig.Config, cfgErr error, pageOn bool, root, id string, sameDir func(configured, root string) bool) string {
-	if cfgErr != nil || webPublicURL(cfg.Web, pageOn) == "" {
-		return ""
-	}
-	if name, ok := inboxProjectName(cfg, cfgErr, root, sameDir); ok {
-		return notify.ItemLink(cfg.Web.PublicURL, name, id)
-	}
-	return ""
+// notification, and its text. The rules live in notify.InboxMessage so the
+// build loop shares them; this adapts an inbox.Item to it.
+func inboxNotification(item inbox.Item) (notify.Message, bool) {
+	return notify.InboxMessage(item.ID, item.Task, item.Kind, item.Title, item.Body, item.Blocking)
 }

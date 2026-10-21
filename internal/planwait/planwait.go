@@ -44,13 +44,12 @@ type Input struct {
 	Chat      planchat.Chat
 	Recorded  string // the key last notified about
 	HasRecord bool
-	Link      string // the chat link; empty when no address is configured
 }
 
 // Decision is what the caller does.
 type Decision struct {
 	Send    bool
-	Message notify.NtfyMessage
+	Message notify.Message
 	Record  Action
 	Key     string
 }
@@ -132,11 +131,9 @@ func Decide(in Input) Decision {
 	}
 	return Decision{
 		Send: true,
-		Message: notify.NtfyMessage{
-			Title:    "afk: " + in.Project + " is waiting for you",
-			Body:     body + bodyTail,
-			Priority: 4,
-			Click:    in.Link,
+		Message: notify.Message{
+			Title: "afk: " + in.Project + " is waiting for you",
+			Body:  body + bodyTail,
 		},
 		Record: Set,
 		Key:    key,
