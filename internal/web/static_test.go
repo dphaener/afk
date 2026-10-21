@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-const wantCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'"
+const wantCSP = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'"
 
 // TestStatic walks the static route: the current address serves the file with
 // the exact policy, the immutable cache header and a JavaScript type; a wrong

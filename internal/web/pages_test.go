@@ -28,8 +28,8 @@ import (
 
 const idScript = "kmn345"
 
-// ownScript is the script tags every page carries: the hashed live.js, confirm.js, submit.js and chat.js.
-var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit|chat)\.js" defer></script>`)
+// ownScript is the script tags every page carries: the hashed live.js, confirm.js, submit.js, chat.js and sw-register.js.
+var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit|chat|sw-register)\.js" defer></script>`)
 
 // noOwnScript removes that tag, so the tests that look for injected markup
 // still see any other script tag a hostile text managed to open.
@@ -513,7 +513,7 @@ func TestPageTemplatesHaveNoInlineScript(t *testing.T) {
 		})
 	}
 	layout, _ := pageFiles.ReadFile("templates/layout.html")
-	for _, f := range []string{"live.js", "confirm.js", "submit.js"} {
+	for _, f := range []string{"live.js", "confirm.js", "submit.js", "sw-register.js"} {
 		if !strings.Contains(string(layout), `<script src="{{asset "`+f+`"}}" defer></script>`) {
 			t.Errorf("layout.html does not load %s", f)
 		}
@@ -1654,7 +1654,7 @@ func TestToastFor(t *testing.T) {
 func TestConfirmScriptServed(t *testing.T) {
 	rg := newRig(t, Config{})
 	body := rg.pageDo("GET", "/p/app", "").Body.String()
-	for _, name := range []string{"confirm.js", "submit.js", "live.js"} {
+	for _, name := range []string{"confirm.js", "submit.js", "live.js", "sw-register.js"} {
 		t.Run(name, func(t *testing.T) {
 			m := regexp.MustCompile(`/static/[0-9a-f]{12}/` + regexp.QuoteMeta(name)).FindString(body)
 			if m == "" {

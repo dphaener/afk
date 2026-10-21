@@ -3798,6 +3798,7 @@ and the things that block on them arrive as native notifications from it; ntfy i
   - Against a built binary with a scratch password: headless Chrome loads the overview, reports the
     page installable (the manifest has no errors) and shows the favicon; the overview still passes
     axe WCAG 2.2 AA at 390 and 1280 px.
+- Amended 2026-10-21 (T15.2 done): the worker is `internal/web/static/sw.js`, served at `/sw.js` (scope `/`) by `serviceWorker` in `internal/web/manifest.go` with `Cache-Control: no-store`; it has only install and activate listeners, so T15.5 adds its `push` and `notificationclick` handlers there. Signed-in (non-Bare) pages register it through `static/sw-register.js`. The manifest is built per request at `/manifest.webmanifest` from `static/icons/`, which is served at hashed `/static/<hash>/icons/<file>` addresses (the static route takes a nested name). `isPublicAppFile` in `auth.go` is the only new sign-in exemption (GET and HEAD, exact paths); the CSP gained `img-src`, `manifest-src` and `worker-src 'self'`. A new page script must be added to `ownScript` in `pages_test.go`. `internal/notify` keeps its own `icon-512.png` copy, and `TestAppIconMatchesWebCopy` fails if it drifts from the web one.
 
 #### T15.3 — Design the Notifications page (owner)
 - **Depends on:** —

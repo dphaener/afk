@@ -256,7 +256,7 @@ Spawns a detached watcher that delivers the notification via `alerter` (full-fid
 - **Title**: `afk · {repo}` (or `afk` if repo is empty)
 - **Subtitle**: `{session}`
 - **Body**: The message text (no prefix)
-- **App icon**: Medium-gray pickaxe (⛏) if available, omitted silently if missing
+- **App icon**: afk's app icon (the same picture the installed web page uses) if available, omitted silently if missing
 - **Sound**: Backend-specific (`default` for alerter, `Ping` for osascript)
 
 **Click-to-focus:** When `alerter` is present and a `afk dash` is running (which records pane metadata for every project it knows about, not just the one it launched in), the notification includes a Focus button. Clicking it switches the dashboard to the session's project first if that project isn't already active, then switches the tmux client to the dashboard's pane and focuses the right side on the named session. A running session is connected and its pane takes your keystrokes; a stopped one shows its overview with a hint to press `ctrl+] r` (a click never restarts a host). Without a running dashboard the toast still appears with correct formatting, sound, and grouping — it just has no Focus button. This is correct by design: a button that cannot act is worse than no button.
