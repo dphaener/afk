@@ -238,3 +238,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Notifications page**: `/notifications`, the machine-wide web page where the owner turns notifications on or off for the device they are using and sends a test; reached from the bell on the phone bar and Notifications on the top bar.
 - **This device card**: the Notifications page's card showing whether the device in hand gets notifications (on, off, blocked, or a note saying what it needs first: an `https://` address, the iPhone home screen, or another browser).
 - **Send test**: the This device card's button that sends one push to this device only, to prove notifications arrive.
+- **Device cookie**: `afk_push_device`, a cookie the web page sets to the id of the device a browser signed up as, so the Notifications page can mark "This device"; it never holds the device's push address.

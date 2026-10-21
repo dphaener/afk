@@ -2,9 +2,40 @@
 // stream (GET /events), fetches the page again when something it shows may
 // have changed, and swaps the marked regions in place. Without it, or when
 // the stream is refused, the page works exactly as before: reload it.
+//
+// A swapped region flashes (is-changed) as a whole, except a region marked
+// data-live-rows (a list such as the Notifications page's devices): there
+// only the child elements whose data-row-id was not in the old copy flash,
+// so a device signed up elsewhere stands out and the rows already there
+// stay still.
 'use strict';
 
+// newRowIDs is the ids in newIDs that oldIDs lacks, in newIDs' order. An
+// empty id names no row and is never new. It is a pure function so a node
+// test can load this file.
+function newRowIDs(oldIDs, newIDs) {
+  var seen = {};
+  (oldIDs || []).forEach(function (id) {
+    seen['k' + id] = true;
+  });
+  var out = [];
+  (newIDs || []).forEach(function (id) {
+    if (id && !seen['k' + id]) {
+      seen['k' + id] = true;
+      out.push(id);
+    }
+  });
+  return out;
+}
+
+if (typeof module !== 'undefined') {
+  module.exports = { newRowIDs: newRowIDs };
+}
+
 (function () {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return;
+  }
   if (!('EventSource' in window) || !('fetch' in window) || !('DOMParser' in window)) {
     return;
   }
@@ -161,6 +192,8 @@
       return;
     }
     var heldId = buttons && old.contains(active) ? active.id : '';
+    var rows = old.hasAttribute('data-live-rows');
+    var oldIDs = rows ? rowIDs(old) : [];
     var node = document.importNode(fresh, true);
     old.replaceWith(node);
     if (heldId) {
@@ -169,9 +202,32 @@
         again.focus({ preventScroll: true });
       }
     }
-    node.classList.add('is-changed');
+    flash(rows ? newRows(node, oldIDs) : [node]);
+  }
+
+  function rowIDs(region) {
+    return Array.prototype.slice.call(region.querySelectorAll('[data-row-id]')).map(function (el) {
+      return el.getAttribute('data-row-id') || '';
+    });
+  }
+
+  // newRows is the rows of a freshly swapped list region that were not in
+  // its old copy (see newRowIDs).
+  function newRows(region, oldIDs) {
+    var fresh = newRowIDs(oldIDs, rowIDs(region));
+    return Array.prototype.slice.call(region.querySelectorAll('[data-row-id]')).filter(function (el) {
+      return fresh.indexOf(el.getAttribute('data-row-id') || '') !== -1;
+    });
+  }
+
+  function flash(els) {
+    els.forEach(function (el) {
+      el.classList.add('is-changed');
+    });
     setTimeout(function () {
-      node.classList.remove('is-changed');
+      els.forEach(function (el) {
+        el.classList.remove('is-changed');
+      });
     }, CHANGED_MS);
   }
 

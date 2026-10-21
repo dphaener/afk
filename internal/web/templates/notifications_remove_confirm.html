@@ -1,0 +1,19 @@
+{{define "title"}}{{.Sheet.Title}}{{end}}
+{{define "content"}}
+{{- /* The no-JavaScript confirm behind a device's Remove: the question the
+       Notifications page's shared dialog asks, drawn from the same sheet
+       (deviceRemoveSheet). The form posts the confirm and the id; the label
+       and the sentence come from the device list, never the address. */}}
+<div class="stack">
+<h1>{{.Sheet.Title}}</h1>
+<div>{{range .Sheet.Body}}<p>{{.Text}}</p>{{end}}</div>
+<form method="post" action="{{.Sheet.Path}}" class="stack">
+  <input type="hidden" name="confirm" value="yes">
+  {{range .Sheet.Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+  {{end}}<div class="btn-row">
+    <button type="submit" class="btn btn--danger">{{.Sheet.Button}}</button>
+    <a class="btn btn--secondary" href="/notifications" autofocus>{{.Sheet.Safe}}</a>
+  </div>
+</form>
+</div>
+{{end}}

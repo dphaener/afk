@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "notifications", "error", "signin"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "notifications", "notifications_remove_confirm", "error", "signin"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -236,6 +236,9 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 	case ConfirmView:
 		c.Title = v.Sheet.Action
 		c.Back, c.BackLabel = "/p/"+url.PathEscape(v.Project), "Back to "+v.Project
+	case NotificationsRemoveConfirmView:
+		c.Title, c.Nav = "Remove a device", "notifications"
+		c.Back, c.BackLabel = "/notifications", "Back to Notifications"
 	case ErrorView:
 		return chrome{Bare: true, Status: v.Status, Path: path, Retry: retryPath(method, path)}
 	case SignInView:
@@ -315,6 +318,9 @@ func (s *server) renderPage(w http.ResponseWriter, r *http.Request, status int, 
 		}
 		if _, isUsage := view.(UsageView); isUsage && r.Method == http.MethodGet {
 			ch.Toast = usageToast(r.URL.Query().Get("done"))
+		}
+		if _, isNotifications := view.(NotificationsView); isNotifications && r.Method == http.MethodGet {
+			ch.Toast = notificationsToast(r.URL.Query().Get("done"))
 		}
 		data := pageData{View: view, Chrome: ch}
 		if err := t.Execute(&buf, data); err != nil {
@@ -397,6 +403,11 @@ var toastTexts = map[string]string{
 	"project_added":     "Project added.",
 	"project_removed":   "Project removed.",
 	"project_unchanged": "Nothing was changed.",
+	// The two codes removing a device leads to, shown only on the
+	// Notifications page (see notificationsToast). They name no device: the
+	// label would have to be read again, and the row is gone anyway.
+	"device-removed": "Device removed.",
+	"device-gone":    "That device was already removed.",
 }
 
 // toastFor is the toast sentence for a ?done= code, or "" when the code is
@@ -406,7 +417,7 @@ var toastTexts = map[string]string{
 // is no task to name, so a placeholder is never shown.
 func toastFor(code, project, task string) string {
 	text, ok := toastTexts[code]
-	if !ok || refreshToastCodes[code] || sessionToastCodes[code] || chatToastCodes[code] || projectToastCodes[code] {
+	if !ok || refreshToastCodes[code] || sessionToastCodes[code] || chatToastCodes[code] || projectToastCodes[code] || notificationsToastCodes[code] {
 		// A refresh code belongs to the usage screen (usageToast); on a
 		// project or the inbox it would say a reading started when none did.
 		// A session code belongs to the Sessions screens, and a chat code to
@@ -435,6 +446,20 @@ var projectToastCodes = map[string]bool{"project_added": true, "project_removed"
 // any other code.
 func projectToast(code string) string {
 	if !projectToastCodes[code] {
+		return ""
+	}
+	return toastTexts[code]
+}
+
+// notificationsToastCodes are the toast codes removing a device leads to.
+// They belong to the Notifications page alone (notificationsToast): toastFor
+// leaves them out, so another page's address cannot show them.
+var notificationsToastCodes = map[string]bool{"device-removed": true, "device-gone": true}
+
+// notificationsToast is the Notifications page's toast after a remove, or ""
+// for any other code.
+func notificationsToast(code string) string {
+	if !notificationsToastCodes[code] {
 		return ""
 	}
 	return toastTexts[code]

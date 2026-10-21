@@ -399,8 +399,9 @@ dialog.confirm-sheet[data-status-sheet] { max-height: 90vh; overflow-y: auto; }
 @media (min-width: 780px) { .notifications__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .push-card .section-head { align-items: center; }
 /* The design's desktop buttons are btn--sm. The markup is the same at every
-   width, so the card's buttons take btn--sm's values above the 760 px
-   breakpoint and keep the full touch target on a phone. */
+   width, so the card's buttons and each device row's Remove take btn--sm's
+   values above the 760 px breakpoint and keep the full touch target on a
+   phone. */
 @media (min-width: 761px) {
-  .push-card .btn { min-height: 36px; padding: 0 var(--space-3); font-size: var(--text-sm); }
+  .push-card .btn, .notifications__devices .row__aside .btn { min-height: 36px; padding: 0 var(--space-3); font-size: var(--text-sm); }
 }

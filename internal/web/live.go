@@ -21,6 +21,7 @@ import (
 	"github.com/dphaener/afk/internal/plansession"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // This file is the live-change stream: GET /events, a server-sent events
@@ -50,13 +51,19 @@ const (
 	partSessions = "sessions"
 	partPlanning = "planning"
 	partUsage    = "usage"
+	partDevices  = "devices"
 )
 
 // parts is every part in the order events are sent within one project.
-var parts = []string{partInbox, partLedger, partPause, partSessions, partPlanning, partUsage}
+var parts = []string{partInbox, partLedger, partPause, partSessions, partPlanning, partUsage, partDevices}
 
-// machineProject is the project key of the machine-wide part (usage). There
-// is one usage reading per machine, so its events name no project.
+// machineParts is how many of parts are machine-wide (usage and devices)
+// rather than per project.
+const machineParts = 2
+
+// machineProject is the project key of the machine-wide parts (usage and
+// devices). There is one usage reading and one device list per machine, so
+// their events name no project.
 const machineProject = ""
 
 // The stream's limits.
@@ -100,7 +107,7 @@ type change struct {
 }
 
 // snapshot is one tick's reading: project name to part to fingerprint. The
-// machine-wide usage part is under machineProject.
+// machine-wide parts (usage and devices) are under machineProject.
 type snapshot map[string]map[string]string
 
 // fingerprint is the hex SHA-256 of the JSON of what was read, with the read
@@ -125,9 +132,10 @@ func fingerprint(value any, err error) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// readSnapshot reads every part of every project, and the machine's usage,
-// once. It is the only place the stream touches the disk. It never blocks:
-// every read is a plain file read or a Deps function that must not block.
+// readSnapshot reads every part of every project, and the machine's usage
+// and device list, once. It is the only place the stream touches the disk.
+// It never blocks: every read is a plain file read or a Deps function that
+// must not block.
 //
 // A project listed twice under one name is read twice and the later reading
 // kept; the daemon's list drops duplicates, so this does not happen there.
@@ -151,6 +159,18 @@ func readSnapshot(projects []Project, d Deps, refreshGen uint64) snapshot {
 		OK      bool            `json:"ok"`
 		Refresh uint64          `json:"refresh"`
 	}{usage, ok, refreshGen}, nil)}
+	// The signed-up devices are machine-wide like usage: push-devices.json
+	// sits in the machine's state folder and every project's notices go to
+	// every device on it, so there is one list for the whole page and its
+	// events name no project. With push off there is no list to watch, and
+	// the part is left out rather than fingerprinted as empty, so turning
+	// push on mid-run is not taken for a change. The fingerprint is of the
+	// whole file, endpoints included; it is a hash and never leaves the
+	// server, and a re-subscribe that changes only the keys also changes
+	// the time, which the list shows.
+	if d.PushDir != "" {
+		snap[machineProject][partDevices] = fingerprint(webpush.ReadDevices(d.PushDir), nil)
+	}
 	return snap
 }
 
@@ -169,7 +189,7 @@ func withBeingPlanned(projects []Project, planned []BeingPlannedView) []Project 
 // readProject reads one project's parts, each from the same files the page
 // that shows it reads.
 func readProject(name, root string, d Deps) map[string]string {
-	fp := make(map[string]string, len(parts)-1)
+	fp := make(map[string]string, len(parts)-machineParts)
 
 	items, unreadable, err := inbox.Store{Dir: inbox.Dir(root), Now: d.Now}.List()
 	fp[partInbox] = fingerprint(struct {

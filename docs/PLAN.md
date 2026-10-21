@@ -3927,6 +3927,8 @@ and the things that block on them arrive as native notifications from it; ntfy i
   - Against a built binary with two devices in a scratch `push-devices.json`: the list shows both,
     removing one leaves the other, and the page passes axe WCAG 2.2 AA at 390 and 1280 px.
 
+- Amended 2026-10-21 (T15.6 done): the list is `NotificationsView.Devices` (`devices` in `GET /api/notifications`: `id`, `label`, `at`, `signed_up`, `this_device`), ordered by `deviceViews` in `internal/web/push.go`. The server knows this device by the `afk_push_device` cookie (the device id only, never the endpoint), set by `POST /api/push/subscribe` and the new JSON-only `POST /api/push/device` lookup (`{endpoint}` in, `{listed,id}` or `{listed:false}` out) and cleared by unsubscribe, a not-listed lookup and removing that id. Remove is `POST /notifications/remove` (with the `/api` twin, `confirm=yes` and `id`; a gone id answers `removed:false`, not an error) and the no-JavaScript confirm page `GET /notifications/remove?id=`. The list is the machine-wide live part `devices` (`partDevices` in `live.go`), so a device T15.7 removes as gone leaves an open page by itself; a later machine-wide part must bump `machineParts` there. `live.js` regions with `data-live-rows` flash only rows whose `data-row-id` is new.
+
 #### T15.7 — The daemon notifies by push
 - **Depends on:** T15.4, T15.5
 - **Goal:** the things that block on the owner arrive on every signed-up device as a native
