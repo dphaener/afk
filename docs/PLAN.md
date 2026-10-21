@@ -3951,7 +3951,8 @@ and the things that block on them arrive as native notifications from it; ntfy i
     gets a `## T15.8` section.
 - **Must not:** fail to load a project whose settings still hold `ntfy_url`.
 - **Acceptance:**
-  - `/usr/bin/grep -rni ntfy --include='*.go' .` (outside `.claude/worktrees/`) finds nothing.
+  - `/usr/bin/grep -rni ntfy --include='*.go' --exclude='*_test.go' .` (outside `.claude/worktrees/`)
+    finds nothing; tests may still name `ntfy_url` to prove it is ignored.
   - A table test: a project config holding `[notify] ntfy_url` loads with no error and no log line.
   - `make check` green.
   - Against a built binary: a blocking `afk inbox add` sends push and makes no request to the old
