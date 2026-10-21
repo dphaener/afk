@@ -3981,7 +3981,7 @@ and the things that block on them arrive as native notifications from it; ntfy i
     `ntfy_url` (pointed at a local listener that records requests).
 
 #### T15.9 — Prove it on phones and computers (owner + agent)
-- **Depends on:** T15.6, T15.8
+- **Depends on:** T15.6, T15.8, T15.10
 - **Goal:** the owner has the app installed and getting real notifications on every kind of device
   they use, and what each one did is written down.
 - **Scope:** the session for this task waits for the owner (an inbox item). The owner, at their
