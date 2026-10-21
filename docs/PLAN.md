@@ -3870,6 +3870,15 @@ and the things that block on them arrive as native notifications from it; ntfy i
     test, the `http://` note (shown when the page is not a secure context), the iPhone note (shown when
     the browser has no push until the page is added to the home screen) and the blocked state. The
     device list is T15.6.
+  - From the design system: the links are the bell `icon-btn` "Notifications" in the Overview
+    `app-bar` (beside Add a project) and the Notifications `topnav__link` after Usage. The This device
+    card uses `badge--on`, `badge--off` and `badge--blocked`, `notice__steps` for the iPhone and
+    blocked steps and `inline-icon` for Safari's Share glyph, and it is an `aria-live="polite"` region.
+    The state shown is decided in this order: not a secure context (the `http://` note), then iPhone or
+    iPad Safari not opened from the home screen (the iPhone note), then a browser with no web push at
+    all (unsupported), then blocked, then on or off. The blocked state has **Check again**, which
+    re-reads the permission. The design does not draw the unsupported and no-JavaScript states yet
+    (`docs/design-followup-3.md`); until it does, each is a `notice--info` with one plain sentence.
   - Turning on: the page's JavaScript asks for permission, subscribes with the VAPID public key and
     posts the subscription to a guarded endpoint (sign-in and the `Origin` check, as every POST) that
     adds it to the device list. Turning off unsubscribes and removes it. Send test sends one push to
