@@ -9,7 +9,8 @@
 autonomous plan → execute → review cycle. Read **§1–§7 in full** before planning any task: they are the
 shared contract every task builds against. Never start a task whose dependencies are not merged.
 Where this plan and `docs/design-system.md` disagree, the plan wins on behaviour and the design system
-wins on looks. That design system covers the web page only (M8); the terminal dashboard has none.
+wins on looks. That design system covers the web page only (M8). The terminal dashboard's is
+`docs/dash-design.md` (M16), and the same rule holds for it.
 
 **How afk gets built (bootstrap).** As autonomously as possible, on the VM (§2, T0.0):
 
@@ -126,8 +127,10 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | One machine settings file | Decided 2026-10-13 (M6): `config.toml` is the machine's only settings file. The dashboard's project switcher lists the `[[project]]` entries the daemon builds, plus any project found under the search folders in its `[dash]` table. `config.json`, carried over from forge, is no longer read; when one is found, afk says once what to move and touches neither file. |
 | Dashboard controls | Decided 2026-10-13 (M6): `afk dash` gets pause and resume keys and an inbox count in its header. T3.2 left both out only because its scope did not list them. |
 | Dashboard as command center | Decided 2026-10-13 (M7): `afk dash` does the owner's day-to-day work, so the shell is needed only for set-up. It starts all four planning sessions (new, extend, amend, reconcile), approves a plan behind a confirm, has an all-projects screen, adds and removes projects, sets a task's status by hand, shows a task's tokens, shows the planning session and the checker's result, and refreshes the usage reading. The owner profile, installing the plugin, starting and stopping the daemon and `afk ledger init` stay commands. |
-| Dashboard keys | Decided 2026-10-13 (M7): one leader key, **ctrl+space**, works everywhere in the dashboard, the agent pane included, except while an overlay, form or confirm is open (`esc` leaves those first), and opens an actions dialog at once listing every action with its key. **Every action is under the leader**: the session list keeps only the keys that move around, and the bare letters, the ctrl chords and the `:` palette go (T7.2). The one exception is `ctrl+c` on the session list, which still quits so a stuck dashboard can always be left. The owner chose this over keeping today's letters as shortcuts. `afk attach` keeps ctrl-\. |
+| Dashboard keys | Decided 2026-10-13 (M7): one leader key, **ctrl+space**, works everywhere in the dashboard, the agent pane included, except while an overlay, form or confirm is open (`esc` leaves those first), and opens an actions dialog at once listing every action with its key. **Every action is under the leader**: the session list keeps only the keys that move around, and the bare letters, the ctrl chords and the `:` palette go (T7.2). The one exception is `ctrl+c` on the session list, which still quits so a stuck dashboard can always be left. The owner chose this over keeping today's letters as shortcuts. `afk attach` keeps ctrl-\. Replaced 2026-10-21 by the row "Dashboard levels and keys" (M16). |
 | Leader key | Decided 2026-10-14 (M9): the leader is **ctrl+]** by default, replacing ctrl+space, which Raycast takes on the owner's Mac (and ctrl+2 and ctrl+@, the same byte, go with it). It is set with `leader = "..."` in the `[dash]` table of `config.toml`; a key the dashboard cannot use falls back to ctrl+] with a line in the header saying what to fix (the owner chose the header over refusing to start). ctrl+m, the owner's first idea, is the same byte as Enter unless the terminal and tmux report it apart, so it was not made the default; the owner uses ctrl+]. Everything else in the row above stands. |
+| Dashboard look | Decided 2026-10-21 (M16): `afk dash` is redesigned from `docs/dash-design.md`, drawn with the owner on a Claude Design canvas after allisonhere's terminal apps (tidemail, TideFTP, whatthedock). Three levels, **All projects → Project → Agent**, each drawn over the dimmed one before it, replace the session list beside a right side; the agent gets nearly the whole screen, and a session's details are an overlay (`d`). The dashboard paints its own background from a named theme (`tide`, `fjord`, `paper`, `phosphor`; `[dash] theme` in `config.toml`, default `tide` on a dark terminal and `paper` on a light one), and its colours mean what the web page's do. The owner chose this layout over a restyle of today's two panes and over a three-pane layout with the agent in the middle, and dropped a variant with a session list beside the agent. |
+| Dashboard levels and keys | Decided 2026-10-21 (M16), replacing M7's "Every action is under the leader": at All projects and Project a key works alone, because no agent is on screen to take it; in the Agent every key goes to the agent, and the leader (ctrl+], still set in `config.toml`, M9) followed by the same key does the same thing. The same letter does the same thing at every level (`docs/dash-design.md` §5). `enter` goes in a level and `esc` comes back out. `]` and `[` go to the next and previous thing that needs the owner across every project, `/` jumps to any project, session or task, and `:` searches actions by name, where letters always type, so a plan action such as "approve" no longer has to dodge a key. The leader alone shows a small strip of the keys that work after it. M7 put every action under the leader because the list and a live agent shared the screen; with the agent on its own level that reason is gone. `ctrl+c` still quits from every level but the Agent, and `afk attach` keeps ctrl-\. |
 | What the dashboard writes | Decided 2026-10-13 (M7): besides inbox answers (T3.2) and pause and resume (T6.3), the dashboard changes afk's state only through the code of the matching command: `afk plan approve` (T7.8; approving from the web page was forbidden here, because others may reach it, and M8 lifts that: see the row "Web page as command center"), `afk project add` and `remove` for `config.toml` (T7.10), and `afk ledger set` for the ledger (T7.11). This replaces "the dashboard never writes the ledger" (T3.2) and "never writes `config.toml`" (T6.1, T6.2) for those actions only. Creating a new plan's folder and its GitHub repository (T7.5, T7.6) has no matching command and is governed by the row below. |
 | New plan in a new folder | Decided 2026-10-13 (M7): the dashboard can create the folder for a new plan. A typed name is created under the owner profile's `project location` (From the owner profile, a default: `~/code`) and made a git repository; the dashboard then asks, each time, whether to create a private GitHub repository with the owner's existing `gh` login and set it as `origin`. Never without that yes, per the profile's rule on accounts. |
 | Web page as command center | Decided 2026-10-13 (M8): the web page does everything `afk dash` does except attach to a session. It holds a planning session as a chat (the agent's messages, a reply box, a button per offered option), never as a terminal; a reply sent while the dashboard has that session open takes the session and the dashboard pane is dropped with a notice. A planning session waiting for the owner sends an ntfy notification linking to its chat. Every owner-only action the dashboard has comes to the page behind a confirm, approving a plan (T8.11) and creating a new project's folder and private GitHub repository (T8.15) included, which replaces "approving from the web page stays forbidden" (T5.7, T7.8). Of coding sessions, only autonomous ones are started from the page (T8.10), because the owner cannot talk to one there; planning sessions are started from the page and held in the chat view (T8.14, T8.15). The password sign-in (T8.18) and the `Origin` check guard all of it; the reply box is a keyboard into the planning agent, so the page stays behind Tailscale or the owner's proxy. |
@@ -4019,6 +4022,207 @@ and the things that block on them arrive as native notifications from it; ntfy i
   - `make check` green.
   - Against a built binary with a scratch password: `curl` of `/manifest.webmanifest` shows both colours
     as `#1C1B18`, and headless Chrome still reports the page installable.
+
+### M16 — The dashboard, redesigned
+
+**Outcome:** `afk dash` opens on every project at once, goes into a project and then into an agent with
+`enter` and back out with `esc`, gives the agent nearly the whole screen, and wears a theme the owner
+picks. Keys work alone wherever no agent is on screen. The look and every key are in
+`docs/dash-design.md`, which wins on looks; this milestone wins on behaviour.
+
+Every task in M16 edits `internal/ui`, and tasks in one Go package collide at merge, so they run one
+after another. Each regenerates the saved screens (`internal/ui/testdata/golden/`) with the tests'
+update flag and rewrites the parts of `docs/dashboard.md` it changes.
+
+#### T16.1 — Themes, the drawing parts and dimming
+- **Depends on:** —
+- **Goal:** the dashboard paints the theme the owner picks, draws today's screens with the parts in
+  `docs/dash-design.md` §3, and dims whatever is under an overlay. No key and no layout changes yet.
+- **Background:** colours come from `internal/palette` (`Scheme`, `For(isDark)`), built into a
+  `styleSet` in `internal/ui/styles.go` and swapped by `applyTheme` when the terminal answers the
+  background-colour request. Today the dashboard leaves the terminal's own background showing. Overlays
+  are laid over the frame by `composeModal` (`internal/ui/modal.go`) with lipgloss v2's `Compositor`;
+  drawing a layer straight onto a `Canvas` ignores its X and Y. A prototype on 2026-10-21 (lipgloss
+  v2.0.6) dimmed a frame by reading every cell with `Canvas.CellAt`, blending its colours toward the
+  background and writing it back with `SetCell`, then laid a box on top with the `Compositor`. It
+  worked, and cells with no colour of their own were left untouched, which is why the scope below
+  treats them as `fg` on `bg` first.
+- **Scope:**
+  - The tokens and the four themes of `docs/dash-design.md` §1 replace the palette's dark and light
+    schemes for the dashboard (`internal/prompt` keeps what it uses). `tide` is the default on a dark
+    terminal, `paper` on a light one.
+  - `theme = "<name>"` in the `[dash]` table of `config.toml`: a `Theme` field on `daemonconfig.Dash`;
+    a value of the wrong kind lands in `DashErr`, and an unknown name is checked by a pure function in
+    `internal/ui` and reported in the toast the folder search already raises for `[dash]` mistakes,
+    with the default theme used. Read once at start, like `leader`. Amend §4.6 and
+    `docs/configuration.md`.
+  - The parts of §3 as functions: top bar, status bar, pane with its title strip (with and without the
+    keyboard), section, read-only pane, rows with the selection fill and the linked row, group heading,
+    the glyph and word for a state (one function, §3.6), progress bar, band, key chip and alert bar.
+  - Dimming (§3.9) as one function over a rendered frame, then `composeModal` lays the overlay on top.
+    Every dialog, form and overlay the dashboard has today dims what is under it.
+  - Today's screens use the parts: the header becomes the top bar (keeping `headerPieces` and its
+    narrowing order), the footer the status bar, the two panes get title strips, the session list's
+    selection is filled edge to edge, and states use the glyphs and words of §3.6.
+- **Must not:** change any key, what any screen shows, or the header's narrowing order.
+- **Acceptance:**
+  - Table tests: the theme check (each theme, unset, unknown, wrong kind); the state-to-glyph mapping
+    (every phase, fault and project state a row); dimming (a coloured cell blended 70%, a default-colour
+    cell blended as `fg` on `bg`, bold cleared, a 16-colour profile setting faint instead).
+  - The saved screens are regenerated and show the new parts.
+  - Against a scratch build in tmux at 120×40: `tmux capture-pane -e` shows the `tide` background on an
+    empty cell, the session list's selection filled, and an open dialog over dimmed cells;
+    `theme = "paper"` in a scratch `config.toml` shows `paper`'s background; `theme = "nope"` raises
+    the toast and draws `tide`.
+  - `make check` is green.
+
+#### T16.2 — Three levels, and keys that work alone
+- **Depends on:** T16.1
+- **Goal:** the dashboard is the three levels of `docs/dash-design.md` §5 with `enter` and `esc`
+  between them; keys work alone at All projects and Project; in the agent, the leader and then the same
+  key; the leader alone shows the key strip; `:` searches actions; `?` shows the keys.
+- **Background:** today every action is a row in `leaderTable` (`internal/ui/leader.go`) and runs only
+  after the leader; the dialog that opens at once on the leader runs a key the moment it is pressed,
+  which is why "approve" is typed and `a` is kept free (`docs/decisions.md`, `## T7.2` and the T7.3
+  correction about `reconcile`). Focus moves between the session list and a right side that shows the
+  agent or the overview (`focusrequest.go`, `ctrl+] t`, `ctrl+] \`). The all-projects screen
+  (`allprojects.go`) replaces the list while it is open. The Decisions row "Dashboard levels and keys"
+  replaces M7's leader-only rule; the leader key itself (M9) and its setting stay.
+- **Scope:**
+  - A level stack (All projects, Project, Agent) and overlays above it, with the move from one to the
+    next decided by a pure function of the level, the open overlay and the key.
+  - One key table replaces `leaderTable`: each action, its key, the levels it works at, its help line.
+    At All projects and Project a key runs its action. In the Agent every key goes to the agent but the
+    leader; the leader shows the key strip (§4.8), the next key runs that action, and the leader twice
+    sends one to the agent as today.
+  - All projects is today's all-projects screen; Project is today's session list with the overview
+    beside it; Agent is the session's pane over the dimmed Project at the width of §3.8. (T16.3 to
+    T16.5 redraw each.)
+  - `:` is the actions search of §4.7 (letters always type; rows with a key show it), `?` the keys
+    overlay of §4.9, both built from the key table. Every key `docs/dash-design.md` §5 lists as replaced
+    is gone, and nothing answers it with a "moved" notice.
+  - Where the dashboard starts (§5, last paragraph), for a plain start, `--project` and `--open`.
+  - `docs/dashboard.md`'s keys section and `docs/reference.md` for `--project` and `--open`.
+- **Must not:** let any key but the leader reach afk while the agent has the keyboard; change the
+  leader setting, its fallback or the pass-through; change `afk attach`.
+- **Acceptance:**
+  - A table test of the level function with a row for every key in §5 at every level. The load-bearing
+    rows: a letter and `esc` in the Agent go to the agent; the leader then `esc` goes back to Project;
+    the leader then an unlisted key closes the strip and sends nothing.
+  - A test that every action in the key table has a help line and appears in `?` and `:`.
+  - Against a scratch build in tmux: from All projects, `enter enter` reaches a stand-in agent,
+    `q` typed there reaches the agent, `C-] Escape` returns to Project, `Escape` to All projects, and
+    `q` quits.
+  - `make check` is green.
+
+#### T16.3 — The home screen
+- **Depends on:** T16.2
+- **Goal:** All projects is the screen of `docs/dash-design.md` §4.1, except the activity column and
+  the week chart, which T16.8 adds.
+- **Background:** the rows, state words and sentences come from `internal/projectrows`, as the
+  all-projects screen reads them today, and the order "needs you first" is already worked out there.
+- **Scope:** the band, the column heads, the four groups, the rows (two lines below 100 columns), the
+  selected project's panel (what it waits on, the question in full, what the answer unblocks, from the
+  inbox and the ledger), and the keys `a`, `p`, `n`, `+`, `-` at this level.
+- **Must not:** read a file the all-projects screen does not read today, or block on a project that is
+  slow to read.
+- **Acceptance:** table tests of the grouping and of the selected panel's lines (a parked task, a plan to
+  approve, a gone project, nothing waiting); saved screens at 120×40 and 80×24; against a scratch
+  build with a scratch `config.toml` listing three throwaway projects, the groups and the panel match
+  their files; `make check` is green.
+
+#### T16.4 — The project view
+- **Depends on:** T16.3
+- **Goal:** Project is the screen of `docs/dash-design.md` §4.2: three numbered sections, the selected
+  session's read-only pane, and the selected session's task linked in Build.
+- **Background:** today's Build tab (`buildtab.go`, `buildcursor.go`) and its `S` and `T` actions, and
+  the inbox overlay's list (`inboxoverlay.go`), hold what the Build and Inbox sections show.
+- **Scope:** the sections, `tab`, `shift+tab` and `1`–`3`, the focus strip, `j`/`k` inside a section,
+  `enter` by what is selected (a session its agent, a task its details, an inbox item the answer
+  screen), the read-only pane, the linked row, and `s` and `t` on the Build section. Below 100 columns
+  one section fills the body, the three names stay in its strip and the read-only pane is left out (`d`
+  shows it). The Build tab goes from the details.
+- **Must not:** change how a task's status is set or tokens are read (`afk ledger set`,
+  `afk tokens`).
+- **Acceptance:** table tests of section focus and of `enter` per selection; the linked row follows the
+  selected session (a row each for a session with a task, one without, and a task with no session);
+  saved screens at 120×40 and 80×24; against a scratch build, `tab` and `2` move focus and `enter` on a
+  task opens its details; `make check` is green.
+
+#### T16.5 — The agent and the details overlay
+- **Depends on:** T16.4
+- **Goal:** the Agent is the screen of `docs/dash-design.md` §4.3, and `d` opens the details overlay of
+  §4.4 anywhere a session is selected.
+- **Background:** the agent's terminal is drawn by `internal/termpane` through `hostpane.go`; its
+  output is full of cells with the terminal's default colour, which T16.1's dimming already handles.
+  The overview and the Waves, Stack, Notes and Diff tabs are today's right side.
+- **Scope:** the band (phase, task, diff, loop, host, the next session needing the owner), the pane
+  size and resize, `ctrl+] d`, `ctrl+] m`; the details overlay with tabs `1`–`5`, its scrolling, and
+  `esc` back to where it was opened; a session with no live agent opening its details with `r restart`
+  when restarting is allowed. Below 100 columns both take the full width.
+- **Must not:** change the host protocol or what the agent receives, beyond its new size.
+- **Acceptance:** table tests of what `enter` on a session opens (running, stopped, pending, cleaning);
+  the agent's size follows the terminal; saved screens; against a scratch build with a stand-in agent,
+  the agent fills the overlay, `C-] d` opens the details over it dimmed and `Escape` returns to the
+  agent with its keys going to it; `make check` is green.
+
+#### T16.6 — Jump, and the next thing that needs you
+- **Depends on:** T16.5
+- **Goal:** `/` jumps to any project, session or task (§4.6), and `]` and `[` go to the next and
+  previous thing that needs the owner across every project.
+- **Scope:** a pure function that orders what needs the owner (a session waiting on them, an inbox item
+  that blocks a task, a plan to approve, a broken session or a gone project) the same way at every
+  level, and where going to each one lands (a waiting session its agent, a blocking item the answer
+  screen, the rest their project). The Agent's band and the top bar's attention count use it. The jump
+  search over the same readers the home screen uses, things that need the owner first.
+- **Must not:** dial, wait on a network or block the dashboard while it reads another project.
+- **Acceptance:** table tests of the order and of where each kind lands; a jump test with a project, a
+  session and a task matching; against a scratch build with two throwaway projects each with one
+  waiting session, `]` from All projects opens the first agent and `C-] ]` from there opens the second;
+  `make check` is green.
+
+#### T16.7 — Answer an inbox item
+- **Depends on:** T16.6
+- **Goal:** `a` and `enter` on an inbox row open the answer screen of `docs/dash-design.md` §4.5.
+- **Background:** the inbox overlay (`inboxoverlay.go`) answers through `answerInboxCmd`; an item has
+  `options` and `recommended` (§4.3).
+- **Scope:** the item screen redrawn: the item's options numbered, the recommended one labelled, a last
+  "Write my own answer" with a field, `1`–`n` to choose, `enter` to send, the line on what happens next.
+  `a` opens the oldest item that blocks a task: in the project at Project and in the Agent, across every
+  project at All projects.
+- **Must not:** change how an answer is written or what `afk inbox` reads.
+- **Acceptance:** table tests of which item `a` picks at each level and of the answer sent for each
+  choice (an option, the recommended one, an own answer, an item with no options); against a scratch
+  build, answering a throwaway item writes the same file `afk inbox answer` would; `make check` is
+  green.
+
+#### T16.8 — Activity and the week
+- **Depends on:** T16.7
+- **Goal:** the home screen shows each project's activity over the last 24 hours and the tokens used on
+  each day of the week (`docs/dash-design.md` §4.1).
+- **Background:** the decision log (§4.4) gets a line for every decision in the loop, with its time;
+  the token ledger (§4.7) gets a line per task phase and role when a task ends, with `weighted`.
+- **Scope:** the activity line counts a project's decision-log lines in each two hours of the last 24
+  hours, drawn with `▁▂▃▄▅▆▇` scaled to the busiest project. The week chart sums `weighted` over every
+  listed project's token ledger per day for the last seven days, with the usage line beside it. Both are
+  pure functions over lines handed in; the reading is done on the project scan, not the 2s refresh,
+  and reads at most the last 1 MB of each file.
+- **Must not:** add a field to either file.
+- **Acceptance:** table tests of the bucketing (an empty log, a log older than 24 hours, a busy hour, a
+  file cut mid-line) and of the per-day sums; against a scratch build with throwaway logs, the line and
+  chart match; `make check` is green.
+
+#### T16.9 — Prove it (owner + agent)
+- **Depends on:** T16.8
+- **Goal:** the owner has used the new dashboard for a day of real work, and what it did in each
+  terminal is written down.
+- **Scope:** the session for this task waits for the owner (an inbox item). The owner runs it in
+  Ghostty and one other terminal, inside tmux with the default prefix and outside it, at 120×40 and
+  80×24, in each theme, and once with only 256 colours (`TERM=xterm-256color`, `COLORTERM` unset) and
+  once with 16. The session writes up in `docs/decisions.md` under `## T16.9` what worked and every
+  fault met with its cause, fixes what it can within M16's code and files the rest in the inbox.
+- **Acceptance:** the write-up covers both terminals, both sizes, all four themes and both reduced
+  colour counts; every fault is fixed or filed.
 
 ## 9. Deferred / later
 
