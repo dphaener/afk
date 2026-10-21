@@ -4009,6 +4009,8 @@ and the things that block on them arrive as native notifications from it; ntfy i
 - **Daemon-side write-guard and continuation enforcement**, replacing shipit's Claude-only mods.
 - Rename `.claude/worktrees/` to a provider-neutral location.
 - Open-source release: Homebrew tap, docs site. (The install script moved to M11, 2026-10-17.)
+- **Push for notices that do not block the owner** (idle, all done, a plan ready for review): dropped
+  in M15 by the owner (2026-10-20), who chose to be notified only of what blocks on them.
 - **A Docker image**: set aside 2026-10-17 in favour of a VM (see the Decisions row "Where afk runs, and
   installing it"). Worth revisiting only as an optional extra for people who already run everything in
   containers.
