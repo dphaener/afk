@@ -239,3 +239,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Send test**: the This device card's button that sends one push to this device only, to prove notifications arrive.
 - **Device cookie**: `afk_push_device`, a cookie the web page sets to the id of the device a browser signed up as, so the Notifications page can mark "This device"; it never holds the device's push address.
 - **Gone device**: a signed-up device whose push service answers that it no longer takes notifications (404 or 410), for example because its browser dropped the subscription; afk removes it from the device list the next time it tries to send to it.
+- **Theme**: one of the dashboard's four named colour sets (`tide`, `fjord`, `paper`, `phosphor`), chosen with `[dash] theme` in `config.toml`; unset, the dashboard uses `tide` on a dark terminal and `paper` on a light one.
+- **Token**: one named colour role in a theme (`bg`, `panel`, `accent`, `need`, and so on); every colour the dashboard draws is a token.
+- **Title strip**: the filled first row of a dashboard pane, holding its name on the left and context on the right; it is `accent` on the pane that has the keyboard.
+- **Dimming**: what the dashboard does to the screen under a dialog or overlay: every colour moves most of the way to the theme's background and bold goes, so the overlay stands out.

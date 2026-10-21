@@ -1304,8 +1304,8 @@ func TestSessionListLabel(t *testing.T) {
 
 // TestRenderListTopEdgeCarriesTheProjectLabel proves the label actually
 // reaches the rendered box, not just the pure helper above: renderList must
-// hand sessionListLabel() to labelBordersStyled rather than keeping the old
-// "Sessions" literal.
+// hand sessionListLabel() to the pane's title strip (its first inner row,
+// since T16.1) rather than keeping the old "Sessions" literal.
 func TestRenderListTopEdgeCarriesTheProjectLabel(t *testing.T) {
 	m := sessionListLabelModel([]string{"alpha", "beta"}, 1)
 	m.width, m.height = 120, 40
@@ -1313,7 +1313,7 @@ func TestRenderListTopEdgeCarriesTheProjectLabel(t *testing.T) {
 	m.sizeSessionList()
 	listOuter, _, bodyHeight := m.layoutDims()
 
-	top := strings.Split(xansi.Strip(m.renderList(listOuter, bodyHeight)), "\n")[0]
+	top := strings.Split(xansi.Strip(m.renderList(listOuter, bodyHeight)), "\n")[1]
 	if !strings.Contains(top, "beta") {
 		t.Fatalf("top edge does not carry the active project's name:\n%s", top)
 	}
@@ -1331,7 +1331,7 @@ func TestRenderListTopEdgeFallsBackToSessionsWithNoProject(t *testing.T) {
 	m := testModel(sess("alpha"))
 	listOuter, _, bodyHeight := m.layoutDims()
 
-	top := strings.Split(xansi.Strip(m.renderList(listOuter, bodyHeight)), "\n")[0]
+	top := strings.Split(xansi.Strip(m.renderList(listOuter, bodyHeight)), "\n")[1]
 	if !strings.Contains(top, sessionListFallbackLabel) {
 		t.Fatalf("top edge does not fall back to %q with no known project:\n%s", sessionListFallbackLabel, top)
 	}
@@ -1367,10 +1367,10 @@ func TestRenderListLabelTruncatesALongProjectNameWithoutOverflow(t *testing.T) {
 	}
 }
 
-// TestRenderDetailTitleStyleUnchanged pins that renderDetail's border label
-// still flows through labelBorders/theme.boxTitle unchanged: the
-// labelBordersStyled sibling function must not leak its stronger title style
-// (boxTitleStrong) into any caller besides renderList's session box.
+// TestRenderDetailTitleStyleUnchanged pins that renderDetail's title is the
+// pane's title strip (§3.3, its first inner row since T16.1), drawn exactly
+// as titleStrip draws an unfocused strip (bold strip-fg on strip), and that
+// renderList's stronger boxTitleStrong style does not leak into it.
 func TestRenderDetailTitleStyleUnchanged(t *testing.T) {
 	m := testModel(sess("alpha"))
 	m.selectSessionIndex(0)
@@ -1381,12 +1381,13 @@ func TestRenderDetailTitleStyleUnchanged(t *testing.T) {
 		t.Fatalf("test setup: detail box has no title to compare against")
 	}
 
-	top := strings.Split(m.renderDetail(mainOuter, bodyHeight), "\n")[0]
-	if !strings.Contains(top, theme.boxTitle.Render(title)) {
-		t.Fatalf("detail box title is not rendered with theme.boxTitle:\n%s", top)
+	strip := strings.Split(m.renderDetail(mainOuter, bodyHeight), "\n")[1]
+	want := theme.titleStrip(title, "", paneOuterWidth(detailContentWidth(mainOuter))-boxBorderCells, false)
+	if !strings.Contains(strip, want) {
+		t.Fatalf("detail box title is not the pane's title strip:\n%q\nwant it to contain %q", strip, want)
 	}
-	if strings.Contains(top, theme.boxTitleStrong.Render(title)) {
-		t.Fatalf("detail box title leaked renderList's boxTitleStrong style:\n%s", top)
+	if strings.Contains(strip, theme.boxTitleStrong.Render(title)) {
+		t.Fatalf("detail box title leaked renderList's boxTitleStrong style:\n%s", strip)
 	}
 }
 
@@ -1432,43 +1433,42 @@ func TestLabelBordersStyledChangesOnlyTheLabelStyle(t *testing.T) {
 	}
 }
 
-// TestTitleStylesStayReadableOnBothSchemes is the regression test for a
-// defect that shipped: boxTitleStrong was Foreground(p.White) with no
-// Background, and palette.Light.White is "#ffffff", so the session box's
-// project label — the frame's primary identifier — rendered white-on-white
-// and was unreadable on a light terminal.
+// TestTitleStylesStayReadableOnEveryTheme is the regression test for a
+// defect that shipped: boxTitleStrong was a white foreground with no
+// Background, and on a light terminal the session box's project label — the
+// frame's primary identifier — rendered white-on-white and was unreadable.
 //
-// Nothing in the package could catch it. The golden fixtures are plain text
-// with the ANSI stripped, so a colour is invisible to them, and the only
+// Nothing else in the package could catch it. The golden fixtures are plain
+// text with the ANSI stripped, so a colour is invisible to them, and the only
 // other assertion about this style (TestLabelBordersStyledChangesOnlyThe
 // LabelStyle) checks that it DIFFERS from boxTitle — which white-on-white
 // satisfies perfectly.
 //
-// Load-bearing rows: light/boxTitleStrong is the exact defect. The dark rows
-// guard the obvious over-correction, swapping to a near-black that then
-// disappears on a dark terminal. boxTitle is here because it reaches the
-// screen through the same labelBordersStyled path and is the style
-// boxTitleStrong has to stay distinct from — a "fix" that collapsed the two
-// would be readable and still wrong.
+// Load-bearing rows: paper/boxTitleStrong is the exact defect's shape (paper's
+// on-accent and sel-fg are near-white, and the label lands on paper's
+// near-white bg). The dark themes' rows guard the over-correction, a
+// near-black that then disappears on tide, fjord or phosphor. boxTitle is here
+// because it reaches the screen through the same labelBordersStyled path and
+// is the style boxTitleStrong has to stay distinct from — a "fix" that
+// collapsed the two would be readable and still wrong.
 //
-// Both schemes are live at runtime: applyTheme rebuilds the whole theme from
-// palette.For(isDark) when tea.BackgroundColorMsg arrives.
-func TestTitleStylesStayReadableOnBothSchemes(t *testing.T) {
-	// Each scheme's terminal background, per the palette package doc: Dark is
-	// "the scheme for a dark terminal background", Light is for a light one.
-	// A style that sets a foreground and no background is drawn onto exactly
-	// this.
+// The dashboard paints each theme's bg under every cell (fillBackground), so
+// a style that sets a foreground and no background is drawn onto exactly that
+// bg, and every theme is live at runtime: [dash] theme picks any of the four.
+func TestTitleStylesStayReadableOnEveryTheme(t *testing.T) {
 	schemes := []struct {
 		name       string
-		scheme     palette.Scheme
+		theme      palette.Theme
 		background string
 	}{
-		{"dark", palette.Dark, palette.Dark.Black},
-		{"light", palette.Light, palette.Light.White},
+		{"tide", palette.Tide, palette.Tide.Bg},
+		{"fjord", palette.Fjord, palette.Fjord.Bg},
+		{"paper", palette.Paper, palette.Paper.Bg},
+		{"phosphor", palette.Phosphor, palette.Phosphor.Bg},
 	}
 
 	for _, sc := range schemes {
-		set := newStyleSet(sc.scheme)
+		set := newStyleSet(sc.theme)
 		bg := lipgloss.Color(sc.background)
 
 		titles := []struct {
@@ -1482,11 +1482,11 @@ func TestTitleStylesStayReadableOnBothSchemes(t *testing.T) {
 			t.Run(sc.name+"/"+ti.name, func(t *testing.T) {
 				if _, bare := ti.style.GetBackground().(lipgloss.NoColor); !bare {
 					t.Fatalf("%s now sets its own Background; this test's premise (the "+
-						"label lands on the terminal background) no longer holds", ti.name)
+						"label lands on the painted ground) no longer holds", ti.name)
 				}
 				fg := ti.style.GetForeground()
 				if sameColor(fg, bg) {
-					t.Fatalf("%s foreground is the %s terminal background (%s) — invisible",
+					t.Fatalf("%s foreground is the %s ground (%s) — invisible",
 						ti.name, sc.name, sc.background)
 				}
 				if got := contrastRatio(fg, bg); got < minTitleContrast {
@@ -1498,7 +1498,7 @@ func TestTitleStylesStayReadableOnBothSchemes(t *testing.T) {
 
 		t.Run(sc.name+"/strong-differs-from-plain", func(t *testing.T) {
 			if sameColor(set.boxTitle.GetForeground(), set.boxTitleStrong.GetForeground()) {
-				t.Fatalf("boxTitleStrong and boxTitle share a foreground on the %s scheme; "+
+				t.Fatalf("boxTitleStrong and boxTitle share a foreground on the %s theme; "+
 					"the session box's label no longer outweighs a detail-pane or modal title", sc.name)
 			}
 		})

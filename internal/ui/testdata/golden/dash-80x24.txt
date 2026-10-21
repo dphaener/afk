@@ -1,13 +1,14 @@
  afk Dashboard                                                                  
-╭─ Sessions ─────────────────╮╭─ feat-auth ────────────────────────────────────╮
+╭────────────────────────────╮╭────────────────────────────────────────────────╮
+│ Sessions                   ││ feat-auth                                      │
 │     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff      │
 │                            ││ ────────────────────────────────────────────── │
-│ ▌ ● feat-auth      EXEC  ● ││ feat-auth  feat-auth → main                    │
-│   ● Billing v2     REVW    ││  executing   loop 3  updated 2026-07-10T00:00… │
-│   ● fix-login-red… PLAN  ● ││                                                │
-│   ○ feat-search    DONE    ││ ● Awaiting input · press enter to answer       │
-│   ● scratch-1      SCR     ││                                                │
-│   ○ old-migration  BRKN    ││ Progress  █████████░░░░░░░░░░░ 3/7             │
+│ ▌ ◐ feat-auth      EXEC  ● ││ feat-auth  feat-auth → main                    │
+│   ◐ Billing v2     REVW    ││ ◐ executing  loop 3  updated 2026-07-10T00:00… │
+│   ◐ fix-login-red… PLAN  ● ││                                                │
+│   ✓ feat-search    DONE    ││ ● Awaiting input · press enter to answer       │
+│   ◐ scratch-1      SCR     ││                                                │
+│   ✕ old-migration  BRKN    ││ Progress  █████████░░░░░░░░░░░ 3/7             │
 │                            ││ Diff      +412/-88 · 9 file(s) vs main         │
 │                            ││ Verdict   — not reviewed yet                   │
 │                            ││                                                │
@@ -18,7 +19,6 @@
 │                            ││   ○ W2.T4 Remove legacy table                  │
 │                            ││                                                │
 │                            ││ Stack     main › feat-auth                     │
-│                            ││                                                │
 │                            ││                                             0% │
 ╰────────────────────────────╯╰─ enter: focus view · ctrl+] c: clean · ctrl+… ─╯
 ↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+] actions                 

@@ -127,35 +127,62 @@ func (m Model) View() tea.View {
 	// owns the keyboard must be ON SCREEN, and that holds in the empty state
 	// too: a scan can empty the project list under an open overlay, and a
 	// component that still routes `q` while invisible would be a keyboard trap.
+	var overlay string
 	switch {
 	case m.leaderOpen:
 		// The actions dialog outranks every overlay in modePrecedence. Its
 		// view takes the terminal size and sizes its own box (leader.go), from a
 		// snapshot of rows taken at open, so drawing it reads no file and
 		// runs nothing.
-		frame = composeModal(frame, m.leader.view(m.width, m.height), m.width, m.height)
+		overlay = m.leader.view(m.width, m.height)
 	case m.switcherOpen:
-		frame = composeModal(frame, m.renderSwitcherModal(), m.width, m.height)
+		overlay = m.renderSwitcherModal()
 	case m.inboxOpen:
-		frame = composeModal(frame, m.renderInboxModal(), m.width, m.height)
+		overlay = m.renderInboxModal()
 	case m.planCheckOpen:
-		frame = composeModal(frame, m.renderPlanCheckModal(), m.width, m.height)
+		overlay = m.renderPlanCheckModal()
 	case m.taskTokensOpen:
-		frame = composeModal(frame, m.renderTaskTokensModal(), m.width, m.height)
+		overlay = m.renderTaskTokensModal()
 	case m.formOpen:
-		frame = composeModal(frame, m.renderNewFormModal(), m.width, m.height)
+		overlay = m.renderNewFormModal()
+	}
+	if overlay != "" {
+		frame = composeModal(frame, overlay, m.width, m.height, m.deps.ColorProfile)
 	}
 	// A confirmation or prompt (m.modal) outranks every overlay in
 	// modePrecedence, so it is composed last and lands on top — a create that
-	// fails while the switcher is open reports over the switcher.
+	// fails while the switcher is open reports over the switcher. Over an
+	// overlay it dims only that overlay's box (composeModalOver): the screen
+	// under both is already dimmed once.
 	if d, ok := m.activeDialog(); ok {
-		frame = composeModal(frame, m.renderDialog(d), m.width, m.height)
+		if overlay != "" {
+			frame = composeModalOver(frame, overlay, m.renderDialog(d), m.width, m.height, m.deps.ColorProfile)
+		} else {
+			frame = composeModal(frame, m.renderDialog(d), m.width, m.height, m.deps.ColorProfile)
+		}
 	}
 	// A fresh status floats above all of it (toast.go), and nothing keeps it
 	// once the toast has gone — this is the only surface a notification has.
 	if m.toastVisible() {
 		frame = composeToast(frame, renderToast(m.statusKind, m.status, m.width), m.width)
 	}
+	// The ground goes on last, over the whole finished frame (§1): every cell
+	// nothing else coloured gets the theme's bg, so the dashboard looks the
+	// same in any terminal. Last, because the overlays and the toast above
+	// are composited cell by cell and leave their own unpainted cells, which
+	// need the ground as much as the frame's do.
+	//
+	// Each row is first padded out to the terminal's width. Every row leaves
+	// its renderer full width, but the Compositor behind composeModal and
+	// composeToast trims a row's bare trailing spaces (lipgloss Canvas.Render),
+	// and paintGround paints a row only as far as it reaches; without the pad
+	// the top bar and the status bar would stop short of the right edge
+	// whenever an overlay or a toast is up. Not on a 16-colour terminal, where
+	// there is no ground to paint and the blanks would only be more bytes.
+	if paintsGround(m.deps.ColorProfile) {
+		frame = padRows(frame, m.width)
+	}
+	frame = paintGround(frame, theme.tokens, m.deps.ColorProfile)
 
 	v.SetContent(frame)
 	// Terminal integration, for terminals that draw it: the tab title names
@@ -186,6 +213,18 @@ func (m Model) View() tea.View {
 		v.Cursor = paneCursor(m.pane.Cursor(), originX, originY, cols, rows, m.width, m.height)
 	}
 	return v
+}
+
+// padRows pads every row of frame shorter than width with spaces out to width,
+// leaving longer rows alone (they are the renderer's to cut, not this one's).
+func padRows(frame string, width int) string {
+	lines := strings.Split(frame, "\n")
+	for i, ln := range lines {
+		if w := lipgloss.Width(ln); w < width {
+			lines[i] = ln + strings.Repeat(" ", width-w)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // paneForSelection reports whether a live pane belongs to the selected row:
@@ -346,23 +385,25 @@ func (m Model) placeholderConnectLive() bool {
 // renderAgentPlaceholder draws the agent view's stand-in: the pane's box and
 // title line, so the view reads as the agent surface it replaces, with the
 // state and the action in place of the emulator screen.
+//
+// It is the same pane part renderPane draws, the same size, with the same
+// title strip ("▶ name" on the left), so switching between the agent and its
+// placeholder moves nothing on screen.
 func (m Model) renderAgentPlaceholder(outerW, outerH int) string {
 	contentW, _ := paneContentDims(outerW, outerH)
 	title, line, action := m.agentPlaceholderText()
 	hint := focusBindingHint(m.keys.Focus)
-	style := theme.paneBox
-	if m.focus == focusRight {
+	focused := m.focus == focusRight
+	if focused {
 		hint = "[" + leaderChord(m.leaderKey.name, actionPaneToggle) + " agent/overview" +
 			" · " + leaderChord(m.leaderKey.name, actionDetailUnfocus) + " return to dashboard]"
-		style = theme.paneBoxFocused
 	}
-	lines := []string{paneTitleBlock(title, hint, contentW), "", truncate(line, contentW)}
+	lines := []string{"", truncate(line, contentW)}
 	if action != "" {
 		lines = append(lines, theme.dim.Render(truncate(action, contentW)))
 	}
-	return sizedBox(style, contentW+2, outerH-boxBorderCells).
-		MaxHeight(outerH).
-		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	return theme.pane(paneStripName(title), hint, strings.Join(lines, "\n"),
+		paneOuterWidth(contentW), outerH, focused)
 }
 
 // layoutDims computes the dashboard body layout from the current terminal
@@ -425,29 +466,38 @@ func (m Model) mouseFrameLayout() (listOuter, mainOuter, bodyHeight, headerRows,
 // adds the border on top) so its wrap point lands exactly at contentW. The
 // emulator, the PTY, and the box's text-wrap width must all agree, or every
 // full-width emulator row wraps and MaxHeight truncates the pane (the
-// fix-cycle-2 geometry blocker). Height: the box border rows plus one reserved
-// title line trim the height. Both are floored at 1 (termpane requires a
-// positive size).
+// fix-cycle-2 geometry blocker). Height: the box border rows plus the pane's
+// title strip (paneStripRows, the pane part's first inner row) trim the
+// height. Both are floored at 1 (termpane requires a positive size).
 func paneContentDims(outerW, outerH int) (cols, rows int) {
 	cols = outerW - 6 // 2 border + 2 padding + 2 (Width() includes padding; wrap at Width-2)
 	if cols < 1 {
 		cols = 1
 	}
-	rows = outerH - 3 // 2 border rows + 1 title line
+	rows = outerH - boxBorderCells - paneStripRows
 	if rows < 1 {
 		rows = 1
 	}
 	return cols, rows
 }
 
+// paneOuterWidth is the outer width the pane part is handed for a body
+// contentW cells wide: the body plus its cell of padding each side
+// (paneBody) plus the border. It is the box the screens drew before they used
+// the pane part (sizedBox(style, contentW+2, …), whose argument includes the
+// padding), so sidebarRenderedWidth and every geometry helper measured
+// against that box still hold.
+func paneOuterWidth(contentW int) int {
+	return contentW + 2 + boxBorderCells
+}
+
 // sidebarRenderedWidth returns how many cells the sidebar actually OCCUPIES for
 // a given sidebar outer width — which is where the pane box begins, since View
 // composes the body as JoinHorizontal(Top, list, main).
 //
-// It is sidebarContentWidth(outerW) + 4 — the content width plus theme.listBox's
-// 2 padding cells (renderList's sizedBox argument is contentW+2, since a
-// lipgloss block size INCLUDES padding) plus the 2 border cells sizedBox adds on
-// top. That equals outerW itself except when sidebarContentWidth's floor of 10
+// It is sidebarContentWidth(outerW) + 4 — the content width plus the 2 padding
+// cells the pane part lays around each row plus the 2 border cells
+// (paneOuterWidth). That equals outerW itself except when sidebarContentWidth's floor of 10
 // kicks in (outerW < 14), so it stays a call into the same arithmetic renderList
 // uses rather than becoming `return outerW`. Measured
 // lipgloss.Width(renderList(...)): outer 24 → 24, 28 → 28, 31 → 31, 35 → 35,
@@ -461,9 +511,11 @@ func sidebarRenderedWidth(outerW int) int {
 	return sidebarContentWidth(outerW) + 4
 }
 
-// paneTitleBlock renders the pane box's title line: the session name, a hint,
-// and nothing else, truncated to exactly one row. It is the ONE place a pane
-// title is produced, for both front ends.
+// paneTitleBlock renders afk attach's pane title line: the session name, a
+// hint, and nothing else, truncated to exactly one row. Until T16.1 it was the
+// one place a pane title was produced for both front ends; the dashboard now
+// draws its agent pane's title as the pane part's title strip (paneStrip),
+// and this stays as attach's title, byte for byte.
 //
 // The hint is a parameter rather than a `focused bool` because there are three
 // variants across two programs and only one of them is about focus: the
@@ -570,15 +622,36 @@ func (m Model) paneScreenGeometry() (originX, originY, cols, rows int) {
 	// one event per cell the pointer crosses.
 	cols, rows = paneContentDims(mainOuter, bodyHeight)
 
-	// The origin must be measured from the SAME title block renderPane draws,
-	// truncated to one row — a raw title reports Height 1 while the box wraps it
-	// onto two or three rows, which would put every event a row or more high.
-	// m.paneTitleHint() is the shared accessor renderPane uses, so the two cannot
-	// pick different hints and disagree about the title's width. cols IS
-	// renderPane's contentW: both come from paneContentDims(mainOuter, bodyHeight).
+	// The origin must be measured from the SAME title strip renderPane's pane
+	// draws (paneStrip), exactly one row — a raw title reports Height 1 while
+	// a box would wrap it onto two or three rows, which would put every event
+	// a row or more high. m.paneTitleHint() is the shared accessor renderPane
+	// uses, so the two cannot pick different hints and disagree about the
+	// strip's width. cols IS renderPane's contentW: both come from
+	// paneContentDims(mainOuter, bodyHeight).
 	originX, originY = paneContentOrigin(boxX, boxY,
-		paneTitleBlock(m.paneName, m.paneTitleHint(), cols))
+		paneStrip(m.paneName, m.paneTitleHint(), cols, m.paneOwnsKeyboard()))
 	return originX, originY, cols, rows
+}
+
+// paneStrip is the agent pane's title strip (§3.3) as the pane part draws it
+// on the pane's first inner row: "▶ name" on the left, the focus hint on the
+// right, accent while the agent has the keyboard. It spans the pane's whole
+// inner width (contentW plus the two padding cells) with its own cell of
+// padding, so "▶" stays in the column the emulator's rows start in.
+//
+// It stands in the row paneTitleBlock used to fill and keeps that row's
+// one-row contract, because paneContentOrigin reads its height to place the
+// emulator's first row; renderPane hands the pane part the same name and hint,
+// so the strip measured here is the strip drawn. paneTitleBlock itself stays
+// as it was: afk attach draws its own title with it.
+func paneStrip(name, hint string, contentW int, focused bool) string {
+	return theme.titleStrip(paneStripName(name), hint, paneOuterWidth(contentW)-boxBorderCells, focused)
+}
+
+// paneStripName is the agent pane's name as its strip shows it.
+func paneStripName(name string) string {
+	return "▶ " + name
 }
 
 // renderPane draws the embedded terminal pane inside a bordered box in the
@@ -588,23 +661,20 @@ func (m Model) paneScreenGeometry() (originX, originY, cols, rows int) {
 func (m Model) renderPane(outerW, outerH int) string {
 	contentW, _ := paneContentDims(outerW, outerH)
 
-	title := paneTitleBlock(m.paneName, m.paneTitleHint(), contentW)
 	screen := ""
 	if m.pane != nil {
 		screen = m.pane.Render()
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, title, screen)
 
-	// The block size excludes the border (sizedBox adds it back) and includes
-	// horizontal padding, so content wraps at width - 2 (paneBox has
-	// Padding(0,1)). Sizing at contentW+2 puts the wrap point exactly at
-	// contentW — the emulator/PTY width from paneContentDims — so a full-width
-	// emulator row never wraps, which would double the line count and let
-	// MaxHeight truncate the screen. Total outer width is contentW+2 plus the
-	// border cells.
-	return sizedBox(m.paneBoxStyle(), contentW+2, outerH-boxBorderCells).
-		MaxHeight(outerH).
-		Render(body)
+	// The pane part draws the title strip on the first inner row and lays the
+	// screen out at exactly contentW — the emulator/PTY width from
+	// paneContentDims — inside one cell of padding and the border, the
+	// geometry sizedBox(paneBox, contentW+2, …) gave, so a full-width emulator
+	// row neither wraps (which would double the line count) nor shifts the
+	// origin routeMouse computes. It cuts the screen to the rows under the
+	// strip, which is what MaxHeight used to bound.
+	return theme.pane(paneStripName(m.paneName), m.paneTitleHint(), screen,
+		paneOuterWidth(contentW), outerH, m.paneOwnsKeyboard())
 }
 
 // paneBoxStyle picks the pane border: accent while the child owns keyboard
@@ -622,7 +692,7 @@ func (m Model) paneBoxStyle() lipgloss.Style {
 // right focus, pane or overview, turns it neutral: two boxes must never
 // claim the keyboard at once (styles.go's accent convention doc).
 func (m Model) listBoxStyle() lipgloss.Style {
-	if m.formOpen || m.focus == focusRight {
+	if !m.listOwnsKeyboard() {
 		return theme.listBox
 	}
 	return theme.listBoxFocused
@@ -1258,7 +1328,10 @@ func headerLine(p headerPieces, width int) string {
 			minGap = 0
 		}
 		if gap := width - lipgloss.Width(c.l) - lipgloss.Width(c.r); gap >= minGap {
-			return c.l + strings.Repeat(" ", gap) + c.r
+			// The top bar (§3.1) lays the rung out: left at the start, right
+			// at the end, width cells in all. The rung already fits, so it
+			// cuts nothing.
+			return theme.topBar(c.l, c.r, width)
 		}
 	}
 	// Last resort: one piece, truncated. The staleness signal still comes
@@ -1438,8 +1511,18 @@ func (m Model) awaitingElsewhere() []otherProjectAwaiting {
 // returns bubbles' FullHelp while `?` is toggled (m.helpShowAll), which is
 // legitimately one row per binding. The invariant is that this function's
 // height is exactly renderHelp's — nothing is added to it.
+//
+// It is drawn as the status bar (§3.2): each row of the help is a status bar,
+// strip edge to edge, so the bar reads as one band across the bottom of the
+// screen. The help row is the bar's left half, where it has always started;
+// its words and keys are renderHelp's, unchanged, and already cut to the
+// width by bubbles/help.
 func (m Model) renderFooter() string {
-	return m.renderHelp()
+	rows := strings.Split(m.renderHelp(), "\n")
+	for i, r := range rows {
+		rows[i] = theme.statusBar(r, "", m.width)
+	}
+	return strings.Join(rows, "\n")
 }
 
 // spawnErrorDialog is the failed-background-create report. It is the only
@@ -1872,8 +1955,21 @@ func (k curatedKeyMap) FullHelp() [][]key.Binding { return [][]key.Binding{k.ful
 // output below: that can be legitimately multi-line (one row per binding),
 // and a single-line truncate would corrupt it rather than bound it.
 func renderModeHelp(km help.KeyMap, showAll bool, width int) string {
+	return renderModeHelpStyled(km, showAll, width, theme.helpStyles)
+}
+
+// renderStatusHelp is renderModeHelp for the status bar: the same line in
+// theme.statusHelpStyles, whose words are readable on the bar's strip fill.
+// renderHelp is its only caller; the overlays' help lines sit on the ground
+// and keep renderModeHelp.
+func renderStatusHelp(km help.KeyMap, showAll bool, width int) string {
+	return renderModeHelpStyled(km, showAll, width, theme.statusHelpStyles)
+}
+
+// renderModeHelpStyled is renderModeHelp with the help styles passed in.
+func renderModeHelpStyled(km help.KeyMap, showAll bool, width int, styles help.Styles) string {
 	h := help.New()
-	h.Styles = theme.helpStyles
+	h.Styles = styles
 	h.ShortSeparator = " · "
 	h.FullSeparator = " · "
 	h.ShowAll = showAll
@@ -1987,12 +2083,12 @@ func (m Model) renderHelp() string {
 		if m.restartKeyLive() {
 			short = append(short, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
 		}
-		return theme.helpLine.Render(spin + renderModeHelp(curatedKeyMap{short: short}, false, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(curatedKeyMap{short: short}, false, width))
 	case mode == inputPane:
 		km, prefix := m.renderPaneHelpKeyMap()
-		return theme.helpLine.Render(spin + prefix + renderModeHelp(km, false, width-lipgloss.Width(prefix)))
+		return theme.helpLine.Render(spin + prefix + renderStatusHelp(km, false, width-lipgloss.Width(prefix)))
 	case mode == inputNormal:
-		return theme.helpLine.Render(spin + renderModeHelp(m.renderNormalHelpKeyMap(), m.helpShowAll, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(m.renderNormalHelpKeyMap(), m.helpShowAll, width))
 	case mode == inputDetail:
 		// Restart is a leader entry that acts only on a stopped or wedged
 		// row, so it joins the line only there, on normal mode's
@@ -2006,25 +2102,25 @@ func (m Model) renderHelp() string {
 			})
 			bindings = slices.Insert(bindings, at+1, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
 		}
-		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: bindings}, false, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(modeKeyMap{bindings: bindings}, false, width))
 	case mode == inputInbox:
 		// The overlay has two screens with different keys, and the registry's
 		// keymap lists both. The line shows the ones for the screen that is
 		// up, read off the same bindings the overlay matches against.
-		return theme.helpLine.Render(spin + renderModeHelp(modeKeyMap{bindings: m.inbox.helpKeys()}, false, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(modeKeyMap{bindings: m.inbox.helpKeys()}, false, width))
 	case mode == inputPlanCheck:
 		// The registry's keymap is the whole surface; it is named here only
 		// so the overlay's line does not depend on the default arm's shape.
 		reg := m.modes()
-		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(inputPlanCheck).keys, false, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(reg.spec(inputPlanCheck).keys, false, width))
 	case mode == inputTaskTokens:
 		// Named for the plan check's reason: the line is the registry's
 		// keymap, whatever the default arm becomes.
 		reg := m.modes()
-		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(inputTaskTokens).keys, false, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(reg.spec(inputTaskTokens).keys, false, width))
 	default:
 		reg := m.modes()
-		return theme.helpLine.Render(spin + renderModeHelp(reg.spec(mode).keys, false, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(reg.spec(mode).keys, false, width))
 	}
 }
 
@@ -2130,32 +2226,46 @@ func (m Model) sessionListLabel() string {
 // width/height: a caption line naming the columns, then the list component's
 // windowed page of one-line rows.
 //
-// sizedBox's argument is the content-PLUS-padding size, not the box's usable
-// text width (the same contract renderPane's contentW+2 and renderSwitcher's
-// contentW+2 follow) — theme.listBox carries Padding(0, 1), so the padding is
-// 2 cells. Handing sizedBox the bare contentW would put the box's wrap point 2
-// columns inside the width every row is padded to, so each full-width row
-// would wrap inside its own box; contentW+2 puts the wrap point exactly at
-// contentW. sidebarRenderedWidth mirrors this arithmetic and must move with it.
+// The box is contentW wide inside one cell of padding on each side and the
+// border, the size sizedBox(theme.listBox, contentW+2, …) gives (a lipgloss
+// block size INCLUDES padding, so the wrap point lands exactly at contentW and
+// no full-width row wraps inside its own box). sidebarRenderedWidth mirrors
+// this arithmetic and must move with it.
 //
-// The label uses labelBordersStyled with theme.boxTitleStrong rather than
-// plain labelBorders: this box is the one place on the frame that says which
-// project you are looking at, now that the header no longer carries the
-// active project's name, so its title earns more visual weight than the
-// detail pane's or a modal's. No width arithmetic changes — paintEdge already
-// ANSI-truncates whatever label it is given to the room available.
+// The pane part draws the box: it lays the rows out at contentW inside one
+// cell of padding, the same geometry, and carries the selected row's fill out
+// to the border (§3.5).
+//
+// The pane's title strip (§3.3) is its first inner row: the project's name on
+// the left, since this box is the one place on the frame that says which
+// project you are looking at, and the paging hint on the right. The strip
+// takes a row from the list (listBodyRows; sizeSessionList sizes the stored
+// list from the same helper), and titleStrip cuts the name with "…" to the
+// room there is.
 func (m Model) renderList(outerW, outerH int) string {
 	contentW := sidebarContentWidth(outerW)
-
-	box := sizedBox(m.listBoxStyle(), contentW+2, outerH-boxBorderCells).
-		MaxHeight(outerH).
-		Render(m.renderRowsBody(contentW, outerH-boxBorderCells))
-	return labelBordersStyled(box, m.listBoxStyle(), m.sessionListLabel(),
-		m.listPagingHint(contentW, outerH-boxBorderCells), theme.boxTitleStrong)
+	rows := listBodyRows(outerH)
+	return theme.pane(m.sessionListLabel(), m.listPagingHint(contentW, rows),
+		m.renderRowsBody(contentW, rows), paneOuterWidth(contentW), outerH, m.listOwnsKeyboard())
 }
 
-// listPagingHint is the session box's bottom-edge hint: the page position and
-// the keys that move it, shown only when the list actually pages. It sizes a
+// listBodyRows is how many rows the session list's pane has under its title
+// strip for a pane outerH rows tall. renderList draws that many and
+// sizeSessionList (model.go) sizes the stored list from it, so the paging
+// keys move by the page the frame shows.
+func listBodyRows(outerH int) int {
+	return outerH - boxBorderCells - paneStripRows
+}
+
+// listOwnsKeyboard is listBoxStyle's question on its own: the list is focused
+// and no creation form is open. The list's border and its title strip both
+// follow it, so they cannot disagree.
+func (m Model) listOwnsKeyboard() bool {
+	return !m.formOpen && m.focus != focusRight
+}
+
+// listPagingHint is the context on the session box's title strip: the page
+// position and the keys that move it, shown only when the list actually pages. It sizes a
 // copy of the list exactly as renderRowsBody does so the page count it reports
 // is the one the rows are drawn from. The key names are literal because the
 // paging bindings are mode-local (newModeRegistry) and not on keyMap.
@@ -2257,30 +2367,50 @@ func displayName(s Session) string {
 	return s.Name
 }
 
-// hostRunningGlyph / hostStoppedGlyph are the row's host-liveness indicator:
-// a filled dot for a session whose `afk _host` is alive, a hollow one for a
-// stopped host. The indicator is independent of the phase badge on purpose —
-// status.json can still say "executing" long after the host died, and the
-// dot is what keeps that stale badge from reading as a live session.
-const (
-	hostRunningGlyph = "●"
-	hostStoppedGlyph = "○"
+// hostRunningGlyph / hostStoppedGlyph are the row's host-liveness glyphs for
+// a session still in its lifecycle: ◐ for a session whose `afk _host` is
+// alive, ○ for a stopped host. The column is independent of the phase word on
+// purpose — status.json can still say "executing" long after the host died,
+// and the glyph is what keeps that stale word from reading as a live session.
+//
+// Both come from stateLook (§3.6): a live host is ◐ running ("running" is one
+// of §3.6's working words), a stopped one is ○ quiet.
+var (
+	hostRunningGlyph = stateLook(stateSession, hostRunningState).glyph
+	hostStoppedGlyph = stateLook(stateSession, hostStoppedState).glyph
 )
 
-// hostIndicator renders the styled liveness dot for s. A pending placeholder
-// has no host yet, so it always gets the stopped (hollow, dim) form.
-//
-// A session the daemon paused for usage keeps the hollow dot, since its host
-// really is gone, but in the warning colour: the dim form says "stopped", and
-// this one is waiting for a usage window and will be started again.
+// hostIndicator is a session row's glyph: §3.6's look for the session, from
+// stateLook, the one mapping. A session that has ended says so whatever its
+// host is doing (✓ done, ✕ failed), as does a worktree fault (✕ BROKEN,
+// ● ORPHAN); a session still in its lifecycle shows its host's liveness, ◐
+// running or ○ stopped, which is what tells a live session from a stale
+// "executing" word. A usage pause is quiet (§3.6 lists paused with the quiet
+// states); the PHASE column beside it is what says PAUSED, in the warning
+// colour. A pending placeholder has no host yet, so it is quiet too.
 func hostIndicator(s Session) string {
-	if s.HostRunning && !s.Pending {
-		return theme.hostRunning.Render(hostRunningGlyph)
+	kind, value := sessionGlyphState(s)
+	return theme.renderGlyph(kind, value)
+}
+
+// sessionGlyphState is hostIndicator's choice of which §3.6 state a row's
+// glyph shows, in stateLook's terms, split out so the choice is a pure
+// function of the session with every branch a table row
+// (TestHostIndicatorUsesTheStateMapping).
+func sessionGlyphState(s Session) (stateKind, string) {
+	switch {
+	case s.Pending:
+		return stateSession, hostStoppedState
+	case isWorktreeFault(s.Kind):
+		return stateFault, faultBadgeLabel(s.Kind)
+	case !s.StatusStale && !s.Scratch && s.Phase.Terminal():
+		return stateSession, string(s.Phase)
+	case s.HostRunning:
+		return stateSession, hostRunningState
+	case usagePaused(s):
+		return stateSession, "paused"
 	}
-	if usagePaused(s) {
-		return theme.awaitingFlag.Render(hostStoppedGlyph)
-	}
-	return theme.hostStopped.Render(hostStoppedGlyph)
+	return stateSession, hostStoppedState
 }
 
 // showsAwaitingInput reports whether the row should draw the awaiting-input
@@ -2431,7 +2561,10 @@ func cell(s string, w int, align lipgloss.Position) string {
 // awaitingGlyph is the flag column's awaiting-input mark. It is the same dot
 // the project switcher draws for a project with a waiting session, so the two
 // surfaces say "needs you" the same way.
-const awaitingGlyph = "●"
+//
+// It is §3.6's needs-you glyph, read from stateLook so it cannot drift from
+// the mapping.
+var awaitingGlyph = stateLook(stateSession, awaitingInputState).glyph
 
 // autonomousGlyph marks a row whose session runs in autonomous mode (the
 // `.afk/{name}/autonomous` marker, surfaced as SessionState.Autonomous).
@@ -2444,8 +2577,7 @@ const awaitingGlyph = "●"
 // attention, so it must never compete with the wedged/awaiting flags.
 const autonomousGlyph = "↻"
 
-// cursorRail is the selected row's left edge: a half-block in the accent hue,
-// which reads as a continuous rail down the sidebar where the chevron it
+// cursorRail is the selected row's left edge: a half-block, which reads as a continuous rail down the sidebar where the chevron it
 // replaced read as one more piece of punctuation among the row's other glyphs
 // (the liveness dot, the awaiting dot, the wedged warning). It measures one
 // cell, so it fits rowMarkerCells' budget exactly as "›" did —
@@ -2457,9 +2589,13 @@ const cursorRail = "▌"
 // rowMarkerCells wide: the unselected row pays for the rail's cell in
 // whitespace so the two line up and the name column never shifts under the
 // cursor.
+//
+// The rail is plain: the only rows that draw it are selected ones, and the
+// row part redraws a selected row in sel-fg on sel (§3.5), so a colour given
+// here would be stripped before it reached the screen.
 func rowMarker(selected bool) string {
 	if selected {
-		return theme.rowCursor.Render(cursorRail) + " "
+		return cursorRail + " "
 	}
 	return "  "
 }
@@ -2582,23 +2718,21 @@ func taskCount(s Session) string {
 // shorter than the highlight bar, which is the switcher's W7.T1 defect (2)
 // replayed on this surface: the padded row was the only one ever exactly as
 // wide as the containing box's wrap point, so the wrap read as selection-only.
-// theme.rowNormal is a zero-value style (styles.go), so the unselected branch
-// changes only trailing whitespace, never how a row looks.
+// The unselected branch changes only trailing whitespace, never how a row
+// looks.
 //
 // composeRow already sums its cells to width, so in practice this only applies
-// the selection style; it stays as the invariant's owner in case a caller ever
-// hands it a shorter line. It cannot wrap: the line was truncated to width
-// first, and rowSelected/rowNormal carry no border or padding, so their wrap
-// point IS width.
+// the selection; it stays as the invariant's owner in case a caller ever
+// hands it a shorter line. It cannot wrap: the row part cuts the line to width
+// and adds no border or padding (the pane's padding is the row's).
 //
-// The selected branch goes through spanStyle (styles.go) because Render alone
-// paints the background as far as the row's first inner reset and no further,
-// which on a session row is the host dot.
+// Both branches are the row part (§3.5). A selected row is redrawn from its
+// plain text in sel-fg on sel, filled edge to edge, so every word on it —
+// the state glyph, the PHASE colour, the flag glyph — turns sel-fg and the
+// fill always reads; the flag keeps its glyph, which is what still tells
+// awaiting (●) from wedged (⚠) and autonomous (↻) on the selection.
 func padSessionRow(line string, selected bool, width int) string {
-	if selected {
-		return theme.rowSelected.Width(width).Render(spanStyle(line, theme.rowSelected))
-	}
-	return theme.rowNormal.Width(width).Render(line)
+	return theme.row(line, width, selected, "")
 }
 
 // renderPendingRow renders the placeholder row for a session whose background
@@ -2663,12 +2797,17 @@ func renderFaultRow(s Session, selected bool, width int, marker string, l rowLay
 // (model.go) sizes the Model's viewport — the one the scroll keys move — from
 // the same two helpers. See detailRowBudget's doc for what happens when the
 // two sides disagree by even one row.
+//
+// The title is the pane's title strip (§3.3), its first inner row, accent
+// while the box has the keyboard; detailRowBudget gives the body the rows
+// under it. The keys stay on the bottom edge (labelBorders), drawn in
+// detailBoxStyle, whose border glyphs and colour are the pane's for the same
+// focus (both rounded, line or accent by detailOwnsKeyboard).
 func (m Model) renderDetail(outerW, outerH int) string {
 	contentW := detailContentWidth(outerW)
-	style := m.detailBoxStyle()
-	box := m.boxDetailBody(m.detailBody(contentW), contentW, outerH, style)
 	title, hint := m.detailBoxLabels()
-	return labelBorders(box, style, title, hint)
+	box := m.boxDetailBody(m.detailBody(contentW), contentW, outerH, title, m.detailOwnsKeyboard())
+	return labelBorders(box, m.detailBoxStyle(), "", hint)
 }
 
 // detailBoxLabels is the detail box's edge text: the selected session's
@@ -2753,8 +2892,9 @@ func detailContentWidth(outerW int) int {
 
 // detailRowBudget decides how many rows of body the detail box shows and
 // whether its last inner row is given to the scroll readout, for a box outerH
-// rows tall (border included — theme.detailBox has horizontal padding only, so
-// boxBorderCells is the whole vertical overhead) holding totalLines of body.
+// rows tall (border included — the pane part has horizontal padding only, so
+// the border and the title strip, paneStripRows, are the whole vertical
+// overhead) holding totalLines of body.
 // The readout row is reserved ONLY when the body overflows: when it fits there
 // is nothing to report and the row is worth more as content. A one-row box
 // never reserves it, since a readout with no content above it says nothing.
@@ -2770,7 +2910,7 @@ func detailContentWidth(outerW int) int {
 // bodyHeight (the box's OUTER height) while the frame drew bodyHeight-3 rows,
 // so the readout stalled at 97% and the final panel line never appeared.
 func detailRowBudget(outerH, totalLines int) (rows int, readout bool) {
-	innerH := outerH - boxBorderCells
+	innerH := outerH - boxBorderCells - paneStripRows
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -2913,7 +3053,7 @@ func rowNotice(leader string, s Session, ok bool) string {
 		// the worktree by hand before pressing `c`.
 		b.WriteString(theme.sessionName.Render(s.Name))
 		b.WriteString("  ")
-		b.WriteString(theme.faultBadge(faultBadgeLabel(s.Kind)))
+		b.WriteString(theme.renderState(stateFault, faultBadgeLabel(s.Kind)))
 		b.WriteString("\n")
 		b.WriteString(theme.staleText.Render(s.Reason))
 		b.WriteString("\n\n")
@@ -3095,7 +3235,8 @@ func (overviewPanel) Render(ctx panelContext, width int) []string {
 	if s.StatusStale {
 		out = append(out, theme.staleText.Render("status.json is stale: "+string(s.StaleReason)))
 	} else {
-		meta := theme.phaseBadge(sessionPhaseKey(s))
+		// The phase as §3.6 draws a state: its glyph and word in its colour.
+		meta := theme.renderState(stateSession, sessionPhaseKey(s))
 		// A session paused for usage says so straight after the phase, ahead
 		// of the loop count and the update time. The line is cut at the pane's
 		// width, and on a default terminal that cut used to land inside the
@@ -3105,7 +3246,7 @@ func (overviewPanel) Render(ctx panelContext, width int) []string {
 		// send the owner looking for a fault that is not there.
 		paused := usagePaused(s)
 		if paused {
-			meta += "  " + hostIndicator(s) + theme.awaitingFlag.Render(" "+usagePausedText(s))
+			meta += "  " + theme.renderGlyph(stateSession, "paused") + theme.awaitingFlag.Render(" "+usagePausedText(s))
 		}
 		if s.LoopCount > 0 {
 			meta += theme.dim.Render(fmt.Sprintf("  loop %d", s.LoopCount))
@@ -3113,12 +3254,16 @@ func (overviewPanel) Render(ctx panelContext, width int) []string {
 		if s.UpdatedAt != "" {
 			meta += theme.dim.Render("  updated " + s.UpdatedAt)
 		}
+		// The host's own glyph, not the row's (hostIndicator): the phase at
+		// the head of this line already says done or failed, and this part
+		// says only whether the host process is alive — ◐ running (one of
+		// §3.6's working words) or ○ stopped.
 		switch {
 		case paused:
 		case s.HostRunning:
-			meta += "  " + hostIndicator(s) + theme.dim.Render(" host running")
+			meta += "  " + theme.renderGlyph(stateSession, hostRunningState) + theme.dim.Render(" host running")
 		default:
-			meta += "  " + hostIndicator(s) + theme.dim.Render(" host stopped")
+			meta += "  " + theme.renderGlyph(stateSession, hostStoppedState) + theme.dim.Render(" host stopped")
 		}
 		if age, ok := showsWedged(s, ctx.Now); ok {
 			meta += "  " + theme.errorText.Render(wedgedGlyph+" wedged "+durationShort(age))
@@ -3394,13 +3539,11 @@ func stackPath(branches []spice.Branch, name string) string {
 	return strings.Join(chain, " › ")
 }
 
-// boxDetailBody bounds body to the rows style has room for and only then
-// draws the box, so the box is always asked for exactly the height it was
-// given — see renderDetail's doc for why the reverse order loses the bottom
-// border. style is renderDetail's m.detailBoxStyle() result (theme.detailBox
-// or theme.detailBoxFocused, per W3.T1): both are Padding(0, 1) with the same
-// border glyphs, so passing either through changes only the border's color,
-// never this function's arithmetic.
+// boxDetailBody bounds body to the rows the pane has room for and only then
+// draws the pane (title in its strip, accent when focused), so the box is
+// always asked for exactly the height it was given — see renderDetail's doc
+// for why the reverse order loses the bottom border. focused changes only the
+// border's and the strip's colour, never this function's arithmetic.
 //
 // The bounding is m.detailViewport's, on a value copy (renderDetail's doc: View
 // may not mutate the Model). Two of its behaviours are load-bearing here and
@@ -3418,7 +3561,7 @@ func stackPath(branches []spice.Branch, name string) string {
 // Model's viewport holds (SoftWrap off makes TotalLineCount width-independent:
 // calculateLine returns len(lines)), so this copy's Height equals the Model
 // viewport's Height and the offset the keys reached is the offset drawn here.
-func (m Model) boxDetailBody(body string, contentW, outerH int, style lipgloss.Style) string {
+func (m Model) boxDetailBody(body string, contentW, outerH int, title string, focused bool) string {
 	vp := m.detailViewport
 	vp.SetWidth(contentW)
 	vp.SetContent(body)
@@ -3437,7 +3580,11 @@ func (m Model) boxDetailBody(body string, contentW, outerH int, style lipgloss.S
 		block = lipgloss.JoinVertical(lipgloss.Left, block, scrollReadout(vp.ScrollPercent(), contentW))
 		innerH++
 	}
-	return sizedBox(style, contentW+2, innerH).Render(block)
+	// The pane part is sizedBox(detailBox, contentW+2, innerH) cell for cell
+	// plus the title strip's row, with the interior painted panel and a
+	// selected row's fill (the Build tab's cursor) carried to the border.
+	return theme.pane(title, "", block, paneOuterWidth(contentW),
+		innerH+paneStripRows+boxBorderCells, focused)
 }
 
 // scrollReadout renders the detail pane's position indicator — a right-aligned

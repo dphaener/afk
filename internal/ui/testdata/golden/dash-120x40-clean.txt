@@ -1,26 +1,27 @@
- afk Dashboard 
-╭─ Sessions ────────────────────────────────╮╭─ feat-auth ─────────────────────────────────────────────────────────────╮
+ afk Dashboard                                                                                                          
+╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                  ││ feat-auth                                                               │
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
 │                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
-│   ● Billing v2          REVIEWING   7/7   ││  executing   loop 3  updated 2026-07-10T00:00:00Z  ● host running       │
-│   ● fix-login-redirect  PLANNING      – ● ││                                                                         │
-│   ○ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
-│   ● scratch-1           SCRATCH       –   ││                                                                         │
-│   ○ old-migration       BROKEN        –   ││ Progress  █████████░░░░░░░░░░░ 3/7                                      │
+│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
+│   ◐ Billing v2          REVIEWING   7/7   ││ ◐ executing  loop 3  updated 2026-07-10T00:00:00Z  ◐ host running       │
+│   ◐ fix-login-redirect  PLANNING      – ● ││                                                                         │
+│   ✓ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
+│   ◐ scratch-1           SCRATCH       –   ││                                                                         │
+│   ✕ old-migration       BROKEN        –   ││ Progress  █████████░░░░░░░░░░░ 3/7                                      │
 │                                           ││ Diff      +412/-88 · 9 file(s) vs main                                  │
 │                                           ││ Verdict   — not reviewed yet                                            │
 │                                           ││                                                                         │
 │                                           ││ Ready (4)                                                               │
 │                                           ││   ○ W2.T1 Migrate legacy sessions                                       │
 │                                           ││   ○ W2.T2 Add logout endpoint                                           │
-│                                           ││   ○ W2.T3 Rotate refresh tokens                                         │
 │                     ╭─ Clean session ──────────────────────────────────────────────────────────╮                     │
 │                     │                                                                          │                     │
 │                     │ Clean session "feat-auth" (phase: executing) — branch not merged to main │                     │
 │                     │ Worktree goes; archive kept.                                             │                     │
 │                     │                                                                          │                     │
-│                     ╰─────────────────────────── y: clean · d: +delete branch · n/esc: cancel ─╯re dropping          │
+│                     ╰─────────────────────────── y: clean · d: +delete branch · n/esc: cancel ─╯                     │
+│                                           ││   legacy_sessions has no FK to users — confirm before dropping          │
 │                                           ││   rate limiter test flaky under -race                                   │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
@@ -35,6 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-│                                           ││                                                                         │
 ╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
-y clean · d +delete branch · d delete anyway · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit
+y clean · d +delete branch · d delete anyway · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit               

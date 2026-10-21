@@ -56,8 +56,10 @@ import (
 // have run. Measured with a 33-character session name, the dashboard's real
 // content-origin Y is 3 at 80x24 but 4 at 90x24 and 5 at 60x20, while
 // 1+Height(rawTitle) says 3 every time. That is why this function must be
-// handed the already-truncated block from paneTitleBlock and never a raw title:
-// truncation, not measurement, is what makes the formula true. The
+// handed an already-cut one-row block — the dashboard's title strip
+// (paneStrip, the pane part's first inner row since T16.1) or afk attach's
+// paneTitleBlock — and never a raw title: cutting, not measurement, is what
+// makes the formula true. The
 // lipgloss.Height call stays instead of a hardcoded 1 so the function remains
 // correct if the block ever legitimately grows a line.
 func paneContentOrigin(boxX, boxY int, titleBlock string) (x, y int) {

@@ -4039,3 +4039,25 @@ T15.10 sets the installed app's splash screen and title bar colours (the manifes
 ### What is still open
 
 Nothing.
+
+## T16.1
+
+T16.1 gives `afk dash` the four colour themes of `docs/dash-design.md`, the drawing parts of its §3, and dimming under every overlay, without changing any key, word or layout.
+
+### What this task decided, and why
+
+- **The themes live beside the old colours (A1).** `internal/palette` gets a `Theme` with the design's 17 tokens and the four themes. The old dark and light `Scheme` stays, because the terminal prompts, `afk clean` and `afk install` still use it.
+- **Every dashboard colour comes from a token (A2).** Each existing style takes the token that matches its meaning, and session phases and faults take their colour from the one state mapping of §3.6.
+- **The ground is painted on the finished frame (A3).** A pass over the rendered screen fills every cell that has no background of its own with `bg` (and `panel` inside panes). Filling the text as it is built does not work, because every colour reset inside a line clears the background. On a 16-colour terminal nothing is painted.
+- **The colour depth is detected once, in `afk dash` (A4),** and handed to the dashboard, so the dashboard's code and tests stay free of the terminal.
+- **The theme setting works like the leader setting (A5).** A value that is not text in quotes is a `[dash]` error. An unknown name is reported in the same error toast and `tide` is drawn. A set theme stays put; unset, the dashboard follows the terminal's background.
+- **Dimming is one function over the frame (A6).** It turns a cell with no colour into `fg` on `bg`, moves both colours 70% of the way to `bg` and turns bold off; on 16 colours it uses faint instead. Every dialog and overlay dims what is under it; toasts do not.
+- **A selected row is redrawn from its plain words (A7)** so every word on it turns `sel-fg`, as the design asks.
+  - *As built:* the session list's and the all-projects screen's selected rows go through the `row` part: the row is redrawn from its plain text in `sel-fg` on `sel`, filled out to the border, and every word on it turns `sel-fg`, the state glyph, the PHASE colour and the flag glyphs (waiting, wedged, autonomous) included. The flag keeps its glyph, which still tells waiting (`●`) from wedged (`⚠`) and autonomous (`↻`); its colour shows on every row the cursor is not on.
+- **No words move (A8).** The header keeps its words and narrowing order and is restyled as the top bar; the footer keeps its keys as the status bar; pane titles move into title strips.
+  - *As built:* every pane on today's screens (the session list, the detail box, the agent pane and its placeholder, the all-projects screen) is drawn by the `pane` part, with its title strip as its own first inner row under the top border. The agent pane's old in-body title row became its strip, so its emulator keeps its rows; the session list, the detail box and the all-projects screen give one body row to the strip, and every helper that sizes them follows (`listBodyRows` for the list and its paging keys, `detailRowBudget` for the detail scroll, `allProjectsBox` for the all-projects page, `paneContentDims` and `paneStrip` for the agent pane's size and mouse origin). When a strip is short of room, its context (a paging or focus hint) gives way before its name is cut. The header and the footer are drawn by the `topBar` and `statusBar` parts; the help line is the status bar's left half, so its words keep their columns.
+  - A session row's glyph is its §3.6 state from the one mapping: `✓` done and `✕` failed whatever the host is doing, `✕` BROKEN and `●` ORPHAN for the worktree faults, and otherwise the host's liveness, `◐` running (one of §3.6's working words) or `○` stopped, paused or still being created. The detail header's host part keeps `◐ host running` / `○ host stopped`, the host's own state. Every word on screen is unchanged; rows at the bottom of a list or the detail box move one row down, behind the strip.
+  - A dialog opened over another overlay dims the screen once: the overlay's box under the dialog is dimmed, and the screen under both keeps the one dim it already has (`composeModalOver`).
+- **Tests first for the pure parts; the saved screens are regenerated (A9).** Nothing had to be in place first (A10). The key strip's lighter dimming is only a constant until T16.2 builds the strip (A11).
+- **The scratch badge in `afk clean` keeps its `Scheme` colours; the drift test now guards only the word.** The dashboard draws its scratch badge from its theme, and `clean.go` is not changed by this task, so the two surfaces no longer share colours. `TestScratchPhaseIdentityMatchesInternalUI` keeps checking that `afk clean` and the dashboard show the same word for a one-off session and no longer compares the badge colours.
+- **This section and the new `CONTEXT.md` terms belong to the change.**

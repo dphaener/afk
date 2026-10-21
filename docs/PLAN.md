@@ -520,6 +520,7 @@ returns it as the load error, so the daemon and every other reader of the file a
 dashboard's folder search reports it, in a toast that names the file and the key. The sentence about a
 separate `config.json` in the T2.1 amendment no longer holds: `config.json` is no longer read, and
 `afk dash` says once per start what to move.
+Amended 2026-10-21 (T16.1): [dash] also reads theme (tide, fjord, paper or phosphor; unset means tide on a dark terminal and paper on a light one). A value of the wrong kind lands in DashErr; an unknown name is reported by the dashboard in the [dash] toast and tide is used. Read once at start.
 
 ### 4.7 Token ledger — `.afk/log/tokens.jsonl` (new; append-only)
 
@@ -4081,6 +4082,7 @@ update flag and rewrites the parts of `docs/dashboard.md` it changes.
     `theme = "paper"` in a scratch `config.toml` shows `paper`'s background; `theme = "nope"` raises
     the toast and draws `tide`.
   - `make check` is green.
+Amended 2026-10-21 (T16.1 done): the dashboard's colours come from `palette.Theme` tokens (`internal/palette/theme.go`); the §3 parts are `styleSet` methods in `internal/ui/parts.go` (`topBar`, `statusBar`, `pane`, `row`, `stateLook`, …, with `section`, `readOnlyPane`, `groupHeading`, `progressBar`, `band`, `keyChip` and `alertBar` built but not yet on a screen); a pane's title strip is its first inner row, so pane bodies are one row shorter; `composeModal` takes the colour profile and dims, and `composeModalOver` keeps a dialog over an overlay to one dim; a selected row is drawn by `row`, every word `sel-fg`; `afk clean` keeps its `Scheme` colours, so its scratch-badge drift test now checks only the word.
 
 #### T16.2 — Three levels, and keys that work alone
 - **Depends on:** T16.1
