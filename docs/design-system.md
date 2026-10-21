@@ -862,22 +862,25 @@ indicator turns `live--offline` and the last data stays on screen.
 
 ### App icon
 A paper crescent (`#F6F5F1`) on the ink ground (`#1C1B18`), with afk's blue working dot (`#8AB4FF`):
-the build runs while you're away. Files, served from the site root:
+the build runs while you're away. The files live in `internal/web/static/icons/` (T15.1) and nothing
+else goes in that folder:
 
 | File | Size | Use |
 |---|---|---|
-| `icon.svg` | vector | favicon in modern browsers |
-| `favicon.ico` | 16, 32, 48 | older browsers |
-| `apple-touch-icon.png` | 180 | iPhone home screen (square; iOS rounds it) |
-| `icon-192.png`, `icon-512.png` | 192, 512 | Android and installed web app |
-| `icon-maskable-512.png` | 512 | Android adaptive icon (content inside the 80% safe zone) |
-| `site.webmanifest` | | names the icons, theme colour `#1C1B18` |
+| `favicon.svg` | vector | the browser tab, sharp at every size |
+| `favicon-32.png` | 32 | the browser tab where the SVG is not used |
+| `apple-touch-icon.png` | 180, no transparency | iPhone and iPad home screen (square; iOS rounds it) |
+| `icon-192.png`, `icon-512.png` | 192, 512 | Android and desktop installs; `icon-512.png` is also the macOS toast icon |
+| `icon-maskable-512.png` | 512 | Android adaptive icon (artwork inside the middle 80%, a circle 410px across) |
+
+The page serves them with its other static files and makes the web app manifest itself (T15.2): name
+`afk`, `display` `standalone`, the three app icons with `purpose` `maskable` on the maskable one, and
+`theme_color` and `background_color` `#1C1B18`. `layout.html` links the favicon (`favicon.svg`, falling
+back to `favicon-32.png`), the manifest and `apple-touch-icon`, and sets `theme-color` per scheme:
 
 ```html
-<link rel="icon" href="/favicon.ico" sizes="48x48">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="manifest" href="/site.webmanifest">
 <meta name="theme-color" content="#F6F5F1" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#141412" media="(prefers-color-scheme: dark)">
 ```
+
+The icons, the manifest and the service worker are served without sign-in; nothing else is.
