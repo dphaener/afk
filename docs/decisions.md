@@ -4023,3 +4023,19 @@ T15.8 removes ntfy: its sender, its `[notify] ntfy_url` setting and its docs. We
 - **"afk cannot run this project" is now inbox-only (A6).** It is a non-blocking item, so under the M15 rule (notify only what blocks) it was ntfy-only, and with ntfy gone no phone hears of it. The owner was asked about it in T15.7's inbox question; if the answer is yes, a later task makes it push.
 - **ntfy goes from every current doc (A7).** That includes `docs/runbook-vm.md`, `CONTEXT.md`, the plugin README and a `.gitignore` comment, beyond the task's list. Earlier entries in this file and earlier task text in `docs/PLAN.md` are history and stay.
 - **This section belongs to the change (A8).**
+
+## T15.10
+
+T15.10 sets the installed app's splash screen and title bar colours (the manifest's `theme_color` and `background_color`) to the icon's ink ground `#1C1B18`.
+
+### What this task decided, and why
+
+- **It replaces T15.2's A7.** The manifest colours are the icon's ink ground `#1C1B18`, from the design system's App icon section, not the light page ground `#F6F5F1`. The owner's choice is that colour is the design system's call.
+- **The `theme-color` tags stay.** The two per-scheme tags in `layout.html` still follow the page's own light and dark grounds; the icons and every other manifest field are unchanged.
+- **The existing test rows changed (A1).** The `theme_color` and `background_color` rows of `TestManifest`'s field table want the new colour; no new test was added.
+- **Tests first; nothing had to be in place first (A2, A3).** The rows were changed and seen to fail before `appColor` changed; T15.2 is merged.
+- **This section belongs to the change (A4).**
+
+### What is still open
+
+Nothing.

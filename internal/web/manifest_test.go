@@ -194,8 +194,8 @@ func TestManifest(t *testing.T) {
 		{"start_url", m.StartURL, "/"},
 		{"scope", m.Scope, "/"},
 		{"display", m.Display, "standalone"},
-		{"theme_color", m.ThemeColor, "#F6F5F1"},
-		{"background_color", m.BackgroundColor, "#F6F5F1"},
+		{"theme_color", m.ThemeColor, "#1C1B18"},
+		{"background_color", m.BackgroundColor, "#1C1B18"},
 	}
 	for _, f := range fields {
 		t.Run(f.name, func(t *testing.T) {

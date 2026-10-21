@@ -4027,6 +4027,7 @@ and the things that block on them arrive as native notifications from it; ntfy i
   - `make check` green.
   - Against a built binary with a scratch password: `curl` of `/manifest.webmanifest` shows both colours
     as `#1C1B18`, and headless Chrome still reports the page installable.
+- Amended 2026-10-21 (T15.10 done): `appColor` in `internal/web/manifest.go` is `#1C1B18` and feeds both manifest colours; `TestManifest`'s field table pins them. The `theme-color` tags in `layout.html` still give `#F6F5F1` (light) and `#141412` (dark). Nothing else changed for later tasks; T15.9 can check the dark splash and title bar on devices. See `## T15.10` in `docs/decisions.md`.
 
 ### M16 — The dashboard, redesigned
 
