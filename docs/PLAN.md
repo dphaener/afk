@@ -3785,8 +3785,9 @@ and the things that block on them arrive as native notifications from it; ntfy i
     task's choice, recorded in `docs/decisions.md` under `## T15.2`.
   - `docs/web.md`: a section on installing the page on a phone and a computer, with the iPhone steps
     (Share, Add to Home Screen) and that installing needs an `https://` address.
-- **Must not:** cache pages or API answers in the service worker; serve anything but the manifest,
-  the icons and `/sw.js` without sign-in.
+- **Must not:** cache pages or API answers in the service worker; make any path that needs sign-in
+  today reachable without it, beyond the manifest, the icons and `/sw.js` (the sign-in form's two
+  stylesheets stay served without sign-in, as T8.5 left them).
 - **Acceptance:**
   - Table tests in `internal/web`: the manifest, each icon and `/sw.js` answer 200 with the right
     content type with no cookie; a page and `/api/...` still answer the sign-in form and 401 with no
