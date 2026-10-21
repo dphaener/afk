@@ -229,3 +229,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Fix task**: a master-plan task whose title carries `(fix)` or `(fix; …)`, added by a bug-fix planning session; the daemon builds a ready one ahead of every other ready task, and a task may not be both a fix task and an owner task.
 - **Fix mode**: the fifth planning mode, `afk plan fix "what is broken"`: a change session that reproduces a bug, finds its cause and adds one fix task to the plan, and changes no code itself.
 - **Fixes milestone**: the standing milestone titled exactly `Fixes` that holds every fix task; the first `afk plan fix` creates it, and later fixes are added at its end.
+- **Web push**: a notification the push service of a browser (Google's, Mozilla's, Apple's) delivers to a device that signed up for it, encrypted so only that browser can read it; afk sends it straight from the daemon, with no app store and no third-party account.
+- **Push subscription**: what a browser hands the page when it signs up for web push: an endpoint address at its push service and two keys (`p256dh` and `auth`) used to encrypt messages for it.
+- **VAPID key**: afk's own key pair that signs every push it sends, so the push service knows the pushes come from the same server the browser signed up with; afk makes it the first time and keeps it in `push-key.json`.
+- **Device list**: `push-devices.json`, every push subscription signed up on this machine, with a label naming the browser and system.
