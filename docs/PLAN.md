@@ -3326,6 +3326,18 @@ T8.18 password ──────────┘
   `afk install` and the web page; on the Mac, the daemon running after a reboot; every problem noted is
   a task in the plan.
 
+#### T11.7 — Choose the sandbox for a Mac (owner + agent)
+- **Depends on:** T11.6
+- **Goal:** a recorded decision on how afk's unattended agents are sandboxed when the owner's machine is a Mac, chosen from a hands-on trial of four options, with the follow-up work named.
+- **Background:** the owner asked on 2026-10-20: "Using multi pass on macOS may not have been the best choice. It works but we now have to copy all the code into the van, set everything up, etc. the web ui for afk (and for any web apps running inside the vm) aren’t reachable without some sort of bridge (currently that isn’t set up so the web ui is not reachable). Really we only need a secure sandbox for the agent to work in unattended. Let’s explore our options." The §2 rows "Where afk runs, and installing it" and "Permissions" make a machine set aside for afk (a Multipass VM on a laptop among them) the sandbox, and set Docker aside on 2026-10-17. The daemon's agents run on the Linux VM and cannot try a macOS option themselves, so the owner runs the trial on the Mac.
+- **Scope:**
+  1. The agent writes `docs/sandbox-trial.md`: for each option, the exact steps to set it up on a Mac with one afk project, and the same checks to run on each. The options: (a) the agent CLI's own OS sandbox on the Mac itself, with no VM, run with permissions bypassed; (b) a VM with folder sharing and port forwarding built in (Lima, and OrbStack); (c) Multipass with the gaps fixed (`multipass mount` of the project folder, the web page on every address or Tailscale, a port forward for a project's web app); (d) a container or devcontainer, reopening the option set aside on 2026-10-17. Every claim in the steps about what a tool does comes from that tool's own documentation, cited; nothing is assumed.
+  2. The checks, the same for each option: what an agent can reach outside the project (the home folder, `~/.ssh`, the keychain, other projects, the network); whether the project's code needs copying or setting up again; whether afk's web page and a web app the project runs open in the Mac's browser and on the phone; whether the project's own tools (a database, a browser for system tests) run; whether a task runs unattended start to finish with permissions bypassed; whether the daemon runs as a service and survives a reboot; and the cost or licence.
+  3. The owner runs the steps on the Mac and answers the inbox item with what each check showed.
+  4. The agent records the results as a table under `## T11.7` in `docs/decisions.md`, the option chosen and why, and the follow-up as plain lines for the owner to start with `afk plan extend` or `afk plan amend` (for example changes to `afk install`, `docs/install.md` and the §2 rows). It adds an Amended line to the §2 row "Where afk runs, and installing it" only when the choice changes it.
+- **Must not:** change `afk install`, the daemon or any code; build the chosen option (that is the follow-up); run an agent with permissions bypassed on the owner's Mac outside the trial's steps; put a secret in any file.
+- **Acceptance:** `docs/sandbox-trial.md` exists with steps and checks for all four options, each tool claim cited; `docs/decisions.md` has `## T11.7` with every check's result for every option, the choice and its reason, and the follow-up lines; `make check` is green.
+
 ### M12 — Releases publish themselves
 
 **Outcome:** every merge to `main` that changes the binary publishes a GitHub release on its own, the
