@@ -24,7 +24,6 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
-	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/planlint"
 	"github.com/dphaener/afk/internal/planpatch"
 	"github.com/dphaener/afk/internal/projectconfig"
@@ -67,8 +66,6 @@ type daemonRig struct {
 	// stderr and stdout are what the last runDaemon wrote to them, for a
 	// row's check.
 	stderr, stdout string
-	// publicURLs is the web page address each newDeps call was handed.
-	publicURLs []string
 	// listens are the addresses the fake "open the web page's port" was asked
 	// for, and listeners what it handed back, in order. listenErr, when set,
 	// is its answer instead. No row opens a real port.
@@ -157,10 +154,9 @@ func (r *daemonRig) env() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: func(int) bool { return r.alive },
-		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, _ func() []daemon.Project, log func(string, ...any)) daemon.Deps {
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, _ func() []daemon.Project, log func(string, ...any)) daemon.Deps {
 			r.providers = append(r.providers, providerName)
 			r.governors = append(r.governors, gov)
-			r.publicURLs = append(r.publicURLs, publicURL)
 			return daemon.Deps{
 				Now: func() time.Time { return daemonTestNow },
 				LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {
@@ -961,10 +957,6 @@ func TestRunDaemonWeb(t *testing.T) {
 				if !r.listeners[0].isClosed() {
 					t.Error("the listener is still open after the daemon returned")
 				}
-				// The trailing slash of public_url is the config's to drop.
-				if len(r.publicURLs) != 1 || r.publicURLs[0] != "https://afk.example" {
-					t.Errorf("the loop's deps were built with public address %q, want https://afk.example", r.publicURLs)
-				}
 			},
 		},
 		{
@@ -1010,10 +1002,6 @@ func TestRunDaemonWeb(t *testing.T) {
 			check: func(t *testing.T, r *daemonRig) {
 				if n := strings.Count(r.stderr, "web page: off"); n != 1 {
 					t.Errorf("the log says the page is off %d times, want once", n)
-				}
-				// No page, so no link: an address alone would lead nowhere.
-				if len(r.publicURLs) != 1 || r.publicURLs[0] != "" {
-					t.Errorf("the loop's deps were built with public address %q, want none", r.publicURLs)
 				}
 			},
 		},
@@ -1873,128 +1861,16 @@ func TestDaemonPreflight(t *testing.T) {
 	}
 }
 
-// TestDaemonNotifier pins who gets a push notification from the daemon, with
-// a fake sender: nothing here reaches a network.
-//
-// Load-bearing rows: "send fails" and "config unreadable" (a notification
-// must never fail a pass; the only trace is a warning in the log, and the
-// warning must not repeat the address, which works as a password); "no
-// address" (most projects have none, and that is silence, not a warning); and
-// the three "with the web page" rows against the rows above them, which send
-// the same message with no link: the link is there only when the page has a
-// public address, it opens the item (or, for the one notification with no
-// item, the project), and it holds no query string, so never the token.
-func TestDaemonNotifier(t *testing.T) {
-	const public = "https://afk.example"
-	const url = "https://user:secret@ntfy.example/topic"
-	item := inbox.Item{ID: "a1b2", Task: "T1.1", Kind: "failure", Blocking: true, Title: "It broke", Body: "Details."}
-	quiet := inbox.Item{ID: "c3d4", Kind: "notice", Title: "FYI"}
-	tests := []struct {
-		name    string
-		url     string
-		public  string
-		cfgErr  error
-		sendErr error
-		call    func(n daemonNotifier)
-		want    *notify.NtfyMessage
-		logHas  string
-	}{
-		{name: "item", url: url, call: func(n daemonNotifier) { n.item(daemon.Project{Name: "demo", Root: "/p"}, item) },
-			want: &notify.NtfyMessage{Title: "afk: It broke", Body: "Details.\n\nafk inbox show a1b2 (T1.1)", Priority: 5}},
-		{name: "item that does not notify", url: url, call: func(n daemonNotifier) { n.item(daemon.Project{Name: "demo", Root: "/p"}, quiet) }},
-		{name: "no address", call: func(n daemonNotifier) { n.item(daemon.Project{Name: "demo", Root: "/p"}, item) }},
-		{name: "idle", url: url, call: func(n daemonNotifier) {
-			n.idle(daemon.Project{Name: "demo", Root: "/p"}, "demo is waiting on you", "waiting on owner: T1.1 parked")
-		},
-			want: &notify.NtfyMessage{Title: "afk: demo is waiting on you", Body: "waiting on owner: T1.1 parked", Priority: 3}},
-		{name: "urgent, for an item that is not blocking", url: url, call: func(n daemonNotifier) {
-			n.urgent(daemon.Project{Name: "demo", Root: "/p"}, inbox.Item{ID: "e5f6", Task: "T1.1", Kind: "failure", Title: "The line is stopped after T1.1", Body: "Check the deploy."})
-		},
-			want: &notify.NtfyMessage{Title: "afk: The line is stopped after T1.1", Body: "Check the deploy.\n\nafk inbox show e5f6 (T1.1)", Priority: 5}},
-		{name: "urgent, for a kind that would not notify", url: url, call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, quiet) },
-			want: &notify.NtfyMessage{Title: "afk: FYI", Body: "afk inbox show c3d4", Priority: 5}},
-		{name: "item, with the web page", url: url, public: public, call: func(n daemonNotifier) { n.item(daemon.Project{Name: "my app", Root: "/p"}, item) },
-			want: &notify.NtfyMessage{Title: "afk: It broke", Body: "Details.\n\nafk inbox show a1b2 (T1.1)", Priority: 5,
-				Click: "https://afk.example/p/my%20app/inbox/a1b2"}},
-		{name: "urgent, with the web page", url: url, public: public, call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, quiet) },
-			want: &notify.NtfyMessage{Title: "afk: FYI", Body: "afk inbox show c3d4", Priority: 5,
-				Click: "https://afk.example/p/demo/inbox/c3d4"}},
-		{name: "idle, with the web page", url: url, public: public, call: func(n daemonNotifier) {
-			n.idle(daemon.Project{Name: "demo", Root: "/p"}, "demo is waiting on you", "waiting on owner: T1.1 parked")
-		},
-			want: &notify.NtfyMessage{Title: "afk: demo is waiting on you", Body: "waiting on owner: T1.1 parked", Priority: 3,
-				Click: "https://afk.example/p/demo"}},
-		{name: "the web page but no address", public: public, call: func(n daemonNotifier) { n.item(daemon.Project{Name: "demo", Root: "/p"}, item) }},
-		{name: "urgent, no address", call: func(n daemonNotifier) { n.urgent(daemon.Project{Name: "demo", Root: "/p"}, item) }},
-		{name: "idle, no address", call: func(n daemonNotifier) { n.idle(daemon.Project{Name: "demo", Root: "/p"}, "t", "b") }},
-		{name: "send fails", url: url, sendErr: errors.New("could not reach https://user:xxxxx@ntfy.example/topic"),
-			call:   func(n daemonNotifier) { n.item(daemon.Project{Name: "demo", Root: "/p"}, item) },
-			want:   &notify.NtfyMessage{Title: "afk: It broke", Body: "Details.\n\nafk inbox show a1b2 (T1.1)", Priority: 5},
-			logHas: "demo: warning: the notification could not be sent"},
-		{name: "config unreadable", cfgErr: errors.New("afk.local.toml: not valid TOML"),
-			call:   func(n daemonNotifier) { n.idle(daemon.Project{Name: "demo", Root: "/p"}, "t", "b") },
-			logHas: "demo: warning: the project config could not be read"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var sent []notify.NtfyMessage
-			var log bytes.Buffer
-			n := daemonNotifier{
-				loadConfig: func(root string) (projectconfig.Config, error) {
-					if root != "/p" {
-						t.Errorf("config loaded from %q, want the project root", root)
-					}
-					return projectconfig.Config{Notify: projectconfig.Notify{NtfyURL: tt.url}}, tt.cfgErr
-				},
-				send: func(_ context.Context, to string, m notify.NtfyMessage) error {
-					if to != tt.url {
-						t.Errorf("sent to %q, want the configured address", to)
-					}
-					sent = append(sent, m)
-					return tt.sendErr
-				},
-				logf:      daemonLogger(&log, func() time.Time { return daemonTestNow }),
-				publicURL: tt.public,
-			}
-			tt.call(n)
-			switch {
-			case tt.want == nil && len(sent) != 0:
-				t.Errorf("sent %+v, want nothing", sent)
-			case tt.want != nil && (len(sent) != 1 || sent[0] != *tt.want):
-				t.Errorf("sent %+v, want exactly %+v", sent, *tt.want)
-			}
-			for _, m := range sent {
-				if strings.ContainsAny(m.Click, "?#") {
-					t.Errorf("the link %q carries a query or a fragment; it must be the bare address", m.Click)
-				}
-			}
-			if tt.logHas == "" && log.Len() != 0 {
-				t.Errorf("logged %q, want silence", log.String())
-			}
-			if !strings.Contains(log.String(), tt.logHas) {
-				t.Errorf("log %q lacks %q", log.String(), tt.logHas)
-			}
-			if strings.Contains(log.String(), "secret") {
-				t.Errorf("log %q repeats the address's password", log.String())
-			}
-			if tt.logHas != "" && !strings.HasPrefix(log.String(), "2026-10-11T09:30:00Z ") {
-				t.Errorf("log line %q does not start with its time", log.String())
-			}
-		})
-	}
-}
-
 // TestDaemonNotifierPush pins what the daemon sends to signed-up devices,
 // with a fake send and a temp device list: nothing reaches a network or the
 // real state folder.
 //
-// Load-bearing rows: "non-blocking item" and "idle" (assumed answers arrive
-// by the dozen and idle has no item to open, so neither may push); "urgent,
-// non-blocking stop item" (the stop item is deliberately not blocking yet is
-// the one notice that must reach a phone, at high urgency); "no ntfy address"
-// and "config unreadable" (push needs neither, so ntfy's silence or warning
-// must not hide it); "gone device" and "send fails" (only gone removes a
-// device); and "no device" (nothing sent and nothing logged).
+// Load-bearing rows: "non-blocking item" (assumed answers arrive by the
+// dozen, so it may not push); "urgent, non-blocking stop item" (the stop item
+// is deliberately not blocking yet is the one notice that must reach a phone,
+// at high urgency); "gone device" and "send fails" (only gone removes a
+// device; a failure is a log line that never repeats the endpoint); and "no
+// device" (nothing sent and nothing logged).
 func TestDaemonNotifierPush(t *testing.T) {
 	proj := daemon.Project{Name: "my app", Root: "/p"}
 	blocking := inbox.Item{ID: "a1b2", Task: "T1.1", Kind: "failure", Blocking: true, Title: "It broke", Body: "Details."}
@@ -2005,8 +1881,6 @@ func TestDaemonNotifierPush(t *testing.T) {
 	tests := []struct {
 		name     string
 		devices  []string
-		ntfyURL  string
-		cfgErr   error
 		answer   func(webpush.Subscription) (bool, error)
 		call     func(n daemonNotifier)
 		want     []webpush.Payload
@@ -2014,23 +1888,16 @@ func TestDaemonNotifierPush(t *testing.T) {
 		logHas   string
 		wantLeft int
 	}{
-		{name: "blocking item", devices: []string{"https://push.example/a"}, ntfyURL: "https://ntfy.example/t", wantLeft: 1,
+		{name: "blocking item", devices: []string{"https://push.example/a"}, wantLeft: 1,
 			call: func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay}},
-		{name: "non-blocking item", devices: []string{"https://push.example/a"}, ntfyURL: "https://ntfy.example/t", wantLeft: 1,
+		{name: "non-blocking item", devices: []string{"https://push.example/a"}, wantLeft: 1,
 			call: func(n daemonNotifier) { n.item(proj, quiet) }},
-		{name: "idle", devices: []string{"https://push.example/a"}, ntfyURL: "https://ntfy.example/t", wantLeft: 1,
-			call: func(n daemonNotifier) { n.idle(proj, "t", "b") }},
 		{name: "urgent, non-blocking stop item", devices: []string{"https://push.example/a"}, wantLeft: 1, wantOpts: webpush.Options{Urgency: "high"},
 			call: func(n daemonNotifier) { n.urgent(proj, stop) },
 			want: []webpush.Payload{{Title: "afk: The line is stopped after T1.1", Body: "Check the deploy.\n\nafk inbox show e5f6 (T1.1)", URL: "/p/my%20app/inbox/e5f6", Tag: "afk-item-e5f6"}}},
 		{name: "urgent, blocking login item", devices: []string{"https://push.example/a"}, wantLeft: 1, wantOpts: webpush.Options{Urgency: "high"},
 			call: func(n daemonNotifier) { n.urgent(proj, login) },
 			want: []webpush.Payload{{Title: "afk: Sign in again", Body: "The agent is signed out.\n\nafk inbox show g7h8", URL: "/p/my%20app/inbox/g7h8", Tag: "afk-item-g7h8"}}},
-		{name: "no ntfy address", devices: []string{"https://push.example/a"}, wantLeft: 1,
-			call: func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay}},
-		{name: "config unreadable", devices: []string{"https://push.example/a"}, cfgErr: errors.New("not valid TOML"), wantLeft: 1,
-			call: func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay},
-			logHas: "the project config could not be read"},
 		{name: "gone device", devices: []string{"https://push.example/a"}, wantLeft: 0,
 			answer: func(webpush.Subscription) (bool, error) { return true, nil },
 			call:   func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay},
@@ -2047,12 +1914,7 @@ func TestDaemonNotifierPush(t *testing.T) {
 			r := newPushRig(t, tt.devices...)
 			r.answer = tt.answer
 			var log bytes.Buffer
-			var ntfySent int
 			n := daemonNotifier{
-				loadConfig: func(string) (projectconfig.Config, error) {
-					return projectconfig.Config{Notify: projectconfig.Notify{NtfyURL: tt.ntfyURL}}, tt.cfgErr
-				},
-				send: func(context.Context, string, notify.NtfyMessage) error { ntfySent++; return nil },
 				logf: daemonLogger(&log, func() time.Time { return daemonTestNow }),
 				push: pushTarget{dir: r.dir, send: r.send},
 			}
@@ -2149,12 +2011,12 @@ func TestRealDaemonDeps(t *testing.T) {
 		}
 		return ""
 	}}
-	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), st, daemonconfig.Governor{}, "", func() []daemon.Project { return nil }, func() time.Time { return daemonTestNow }, &log,
+	d := realDaemonDeps(&preflightProvider{}, "", t.TempDir(), st, daemonconfig.Governor{}, func() []daemon.Project { return nil }, func() time.Time { return daemonTestNow }, &log,
 		daemonLogger(&log, func() time.Time { return daemonTestNow }))
 	for name, isNil := range map[string]bool{
 		"Now": d.Now == nil, "LoadBuild": d.LoadBuild == nil, "Sessions": d.Sessions == nil,
 		"Preflight": d.Preflight == nil, "Launch": d.Launch == nil, "RecordTokens": d.RecordTokens == nil,
-		"Notify": d.Notify == nil, "NotifyIdle": d.NotifyIdle == nil, "Log": d.Log == nil,
+		"Notify": d.Notify == nil, "Log": d.Log == nil,
 		"Ship": d.Ship == nil, "SendPrompt": d.SendPrompt == nil, "Clean": d.Clean == nil,
 		"NotifyUrgent": d.NotifyUrgent == nil, "Restart": d.Restart == nil, "Relaunch": d.Relaunch == nil,
 		// Without Usage every usage rule is off, and without StopSession a

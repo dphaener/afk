@@ -101,15 +101,10 @@ type daemonEnv struct {
 	// gov is the [governor] table of the machine config: the usage limits the
 	// real loop hands to its usage source and its login check.
 	//
-	// publicURL is the address the owner reaches the web page at, or "" when
-	// the page is off or has none. It is all of the [web] table the loop is
-	// given, and it is there for one thing: the link in a notification. No
-	// secret is ever handed over: the page's password stays in its file.
-	//
 	// projects is the loop's current project list (projectList.get): the
 	// planning-wait check looks at the configured projects as the loop last
 	// read them, as the web page does.
-	newDeps func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, projects func() []daemon.Project, log func(format string, args ...any)) daemon.Deps
+	newDeps func(p provider.Provider, providerName string, gov daemonconfig.Governor, projects func() []daemon.Project, log func(format string, args ...any)) daemon.Deps
 	// signalContext returns a context that ends when the process is asked to
 	// stop.
 	signalContext func() (context.Context, context.CancelFunc)
@@ -151,8 +146,8 @@ func realDaemonEnv() daemonEnv {
 			return err == nil && fi.IsDir()
 		},
 		alive: host.Alive,
-		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, publicURL string, projects func() []daemon.Project, log func(string, ...any)) daemon.Deps {
-			return realDaemonDeps(p, providerName, home, st, gov, publicURL, projects, now, os.Stderr, log)
+		newDeps: func(p provider.Provider, providerName string, gov daemonconfig.Governor, projects func() []daemon.Project, log func(string, ...any)) daemon.Deps {
+			return realDaemonDeps(p, providerName, home, st, gov, projects, now, os.Stderr, log)
 		},
 		signalContext: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -231,7 +226,6 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	// or a single pass has no page to talk about.
 	passwordPath, _ := webpass.Path(env.state)
 	_, readErr := webpass.Read(env.state)
-	passwordSet := readErr == nil
 	webOn, webLogs, err := webStart(cfg.Web, readErr, cfgPath, passwordPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "afk daemon: %v\n", err)
@@ -278,7 +272,7 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	// it follows config.toml.
 	list := &projectList{}
 	list.set(projects)
-	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, webPublicURL(cfg.Web, passwordSet), list.get, logf)
+	deps := env.newDeps(prov, cfg.Provider, cfg.Governor, list.get, logf)
 	settings := daemonSettings(cfg)
 
 	if *once {
@@ -373,23 +367,6 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 	}
 	logf("afk daemon stopped. Every session is still running; the next start picks them up.")
 	return 0
-}
-
-// webPublicURL is the address a notification may link to, or "" for no link.
-// Pure.
-//
-// A public address with the page off gives no link: the link would open
-// nothing, and a notification that leads to an error page is worse than one
-// with only the command in it. pageOn is whether a password is set
-// (webpass.Exists), read by each caller in its own process. So a password set
-// after the daemon started gives links to a page that stays off until the
-// daemon restarts; the plan accepts that rather than have every notifier ask
-// a running daemon.
-func webPublicURL(w daemonconfig.Web, pageOn bool) string {
-	if !pageOn {
-		return ""
-	}
-	return w.PublicURL
 }
 
 // webStart decides whether the daemon starts its web page. Pure.
@@ -632,109 +609,47 @@ func daemonPreflight(p provider.Provider, ud provider.UnattendedDeps, run provid
 	}
 }
 
-// daemonNotifier sends the daemon's push notifications. Every failure is a
-// line in the log and nothing more: a notification is a courtesy on top of
-// the inbox item, which is already on disk, and must never fail a pass.
+// daemonNotifier pushes the daemon's notices to the owner's signed-up
+// devices. Every failure is a line in the log and nothing more: a
+// notification is a courtesy on top of the inbox item, which is already on
+// disk, and must never fail a pass.
 type daemonNotifier struct {
-	loadConfig func(root string) (projectconfig.Config, error)
-	send       func(ctx context.Context, url string, m notify.NtfyMessage) error
-	logf       func(format string, args ...any)
-	// publicURL is where the owner reaches the web page, or "" for no page.
-	// When set, each notification carries a link that opens what it is about
-	// (ntfy's Click header, see notify.NtfyMessage). The link never holds a
-	// secret: the browser proves itself with its sign-in cookie.
-	publicURL string
-	// push is where the same notices go as web push to the owner's signed-up
-	// devices. The zero value sends nothing. It is independent of the ntfy
-	// address and of the project config: a push needs neither.
+	logf func(format string, args ...any)
+	// push is where the notices go: web push to the owner's signed-up
+	// devices. The zero value sends nothing. It needs neither the project's
+	// config nor a public address: a push opens a path on the page.
 	push pushTarget
 }
 
 // item tells the owner about an inbox item the loop just added, with the
 // text `afk inbox add` sends for the same item.
 //
-// A blocking item also goes to the signed-up devices, whatever the ntfy
-// setup: assumed answers and notices arrive by the dozen and are not pushed.
+// Only a blocking item is pushed: assumed answers and notices arrive by the
+// dozen, and a non-blocking item reaches the inbox only.
 func (n daemonNotifier) item(p daemon.Project, it inbox.Item) {
-	if it.Blocking {
-		if msg, ok := notify.InboxMessage(it.ID, it.Task, it.Kind, it.Title, it.Body, true, inboxPushPlaceholderURL); ok {
-			n.push.deliver(webpush.Payload{Title: msg.Title, Body: msg.Body, URL: notify.ItemPath(p.Name, it.ID), Tag: "afk-item-" + it.ID},
-				webpush.Options{}, n.logf)
-		}
-	}
-	url, ok := n.address(p)
-	if !ok {
+	if !it.Blocking {
 		return
 	}
-	msg, ok := notify.InboxMessage(it.ID, it.Task, it.Kind, it.Title, it.Body, it.Blocking, url)
-	if !ok {
-		return
+	if msg, ok := notify.InboxMessage(it.ID, it.Task, it.Kind, it.Title, it.Body, true); ok {
+		n.push.deliver(webpush.Payload{Title: msg.Title, Body: msg.Body, URL: notify.ItemPath(p.Name, it.ID), Tag: "afk-item-" + it.ID},
+			webpush.Options{}, n.logf)
 	}
-	msg.Click = notify.ItemLink(n.publicURL, p.Name, it.ID)
-	n.deliver(p, url, msg)
 }
 
-// idle sends the one notification with no item behind it. Priority 3 is
-// ntfy's default: the build has stopped moving, but nothing is on fire. With
-// no item to open, its link goes to the project's page.
-func (n daemonNotifier) idle(p daemon.Project, title, body string) {
-	url, ok := n.address(p)
-	if !ok {
-		return
-	}
-	n.deliver(p, url, notify.NtfyMessage{Title: "afk: " + title, Body: body, Priority: 3,
-		Click: notify.ProjectLink(n.publicURL, p.Name)})
-}
-
-// urgent tells the owner about an item at ntfy's highest priority (5), the
-// one that gets past a phone's quiet hours. The loop uses it for one thing: a
-// stopped line, whether a deploy did not come up or a project's after-merge
-// command failed.
+// urgent tells the owner about an item with high urgency, the one a phone
+// lets through when it is holding back the rest. The loop uses it for one
+// thing: a stopped line, whether a deploy did not come up or a project's
+// after-merge command failed.
 //
 // The text is the same as item's. InboxMessage is asked with "failure" and
-// blocking rather than the item's own kind and flag for one reason: those two
-// only choose whether to send and how loudly, the stop item is deliberately
-// not blocking (`afk resume` clears the line, not an answer), and here both
-// questions are already settled.
-//
-// The devices get it too, always and with high urgency, so a phone lets it
-// through; like ntfy's, that does not depend on the item being blocking.
+// blocking rather than the item's own kind and flag because those two only
+// choose whether to send, the stop item is deliberately not blocking
+// (`afk resume` clears the line, not an answer), and here that question is
+// already settled: a stopped line is always pushed.
 func (n daemonNotifier) urgent(p daemon.Project, it inbox.Item) {
-	if msg, ok := notify.InboxMessage(it.ID, it.Task, "failure", it.Title, it.Body, true, inboxPushPlaceholderURL); ok {
+	if msg, ok := notify.InboxMessage(it.ID, it.Task, "failure", it.Title, it.Body, true); ok {
 		n.push.deliver(webpush.Payload{Title: msg.Title, Body: msg.Body, URL: notify.ItemPath(p.Name, it.ID), Tag: "afk-item-" + it.ID},
 			webpush.Options{Urgency: "high"}, n.logf)
-	}
-	url, ok := n.address(p)
-	if !ok {
-		return
-	}
-	msg, ok := notify.InboxMessage(it.ID, it.Task, "failure", it.Title, it.Body, true, url)
-	if !ok {
-		return
-	}
-	msg.Priority = 5
-	msg.Click = notify.ItemLink(n.publicURL, p.Name, it.ID)
-	n.deliver(p, url, msg)
-}
-
-// address reads the project's ntfy address. No address is silence: most
-// projects have none.
-func (n daemonNotifier) address(p daemon.Project) (string, bool) {
-	cfg, err := n.loadConfig(p.Root)
-	if err != nil {
-		n.logf("%s: warning: the project config could not be read, so no notification was sent: %v", p.Name, err)
-		return "", false
-	}
-	return cfg.Notify.NtfyURL, cfg.Notify.NtfyURL != ""
-}
-
-func (n daemonNotifier) deliver(p daemon.Project, url string, m notify.NtfyMessage) {
-	// Bounded, because this runs inside a pass: a server that never answers
-	// must cost seconds, not the loop.
-	ctx, cancel := context.WithTimeout(context.Background(), inboxNotifyTimeout)
-	defer cancel()
-	if err := n.send(ctx, url, m); err != nil {
-		n.logf("%s: warning: the notification could not be sent: %v", p.Name, err)
 	}
 }
 
@@ -793,24 +708,14 @@ func daemonPatchPlan(load func(root string) (projectconfig.Config, error), run s
 // [governor] table. Both go to the usage source and the login check only
 // (daemon_governor.go); the loop itself never sees a threshold.
 //
-// publicURL is the web page's public address, or "": it goes to the
-// notifiers only, for the link in a notification.
-//
 // projects is the loop's current project list, for the planning-wait check
 // (plan_wait_notify.go), which also reads the review and being-planned lists
 // from afk's state folder. If that folder cannot be found the check is left
 // out and said so once: runDaemon has already refused to start in that case,
 // so this is only the guard that keeps plan-waits.json out of the working
 // folder.
-func realDaemonDeps(p provider.Provider, providerName, home string, st usagestate.Deps, gov daemonconfig.Governor, publicURL string, projects func() []daemon.Project, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
-	n := daemonNotifier{
-		publicURL:  publicURL,
-		loadConfig: projectconfig.Load,
-		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
-			return notify.Ntfy{URL: url}.Send(ctx, m)
-		},
-		logf: logf,
-	}
+func realDaemonDeps(p provider.Provider, providerName, home string, st usagestate.Deps, gov daemonconfig.Governor, projects func() []daemon.Project, now func() time.Time, logw io.Writer, logf func(string, ...any)) daemon.Deps {
+	n := daemonNotifier{logf: logf}
 	// A state folder that cannot be found leaves push off. The message below
 	// is the one log line for it; the planning-wait check says its own.
 	stateDir, stateErr := usagestate.Dir(st)
@@ -860,7 +765,7 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		logf("warning: afk's state folder cannot be found, so no \"planning session is waiting\" notification will be sent: %v", stateErr)
 	} else {
 		planWaits = composePlanHooks(
-			realPlanWaitNotifier(projects, stateDir, publicURL, now, logf).check,
+			realPlanWaitNotifier(projects, stateDir, now, logf).check,
 			realPlanEnder(projects, stateDir, now, logf).check,
 		)
 	}
@@ -890,7 +795,6 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 			return len(res.Lines), err
 		},
 		Notify:       n.item,
-		NotifyIdle:   n.idle,
 		NotifyUrgent: n.urgent,
 		Log:          logf,
 		Ship:         daemonShip(projectconfig.Load, sw),

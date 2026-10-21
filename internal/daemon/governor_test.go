@@ -184,9 +184,9 @@ func TestTickGovernorLaunchRefusedAt75(t *testing.T) {
 		t.Fatalf("launches %d, preflights %d at 75%%; want none: a held launch must not even run the preflight",
 			len(r.launches), r.preflights)
 	}
-	if len(r.items()) != 0 || len(r.idle) != 0 || len(r.notified) != 0 || len(r.urgent) != 0 {
-		t.Errorf("items %d, idle %v, notified %d, urgent %d; want nothing said about no_launch",
-			len(r.items()), r.idle, len(r.notified), len(r.urgent))
+	if len(r.items()) != 0 || len(r.notified) != 0 || len(r.urgent) != 0 {
+		t.Errorf("items %d, notified %d, urgent %d; want nothing said about no_launch",
+			len(r.items()), len(r.notified), len(r.urgent))
 	}
 	r.wantDecisions("governor")
 
@@ -235,9 +235,6 @@ func TestTickGovernorSameVerdictLogsOnce(t *testing.T) {
 	wantContains(t, "the state", third.Reason, "no recent usage reading")
 	r.ticks(5, time.Minute)
 	r.wantDecisions("governor", "governor")
-	if len(r.idle) != 1 {
-		t.Errorf("notifications = %v, want one, for the hold", r.idle)
-	}
 }
 
 // TestTickGovernorPausedReasonsLogOnce: a paused session's state is reworded
@@ -287,9 +284,6 @@ func TestTickGovernorPausesAt90AndResumesAfterTheReset(t *testing.T) {
 	// The stop was asked for with the pause already on disk.
 	if want := []stopCall{{worktree: wt, session: "t1-1", force: false, paused: pausedAt}}; !slices.Equal(r.stops, want) {
 		t.Fatalf("stops = %+v, want %+v", r.stops, want)
-	}
-	if len(r.idle) != 1 || !strings.Contains(r.idle[0], "paused T1.1 for usage") {
-		t.Errorf("notifications = %v, want one saying the session was paused", r.idle)
 	}
 
 	// Until the wake time: nothing is done, and nothing is asked.
@@ -514,9 +508,6 @@ func TestTickGovernorStaleReadingHoldsAnIdleProject(t *testing.T) {
 	if len(r.launches) != 0 || r.preflights != 0 {
 		t.Fatalf("launches %d, preflights %d on a stale reading; want none", len(r.launches), r.preflights)
 	}
-	if len(r.idle) != 1 || !strings.Contains(r.idle[0], "holding new work") {
-		t.Errorf("notifications = %v, want exactly one saying new work is held", r.idle)
-	}
 	if len(r.items()) != 0 {
 		t.Errorf("items = %+v, want none for a hold", r.items())
 	}
@@ -525,9 +516,6 @@ func TestTickGovernorStaleReadingHoldsAnIdleProject(t *testing.T) {
 	// A new reading ends it.
 	r.readAt = time.Time{}
 	wantKind(t, r.tick(), ActLaunch)
-	if len(r.idle) != 1 {
-		t.Errorf("notifications after the hold ended = %v, want still one", r.idle)
-	}
 }
 
 // TestTickGovernorStaleReadingLeavesARunningSessionAlone: a hold stops new
@@ -549,8 +537,8 @@ func TestTickGovernorStaleReadingLeavesARunningSessionAlone(t *testing.T) {
 	if len(r.stops) != 0 || len(r.relaunches) != 0 || r.ledgerText() != before {
 		t.Fatalf("stops %d, relaunches %d, or the ledger changed under a hold", len(r.stops), len(r.relaunches))
 	}
-	if len(r.idle) != 0 || len(r.items()) != 0 {
-		t.Errorf("notifications %v, items %d; want none", r.idle, len(r.items()))
+	if len(r.items()) != 0 {
+		t.Errorf("items %d; want none", len(r.items()))
 	}
 	r.wantDecisions("launch")
 }
@@ -562,10 +550,9 @@ func TestTickGovernorUnsupportedFollowsOnUnknownUsage(t *testing.T) {
 		name, onUnknown string
 		wantKind        ActionKind
 		wantLaunches    int
-		wantNotices     int
 	}{
 		{name: "run", onUnknown: governor.UnknownRun, wantKind: ActLaunch, wantLaunches: 1},
-		{name: "hold", onUnknown: governor.UnknownHold, wantKind: ActUsageWait, wantNotices: 1},
+		{name: "hold", onUnknown: governor.UnknownHold, wantKind: ActUsageWait},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -573,8 +560,8 @@ func TestTickGovernorUnsupportedFollowsOnUnknownUsage(t *testing.T) {
 			r.unsupported, r.onUnknown = true, tc.onUnknown
 			wantKind(t, r.tick(), tc.wantKind)
 			r.ticks(10, time.Minute)
-			if len(r.launches) != tc.wantLaunches || len(r.idle) != tc.wantNotices {
-				t.Errorf("launches %d, notifications %v; want %d and %d", len(r.launches), r.idle, tc.wantLaunches, tc.wantNotices)
+			if len(r.launches) != tc.wantLaunches {
+				t.Errorf("launches %d; want %d", len(r.launches), tc.wantLaunches)
 			}
 			if len(r.stops) != 0 || len(r.items()) != 0 {
 				t.Errorf("stops %d, items %d; want none", len(r.stops), len(r.items()))

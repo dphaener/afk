@@ -44,20 +44,18 @@ func TestDecide(t *testing.T) {
 		send      bool
 		record    Action
 		wantKey   bool
-		click     string
 		bodyStart string
 	}{
-		{"new_wait", Input{Project: "p", Chat: text, Link: "http://x/chat"}, true, Set, true, "http://x/chat", "ma"},
-		{"new_wait_choice", Input{Project: "p", Chat: choiceChat(), Link: "http://x/chat"}, true, Set, true, "http://x/chat", "Which database?"},
-		{"same_wait", Input{Project: "p", Chat: text, Recorded: Key(text), HasRecord: true}, false, Keep, false, "", ""},
-		{"answered_then_waiting_again", Input{Project: "p", Chat: answered, Recorded: Key(text), HasRecord: true, Link: "l"}, true, Set, true, "l", "mc"},
-		{"host_gone", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateNone}, Recorded: "k", HasRecord: true}, false, Clear, false, "", ""},
-		{"none_without_record", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateNone}}, false, Keep, false, "", ""},
-		{"no_link_settings", Input{Project: "p", Chat: text}, true, Set, true, "", "ma"},
-		{"working_keeps_record", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateWorking}, Recorded: "k", HasRecord: true}, false, Keep, false, "", ""},
-		{"unknown_keeps_record", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateUnknown}, Recorded: "k", HasRecord: true}, false, Keep, false, "", ""},
-		{"stale_record_cleared_wait_resends", Input{Project: "p", Chat: text, Recorded: Key(text), HasRecord: false}, true, Set, true, "", "ma"},
-		{"empty_text_uses_default_body", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateWaitingForText}}, true, Set, true, "", "The planning session is waiting"},
+		{"new_wait", Input{Project: "p", Chat: text}, true, Set, true, "ma"},
+		{"new_wait_choice", Input{Project: "p", Chat: choiceChat()}, true, Set, true, "Which database?"},
+		{"same_wait", Input{Project: "p", Chat: text, Recorded: Key(text), HasRecord: true}, false, Keep, false, ""},
+		{"answered_then_waiting_again", Input{Project: "p", Chat: answered, Recorded: Key(text), HasRecord: true}, true, Set, true, "mc"},
+		{"host_gone", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateNone}, Recorded: "k", HasRecord: true}, false, Clear, false, ""},
+		{"none_without_record", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateNone}}, false, Keep, false, ""},
+		{"working_keeps_record", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateWorking}, Recorded: "k", HasRecord: true}, false, Keep, false, ""},
+		{"unknown_keeps_record", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateUnknown}, Recorded: "k", HasRecord: true}, false, Keep, false, ""},
+		{"stale_record_cleared_wait_resends", Input{Project: "p", Chat: text, Recorded: Key(text), HasRecord: false}, true, Set, true, "ma"},
+		{"empty_text_uses_default_body", Input{Project: "p", Chat: planchat.Chat{State: planchat.StateWaitingForText}}, true, Set, true, "The planning session is waiting"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -69,12 +67,12 @@ func TestDecide(t *testing.T) {
 				t.Fatalf("Key = %q, wantKey %v", d.Key, tt.wantKey)
 			}
 			if !tt.send {
-				if d.Message != (notify.NtfyMessage{}) {
+				if d.Message != (notify.Message{}) {
 					t.Fatalf("no-send decision carries a message: %+v", d.Message)
 				}
 				return
 			}
-			if d.Message.Title != "afk: p is waiting for you" || d.Message.Priority != 4 || d.Message.Click != tt.click {
+			if d.Message.Title != "afk: p is waiting for you" {
 				t.Fatalf("message = %+v", d.Message)
 			}
 			if !strings.HasPrefix(d.Message.Body, tt.bodyStart) || !strings.HasSuffix(d.Message.Body, "\n\nAnswer it in the chat on afk's web page, or in afk dash.") {

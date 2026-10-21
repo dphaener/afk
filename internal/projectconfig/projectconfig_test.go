@@ -1,6 +1,8 @@
 package projectconfig
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +52,6 @@ func TestLoad(t *testing.T) {
 		{name: "plan inside with dotdot kept inside", file: ptr(`plan = "a/../b.md"`), want: "b.md"},
 		{name: "full example", file: ptr(sprintf(fullExample, `""`)), want: "docs/PLAN.md"},
 		{name: "no plan key but other sections", file: ptr("[ship]\nbase = \"main\"\n"), want: DefaultPlan},
-		{name: "only a notify table keeps the default plan", file: ptr("[notify]\nntfy_url = \"https://ntfy.sh/t\"\n"), want: DefaultPlan},
 		{name: "unknown keys and tables", file: ptr("mystery = 3\n[unknown]\nx = [1, 2]\n[ship.nested]\ny = true\n"), want: DefaultPlan},
 		{name: "invalid toml", file: ptr("plan = \n[[["), wantErr: []string{FileName, "TOML"}},
 		{name: "plan not a string", file: ptr("plan = 42"), wantErr: []string{FileName, "plan", "string"}},
@@ -93,80 +94,75 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-// TestLoadNotify is table-driven over file contents and checks the ntfy
-// address. Load-bearing rows: the verbatim section 4.6 example (the other
-// keys and the multi-line notes must not break the reader), the rejections
-// (each must name afk.toml and must not echo the password in the URL), and
-// the missing file (no error, because most projects have none).
-func TestLoadNotify(t *testing.T) {
+// TestLoadIgnoresNtfyURL: a settings file written for an older afk may still
+// hold [notify] ntfy_url, and it must load as if the line were not there.
+// Load-bearing rows: "malformed value" and "wrong type" (the old reader
+// refused both, so a regression that re-adds validation shows here), "in both
+// files" (the overlay must not trip on it either) and "the verbatim section
+// 4.6 example" (the rest of the file still reads). Every row also checks that
+// the log stays silent and that [ship] is unchanged.
+func TestLoadIgnoresNtfyURL(t *testing.T) {
+	const ship = "[ship]\nbase = \"trunk\"\n"
 	tests := []struct {
-		name    string
-		content *string // nil means no file
-		want    string
-		errHas  []string
+		name      string
+		committed *string
+		local     *string
 	}{
-		{name: "missing file", content: nil, want: ""},
-		{name: "empty file", content: ptr(""), want: ""},
-		{name: "plan example with empty url", content: ptr(sprintf(fullExample, `""`)), want: ""},
-		{name: "plan example with url", content: ptr(sprintf(fullExample, `"https://ntfy.example/afk-nebari"`)), want: "https://ntfy.example/afk-nebari"},
-		{name: "surrounding spaces trimmed", content: ptr("[notify]\nntfy_url = \"  https://ntfy.sh/t  \"\n"), want: "https://ntfy.sh/t"},
-		{name: "http allowed", content: ptr("[notify]\nntfy_url = \"http://localhost:8080/t\"\n"), want: "http://localhost:8080/t"},
-		{name: "ftp scheme", content: ptr("[notify]\nntfy_url = \"ftp://user:hunter2@ntfy.sh/t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
-		{name: "no host", content: ptr("[notify]\nntfy_url = \"https:///t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
-		{name: "no scheme", content: ptr("[notify]\nntfy_url = \"ntfy.sh/t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
-		{name: "unparseable url", content: ptr("[notify]\nntfy_url = \"http://user:hunter2@ntfy.sh:bad/t\"\n"), errHas: []string{"afk.toml", "[notify] ntfy_url"}},
-		{name: "wrong type", content: ptr("[notify]\nntfy_url = 5\n"), errHas: []string{"afk.toml"}},
-		{name: "broken toml", content: ptr("[notify\nntfy_url = \n"), errHas: []string{"afk.toml"}},
-		{name: "broken toml beside a secret", content: ptr("[notify]\nntfy_url = \"http://user:hunter2@ntfy.sh/t\" junk\n"), errHas: []string{"afk.toml"}},
-		{name: "wrong type beside a secret", content: ptr("plan = \"http://user:hunter2@x\"\n[notify]\nntfy_url = 5\n"), errHas: []string{"afk.toml"}},
-		{name: "unknown tables ignored", content: ptr("[mystery]\nx = 1\n[notify]\nother = true\nntfy_url = \"https://ntfy.sh/t\"\n[more.nested]\ny = [1, 2]\n"), want: "https://ntfy.sh/t"},
+		{name: "afk.toml only", committed: ptr(ship + "[notify]\nntfy_url = \"https://ntfy.sh/t\"\n")},
+		{name: "afk.local.toml only", committed: ptr(ship), local: ptr("[notify]\nntfy_url = \"https://ntfy.sh/t\"\n")},
+		{name: "in both files", committed: ptr(ship + "[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("[notify]\nntfy_url = \"https://ntfy.sh/l\"\n")},
+		{name: "malformed value", committed: ptr(ship + "[notify]\nntfy_url = \"ftp://x\"\n")},
+		{name: "wrong type", committed: ptr(ship + "[notify]\nntfy_url = 5\n")},
+		{name: "empty string", committed: ptr(ship + "[notify]\nntfy_url = \"\"\n")},
+		{name: "the verbatim section 4.6 example", committed: ptr(strings.Replace(sprintf(fullExample, `"https://ntfy.example/afk-nebari"`), `base = "main"`, `base = "trunk"`, 1))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			defer log.SetOutput(os.Stderr)
+
 			root := t.TempDir()
-			if tt.content != nil {
-				if err := os.WriteFile(filepath.Join(root, FileName), []byte(*tt.content), 0o644); err != nil {
+			for name, content := range map[string]*string{FileName: tt.committed, LocalFileName: tt.local} {
+				if content == nil {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(root, name), []byte(*content), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
 			got, err := Load(root)
-			if len(tt.errHas) > 0 {
-				if err == nil {
-					t.Fatalf("Load = %+v, want an error", got)
-				}
-				for _, s := range tt.errHas {
-					if !strings.Contains(err.Error(), s) {
-						t.Errorf("error %q does not mention %q", err, s)
-					}
-				}
-				if strings.Contains(err.Error(), "hunter2") {
-					t.Errorf("error leaks the URL password: %q", err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			if got.Notify.NtfyURL != tt.want {
-				t.Errorf("NtfyURL = %q, want %q", got.Notify.NtfyURL, tt.want)
+			want := Config{Plan: DefaultPlan, Ship: defaultShip()}
+			want.Ship.Base = "trunk"
+			if tt.name == "the verbatim section 4.6 example" {
+				want = Config{Plan: "docs/PLAN.md", Ship: want.Ship}
+				want.Ship.DeployTimeout = 15 * time.Minute
+			}
+			if got.Plan != want.Plan || got.Ship.Base != want.Ship.Base {
+				t.Errorf("Load = %+v, want plan %q and ship base %q", got, want.Plan, want.Ship.Base)
+			}
+			if logged.Len() != 0 {
+				t.Errorf("Load logged %q, want nothing", logged.String())
 			}
 		})
 	}
 }
 
 // TestLoadBothKeys: the fold's reason to exist. One file with plan and
-// [notify] must give both values, and each half must default independently
+// [ship] must give both values, and each half must default independently
 // when the other is the only thing present. A missing file must give the
-// default plan with a zero Notify, since callers use the plan unconditionally.
+// default plan, since callers use the plan unconditionally.
 func TestLoadBothKeys(t *testing.T) {
 	tests := []struct {
 		name    string
 		content *string // nil means no file
 		want    Config
 	}{
-		{"plan and notify together", ptr("plan = \"plans/m.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/t\"\n"), Config{Plan: "plans/m.md", Notify: Notify{NtfyURL: "https://ntfy.sh/t"}}},
-		{"only notify keeps default plan", ptr("[notify]\nntfy_url = \"https://ntfy.sh/t\"\n"), Config{Plan: DefaultPlan, Notify: Notify{NtfyURL: "https://ntfy.sh/t"}}},
-		{"only plan leaves notify empty", ptr("plan = \"plans/m.md\"\n"), Config{Plan: "plans/m.md"}},
+		{"plan and ship together", ptr("plan = \"plans/m.md\"\n[ship]\nbase = \"trunk\"\n"), Config{Plan: "plans/m.md", Ship: func() Ship { s := defaultShip(); s.Base = "trunk"; return s }()}},
+		{"only plan", ptr("plan = \"plans/m.md\"\n"), Config{Plan: "plans/m.md"}},
 		{"missing file", nil, Config{Plan: DefaultPlan}},
 	}
 	for _, tt := range tests {
@@ -181,7 +177,9 @@ func TestLoadBothKeys(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			tt.want.Ship = defaultShip() // these rows set no [ship] key
+			if tt.want.Ship == (Ship{}) {
+				tt.want.Ship = defaultShip()
+			}
 			if got != tt.want {
 				t.Errorf("Load = %+v, want %+v", got, tt.want)
 			}
@@ -190,11 +188,9 @@ func TestLoadBothKeys(t *testing.T) {
 }
 
 // TestLoadOverlay: the load-bearing rows are "local overrides committed" (the
-// reason the overlay exists), "local sets only ntfy while committed sets only
-// plan" (the merge is per key, not per file), "empty local ntfy wins" (present
-// but empty must beat a committed address, so a private file can switch
-// notifications off) and the two parse-error rows (each error must name the
-// file that is broken, not its sibling). The bad-local row logs the error text
+// reason the overlay exists), "local sets only ship base while committed sets
+// only plan" (the merge is per key, not per file), and the two parse-error
+// rows (each error must name the file that is broken, not its sibling). The bad-local row logs the error text
 // for the QA evidence.
 func TestLoadOverlay(t *testing.T) {
 	tests := []struct {
@@ -206,16 +202,13 @@ func TestLoadOverlay(t *testing.T) {
 		errNot    string
 	}{
 		{name: "both missing", want: Config{Plan: DefaultPlan}},
-		{name: "committed only", committed: ptr("plan = \"a.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), want: Config{Plan: "a.md", Notify: Notify{NtfyURL: "https://ntfy.sh/c"}}},
-		{name: "local only", local: ptr("plan = \"b.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/l\"\n"), want: Config{Plan: "b.md", Notify: Notify{NtfyURL: "https://ntfy.sh/l"}}},
-		{name: "local overrides committed", committed: ptr("plan = \"a.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("plan = \"b.md\"\n[notify]\nntfy_url = \"https://ntfy.sh/l\"\n"), want: Config{Plan: "b.md", Notify: Notify{NtfyURL: "https://ntfy.sh/l"}}},
-		{name: "local sets only ntfy, committed only plan", committed: ptr("plan = \"a.md\"\n"), local: ptr("[notify]\nntfy_url = \"https://ntfy.sh/l\"\n"), want: Config{Plan: "a.md", Notify: Notify{NtfyURL: "https://ntfy.sh/l"}}},
-		{name: "empty local ntfy wins over committed address", committed: ptr("[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("[notify]\nntfy_url = \"\"\n"), want: Config{Plan: DefaultPlan}},
+		{name: "committed only", committed: ptr("plan = \"a.md\"\n"), want: Config{Plan: "a.md"}},
+		{name: "local only", local: ptr("plan = \"b.md\"\n"), want: Config{Plan: "b.md"}},
+		{name: "local overrides committed", committed: ptr("plan = \"a.md\"\n"), local: ptr("plan = \"b.md\"\n"), want: Config{Plan: "b.md"}},
+		{name: "local sets only ship base, committed only plan", committed: ptr("plan = \"a.md\"\n"), local: ptr("[ship]\nbase = \"trunk\"\n"), want: Config{Plan: "a.md", Ship: func() Ship { s := defaultShip(); s.Base = "trunk"; return s }()}},
 		{name: "empty local file keeps committed", committed: ptr("plan = \"a.md\"\n"), local: ptr(""), want: Config{Plan: "a.md"}},
 		{name: "local file does not parse", committed: ptr("plan = \"a.md\"\n"), local: ptr("plan = \n[[["), errHas: LocalFileName},
 		{name: "committed file does not parse", committed: ptr("plan = \n[[["), local: ptr("plan = \"b.md\"\n"), errHas: FileName, errNot: LocalFileName},
-		{name: "bad address in local names local", committed: ptr("[notify]\nntfy_url = \"https://ntfy.sh/c\"\n"), local: ptr("[notify]\nntfy_url = \"ftp://user:hunter2@ntfy.sh/t\"\n"), errHas: LocalFileName + ": [notify] ntfy_url"},
-		{name: "bad address in committed names committed", committed: ptr("[notify]\nntfy_url = \"ntfy.sh/t\"\n"), local: ptr("plan = \"b.md\"\n"), errHas: FileName + ": [notify] ntfy_url", errNot: LocalFileName},
 		{name: "bad after_merge_timeout in local names local", committed: ptr("[ship]\nafter_merge_timeout = \"5m\"\n"), local: ptr("[ship]\nafter_merge_timeout = \"soon\"\n"), errHas: LocalFileName + ": [ship] after_merge_timeout", errNot: FileName + ":"},
 		{name: "bad plan in local names local", local: ptr("plan = \"../x.md\"\n"), errHas: LocalFileName},
 	}
@@ -250,7 +243,9 @@ func TestLoadOverlay(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			tt.want.Ship = defaultShip() // these rows set no [ship] key
+			if tt.want.Ship == (Ship{}) {
+				tt.want.Ship = defaultShip()
+			}
 			if got != tt.want {
 				t.Errorf("Load = %+v, want %+v", got, tt.want)
 			}

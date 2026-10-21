@@ -21,12 +21,11 @@
 // Keep new impurity inside these files: a Format or an argv builder that
 // reached for the environment on its own would take the matrix above with it.
 //
-// The package also sends push notifications through ntfy. ntfy.go is the third
-// confined impure file: it makes one HTTP request (Ntfy.Send) and its only
-// branching, which inbox items notify and how loudly, is the pure NtfyPriority.
-// Unlike the two files above it is called from the `afk inbox` command, never
-// from the detached watcher. NtfyPriority takes plain kind and blocking values
-// because notify must not import internal/inbox.
+// message.go is pure too: it builds the text of a phone notification for an
+// inbox item (InboxMessage, with ItemNotifies deciding which items notify)
+// and the web page paths a push opens (ItemPath, PlanPath, ChatPath). It
+// sends nothing; the root package's web push does. ItemNotifies takes plain
+// kind and blocking values because notify must not import internal/inbox.
 //
 // internal/probe imports this for backend selection, never the reverse. Import
 // boundaries: internal/notify imports only stdlib and internal/dashmeta. Never

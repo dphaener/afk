@@ -44,7 +44,7 @@ go.work
 # The master plan is committed (overrides a global "PLAN.md" ignore)
 !/docs/PLAN.md
 
-# Private project settings (the ntfy topic and the like). afk.toml itself is
+# Private project settings. afk.toml itself is
 # committed; afk.local.toml is laid over it and stays on this machine.
 afk.local.toml
 

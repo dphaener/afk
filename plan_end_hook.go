@@ -100,13 +100,12 @@ func (e planEnder) check(ctx context.Context) {
 }
 
 // realPlanEnder wires the ender to the machine. It looks at the same projects
-// as the wait notifier (planTargetsFrom); no link is needed, so the public
-// address is not passed. Stderr of the stop is discarded: the daemon reports
-// through logf.
+// as the wait notifier (planTargetsFrom). Stderr of the stop is discarded:
+// the daemon reports through logf.
 func realPlanEnder(projects func() []daemon.Project, stateDir string, now func() time.Time, logf func(string, ...any)) planEnder {
 	deps := realPlanDeps()
 	return planEnder{
-		targets: planTargetsFrom(projects, stateDir, ""),
+		targets: planTargetsFrom(projects, stateDir),
 		files: func(root string) (plansession.Files, error) {
 			f, _, err := loadPlanSession(root, deps)
 			return f, err

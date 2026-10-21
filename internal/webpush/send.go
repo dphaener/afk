@@ -28,9 +28,8 @@ const DefaultSubject = "https://github.com/dphaener/afk"
 const defaultTTL = 24 * time.Hour
 
 // sendTimeout is the whole-request timeout of the client used when
-// Sender.Client is nil, the same as the ntfy sender in internal/notify: long
-// enough for a slow push service, short enough that a hung one cannot hold
-// up the daemon's pass.
+// Sender.Client is nil: long enough for a slow push service, short enough
+// that a hung one cannot hold up the daemon's pass.
 const sendTimeout = 10 * time.Second
 
 // errorBodyLimit is how much of a push service's error answer goes into
@@ -54,7 +53,7 @@ var urgencies = map[string]bool{"very-low": true, "low": true, "normal": true, "
 // for the message keys. The zero value of each is the real thing.
 type Sender struct {
 	// Client makes the request. nil means a client with a 10 second
-	// timeout, as the ntfy sender uses.
+	// timeout (sendTimeout).
 	Client *http.Client
 	// Now is the clock the VAPID token's expiry counts from. nil means
 	// time.Now.

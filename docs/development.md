@@ -81,7 +81,7 @@ The binary is organized into packages:
 - **internal/ui** — Bubble Tea dashboard (TUI, keybindings, panels)
 - **internal/governor** — The usage governor's decision: one pure function from a usage reading to `run`, `no_launch`, `pause`, `hold` or `refuse`
 - **internal/usagestate** — Reads and writes `usage.json`, the last usage reading, under afk's per-machine state directory
-- **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` and `afk.local.toml` reader (`plan`, `[planning]`, `[ship]` and `[notify]`), and the desktop and ntfy notification senders
+- **internal/inbox**, **internal/projectconfig**, **internal/notify** — The owner inbox behind `afk inbox`, the `afk.toml` and `afk.local.toml` reader (`plan`, `[planning]` and `[ship]`), and the desktop notification sender
 - **internal/daemon** — The build loop behind `afk daemon`: one pure function (`Decide`) picks what to do on a pass, and an executor carries it out
 - **internal/daemonconfig** — Reads `config.toml`, the machine's one settings file (projects, tick, stall limit, and the dashboard's `[dash]` search folders)
 - **internal/daemonstate** — The pause flag, each project's `daemon.json` and the one-daemon-per-machine lock

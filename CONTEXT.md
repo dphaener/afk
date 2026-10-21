@@ -41,7 +41,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Blocking**: an inbox item the task cannot go on without; the task parks until the owner answers it.
 - **Open**: an inbox item nobody has answered yet.
 - **Assumed**: on a non-blocking question, the answer the agent went ahead with instead of waiting.
-- **ntfy**: the push-notification service afk posts to when an inbox item needs the owner, set by `[notify] ntfy_url` in `afk.toml`.
 - **Main checkout**: the project's original folder, as opposed to a session's worktree; `.afk/inbox/` lives there.
 - **Token ledger**: `.afk/log/tokens.jsonl` in the project's main checkout, one line per task, phase, role and model, recording how many tokens that part of a task used.
 - **Weighted cost**: one number for a set of model calls, `input + 5×output + 1.25×cache_write + 0.1×cache_read`, in input-token equivalents; a proxy from API price ratios.
@@ -61,7 +60,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Pause flag**: `.afk/build/paused`, written by `afk pause`; while it exists the daemon starts no new task for that project.
 - **Decision log**: `.afk/log/decisions.jsonl`, one line for every decision made in the loop and who or what made it.
 - **Machine config**: `config.toml` in afk's config folder, listing the projects the daemon runs and its timings; one per machine.
-- **Local config**: `afk.local.toml`, laid over `afk.toml` key by key and never committed; where private values such as the ntfy address go.
+- **Local config**: `afk.local.toml`, laid over `afk.toml` key by key and never committed; where private values go.
 - **Un-park**: to return a parked task to `running` once every item it waited for has been answered.
 - **Ship**: what the daemon does with a finished session: push the branch, open a pull request, wait for CI, merge, check the deploy and clean up.
 - **Ship state**: how far a task's ship has got (`committed`, `pushed`, `pr_open`, `handed_back`, `ci_green`, `merged`, `deploy_healthy`, `stopped`), saved in the ledger before the step that leaves it.

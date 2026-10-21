@@ -7,7 +7,7 @@ afk reads a few plain TOML files. You can edit each by hand.
 | `config.toml` | `~/.config/afk/` | The machine's settings: the projects the daemon builds, the daemon's timings, the usage limits, the web page, and the dashboard's search folders |
 | `profile.toml` | `~/.config/afk/` | How you build and host things, read by the planning session |
 | `afk.toml` | each project's root folder, committed | Where the plan is, how a finished task ships, notifications |
-| `afk.local.toml` | each project's root folder, never committed | Private project settings, such as your ntfy topic |
+| `afk.local.toml` | each project's root folder, never committed | Private project settings, kept on this machine |
 
 ## `config.toml` — The machine's settings
 
@@ -146,14 +146,8 @@ A pull request that has no CI checks is never merged (see "Shipping" in the daem
 
 ## `afk.local.toml` — Private project settings
 
-Put private values in `afk.local.toml`, next to `afk.toml` in the project's top folder. The main case is `ntfy_url`: an ntfy topic name works as a password, because anyone who knows it can read and post to it, and `afk.toml` is committed.
-
-```toml
-# afk.local.toml (never committed)
-[notify]
-ntfy_url = "https://ntfy.sh/your-topic"
-```
+Put private values in `afk.local.toml`, next to `afk.toml` in the project's top folder. Use it for any `afk.toml` value you do not want committed, such as a `[ship]` command that names a private path.
 
 afk reads `afk.toml` first and then lays `afk.local.toml` over it key by key: a key in the local file wins, and every key it leaves out keeps the committed value. Either file may be missing. This repo's `.gitignore` lists `afk.local.toml`, so it is never committed; add the same line to your own project's `.gitignore`.
 
-**If your project already has an `afk.toml` with an `ntfy_url` in it,** move that line to `afk.local.toml` before you commit `afk.toml`. This repo used to ignore `afk.toml`; it no longer does, so committing the file as it is would publish your topic.
+A leftover `[notify] ntfy_url` line in either file is ignored without a word: afk no longer sends ntfy notifications, and phone notifications come from web push (see [the web page](web.md#notifications)).

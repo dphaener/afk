@@ -704,33 +704,6 @@ func TestWebPauseError(t *testing.T) {
 	}
 }
 
-// TestWebPublicURL pins when a notification may carry a link.
-//
-// Load-bearing: "an address but the page is off". With no password set the
-// page is off, so a link would open nothing; pageOn is the only thing that
-// turns the link on, since [web] has no secret of its own any more.
-func TestWebPublicURL(t *testing.T) {
-	tests := []struct {
-		name   string
-		in     daemonconfig.Web
-		pageOn bool
-		want   string
-	}{
-		{name: "nothing set", in: daemonconfig.Web{Bind: daemonconfig.DefaultWebBind}},
-		{name: "page on and an address", in: daemonconfig.Web{PublicURL: "https://afk.example"}, pageOn: true, want: "https://afk.example"},
-		{name: "page on but no address", in: daemonconfig.Web{}, pageOn: true},
-		{name: "an address but the page is off", in: daemonconfig.Web{PublicURL: "https://afk.example"}},
-		{name: "a leftover token does not turn the page on", in: daemonconfig.Web{PublicURL: "https://afk.example", LeftoverToken: true}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := webPublicURL(tt.in, tt.pageOn); got != tt.want {
-				t.Errorf("webPublicURL = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 // webTestOverview and webTestPlan are the keys of the page's JSON these tests
 // read; the full shapes are internal/web's to test.
 type webTestOverview struct {

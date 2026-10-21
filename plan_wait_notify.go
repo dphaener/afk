@@ -11,27 +11,20 @@ import (
 	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/planwait"
-	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/web"
 	"github.com/dphaener/afk/internal/webpush"
 )
 
-// planWaitNotifyTimeout bounds one "the planning session is waiting"
-// notification. It runs inside a daemon pass, so a server that never answers
-// must cost seconds, not the loop (the same bound as every other daemon
-// notification, inboxNotifyTimeout).
-const planWaitNotifyTimeout = 10 * time.Second
-
 // planWaitTarget is one project whose planning chat the daemon looks at:
-// the name the page shows it under, its main checkout, and where a
-// notification about it should lead ("" for no link). Path is the same place
-// as a path on the page, for the web push, which never carries an address.
+// the name the page shows it under, its main checkout, and the path on the
+// page a push about it opens. A push opens a path against the page's own
+// origin, so it never carries an address.
 type planWaitTarget struct {
-	Name, Root, Link, Path string
+	Name, Root, Path string
 }
 
 // planWaitTargets is every project the web page lists, in the page's order
-// of precedence, each with the link a notification about it carries. Pure.
+// of precedence, each with the path a push about it opens. Pure.
 //
 // The precedence mirrors internal/web's handlers: a configured project comes
 // first; a plan waiting for approval is dropped when a configured project has
@@ -40,22 +33,19 @@ type planWaitTarget struct {
 // same here means a notification never names a project the page would show
 // under another name, and its record is kept under the folder the page means.
 //
-// The link follows what the page serves. The chat address
-// /p/{name}/plan/chat is served for a configured project and a project being
-// planned (server.findChatProject) but is a 404 for a plan that is only
-// waiting for approval, so such a project links to its plan page instead.
-// With no public address there is no link, and none while the page has no
-// password (webPublicURL gives ""); a link never holds a secret
-// (notify.ChatLink and notify.PlanLink add none).
+// The path follows what the page serves. The chat path /p/{name}/plan/chat
+// is served for a configured project and a project being planned
+// (server.findChatProject) but is a 404 for a plan that is only waiting for
+// approval, so such a project opens its plan page instead.
 //
 // An entry with no folder is skipped: it cannot have a planning session, and
 // filepath.Clean would turn it into "." (whatever folder the daemon runs in).
-func planWaitTargets(configured, reviews, being []web.Project, publicURL string) []planWaitTarget {
+func planWaitTargets(configured, reviews, being []web.Project) []planWaitTarget {
 	var out []planWaitTarget
 	taken := func(name, root string) bool {
 		return slices.ContainsFunc(out, func(t planWaitTarget) bool { return t.Name == name || t.Root == root })
 	}
-	add := func(ps []web.Project, link func(base, name string) string, path func(name string) string) {
+	add := func(ps []web.Project, path func(name string) string) {
 		for _, p := range ps {
 			if p.Root == "" {
 				continue
@@ -64,12 +54,12 @@ func planWaitTargets(configured, reviews, being []web.Project, publicURL string)
 			if taken(p.Name, root) {
 				continue
 			}
-			out = append(out, planWaitTarget{Name: p.Name, Root: root, Link: link(publicURL, p.Name), Path: path(p.Name)})
+			out = append(out, planWaitTarget{Name: p.Name, Root: root, Path: path(p.Name)})
 		}
 	}
-	add(configured, notify.ChatLink, notify.ChatPath)
-	add(reviews, notify.PlanLink, notify.PlanPath)
-	add(being, notify.ChatLink, notify.ChatPath)
+	add(configured, notify.ChatPath)
+	add(reviews, notify.PlanPath)
+	add(being, notify.ChatPath)
 	return out
 }
 
@@ -82,10 +72,6 @@ type planWaitNotifier struct {
 	// chat is the planning chat of one project, read only through
 	// planchat.Read, which never opens a transcript for a dead host.
 	chat func(project, root string) planchat.Chat
-	// address is the project's ntfy address, "" for none or when its
-	// config cannot be read.
-	address func(root string) string
-	send    func(ctx context.Context, url string, m notify.NtfyMessage) error
 	// push is the owner's signed-up devices; the zero value pushes nothing.
 	push pushTarget
 	// stateDir is afk's state folder, where plan-waits.json lives.
@@ -100,13 +86,12 @@ type planWaitNotifier struct {
 // daemon restarted after a crash knows what the dead one sent and does not
 // repeat it. A wait is recorded only after its notification went out: a
 // failed send is retried on the next pass, and a delivered one is never sent
-// again. "Delivered" means the ntfy send succeeded or at least one device took
-// the push. With no ntfy address and no device, or with every send failing,
-// nothing is recorded, so signing up a device or adding an address later
-// still announces a wait that is open then.
+// again. "Delivered" means at least one device took the push. With no device,
+// or with every push failing, nothing is recorded, so signing up a device
+// later still announces a wait that is open then.
 //
-// Every failure is one log line and nothing more. A send error comes from
-// notify.Ntfy.Send, which never holds the address's credentials.
+// Every failure is one log line and nothing more (pushTarget.deliver writes
+// it, naming the device by its label and never its endpoint).
 func (n planWaitNotifier) check(ctx context.Context) {
 	waits := daemonstate.ReadPlanWaits(n.stateDir)
 	changed := false
@@ -115,7 +100,7 @@ func (n planWaitNotifier) check(ctx context.Context) {
 			break
 		}
 		i := slices.IndexFunc(waits, func(w daemonstate.PlanWait) bool { return filepath.Clean(w.Root) == t.Root })
-		in := planwait.Input{Project: t.Name, Chat: n.chat(t.Name, t.Root), Link: t.Link}
+		in := planwait.Input{Project: t.Name, Chat: n.chat(t.Name, t.Root)}
 		if i >= 0 {
 			in.Recorded, in.HasRecord = waits[i].Key, true
 		}
@@ -128,21 +113,7 @@ func (n planWaitNotifier) check(ctx context.Context) {
 		if !d.Send {
 			continue
 		}
-		delivered := false
-		if url := n.address(t.Root); url != "" {
-			sctx, cancel := context.WithTimeout(ctx, planWaitNotifyTimeout)
-			err := n.send(sctx, url, d.Message)
-			cancel()
-			if err != nil {
-				n.logf("%s: warning: the \"planning session is waiting\" notification could not be sent; it is tried again on the next pass: %v", t.Name, err)
-			} else {
-				delivered = true
-			}
-		}
-		if n.push.deliver(webpush.Payload{Title: d.Message.Title, Body: d.Message.Body, URL: t.Path, Tag: "afk-plan-" + t.Name}, webpush.Options{}, n.logf) > 0 {
-			delivered = true
-		}
-		if !delivered {
+		if n.push.deliver(webpush.Payload{Title: d.Message.Title, Body: d.Message.Body, URL: t.Path, Tag: "afk-plan-" + t.Name}, webpush.Options{}, n.logf) == 0 {
 			continue
 		}
 		rec := daemonstate.PlanWait{Root: t.Root, Key: d.Key, At: n.now().UTC().Format(time.RFC3339)}
@@ -165,23 +136,11 @@ func (n planWaitNotifier) check(ctx context.Context) {
 // loop's current project list (runDaemon's projectList.get), so a project
 // added while the daemon runs is looked at from the pass that first reads
 // it; the review list and the being-planned list are read from stateDir on
-// every pass, the same reads the web page makes (daemonWebDeps). publicURL
-// is webPublicURL's answer, "" while no password is set, and never a secret.
-func realPlanWaitNotifier(projects func() []daemon.Project, stateDir, publicURL string, now func() time.Time, logf func(string, ...any)) planWaitNotifier {
+// every pass, the same reads the web page makes (daemonWebDeps).
+func realPlanWaitNotifier(projects func() []daemon.Project, stateDir string, now func() time.Time, logf func(string, ...any)) planWaitNotifier {
 	return planWaitNotifier{
-		targets: planTargetsFrom(projects, stateDir, publicURL),
-		chat:    webPlanChat(now),
-		address: func(root string) string {
-			cfg, err := projectconfig.Load(root)
-			if err != nil {
-				logf("%s: warning: the project config could not be read, so no \"planning session is waiting\" notification was sent: %v", filepath.Base(root), err)
-				return ""
-			}
-			return cfg.Notify.NtfyURL
-		},
-		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
-			return notify.Ntfy{URL: url}.Send(ctx, m)
-		},
+		targets:  planTargetsFrom(projects, stateDir),
+		chat:     webPlanChat(now),
 		push:     pushTarget{dir: stateDir, send: webPushSend(stateDir, now)},
 		stateDir: stateDir,
 		now:      now,
@@ -193,7 +152,7 @@ func realPlanWaitNotifier(projects func() []daemon.Project, stateDir, publicURL 
 // session the daemon looks at on each pass. The wait notifier and the planning
 // ender share it so both look at exactly the projects the web page lists, in
 // the same precedence (planWaitTargets).
-func planTargetsFrom(projects func() []daemon.Project, stateDir, publicURL string) func() []planWaitTarget {
+func planTargetsFrom(projects func() []daemon.Project, stateDir string) func() []planWaitTarget {
 	return func() []planWaitTarget {
 		got := projects()
 		configured := make([]web.Project, 0, len(got))
@@ -205,6 +164,6 @@ func planTargetsFrom(projects func() []daemon.Project, stateDir, publicURL strin
 		for _, v := range views {
 			being = append(being, web.Project{Name: v.Name, Root: v.Root})
 		}
-		return planWaitTargets(configured, webReviews(daemonstate.ReadReviews(stateDir), configured), being, publicURL)
+		return planWaitTargets(configured, webReviews(daemonstate.ReadReviews(stateDir), configured), being)
 	}
 }

@@ -4008,3 +4008,18 @@ T15.7 sends web push beside ntfy, to every device signed up on the Notifications
 
 - **Real delivery on a real device (verification for the owner).** At the `https://` address, sign a phone or computer up on the Notifications page, run a blocking `afk inbox add` in a configured project, and tap the notification: it should open that item. The built-binary check proved the send against a local stand-in push service only.
 - **Whether "afk cannot run this project" should push (question for the owner).** It is a non-blocking `failure`, so it stays ntfy-only under the blocking rule; the inbox asks whether it should go to devices too.
+
+## T15.8
+
+T15.8 removes ntfy: its sender, its `[notify] ntfy_url` setting and its docs. Web push (T15.7) is the only phone notification, and the idle and plan-ready notices are no longer sent. macOS desktop toasts stay.
+
+### What this task decided, and why
+
+- **Tests change with the code (A1).** Each task updates its own tests, and a new table test proves a leftover `ntfy_url` (in `afk.toml`, `afk.local.toml` or both, even a malformed or wrong-typed one) loads with no error and no log line.
+- **Nothing had to be in place first (A2).** T15.7 is merged.
+- **The daemon's idle callback goes too (A3).** `NotifyIdle` in `internal/daemon` existed only to send the idle notice, so it is removed with its call sites. What the daemon decides (run, wait, hold, pause) does not change.
+- **What push keeps is renamed (A4).** The message is `notify.Message` (a title and a body; push never read ntfy's priority or click link), and the rule for which inbox items notify is `notify.ItemNotifies`, with the same set as before. The `…Path` link builders stay; the `…Link` builders that added `public_url` for ntfy go.
+- **`afk inbox add` no longer reads `afk.toml` to notify (A5).** It read the file only for `ntfy_url`, so its "afk.toml could not be read" warning goes with it.
+- **"afk cannot run this project" is now inbox-only (A6).** It is a non-blocking item, so under the M15 rule (notify only what blocks) it was ntfy-only, and with ntfy gone no phone hears of it. The owner was asked about it in T15.7's inbox question; if the answer is yes, a later task makes it push.
+- **ntfy goes from every current doc (A7).** That includes `docs/runbook-vm.md`, `CONTEXT.md`, the plugin README and a `.gitignore` comment, beyond the task's list. Earlier entries in this file and earlier task text in `docs/PLAN.md` are history and stay.
+- **This section belongs to the change (A8).**

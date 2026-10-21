@@ -139,7 +139,7 @@ A Mac is the "your laptop itself" row above: the agents can reach your files. Ru
 - Get afk: the one-line command from step 2. Or build it: `brew install git go`, then the `git clone` and `make install` lines from step 2.
 - Run `afk install` from a desktop login on the Mac, not over SSH: the service is a launchd agent loaded into your desktop session. Its packages step uses `brew install`.
 
-The service's details, and how to set it up by hand, are in [`contrib/README.md`](../contrib/README.md#on-macos). Desktop notifications (`afk notify`) work only on macOS; on Linux, use push notifications to your phone through ntfy (see [`afk inbox`](reference.md#afk-inbox--things-that-need-you)).
+The service's details, and how to set it up by hand, are in [`contrib/README.md`](../contrib/README.md#on-macos). Desktop notifications (`afk notify`) work only on macOS; on Linux, use web push to your phone (see [`afk inbox`](reference.md#afk-inbox--things-that-need-you)).
 
 ## Setting up by hand
 

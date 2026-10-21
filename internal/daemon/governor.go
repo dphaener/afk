@@ -281,13 +281,9 @@ func governorKind(kind string) bool {
 // Two readings under one unchanged verdict give the same sentence, so the
 // state is not written at all and this is never reached.
 //
-// A hold (the governor has no usable reading) is the one wait the owner is
-// told about here: nothing starts, nothing says when that ends, and it may be
-// theirs to fix. It is sent when the state becomes that hold, from another
-// kind or from another reason of the same kind, and the fixed sentence Decide
-// gives a hold is what makes "the same hold as before" readable from the
-// state file. A wait for no_launch or for a pause line sends nothing: it ends
-// by itself at the reset. Extra usage and a logged-out agent have their items.
+// Nothing is sent for a wait: a hold, a no_launch and a pause line all show in
+// the state file and the decision log. Extra usage and a logged-out agent have
+// their items.
 func (t *pass) governorChanged(prev daemonstate.State, had bool, st daemonstate.State) {
 	old := ""
 	if had {
@@ -297,12 +293,6 @@ func (t *pass) governorChanged(prev daemonstate.State, had bool, st daemonstate.
 	verdictChanged := old == st.Kind && st.Kind == string(ActUsageWait) && prev.Reason != st.Reason
 	if kindChanged || verdictChanged {
 		t.record("governor", st.Task, st.Session, st.Reason, st.Kind, ruleGovernor)
-	}
-
-	hold := st.Kind == string(ActUsageWait) && t.obs.Usage.Consulted && t.obs.Usage.Action == governor.ActionHold
-	sameHold := had && prev.Kind == st.Kind && prev.Reason == st.Reason
-	if hold && !sameHold && t.d.NotifyIdle != nil {
-		t.d.NotifyIdle(t.p, fmt.Sprintf("%s is holding new work", t.p.Name), st.Reason)
 	}
 }
 
@@ -365,10 +355,6 @@ func (t *pass) usagePause(a Action) daemonstate.State {
 	}
 	t.record("usage_pause", a.Task, a.Session, fmt.Sprintf("%s. What now?", upperFirst(a.Reason)),
 		"stop its agent; "+until, ruleGovernor)
-	if t.d.NotifyIdle != nil {
-		t.d.NotifyIdle(t.p, fmt.Sprintf("%s paused %s for usage", t.p.Name, a.Task),
-			fmt.Sprintf("%s. Nothing is lost: %s.", upperFirst(a.Reason), until))
-	}
 	return stateOf(a)
 }
 
