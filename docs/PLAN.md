@@ -3995,6 +3995,27 @@ and the things that block on them arrive as native notifications from it; ntfy i
 - **Acceptance:** the write-up covers at least an iPhone and one computer, each with a real
   notification received and tapped; every fault is fixed or filed.
 
+#### T15.10 — The installed app's colours from the design system
+- **Depends on:** T15.2
+- **Goal:** the installed app's splash screen and title bar use the icon's ink ground, as
+  `docs/design-system.md` (App icon) gives it, in place of the paper colour T15.2 chose.
+- **Background:** T15.2 set the manifest's `theme_color` and `background_color` to `#F6F5F1` (`appColor`
+  in `internal/web/manifest.go`, `docs/decisions.md` `## T15.2` A7). The design system's App icon section
+  gives both as `#1C1B18`, and colour is the design system's call (the reconcile of 2026-10-21, the
+  owner's choice).
+- **Scope:** `theme_color` and `background_color` in the manifest become `#1C1B18`, with `appColor`'s
+  comment saying why (the icon's ground, from the design system). The two per-scheme `theme-color` tags
+  in `layout.html` stay as they are. `docs/decisions.md` gets a `## T15.10` section saying it replaces
+  T15.2's A7.
+- **Must not:** change the `theme-color` tags in `layout.html`, the icons or anything else the manifest
+  holds.
+- **Acceptance:**
+  - A table test in `internal/web` reads the manifest and finds `theme_color` and `background_color`
+    both `#1C1B18`.
+  - `make check` green.
+  - Against a built binary with a scratch password: `curl` of `/manifest.webmanifest` shows both colours
+    as `#1C1B18`, and headless Chrome still reports the page installable.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
