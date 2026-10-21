@@ -3969,3 +3969,23 @@ T15.5 builds the Notifications page's This device card: the page at `/notificati
 - **Real delivery on a real device (verification for the owner).** In the review check, headless Chrome's push service answered 410 to the test, so real delivery is proved only by the first check's run. At the `https://` address, turn notifications on from a phone or computer, press Send test, and tap the notification it shows.
 - **A browser subscription the server does not list shows On at page load.** The first Send test repairs it. T15.6 reads the device list from the server and can show such a device as off.
 - **Sign-up checks only what `internal/webpush` checks.** A made-up endpoint with bad keys is accepted and fails only at Send test (502). This is a possible follow-up in `internal/webpush`.
+
+## T15.6
+
+T15.6 fills the Notifications page's second column with the list of signed-up devices, lets the owner remove any of them, and keeps the list up to date while the page is open.
+
+### What this task decided, and why
+
+- **The server knows this device by a cookie holding its id (A1).** When a device signs up, or when the page asks whether this browser is still listed, the server sets a small cookie with the device's id. The page, the API and every live refresh then mark this device and put it first on the server. The cookie never holds the push address, which stays out of every page, address and error.
+- **A device the server no longer lists shows Off (A2).** At page load the script asks the server whether its subscription is still listed. When it is not (it was removed from another device, or the push service reported it gone), the browser drops its subscription and the card shows Off. This also fixes T15.5's open point about a subscription the server does not list.
+- **Remove has a page twin and a confirm page (A3).** `POST /notifications/remove` (and `/api/notifications/remove`) removes one device by id, after `confirm=yes`, like removing a project. A device that is already gone counts as removed, not as an error. Without JavaScript, Remove opens a confirm page at `/notifications/remove?id=…`.
+- **One confirm sheet for every row (A4).** The rows hold only links, and one sheet outside the list is filled by the script, because the page's live updates never replace a part of the page that holds a form.
+- **Removing this device is Turn off (A5).** With JavaScript it unsubscribes the browser too. Without JavaScript it removes the entry, and the browser shows Off the next time the page's script runs.
+- **Only the new row flashes (A6).** Live updates used to flash the whole updated part of the page. A list that opts in now flashes only rows that were not there before.
+- **"Signed up Oct 2, 2026" (A7).** The date is written on the server, in UTC.
+- **Tests with each task; nothing had to be in place first (A8, A9).**
+
+### What is still open
+
+- **A phone that signed up before this change (verification for the owner).** Open the Notifications page on a phone or computer that already gets notifications and check that it shows in Signed-up devices with the This device badge after one load. Then remove it from another device and open the page on it again: it should show Off.
+- **A device added in the first second or two after the page opens can be missed by live updates.** The review saw one stay missing for about 12 seconds; the same change made later showed at once. This looks like the live updates' first reading, which is older than this change; a possible follow-up.

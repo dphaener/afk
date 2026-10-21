@@ -994,6 +994,7 @@ func TestPageLayout(t *testing.T) {
 		{name: "remove a project", page: "project_remove", path: "/projects/remove", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/" aria-current="true"`, navTitle: "Remove a project"},
 		{name: "remove a project, confirm", page: "project_remove_confirm", path: "/projects/remove/confirm?name=app", status: 200, bars: true, back: `href="/projects/remove" aria-label="Back to the project list"`, navTitle: "Remove a project"},
 		{name: "notifications", page: "notifications", path: "/notifications", status: 200, bars: true, back: `href="/" aria-label="Back to all projects"`, current: `href="/notifications" aria-current="page"`, navTitle: "Notifications"},
+		{name: "remove a device, confirm", page: "notifications_remove_confirm", path: "/notifications/remove?id=" + fixedDeviceID, status: 200, bars: true, back: `href="/notifications" aria-label="Back to Notifications"`, current: `href="/notifications" aria-current="true"`, navTitle: "Remove a device"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		{name: "refused", page: "signin", path: "/p/app", noCookie: true, status: 401},
 	}
@@ -1013,8 +1014,9 @@ func TestPageLayout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
 			// Push on, as the daemon always has it, so the Notifications
-			// page answers and every page's bars carry its link.
-			rg.withPush()
+			// page answers and every page's bars carry its link. One device
+			// is signed up, so the remove confirm page has one to name.
+			rg.withPush().seedFixed(t)
 			rg.seedInbox()
 			var rec *httptest.ResponseRecorder
 			if tc.noCookie {
@@ -1129,6 +1131,7 @@ func TestDesktopBackRow(t *testing.T) {
 		{name: "remove a project", page: "project_remove", path: "/projects/remove", status: 200, back: "/", label: "Back to all projects", title: "Remove a project"},
 		{name: "remove a project confirm", page: "project_remove_confirm", path: "/projects/remove/confirm?name=app", status: 200, back: "/projects/remove", label: "Back to the project list", title: "Remove a project"},
 		{name: "notifications", page: "notifications", path: "/notifications", status: 200, back: "/", label: "Back to all projects", title: "Notifications", meta: "For this whole afk, not one project"},
+		{name: "remove a device confirm", page: "notifications_remove_confirm", path: "/notifications/remove?id=" + fixedDeviceID, status: 200, back: "/notifications", label: "Back to Notifications", title: "Remove a device"},
 		{name: "error", page: "error", path: "/p/nope", status: 404},
 		// A wrong password redraws the sign-in form, which has no bars.
 		{name: "sign-in", page: "signin", path: "/signin", form: "password=wrong-wrong", status: 401},
@@ -1145,7 +1148,7 @@ func TestDesktopBackRow(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rg := newRig(t, Config{})
-			rg.withPush()
+			rg.withPush().seedFixed(t)
 			rg.seedInbox()
 			method := "GET"
 			if tc.form != "" {
@@ -1288,6 +1291,9 @@ func TestInPageBackLinksRemoved(t *testing.T) {
 			do:   get(func(rg *rig) { rg.planStatus[rg.root] = approvable() }, "/p/app/plan/approve"),
 			want: []string{`href="/p/app/plan" autofocus>`, "Approve and start"}},
 		{name: "notifications", do: get(func(rg *rig) { rg.withPush() }, "/notifications"), status: 200, back: `href="/" aria-label="Back to all projects"`},
+		{name: "remove a device, confirm", status: 200, back: `href="/notifications" aria-label="Back to Notifications"`,
+			do:   get(func(rg *rig) { rg.withPush().seedFixed(rg.t) }, "/notifications/remove?id="+fixedDeviceID),
+			want: []string{`<a class="btn btn--secondary" href="/notifications" autofocus>Keep it</a>`}},
 		{name: "session action", status: 200, back: `href="/p/app/sessions/finished" aria-label="Back to finished"`,
 			do: func(t *testing.T) result {
 				rg := actionRig(t)
@@ -1445,6 +1451,8 @@ func TestChromeFor(t *testing.T) {
 			want: chrome{Title: "Remove a project", Nav: "projects", Current: "true", Projects: 3, Back: "/projects/remove", BackLabel: "Back to the project list"}},
 		{name: "notifications", page: "notifications", view: NotificationsView{Label: "Firefox on Linux"}, method: "GET", path: "/notifications",
 			want: chrome{Title: "Notifications", Meta: "For this whole afk, not one project", Nav: "notifications", Current: "page", Projects: 3, Back: "/", BackLabel: "Back to all projects"}},
+		{name: "remove a device, confirm", page: "notifications_remove_confirm", view: NotificationsRemoveConfirmView{ID: fixedDeviceID, Label: "Chrome on Android"}, method: "GET", path: "/notifications/remove",
+			want: chrome{Title: "Remove a device", Nav: "notifications", Current: "true", Projects: 3, Back: "/notifications", BackLabel: "Back to Notifications"}},
 		{name: "error", page: "error", view: ErrorView{Status: 404}, method: "GET", path: "/p/nope",
 			want: chrome{Bare: true, Status: 404, Path: "/p/nope", Retry: "/p/nope"}},
 		{name: "error after a POST", page: "error", view: ErrorView{Status: 400}, method: "POST", path: "/p/app/inbox/x/answer",

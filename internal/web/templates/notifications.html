@@ -73,8 +73,42 @@
   </div>
 {{- end}}
 </section>
-{{- /* The signed-up devices list (T15.6) is drawn in this second column. */}}
-<div class="notifications__devices" id="push-devices"></div>
+{{- /* The signed-up devices list. The whole section, its head and count
+       included, is the live region, so a device added or removed elsewhere
+       changes the count too. It holds no form, input or button in a form:
+       live.js never swaps a region holding one, so removing a device is a
+       link here (the confirm is outside the region). Without JavaScript
+       the link goes to the confirm page; with it, the page's script opens
+       the shared dialog below instead. data-live-rows makes live.js flash
+       only a row that is new, not the whole list. */}}
+<div class="notifications__devices" id="push-devices">
+<section aria-labelledby="push-devices-title">
+<div id="push-device-list" data-live="devices" data-project="" aria-live="polite" data-live-rows>
+  <div class="section-head"><h2 class="section-head__title" id="push-devices-title">Signed-up devices</h2><span class="meta">{{len .Devices}}</span></div>
+{{- with .Devices}}
+  <ul class="list">
+  {{range .}}<li><div class="row" data-row-id="{{.ID}}">
+    <div class="row__main">
+      <div class="row__top"><span class="row__title">{{.Label}}</span>{{if .ThisDevice}} <span class="badge badge--this-device">This device</span>{{end}}</div>
+      {{if .SignedUp}}<span class="row__meta">Signed up {{.SignedUp}}</span>{{end}}
+    </div>
+    <div class="row__aside"><a class="btn btn--quiet" href="/notifications/remove?id={{.ID}}" data-push-remove data-device-id="{{.ID}}" data-device-label="{{.Label}}"{{if .ThisDevice}} data-this-device{{end}} aria-label="Remove {{.Label}}">Remove</a></div>
+  </div></li>
+  {{end}}</ul>
+{{- else}}
+  <div class="empty">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+    <p class="empty__title">No devices signed up</p>
+    <p>Turn notifications on from a phone or computer and it shows up here.</p>
+  </div>
+{{- end}}
 </div>
+</section>
+</div>
+</div>
+{{- /* The one confirm every row's Remove opens, outside the live list so
+       the list stays swappable. Its question and id are the script's to
+       fill for the row pressed; without the script it never opens. */}}
+{{template "session-sheet" .RemoveSheet}}
 </div>
 {{end}}

@@ -11,8 +11,23 @@
 //   [data-push-on]  [data-push-off]  [data-push-test]  [data-push-recheck]
 //                          the buttons
 //   [data-push-nojs]       the no-JavaScript notice; this script hides it
+//   #push-device-list      the signed-up devices list (a live.js region); the
+//                          script replaces it after removing this device and
+//                          after the load-time lookup marks this device
+//   a[data-push-remove]    a row's Remove link: data-device-id, data-device-label,
+//                          and data-this-device on this device's row. Without
+//                          the script it goes to the no-JavaScript confirm page
+//   #push-remove-sheet     the one shared confirm dialog; its -title, -body and
+//                          -form (hidden input name="id") are filled per row
 //
-// The state choice is a pure function so a node test can load this file.
+// It also removes devices: a row's Remove opens the shared dialog, filled
+// with the row's words, and Remove there posts the dialog's form (another
+// device) or runs Turn off (this device). At load, a browser holding a
+// subscription asks the server whether it is still listed, and turns itself
+// off when it is not: that is how a device removed elsewhere shows Off.
+//
+// The state choice, the dialog's words and the lookup's outcome are pure
+// functions so a node test can load this file.
 'use strict';
 
 // deviceState picks the one state to show. The order is the point: an
@@ -69,21 +84,62 @@ function urlBase64ToUint8Array(s) {
   return out;
 }
 
+// REMOVE_OTHER and REMOVE_THIS are the dialog's sentences. They are the
+// server's words (deviceRemoveOther and deviceRemoveThis in push.go, which
+// the no-JavaScript confirm page shows), so the dialog and the page say the
+// same thing; change them together.
+var REMOVE_OTHER = 'It stops getting notifications. To get them again, open afk on it and turn them on.';
+var REMOVE_THIS = 'This device stops getting notifications.';
+
+// removeSheetText is the shared dialog's question and sentence for one row.
+// Another device is told how to come back, since removing it does not stop
+// the browser there from asking again; this device is turned off in front
+// of the owner, so it needs no such line.
+function removeSheetText(label, thisDevice) {
+  return {
+    title: 'Remove ' + label + '?',
+    body: thisDevice ? REMOVE_THIS : REMOVE_OTHER
+  };
+}
+
+// afterLookup decides what the page does with the server's answer to "is
+// this browser's subscription still listed?" (POST /api/push/device), given
+// the id of the row the page marks as this device ('' for none):
+//   "off"     the server does not list it (removed from another device, or
+//             dropped by the push service): drop the browser's subscription
+//             and show Off, or the card would show On with nothing behind it
+//   "refresh" listed, but the page marks another row or none: the lookup has
+//             just set the device cookie, so a fresh copy of the list marks
+//             this device and puts it first
+//   "keep"    listed and already marked, or no usable answer (a failed
+//             fetch, a refusal): the page stays as the server drew it, since
+//             guessing Off on a network blip would drop a working device
+function afterLookup(answer, markedID) {
+  if (!answer || typeof answer !== 'object') {
+    return 'keep';
+  }
+  if (answer.listed === false) {
+    return 'off';
+  }
+  if (answer.listed === true && typeof answer.id === 'string' && answer.id !== '' && answer.id !== markedID) {
+    return 'refresh';
+  }
+  return 'keep';
+}
+
 if (typeof module !== 'undefined') {
   module.exports = {
     deviceState: deviceState,
     staleAfterTest: staleAfterTest,
     isAppleMobile: isAppleMobile,
-    urlBase64ToUint8Array: urlBase64ToUint8Array
+    urlBase64ToUint8Array: urlBase64ToUint8Array,
+    removeSheetText: removeSheetText,
+    afterLookup: afterLookup
   };
 }
 
 (function () {
   if (typeof document === 'undefined' || typeof window === 'undefined') {
-    return;
-  }
-  var card = document.querySelector('[data-push-card]');
-  if (!card) {
     return;
   }
 
@@ -93,14 +149,29 @@ if (typeof module !== 'undefined') {
     off: ['badge--off', 'Off']
   };
   var BADGE_CLASSES = ['badge--on', 'badge--blocked', 'badge--off'];
+  var SHEET_ID = 'push-remove-sheet';
+  var LIST_ID = 'push-device-list';
 
-  var nojs = card.querySelector('[data-push-nojs]') || document.querySelector('[data-push-nojs]');
-  if (nojs) {
-    nojs.hidden = true;
+  // card is found again after submit.js swaps the page (afk:swapped):
+  // removing another device posts the dialog's form, and the page it lands
+  // on brings a new card that nothing has drawn yet. Without a key the
+  // page has no card, and only the Remove links are handled.
+  var card = null;
+
+  function findCard() {
+    card = document.querySelector('[data-push-card]');
+    if (!card) {
+      return false;
+    }
+    var nojs = card.querySelector('[data-push-nojs]') || document.querySelector('[data-push-nojs]');
+    if (nojs) {
+      nojs.hidden = true;
+    }
+    return true;
   }
 
   function one(sel) {
-    return card.querySelector(sel);
+    return card ? card.querySelector(sel) : null;
   }
 
   function hasPush() {
@@ -136,6 +207,9 @@ if (typeof module !== 'undefined') {
   }
 
   function draw() {
+    if (!card) {
+      return Promise.resolve('');
+    }
     return readEnv().then(function (env) {
       var state = deviceState(env);
       Array.prototype.slice.call(card.querySelectorAll('[data-push-state]')).forEach(function (p) {
@@ -168,6 +242,10 @@ if (typeof module !== 'undefined') {
       toast.setAttribute('data-toast', '');
       region.appendChild(toast);
       document.body.appendChild(region);
+    }
+    var holder = toast.parentNode;
+    if (holder && holder.classList.contains('toast-region')) {
+      holder.hidden = false;
     }
     toast.textContent = '';
     setTimeout(function () {
@@ -206,6 +284,45 @@ if (typeof module !== 'undefined') {
     return (err && err.message) || 'Something went wrong. Try again.';
   }
 
+  // markedID is the id of the row the server marked as this device, or ''.
+  function markedID() {
+    var link = document.querySelector('#' + LIST_ID + ' a[data-push-remove][data-this-device]');
+    return link ? link.getAttribute('data-device-id') || '' : '';
+  }
+
+  // refreshList fetches this page again and puts its devices list in place
+  // of the one showing. live.js keeps the list current from the change
+  // stream, but the two moments here change nothing in the device file
+  // (the load lookup only sets the device cookie) or must not wait for the
+  // stream (this device just removed), so the list is fetched directly.
+  // A failed fetch leaves the list as it is; the stream catches it up.
+  function refreshList() {
+    return fetch(location.href, { credentials: 'same-origin', cache: 'no-store' }).then(function (res) {
+      if (!res.ok) {
+        throw new Error('status ' + res.status);
+      }
+      return res.text();
+    }).then(function (text) {
+      var fresh = new DOMParser().parseFromString(text, 'text/html').getElementById(LIST_ID);
+      var cur = document.getElementById(LIST_ID);
+      if (!fresh || !cur) {
+        return;
+      }
+      var hadFocus = cur.contains(document.activeElement);
+      var node = document.importNode(fresh, true);
+      cur.replaceWith(node);
+      // The focused Remove link may be gone with its row, so focus moves
+      // to the list's heading rather than falling back to the page's top.
+      var head = hadFocus ? node.querySelector('h2') : null;
+      if (head) {
+        head.setAttribute('tabindex', '-1');
+        head.focus({ preventScroll: true });
+      }
+    }).catch(function () {
+      return null;
+    });
+  }
+
   function turnOn(btn) {
     var done = busy(btn, 'Turning on');
     var key = card.getAttribute('data-public-key') || '';
@@ -237,16 +354,36 @@ if (typeof module !== 'undefined') {
     });
   }
 
-  function turnOff(btn) {
-    var done = busy(btn, 'Turning off');
-    currentSubscription().then(function (sub) {
-      if (!sub) {
+  // stopThisDevice is Turn off: the server forgets this browser's
+  // subscription (and clears the device cookie), then the browser drops it.
+  // Removing this device from the list runs the same code, so the card and
+  // the list can never disagree about whether it is signed up. The one
+  // difference is a browser with no subscription left that the list still
+  // marks (its permission was taken away, which drops the subscription
+  // without telling afk): there is no endpoint to send, so the row's id is
+  // removed by the remove address instead. Turn off passes no id; with no
+  // subscription it has nothing to do.
+  function stopThisDevice(id) {
+    return currentSubscription().then(function (sub) {
+      if (sub) {
+        return post('/api/push/unsubscribe', { endpoint: sub.endpoint }).then(function () {
+          return sub.unsubscribe();
+        });
+      }
+      if (!id) {
         return null;
       }
-      return post('/api/push/unsubscribe', { endpoint: sub.endpoint }).then(function () {
-        return sub.unsubscribe();
+      return post('/api/notifications/remove', { id: id, confirm: true }).then(function (r) {
+        if (!r.ok) {
+          throw new Error(r.data.error || 'afk could not remove this device. Try again.');
+        }
       });
-    }).catch(function (err) {
+    });
+  }
+
+  function turnOff(btn) {
+    var done = busy(btn, 'Turning off');
+    stopThisDevice('').catch(function (err) {
       say(failure(err));
     }).then(function () {
       done();
@@ -289,10 +426,42 @@ if (typeof module !== 'undefined') {
     });
   }
 
-  card.addEventListener('click', function (ev) {
+  // lookUp asks the server whether this browser's subscription is still
+  // listed (see afterLookup). Only a browser holding a subscription asks:
+  // one without has nothing to look up and already shows Off. The endpoint
+  // goes in the POST body only, never in the page or an address.
+  function lookUp() {
+    currentSubscription().then(function (sub) {
+      if (!sub) {
+        return null;
+      }
+      return post('/api/push/device', { endpoint: sub.endpoint }).then(function (r) {
+        var marked = markedID();
+        var next = afterLookup(r.ok ? r.data : null, marked);
+        if (next === 'refresh') {
+          return refreshList();
+        }
+        if (next !== 'off') {
+          return null;
+        }
+        // The lookup cleared the device cookie, so a row still marked as
+        // this device is redrawn unmarked.
+        return sub.unsubscribe().catch(function () {
+          return null;
+        }).then(function () {
+          return Promise.all([draw(), marked ? refreshList() : null]);
+        });
+      });
+    }).catch(function () {
+      // A failed lookup leaves the page as the server drew it.
+      return null;
+    });
+  }
+
+  document.addEventListener('click', function (ev) {
     var t = ev.target;
     var btn = t && t.closest ? t.closest('button') : null;
-    if (!btn || btn.disabled || !card.contains(btn)) {
+    if (!btn || btn.disabled || !card || !card.contains(btn)) {
       return;
     }
     if (btn.hasAttribute('data-push-on')) {
@@ -306,5 +475,91 @@ if (typeof module !== 'undefined') {
     }
   });
 
-  draw();
+  // A row's Remove opens the shared dialog filled for that row. The click
+  // is delegated on the document because live.js replaces the list's rows.
+  // A modified or middle click, or a browser without <dialog>, follows the
+  // link to the no-JavaScript confirm page instead. Every word goes in with
+  // textContent, so a device label is shown as text, never as markup.
+  document.addEventListener('click', function (ev) {
+    var link = ev.target && ev.target.closest ? ev.target.closest('a[data-push-remove]') : null;
+    if (!link || ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) {
+      return;
+    }
+    var sheet = document.getElementById(SHEET_ID);
+    var title = document.getElementById(SHEET_ID + '-title');
+    var body = document.getElementById(SHEET_ID + '-body');
+    var form = document.getElementById(SHEET_ID + '-form');
+    var input = form ? form.querySelector('input[name="id"]') : null;
+    if (!sheet || typeof sheet.showModal !== 'function' || !title || !body || !input) {
+      return;
+    }
+    ev.preventDefault();
+    var thisDevice = link.hasAttribute('data-this-device');
+    var text = removeSheetText(link.getAttribute('data-device-label') || '', thisDevice);
+    title.textContent = text.title;
+    var p = body.querySelector('p');
+    if (!p) {
+      p = document.createElement('p');
+      body.appendChild(p);
+    }
+    p.textContent = text.body;
+    input.value = link.getAttribute('data-device-id') || '';
+    if (thisDevice) {
+      sheet.setAttribute('data-this-device', '');
+    } else {
+      sheet.removeAttribute('data-this-device');
+    }
+    sheet.showModal();
+    // Keep it starts focused (autofocus), set again here for browsers that
+    // skip autofocus inside a dialog.
+    var safe = sheet.querySelector('[autofocus]');
+    if (safe) {
+      safe.focus();
+    }
+  });
+
+  // Remove in the dialog for this device runs Turn off instead of posting
+  // the form. The listener is on the capture phase so it runs before
+  // submit.js (which would post the form by fetch) and confirm.js (which
+  // would put a spinner on the button) see the submit; stopping it there
+  // keeps both out. For another device the submit goes on untouched: the
+  // form posts, the server removes the entry and the page comes back with
+  // its toast.
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target;
+    var sheet = document.getElementById(SHEET_ID);
+    if (!form || form.id !== SHEET_ID + '-form' || !sheet || !sheet.hasAttribute('data-this-device')) {
+      return;
+    }
+    ev.preventDefault();
+    ev.stopPropagation();
+    var btn = document.querySelector('button[form="' + SHEET_ID + '-form"]');
+    if (btn && btn.disabled) {
+      return;
+    }
+    var input = form.querySelector('input[name="id"]');
+    var done = btn ? busy(btn, 'Removing') : function () {};
+    stopThisDevice(input ? input.value : '').then(function () {
+      say('Device removed.');
+    }, function (err) {
+      say(failure(err));
+    }).then(function () {
+      done();
+      if (sheet.open) {
+        sheet.close();
+      }
+      return Promise.all([draw(), refreshList()]);
+    });
+  }, true);
+
+  document.addEventListener('afk:swapped', function () {
+    if (findCard()) {
+      draw();
+    }
+  });
+
+  if (findCard()) {
+    draw();
+    lookUp();
+  }
 })();

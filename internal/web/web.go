@@ -565,9 +565,13 @@ var routes = []route{
 	// Deps.RefreshUsage. A POST of its own, so GET /usage stays a read that
 	// can never start one, and POST /usage stays not found.
 	{http.MethodPost, "/usage/refresh", (*server).refreshUsage},
-	// The Notifications page: machine-wide, like Usage. Its three JSON
-	// POSTs are not here (see build and push.go).
+	// The Notifications page: machine-wide, like Usage. Its four JSON-only
+	// push POSTs are not here (see build and push.go).
 	{http.MethodGet, "/notifications", (*server).notifications},
+	// Removing a device from it: a confirmed form POST with an /api twin,
+	// unlike the push POSTs, because no PushManager is needed to take an
+	// entry off the list (see push.go).
+	{http.MethodPost, "/notifications/remove", (*server).removeDevice},
 	{http.MethodGet, "/p/{project}", (*server).project},
 	// The plan view. A plan on the review list, whose project is not a
 	// configured one yet, is served here too (findPlanProject).
@@ -689,8 +693,9 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("POST /api/p/{project}/plan/chat", s.planReply)
 	mux.HandleFunc("GET /p/{project}/plan/chat", s.planChat)
 	mux.HandleFunc("POST /p/{project}/plan/chat", s.planChatReply)
-	// The push sign-up, sign-off and test are JSON only: a push subscription
-	// is made by the browser's PushManager, which no form can reach, so they
+	// The push sign-up, sign-off, test and listed-or-not lookup are JSON
+	// only: a push subscription is made by the browser's PushManager, which
+	// no form can reach, so they
 	// have no page twin and stay out of routes, which would give them one.
 	// guard covers them like every other POST (the cookie, then checkPost's
 	// Origin check and size limit); auth_test.go checks each needs a sign-in,
@@ -698,6 +703,7 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("POST /api/push/subscribe", s.pushSubscribe)
 	mux.HandleFunc("POST /api/push/unsubscribe", s.pushUnsubscribe)
 	mux.HandleFunc("POST /api/push/test", s.pushTest)
+	mux.HandleFunc("POST /api/push/device", s.pushDevice)
 	// The confirm page behind Pause and Resume is HTML only, so it stays out
 	// of routes for the same reason.
 	mux.HandleFunc("GET /p/{project}/confirm/{action}", s.confirm)
@@ -718,6 +724,8 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("GET /projects/add", s.addProjectPage)
 	mux.HandleFunc("GET /projects/remove", s.removeProjectPage)
 	mux.HandleFunc("GET /projects/remove/confirm", s.removeProjectConfirmPage)
+	// And the no-JS confirm page behind a device's Remove.
+	mux.HandleFunc("GET /notifications/remove", s.removeDevicePage)
 	// Static files likewise have no JSON form and no /api twin. {file...}
 	// takes the rest of the path, so the icons in static/icons/ are served
 	// like every other file (see loadAssets).

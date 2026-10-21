@@ -402,8 +402,8 @@ var refusedWays = []struct {
 // without a sign-in would let anyone who can reach the port stop a build or
 // answer for the owner, so the test also checks nothing was changed.
 func TestAuthEveryRouteNeedsACookie(t *testing.T) {
-	if len(routes) != 26 {
-		t.Fatalf("the route table has %d routes; the plan lists 26", len(routes))
+	if len(routes) != 27 {
+		t.Fatalf("the route table has %d routes; the plan lists 27", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -487,11 +487,12 @@ func TestAuthEveryRouteNeedsACookie(t *testing.T) {
 			// and so is the GitHub answer, since no folder was offered
 			// (400, not_offered). Adding a project is refused for its missing
 			// folder (400), and removing one for its missing name (400,
-			// not_listed), both before their seam. None is the catch-all's 404.
+			// not_listed), both before their seam. Removing a device is
+			// refused for its missing id (400). None is the catch-all's 404.
 			want := http.StatusOK
 			if strings.HasSuffix(rt.path, "/answer") || strings.HasSuffix(rt.path, "/status") ||
 				strings.HasSuffix(rt.path, "/restart") || strings.HasSuffix(rt.path, "/plan/change") || rt.path == "/plan/new" || rt.path == "/plan/new/github" ||
-				rt.path == "/projects/add" || rt.path == "/projects/remove" ||
+				rt.path == "/projects/add" || rt.path == "/projects/remove" || rt.path == "/notifications/remove" ||
 				(rt.method == http.MethodPost && rt.path == "/p/{project}/sessions") {
 				want = http.StatusBadRequest
 			}
@@ -524,20 +525,22 @@ func TestAuthPlanReplyRouteNeedsACookie(t *testing.T) {
 	}
 }
 
-// TestAuthPushRoutesNeedACookie covers the three push POSTs, which are JSON
+// TestAuthPushRoutesNeedACookie covers the four push POSTs, which are JSON
 // only and so not in the route table, with the route walk's refusals plus a
 // foreign Origin with the right cookie. Each request carries a body the
 // handler would act on, so a refusal cannot be the body's fault.
 //
 // Load-bearing: every row. A subscribe that went through without a sign-in
 // would put a stranger's browser on the list that gets the owner's notices;
-// a test that went through would let anyone make afk send; so no row may
-// write the device list or call PushSend.
+// a test that went through would let anyone make afk send; a device lookup
+// that went through would tell a stranger whether an endpoint is listed and
+// hand out its id; so no row may write the device list or call PushSend.
 func TestAuthPushRoutesNeedACookie(t *testing.T) {
 	bodies := map[string]string{
 		"/api/push/subscribe":   phoneSubscription,
 		"/api/push/unsubscribe": `{"endpoint":"` + phoneEndpoint + `"}`,
 		"/api/push/test":        `{"endpoint":"` + phoneEndpoint + `"}`,
+		"/api/push/device":      `{"endpoint":"` + phoneEndpoint + `"}`,
 	}
 	type way struct {
 		name string
@@ -551,7 +554,7 @@ func TestAuthPushRoutesNeedACookie(t *testing.T) {
 	for _, bad := range refusedWays {
 		ways = append(ways, way{name: bad.name, want: http.StatusUnauthorized, with: bad.with})
 	}
-	for _, path := range []string{"/api/push/subscribe", "/api/push/unsubscribe", "/api/push/test"} {
+	for _, path := range []string{"/api/push/subscribe", "/api/push/unsubscribe", "/api/push/test", "/api/push/device"} {
 		for _, w := range ways {
 			t.Run(path+" "+w.name, func(t *testing.T) {
 				rg := newRig(t, Config{})
@@ -579,8 +582,72 @@ func TestAuthPushRoutesNeedACookie(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(push.dir, webpush.KeyFileName)); err == nil {
 					t.Errorf("a refused request made the push key")
 				}
+				if c := deviceCookieSet(rec); c != nil {
+					t.Errorf("a refused request set the device cookie: %+v", c)
+				}
 			})
 		}
+	}
+}
+
+// TestAuthPushRemoveNeedsACookie covers removing a device, page and API,
+// with a body the handler would act on (the confirm and a listed id).
+//
+// Load-bearing: the refused rows. A remove that went through without a
+// sign-in, or from another site's page while the owner is signed in, would
+// let a stranger silence the owner's devices; the list's bytes must not
+// change. The "same site" rows are the control: the same body removes the
+// device, so a refused row cannot be refused for some other reason. The route
+// walk already sends the /api twin without a cookie, but with no id; these
+// rows add the page address, the foreign Origin and a body that would work.
+func TestAuthPushRemoveNeedsACookie(t *testing.T) {
+	tests := []struct {
+		name string
+		req  pushReq
+		want int
+	}{
+		{name: "page, no cookie", req: pushReq{path: "/notifications/remove", form: true, noCookie: true}, want: http.StatusUnauthorized},
+		{name: "page, another site", req: pushReq{path: "/notifications/remove", form: true, origin: "https://evil.example"}, want: http.StatusForbidden},
+		{name: "page, same site", req: pushReq{path: "/notifications/remove", form: true}, want: http.StatusSeeOther},
+		{name: "API, no cookie", req: pushReq{path: "/api/notifications/remove", noCookie: true}, want: http.StatusUnauthorized},
+		{name: "API, another site", req: pushReq{path: "/api/notifications/remove", origin: "https://evil.example"}, want: http.StatusForbidden},
+		{name: "API, same site", req: pushReq{path: "/api/notifications/remove"}, want: http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			push := rg.withPush()
+			push.seed(t, phoneEndpoint, "phone")
+			id := push.idOf(phoneEndpoint)
+			before, err := os.ReadFile(filepath.Join(push.dir, webpush.DevicesFileName))
+			must(t, err)
+			req := tc.req
+			req.device = id
+			req.body = `{"id":"` + id + `","confirm":true}`
+			if req.form {
+				req.body = "confirm=yes&id=" + id
+			}
+			rec := req.send(rg.h)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d\n%s", rec.Code, tc.want, rec.Body.String())
+			}
+			after, err := os.ReadFile(filepath.Join(push.dir, webpush.DevicesFileName))
+			must(t, err)
+			refused := tc.want == http.StatusUnauthorized || tc.want == http.StatusForbidden
+			if refused {
+				if string(after) != string(before) {
+					t.Errorf("the device list changed on a refused request")
+				}
+				if c := deviceCookieSet(rec); c != nil {
+					t.Errorf("a refused request touched the device cookie: %+v", c)
+				}
+			} else if push.idOf(phoneEndpoint) != "" {
+				t.Errorf("the same body from the same site did not remove the device")
+			}
+			if len(push.calls) != 0 {
+				t.Errorf("PushSend ran %d times", len(push.calls))
+			}
+		})
 	}
 }
 

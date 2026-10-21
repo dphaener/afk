@@ -1,18 +1,23 @@
 // Table tests of notifications.js (deviceState, staleAfterTest,
-// isAppleMobile, urlBase64ToUint8Array) and sw.js's safePath. Load-bearing
+// isAppleMobile, urlBase64ToUint8Array, removeSheetText, afterLookup) and
+// sw.js's safePath. Load-bearing
 // rows: the "beats" rows of deviceState, which pin the order (http first,
 // then the iPhone home-screen need, then unsupported, then blocked, then
 // subscribed); the 404 and 410 rows of staleAfterTest, which drop a
 // subscription the server no longer lists so the card can offer Turn on
 // again, and the 502 row, which keeps a listed device signed up through a
 // passing push-service failure; and the "//evil" and "/\\evil" rows of
-// safePath, which stop a push from opening another site.
+// safePath, which stop a push from opening another site; the "not listed"
+// row of afterLookup, which is how a device removed elsewhere shows Off, and
+// its "failed" rows, which keep a working device on through a network blip
+// or a refusal; and removeSheetText's this-device row, whose sentence must
+// match the server's deviceRemoveThis.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { deviceState, staleAfterTest, isAppleMobile, urlBase64ToUint8Array } = require('../static/notifications.js');
+const { deviceState, staleAfterTest, isAppleMobile, urlBase64ToUint8Array, removeSheetText, afterLookup } = require('../static/notifications.js');
 const { safePath } = require('../static/sw.js');
 
 const ok = { secure: true, ios: false, standalone: false, hasPush: true, permission: 'default', subscribed: false };
@@ -95,6 +100,56 @@ test('safePath', async (t) => {
   for (const r of pathRows) {
     await t.test(r.name, () => {
       assert.equal(safePath(r.in), r.want);
+    });
+  }
+});
+
+// The sentences are the server's (deviceRemoveOther and deviceRemoveThis in
+// push.go), so the dialog says what the no-JavaScript confirm page says.
+const sheetRows = [
+  {
+    name: 'another device',
+    label: 'Firefox on Windows',
+    thisDevice: false,
+    want: { title: 'Remove Firefox on Windows?', body: 'It stops getting notifications. To get them again, open afk on it and turn them on.' },
+  },
+  {
+    name: 'this device',
+    label: 'Chrome on Android',
+    thisDevice: true,
+    want: { title: 'Remove Chrome on Android?', body: 'This device stops getting notifications.' },
+  },
+  {
+    name: 'markup in a label stays text',
+    label: '<b>x</b>',
+    thisDevice: false,
+    want: { title: 'Remove <b>x</b>?', body: 'It stops getting notifications. To get them again, open afk on it and turn them on.' },
+  },
+];
+
+test('removeSheetText', async (t) => {
+  for (const r of sheetRows) {
+    await t.test(r.name, () => {
+      assert.deepEqual(removeSheetText(r.label, r.thisDevice), r.want);
+    });
+  }
+});
+
+const lookupRows = [
+  { name: 'not listed', answer: { listed: false }, marked: '', want: 'off' },
+  { name: 'not listed though marked', answer: { listed: false }, marked: 'a1', want: 'off' },
+  { name: 'listed and unmarked', answer: { listed: true, id: 'a1' }, marked: '', want: 'refresh' },
+  { name: 'listed but another row marked', answer: { listed: true, id: 'a1' }, marked: 'b2', want: 'refresh' },
+  { name: 'listed and already marked', answer: { listed: true, id: 'a1' }, marked: 'a1', want: 'keep' },
+  { name: 'listed with no id', answer: { listed: true }, marked: '', want: 'keep' },
+  { name: 'failed fetch', answer: null, marked: 'a1', want: 'keep' },
+  { name: 'failed refusal body', answer: { error: 'Nothing changed' }, marked: '', want: 'keep' },
+];
+
+test('afterLookup', async (t) => {
+  for (const r of lookupRows) {
+    await t.test(r.name, () => {
+      assert.equal(afterLookup(r.answer, r.marked), r.want);
     });
   }
 });

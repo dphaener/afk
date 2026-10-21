@@ -20,6 +20,7 @@ import (
 	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // liveFixture is two temp-folder projects ("app" and "other") and the fake
@@ -35,11 +36,15 @@ type liveFixture struct {
 	refreshGen uint64
 	// chat, when set, is what the fake PlanChat returns; nil leaves Deps.PlanChat nil.
 	chat *planchat.Chat
+	// pushDir is Deps.PushDir, a temp folder holding push-devices.json. It
+	// is in deps() from the start because the hub copies Deps at build(),
+	// so a folder set on a built rig would never be read by the stream.
+	pushDir string
 }
 
 func newLiveFixture(t *testing.T) *liveFixture {
 	t.Helper()
-	fx := &liveFixture{t: t, app: t.TempDir(), other: t.TempDir()}
+	fx := &liveFixture{t: t, app: t.TempDir(), other: t.TempDir(), pushDir: t.TempDir()}
 	fx.projects = []Project{{Name: "app", Root: fx.app}, {Name: "other", Root: fx.other}}
 	fx.sessions = []SessionView{{Name: "t1-2", Phase: "executing", HostRunning: true}}
 	fx.usage = usagestate.File{At: testNow, Source: "probe", Windows: []usagestate.Window{{Kind: "session", UsedPct: 10}}}
@@ -67,8 +72,26 @@ func (fx *liveFixture) deps() Deps {
 			}
 			return fx.sessions
 		},
-		Usage: func() (usagestate.File, bool) { return fx.usage, true },
-		Now:   func() time.Time { return testNow },
+		Usage:   func() (usagestate.File, bool) { return fx.usage, true },
+		Now:     func() time.Time { return testNow },
+		PushDir: fx.pushDir,
+	}
+}
+
+// addDevice signs a device up in the fixture's push folder.
+func (fx *liveFixture) addDevice(endpoint, label string) {
+	fx.t.Helper()
+	sub := webpush.Subscription{Endpoint: endpoint, P256dh: "p256dh-" + label, Auth: "auth-" + label}
+	if _, err := webpush.AddDevice(fx.pushDir, sub, label, testNow, nil); err != nil {
+		fx.t.Fatal(err)
+	}
+}
+
+// removeDevice takes the device with this endpoint off the fixture's list.
+func (fx *liveFixture) removeDevice(endpoint string) {
+	fx.t.Helper()
+	if _, err := webpush.RemoveEndpoint(fx.pushDir, endpoint); err != nil {
+		fx.t.Fatal(err)
 	}
 }
 
@@ -124,6 +147,9 @@ const damagedLedger = "{this is not a ledger"
 //     changes when the agent speaks, so without the fold an open chat screen
 //     never updates; "the same chat read twice" keeps it from swapping every
 //     tick; "no PlanChat" keeps a page built without the reader unchanged.
+//   - the "devices" rows: a device signing up or removed elsewhere must
+//     reach an open Notifications page, as a machine-wide event, and the
+//     same list twice must not swap it every tick.
 //   - "sorted": the order is what lets a page and a test rely on it.
 func TestChangedParts(t *testing.T) {
 	cases := []struct {
@@ -268,6 +294,26 @@ func TestChangedParts(t *testing.T) {
 			want: []change{{"", partUsage}},
 		},
 		{
+			name: "devices: a device signs up, machine-wide",
+			edit: func(fx *liveFixture) { fx.addDevice(phoneEndpoint, "phone") },
+			want: []change{{"", partDevices}},
+		},
+		{
+			name: "devices: a device is removed",
+			setup: func(fx *liveFixture) {
+				fx.addDevice(phoneEndpoint, "phone")
+				fx.addDevice(laptopEndpoint, "laptop")
+			},
+			edit: func(fx *liveFixture) { fx.removeDevice(phoneEndpoint) },
+			want: []change{{"", partDevices}},
+		},
+		{
+			name:    "devices: the same list read twice",
+			setup:   func(fx *liveFixture) { fx.addDevice(phoneEndpoint, "phone") },
+			edit:    func(*liveFixture) {},
+			wantNil: true,
+		},
+		{
 			name:    "first tick",
 			edit:    func(fx *liveFixture) { fx.addItem(fx.app, "abc234", "Which database?") },
 			noPrev:  true,
@@ -321,6 +367,37 @@ func TestChangedParts(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("changedParts = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPushDevicesPartInSnapshot covers when the snapshot carries the devices
+// part at all. Load-bearing: "push off" — a server without a push folder has
+// no list to watch, and reading one from an empty path would read the
+// working directory's file instead.
+func TestPushDevicesPartInSnapshot(t *testing.T) {
+	tests := []struct {
+		name    string
+		pushDir func(t *testing.T) string
+		want    bool
+	}{
+		{name: "push on", pushDir: func(t *testing.T) string { return t.TempDir() }, want: true},
+		{name: "push off", pushDir: func(*testing.T) string { return "" }, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newLiveFixture(t)
+			fx.pushDir = tc.pushDir(t)
+			snap := fx.read()
+			_, got := snap[machineProject][partDevices]
+			if got != tc.want {
+				t.Errorf("devices part present = %v, want %v", got, tc.want)
+			}
+			for _, p := range fx.projects {
+				if _, in := snap[p.Name][partDevices]; in {
+					t.Errorf("project %s carries a devices part; it is machine-wide", p.Name)
+				}
 			}
 		})
 	}
@@ -557,6 +634,27 @@ func TestEvents(t *testing.T) {
 		}
 	})
 
+	// Load-bearing: the wiring between push-devices.json and an open
+	// Notifications page. A device signing up on another phone must reach
+	// it as a machine-wide devices event.
+	t.Run("a device signing up sends a devices event", func(t *testing.T) {
+		rg := newLiveRig(t, 0)
+		srv := httptest.NewServer(rg.h)
+		t.Cleanup(srv.Close)
+		st := openStream(t, srv)
+		st.until("retry: 3000")
+		rg.syncPing(st)
+		rg.addDevice(phoneEndpoint, "phone")
+		rg.tick()
+		if got := st.until(""); !reflect.DeepEqual(got, []string{"event: change", `data: {"project":"","part":"devices"}`}) {
+			t.Errorf("event = %q", got)
+		}
+		rg.removeDevice(phoneEndpoint)
+		if got := events(rg.syncPing(st)); !reflect.DeepEqual(got, []string{"event: change", `data: {"project":"","part":"devices"}`}) {
+			t.Errorf("after a removal the stream sent %q", got)
+		}
+	})
+
 	t.Run("no change sends nothing", func(t *testing.T) {
 		rg := newLiveRig(t, 0)
 		srv := httptest.NewServer(rg.h)
@@ -702,6 +800,7 @@ func TestFormatLive(t *testing.T) {
 	}{
 		{"change", liveMsg{change: change{"my app", partLedger}}, "event: change\ndata: {\"project\":\"my app\",\"part\":\"ledger\"}\n\n"},
 		{"machine-wide", liveMsg{change: change{"", partUsage}}, "event: change\ndata: {\"project\":\"\",\"part\":\"usage\"}\n\n"},
+		{"machine-wide devices", liveMsg{change: change{"", partDevices}}, "event: change\ndata: {\"project\":\"\",\"part\":\"devices\"}\n\n"},
 		{"ping", liveMsg{ping: true}, ": ping\n\n"},
 	}
 	for _, tc := range cases {
