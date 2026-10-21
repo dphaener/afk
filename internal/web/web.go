@@ -10,11 +10,13 @@
 // answer inbox questions and pause a build: anyone who can reach the port
 // without the cookie a right password earns must learn nothing and change
 // nothing. The only things served without it are the sign-in form and its
-// POST, and the two stylesheets the form links (see isRefusedPageStyle in
-// auth.go), which hold nothing but looks. The password record is read
-// through Deps.Password on every check, and New refuses a server without
-// that seam, so a server with no way to check a sign-in cannot be built by
-// mistake.
+// POST, the two stylesheets the form links (see isRefusedPageStyle in
+// auth.go), which hold nothing but looks, and the app files a browser
+// fetches without the cookie to install the page: the manifest, the icons
+// and the service worker (see isPublicAppFile), which hold no data. The
+// password record is read through Deps.Password on every check, and New
+// refuses a server without that seam, so a server with no way to check a
+// sign-in cannot be built by mistake.
 //
 // Handlers read the files fresh on every request and keep no cache. The
 // daemon, the sessions and the `afk` commands rewrite those files all the
@@ -690,8 +692,17 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	mux.HandleFunc("GET /projects/add", s.addProjectPage)
 	mux.HandleFunc("GET /projects/remove", s.removeProjectPage)
 	mux.HandleFunc("GET /projects/remove/confirm", s.removeProjectConfirmPage)
-	// Static files likewise have no JSON form and no /api twin.
-	mux.HandleFunc("GET /static/{hash}/{file}", s.static)
+	// Static files likewise have no JSON form and no /api twin. {file...}
+	// takes the rest of the path, so the icons in static/icons/ are served
+	// like every other file (see loadAssets).
+	mux.HandleFunc("GET /static/{hash}/{file...}", s.static)
+	// The manifest and the service worker are the app's two fixed
+	// addresses: a browser looks for them where the page's head and
+	// sw-register.js say, so they cannot carry a hash, and they have no JSON
+	// form and no /api twin. They are served without a cookie (see
+	// isPublicAppFile).
+	mux.HandleFunc("GET "+manifestPath, s.manifest)
+	mux.HandleFunc("GET "+serviceWorkerPath, s.serviceWorker)
 	// Everything else, including a known address asked for with the wrong
 	// method, gets the same plain sentence as any other error instead of the
 	// standard library's bare "404 page not found".

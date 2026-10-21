@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-// staticFiles holds the page's own script (and room for a stylesheet) inside
-// the binary, so the page needs no files next to it, no build step and no
+// staticFiles holds the page's own scripts, stylesheets and icons inside the
+// binary, so the page needs no files next to it, no build step and no
 // outside address. Only files in the static folder are reachable: the
 // handler looks names up in a map built from this folder, never in a path
 // the request supplies.
@@ -36,9 +36,16 @@ type asset struct {
 var assetTypes = map[string]string{
 	".js":  "text/javascript; charset=utf-8",
 	".css": "text/css; charset=utf-8",
+	// The app icons in static/icons/ (see manifest.go). An SVG is served as
+	// a document of its own, so the content policy's default-src 'none'
+	// still stops any script inside one opened directly.
+	".png": "image/png",
+	".svg": "image/svg+xml",
 }
 
-// loadAssets reads and hashes every embedded static file once, at New.
+// loadAssets reads and hashes every embedded static file once, at New. A file
+// in a sub-folder keeps the folder in its name ("icons/icon-512.png"), which
+// is why the static route takes the rest of the path as the name.
 func loadAssets() (map[string]asset, error) {
 	out := map[string]asset{}
 	err := fs.WalkDir(staticFiles, "static", func(p string, d fs.DirEntry, err error) error {
@@ -70,7 +77,10 @@ func (s *server) assetURL(name string) string {
 	return "/static/" + s.assets[name].hash + "/" + name
 }
 
-// static serves one embedded file. A name the binary does not hold, or a hash
+// static serves one embedded file. The name is everything after the hash, a
+// sub-folder included, and is only ever a key into the map: a name the map
+// does not hold (an empty one, a folder, a ".." path) is not found. A name
+// the binary does not hold, or a hash
 // that is not the file's current one, is a 404 with no-store: an immutable
 // answer is only right for the exact address that names the content, and a
 // stale address cached as a miss for a year would hide the new file.

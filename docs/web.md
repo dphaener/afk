@@ -15,6 +15,23 @@ The one thing it does not do is show an agent's terminal. To watch an agent work
 
 The Pause and Resume buttons hold and release the daemon. A pause stops new tasks from starting; a task that is already running carries on and finishes.
 
+## Install it as an app
+
+You can put the page on your phone's home screen or your computer's dock, and open it like any other app, with afk's icon and no browser address bar. Installing needs an `https://` address. The page has no TLS of its own, so reach it through Tailscale's HTTPS or a reverse proxy, and set `public_url` in `config.toml` to that address (see [configuration.md](configuration.md)). Open the page at that address to install it. A plain `http://` address does not offer the install.
+
+**On an iPhone or iPad:**
+
+1. Open the page in Safari. Other iPhone browsers cannot add a home screen app.
+2. Tap the **Share** button (the square with an arrow pointing up).
+3. Tap **Add to Home Screen**, then **Add**.
+4. Open afk from its new icon on the home screen.
+
+**On an Android phone:** open the page in Chrome, tap the menu (the three dots), then tap **Install app** (or **Add to Home screen**, on older versions).
+
+**On a computer:** in Chrome or Edge, click the install icon at the right end of the address bar, then **Install**. In Safari on a Mac, choose **File**, then **Add to Dock**.
+
+The app opens in its own window with afk's icon. It shows the same live data as the browser tab. Nothing is kept for offline use, so with no connection it has nothing new to show. If it asks for the password, type the one you set with `afk web password`.
+
 ## Reference
 
 `afk daemon` can also serve a small web page, so you can see what it is doing and unblock it from a phone. It shows each project's current task, the usage reading and the inbox, lets you answer an inbox item, has Pause and Resume buttons, plans a new project in a folder you name, starts extend, amend, reconcile or fix on a project's plan, and acts on a project's sessions: it starts a new autonomous session, restarts a stopped or stuck one, sets a session's label, and cleans a finished one up. Each session action asks you to confirm first. It also approves a new plan that is waiting for review, behind a confirm too (see `/p/<project>/plan` below). It is off until you set a password with `afk web password`.
@@ -67,6 +84,6 @@ With JavaScript off, each action goes to a confirm page with the same words and 
 curl -H "Cookie: afk_web=<the value of your browser's afk_web cookie>" http://127.0.0.1:4253/api/p/my-app
 ```
 
-Every address needs a sign-in, including ones that do not exist: a page with no valid cookie shows the sign-in form, and an `/api` address answers 401 with JSON. A POST whose `Origin` header names another site, or no site at all (`null`), is refused with 403, and a body over 64 KB with 413. The page sends `Referrer-Policy: same-origin`, so your browser tells the page that its own forms are its own, and passes the page's address to no other site. It is not `no-referrer` on purpose: under that policy a browser sends `Origin: null` on every POST, the page's own forms included, and every button on the page would answer 403.
+Every address needs a sign-in, including ones that do not exist: a page with no valid cookie shows the sign-in form, and an `/api` address answers 401 with JSON. The only exceptions are the app's own files: the manifest at `/manifest.webmanifest`, its icons and the service worker at `/sw.js` are served without a sign-in, for GET and HEAD requests only, because the browser fetches them without the cookie and they hold no data. Every other address, and every POST, still needs it. A POST whose `Origin` header names another site, or no site at all (`null`), is refused with 403, and a body over 64 KB with 413. The page sends `Referrer-Policy: same-origin`, so your browser tells the page that its own forms are its own, and passes the page's address to no other site. It is not `no-referrer` on purpose: under that policy a browser sends `Origin: null` on every POST, the page's own forms included, and every button on the page would answer 403.
 
 **Links in notifications.** When `public_url` is set (and a password is set, so the page is on), an inbox notification carries a link to the item at `<public_url>/p/<project>/inbox/<id>`. The link holds no password and no cookie. A notification about a planning wait links to the project's planning chat, `<public_url>/p/<project>/plan/chat`, the same way. For a plan waiting for approval that the page does not serve a chat for, it links to the plan page, `<public_url>/p/<project>/plan`. Neither link holds a password or a cookie. A password set while `afk daemon` is running needs a daemon restart before these links open the page, because the page is turned on when the daemon starts. Set `public_url` to the address you use from your phone, without a trailing slash. Its scheme also decides whether the cookie is marked Secure: only an `https://` address does that, so a page used over plain HTTP still works.

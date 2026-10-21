@@ -233,3 +233,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Push subscription**: what a browser hands the page when it signs up for web push: an endpoint address at its push service and two keys (`p256dh` and `auth`) used to encrypt messages for it.
 - **VAPID key**: afk's own key pair that signs every push it sends, so the push service knows the pushes come from the same server the browser signed up with; afk makes it the first time and keeps it in `push-key.json`.
 - **Device list**: `push-devices.json`, every push subscription signed up on this machine, with a label naming the browser and system.
+- **Web app manifest**: the file `/manifest.webmanifest` that tells a browser the page can be installed as an app: its name, its icons, its colours and the address it opens at.
+- **Service worker**: a small script (`/sw.js`) the browser keeps for an installed page; afk's does nothing yet and caches nothing, and T15.5 gives it the push handler.

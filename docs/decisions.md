@@ -3915,3 +3915,22 @@ T15.4 adds `internal/webpush`: afk's own push key, the encryption of a message f
 - **Signing up the same browser twice keeps one entry (A5).** A browser that subscribes again with the same endpoint replaces its entry (new keys and label, same id), so it never gets each push twice.
 - **One encrypted record, no padding (A6).** A payload is one `aes128gcm` record with a 4096-byte record size; a payload over 3993 bytes is refused, because push services accept at most 4096 bytes of body. afk's messages are a title, a body, a path and a tag, far under that.
 - **Tests first; nothing had to be in place first (A7, A8).**
+
+## T15.2
+
+T15.2 makes the web page installable as an app: it serves the owner's icons, a web app manifest and a service worker that does nothing yet, adds the head tags, and switches the macOS desktop toasts to the owner's icon.
+
+### What this task decided, and why
+
+- **The icons keep their hashed addresses (A1).** They are served like the stylesheets, at `/static/<hash>/icons/<file>` (the static route now takes a nested name), so they keep the long immutable cache. Only those exact current-hash addresses are open without sign-in, the same exact-match rule T8.5 used for the sign-in form's two stylesheets, so no other file opens with them.
+- **The manifest is built in Go at `/manifest.webmanifest` (A2).** A fixed address is what the page links to and what browsers fetch, and building its icon list from the embedded `static/icons/` folder means a new icon file is listed without anyone editing the manifest.
+- **The service worker lives at `/sw.js` and does nothing yet (A3).** A worker only controls pages under the folder it is served from, so it cannot live under `/static/<hash>/`. It has no `fetch` handler, so nothing is ever kept offline: every page is live data. A small `sw-register.js` registers it on signed-in pages; T15.5 gives the worker its push handler.
+- **The security policy now allows images, the manifest and the worker from the page itself (A4).** `default-src 'none'` would otherwise block the favicon and the manifest. Everything else in the policy is as it was.
+- **The toast icon is an embedded copy (A5).** `internal/notify` cannot import `internal/web` (the web package already depends on it through `internal/probe`), and an embed cannot reach another package's folder, so `internal/notify` keeps its own copy of `icon-512.png`. A test checks the copy is byte-for-byte the same as the web one, so they cannot drift. The cached file is named `icon-512.png`, so a cached old pickaxe is never reused. `pickaxe.png` is removed.
+- **Every page carries the icon tags, the sign-in page too (A6).** The favicon, manifest, home-screen icon and theme colour are public files, so the sign-in tab shows the icon as well. Only signed-in pages register the worker.
+- **The colours are the light background token (A7).** `theme_color` and `background_color` are `#F6F5F1` (`--bg`, light). The page's theme-color tag gives `#F6F5F1` for light and `#141412` for dark.
+- **Tests first; nothing had to be in place first (A8).** T15.1's icons were already committed.
+
+### What is still open
+
+- Nothing.

@@ -65,3 +65,26 @@ func TestIconPathDegradation(t *testing.T) {
 		t.Errorf("iconPathWith() with unwritable cache dir = %q, want empty string for silent degradation", got)
 	}
 }
+
+// TestAppIconMatchesWebCopy pins the embedded icon to the web page's icon byte
+// for byte. Load-bearing: the two copies exist only because an embed cannot
+// cross packages, so this is the only thing stopping them drifting apart.
+func TestAppIconMatchesWebCopy(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"web icon-512", "../web/static/icons/icon-512.png"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want, err := os.ReadFile(tt.path)
+			if err != nil {
+				t.Fatalf("reading %s: %v", tt.path, err)
+			}
+			if !bytes.Equal(appIcon, want) {
+				t.Errorf("embedded icon differs from %s", tt.path)
+			}
+		})
+	}
+}

@@ -46,7 +46,9 @@ const (
 )
 
 // guard is the one middleware around the whole mux. Nothing is exempt but
-// the sign-in itself: a request that does not hold a good cookie is answered
+// the sign-in itself and a few exact files that hold no data (the sign-in
+// form's stylesheets and the app files; see isRefusedPageStyle and
+// isPublicAppFile): a request that does not hold a good cookie is answered
 // here with the sign-in form and never reaches a handler, a "not found"
 // included, so a stranger cannot map the site by telling 401 from 404.
 func (s *server) guard(next http.Handler) http.Handler {
@@ -72,7 +74,7 @@ func (s *server) guard(next http.Handler) http.Handler {
 		}
 
 		if !s.signedInRequest(r) {
-			if s.isRefusedPageStyle(r) {
+			if s.isRefusedPageStyle(r) || s.isPublicAppFile(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -398,8 +400,12 @@ func (s *server) sameOrigin(r *http.Request) bool {
 //     pressed by trickery.
 //   - The content policy allows scripts and connections from this site only
 //     (live.js and the /events stream), styles from this site (afk.css and
-//     page.css) and inline, and forms that post back here. Nothing else: no
-//     inline script, image, font or outside address. No page uses an inline
+//     page.css) and inline, images from this site (the app icons the head
+//     links as favicons), the app manifest and the service worker from this
+//     site, and forms that post back here. Nothing else: no inline script,
+//     font or outside address. Without img-src and manifest-src the
+//     default-src 'none' would refuse the favicon and the manifest, and
+//     without worker-src the worker's registration. No page uses an inline
 //     style any more (TestPageTemplatesHaveNoInlineScript keeps it so), but
 //     'unsafe-inline' stays for now: taking it out is its own change, to be
 //     checked against everything the plan renderer can emit.
@@ -408,7 +414,7 @@ func setSecurityHeaders(h http.Header) {
 	h.Set("Referrer-Policy", "same-origin")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
-	h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'")
+	h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'")
 }
 
 // unauthorized answers a request without a good cookie: JSON under /api, and
@@ -458,6 +464,36 @@ func (s *server) isRefusedPageStyle(r *http.Request) bool {
 	}
 	for _, name := range refusedStyles {
 		if _, ok := s.assets[name]; ok && r.URL.Path == s.assetURL(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicAppFile reports whether a request without a cookie asks for one of
+// the files that make the page an app: the manifest, the service worker, or
+// an icon in static/icons/ at its current address.
+//
+// A browser fetches each of these without the cookie: the manifest is
+// fetched with no credentials unless the page asks otherwise, a phone reads
+// the home-screen icon on its own, and the sign-in form (the page a browser
+// without the cookie shows) links the favicon. Behind the sign-in the page
+// could never be installed. What is let through gives a stranger nothing:
+// files that ship in the open-source binary, with no project data in any of
+// them. Only GET and HEAD pass, and only these exact addresses: no prefix
+// match, so an icon under a stale or made-up hash, any other static file and
+// any page still get the sign-in form, and 401 against 404 still maps
+// nothing.
+func (s *server) isPublicAppFile(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	switch r.URL.Path {
+	case manifestPath, serviceWorkerPath:
+		return true
+	}
+	for name := range s.assets {
+		if strings.HasPrefix(name, "icons/") && r.URL.Path == s.assetURL(name) {
 			return true
 		}
 	}

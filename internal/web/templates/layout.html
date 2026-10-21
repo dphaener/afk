@@ -6,10 +6,21 @@
 <title>{{template "title" .View}} - afk</title>
 <link rel="stylesheet" href="{{asset "afk.css"}}">
 <link rel="stylesheet" href="{{asset "page.css"}}">
+<link rel="icon" href="{{asset "icons/favicon.svg"}}" type="image/svg+xml">
+<link rel="icon" href="{{asset "icons/favicon-32.png"}}" sizes="32x32" type="image/png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="{{asset "icons/apple-touch-icon.png"}}">
+<meta name="theme-color" content="#F6F5F1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141412" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="afk">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 {{if not .Chrome.Bare}}<script src="{{asset "live.js"}}" defer></script>
 <script src="{{asset "confirm.js"}}" defer></script>
 <script src="{{asset "submit.js"}}" defer></script>
 <script src="{{asset "chat.js"}}" defer></script>
+<script src="{{asset "sw-register.js"}}" defer></script>
 {{end}}</head>
 <body class="afk">
 <div class="shell">
