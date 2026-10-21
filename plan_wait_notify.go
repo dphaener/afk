@@ -13,6 +13,7 @@ import (
 	"github.com/dphaener/afk/internal/planwait"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/web"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // planWaitNotifyTimeout bounds one "the planning session is waiting"
@@ -23,9 +24,10 @@ const planWaitNotifyTimeout = 10 * time.Second
 
 // planWaitTarget is one project whose planning chat the daemon looks at:
 // the name the page shows it under, its main checkout, and where a
-// notification about it should lead ("" for no link).
+// notification about it should lead ("" for no link). Path is the same place
+// as a path on the page, for the web push, which never carries an address.
 type planWaitTarget struct {
-	Name, Root, Link string
+	Name, Root, Link, Path string
 }
 
 // planWaitTargets is every project the web page lists, in the page's order
@@ -53,7 +55,7 @@ func planWaitTargets(configured, reviews, being []web.Project, publicURL string)
 	taken := func(name, root string) bool {
 		return slices.ContainsFunc(out, func(t planWaitTarget) bool { return t.Name == name || t.Root == root })
 	}
-	add := func(ps []web.Project, link func(base, name string) string) {
+	add := func(ps []web.Project, link func(base, name string) string, path func(name string) string) {
 		for _, p := range ps {
 			if p.Root == "" {
 				continue
@@ -62,12 +64,12 @@ func planWaitTargets(configured, reviews, being []web.Project, publicURL string)
 			if taken(p.Name, root) {
 				continue
 			}
-			out = append(out, planWaitTarget{Name: p.Name, Root: root, Link: link(publicURL, p.Name)})
+			out = append(out, planWaitTarget{Name: p.Name, Root: root, Link: link(publicURL, p.Name), Path: path(p.Name)})
 		}
 	}
-	add(configured, notify.ChatLink)
-	add(reviews, notify.PlanLink)
-	add(being, notify.ChatLink)
+	add(configured, notify.ChatLink, notify.ChatPath)
+	add(reviews, notify.PlanLink, notify.PlanPath)
+	add(being, notify.ChatLink, notify.ChatPath)
 	return out
 }
 
@@ -84,6 +86,8 @@ type planWaitNotifier struct {
 	// config cannot be read.
 	address func(root string) string
 	send    func(ctx context.Context, url string, m notify.NtfyMessage) error
+	// push is the owner's signed-up devices; the zero value pushes nothing.
+	push pushTarget
 	// stateDir is afk's state folder, where plan-waits.json lives.
 	stateDir string
 	now      func() time.Time
@@ -96,8 +100,10 @@ type planWaitNotifier struct {
 // daemon restarted after a crash knows what the dead one sent and does not
 // repeat it. A wait is recorded only after its notification went out: a
 // failed send is retried on the next pass, and a delivered one is never sent
-// again. With no ntfy address nothing is sent and nothing is recorded, so
-// adding an address later still announces a wait that is open then.
+// again. "Delivered" means the ntfy send succeeded or at least one device took
+// the push. With no ntfy address and no device, or with every send failing,
+// nothing is recorded, so signing up a device or adding an address later
+// still announces a wait that is open then.
 //
 // Every failure is one log line and nothing more. A send error comes from
 // notify.Ntfy.Send, which never holds the address's credentials.
@@ -122,15 +128,21 @@ func (n planWaitNotifier) check(ctx context.Context) {
 		if !d.Send {
 			continue
 		}
-		url := n.address(t.Root)
-		if url == "" {
-			continue
+		delivered := false
+		if url := n.address(t.Root); url != "" {
+			sctx, cancel := context.WithTimeout(ctx, planWaitNotifyTimeout)
+			err := n.send(sctx, url, d.Message)
+			cancel()
+			if err != nil {
+				n.logf("%s: warning: the \"planning session is waiting\" notification could not be sent; it is tried again on the next pass: %v", t.Name, err)
+			} else {
+				delivered = true
+			}
 		}
-		sctx, cancel := context.WithTimeout(ctx, planWaitNotifyTimeout)
-		err := n.send(sctx, url, d.Message)
-		cancel()
-		if err != nil {
-			n.logf("%s: warning: the \"planning session is waiting\" notification could not be sent; it is tried again on the next pass: %v", t.Name, err)
+		if n.push.deliver(webpush.Payload{Title: d.Message.Title, Body: d.Message.Body, URL: t.Path, Tag: "afk-plan-" + t.Name}, webpush.Options{}, n.logf) > 0 {
+			delivered = true
+		}
+		if !delivered {
 			continue
 		}
 		rec := daemonstate.PlanWait{Root: t.Root, Key: d.Key, At: n.now().UTC().Format(time.RFC3339)}
@@ -170,6 +182,7 @@ func realPlanWaitNotifier(projects func() []daemon.Project, stateDir, publicURL 
 		send: func(ctx context.Context, url string, m notify.NtfyMessage) error {
 			return notify.Ntfy{URL: url}.Send(ctx, m)
 		},
+		push:     pushTarget{dir: stateDir, send: webPushSend(stateDir, now)},
 		stateDir: stateDir,
 		now:      now,
 		logf:     logf,

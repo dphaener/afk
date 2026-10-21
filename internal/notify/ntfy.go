@@ -149,7 +149,29 @@ func ItemLink(publicURL, project, id string) string {
 	if base == "" || project == "" || id == "" {
 		return ""
 	}
-	return base + "/p/" + url.PathEscape(project) + "/inbox/" + url.PathEscape(id)
+	return base + ItemPath(project, id)
+}
+
+// ItemPath is the path of one inbox item on the web page, with no host. A
+// push notification opens a path against the page's own origin, so it needs
+// no public address; ItemLink is this path behind the public address.
+func ItemPath(project, id string) string {
+	return ProjectPath(project) + "/inbox/" + url.PathEscape(id)
+}
+
+// ProjectPath is the path of one project's page, the root of the other paths.
+func ProjectPath(project string) string {
+	return "/p/" + url.PathEscape(project)
+}
+
+// PlanPath is the path of one project's plan view.
+func PlanPath(project string) string {
+	return ProjectPath(project) + "/plan"
+}
+
+// ChatPath is the path of one project's planning chat.
+func ChatPath(project string) string {
+	return PlanPath(project) + "/chat"
 }
 
 // ProjectLink is the web address of one project's page, or "" when there is no
@@ -159,7 +181,7 @@ func ProjectLink(publicURL, project string) string {
 	if base == "" || project == "" {
 		return ""
 	}
-	return base + "/p/" + url.PathEscape(project)
+	return base + ProjectPath(project)
 }
 
 // PlanLink is the web address of one project's plan view, for the "plan
@@ -167,11 +189,10 @@ func ProjectLink(publicURL, project string) string {
 // public address or no project name, the name escaped as one path segment,
 // and never a token.
 func PlanLink(publicURL, project string) string {
-	link := ProjectLink(publicURL, project)
-	if link == "" {
+	if ProjectLink(publicURL, project) == "" {
 		return ""
 	}
-	return link + "/plan"
+	return trimBase(publicURL) + PlanPath(project)
 }
 
 // ChatLink is the web address of one project's planning chat, for the "waiting
@@ -179,11 +200,10 @@ func PlanLink(publicURL, project string) string {
 // The rules are PlanLink's: empty with no public address or no project name,
 // the name escaped as one path segment, and never a token or a query string.
 func ChatLink(publicURL, project string) string {
-	link := PlanLink(publicURL, project)
-	if link == "" {
+	if ProjectLink(publicURL, project) == "" {
 		return ""
 	}
-	return link + "/chat"
+	return trimBase(publicURL) + ChatPath(project)
 }
 
 // trimBase drops one trailing slash so the link builders never produce a

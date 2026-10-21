@@ -15,6 +15,7 @@ import (
 	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/planwait"
 	"github.com/dphaener/afk/internal/web"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // TestPlanWaitTargets checks the merge of the page's three lists. The
@@ -37,30 +38,30 @@ func TestPlanWaitTargets(t *testing.T) {
 	}{
 		{name: "nothing", public: public},
 		{name: "configured gets the chat link", configured: []web.Project{p("app", "/c/app/")}, public: public,
-			want: []planWaitTarget{{Name: "app", Root: "/c/app", Link: "https://afk.example/p/app/plan/chat"}}},
+			want: []planWaitTarget{{Name: "app", Root: "/c/app", Link: "https://afk.example/p/app/plan/chat", Path: "/p/app/plan/chat"}}},
 		{name: "review-only gets the plan link", reviews: []web.Project{p("draft", "/c/draft")}, public: public,
-			want: []planWaitTarget{{Name: "draft", Root: "/c/draft", Link: "https://afk.example/p/draft/plan"}}},
+			want: []planWaitTarget{{Name: "draft", Root: "/c/draft", Link: "https://afk.example/p/draft/plan", Path: "/p/draft/plan"}}},
 		{name: "being planned gets the chat link", bps: []web.Project{p("new one", "/c/new")}, public: public,
-			want: []planWaitTarget{{Name: "new one", Root: "/c/new", Link: "https://afk.example/p/new%20one/plan/chat"}}},
+			want: []planWaitTarget{{Name: "new one", Root: "/c/new", Link: "https://afk.example/p/new%20one/plan/chat", Path: "/p/new%20one/plan/chat"}}},
 		{name: "precedence: configured, reviews, being planned", public: public,
 			configured: []web.Project{p("a", "/a")}, reviews: []web.Project{p("b", "/b")}, bps: []web.Project{p("c", "/c")},
 			want: []planWaitTarget{
-				{Name: "a", Root: "/a", Link: "https://afk.example/p/a/plan/chat"},
-				{Name: "b", Root: "/b", Link: "https://afk.example/p/b/plan"},
-				{Name: "c", Root: "/c", Link: "https://afk.example/p/c/plan/chat"},
+				{Name: "a", Root: "/a", Link: "https://afk.example/p/a/plan/chat", Path: "/p/a/plan/chat"},
+				{Name: "b", Root: "/b", Link: "https://afk.example/p/b/plan", Path: "/p/b/plan"},
+				{Name: "c", Root: "/c", Link: "https://afk.example/p/c/plan/chat", Path: "/p/c/plan/chat"},
 			}},
 		{name: "review clashing with configured by folder is dropped", public: public,
 			configured: []web.Project{p("a", "/a")}, reviews: []web.Project{p("other", "/a/")},
-			want: []planWaitTarget{{Name: "a", Root: "/a", Link: "https://afk.example/p/a/plan/chat"}}},
+			want: []planWaitTarget{{Name: "a", Root: "/a", Link: "https://afk.example/p/a/plan/chat", Path: "/p/a/plan/chat"}}},
 		{name: "review clashing with configured by name is dropped", public: public,
 			configured: []web.Project{p("a", "/a")}, reviews: []web.Project{p("a", "/elsewhere")},
-			want: []planWaitTarget{{Name: "a", Root: "/a", Link: "https://afk.example/p/a/plan/chat"}}},
+			want: []planWaitTarget{{Name: "a", Root: "/a", Link: "https://afk.example/p/a/plan/chat", Path: "/p/a/plan/chat"}}},
 		{name: "being planned clashing with a review is dropped", public: public,
 			reviews: []web.Project{p("b", "/b")}, bps: []web.Project{p("b", "/new"), p("n", "/b")},
-			want: []planWaitTarget{{Name: "b", Root: "/b", Link: "https://afk.example/p/b/plan"}}},
+			want: []planWaitTarget{{Name: "b", Root: "/b", Link: "https://afk.example/p/b/plan", Path: "/p/b/plan"}}},
 		{name: "no public address, no link",
 			configured: []web.Project{p("a", "/a")}, reviews: []web.Project{p("b", "/b")}, bps: []web.Project{p("c", "/c")},
-			want: []planWaitTarget{{Name: "a", Root: "/a"}, {Name: "b", Root: "/b"}, {Name: "c", Root: "/c"}}},
+			want: []planWaitTarget{{Name: "a", Root: "/a", Path: "/p/a/plan/chat"}, {Name: "b", Root: "/b", Path: "/p/b/plan"}, {Name: "c", Root: "/c", Path: "/p/c/plan/chat"}}},
 		{name: "an entry with no folder is skipped", public: public, configured: []web.Project{p("x", "")}},
 	}
 	for _, tt := range tests {
@@ -92,6 +93,7 @@ type planWaitRig struct {
 	sendErr error
 	sent    []notify.NtfyMessage
 	sentTo  []string
+	push    *pushRig
 	log     bytes.Buffer
 	now     time.Time
 }
@@ -101,7 +103,7 @@ const planWaitTestRoot = "/code/app"
 func (r *planWaitRig) notifier() planWaitNotifier {
 	return planWaitNotifier{
 		targets: func() []planWaitTarget {
-			return []planWaitTarget{{Name: "app", Root: planWaitTestRoot, Link: "https://afk.example/p/app/plan/chat"}}
+			return []planWaitTarget{{Name: "app", Root: planWaitTestRoot, Link: "https://afk.example/p/app/plan/chat", Path: "/p/app/plan/chat"}}
 		},
 		chat:    func(project, root string) planchat.Chat { return r.chat },
 		address: func(string) string { return r.address },
@@ -114,9 +116,17 @@ func (r *planWaitRig) notifier() planWaitNotifier {
 			return r.sendErr
 		},
 		stateDir: r.dir,
+		push:     r.pushTarget(),
 		now:      func() time.Time { return r.now },
 		logf:     daemonLogger(&r.log, func() time.Time { return daemonTestNow }),
 	}
+}
+
+func (r *planWaitRig) pushTarget() pushTarget {
+	if r.push == nil {
+		return pushTarget{}
+	}
+	return pushTarget{dir: r.push.dir, send: r.push.send}
 }
 
 func planWaitChat(state planchat.State, texts ...string) planchat.Chat {
@@ -255,4 +265,114 @@ func TestPlanWaitNotifierStopped(t *testing.T) {
 	if len(r.sent) != 0 {
 		t.Errorf("sent %d after the context ended, want 0", len(r.sent))
 	}
+}
+
+// TestPlanWaitPush walks the web push of a planning wait. The load-bearing
+// rows are the record rules: a wait is recorded when one device took the push
+// even with no ntfy address, and is NOT recorded when there is no device and
+// no address or every push failed, so the next pass tries again (and the
+// retry row proves the same wait is sent again once a device works). The
+// ntfy-fails row pins that one delivered channel is enough to record, and the
+// gone row that a device the service dropped leaves the list.
+func TestPlanWaitPush(t *testing.T) {
+	const ntfy = "https://ntfy.example/topic"
+	wait := planWaitChat(planchat.StateWaitingForText, "Which database should it use?")
+	ctx := context.Background()
+	epA, epB := "https://push.example/a", "https://push.example/b"
+	fail := func(webpush.Subscription) (bool, error) { return false, errors.New("push service down") }
+
+	newRig := func(t *testing.T, address string, eps ...string) *planWaitRig {
+		return &planWaitRig{dir: t.TempDir(), address: address, chat: wait, push: newPushRig(t, eps...),
+			now: time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)}
+	}
+	recorded := func(r *planWaitRig) bool { return len(daemonstate.ReadPlanWaits(r.dir)) == 1 }
+
+	t.Run("one device, no ntfy address: pushed once with the chat path and recorded", func(t *testing.T) {
+		r := newRig(t, "", epA)
+		n := r.notifier()
+		n.check(ctx)
+		if len(r.push.calls) != 1 || len(r.sent) != 0 {
+			t.Fatalf("pushes=%d ntfy=%d, want 1 and 0", len(r.push.calls), len(r.sent))
+		}
+		p := r.push.pays[0]
+		if p.Title != "afk: app is waiting for you" || p.URL != "/p/app/plan/chat" || p.Tag != "afk-plan-app" ||
+			!strings.HasPrefix(p.Body, "Which database should it use?") || r.push.opts[0] != (webpush.Options{}) {
+			t.Errorf("payload = %+v opts = %+v", p, r.push.opts[0])
+		}
+		if !recorded(r) {
+			t.Error("the wait was not recorded")
+		}
+		n.check(ctx)
+		if len(r.push.calls) != 1 {
+			t.Errorf("same wait next pass pushed again: %d", len(r.push.calls))
+		}
+	})
+	t.Run("review-only project pushes the plan path", func(t *testing.T) {
+		r := newRig(t, "", epA)
+		n := r.notifier()
+		n.targets = func() []planWaitTarget {
+			return []planWaitTarget{{Name: "app", Root: planWaitTestRoot, Path: "/p/app/plan"}}
+		}
+		n.check(ctx)
+		if len(r.push.pays) != 1 || r.push.pays[0].URL != "/p/app/plan" {
+			t.Errorf("payloads = %+v", r.push.pays)
+		}
+	})
+	t.Run("no device and no ntfy address records nothing", func(t *testing.T) {
+		r := newRig(t, "")
+		r.notifier().check(ctx)
+		if recorded(r) || len(r.push.calls) != 0 {
+			t.Errorf("recorded=%v calls=%d", recorded(r), len(r.push.calls))
+		}
+	})
+	t.Run("every push failing and no ntfy records nothing and is retried", func(t *testing.T) {
+		r := newRig(t, "", epA, epB)
+		r.push.answer = fail
+		n := r.notifier()
+		n.check(ctx)
+		if recorded(r) || len(r.push.calls) != 2 {
+			t.Fatalf("recorded=%v calls=%d", recorded(r), len(r.push.calls))
+		}
+		if _, err := os.Stat(daemonstate.PlanWaitsPath(r.dir)); !os.IsNotExist(err) {
+			t.Errorf("plan-waits.json exists (stat err %v)", err)
+		}
+		r.push.answer = nil
+		n.check(ctx)
+		if len(r.push.calls) != 4 || !recorded(r) {
+			t.Errorf("after the retry calls=%d recorded=%v, want 4 and true", len(r.push.calls), recorded(r))
+		}
+	})
+	t.Run("ntfy failing but one device sent records", func(t *testing.T) {
+		r := newRig(t, ntfy, epA, epB)
+		r.sendErr = errors.New("refused")
+		r.push.answer = func(sub webpush.Subscription) (bool, error) {
+			if sub.Endpoint == epB {
+				return false, errors.New("down")
+			}
+			return false, nil
+		}
+		r.notifier().check(ctx)
+		if !recorded(r) {
+			t.Error("the wait was not recorded")
+		}
+	})
+	t.Run("ntfy sent and every push failing still records", func(t *testing.T) {
+		r := newRig(t, ntfy, epA)
+		r.push.answer = fail
+		r.notifier().check(ctx)
+		if !recorded(r) {
+			t.Error("the wait was not recorded")
+		}
+	})
+	t.Run("gone device is removed and, as the only one, records nothing", func(t *testing.T) {
+		r := newRig(t, "", epA)
+		r.push.answer = func(webpush.Subscription) (bool, error) { return true, nil }
+		r.notifier().check(ctx)
+		if got := webpush.ReadDevices(r.push.dir); len(got) != 0 {
+			t.Errorf("devices left = %d, want 0", len(got))
+		}
+		if recorded(r) {
+			t.Error("recorded although no device took the push")
+		}
+	})
 }

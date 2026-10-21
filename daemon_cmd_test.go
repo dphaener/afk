@@ -33,6 +33,7 @@ import (
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/webpass"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 var daemonTestNow = time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)
@@ -1978,6 +1979,106 @@ func TestDaemonNotifier(t *testing.T) {
 			}
 			if tt.logHas != "" && !strings.HasPrefix(log.String(), "2026-10-11T09:30:00Z ") {
 				t.Errorf("log line %q does not start with its time", log.String())
+			}
+		})
+	}
+}
+
+// TestDaemonNotifierPush pins what the daemon sends to signed-up devices,
+// with a fake send and a temp device list: nothing reaches a network or the
+// real state folder.
+//
+// Load-bearing rows: "non-blocking item" and "idle" (assumed answers arrive
+// by the dozen and idle has no item to open, so neither may push); "urgent,
+// non-blocking stop item" (the stop item is deliberately not blocking yet is
+// the one notice that must reach a phone, at high urgency); "no ntfy address"
+// and "config unreadable" (push needs neither, so ntfy's silence or warning
+// must not hide it); "gone device" and "send fails" (only gone removes a
+// device); and "no device" (nothing sent and nothing logged).
+func TestDaemonNotifierPush(t *testing.T) {
+	proj := daemon.Project{Name: "my app", Root: "/p"}
+	blocking := inbox.Item{ID: "a1b2", Task: "T1.1", Kind: "failure", Blocking: true, Title: "It broke", Body: "Details."}
+	quiet := inbox.Item{ID: "c3d4", Kind: "notice", Title: "FYI"}
+	stop := inbox.Item{ID: "e5f6", Task: "T1.1", Kind: "failure", Title: "The line is stopped after T1.1", Body: "Check the deploy."}
+	login := inbox.Item{ID: "g7h8", Kind: "login", Blocking: true, Title: "Sign in again", Body: "The agent is signed out."}
+	itemPay := webpush.Payload{Title: "afk: It broke", Body: "Details.\n\nafk inbox show a1b2 (T1.1)", URL: "/p/my%20app/inbox/a1b2", Tag: "afk-item-a1b2"}
+	tests := []struct {
+		name     string
+		devices  []string
+		ntfyURL  string
+		cfgErr   error
+		answer   func(webpush.Subscription) (bool, error)
+		call     func(n daemonNotifier)
+		want     []webpush.Payload
+		wantOpts webpush.Options
+		logHas   string
+		wantLeft int
+	}{
+		{name: "blocking item", devices: []string{"https://push.example/a"}, ntfyURL: "https://ntfy.example/t", wantLeft: 1,
+			call: func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay}},
+		{name: "non-blocking item", devices: []string{"https://push.example/a"}, ntfyURL: "https://ntfy.example/t", wantLeft: 1,
+			call: func(n daemonNotifier) { n.item(proj, quiet) }},
+		{name: "idle", devices: []string{"https://push.example/a"}, ntfyURL: "https://ntfy.example/t", wantLeft: 1,
+			call: func(n daemonNotifier) { n.idle(proj, "t", "b") }},
+		{name: "urgent, non-blocking stop item", devices: []string{"https://push.example/a"}, wantLeft: 1, wantOpts: webpush.Options{Urgency: "high"},
+			call: func(n daemonNotifier) { n.urgent(proj, stop) },
+			want: []webpush.Payload{{Title: "afk: The line is stopped after T1.1", Body: "Check the deploy.\n\nafk inbox show e5f6 (T1.1)", URL: "/p/my%20app/inbox/e5f6", Tag: "afk-item-e5f6"}}},
+		{name: "urgent, blocking login item", devices: []string{"https://push.example/a"}, wantLeft: 1, wantOpts: webpush.Options{Urgency: "high"},
+			call: func(n daemonNotifier) { n.urgent(proj, login) },
+			want: []webpush.Payload{{Title: "afk: Sign in again", Body: "The agent is signed out.\n\nafk inbox show g7h8", URL: "/p/my%20app/inbox/g7h8", Tag: "afk-item-g7h8"}}},
+		{name: "no ntfy address", devices: []string{"https://push.example/a"}, wantLeft: 1,
+			call: func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay}},
+		{name: "config unreadable", devices: []string{"https://push.example/a"}, cfgErr: errors.New("not valid TOML"), wantLeft: 1,
+			call: func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay},
+			logHas: "the project config could not be read"},
+		{name: "gone device", devices: []string{"https://push.example/a"}, wantLeft: 0,
+			answer: func(webpush.Subscription) (bool, error) { return true, nil },
+			call:   func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay},
+			logHas: "is gone and was removed"},
+		{name: "send fails", devices: []string{"https://push.example/a"}, wantLeft: 1,
+			answer: func(webpush.Subscription) (bool, error) { return false, errors.New("503") },
+			call:   func(n daemonNotifier) { n.item(proj, blocking) }, want: []webpush.Payload{itemPay},
+			logHas: "failed, device kept"},
+		{name: "no device", wantLeft: 0,
+			call: func(n daemonNotifier) { n.item(proj, blocking); n.urgent(proj, stop) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newPushRig(t, tt.devices...)
+			r.answer = tt.answer
+			var log bytes.Buffer
+			var ntfySent int
+			n := daemonNotifier{
+				loadConfig: func(string) (projectconfig.Config, error) {
+					return projectconfig.Config{Notify: projectconfig.Notify{NtfyURL: tt.ntfyURL}}, tt.cfgErr
+				},
+				send: func(context.Context, string, notify.NtfyMessage) error { ntfySent++; return nil },
+				logf: daemonLogger(&log, func() time.Time { return daemonTestNow }),
+				push: pushTarget{dir: r.dir, send: r.send},
+			}
+			tt.call(n)
+			if len(r.pays) != len(tt.want) {
+				t.Fatalf("pushed %+v, want %+v", r.pays, tt.want)
+			}
+			for i, w := range tt.want {
+				if r.pays[i] != w {
+					t.Errorf("payload %d = %+v, want %+v", i, r.pays[i], w)
+				}
+				if r.opts[i] != tt.wantOpts {
+					t.Errorf("options %d = %+v, want %+v", i, r.opts[i], tt.wantOpts)
+				}
+			}
+			if got := len(webpush.ReadDevices(r.dir)); got != tt.wantLeft {
+				t.Errorf("%d devices left, want %d", got, tt.wantLeft)
+			}
+			if tt.logHas == "" && log.Len() != 0 {
+				t.Errorf("logged %q, want silence", log.String())
+			}
+			if !strings.Contains(log.String(), tt.logHas) {
+				t.Errorf("log %q lacks %q", log.String(), tt.logHas)
+			}
+			if strings.Contains(log.String(), "push.example") {
+				t.Errorf("log %q repeats a device endpoint", log.String())
 			}
 		})
 	}

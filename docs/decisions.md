@@ -3989,3 +3989,22 @@ T15.6 fills the Notifications page's second column with the list of signed-up de
 
 - **A phone that signed up before this change (verification for the owner).** Open the Notifications page on a phone or computer that already gets notifications and check that it shows in Signed-up devices with the This device badge after one load. Then remove it from another device and open the page on it again: it should show Off.
 - **A device added in the first second or two after the page opens can be missed by live updates.** The review saw one stay missing for about 12 seconds; the same change made later showed at once. This looks like the live updates' first reading, which is older than this change; a possible follow-up.
+
+## T15.7
+
+T15.7 sends web push beside ntfy, to every device signed up on the Notifications page, for what blocks on the owner: an inbox item that blocks a task, the urgent notices and a planning session waiting. ntfy stays until T15.8.
+
+### What this task decided, and why
+
+- **Only an item that blocks is pushed (A1).** The task says push goes for "an inbox item that blocks a task (the items ntfy sends for today, by the same rule as `NtfyPriority`)", but `NtfyPriority` also sends some items that do not block (a non-blocking `failure`, `verification`, `env_var` or `external_action`). The goal, the M15 decision ("only what blocks on them") and the acceptance ("a non-blocking item ... do not push") all say blocking, so that is the rule. The urgent notices are the one exception: they always push, as urgent, because the stopped line's item deliberately does not block. This means "afk cannot run this project" (a non-blocking `failure`) is not pushed; the owner was asked in the inbox.
+- **One helper sends to every device (A2).** `push_notify.go` sends one payload to every device in the list, removes a device the push service reports gone, and logs any other failure without the device's push address. Every send site calls it with a send function, so each site's test uses a fake.
+- **Links are paths (A3).** A tap opens a page on the same app the device signed up from, so the url is a path (`ItemPath`, `ChatPath`, `PlanPath` in `internal/notify`) and needs no `public_url`. The ntfy links are built on the same paths and did not change.
+- **A planning wait counts as sent once anything got it (A4).** The record in `plan-waits.json` is written when ntfy or at least one device got the wait. With no device and no ntfy address, or when every send failed, nothing is recorded, so the next pass tries again. Push does not need `ntfy_url`.
+- **A project not in `config.toml` is not pushed from `afk inbox add` (A5).** The page serves only configured projects, so the tap would open a page that does not exist. The command prints a warning and still exits 0.
+- **Tags, lifetime and timeouts (A6).** An item's notification is tagged `afk-item-<id>` and a planning wait's `afk-plan-<project>`, so a newer wait for a project replaces the older one on the device. Notifications keep the push service's default of a day, each device gets its own 10-second limit, and the push key's subject stays afk's repository address.
+- **Tests with each task; nothing had to be in place first (A7, A8).**
+
+### What is still open
+
+- **Real delivery on a real device (verification for the owner).** At the `https://` address, sign a phone or computer up on the Notifications page, run a blocking `afk inbox add` in a configured project, and tap the notification: it should open that item. The built-binary check proved the send against a local stand-in push service only.
+- **Whether "afk cannot run this project" should push (question for the owner).** It is a non-blocking `failure`, so it stays ntfy-only under the blocking rule; the inbox asks whether it should go to devices too.

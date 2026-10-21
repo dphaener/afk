@@ -419,3 +419,45 @@ func TestChatLink(t *testing.T) {
 		})
 	}
 }
+
+// TestLinkPaths pins the path-only builders a push notification taps
+// through. Load-bearing rows: the escaped name and id, because a "/" or a
+// space left raw in a path would open a different page (or none), and the
+// agreement with the full links, which are these paths behind the public
+// address.
+func TestLinkPaths(t *testing.T) {
+	tests := []struct {
+		name                  string
+		project, id           string
+		item, plan, chat, prj string
+	}{
+		{"plain", "afk", "abc123", "/p/afk/inbox/abc123", "/p/afk/plan", "/p/afk/plan/chat", "/p/afk"},
+		{"escaped", "my app/x", "id 1/2?", "/p/my%20app%2Fx/inbox/id%201%2F2%3F", "/p/my%20app%2Fx/plan", "/p/my%20app%2Fx/plan/chat", "/p/my%20app%2Fx"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ItemPath(tt.project, tt.id); got != tt.item {
+				t.Errorf("ItemPath = %q, want %q", got, tt.item)
+			}
+			if got := PlanPath(tt.project); got != tt.plan {
+				t.Errorf("PlanPath = %q, want %q", got, tt.plan)
+			}
+			if got := ChatPath(tt.project); got != tt.chat {
+				t.Errorf("ChatPath = %q, want %q", got, tt.chat)
+			}
+			const base = "https://afk.example"
+			if got := ItemLink(base+"/", tt.project, tt.id); got != base+tt.item {
+				t.Errorf("ItemLink = %q", got)
+			}
+			if got := PlanLink(base, tt.project); got != base+tt.plan {
+				t.Errorf("PlanLink = %q", got)
+			}
+			if got := ChatLink(base, tt.project); got != base+tt.chat {
+				t.Errorf("ChatLink = %q", got)
+			}
+			if got := ProjectLink(base, tt.project); got != base+tt.prj {
+				t.Errorf("ProjectLink = %q", got)
+			}
+		})
+	}
+}

@@ -42,6 +42,8 @@ The Notifications page (`/notifications`) is for the whole machine, not one proj
 
 **Turn on, send a test, turn off.** Press **Turn on for this device**. Your browser asks first; choose **Allow**, and the card then says this device gets notifications from afk. Press **Send test** to get a test notification on this device; it should arrive in a few seconds. Press **Turn off** to take this device off the list, so it stops getting notifications. Turning off one device leaves the others as they are.
 
+**What afk sends.** Three kinds of notice go to a device, and nothing else: an item that stops a task (a tap opens that item), the urgent notices (the logged-out line, extra usage switched on, and the stopped line; a tap opens the item, and the notice is sent as urgent), and a planning session waiting for you (a tap opens the planning chat, or the plan page for a project that is only waiting for you to review its plan). A device that the push service reports gone is taken off the list by afk itself, and it stops getting notifications until you turn them on again there.
+
 **When the browser has blocked notifications.** The card says "Your browser has blocked notifications from afk" when you, or the browser, have said no for afk. afk cannot ask again, so allow them yourself: open the site settings with the icon at the left of the address bar, set **Notifications** to **Allow**, then reload the page or press **Check again**, and turn notifications on. On an iPhone or iPad, go to Settings, then Notifications, then afk, then Allow Notifications.
 
 **With JavaScript off,** the page says that notifications need JavaScript and does not show the buttons. Turn JavaScript on for the page, then reload it.

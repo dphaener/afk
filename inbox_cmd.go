@@ -18,6 +18,7 @@ import (
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/webpass"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // inboxNotifyTimeout bounds the one push notification `afk inbox add` sends.
@@ -52,6 +53,12 @@ type inboxEnv struct {
 	// test that leaves it unset never builds a link to a page that is not
 	// there, and never reads the real state folder.
 	pageOn func() bool
+	// pushDir finds the state folder holding push-devices.json, and pushSend
+	// sends one web push (the same function the web page's test button uses).
+	// Nil pushSend means push is off, so a test that leaves them unset never
+	// reads the real state folder or sends anything.
+	pushDir  func() (string, error)
+	pushSend pushSendFunc
 }
 
 // cmdInbox implements `afk inbox`.
@@ -75,7 +82,20 @@ func cmdInbox(args []string) {
 		},
 		loadMachine: func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) },
 		pageOn:      func() bool { return webpass.Exists(usagestate.DefaultDeps()) },
+		pushDir:     func() (string, error) { return usagestate.Dir(usagestate.DefaultDeps()) },
+		pushSend:    inboxPushSend,
 	}))
+}
+
+// inboxPushSend sends through the machine's own push key, found in the same
+// state folder as the device list. It resolves the folder on each send so
+// the wiring above stays a plain function value.
+func inboxPushSend(ctx context.Context, sub webpush.Subscription, p webpush.Payload, o webpush.Options) (bool, error) {
+	dir, err := usagestate.Dir(usagestate.DefaultDeps())
+	if err != nil {
+		return false, err
+	}
+	return webPushSend(dir, time.Now)(ctx, sub, p, o)
 }
 
 func printInboxUsage(w io.Writer) {
@@ -473,6 +493,12 @@ func runInboxAdd(args []string, projDefault string, env inboxEnv) int {
 	// happens. The caller is usually an agent that is about to park on this
 	// item: a non-zero exit would tell it the item was not recorded, and it
 	// would add it again or carry on without it.
+	//
+	// The push to signed-up devices comes before the ntfy path because it
+	// does not depend on it: no ntfy_url (or an unreadable afk.toml) ends the
+	// ntfy part early, and a device list is no reason to stay quiet.
+	inboxPush(item, project, env)
+
 	cfg, err := env.loadConfig(project)
 	if err != nil {
 		fmt.Fprintf(env.stderr, "afk inbox add: the item was added, but afk.toml could not be read, so no notification was sent: %v\n", err)
@@ -497,6 +523,67 @@ func runInboxAdd(args []string, projDefault string, env inboxEnv) int {
 		fmt.Fprintf(env.stderr, "afk inbox add: the item was added, but the notification could not be sent: %v\n", err)
 	}
 	return 0
+}
+
+// inboxPushPlaceholderURL stands in for ntfy_url when the message is built
+// for push. notify.InboxMessage returns nothing without an address, but the
+// title and body must be exactly the ones ntfy sends, so the one builder is
+// reused and the address it is given is never used.
+const inboxPushPlaceholderURL = "unused"
+
+// inboxPush sends a blocking item to every signed-up device. Items that do
+// not stop a task are not pushed: assumed answers arrive by the dozen. It
+// never changes the exit code; a problem is one stderr line.
+func inboxPush(item inbox.Item, project string, env inboxEnv) {
+	if !item.Blocking || env.pushSend == nil || env.pushDir == nil {
+		return
+	}
+	dir, err := env.pushDir()
+	if err != nil || dir == "" {
+		return
+	}
+	// No device means nothing to say: most machines never sign one up, and
+	// that is not worth a line on every add.
+	if len(webpush.ReadDevices(dir)) == 0 {
+		return
+	}
+	msg, ok := inboxNotification(item, inboxPushPlaceholderURL)
+	if !ok {
+		return
+	}
+	machine, machineErr := env.loadMachine()
+	name, found := inboxProjectName(machine, machineErr, project, func(configured, root string) bool {
+		return mainCheckout(configured, env.gitCommonDir(configured)) == filepath.Clean(root)
+	})
+	if !found {
+		fmt.Fprintf(env.stderr, "afk inbox add: the item was added, but it was not sent to your signed-up devices because this project is not in config.toml.\n")
+		return
+	}
+	logf := func(format string, a ...any) {
+		fmt.Fprintf(env.stderr, "afk inbox add: warning: "+format+"\n", a...)
+	}
+	pushTarget{dir: dir, send: env.pushSend}.deliver(webpush.Payload{
+		Title: msg.Title,
+		Body:  msg.Body,
+		URL:   notify.ItemPath(name, item.ID),
+		Tag:   "afk-item-" + item.ID,
+	}, webpush.Options{}, logf)
+}
+
+// inboxProjectName is the name the machine config gives the project whose
+// main folder is root, which is the name the web page serves it under. It
+// needs no public address and no password: a push link is a path. The first
+// match wins, as in daemonProjects.
+func inboxProjectName(cfg daemonconfig.Config, cfgErr error, root string, sameDir func(configured, root string) bool) (string, bool) {
+	if cfgErr != nil {
+		return "", false
+	}
+	for _, p := range cfg.Projects {
+		if sameDir(p.Path, root) {
+			return p.Name, true
+		}
+	}
+	return "", false
 }
 
 // inboxInferSession names the session the command is running in, or "".
@@ -550,10 +637,8 @@ func inboxItemLink(cfg daemonconfig.Config, cfgErr error, pageOn bool, root, id 
 	if cfgErr != nil || webPublicURL(cfg.Web, pageOn) == "" {
 		return ""
 	}
-	for _, p := range cfg.Projects {
-		if sameDir(p.Path, root) {
-			return notify.ItemLink(cfg.Web.PublicURL, p.Name, id)
-		}
+	if name, ok := inboxProjectName(cfg, cfgErr, root, sameDir); ok {
+		return notify.ItemLink(cfg.Web.PublicURL, name, id)
 	}
 	return ""
 }
