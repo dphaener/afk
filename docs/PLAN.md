@@ -3337,6 +3337,7 @@ T8.18 password ──────────┘
   4. The agent records the results as a table under `## T11.7` in `docs/decisions.md`, the option chosen and why, and the follow-up as plain lines for the owner to start with `afk plan extend` or `afk plan amend` (for example changes to `afk install`, `docs/install.md` and the §2 rows). It adds an Amended line to the §2 row "Where afk runs, and installing it" only when the choice changes it.
 - **Must not:** change `afk install`, the daemon or any code; build the chosen option (that is the follow-up); run an agent with permissions bypassed on the owner's Mac outside the trial's steps; put a secret in any file.
 - **Acceptance:** `docs/sandbox-trial.md` exists with steps and checks for all four options, each tool claim cited; `docs/decisions.md` has `## T11.7` with every check's result for every option, the choice and its reason, and the follow-up lines; `make check` is green.
+- Amended 2026-10-20: drop option (a), the agent CLI's own OS sandbox on the Mac with no VM; the owner said the agent breaks out of it regularly, so it is not a sandbox for unattended agents. Compare the other three options only, and say in `## T11.7` why (a) was left out.
 
 ### M12 — Releases publish themselves
 
