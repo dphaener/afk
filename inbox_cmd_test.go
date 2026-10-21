@@ -19,6 +19,7 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/notify"
 	"github.com/dphaener/afk/internal/projectconfig"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // inboxTestIDs are the ids the scripted generator hands out, in order. They
@@ -1293,4 +1294,166 @@ func TestRunInboxRealConfigAndSender(t *testing.T) {
 			t.Errorf("item files = %v, want one", got)
 		}
 	})
+}
+
+// TestRunInboxAddPush drives `afk inbox add` with a fake push send and a temp
+// device list. Load-bearing rows: "blocking item pushes once per device"
+// (the whole point, with the item's path, tag and the ntfy title and body),
+// "non-blocking kinds do not push" (assumed answers arrive by the dozen),
+// "blocking item with no ntfy_url still pushes" (push does not hang off the
+// ntfy path), "project not in config.toml warns" (the path needs the name the
+// page serves), "send error warns and exits 0" (the caller is an agent that
+// must not re-add the item) and "public_url set keeps a path" (a push url
+// that is a full address is refused by the payload check).
+func TestRunInboxAddPush(t *testing.T) {
+	const epA, epB = "https://push.example/secret-a", "https://push.example/secret-b"
+	blocking := []string{"add", "--kind", "question", "--title", "Need a key", "--body", "Which one?", "--task", "T4.3", "--block"}
+	listed := func(f *inboxFixture) {
+		f.machine = daemonconfig.Config{Projects: []daemonconfig.Project{{Name: "my app", Path: f.project}}}
+		f.machineErr = nil
+	}
+
+	cases := []struct {
+		name        string
+		endpoints   []string
+		args        []string
+		setup       func(f *inboxFixture, r *pushRig)
+		wantCalls   int
+		wantStderr  []string
+		emptyStderr bool
+		check       func(t *testing.T, f *inboxFixture, r *pushRig)
+	}{
+		{
+			name: "blocking item pushes once per device", endpoints: []string{epA, epB}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) { listed(f); f.ntfyURL = inboxTestURL }, wantCalls: 2, emptyStderr: true,
+			check: func(t *testing.T, f *inboxFixture, r *pushRig) {
+				want := webpush.Payload{Title: "afk: Need a key", Body: "Which one?\n\nafk inbox show aaaaaa (T4.3)", URL: "/p/my%20app/inbox/aaaaaa", Tag: "afk-item-aaaaaa"}
+				for i, p := range r.pays {
+					if p != want || r.opts[i] != (webpush.Options{}) {
+						t.Errorf("call %d: payload %+v options %+v, want %+v", i, p, r.opts[i], want)
+					}
+				}
+				if len(f.sends) != 1 {
+					t.Errorf("ntfy sends = %d, want 1", len(f.sends))
+				}
+			},
+		},
+		{
+			name: "blocking item with no ntfy_url still pushes", endpoints: []string{epA}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, wantCalls: 1, emptyStderr: true,
+			check: func(t *testing.T, f *inboxFixture, r *pushRig) {
+				if len(f.sends) != 0 {
+					t.Errorf("ntfy sends = %d, want 0", len(f.sends))
+				}
+			},
+		},
+		{
+			name: "blocking item with an unreadable afk.toml still pushes", endpoints: []string{epA}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) { listed(f); f.configErr = errors.New("bad toml") }, wantCalls: 1,
+			wantStderr: []string{"afk.toml could not be read"},
+		},
+		{
+			name: "question non-blocking does not push", endpoints: []string{epA},
+			args:  []string{"add", "--kind", "question", "--title", "t", "--no-block"},
+			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, emptyStderr: true,
+		},
+		{
+			name: "notice non-blocking does not push", endpoints: []string{epA},
+			args:  []string{"add", "--kind", "notice", "--title", "t", "--no-block"},
+			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, emptyStderr: true,
+		},
+		{
+			name: "verification non-blocking does not push", endpoints: []string{epA},
+			args:  []string{"add", "--kind", "verification", "--title", "t", "--no-block"},
+			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, emptyStderr: true,
+		},
+		{
+			name: "failure non-blocking does not push", endpoints: []string{epA},
+			args:  []string{"add", "--kind", "failure", "--title", "t", "--no-block"},
+			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, emptyStderr: true,
+		},
+		{
+			name: "no device sends nothing and prints nothing", args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) { listed(f) }, emptyStderr: true,
+		},
+		{
+			name: "project not in config.toml sends nothing and warns", endpoints: []string{epA}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) {
+				f.machine = daemonconfig.Config{Projects: []daemonconfig.Project{{Name: "other", Path: "/elsewhere"}}}
+				f.machineErr = nil
+				// The fixture's fake git answers with the project for every
+				// folder; this row needs the other folder to be its own.
+				f.env.gitCommonDir = func(dir string) string { return filepath.Join(dir, ".git") }
+			},
+			wantStderr: []string{"not sent to your signed-up devices", "not in config.toml"},
+		},
+		{
+			name: "gone device is removed", endpoints: []string{epA, epB}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) {
+				listed(f)
+				r.answer = func(s webpush.Subscription) (bool, error) { return s.Endpoint == epA, nil }
+			},
+			wantCalls: 2, wantStderr: []string{"warning:", `"Phone 1"`, "removed"},
+			check: func(t *testing.T, f *inboxFixture, r *pushRig) {
+				left := webpush.ReadDevices(r.dir)
+				if len(left) != 1 || left[0].Endpoint != epB {
+					t.Errorf("devices left = %+v", left)
+				}
+			},
+		},
+		{
+			name: "send error warns and exits 0", endpoints: []string{epA}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) {
+				listed(f)
+				r.answer = func(webpush.Subscription) (bool, error) { return false, errors.New("push service said 503") }
+			},
+			wantCalls: 1, wantStderr: []string{"warning:", `"Phone 1"`, "503"},
+			check: func(t *testing.T, f *inboxFixture, r *pushRig) {
+				if len(webpush.ReadDevices(r.dir)) != 1 {
+					t.Error("a failing device must be kept")
+				}
+			},
+		},
+		{
+			name: "public_url set keeps the push url a path", endpoints: []string{epA}, args: blocking,
+			setup: func(f *inboxFixture, r *pushRig) {
+				listed(f)
+				f.machine.Web.PublicURL = "https://afk.example.com"
+				f.pageOn = true
+			},
+			wantCalls: 1, emptyStderr: true,
+			check: func(t *testing.T, f *inboxFixture, r *pushRig) {
+				if got := r.pays[0].URL; got != "/p/my%20app/inbox/aaaaaa" {
+					t.Errorf("url = %q", got)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInboxFixture(t)
+			r := newPushRig(t, tc.endpoints...)
+			f.env.pushDir = func() (string, error) { return r.dir, nil }
+			f.env.pushSend = r.send
+			tc.setup(f, r)
+			if code := f.run(tc.args...); code != 0 {
+				t.Fatalf("exit = %d, stderr: %s", code, f.stderr.String())
+			}
+			if len(r.calls) != tc.wantCalls {
+				t.Errorf("push calls = %d, want %d", len(r.calls), tc.wantCalls)
+			}
+			if tc.emptyStderr && f.stderr.Len() != 0 {
+				t.Errorf("stderr should be empty:\n%s", f.stderr.String())
+			}
+			wantContains(t, "stderr", f.stderr.String(), tc.wantStderr)
+			for _, ep := range tc.endpoints {
+				if strings.Contains(f.stderr.String(), ep) {
+					t.Errorf("stderr holds an endpoint:\n%s", f.stderr.String())
+				}
+			}
+			if tc.check != nil {
+				tc.check(t, f, r)
+			}
+		})
+	}
 }

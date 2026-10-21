@@ -239,3 +239,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **This device card**: the Notifications page's card showing whether the device in hand gets notifications (on, off, blocked, or a note saying what it needs first: an `https://` address, the iPhone home screen, or another browser).
 - **Send test**: the This device card's button that sends one push to this device only, to prove notifications arrive.
 - **Device cookie**: `afk_push_device`, a cookie the web page sets to the id of the device a browser signed up as, so the Notifications page can mark "This device"; it never holds the device's push address.
+- **Gone device**: a signed-up device whose push service answers that it no longer takes notifications (404 or 410), for example because its browser dropped the subscription; afk removes it from the device list the next time it tries to send to it.

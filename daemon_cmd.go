@@ -35,6 +35,7 @@ import (
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
 	"github.com/dphaener/afk/internal/webpass"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // This file is the daemon's command line and its wiring, and nothing else.
@@ -643,11 +644,24 @@ type daemonNotifier struct {
 	// (ntfy's Click header, see notify.NtfyMessage). The link never holds a
 	// secret: the browser proves itself with its sign-in cookie.
 	publicURL string
+	// push is where the same notices go as web push to the owner's signed-up
+	// devices. The zero value sends nothing. It is independent of the ntfy
+	// address and of the project config: a push needs neither.
+	push pushTarget
 }
 
 // item tells the owner about an inbox item the loop just added, with the
 // text `afk inbox add` sends for the same item.
+//
+// A blocking item also goes to the signed-up devices, whatever the ntfy
+// setup: assumed answers and notices arrive by the dozen and are not pushed.
 func (n daemonNotifier) item(p daemon.Project, it inbox.Item) {
+	if it.Blocking {
+		if msg, ok := notify.InboxMessage(it.ID, it.Task, it.Kind, it.Title, it.Body, true, inboxPushPlaceholderURL); ok {
+			n.push.deliver(webpush.Payload{Title: msg.Title, Body: msg.Body, URL: notify.ItemPath(p.Name, it.ID), Tag: "afk-item-" + it.ID},
+				webpush.Options{}, n.logf)
+		}
+	}
 	url, ok := n.address(p)
 	if !ok {
 		return
@@ -682,7 +696,14 @@ func (n daemonNotifier) idle(p daemon.Project, title, body string) {
 // only choose whether to send and how loudly, the stop item is deliberately
 // not blocking (`afk resume` clears the line, not an answer), and here both
 // questions are already settled.
+//
+// The devices get it too, always and with high urgency, so a phone lets it
+// through; like ntfy's, that does not depend on the item being blocking.
 func (n daemonNotifier) urgent(p daemon.Project, it inbox.Item) {
+	if msg, ok := notify.InboxMessage(it.ID, it.Task, "failure", it.Title, it.Body, true, inboxPushPlaceholderURL); ok {
+		n.push.deliver(webpush.Payload{Title: msg.Title, Body: msg.Body, URL: notify.ItemPath(p.Name, it.ID), Tag: "afk-item-" + it.ID},
+			webpush.Options{Urgency: "high"}, n.logf)
+	}
 	url, ok := n.address(p)
 	if !ok {
 		return
@@ -790,6 +811,14 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		},
 		logf: logf,
 	}
+	// A state folder that cannot be found leaves push off. The message below
+	// is the one log line for it; the planning-wait check says its own.
+	stateDir, stateErr := usagestate.Dir(st)
+	if stateErr != nil {
+		logf("warning: afk's state folder cannot be found, so no notification will be pushed to your devices: %v", stateErr)
+	} else {
+		n.push = pushTarget{dir: stateDir, send: webPushSend(stateDir, now)}
+	}
 	sd := session.DefaultDeps()
 	// Session creation prints its steps as it goes. They belong in the
 	// daemon's log, not on a stdout nobody reads. PickBase stays nil: there
@@ -827,8 +856,8 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 	// finished change session's agent. Both ride daemon.Deps.PlanWaits, so
 	// both run while paused, once per pass in Run and once at the end of Once.
 	var planWaits func(context.Context)
-	if stateDir, err := usagestate.Dir(st); err != nil {
-		logf("warning: afk's state folder cannot be found, so no \"planning session is waiting\" notification will be sent: %v", err)
+	if stateErr != nil {
+		logf("warning: afk's state folder cannot be found, so no \"planning session is waiting\" notification will be sent: %v", stateErr)
 	} else {
 		planWaits = composePlanHooks(
 			realPlanWaitNotifier(projects, stateDir, publicURL, now, logf).check,

@@ -3959,6 +3959,7 @@ and the things that block on them arrive as native notifications from it; ntfy i
   - `make check` green.
   - Against a built binary with one real subscription from T15.5: `afk inbox add` of a blocking item
     reaches the device, and tapping it opens that item.
+- Amended 2026-10-21 (T15.7 done): push goes through `pushTarget.deliver` in `push_notify.go` (every device, a gone one removed with `webpush.RemoveEndpoint`, other failures logged by label, never by endpoint), called from `afk inbox add` (`inboxPush`), `daemonNotifier.item` and `.urgent` (`daemon_cmd.go`, urgent with `Urgency: high`) and `planWaitNotifier.check`. Only blocking items push (not every item `NtfyPriority` sends; the urgent hook always pushes), so T15.8 keeps `NtfyPriority` only for ntfy's own wording if anything. Links are paths from `notify.ItemPath`, `ChatPath`, `PlanPath` (on `ProjectPath`), which the `…Link` builders now wrap; tags are `afk-item-<id>` and `afk-plan-<project>`. A planning wait is recorded once ntfy or at least one device got it, and push no longer needs `ntfy_url`, so T15.8 can drop the ntfy branch of `check` and keep the push count as the record rule. `afk inbox add` for a project not in `config.toml` does not push. See `## T15.7` in `docs/decisions.md`.
 
 #### T15.8 — Remove ntfy
 - **Depends on:** T15.7
