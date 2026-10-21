@@ -56,3 +56,4 @@ afk.local.toml
 # Unignored inside the checkout, the first archive made every later build
 # stamp +dirty.
 /dist/
+.playwright-mcp/
