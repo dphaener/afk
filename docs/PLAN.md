@@ -3909,9 +3909,18 @@ and the things that block on them arrive as native notifications from it; ntfy i
   the no-JavaScript confirm page the other actions have). Removing deletes the entry from
   `push-devices.json`; a removed device that is open later shows itself as off. The JSON API gets the
   list and the remove. `docs/web.md` says how to remove a device.
+  - From the design system: this device first, marked with `badge--this-device`, then the others
+    newest sign-up first. Each row is a `div`, not a link, with a **Remove** `btn--quiet` whose
+    `aria-label` names the device ("Remove Firefox on Windows"). Removing this device is the same as
+    Turn off (T15.5), and its confirm says "This device stops getting notifications." An empty list is
+    the `empty` "No devices signed up".
+  - The list updates by itself through the page's live updates (the owner's choice, reconcile of
+    2026-10-21): a device that signs up or is removed elsewhere while the page is open appears or goes
+    without a reload, and a new one arrives with `is-changed`.
 - **Acceptance:**
-  - Table tests: the list shows every entry, the current device is marked, remove deletes only that
-    entry, removing an id that is gone is not an error, and the confirm page works with JavaScript off.
+  - Table tests: the list shows every entry, this device first and the rest newest first, the current
+    device is marked, remove deletes only that entry, removing an id that is gone is not an error, the
+    confirm page works with JavaScript off, and adding or removing a device sends a live update.
   - `make check` green.
   - Against a built binary with two devices in a scratch `push-devices.json`: the list shows both,
     removing one leaves the other, and the page passes axe WCAG 2.2 AA at 390 and 1280 px.
