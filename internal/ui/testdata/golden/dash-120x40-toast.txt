@@ -1,13 +1,14 @@
- afk Dashboard 
-╭─ Sessions ────────────────────────────────╮╭─ feat-auth ──────────╭─────────────────────────────────────────────────╮╮
-│     NAME                PHASE     TASKS   ││   Overview   Waves   │ restarted feat-billing — claude is resuming its ││
-│                                           ││ ─────────────────────│ conversation · enter/f to reopen the agent      ││
-│ ▌ ● feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth ╰─────────────────────────────────────────────────╯│
-│   ● Billing v2          REVIEWING   7/7   ││  executing   loop 3  updated 2026-07-10T00:00:00Z  ● host running       │
-│   ● fix-login-redirect  PLANNING      – ● ││                                                                         │
-│   ○ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
-│   ● scratch-1           SCRATCH       –   ││                                                                         │
-│   ○ old-migration       BROKEN        –   ││ Progress  █████████░░░░░░░░░░░ 3/7                                      │
+ afk Dashboard                                                                                                          
+╭───────────────────────────────────────────╮╭──────────────────────╭─────────────────────────────────────────────────╮╮
+│ Sessions                                  ││ feat-auth            │ restarted feat-billing — claude is resuming its ││
+│     NAME                PHASE     TASKS   ││   Overview   Waves   │ conversation · enter/f to reopen the agent      ││
+│                                           ││ ─────────────────────╰─────────────────────────────────────────────────╯│
+│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
+│   ◐ Billing v2          REVIEWING   7/7   ││ ◐ executing  loop 3  updated 2026-07-10T00:00:00Z  ◐ host running       │
+│   ◐ fix-login-redirect  PLANNING      – ● ││                                                                         │
+│   ✓ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
+│   ◐ scratch-1           SCRATCH       –   ││                                                                         │
+│   ✕ old-migration       BROKEN        –   ││ Progress  █████████░░░░░░░░░░░ 3/7                                      │
 │                                           ││ Diff      +412/-88 · 9 file(s) vs main                                  │
 │                                           ││ Verdict   — not reviewed yet                                            │
 │                                           ││                                                                         │
@@ -35,6 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-│                                           ││                                                                         │
 ╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
-↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+] actions
+↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+] actions                                                         

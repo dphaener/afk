@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/dashmeta"
@@ -618,6 +619,12 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		Scan:               scanProjects,
 		LoadConfig:         loadDashConfig,
 		Leader:             startupLeader(),
+		Theme:              startupTheme(),
+		// The colour depth is detected here, once, so internal/ui never
+		// probes a terminal: it only decides whether the theme's ground is
+		// painted (not at 16 colours or fewer). Stdout is what bubbletea
+		// draws to.
+		ColorProfile:       colorprofile.Detect(os.Stdout, os.Environ()),
 		LoadSelections:     loadSelections,
 		RememberSelection:  rememberSelection,
 		LoadProjectOpens:   loadProjectOpens,
@@ -754,6 +761,23 @@ func configuredLeader(d daemonconfig.Deps) string {
 		return ""
 	}
 	return cfg.Dash.Leader
+}
+
+// startupTheme is the colour theme read once when `afk dash` starts. It is a
+// variable so a test can stand in for the config file.
+var startupTheme = func() string { return configuredTheme(daemonconfig.DefaultDeps()) }
+
+// configuredTheme reads config.toml's [dash] theme, best effort, on
+// configuredLeader's terms: a load error or a bad [dash] table gives "" (the
+// default theme), because the first scan's toast already names the file and
+// the key, and a malformed file must not stop the dashboard. The name is not
+// checked here; the dashboard does that (ui checkTheme) and says so itself.
+func configuredTheme(d daemonconfig.Deps) string {
+	cfg, err := daemonconfig.Load(d)
+	if err != nil || cfg.DashErr != nil {
+		return ""
+	}
+	return cfg.Dash.Theme
 }
 
 // resolveTmuxClientTTY asks tmux which tty the attached client is on, or returns

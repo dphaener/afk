@@ -325,8 +325,10 @@ func TestBuildKey(t *testing.T) {
 				t.Errorf("the pane is missing %q:\n%s", want, body)
 			}
 		}
-		if frame := render(m); !strings.Contains(frame, "─ Build ─") {
-			t.Errorf("the box is not titled Build:\n%s", frame)
+		// The detail box's title strip is its first inner row, just right
+		// of the session list's border: "││ Build ".
+		if frame := render(m); !strings.Contains(frame, "││ Build ") {
+			t.Errorf("the box's title strip is not Build:\n%s", frame)
 		}
 		m, _ = update(t, m, keyEsc)
 		if m.focus != focusList {

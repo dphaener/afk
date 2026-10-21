@@ -1,10 +1,10 @@
- afk Dashboard 
-╭─ Sessions ─────────────────╮╭─ feat-auth ────────────────────────────────────╮
+ afk Dashboard                                                                  
+╭────────────────────────────╮╭────────────────────────────────────────────────╮
+│ Sessions                   ││ feat-auth                                      │
 │     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff      │
 │                            ││ ────────────────────────────────────────────── │
-│ ▌ ● feat-auth      EXEC  ● ││ feat-auth  feat-auth → main                    │
-│   ● Billing v2     REVW    ││  executing   loop 3  updated 2026-07-10T00:00… │
-│   ● fix-login-red… PLAN  ● ││                                                │
+│ ▌ ◐ feat-auth      EXEC  ● ││ feat-auth  feat-auth → main                    │
+│   ◐ Billing v2     REVW    ││ ◐ executing  loop 3  updated 2026-07-10T00:00… │
 │ ╭─ Plan check · docs/PLAN.md ──────────────────────────────────────────────╮ │
 │ │ 2 milestones · 5 tasks · 1 owner tasks · 0 open questions                │ │
 │ │ docs/PLAN.md: 2 errors, 1 warning                                        │ │
@@ -14,11 +14,11 @@
 │ │ docs/PLAN.md: error: the plan has no milestone heading [no-milestone]    │ │
 │ │ docs/PLAN.md:3: warning: the plan has an open question [open-question]   │ │
 │ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                            ││   ○ W2.T2 Add logout endpoint                  │
 │                            ││   ○ W2.T3 Rotate refresh tokens                │
 │                            ││   ○ W2.T4 Remove legacy table                  │
 │                            ││                                                │
 │                            ││ Stack     main › feat-auth                     │
-│                            ││                                                │
 │                            ││                                             0% │
 ╰────────────────────────────╯╰─ enter: focus view · ctrl+] c: clean · ctrl+… ─╯
-↑/k up · ↓/j down · pgup page up · pgdn page down · home top · end bottom …
+↑/k up · ↓/j down · pgup page up · pgdn page down · home top · end bottom …     

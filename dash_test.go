@@ -1595,6 +1595,51 @@ func TestRememberSelectionAndRecordProjectOpenShareTheWriteLock(t *testing.T) {
 	}
 }
 
+// TestConfiguredTheme pins the start-up read of config.toml's theme, on
+// TestConfiguredLeader's terms. Load-bearing rows: "bad dash value" and "load
+// error" must give "" (the default theme) without failing, because a malformed
+// file must not stop the dashboard and a theme beside a bad value is not used;
+// "unknown name" must come through as written, because the dashboard, not this
+// read, refuses it and says so in a toast.
+func TestConfiguredTheme(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{name: "absent file", file: "", want: ""},
+		{name: "value present", file: "[dash]\ntheme = \"paper\"\n", want: "paper"},
+		{name: "no theme key", file: "[dash]\nmax_depth = 3\n", want: ""},
+		{name: "unknown name", file: "[dash]\ntheme = \"nope\"\n", want: "nope"},
+		{name: "bad dash value", file: "[dash]\ntheme = \"paper\"\nscan_interval = \"soon\"\n", want: ""},
+		{name: "theme not text", file: "[dash]\ntheme = 3\n", want: ""},
+		{name: "load error", file: "[dash\n", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			d := daemonconfig.DefaultDeps()
+			d.Getenv = func(k string) string {
+				if k == "XDG_CONFIG_HOME" {
+					return dir
+				}
+				return ""
+			}
+			if tt.file != "" {
+				if err := os.MkdirAll(filepath.Join(dir, "afk"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(daemonconfig.Path(d), []byte(tt.file), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := configuredTheme(d); got != tt.want {
+				t.Errorf("configuredTheme = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestConfiguredLeader pins the start-up read of config.toml's leader. The
 // load-error and bad-[dash] rows are load-bearing: both must give "" (the
 // default leader) without failing, because a malformed file must not stop the

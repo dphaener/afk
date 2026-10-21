@@ -11,9 +11,10 @@
 // one the XDG spec gives (a relative value must be ignored), so config.toml
 // sits next to usage.json.
 //
-// The [dash] table (search_roots, scan_interval, max_depth) is read here for
-// the dashboard's folder search. The daemon ignores it, and so does every
-// other command that shares this load: a bad [dash] value never fails Load.
+// The [dash] table (search_roots, scan_interval, max_depth, leader, theme) is
+// read here for the dashboard's folder search. The daemon ignores it, and so
+// does every other command that shares this load: a bad [dash] value never
+// fails Load.
 // It is carried in Config.DashErr for the dashboard to report (see DashErr).
 //
 // The [governor] table holds the usage limits (pause_at, launch_below,
@@ -243,6 +244,13 @@ type Dash struct {
 	// so refusing a mistyped key name in this loader would also throw away the
 	// owner's folder search. Only the type is checked here.
 	Leader string
+	// Theme is the colour theme named in the file, exactly as written, trimmed
+	// of surrounding white space, and "" when unset. The dashboard checks it
+	// (internal/ui checkTheme), not here, for the same reason as Leader:
+	// DashErr is all-or-nothing, so refusing an unknown theme name in this
+	// loader would also throw away the owner's folder search. Only the type is
+	// checked here.
+	Theme string
 }
 
 func defaultDash() Dash {
@@ -421,7 +429,7 @@ func loadDash(path string, raw rawFile, d Deps) (Dash, error) {
 	}
 	table, ok := raw.Dash.(map[string]any)
 	if !ok {
-		return Dash{}, fmt.Errorf("%s: dash is not a table; write a [dash] line and put search_roots, scan_interval, max_depth and leader under it", path)
+		return Dash{}, fmt.Errorf("%s: dash is not a table; write a [dash] line and put search_roots, scan_interval, max_depth, leader and theme under it", path)
 	}
 
 	if v, ok := table["scan_interval"]; ok {
@@ -457,6 +465,14 @@ func loadDash(path string, raw rawFile, d Deps) (Dash, error) {
 			return Dash{}, fmt.Errorf("%s: dash.leader is %#v, which is not text in quotes; write it like \"ctrl+o\"", path, v)
 		}
 		dash.Leader = strings.TrimSpace(s)
+	}
+
+	if v, ok := table["theme"]; ok {
+		s, isString := v.(string)
+		if !isString {
+			return Dash{}, fmt.Errorf("%s: dash.theme is %#v, which is not text in quotes; write it like \"tide\"", path, v)
+		}
+		dash.Theme = strings.TrimSpace(s)
 	}
 
 	if v, ok := table["search_roots"]; ok {

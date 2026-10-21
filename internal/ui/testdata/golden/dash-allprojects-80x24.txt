@@ -1,24 +1,24 @@
  afk Dashboard                                                                  
-╭─ All projects ───────────────────────────────────────────────────────────────╮
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ All projects                                                                 │
 │ 5 need you                                                                   │
 │                                                                              │
 │ ▌ beta  2/6  2 in inbox, 1 holds a task up                                   │
-│ ▌   paused · Paused: no new task will start until you resume it. A task tha… │
+│ ▌ ○ paused · Paused: no new task will start until you resume it. A task tha… │
 │   gamma  -                                                                   │
-│     gone · The project folder does not exist. Check its path in config.toml. │
+│   ✕ gone · The project folder does not exist. Check its path in config.toml. │
 │   delta  -                                                                   │
-│     can't read · reading /p/delta/.afk/build/ledger.json: invalid character… │
+│   ✕ can't read · reading /p/delta/.afk/build/ledger.json: invalid character… │
 │   epsilon  -  plan waiting for approval                                      │
-│     no plan · This project has no master plan to build.                      │
+│   ○ no plan · This project has no master plan to build.                      │
 │   eta  1/4  1 in inbox, 1 holds a task up                                    │
-│     waiting on you · a task is parked until you answer its inbox items: W2.… │
+│   ● waiting on you · a task is parked until you answer its inbox items: W2.… │
 │   alpha  3/8                                                                 │
-│     running · W1.T2 Add the parser: executing                                │
+│   ◐ running · W1.T2 Add the parser: executing                                │
 │   zeta  5/5                                                                  │
-│     finished · Every task is done.                                           │
+│   ✓ finished · Every task is done.                                           │
 │   repo  0/3                                                                  │
-│     held for usage · nothing new is started, because of the usage limits     │
-│                                                                              │
+│   ○ held for usage · nothing new is started, because of the usage limits     │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 enter switch · esc close · ↑/k up · ↓/j down · ctrl+] P pause · ctrl+] U resume…

@@ -42,6 +42,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/dashmeta"
@@ -764,6 +765,20 @@ type Deps struct {
 	// leader is decided once per start (no live reload on scan ticks), and
 	// this package still reads no file of its own.
 	Leader string
+	// Theme is the colour theme as written in config.toml's [dash] table,
+	// read by the caller once at start; "" means unset (tide on a dark
+	// terminal, paper on a light one). New checks it with checkTheme, so an
+	// unknown name draws tide and says why in an error toast. A plain string
+	// for Leader's reason: decided once per start, and this package reads no
+	// file of its own.
+	Theme string
+	// ColorProfile is how many colours the terminal shows, detected by the
+	// caller (`afk dash`, colorprofile.Detect) so this package never probes a
+	// terminal. It decides only whether the ground is painted (paintsGround):
+	// bubbletea already rounds every colour to the profile at its writer. The
+	// zero value, colorprofile.Unknown, counts as true colour, so a test's
+	// zero Deps paints exactly as a modern terminal would.
+	ColorProfile colorprofile.Profile
 	// LaunchMainCheckout is the main checkout of the start-up project (the
 	// pinned entry in Projects). It differs from that entry's path only when
 	// the dashboard was started inside a linked worktree; empty means "same as
@@ -2126,6 +2141,12 @@ type Model struct {
 	// changes while the dashboard runs.
 	leaderKey leaderSetting
 
+	// themeSetting is the theme this dashboard draws with, decided once in
+	// New by checkTheme from Deps.Theme. The package's theme variable is
+	// always built from themeSetting.theme; the background answer replaces it
+	// only when it is not pinned (onBackground).
+	themeSetting themeSetting
+
 	// helpShowAll is renderHelp's ShowAll flag (views.go), toggled by
 	// ctrl+] ? (actionHelp) and closed by esc on the list. It is
 	// presentational — no mode is derived from it, only normal mode's esc
@@ -2159,6 +2180,13 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 	}
 	d := deps.withDefaults()
 	leader := checkLeader(d.Leader)
+	// The theme is applied before anything below captures a style (the
+	// spinner takes theme.spinner by value), so a chosen theme is on screen
+	// from the first frame.
+	// useThemeFor also tells the parts whether the terminal can show the
+	// panes' panel ground (16 colours cannot, §1).
+	themeSet := checkTheme(d.Theme)
+	useThemeFor(themeSet.theme, d.ColorProfile)
 	keys := defaultKeyMap()
 	keys.Leader = leaderBinding(leader.name)
 	var remembered map[string]string
@@ -2205,6 +2233,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		deps:                  d,
 		keys:                  keys,
 		leaderKey:             leader,
+		themeSetting:          themeSet,
 		stackRefreshing:       new(atomic.Bool),
 		buildRefreshing:       new(atomic.Bool),
 		planStatusRefreshing:  new(atomic.Bool),
@@ -2235,6 +2264,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(theme.spinner)),
 	}
 	m.raiseStartupNotice(deps.StartupNotice)
+	m.raiseThemeNotice(themeSet.notice)
 	return m
 }
 
@@ -2256,9 +2286,9 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 // it.
 func (m Model) Init() tea.Cmd {
 	cmds := append(m.projectCmds(), m.tickCmd(),
-		// Ask the terminal for its background so the palette can pick its
-		// light or dark scheme (applyTheme); a terminal that never answers
-		// leaves the dark default in place.
+		// Ask the terminal for its background so an unset theme can pick
+		// paper on a light terminal (themeSetting.onBackground); a terminal
+		// that never answers leaves tide in place.
 		tea.RequestBackgroundColor,
 		focusRequestWatchCmd(m.focusWatch, m.gitCommonDir, m.pid),
 		writeDashEntryCmd(m.deps.WriteDashEntry, m.gitCommonDir, m.dashEntry),
@@ -2315,10 +2345,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
-		// The terminal answered RequestBackgroundColor. Rebuild the shared
-		// style set for its scheme; the spinner captured its style at New,
-		// so it is re-pointed here.
-		applyTheme(msg.IsDark())
+		// The terminal answered RequestBackgroundColor. An unset theme
+		// follows it (tide or paper); a theme the owner chose stays. The
+		// shared style set is rebuilt either way, from the one setting, and
+		// the spinner captured its style at New, so it is re-pointed here.
+		m.themeSetting = m.themeSetting.onBackground(msg.IsDark())
+		useThemeFor(m.themeSetting.theme, m.deps.ColorProfile)
 		m.spinner.Style = theme.spinner
 		return m, nil
 	case tea.WindowSizeMsg:
@@ -4150,7 +4182,7 @@ func (m *Model) sizeSessionList() {
 		return
 	}
 	listOuter, _, bodyHeight := m.layoutDims()
-	m.list.SetSize(sidebarContentWidth(listOuter), bodyHeight-boxBorderCells-sidebarCaptionRows)
+	m.list.SetSize(sidebarContentWidth(listOuter), listBodyRows(bodyHeight)-sidebarCaptionRows)
 }
 
 // syncDetailViewport brings the Model's detail viewport — the one the scroll

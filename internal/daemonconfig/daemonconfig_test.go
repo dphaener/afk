@@ -212,6 +212,10 @@ name = "bee"
 // value, that a string is kept as written (trimmed, never checked here, so a
 // mistyped key name cannot reset the folder search) and that it does not
 // disturb the other keys.
+// The theme rows pin the same rule for [dash] theme: a string is kept as
+// written (trimmed, and an unknown name is stored, not refused, because the
+// dashboard shows the owner the notice), and a number is refused like any
+// other bad value.
 // "max_depth zero" pins that a written 0 is refused and not passed on as
 // "not set" (see Dash.MaxDepth). "relative root" pins that a relative folder
 // stays allowed, unlike a [[project]] path.
@@ -290,6 +294,15 @@ func TestLoadDash(t *testing.T) {
 			want: Dash{SearchRoots: []string{"/srv/code"}, ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Leader: "alt+x"}},
 		{name: "leader of the wrong type", toml: "[dash]\nleader = 5\n",
 			errHas: []string{home, "dash.leader", "ctrl+o"}},
+		{name: "theme alone", toml: "[dash]\ntheme = \"paper\"\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Theme: "paper"}},
+		{name: "theme trimmed", toml: "[dash]\ntheme = \"  fjord  \"\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Theme: "fjord"}},
+		{name: "theme empty", toml: "[dash]\ntheme = \"\"\n", want: def},
+		{name: "theme unknown name stored as written", toml: "[dash]\ntheme = \"nope\"\n",
+			want: Dash{ScanInterval: DefaultScanInterval, MaxDepth: DefaultMaxDepth, Theme: "nope"}},
+		{name: "theme of the wrong type", toml: "[dash]\ntheme = 3\n",
+			errHas: []string{home, "dash.theme", "tide"}},
 		{name: "dash is a number", toml: "dash = 5\n",
 			errHas: []string{home, "dash", "[dash]"}},
 		{name: "dash is a list of tables", toml: "[[dash]]\nmax_depth = 2\n",

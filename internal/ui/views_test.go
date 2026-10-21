@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/discover"
@@ -47,21 +48,23 @@ func scratchSess(name string) Session {
 // string: the test binary's stdout is not a TTY, so lipgloss's default
 // renderer strips color at Render time and a substring check on the output
 // can never see a regressed hue. The fg/bg columns pin each phase to its
-// palette constant; the width check pins badge()'s Padding(0, 1) (one cell
-// each side survives even the colorless profile); the plain variant pins
-// badgePlain()'s bg-reused-as-fg hue with no background and no padding.
+// tide token (§3.6: working phases work, done done, failed bad, text
+// on-accent; tide is the theme a zero-Deps test draws with); the width
+// check pins badge()'s Padding(0, 1) (one cell each side survives even the
+// colorless profile); the plain variant pins badgePlain()'s bg-reused-as-fg
+// hue with no background and no padding.
 func TestPhaseBadgeSixExistingPhasesUnchanged(t *testing.T) {
 	cases := []struct {
 		phase  string
 		want   string
 		fg, bg string
 	}{
-		{"planning", "planning", palette.White, palette.PhasePlanningBg},
-		{"executing", "executing", palette.Black, palette.PhaseExecutingBg},
-		{"reviewing", "reviewing", palette.Black, palette.PhaseReviewingBg},
-		{"fixing", "fixing", palette.White, palette.PhaseFixingBg},
-		{"done", "done", palette.Black, palette.PhaseDoneBg},
-		{"failed", "failed", palette.White, palette.PhaseFailedBg},
+		{"planning", "planning", palette.Tide.OnAccent, palette.Tide.Work},
+		{"executing", "executing", palette.Tide.OnAccent, palette.Tide.Work},
+		{"reviewing", "reviewing", palette.Tide.OnAccent, palette.Tide.Work},
+		{"fixing", "fixing", palette.Tide.OnAccent, palette.Tide.Work},
+		{"done", "done", palette.Tide.OnAccent, palette.Tide.Done},
+		{"failed", "failed", palette.Tide.OnAccent, palette.Tide.Bad},
 	}
 	for _, c := range cases {
 		t.Run(c.phase, func(t *testing.T) {
@@ -171,7 +174,7 @@ func TestScratchSessionRowShowsNoBranchLine(t *testing.T) {
 
 // TestScratchSessionDetailHeaderHasNoBranchSubLineOrLoopCount covers the
 // detail header (renderDetail): a scratch session must show the scratch
-// badge, no "branch → base" sub-line (both fields are empty, per
+// state (glyph and word), no "branch → base" sub-line (both fields are empty, per
 // SessionState.Scratch's doc), and no "loop N" (LoopCount is always 0).
 func TestScratchSessionDetailHeaderHasNoBranchSubLineOrLoopCount(t *testing.T) {
 	m := testModel(scratchSess("scratch-1"))
@@ -187,8 +190,13 @@ func TestScratchSessionDetailHeaderHasNoBranchSubLineOrLoopCount(t *testing.T) {
 	if strings.Contains(detail, "unknown") {
 		t.Errorf("expected no unknown fallback in scratch detail header, got:\n%s", detail)
 	}
-	wantBadge := theme.phaseBadge(scratchPhaseKey)
-	if !strings.Contains(detail, wantBadge) {
+	// The header draws the state as §3.6 does (T16.1): "○ scratch" in the
+	// quiet colour, through the one mapping, stateLook.
+	// It is read off detailBody, the text before the box: the box repaints
+	// every cell with the panel ground (panelBox), which re-encodes the
+	// styled run.
+	wantBadge := theme.renderState(stateSession, scratchPhaseKey)
+	if !strings.Contains(m.detailBody(detailContentWidth(80)), wantBadge) || !strings.Contains(xansi.Strip(detail), "○ scratch") {
 		t.Errorf("expected scratch badge in detail header, got:\n%s", detail)
 	}
 }
@@ -248,8 +256,10 @@ func TestNormalSessionDetailHeaderUnaffected(t *testing.T) {
 	if !strings.Contains(detail, "loop 2") {
 		t.Errorf("expected loop count preserved for a normal session, got:\n%s", detail)
 	}
-	wantBadge := theme.phaseBadge(string(state.PhaseExecuting))
-	if !strings.Contains(detail, wantBadge) {
+	// The phase is drawn as §3.6 draws a state since T16.1: "◐ executing" in
+	// the working colour, the same word as the old badge.
+	wantBadge := theme.renderState(stateSession, string(state.PhaseExecuting))
+	if !strings.Contains(m.detailBody(detailContentWidth(80)), wantBadge) || !strings.Contains(xansi.Strip(detail), "◐ executing") {
 		t.Errorf("expected normal phase badge preserved, got:\n%s", detail)
 	}
 }
@@ -718,14 +728,16 @@ func TestDetailRowBudget(t *testing.T) {
 		wantRows           int
 		wantReadout        bool
 	}{
-		{"fits with room to spare", 21, 5, 19, false},
-		{"exact fit is not an overflow", 21, 19, 19, false},
-		{"overflow by one reserves the readout row", 21, 20, 18, true},
-		{"deep overflow reserves the readout row", 21, 127, 18, true},
-		{"80x10's 7-row body overflowing", 7, 127, 4, true},
-		{"one inner row, fits", 3, 1, 1, false},
-		{"one inner row, overflowing: no readout, the row stays content", 3, 40, 1, false},
-		{"border-only box floors at one row", 2, 0, 1, false},
+		// The inner rows are outerH less the border and the title strip
+		// (paneStripRows): 21 → 18.
+		{"fits with room to spare", 21, 5, 18, false},
+		{"exact fit is not an overflow", 21, 18, 18, false},
+		{"overflow by one reserves the readout row", 21, 19, 17, true},
+		{"deep overflow reserves the readout row", 21, 127, 17, true},
+		{"80x10's 7-row body overflowing", 7, 127, 3, true},
+		{"one inner row, fits", 4, 1, 1, false},
+		{"one inner row, overflowing: no readout, the row stays content", 4, 40, 1, false},
+		{"border and strip only floors at one row", 3, 0, 1, false},
 		{"degenerate zero height floors at one row", 0, 40, 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -795,9 +807,12 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 	}
 
 	t.Run("exact fit: no readout, last row is content", func(t *testing.T) {
-		frame := m.renderDetail(mainOuter, total+boxBorderCells)
-		if lipgloss.Height(frame) != total+boxBorderCells {
-			t.Fatalf("frame is %d rows, want %d", lipgloss.Height(frame), total+boxBorderCells)
+		// The box's inner rows are the title strip (paneStripRows) and the
+		// body under it.
+		outerH := total + boxBorderCells + paneStripRows
+		frame := m.renderDetail(mainOuter, outerH)
+		if lipgloss.Height(frame) != outerH {
+			t.Fatalf("frame is %d rows, want %d", lipgloss.Height(frame), outerH)
 		}
 		row := lastInnerRow(frame)
 		if strings.Contains(row, "%") {
@@ -809,7 +824,7 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 	})
 
 	t.Run("overflow by one: readout, and the last line still reachable", func(t *testing.T) {
-		outerH := total + boxBorderCells - 1
+		outerH := total + boxBorderCells + paneStripRows - 1
 		if row := lastInnerRow(m.renderDetail(mainOuter, outerH)); !strings.Contains(row, "0%") {
 			t.Fatalf("overflowing frame's last row is %q, want a 0%% readout at the top", row)
 		}
@@ -1082,30 +1097,32 @@ func TestDetailBoxFocusedBlurredStylesAreGeometryNeutral(t *testing.T) {
 	}
 }
 
-// TestBoxDetailBodyRendersWithTheGivenStyle is the render-level companion to
-// TestDetailBoxStyleAccentOnAllFourEdgesWhenFocused: color is invisible on a
-// rendered string in this suite (see the section doc above), but a border's
-// GLYPHS are plain runes and survive just fine, so a style whose border
-// glyphs differ from theme.detailBox's proves boxDetailBody's style
-// parameter genuinely reaches sizedBox rather than being accepted and
-// ignored — the wiring mistake step 3 warns about, where only labelBorders'
-// top/bottom repaint would show a change and boxDetailBody's own border
-// would stay whatever sizedBox hard-coded.
-func TestBoxDetailBodyRendersWithTheGivenStyle(t *testing.T) {
+// TestBoxDetailBodyRendersWithTheGivenFocus is the render-level companion
+// to TestDetailBoxStyleAccentOnAllFourEdgesWhenFocused: boxDetailBody draws
+// the detail box with the pane part, and its focused parameter must reach
+// the pane's border on all four sides and its title strip, rather than being
+// accepted and ignored — the wiring mistake where only labelBorders' bottom
+// repaint would show a change. Load-bearing: the left edge cell (only the
+// pane's own border draws it) and the strip's fill.
+func TestBoxDetailBodyRendersWithTheGivenFocus(t *testing.T) {
 	m := testModel(sess("alpha"))
 	_, mainOuter, bodyHeight := m.layoutDims()
 	contentW := detailContentWidth(mainOuter)
-
-	thick := lipgloss.NewStyle().Border(lipgloss.ThickBorder(), true).Padding(0, 1)
-	if thick.GetBorderStyle() == theme.detailBox.GetBorderStyle() {
-		t.Fatalf("precondition: the probe style's border must differ from theme.detailBox's")
-	}
-
-	got := m.boxDetailBody(m.detailBody(contentW), contentW, bodyHeight, thick)
-
-	thickBorder := lipgloss.ThickBorder()
-	if !strings.Contains(got, thickBorder.TopLeft) {
-		t.Errorf("boxDetailBody did not draw with the style it was given: %q", got)
+	for _, focused := range []bool{false, true} {
+		border, strip := palette.Tide.Line, palette.Tide.Strip
+		if focused {
+			border, strip = palette.Tide.Accent, palette.Tide.Accent
+		}
+		got := m.boxDetailBody(m.detailBody(contentW), contentW, bodyHeight, "alpha", focused)
+		if c := cellOf(t, got, 0, 2); hexOf(c.Style.Fg) != border {
+			t.Errorf("focused=%v: left edge fg = %s, want %s", focused, hexOf(c.Style.Fg), border)
+		}
+		if c := cellOf(t, got, 1, 1); hexOf(c.Style.Bg) != strip {
+			t.Errorf("focused=%v: title strip bg = %s, want %s", focused, hexOf(c.Style.Bg), strip)
+		}
+		if line := strings.Split(xansi.Strip(got), "\n")[1]; !strings.HasPrefix(line, "│ alpha") {
+			t.Errorf("focused=%v: strip row = %q, want the title first", focused, line)
+		}
 	}
 }
 
@@ -1589,4 +1606,268 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The tide tokens the redraw tests below look for in raw SGR, spelled out (as
+// render_test.go's selectionBg is) so a theme edit fails them rather than
+// making them vacuous.
+const (
+	tideGroundBg = "48;2;10;18;34"   // bg #0a1222
+	tidePanelBg  = "48;2;12;22;41"   // panel #0c1629
+	tideStripBg  = "48;2;22;39;74"   // strip #16274a
+	tideAccentBg = "48;2;99;179;242" // accent #63b3f2
+)
+
+// boxInner is a box row's text between its left and right border glyphs,
+// escapes included, for bgActiveAtEveryCell.
+func boxInner(line string) string {
+	from := strings.Index(line, "│")
+	to := strings.LastIndex(line, "│")
+	if from < 0 || to <= from {
+		return ""
+	}
+	return line[from+len("│") : to]
+}
+
+// TestPaneFillsRowsToTheBorder pins the pane part's body, which today's
+// screens are drawn in since T16.1. Load-bearing rows: "selected row reaches
+// the border" is §3.5's edge-to-edge selection (the pane's padding wears the
+// row's own fill, so the bar does not stop a cell short of the border on each
+// side); "plain row is panel" is §1's pane interior; the two flat rows are the
+// 16-colour terminal, where panel must not be painted but a selection still
+// fills. Every row also checks the pane is the exact width sizedBox gave the
+// padded style, which every geometry helper (sidebarRenderedWidth,
+// paneContentDims, detailContentWidth) was measured against, and one row
+// taller for the title strip.
+func TestPaneFillsRowsToTheBorder(t *testing.T) {
+	set := newStyleSet(palette.Tide)
+	selected := set.row("▌ alpha", 10, true, "")
+	cases := []struct {
+		name   string
+		flat   bool
+		row    string
+		wantBg string // in force at every cell between the borders; "" = no background at all
+	}{
+		{"selected row reaches the border", false, selected, selectionBg},
+		{"plain row is panel to the border", false, "alpha", tidePanelBg},
+		{"flat set keeps a selected row's fill", true, selected, selectionBg},
+		{"flat set leaves a plain row unpainted", true, "alpha", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStyleSet(palette.Tide)
+			s.flat = tc.flat
+			got := strings.Split(s.pane("T", "", tc.row, paneOuterWidth(10), 3+paneStripRows+boxBorderCells, false), "\n")
+			want := strings.Split(sizedBox(s.listBox, 12, 3+paneStripRows).Render("x"), "\n")
+			if len(got) != len(want) {
+				t.Fatalf("pane is %d rows, want sizedBox's %d", len(got), len(want))
+			}
+			for i := range got {
+				if gw, ww := lipgloss.Width(got[i]), lipgloss.Width(want[i]); gw != ww {
+					t.Errorf("row %d is %d cells, want sizedBox's %d", i, gw, ww)
+				}
+			}
+			inner := boxInner(got[2])
+			if tc.wantBg == "" {
+				if strings.Contains(inner, "48;") {
+					t.Errorf("a flat pane painted a background: %q", inner)
+				}
+				return
+			}
+			if at, ok := bgActiveAtEveryCell(inner, tc.wantBg); !ok {
+				t.Errorf("%s is not in force at byte %d of the row: %q", tc.wantBg, at, inner)
+			}
+			if !tc.flat {
+				if at, ok := bgActiveAtEveryCell(boxInner(got[3]), tidePanelBg); !ok {
+					t.Errorf("an empty row below the block is not panel at byte %d: %q", at, got[3])
+				}
+			}
+		})
+	}
+}
+
+// TestPaneTitleStripLayout pins the pane part's title strip, its first inner
+// row. Load-bearing rows: "name and context" is the session list's strip
+// (project left, paging hint right); "context gives way" and "long name is
+// cut" are the narrowing rules (the context goes first, then the name is cut
+// with "…", never wrapped), so a narrow sidebar that pages still names its
+// project; "focused" is §3.3's accent strip for the pane with the keyboard.
+// Every row checks the strip stays exactly as wide as the pane's inside and
+// its fill covers it border to border.
+func TestPaneTitleStripLayout(t *testing.T) {
+	cases := []struct {
+		name       string
+		title, ctx string
+		width      int
+		focused    bool
+		prefix     string
+		suffix     string
+		not        string
+		fill       string
+	}{
+		{"name and context", "beta", "page 1/2", 30, false, "│ beta ", " page 1/2 │", "", tideStripBg},
+		{"context gives way to the name", "beta", "page 1/2 · pgup/pgdn", 20, false, "│ beta ", " │", "page", tideStripBg},
+		{"long name is cut", strings.Repeat("x", 40), "", 20, false, "│ xxx", "… │", "", tideStripBg},
+		{"focused strip is accent", "beta", "", 30, true, "│ beta ", " │", "", tideAccentBg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := strings.Split(theme.pane(tc.title, tc.ctx, "", tc.width, 4, tc.focused), "\n")[1]
+			text := xansi.Strip(got)
+			if w := lipgloss.Width(got); w != tc.width {
+				t.Errorf("strip row is %d cells, want the pane's %d: %q", w, tc.width, text)
+			}
+			if !strings.HasPrefix(text, tc.prefix) || !strings.HasSuffix(text, tc.suffix) {
+				t.Errorf("strip row = %q, want it to start %q and end %q", text, tc.prefix, tc.suffix)
+			}
+			if tc.not != "" && strings.Contains(text, tc.not) {
+				t.Errorf("strip row = %q, must not contain %q", text, tc.not)
+			}
+			if at, ok := bgActiveAtEveryCell(boxInner(got), tc.fill); !ok {
+				t.Errorf("the strip's fill %s stops at byte %d: %q", tc.fill, at, got)
+			}
+		})
+	}
+}
+
+// TestFooterIsAStatusBar pins §3.2 on today's footer: the row is filled with
+// strip edge to edge, and its words are renderHelp's, unchanged. Both rows
+// are load-bearing: the normal list is the common case, and the full help (?)
+// is the one footer that is more than one row, each of which must be filled.
+func TestFooterIsAStatusBar(t *testing.T) {
+	cases := []struct {
+		name    string
+		showAll bool
+	}{
+		{"normal short help", false},
+		{"full help, one row per binding", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := goldenModel(t, 120, 40)
+			m.helpShowAll = tc.showAll
+			footer := strings.Split(m.renderFooter(), "\n")
+			help := strings.Split(m.renderHelp(), "\n")
+			if len(footer) != len(help) {
+				t.Fatalf("footer is %d rows, want renderHelp's %d", len(footer), len(help))
+			}
+			for i := range footer {
+				if w := lipgloss.Width(footer[i]); w != m.width {
+					t.Errorf("row %d is %d cells, want the full width %d", i, w, m.width)
+				}
+				if at, ok := bgActiveAtEveryCell(footer[i], tideStripBg); !ok {
+					t.Errorf("row %d: strip stops at byte %d: %q", i, at, footer[i])
+				}
+				got := strings.TrimRight(xansi.Strip(footer[i]), " ")
+				want := strings.TrimRight(xansi.Strip(help[i]), " ")
+				if got != want {
+					t.Errorf("row %d words changed:\n got %q\nwant %q", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestViewGroundReachesTheRightEdge pins the ground on every cell of the
+// frame. Load-bearing rows: "under a dialog" is the case the row padding in
+// View exists for (the Compositor trims a row's bare trailing blanks, which
+// left the top bar and the status bar unpainted at their right end); "16
+// colours" is §1's exception, where neither the ground nor the panes' panel
+// may be painted.
+func TestViewGroundReachesTheRightEdge(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile colorprofile.Profile
+		dialog  bool
+	}{
+		{"plain frame", colorprofile.TrueColor, false},
+		{"under a dialog", colorprofile.TrueColor, true},
+		{"16 colours paint no ground", colorprofile.ANSI, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() { useTheme(palette.Tide) })
+			d := testDeps()
+			d.ColorProfile = tc.profile
+			m := New("/repo", 2*time.Second, d)
+			m, _ = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+			m.setSessions(goldenSessions())
+			if tc.dialog {
+				m, _ = update(t, m, leaderKeyPress)
+				var cmd tea.Cmd
+				m, cmd = update(t, m, keyRune('c'))
+				m = pumpForm(t, m, cmd, 0)
+				if m.modal != inputConfirmClean {
+					t.Fatal("c did not open the clean confirmation")
+				}
+			}
+			frame := m.View().Content
+			if tc.profile == colorprofile.ANSI {
+				for _, bg := range []string{tideGroundBg, tidePanelBg} {
+					if strings.Contains(frame, bg) {
+						t.Errorf("a 16-colour frame carries %s", bg)
+					}
+				}
+				return
+			}
+			for i, line := range strings.Split(frame, "\n") {
+				if w := lipgloss.Width(line); w != m.width {
+					t.Errorf("row %d is %d cells, want %d", i, w, m.width)
+				}
+			}
+		})
+	}
+}
+
+// TestHostIndicatorUsesTheStateMapping pins the session row's glyph to §3.6
+// through stateLook (sessionGlyphState picks the state, stateLook draws it).
+// Load-bearing rows: "done" and "failed" are a session that has ended, which
+// says so whatever its host is doing ("done with its host still up" proves the
+// ending outranks the host); "broken" and "orphan" are the worktree faults;
+// "running" is the change T16.1 made (◐ in work, where a filled dot used to say
+// "needs you" in every other place it appears); "stale with a live host" keeps
+// the liveness the column exists to show; "usage paused" keeps the hollow
+// glyph of a stopped host.
+func TestHostIndicatorUsesTheStateMapping(t *testing.T) {
+	paused := sess("alpha")
+	paused.UsagePaused = true
+	pending := Session{SessionState: discover.SessionState{Name: "alpha"}, Pending: true}
+	withPhase := func(s Session, p state.Phase) Session {
+		s.Phase = p
+		return s
+	}
+	fault := func(k session.Kind) Session {
+		return Session{SessionState: discover.SessionState{Name: "alpha", Kind: k}}
+	}
+	staleLive := staleSess("alpha")
+	staleLive.HostRunning = true
+	cases := []struct {
+		name  string
+		s     Session
+		kind  stateKind
+		value string
+		glyph string
+	}{
+		{"running", runningSess("alpha"), stateSession, hostRunningState, "◐"},
+		{"stopped", sess("alpha"), stateSession, hostStoppedState, "○"},
+		{"pending has no host yet", pending, stateSession, hostStoppedState, "○"},
+		{"usage paused", paused, stateSession, "paused", "○"},
+		{"stale with a live host", staleLive, stateSession, hostRunningState, "◐"},
+		{"done", withPhase(sess("alpha"), state.PhaseDone), stateSession, "done", "✓"},
+		{"done with its host still up", withPhase(runningSess("alpha"), state.PhaseDone), stateSession, "done", "✓"},
+		{"failed", withPhase(sess("alpha"), state.PhaseFailed), stateSession, "failed", "✕"},
+		{"broken", fault(session.KindWorktreeMissing), stateFault, brokenBadgeLabel, "✕"},
+		{"orphan", fault(session.KindWorktreeNoSession), stateFault, orphanBadgeLabel, "●"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hostIndicator(tc.s)
+			if want := theme.renderGlyph(tc.kind, tc.value); got != want {
+				t.Errorf("hostIndicator = %q, want stateLook's %q", got, want)
+			}
+			if xansi.Strip(got) != tc.glyph {
+				t.Errorf("glyph = %q, want %q", xansi.Strip(got), tc.glyph)
+			}
+		})
+	}
 }
