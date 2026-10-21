@@ -3901,3 +3901,17 @@ T13.8 proves the `fix` planning mode on a real bug. The owner ran the bug fix; t
 - Inbox item 7e6wuu (a non-blocking note that T13.8 would wait) was never answered; it can be closed.
 - Inbox item vbkr6s (should afk pre-trust new folders) is T14.1's answer and is still open for the owner to close.
 - T14.1 itself has not been tried by the owner on a phone or in the dashboard against a real new folder; its acceptance ran against a scratch settings file.
+
+## T15.4
+
+T15.4 adds `internal/webpush`: afk's own push key, the encryption of a message for one browser, the send to its push service, and the list of signed-up devices. Nothing calls it yet; T15.5 and T15.7 do.
+
+### What this task decided, and why
+
+- **No new Go dependency (A1).** Go 1.25's standard library has every piece web push needs (`crypto/ecdh`, `crypto/ecdsa`, `crypto/hkdf`, AES-GCM), and the page's technology row in §2 adds no dependency for live updates. A library would add a module and its own JWT code for about 300 lines we can test against the RFC's own example.
+- **The device list lives in `internal/webpush` (A2).** The key, the sender and the list belong together and nothing else reads them, so one package owns them. Both files take the state folder as a plain directory, like `plan-waits.json`, so tests use a temp folder.
+- **The push key's `sub` is a fixed address unless the caller gives one (A3).** Apple's push service refuses a VAPID token with no contact (`sub`), and RFC 8292 asks for one. The sender takes it as a field, with afk's repository address as the default, so T15.7 can pass the owner's `public_url` later without a change here.
+- **What counts as success, gone and failure (A4).** Any 2xx is success (RFC 8030 says 201, some services answer 200 or 202). 404 and 410 mean the device has unsubscribed or expired, so the caller can drop it. Everything else, 429 and 5xx included, is a failure that keeps the device.
+- **Signing up the same browser twice keeps one entry (A5).** A browser that subscribes again with the same endpoint replaces its entry (new keys and label, same id), so it never gets each push twice.
+- **One encrypted record, no padding (A6).** A payload is one `aes128gcm` record with a 4096-byte record size; a payload over 3993 bytes is refused, because push services accept at most 4096 bytes of body. afk's messages are a title, a body, a path and a tag, far under that.
+- **Tests first; nothing had to be in place first (A7, A8).**
