@@ -19,10 +19,11 @@ const (
 	serviceWorkerPath = "/sw.js"
 )
 
-// appColor is the light page ground (--bg in docs/design-system.md). The
-// manifest has one colour for the splash screen and the title bar, and light
-// is the page's default look; the head's theme-color tags add the dark one.
-const appColor = "#F6F5F1"
+// appColor is the app icon's ink ground, which the App icon section of
+// docs/design-system.md gives for both theme_color and background_color, so
+// the splash screen and title bar match the icon. The head's theme-color tags
+// in layout.html still follow the page's own light and dark grounds.
+const appColor = "#1C1B18"
 
 // iconsDir is the embedded folder of the owner's app icons. The manifest
 // lists every file in it and the guard lets every one of them through, so
