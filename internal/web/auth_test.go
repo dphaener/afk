@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -22,6 +24,7 @@ import (
 	"github.com/dphaener/afk/internal/masterplan"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/webpass"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // oldTokenQuery is the query a token query visit (`token=` in the address) carried before the page had a
@@ -399,8 +402,8 @@ var refusedWays = []struct {
 // without a sign-in would let anyone who can reach the port stop a build or
 // answer for the owner, so the test also checks nothing was changed.
 func TestAuthEveryRouteNeedsACookie(t *testing.T) {
-	if len(routes) != 25 {
-		t.Fatalf("the route table has %d routes; the plan lists 25", len(routes))
+	if len(routes) != 26 {
+		t.Fatalf("the route table has %d routes; the plan lists 26", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -408,9 +411,16 @@ func TestAuthEveryRouteNeedsACookie(t *testing.T) {
 			t.Run(rt.method+" "+target+" "+bad.name, func(t *testing.T) {
 				rg := newRig(t, Config{})
 				rg.seedInbox()
+				push := rg.withPush()
 				rec := bad.with(authReq{method: rt.method, target: target}).send(rg.h)
 				if rec.Code != http.StatusUnauthorized {
 					t.Fatalf("status = %d, want 401\n%s", rec.Code, rec.Body.String())
+				}
+				if len(push.calls) != 0 {
+					t.Errorf("a push was sent %d times without a sign-in", len(push.calls))
+				}
+				if entries, _ := os.ReadDir(push.dir); len(entries) != 0 {
+					t.Errorf("the push folder was written without a sign-in (%d files)", len(entries))
 				}
 				wantSecurityHeaders(t, rec)
 				noSecrets(t, rec)
@@ -461,6 +471,9 @@ func TestAuthEveryRouteNeedsACookie(t *testing.T) {
 			// The status POST carries the confirm (send adds it) but no
 			// status, so the fake answers as the real seam would: refused.
 			rg.statusResult = TaskStatusResult{Outcome: StatusRefused, Text: "unknown status"}
+			// With push on, the Notifications page answers 200 like every
+			// other GET; with it off it would be 404.
+			rg.withPush()
 			rec := authReq{method: rt.method, target: target, cookie: goodCookie()}.send(rg.h)
 			// The answer route gets 400 (no answer was sent) and the status
 			// route 400 (no status was sent, so the seam refuses it); every
@@ -509,6 +522,85 @@ func TestAuthPlanReplyRouteNeedsACookie(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuthPushRoutesNeedACookie covers the three push POSTs, which are JSON
+// only and so not in the route table, with the route walk's refusals plus a
+// foreign Origin with the right cookie. Each request carries a body the
+// handler would act on, so a refusal cannot be the body's fault.
+//
+// Load-bearing: every row. A subscribe that went through without a sign-in
+// would put a stranger's browser on the list that gets the owner's notices;
+// a test that went through would let anyone make afk send; so no row may
+// write the device list or call PushSend.
+func TestAuthPushRoutesNeedACookie(t *testing.T) {
+	bodies := map[string]string{
+		"/api/push/subscribe":   phoneSubscription,
+		"/api/push/unsubscribe": `{"endpoint":"` + phoneEndpoint + `"}`,
+		"/api/push/test":        `{"endpoint":"` + phoneEndpoint + `"}`,
+	}
+	type way struct {
+		name string
+		want int
+		with func(authReq) authReq
+	}
+	ways := []way{{name: "foreign Origin", want: http.StatusForbidden, with: func(a authReq) authReq {
+		a.cookie, a.origin = goodCookie(), "https://evil.example"
+		return a
+	}}}
+	for _, bad := range refusedWays {
+		ways = append(ways, way{name: bad.name, want: http.StatusUnauthorized, with: bad.with})
+	}
+	for _, path := range []string{"/api/push/subscribe", "/api/push/unsubscribe", "/api/push/test"} {
+		for _, w := range ways {
+			t.Run(path+" "+w.name, func(t *testing.T) {
+				rg := newRig(t, Config{})
+				push := rg.withPush()
+				// The device is seeded so unsubscribe and test would have
+				// something to act on; the list's bytes must not change.
+				push.seed(t, phoneEndpoint, "phone")
+				before, err := os.ReadFile(filepath.Join(push.dir, webpush.DevicesFileName))
+				must(t, err)
+				rec := sendWithBody(w.with(authReq{method: http.MethodPost, target: path}), bodies[path], rg.h)
+				if rec.Code != w.want {
+					t.Fatalf("status = %d, want %d\n%s", rec.Code, w.want, rec.Body.String())
+				}
+				if _, ok := decode(t, rec)["error"]; !ok {
+					t.Errorf("body = %s, want {\"error\": ...}", rec.Body.String())
+				}
+				if len(push.calls) != 0 {
+					t.Errorf("PushSend ran %d times on a refused request", len(push.calls))
+				}
+				after, err := os.ReadFile(filepath.Join(push.dir, webpush.DevicesFileName))
+				must(t, err)
+				if string(after) != string(before) {
+					t.Errorf("the device list changed on a refused request")
+				}
+				if _, err := os.Stat(filepath.Join(push.dir, webpush.KeyFileName)); err == nil {
+					t.Errorf("a refused request made the push key")
+				}
+			})
+		}
+	}
+}
+
+// sendWithBody sends a with body as its JSON body instead of the confirm
+// authReq.send would add.
+func sendWithBody(a authReq, body string, h http.Handler) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(a.method, a.target, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if a.cookie != "" {
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: a.cookie})
+	}
+	if a.auth != "" {
+		req.Header.Set("Authorization", a.auth)
+	}
+	if a.origin != "" {
+		req.Header.Set("Origin", a.origin)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }
 
 // TestAuthPlanChatPageRoutesNeedACookie covers the chat screen's two page

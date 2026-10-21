@@ -333,3 +333,57 @@ func TestPageTemplatesAppHead(t *testing.T) {
 		}
 	})
 }
+
+// TestServiceWorkerIcon covers the icon address written into /sw.js as it is
+// served. The worker cannot know the icon's hashed address, so the server
+// fills AFK_ICON in.
+//
+// Load-bearing rows: "icon present" (the address is the one the icon's own
+// bytes earn, computed here and not read back from the server, and it
+// answers without a cookie, as a notification's icon is fetched by the
+// worker) and "icon missing" (the placeholder never reaches a browser as an
+// address).
+func TestServiceWorkerIcon(t *testing.T) {
+	tests := []struct {
+		name     string
+		dropIcon bool
+		want     string
+	}{
+		{name: "icon present", want: "var AFK_ICON = '" + iconAddrs(t)["icon-192.png"] + "';"},
+		{name: "icon missing", dropIcon: true, want: "var AFK_ICON = '';"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tt.dropIcon {
+				delete(rg.srv.assets, workerIcon)
+			}
+			rec := httptest.NewRecorder()
+			rg.h.ServeHTTP(rec, httptest.NewRequest("GET", "/sw.js", nil))
+			if rec.Code != 200 {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, tt.want) {
+				t.Errorf("/sw.js lacks %q:\n%s", tt.want, body)
+			}
+			if strings.Contains(body, workerIconToken) {
+				t.Errorf("/sw.js still holds the placeholder %s", workerIconToken)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+				t.Errorf("Content-Type = %q", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			if tt.dropIcon {
+				return
+			}
+			icon := httptest.NewRecorder()
+			rg.h.ServeHTTP(icon, httptest.NewRequest("GET", iconAddrs(t)["icon-192.png"], nil))
+			if icon.Code != 200 || icon.Header().Get("Content-Type") != "image/png" {
+				t.Errorf("the worker's icon answers %d %q without a cookie", icon.Code, icon.Header().Get("Content-Type"))
+			}
+		})
+	}
+}

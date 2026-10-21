@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -28,6 +29,7 @@ import (
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
 	"github.com/dphaener/afk/internal/webpass"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // This file joins the web page (internal/web) to `afk daemon`: the real
@@ -127,6 +129,28 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		// webStart looked at when the daemon started.
 		Password: func() (webpass.Record, error) { return webpass.Read(st) },
 		Now:      now,
+		// Push lives in the same state folder as everything above, so the
+		// page signs devices up into the list the daemon's own sends read.
+		PushDir:  stateDir,
+		PushSend: webPushSend(stateDir, now),
+	}
+}
+
+// webPushSend is the real version of web.Deps.PushSend: it loads afk's push
+// key from stateDir on every send, as the page does on every request, so a
+// key file the owner moved aside is noticed at once rather than after a
+// restart. The subject and the HTTP client are left as webpush.Sender's
+// zero values give them (its default contact, a 10 second timeout).
+func webPushSend(stateDir string, now func() time.Time) func(context.Context, webpush.Subscription, webpush.Payload, webpush.Options) (bool, error) {
+	if now == nil {
+		now = time.Now
+	}
+	return func(ctx context.Context, sub webpush.Subscription, p webpush.Payload, o webpush.Options) (bool, error) {
+		key, err := webpush.LoadOrCreateKey(stateDir, rand.Reader, now())
+		if err != nil {
+			return false, err
+		}
+		return webpush.Sender{Key: key}.Send(ctx, sub, p, o)
 	}
 }
 

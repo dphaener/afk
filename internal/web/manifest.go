@@ -111,17 +111,41 @@ func (s *server) manifest(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// workerIcon is the icon a notification shows, and workerIconToken the
+// placeholder in sw.js that serviceWorker replaces with its address.
+const (
+	workerIcon      = "icons/icon-192.png"
+	workerIconToken = "__AFK_ICON__"
+)
+
 // serviceWorker serves static/sw.js at /sw.js. A worker controls only the
 // addresses under its own, so it has to be served from the top of the site
 // to cover every page; its hashed address under /static/ would cover
 // nothing. It keeps the guard's no-store: the address never changes, and a
-// stale copy would hold back the push handler T15.5 adds.
+// stale copy would hold back a changed push handler.
+//
+// The worker's icon address is written into the body here, because the
+// icon, like every static file, is served only under its content hash (see
+// static.go), and the worker is a fixed address that cannot be built from a
+// template. no-store is what makes this safe: a browser checks /sw.js again
+// on every visit, so a new icon hash reaches the worker with the next one.
 func (s *server) serviceWorker(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.assets["sw.js"]
 	if !ok {
 		s.notFound(w, r)
 		return
 	}
+	icon := ""
+	if _, ok := s.assets[workerIcon]; ok {
+		icon = s.assetURL(workerIcon)
+	}
 	w.Header().Set("Content-Type", a.typ)
-	_, _ = w.Write(a.body)
+	_, _ = w.Write(workerBody(a.body, icon))
+}
+
+// workerBody is sw.js with its icon placeholder replaced by icon. An empty
+// icon still replaces it, so the worker never shows a notification with the
+// placeholder as its icon address.
+func workerBody(body []byte, icon string) []byte {
+	return bytes.ReplaceAll(body, []byte(workerIconToken), []byte(icon))
 }

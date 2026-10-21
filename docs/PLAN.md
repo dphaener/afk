@@ -3899,6 +3899,7 @@ and the things that block on them arrive as native notifications from it; ntfy i
   - Against a built binary served over `https://` (the owner's address or a local test certificate):
     headless Chrome subscribes, Send test reaches a real push service and the service worker shows the
     notification; the page passes axe WCAG 2.2 AA at 390 and 1280 px in both schemes.
+- Amended 2026-10-21 (T15.5 done): the page is `/notifications` (`internal/web/push.go`, template `notifications.html`, script `static/notifications.js`), on only when `Deps.PushDir` and `Deps.PushSend` are both set (`daemonWebDeps` sets them); the bell and top-bar link are drawn only then (`chrome.Notifications`). The JSON-only `POST /api/push/subscribe`, `/unsubscribe` and `/test` are registered straight on the mux (`TestAuthPushRoutesNeedACookie`) and match a device by its endpoint, so T15.6 marks this device by comparing the browser's endpoint and should add its list to `GET /api/notifications`. T15.6's list goes in the empty `#push-devices` column; the script's data hooks are documented at the top of `notifications.js`. The worker (`sw.js`) shows the payload with afk's icon (filled in when `/sw.js` is served) and focuses or opens the payload's path on a tap, so T15.7 only needs to send. A Send test answered 404 or 410 drops the browser's subscription; a subscription the server does not list still shows On at page load, which T15.6 can fix from its list.
 
 #### T15.6 — See and remove devices
 - **Depends on:** T15.5

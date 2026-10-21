@@ -3934,3 +3934,38 @@ T15.2 makes the web page installable as an app: it serves the owner's icons, a w
 ### What is still open
 
 - Nothing.
+
+## T15.5
+
+T15.5 builds the Notifications page's This device card: the page at `/notifications`, its two links, the addresses the page uses to sign a device up, remove it and send it a test, and the service worker's push and tap handlers. The device list is T15.6.
+
+### What this task decided, and why
+
+- **The page and its addresses (A1).** The page is `/notifications` (and `/api/notifications`), next to `/usage` as the other page for the whole machine. Signing up, removing and the test are `POST /api/push/subscribe`, `/api/push/unsubscribe` and `/api/push/test`, JSON only: a browser needs JavaScript to subscribe at all, so a form that works without it would have nothing to send. They sit behind the same sign-in and `Origin` check as every other POST.
+- **How the page reaches push (A2).** The server is given the state folder and a send function. It reads the key, the device list and the browser label with `internal/webpush` itself, and the send function is the one part a test replaces, so the tests prove a test push goes to one device without reaching a real push service.
+- **What the test push says (A3).** Title "afk", a body saying it is a test, the path `/notifications` and the tag `afk-test`, kept for one minute, so a test that cannot be delivered soon is dropped instead of arriving hours later. The worker shows afk's icon through its hashed address, filled in when `/sw.js` is served, because the icons have no fixed public address.
+- **Where the http note links (A4).** The page serves no docs of its own, so "Set up the https address (docs)" goes to `docs/web.md`'s install section on the repository's address.
+- **The design follow-up file is the owner's (A5).** `docs/design-followup-3.md`, the reconcile's prompt for the unsupported and no-JavaScript states, is not part of this change. Until the design draws those states, each is a plain information notice with one sentence.
+- **Tests first; nothing had to be in place first (A6, A7).**
+- **A real push in the check (A8).** The built-binary check tries a real subscription and Send test in headless Chrome at `127.0.0.1`, which browsers treat as secure. If headless Chrome or the network refuses it, the owner is asked to check Send test on a real device.
+- **The page and its API are off unless push is set up (W1.T1).** Push is on only when both the state folder and the send function are set. With push off, `/notifications` and the three push addresses answer 404, and the bell and the top-bar link are not drawn, so a link can never lead to a page that cannot send a test.
+- **The push addresses answer in a fixed way (W1.T1).** Their bodies must be JSON; a form body gets 400, since only the page's script posts there and the `Origin` check already covers cross-site posts. Any sign-up error answers 400, including a failed write to the device list, because telling a failed write from a bad body would mean matching on the push library's error text. A failed removal on turn-off answers 500.
+- **A push address is never echoed (W1.T1).** An error text that names a device's push address is rewritten to "this device's push address" before it is sent. The push library's own errors do not contain it, but the send function is a seam, so the handler enforces the rule itself.
+- **A device the push service reports gone is removed (W1.T1).** When the push service says a device is gone, afk removes it and answers 410, even if the removal fails. The owner's answer is the same either way, and the next gone answer removes the device.
+- **The page creates the push key on first visit (W1.T1).** `GET /notifications` makes afk's key if there is none. That is a write on a GET, accepted because the page cannot offer Turn on without a key and making the key is idempotent. The send function reads the key on every send, so a key file moved aside is noticed at once.
+- **The worker's icon is filled in when `/sw.js` is served (W1.T1).** The icon address is put into the worker's text by a pure function from the icon assets. A missing icon leaves the icon out rather than failing the worker.
+- **The script reads the subscription without waiting for the worker (W1.T2).** It uses `getRegistration()`, because `ready` never resolves when no worker is registered. Turn on still waits for `ready`, since it is about to subscribe. The worker's listeners sit behind a `typeof self` guard, because a node test loads `sw.js` and an unguarded `self` would throw when it loads.
+- **The script makes its own toast when the page has none (W1.T2).** The layout draws the toast region only when the page has a toast, so the script adds one itself. "Turning off" is shown on Turn off while it works; the plan named only two words, so this is one more.
+- **The bell and the top-bar link show only when push is on (W2.T1).** They are drawn like Plan a new project and Add a project, so neither can lead to the 404 that the page gives with push off. The daemon always turns push on, so the owner always sees both.
+- **The card's heading is an `h2` with the `h3` class (W2.T1).** The page has only an `h1` above the card, and an `h3` would skip a level. The `.h3` class keeps the design's size.
+- **Desktop buttons are small through page.css (W2.T1).** `.push-card .btn` takes the `btn--sm` size above 760 px. The size is set in the stylesheet, not with a class in the markup, because the markup is the same at every width and the phone keeps the full touch target.
+- **Panels say only what applies (W2.T1).** Only the Off panel carries the turn-on sentence ("Turn them on to hear when something needs you"), because only it has a turn-on button. The https, home screen and blocked panels say only "{label} doesn't get notifications from afk.", and the unsupported panel has its one notice sentence. The https panel says the page is open at an `http://` address rather than giving the address, because the server cannot know the scheme a browser used behind a proxy. Its link still goes to the install section of `docs/web.md`; a later change may point it at the new Notifications section.
+- **A damaged key shows the error and nothing else (W2.T1).** With no usable key the card has no state panels and no no-JavaScript notice, only the badge, the label sentence and the error. The script leaves the card alone, so it can never offer Turn on with no key.
+- **T15.6 has a place for the device list (W2.T1).** An empty `#push-devices` div sits in the second column of the grid, with a template comment saying the list goes there.
+- **A Send test the server cannot match turns the page off (review fix).** When Send test answers 404 or 410, the server no longer lists this device, so the page drops the browser's own subscription and shows Off with Turn on, keeping the server's words in the toast. A 502 keeps the subscription, because the device is still listed and the push service may only be slow.
+
+### What is still open
+
+- **Real delivery on a real device (verification for the owner).** In the review check, headless Chrome's push service answered 410 to the test, so real delivery is proved only by the first check's run. At the `https://` address, turn notifications on from a phone or computer, press Send test, and tap the notification it shows.
+- **A browser subscription the server does not list shows On at page load.** The first Send test repairs it. T15.6 reads the device list from the server and can show such a device as off.
+- **Sign-up checks only what `internal/webpush` checks.** A made-up endpoint with bad keys is accepted and fails only at Send test (502). This is a possible follow-up in `internal/webpush`.

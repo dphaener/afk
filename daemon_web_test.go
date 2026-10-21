@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +40,7 @@ import (
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
 	"github.com/dphaener/afk/internal/webpass"
+	"github.com/dphaener/afk/internal/webpush"
 )
 
 // pipeListener is a net.Listener with no port behind it: each connection is
@@ -1403,4 +1407,95 @@ func TestDaemonWebPasswordSeam(t *testing.T) {
 	if got, err := deps.Password(); err != nil || got.CookieValue() != daemonTestOldWebCookie() {
 		t.Fatalf("after a new password the seam still gave the old record (err %v)", err)
 	}
+}
+
+// TestWebDepsPush checks the push wiring: daemonWebDeps points the page at
+// the state folder, and its PushSend signs with the key kept there. The
+// "push service" is an httptest server on this machine, so no real push
+// service is reached.
+//
+// Load-bearing rows: "push service takes it" (the Authorization header
+// carries the public key read from stateDir's push-key.json, the same one
+// the page hands browsers, so a device signed up on the page accepts the
+// daemon's sends) and "damaged key" (the error names the file and nothing is
+// sent, rather than a new key that would cut off every device).
+func TestWebDepsPush(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		damage   bool
+		wantGone bool
+		wantErr  bool
+		wantHits int
+	}{
+		{name: "push service takes it", status: http.StatusCreated, wantHits: 1},
+		{name: "push service says gone", status: http.StatusGone, wantGone: true, wantHits: 1},
+		{name: "push service fails", status: http.StatusServiceUnavailable, wantErr: true, wantHits: 1},
+		{name: "damaged key", damage: true, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			if tc.damage {
+				if err := os.WriteFile(filepath.Join(stateDir, webpush.KeyFileName), []byte("{"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var hits int
+			var auth string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				auth = r.Header.Get("Authorization")
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+
+			d := daemonWebDeps(nil, stateDir, usagestate.Deps{}, nil)
+			if d.PushDir != stateDir {
+				t.Errorf("PushDir = %q, want the state folder %q", d.PushDir, stateDir)
+			}
+			if d.PushSend == nil {
+				t.Fatal("daemonWebDeps left PushSend nil")
+			}
+			gone, err := d.PushSend(context.Background(), testPushSubscription(t, srv.URL+"/push/abc"),
+				webpush.Payload{Title: "afk", Body: "hello", URL: "/notifications", Tag: "afk-test"},
+				webpush.Options{TTL: time.Minute, Urgency: "normal"})
+			if gone != tc.wantGone || (err != nil) != tc.wantErr {
+				t.Fatalf("Send = (%v, %v), want gone %v, error %v", gone, err, tc.wantGone, tc.wantErr)
+			}
+			if hits != tc.wantHits {
+				t.Errorf("the push service was asked %d times, want %d", hits, tc.wantHits)
+			}
+			if tc.damage {
+				if !strings.Contains(err.Error(), filepath.Join(stateDir, webpush.KeyFileName)) {
+					t.Errorf("error = %v, want it to name the key file", err)
+				}
+				return
+			}
+			key, err := webpush.LoadOrCreateKey(stateDir, nil, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(auth, "k="+key.PublicKey()) {
+				t.Errorf("Authorization = %q, want it signed with the state folder's key %s", auth, key.PublicKey())
+			}
+		})
+	}
+}
+
+// testPushSubscription makes a browser-like subscription for endpoint: a
+// fresh P-256 key and 16 random auth bytes, base64url without padding, as a
+// browser's PushSubscription.toJSON() gives them.
+func testPushSubscription(t *testing.T, endpoint string) webpush.Subscription {
+	t.Helper()
+	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authSecret := make([]byte, 16)
+	if _, err := rand.Read(authSecret); err != nil {
+		t.Fatal(err)
+	}
+	enc := base64.RawURLEncoding
+	return webpush.Subscription{Endpoint: endpoint, P256dh: enc.EncodeToString(priv.PublicKey().Bytes()), Auth: enc.EncodeToString(authSecret)}
 }
