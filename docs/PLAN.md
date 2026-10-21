@@ -3731,6 +3731,245 @@ T13.4 (fix) runs next ──┬─▶ T13.5 fix mode ──┬─▶ T13.6 dashb
     started there on a pty shows no "Quick safety check" screen.
 - Amended 2026-10-19 (T14.1 done): `provider.TrustFolder(name, folder, provider.TrustDeps)` (internal/provider/trust.go) is the one writer of the trust flag, returning `provider.ErrTrustUnsupported` for non-default agents; it keys the folder by its symlink-resolved absolute path and may reorder the file's top-level keys. Both new-plan create paths call it through `trustNewPlanFolder` in dash_plan.go, and `webCreatePlanFolderWith` now takes a `trust` function after `gitInit`.
 
+### M15 — Install the page as an app, with native notifications
+
+**Outcome:** the owner installs the web page on their phones and computers as an app with its own icon,
+and the things that block on them arrive as native notifications from it; ntfy is gone.
+
+#### T15.1 — Make the app icons (owner)
+- **Depends on:** —
+- **Goal:** the repository holds the app icons, made by the owner, at every size the page and the
+  desktop toasts need.
+- **Scope:** Make these six files from the icon you designed and put them in
+  `internal/web/static/icons/` in the main checkout, then commit them (`scp` them over from your laptop
+  first if that is where they are):
+
+  | File | Size | Used for |
+  |---|---|---|
+  | `icon-512.png` | 512×512 PNG | the app icon on Android and desktop installs, and the macOS toast icon |
+  | `icon-192.png` | 192×192 PNG | the smaller app icon Android and desktop browsers ask for |
+  | `icon-maskable-512.png` | 512×512 PNG, the artwork inside the middle 80% (a circle 410px across), the rest filled with the background colour | Android, which crops it to a circle or rounded square |
+  | `apple-touch-icon.png` | 180×180 PNG, no transparency | iPhone and iPad home screens |
+  | `favicon-32.png` | 32×32 PNG | the browser tab |
+  | `favicon.svg` | any, optional | a sharp browser tab icon at every size; leave it out if you have none |
+
+  Square, and the same artwork in each. No other file goes in the folder.
+- **Acceptance:** `internal/web/static/icons/` is committed on `main` and holds the five PNG files at
+  the sizes above, and `favicon.svg` if the owner made one.
+
+#### T15.2 — Install the page as an app
+- **Depends on:** T15.1
+- **Goal:** the web page can be installed on a phone or a computer as an app that opens with the
+  owner's icon, the browser tab shows the icon, and macOS desktop toasts use it in place of the pickaxe.
+- **Background:** the page has no favicon, manifest, icon or service worker today, and `layout.html`
+  holds only the charset, the viewport and the two stylesheets. `internal/web/static.go` serves only
+  `.js` and `.css`, under `/static/<hash>/<file>`, and the sign-in guard (`auth.go`) answers every path
+  but `/signin` with the sign-in form. Browsers fetch a manifest and the iPhone home-screen icon
+  without the sign-in cookie, and a service worker's scope is limited to the folder it is served from,
+  so a worker under `/static/<hash>/` could not control the pages.
+- **Scope:**
+  - Serve the icons from T15.1 (add `.png`, `.svg` and the manifest's type to the served types).
+  - A web app manifest: the name `afk`, `start_url` and `scope` `/`, `display` `standalone`, the
+    icons (with `purpose` `maskable` on the maskable one), and `theme_color` and `background_color`
+    taken from `docs/design-system.md`'s tokens.
+  - `layout.html`: the favicon (`favicon.svg` when present, `favicon-32.png` otherwise), the manifest,
+    `apple-touch-icon`, `theme-color`, and the iPhone standalone tags.
+  - A service worker served at `/sw.js`, registered by the page's own JavaScript, that does nothing
+    yet but exist (no caching of pages: every page is live data). T15.5 gives it its push handler.
+    Update the `Content-Security-Policy` to allow it.
+  - The manifest, the icons and `/sw.js` are served without sign-in, because they hold no data and
+    the browser fetches them without the cookie; every other path stays guarded as today.
+  - macOS desktop toasts (`internal/notify`) use `icon-512.png` in place of `pickaxe.png`, which is
+    removed. How the toast code gets the bytes (an embedded copy or an exported variable) is this
+    task's choice, recorded in `docs/decisions.md` under `## T15.2`.
+  - `docs/web.md`: a section on installing the page on a phone and a computer, with the iPhone steps
+    (Share, Add to Home Screen) and that installing needs an `https://` address.
+- **Must not:** cache pages or API answers in the service worker; serve anything but the manifest,
+  the icons and `/sw.js` without sign-in.
+- **Acceptance:**
+  - Table tests in `internal/web`: the manifest, each icon and `/sw.js` answer 200 with the right
+    content type with no cookie; a page and `/api/...` still answer the sign-in form and 401 with no
+    cookie; the manifest parses as JSON and lists every icon that exists in `static/icons/`.
+  - `make check` green.
+  - Against a built binary with a scratch password: headless Chrome loads the overview, reports the
+    page installable (the manifest has no errors) and shows the favicon; the overview still passes
+    axe WCAG 2.2 AA at 390 and 1280 px.
+
+#### T15.3 — Design the Notifications page (owner)
+- **Depends on:** —
+- **Goal:** `docs/design-system.md` defines the Notifications page, so T15.5 and T15.6 build it from
+  the design system and not from a guess.
+- **Scope:** Open the afk design system in Claude Design (From the owner profile, a default: design
+  tool), give it the prompt below, save the result over `docs/design-system.md` and commit it. Then run
+  `afk plan reconcile docs/design-system.md` and see that session through.
+
+  The prompt: "Add one screen to the afk web page's design system: **Notifications**, a page for the
+  whole machine (not one project), reached from the desktop top bar and the phone bar. Build it from
+  the existing tokens and components; add a component only where none fits, and name it as it should
+  be named in code. The page holds: (1) this device's state, on or off, with a button to turn
+  notifications on or off for this device, and a **Send test** button when it is on; (2) a list of
+  every device signed up for notifications, each row showing its browser and system and when it
+  signed up, the current device marked, with a **Remove** button behind a confirm; (3) a note shown
+  when the page is opened over plain `http://`, saying notifications need an `https://` address and
+  linking to the setting in the docs; (4) a note shown in iPhone or iPad Safari before the page is
+  added to the home screen, with the steps (Share, then Add to Home Screen, then open afk from the home
+  screen); (5) the state when the browser has blocked notifications, saying how to allow them again;
+  (6) the empty list. Phone first, works on desktop, WCAG 2.2 AA, both colour schemes. Hand back the
+  whole design system with this screen added."
+- **Acceptance:** `docs/design-system.md` on `main` defines the Notifications screen and every state
+  listed in the prompt, and the reconcile session has finished.
+
+#### T15.4 — The push sender and its key
+- **Depends on:** —
+- **Goal:** afk can send an encrypted web push message to a signed-up device, with a key it makes for
+  itself and a list of devices it keeps, all tested without a real push service.
+- **Background:** web push is three standards: the push protocol (RFC 8030), message encryption
+  (RFC 8291, `aes128gcm` from RFC 8188) and the server's identity key, VAPID (RFC 8292, an ES256 JWT).
+  Go 1.25's standard library has what they need (`crypto/ecdh`, `crypto/ecdsa`, `crypto/hkdf`,
+  `crypto/aes`, `crypto/cipher`). The page's technology row in §2 adds no Go dependency for live
+  updates; hold push to the same unless `docs/decisions.md` says why one is worth it.
+- **Scope:**
+  - A package (`internal/webpush`) that: makes the VAPID key pair the first time it is needed and
+    stores it in `push-key.json` in afk's state folder (mode 0600, temp file and rename, never in a
+    settings file, never logged); encrypts a payload for one subscription; and sends it with the
+    `TTL`, `Urgency` and `Authorization` headers, returning whether the device is gone (404 or 410)
+    apart from any other failure. The HTTP client and the clock are injected.
+  - The payload is JSON: `title`, `body`, `url` (a path on the page, never a full address and never a
+    password or cookie) and `tag`.
+  - The device list, `push-devices.json` in afk's state folder (through `internal/daemonstate` or the
+    new package, atomic rename, mode 0600): one entry per subscription with an id, the endpoint and
+    its keys, a label (browser and system, from the user agent) and when it signed up. Add, remove by
+    id, remove by endpoint, list. A missing or damaged file reads as an empty list.
+  - §4 of this plan: an Amended paragraph for `push-key.json` and `push-devices.json` (writers,
+    readers, shape), in the same change.
+- **Must not:** reach a real push service in any test; write outside a temp state folder in tests.
+- **Acceptance:**
+  - A test decrypts the package's output with the receiver's side of RFC 8291 and gets the payload
+    back, and a test reproduces the RFC 8291 Appendix A example from its fixed keys and salt.
+  - Table tests against an `httptest` push service: the headers are sent, the VAPID JWT verifies with
+    the public key and names the endpoint's origin as audience, 201 is success, 404 and 410 report the
+    device gone, 429 and 5xx report a failure that is not gone. The test comment names the load-bearing
+    rows.
+  - Table tests for the key (made once, reused, a damaged file is an error naming the file) and the
+    device list (add, remove, missing and damaged files).
+  - `make check` green.
+
+#### T15.5 — Turn notifications on for this device
+- **Depends on:** T15.2, T15.3, T15.4
+- **Goal:** on the Notifications page, the owner turns notifications on or off for the device they are
+  using and presses Send test to get a real native notification, on any browser that supports web push.
+- **Scope:**
+  - The Notifications page as `docs/design-system.md` draws it, at a machine-wide path, linked from the
+    desktop top bar and the phone bar. This task builds this device's state, the on/off button, Send
+    test, the `http://` note (shown when the page is not a secure context), the iPhone note (shown when
+    the browser has no push until the page is added to the home screen) and the blocked state. The
+    device list is T15.6.
+  - Turning on: the page's JavaScript asks for permission, subscribes with the VAPID public key and
+    posts the subscription to a guarded endpoint (sign-in and the `Origin` check, as every POST) that
+    adds it to the device list. Turning off unsubscribes and removes it. Send test sends one push to
+    this device only.
+  - The service worker from T15.2 shows the notification from the payload and, when it is tapped,
+    focuses an open afk window or opens one at the payload's `url`.
+  - With JavaScript off the page says notifications need JavaScript; nothing else on the site changes.
+  - `docs/web.md`: the Notifications page, which browsers and systems support it (iPhone and iPad need
+    the page added to the home screen first), and that it needs an `https://` address (`public_url`
+    in `docs/configuration.md`).
+- **Acceptance:**
+  - Go table tests: subscribing adds a device, unsubscribing removes it, Send test sends to that
+    device only (through a fake sender), and a POST without a cookie or with a foreign `Origin` is
+    refused.
+  - Node tests in `internal/web/jstest` for the pure parts of the page's script: which state it shows
+    (unsupported, needs https, needs the home screen, blocked, off, on) from the browser's answers.
+  - `make check` green.
+  - Against a built binary served over `https://` (the owner's address or a local test certificate):
+    headless Chrome subscribes, Send test reaches a real push service and the service worker shows the
+    notification; the page passes axe WCAG 2.2 AA at 390 and 1280 px in both schemes.
+
+#### T15.6 — See and remove devices
+- **Depends on:** T15.5
+- **Goal:** the Notifications page lists every device signed up for notifications, and the owner can
+  remove any of them, so an old phone or laptop stops getting them.
+- **Scope:** the device list on the Notifications page as `docs/design-system.md` draws it: each
+  device's label and when it signed up, the current device marked, and Remove behind a confirm (with
+  the no-JavaScript confirm page the other actions have). Removing deletes the entry from
+  `push-devices.json`; a removed device that is open later shows itself as off. The JSON API gets the
+  list and the remove. `docs/web.md` says how to remove a device.
+- **Acceptance:**
+  - Table tests: the list shows every entry, the current device is marked, remove deletes only that
+    entry, removing an id that is gone is not an error, and the confirm page works with JavaScript off.
+  - `make check` green.
+  - Against a built binary with two devices in a scratch `push-devices.json`: the list shows both,
+    removing one leaves the other, and the page passes axe WCAG 2.2 AA at 390 and 1280 px.
+
+#### T15.7 — The daemon notifies by push
+- **Depends on:** T15.4, T15.5
+- **Goal:** the things that block on the owner arrive on every signed-up device as a native
+  notification that opens the right page when tapped.
+- **Background:** ntfy is sent today from `afk inbox add` (`inbox_cmd.go`), the daemon's item, idle and
+  urgent notices (`daemon_cmd.go`, `daemonNotifier`), the planning wait (`plan_wait_notify.go`, with
+  the decision in `internal/planwait` and its record in `plan-waits.json`) and the plan-ready notice
+  (`plan_review_notify.go`). The owner chose (M15) to be notified only of what blocks on them.
+- **Scope:**
+  - Push is sent, to every device in the list, for: an inbox item that blocks a task (the items ntfy
+    sends for today, by the same rule as `NtfyPriority`), the urgent notices (logged out, extra usage
+    on, the daemon stopped), and a planning session waiting for the owner. The title and body are the
+    ones ntfy sends today; `url` is the path `ItemLink`, `ChatLink` or `PlanLink` builds, without
+    `public_url`; urgent notices go with `Urgency: high`.
+  - The planning wait keeps its record in `plan-waits.json` exactly as today: written only once a send
+    to at least one device went out.
+  - A device the push service reports gone is removed from the list; any other failure is logged and
+    the device kept.
+  - With no device signed up nothing is sent and nothing fails.
+  - This task sends push beside ntfy; T15.8 removes ntfy.
+  - `docs/reference.md` (push notifications), `docs/daemon.md` and `docs/web.md`: what is sent, when,
+    and where tapping it goes.
+- **Acceptance:**
+  - Table tests, with a fake sender, of each send site: which events push and which do not (a
+    non-blocking item, idle and plan-ready do not), the url each one carries, the urgency, the
+    gone-device removal, and the plan-wait record written only after a send went out. The test comment
+    names the load-bearing rows.
+  - `make check` green.
+  - Against a built binary with one real subscription from T15.5: `afk inbox add` of a blocking item
+    reaches the device, and tapping it opens that item.
+
+#### T15.8 — Remove ntfy
+- **Depends on:** T15.7
+- **Goal:** ntfy is gone from afk: its code, its setting and its docs; push is the only phone
+  notification, and the idle and plan-ready notices are no longer sent.
+- **Scope:**
+  - Remove the ntfy sender and every call to it, the idle and plan-ready notices with them. Keep what
+    push still uses (the link builders, `InboxMessage`, the priority rule), renamed where the name says
+    ntfy.
+  - `[notify] ntfy_url` in `afk.toml` or `afk.local.toml` is ignored without a word (the owner's
+    choice, M15): a file that still has it loads as before and nothing is logged.
+  - macOS desktop toasts (`afk notify`) stay.
+  - Docs: remove ntfy from `docs/configuration.md`, `docs/reference.md` (the degradation matrix
+    included), `docs/web.md`, `docs/daemon.md`, `docs/install.md` and `docs/development.md`; this plan's
+    §4 `[notify]` entry gets an Amended line saying `ntfy_url` is no longer read; `docs/decisions.md`
+    gets a `## T15.8` section.
+- **Must not:** fail to load a project whose settings still hold `ntfy_url`.
+- **Acceptance:**
+  - `/usr/bin/grep -rni ntfy --include='*.go' .` (outside `.claude/worktrees/`) finds nothing.
+  - A table test: a project config holding `[notify] ntfy_url` loads with no error and no log line.
+  - `make check` green.
+  - Against a built binary: a blocking `afk inbox add` sends push and makes no request to the old
+    `ntfy_url` (pointed at a local listener that records requests).
+
+#### T15.9 — Prove it on phones and computers (owner + agent)
+- **Depends on:** T15.6, T15.8
+- **Goal:** the owner has the app installed and getting real notifications on every kind of device
+  they use, and what each one did is written down.
+- **Scope:** the session for this task waits for the owner (an inbox item). The owner, at their
+  `https://` address: installs the page on an iPhone (Add to Home Screen), on an Android phone if they
+  have one, and on a computer (Chrome, Edge or Safari on the Mac); turns notifications on in each and
+  presses Send test; removes one device from another; then has the daemon raise a blocking inbox item
+  and a planning wait and taps each notification. The session writes up in `docs/decisions.md` under
+  `## T15.9`: each device and browser, whether the icon, installing, Send test, a real notification and
+  tapping it worked, and every fault met with its cause. It fixes what it can within M15's code and
+  files the rest in the inbox.
+- **Acceptance:** the write-up covers at least an iPhone and one computer, each with a real
+  notification received and tapped; every fault is fixed or filed.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
