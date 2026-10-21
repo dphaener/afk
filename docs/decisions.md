@@ -4040,6 +4040,36 @@ T15.10 sets the installed app's splash screen and title bar colours (the manifes
 
 Nothing.
 
+## T15.9
+
+T15.9 is the owner's test of the installed app and its notifications on real devices, at the `https://` address, with afk built from main at ded53f2.
+
+### What the owner tested
+
+- **iPhone (installed from Safari with Add to Home Screen).** The icon, installing (with the dark splash screen and title bar from T15.10), Send test, a real notification and tapping it all worked (8a8cte, y45r3t).
+- **Chrome on a Mac.** The same checks all worked (8a8cte, y45r3t).
+- **The device list.** This device is marked, and a device removed from another showed Off when opened (fpkvve, "It does").
+- **Blocking inbox item and planning wait.** Each reached the devices, and tapping each opened the right page (8a8cte).
+- **No Android phone was tested.**
+
+The sources are the owner's inbox answers. 8a8cte: "Everything worked as intended!". y45r3t: "It worked on a iPhone and chrome on a Mac". fpkvve: "It does".
+
+### Faults
+
+None was met. So nothing was fixed and nothing new was filed. The live-updates notice fj7vk8 from T15.6 stays open and was not met here.
+
+### What this task decided, and why
+
+- **The devices come from y45r3t (A1).** 8a8cte names no devices, so the iPhone and Chrome on a Mac are taken from y45r3t, the owner's own answer from the same afternoon. The owner was asked in the inbox to correct the list (h5hxfs). This was assumed, and would have escalated if it could not be settled.
+- **No faults, so no code change (A2).** The owner reported none, so nothing was fixed and nothing new was filed.
+- **Docs only, no new tests (A3).** This task changes only this document, so no automated test was added and `make check` stays green.
+- **Nothing had to be in place first (A4).** T15.6, T15.8 and T15.10 are merged on main.
+- **This section belongs to the change.** It is the task's deliverable, and it also holds the planner's decisions (Project Documents).
+
+### What is still open
+
+- The inbox question on the device list (h5hxfs). The owner can correct which devices the write-up names.
+
 ## T16.1
 
 T16.1 gives `afk dash` the four colour themes of `docs/dash-design.md`, the drawing parts of its §3, and dimming under every overlay, without changing any key, word or layout.

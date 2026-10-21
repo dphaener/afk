@@ -4007,6 +4007,7 @@ and the things that block on them arrive as native notifications from it; ntfy i
   files the rest in the inbox.
 - **Acceptance:** the write-up covers at least an iPhone and one computer, each with a real
   notification received and tapped; every fault is fixed or filed.
+- Amended 2026-10-21 (T15.9 done): the owner found no fault on an iPhone (installed from Safari) or Chrome on a Mac: install, Send test, a real notification and its tap, the device list, a blocking item and a planning wait all worked, so no code changed. No Android phone was tested. The device list comes from the T15.5 answer, and the owner can correct it in inbox item h5hxfs. See `## T15.9` in `docs/decisions.md`.
 
 #### T15.10 — The installed app's colours from the design system
 - **Depends on:** T15.2
