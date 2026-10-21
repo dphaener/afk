@@ -125,7 +125,7 @@ dropped. Focus everywhere: 2px `--focus` outline, 2px offset.
 ### app-bar
 Top bar of every phone screen. Sticky.
 Parts: `app-bar__title`, `app-bar__actions`; `app-bar--back` when it starts with a back `icon-btn`.
-Holds the `wordmark` on Overview, otherwise back + title + `live`.
+Holds the `wordmark` on Overview with two `icon-btn` actions (Notifications, Add a project), otherwise back + title + `live`.
 ```html
 <header class="app-bar app-bar--back">
   <a class="icon-btn" href="/" aria-label="Back to all projects">…chevron svg…</a>
@@ -135,7 +135,7 @@ Holds the `wordmark` on Overview, otherwise back + title + `live`.
 ```
 
 ### topnav (desktop)
-Desktop replacement for app-bar. Parts `topnav__links`, `topnav__link` (`aria-current="page"` = current).
+Desktop replacement for app-bar. Parts `topnav__links`, `topnav__link` (`aria-current="page"` = current). Links, in order: Projects (with `count`), Usage, Notifications.
 Every desktop screen below the home screen keeps the phone's back navigation: an `app-bar app-bar--back
 app-bar--desktop` sits under the `topnav` with the same back `icon-btn` (same chevron, same
 `aria-label` "Back to …", same target as on the phone), the page title, and optional meta. On desktop it is
@@ -184,6 +184,7 @@ Groups: `btn-row` (wrapping row), `btn-row--end`, `btn-stack` (column, phone).
 | Project state | `badge--running` Building · `badge--needs-you` Waiting on you / Plan waiting for approval · `badge--paused` Paused · `badge--stopped` Line stopped · `badge--held` Held for usage · `badge--idle` Nothing ready · `badge--finished` Finished |
 | Task status | `badge--pending` · `badge--running` · `badge--shipping` · `badge--parked` · `badge--done` · `badge--failed` · `badge--superseded` (struck through) |
 | Inbox / review / checker | `badge--blocking` · `badge--pass` Review passed · `badge--error` · `badge--warning` |
+| Notifications (device) | `badge--on` On (green) · `badge--off` Off (grey) · `badge--blocked` Blocked (orange: you have to act) · `badge--this-device` This device (blue, no dot) |
 `badge--plain` drops the dot.
 
 ### count
@@ -243,6 +244,12 @@ Token split by phase: `split-bar` segments + `legend` (`legend__swatch`, `legend
 ### notice
 Inline message with icon and `notice__body` (`notice__title` optional).
 Variants: `notice--attention` (needs you), `notice--error` (`role="alert"`), `notice--info`, `notice--ok`.
+Part `notice__steps`: an `<ol>` of numbered steps inside `notice__body`, for instructions the owner follows
+outside afk (add to home screen, allow in the browser). Links inside a notice are accent and semibold.
+
+### inline-icon
+A glyph inside a sentence, 1.15em, sitting on the text baseline: used to show Safari's Share icon in the
+add-to-home-screen steps. Give it `role="img"` and an `aria-label` that describes it in words.
 
 ### nav-list · nav-item
 Two-column grid of large links from a project to its pages, each with a live hint (count or "12 of 31").
@@ -682,6 +689,18 @@ a.row:focus-visible { outline-offset: -2px; border-radius: 0; }
 .app-bar--desktop { position: static; min-height: 52px; padding: var(--space-1) var(--space-5) var(--space-1) var(--space-3); gap: var(--space-2); }
 .app-bar--desktop .app-bar__title { flex: 0 1 auto; }
 .app-bar--desktop .meta { margin-left: var(--space-2); }
+
+/* ───────── notifications: device state badges, steps inside a notice, inline glyph ───────── */
+.badge--on { background: var(--ok-soft); color: var(--ok); }
+.badge--off { background: var(--idle-soft); color: var(--idle); }
+.badge--blocked { background: var(--attn-soft); color: var(--attn); }
+.badge--this-device { background: var(--accent-soft); color: var(--accent); }
+.badge--this-device::before { display: none; }
+.notice a { color: var(--accent); font-weight: var(--weight-semibold); }
+.notice__steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: var(--space-2); }
+.notice__steps li { padding-left: 2px; }
+.inline-icon { display: inline; width: 1.15em; height: 1.15em; vertical-align: -0.2em; }
+.notice .inline-icon { width: 1.15em; height: 1.15em; margin: 0; color: inherit; }
 ```
 
 ---
@@ -692,7 +711,7 @@ Phone width 390px unless said. Every screen: `app-bar` on top, `page` below (16p
 sections). Live data replaces in place; a changed row gets `is-changed` once.
 
 ### Overview (home) — T8.5, T8.15, T8.16
-**Phone.** `app-bar`: `wordmark`, `live`, `icon-btn` "Add a project". `h1` names the count:
+**Phone.** `app-bar`: `wordmark`, `live`, `icon-btn` "Notifications" (bell) and `icon-btn` "Add a project". `h1` names the count:
 "3 projects need you" (or "Nothing needs you").
 Section **Needs you**: `list` of `row row--needs-you`, each with `row__title` (project), state `badge`,
 `row__sub` (current task `tid` and phase, or why nothing runs), `progress` "12 of 31", `row__meta`
@@ -702,7 +721,7 @@ Why nothing runs, in words: "Paused by you. Nothing new will start." · "Line st
 after T2.6." · "Waiting on you." · "Held for usage until 3:40 pm." · "Nothing ready: every pending task waits
 on another." · "Finished."
 Footer `btn-stack`: **Plan a new project** (primary), **Add an existing project** (secondary), **Remove a project** (quiet).
-**Desktop.** `topnav` with Projects (`count`), Usage, `live`, Add a project, Plan a new project. `split`:
+**Desktop.** `topnav` with Projects (`count`), Usage, Notifications, `live`, Add a project, Plan a new project. `split`:
 project `list` on the left (selected row `is-selected`), the selected Project on the right.
 
 ### Plan a new project — T8.15
@@ -785,6 +804,49 @@ composer still accepts typing, Send disabled until the agent is done. **No plann
 **Desktop.** `topnav`, then the back bar (back to the project, title "Planning recipe-box", phase as meta). `split`: left column with `steps` (brief, rounds, slices, draft, check, review), folder and
 repository; right, the thread centred at 720px with the composer under it. Options sit side by side.
 
+### Notifications
+A page for the whole machine, not one project. Reached from the bell `icon-btn` in the Overview
+`app-bar` on the phone and the Notifications `topnav__link` on desktop. No new component: it is a `card`,
+a `list` of `row`s, `notice`s, `empty` and `confirm-sheet`, plus the notification badge variants,
+`notice__steps` and `inline-icon` above.
+
+**Phone.** `app-bar app-bar--back` (back to all projects), title "Notifications", `live`. One line under
+it: "For this whole afk, not one project. afk sends a notification when something needs you, to every
+device signed up below."
+
+1. **This device** `card`: `section-head` with `h3` "This device" and a device badge, one sentence naming
+   the browser and system, then the actions for the state:
+
+   | State | Badge | Sentence and actions |
+   |---|---|---|
+   | On | `badge--on` | "Safari on iPhone gets notifications from afk." **Send test** and **Turn off** (both secondary, side by side). Send test turns loading ("Sending test"), then a `toast`: "Test sent. It should arrive in a few seconds." |
+   | Off | `badge--off` | "…doesn't get notifications from afk. Turn them on to hear when something needs you." **Turn on for this device** (primary, loading "Turning on"), meta "Your browser will ask first. Choose Allow." |
+   | Opened over `http://` | `badge--off` | No button. `notice--attention`: title "Notifications need an https:// address"; "This page is open at `http://…`. Browsers only allow notifications on https://."; link "Set up the https address (docs)" to the docs section on the https setting. |
+   | iPhone or iPad Safari, not on the home screen | `badge--off` | No button. `notice--info`: title "Add afk to your home screen first"; "On iPhone and iPad, notifications work only when afk is opened from the home screen."; `notice__steps`: 1 Tap Share (`inline-icon`) in Safari's toolbar. 2 Tap Add to Home Screen, then Add. 3 Open afk from the home screen and come back to this page. |
+   | Blocked by the browser | `badge--blocked` | No turn-on button. `notice--attention`: title "Your browser has blocked notifications from afk"; "afk can't ask again. To allow them:"; `notice__steps`: 1 Open the site settings: the icon at the left of the address bar. 2 Set Notifications to Allow. 3 Reload this page, then turn notifications on. Then "On iPhone or iPad: Settings, then Notifications, then afk, then Allow Notifications." **Check again** (secondary) re-reads the permission. |
+
+   Which state shows is decided in this order: http, then iPhone/iPad not installed, then blocked, then on or off.
+
+2. **Signed-up devices** `section`: `section-head__title` with the count as meta, then a `list`. Each `row`
+   (a `div`, not a link): `row__title` "Firefox on Windows" (browser on system), `row__meta` "Signed up
+   Oct 2, 2026", and the current device carries `badge--this-device`. On the right a **Remove** `btn--quiet`
+   whose `aria-label` names the device ("Remove Firefox on Windows"). Newest sign-ups first after this
+   device, which is always first. A device that signs up while the page is open arrives with `is-changed`.
+   Remove opens a `confirm-sheet`: "Remove Firefox on Windows?" — "It stops getting notifications. To get
+   them again, open afk on it and turn them on." **Remove** (danger) / **Keep it** (focused). Removing this
+   device is the same as Turn off, and the sheet says "This device stops getting notifications."
+3. **Empty list**: `empty` with the bell, "No devices signed up", "Turn notifications on from a phone or
+   computer and it shows up here."
+
+**Desktop.** `topnav` with Notifications current, then the back bar (back to all projects, title
+"Notifications", meta "For this whole afk, not one project"). A centred column up to 1040px, two
+columns that stack under 780px: the This device `card` on the left, Signed-up devices on the right,
+Remove as `btn--sm`, the confirm centred (`scrim--center`).
+
+Accessibility: the device badge's word carries the state (never colour alone); the state card is an
+`aria-live="polite"` region so turning on, off or blocked is announced; the step lists are real `<ol>`s;
+the docs link has its own words, not "here".
+
 ### Sign-in prompt and errors
 Sign-in: no app-bar; `wordmark`, `h1` "This page is private", one line, **Sign in** (primary), meta
 "Not the owner? There is nothing else here." Nothing about projects is shown.
@@ -797,3 +859,25 @@ indicator turns `live--offline` and the last data stays on screen.
 - `live` shows Live / Working / Offline at the top of every screen.
 - Buttons that start work turn loading until the server answers, then a `toast` confirms.
 - Regions that change get `aria-live="polite"` (thread, inbox list, project state card).
+
+### App icon
+A paper crescent (`#F6F5F1`) on the ink ground (`#1C1B18`), with afk's blue working dot (`#8AB4FF`):
+the build runs while you're away. Files, served from the site root:
+
+| File | Size | Use |
+|---|---|---|
+| `icon.svg` | vector | favicon in modern browsers |
+| `favicon.ico` | 16, 32, 48 | older browsers |
+| `apple-touch-icon.png` | 180 | iPhone home screen (square; iOS rounds it) |
+| `icon-192.png`, `icon-512.png` | 192, 512 | Android and installed web app |
+| `icon-maskable-512.png` | 512 | Android adaptive icon (content inside the 80% safe zone) |
+| `site.webmanifest` | | names the icons, theme colour `#1C1B18` |
+
+```html
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<meta name="theme-color" content="#F6F5F1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141412" media="(prefers-color-scheme: dark)">
+```
