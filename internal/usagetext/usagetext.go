@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dphaener/afk/internal/governor"
@@ -164,4 +165,56 @@ func ageText(d time.Duration) string {
 		return fmt.Sprintf("%d hours", int(d/time.Hour))
 	}
 	return fmt.Sprintf("%d days", int(d/(24*time.Hour)))
+}
+
+// weekResetLayout is the reset time on the home screen's usage line, as
+// `resets Thu 15:57`: a weekday and a clock time, with no date.
+const weekResetLayout = "Mon 15:04"
+
+// WeekLine is the usage line under the home screen's THIS WEEK chart, as
+// `week 62% · 5-hour 28% · resets Thu 15:57` (docs/dash-design.md §4.1). It
+// shows the all-models weekly window and the session window, and the reset of
+// whichever of the two is tighter, so the reset that will bind is the one
+// shown. Per-model weekly windows are left out: the line is about the whole
+// account, and the per-model windows already have their own place in the
+// header. A missing window is left out with its separator, and neither window
+// gives "" so the chart can drop the line. The reset time is left out when the
+// tighter window has none, because a guessed time would read as a real one.
+func WeekLine(ws []usagestate.Window, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	var weekly, session *usagestate.Window
+	for i := range ws {
+		w := &ws[i]
+		switch {
+		case w.Kind == provider.WindowWeekly && w.Scope == "" && weekly == nil:
+			weekly = w
+		case w.Kind == provider.WindowSession && session == nil:
+			session = w
+		}
+	}
+	var parts []string
+	var both []usagestate.Window
+	if weekly != nil {
+		parts = append(parts, "week "+pctText(weekly.UsedPct))
+		both = append(both, *weekly)
+	}
+	if session != nil {
+		parts = append(parts, "5-hour "+pctText(session.UsedPct))
+		both = append(both, *session)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	if tight, ok := Tightest(both); ok && tight.ResetsAt != nil {
+		parts = append(parts, "resets "+tight.ResetsAt.In(loc).Format(weekResetLayout))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// pctText rounds a window's use the way Segment does, so the two readers of
+// one reading never disagree by a point.
+func pctText(used float64) string {
+	return strconv.Itoa(int(math.Round(used))) + "%"
 }

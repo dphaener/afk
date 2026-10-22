@@ -745,6 +745,9 @@ func TestDashDepsWiresTheBuildSeams(t *testing.T) {
 	if deps.LoadAllProjects == nil {
 		t.Fatal("dashDeps(...).LoadAllProjects is nil, want dashLoadAllProjects")
 	}
+	if deps.LoadActivity == nil {
+		t.Fatal("dashDeps(...).LoadActivity is nil, want dashLoadActivity")
+	}
 
 	// A scratch state home, so the real usage read finds no file and cannot
 	// touch this machine's own.

@@ -1,20 +1,20 @@
- afk Dashboard  ● 1 needs you in beta · 1 in gamma · 1 in delta · 1 in epsilon                                          
+ afk Dashboard  ● 1 needs you in beta · 1 in gamma · 1 in delta · 1 in epsilon              usage: Week (all models) 62%
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ All projects                                                                                                         │
-│  ● 5 need you  ◐ 1 running  ○ 1 quiet  ✓ 1 finished   inbox 3 · 2 blocking                                           │
-│     PROJECT  STATE           TASKS           NOW                                                     INBOX           │
+│  ● 5 need you  ◐ 1 running  ○ 1 quiet  ✓ 1 finished   inbox 3 · 2 blocking   usage ██████░░░░ 62%                    │
+│     PROJECT  STATE           TASKS           NOW                                       LAST 24H      INBOX           │
 │  ▾ NEEDS YOU                                                                                                      5  │
-│ ▌ ○ beta     paused          ███░░░░░░░ 2/6  Paused: no new task will start until you resume it. A…  2 · 1 blocking  │
-│   ✕ gamma    gone            -               The project folder does not exist. Check its path in …                  │
-│   ✕ delta    can't read      -               reading /p/delta/.afk/build/ledger.json: invalid char…                  │
-│   ○ epsilon  no plan         -               This project has no master plan to build.               plan to approve │
-│   ● eta      waiting on you  ███░░░░░░░ 1/4  a task is parked until you answer its inbox items: W2…  1 · 1 blocking  │
+│ ▌ ○ beta     paused          ███░░░░░░░ 2/6  Paused: no new task will start until yo…  ▁▁▁▁▁▁▁▇▂▁▁▁  2 · 1 blocking  │
+│   ✕ gamma    gone            -               The project folder does not exist. Chec…                                │
+│   ✕ delta    can't read      -               reading /p/delta/.afk/build/ledger.json…                                │
+│   ○ epsilon  no plan         -               This project has no master plan to buil…  ▁▁▁▁▁▁▁▁▁▁▁▁  plan to approve │
+│   ● eta      waiting on you  ███░░░░░░░ 1/4  a task is parked until you answer its i…  ▁▁▁▁▁▁▁▁▁▁▁▁  1 · 1 blocking  │
 │  ▾ RUNNING                                                                                                        1  │
-│   ◐ alpha    running         ████░░░░░░ 3/8  W1.T2 Add the parser: executing                                         │
+│   ◐ alpha    running         ████░░░░░░ 3/8  W1.T2 Add the parser: executing           ▁▁▁▂▄▃▁▁▂▅▆▃                  │
 │  ▾ QUIET                                                                                                          1  │
-│   ○ repo     held for usage  ░░░░░░░░░░ 0/3  nothing new is started, because of the usage limits                     │
+│   ○ repo     held for usage  ░░░░░░░░░░ 0/3  nothing new is started, because of the …  ▁▁▁▁▁▁▁▁▁▁▁▁                  │
 │  ▾ FINISHED                                                                                                       1  │
-│   ✓ zeta     finished        ██████████ 5/5  Every task is done.                                                     │
+│   ✓ zeta     finished        ██████████ 5/5  Every task is done.                       ▁▁▁▁▁▁▁▁▁▁▁▁                  │
 │ ─ beta ───────────────────────────────────────────────────────────────────────────────────────────────────────────── │
 │ Waits on question bbbbb3                                                                                             │
 │ Which database should the cache use?                                                                                 │
@@ -27,8 +27,8 @@
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
+│ THIS WEEK  5.1M tokens                                                      week 62% · 5-hour 28% · resets Thu 15:57 │
+│ Tue ▁ 0  Wed ▁ 120.0k  Thu ▃ 850.0k  Fri ▅ 1.2M  Sat ▁ 40.0k  Sun █ 2.3M  Mon ▃ 610.0k                               │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

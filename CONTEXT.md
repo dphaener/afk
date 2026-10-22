@@ -261,3 +261,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Next needing you**: the item after the one in view in that order; `]` goes to it and `[` to the one before, and the Agent's band names it.
 - **Jump search**: the `/` box that finds any project, session or task across every project and goes there; things that need the owner come first.
 - **Answer screen**: the inbox item screen of `a` and `enter` on an inbox row: the item's choices numbered `1`–`n`, a "Write my own answer" field, and a line on what happens next.
+- **Activity line**: the twelve cells of a home-screen row that show how many decisions the project's loop made in each two hours of the last day.
+- **This week**: the home-screen chart of the tokens every listed project used on each of the last seven days, with the usage line beside it.

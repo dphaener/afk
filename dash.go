@@ -714,6 +714,9 @@ func dashDeps(openSession string, loc dashLocation, projects []project.Project, 
 		// started without the reader. The start-up project's main checkout is
 		// the row the screen adds when that project is not listed.
 		LoadAllProjects: dashLoadAllProjects(launchMainCheckout(projects, resolveGitCommonDirIn, filepath.EvalSymlinks)),
+		// LoadActivity has no default either; without it the LAST 24H column
+		// and the THIS WEEK chart on the home screen are never drawn.
+		LoadActivity: dashLoadActivity(),
 		// StartPlan has no default in internal/ui (it starts a real session), so
 		// this is the only place the three plan actions are wired. Nor do the
 		// GitHub seams (they run gh and can make a repository): without

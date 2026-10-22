@@ -11,13 +11,16 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dphaener/afk/internal/activity"
 	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/project"
+	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/spice"
 	"github.com/dphaener/afk/internal/state"
+	"github.com/dphaener/afk/internal/usagestate"
 )
 
 // updateGolden rewrites every golden frame from the current rendering instead
@@ -215,7 +218,45 @@ func goldenModel(t *testing.T, w, h int) Model {
 	m.setSessions(goldenSessions())
 	m.lastLoad = goldenNow.Add(-4 * time.Second)
 	m.stack = stackState{Detected: true, Branches: goldenStack()}
+	m.deps.LoadActivity = goldenActivity
 	return m
+}
+
+// goldenActivity is the golden model's LoadActivity (T16.8): fixed LAST 24H
+// cells for the all-projects fixture's readable rows and a fixed week ending
+// on goldenNow's day in UTC, so the home screen's frames never drift. beta's
+// busy cell is the busiest of every project, so the others are drawn
+// against it; zeta has an entry of all zeros (read and found quiet, faint
+// ▁), and gamma and delta have none, as the reader gives a gone or
+// unreadable project (blank cells).
+func goldenActivity(roots []string, now time.Time) HomeActivity {
+	lines := map[string][12]int{
+		"/p/alpha":   {0, 0, 1, 2, 4, 3, 0, 0, 2, 5, 6, 3},
+		"/p/beta":    {0, 0, 0, 0, 0, 0, 1, 8, 2, 0, 0, 0},
+		"/p/epsilon": {},
+		"/p/zeta":    {},
+		"/p/eta":     {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		"/repo":      {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0},
+	}
+	y, mo, d := now.UTC().Date()
+	var w activity.Week
+	for i := range w.Days {
+		w.Days[i] = time.Date(y, mo, d, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i-6)
+	}
+	w.Sums = [7]float64{0, 120_000, 850_000, 1_200_000, 40_000, 2_300_000, 610_000}
+	return HomeActivity{Lines: lines, Week: w, WeekKnown: true}
+}
+
+// goldenUsage is a build snapshot holding only a usage reading, the one the
+// THIS WEEK usage line is drawn from: week 62%, 5-hour 28%, and the weekly
+// window (the tighter) resetting Thu 15:57 UTC, three days after goldenNow.
+func goldenUsage() buildview.Snapshot {
+	weekReset := time.Date(1970, 1, 15, 15, 57, 0, 0, time.UTC)
+	sessReset := time.Date(1970, 1, 12, 17, 0, 0, 0, time.UTC)
+	return buildview.Snapshot{UsageKnown: true, Usage: usagestate.File{Windows: []usagestate.Window{
+		{Kind: provider.WindowWeekly, UsedPct: 62, ResetsAt: &weekReset},
+		{Kind: provider.WindowSession, UsedPct: 28, ResetsAt: &sessReset},
+	}}}
 }
 
 // TestGoldenDashboardFrames pins the whole dashboard at the two sizes the

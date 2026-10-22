@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
@@ -298,7 +299,7 @@ func TestAllProjectsListLines(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			lines, spans := allProjectsListLines(rows, 0, 76, tc.wide)
+			lines, spans := allProjectsListLines(rows, 0, 76, tc.wide, activityCol{})
 			if len(lines) != len(rows)*tc.perRow+len(tc.heading) {
 				t.Fatalf("%d lines, want %d", len(lines), len(rows)*tc.perRow+len(tc.heading))
 			}
@@ -329,23 +330,33 @@ func TestAllProjectsListLines(t *testing.T) {
 // TestAllProjectsLayoutFor pins how the pane's rows are shared out.
 // Load-bearing: the panel takes a third of the pane and at least 3 rows, and
 // a pane too short for that still keeps one project's lines in the list.
+// The chart rows (T16.8) are load-bearing too: "chart fits at 120x40" takes
+// its two rows from the list and leaves the panel alone, and "chart left
+// out" is the pane where taking them would leave the list without one
+// project's two lines, so the chart, not the list, gives way.
 func TestAllProjectsLayoutFor(t *testing.T) {
 	cases := []struct {
-		name               string
-		h, perRow, head    int
-		wantList, wantPane int
+		name                          string
+		h, perRow, head               int
+		chart                         bool
+		wantList, wantPane, wantChart int
 	}{
-		{"120x40", 35, 1, 0, 20, 11},
-		{"80x24", 19, 2, 0, 9, 6},
-		{"short pane keeps the panel at three", 9, 1, 0, 2, 3},
-		{"tiny pane keeps a project", 7, 2, 0, 2, 1},
-		{"head lines come out of the list", 35, 1, 2, 18, 11},
+		{"120x40", 35, 1, 0, false, 20, 11, 0},
+		{"80x24", 19, 2, 0, false, 9, 6, 0},
+		{"short pane keeps the panel at three", 9, 1, 0, false, 2, 3, 0},
+		{"tiny pane keeps a project", 7, 2, 0, false, 2, 1, 0},
+		{"head lines come out of the list", 35, 1, 2, false, 18, 11, 0},
+		{"chart fits at 120x40", 35, 1, 0, true, 18, 11, 2},
+		{"chart fits at 80x24", 19, 2, 0, true, 7, 6, 2},
+		{"chart left out when the list would lose its last project at 80 columns", 10, 2, 0, true, 3, 3, 0},
+		{"chart left out on a tiny pane", 7, 2, 0, true, 2, 1, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			lay := allProjectsLayoutFor(tc.h, tc.perRow, make([]string, tc.head), true)
-			if lay.listRows != tc.wantList || lay.panelRows != tc.wantPane {
-				t.Fatalf("list %d panel %d, want list %d panel %d", lay.listRows, lay.panelRows, tc.wantList, tc.wantPane)
+			lay := allProjectsLayoutFor(tc.h, tc.perRow, make([]string, tc.head), true, tc.chart)
+			if lay.listRows != tc.wantList || lay.panelRows != tc.wantPane || lay.chartRows != tc.wantChart {
+				t.Fatalf("list %d panel %d chart %d, want list %d panel %d chart %d",
+					lay.listRows, lay.panelRows, lay.chartRows, tc.wantList, tc.wantPane, tc.wantChart)
 			}
 		})
 	}
@@ -435,7 +446,15 @@ func openAllProjectsGolden(t *testing.T, w, h int, res AllProjects) Model {
 		t.Fatal("esc did not open the all-projects screen")
 	}
 	for _, msg := range collectMsgs(t, cmd) {
-		m, _ = update(t, m, msg)
+		var next tea.Cmd
+		m, next = update(t, m, msg)
+		// The rows landing start the activity read (T16.8); land it too, so
+		// the frame has its LAST 24H cells and THIS WEEK chart.
+		for _, msg := range collectMsgs(t, next) {
+			if am, ok := msg.(activityLoadedMsg); ok {
+				m, _ = update(t, m, am)
+			}
+		}
 	}
 	if !m.allProjectsKnown {
 		t.Fatal("the first read did not land")
@@ -449,7 +468,9 @@ func openAllProjectsGolden(t *testing.T, w, h int, res AllProjects) Model {
 // with the list scrolled to its first rows), and under the rule the selected
 // project's panel: beta's blocking question in full and the task it
 // unblocks. The chips sit on the pane's last row; at 80 columns the last one
-// gives way.
+// gives way. Since T16.8 every row read has its LAST 24H line (gone and
+// unreadable rows blank) and the THIS WEEK chart sits under the panel with
+// the usage line goldenUsage gives, from goldenActivity's fixed numbers.
 func TestGoldenAllProjects(t *testing.T) {
 	for _, size := range []struct {
 		name string
@@ -463,6 +484,7 @@ func TestGoldenAllProjects(t *testing.T) {
 				Rows:       allProjectsFixture(),
 				ConfigPath: "/home/owner/.config/afk/config.toml",
 			})
+			m.build, m.buildKnown = goldenUsage(), true
 			assertGolden(t, size.name, render(m))
 		})
 	}
