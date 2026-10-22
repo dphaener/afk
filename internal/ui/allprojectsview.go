@@ -7,8 +7,10 @@
 // One pane, "All projects", holds top to bottom: the band (counts by group,
 // the inbox summed over every project, usage), the column heads, the rows
 // under their group headings, a rule, the selected project's panel and the
-// key chips on the pane's last row. The activity column (LAST 24H) and the
-// THIS WEEK chart of §4.1 are T16.8's and are not drawn yet.
+// key chips on the pane's last row. Since T16.8 each row also has its LAST
+// 24H activity line and the THIS WEEK chart sits under the panel, both drawn
+// from the numbers Deps.LoadActivity last read (activityview.go) and left out
+// when no reader is wired.
 //
 // Every line is cut with "…" rather than wrapped, except the panel's question,
 // which is wrapped because reading it in full is the panel's purpose; the list
@@ -235,6 +237,9 @@ type allProjectsLayout struct {
 	// listRows is the lines the grouped rows get; panelRows the selected
 	// project's panel's, under its rule.
 	listRows, panelRows int
+	// chartRows is the THIS WEEK chart's, under the panel: weekChartRows,
+	// or 0 when it is not drawn.
+	chartRows int
 }
 
 // allProjectsLayoutFor shares contentH rows out: one each for the band, the
@@ -243,7 +248,12 @@ type allProjectsLayout struct {
 // pane too short for that keeps at least one project's lines in the list and
 // gives the panel what is left, down to one row, because the list is how the
 // owner moves at all.
-func allProjectsLayoutFor(contentH, linesPerRow int, head []string, list bool) allProjectsLayout {
+//
+// chart asks for the THIS WEEK chart's rows under the panel. They are taken
+// from the list, and only when the list still holds one project's lines
+// after them (decisions A5): the chart is a summary, the list is how the
+// owner gets anywhere, so on a short pane the chart is what gives way.
+func allProjectsLayoutFor(contentH, linesPerRow int, head []string, list, chart bool) allProjectsLayout {
 	lay := allProjectsLayout{height: contentH, head: head, list: list}
 	if !list {
 		return lay
@@ -251,6 +261,10 @@ func allProjectsLayoutFor(contentH, linesPerRow int, head []string, list bool) a
 	fixed := 4 + len(head)
 	panel := max(contentH/3, allProjectsPanelMin)
 	rows := contentH - fixed - panel
+	if chart && rows-weekChartRows >= linesPerRow {
+		lay.chartRows = weekChartRows
+		rows -= weekChartRows
+	}
 	if rows < linesPerRow {
 		panel = max(contentH-fixed-linesPerRow, 1)
 		rows = contentH - fixed - panel
@@ -263,9 +277,21 @@ func allProjectsLayoutFor(contentH, linesPerRow int, head []string, list bool) a
 func (m Model) allProjectsLayout() allProjectsLayout {
 	w, h := m.allProjectsBox()
 	list := m.allProjectsKnown && len(m.allProjectsRows) > 0
-	lay := allProjectsLayoutFor(h, allProjectsLinesPerRow(m.width), m.allProjectsHead(), list)
+	lay := allProjectsLayoutFor(h, allProjectsLinesPerRow(m.width), m.allProjectsHead(), list, m.weekChartShown())
 	lay.width = w
 	return lay
+}
+
+// weekChartShown is whether there is a THIS WEEK chart to draw: a reader is
+// wired and a read with a week in it has landed.
+func (m Model) weekChartShown() bool {
+	return m.deps.LoadActivity != nil && m.homeActivityKnown && m.homeActivity.WeekKnown
+}
+
+// allProjectsActivity is the LAST 24H column for the screen's rows, off when
+// no reader is wired.
+func (m Model) allProjectsActivity() activityCol {
+	return activityColumn(m.deps.LoadActivity != nil, m.homeActivity.Lines, m.allProjectsRows)
 }
 
 // allProjectsPage is how many projects fit on screen at once, which is how
@@ -304,30 +330,54 @@ func allProjectsColumns(rows []projectrows.Row) (nameW, inboxW int) {
 }
 
 // allProjectsSentenceW is the NOW column's width on a wide line: whatever the
-// other columns leave.
-func allProjectsSentenceW(nameW, inboxW, width int) int {
+// other columns leave, the LAST 24H column and its gap included when act.
+func allProjectsSentenceW(nameW, inboxW, width int, act bool) int {
 	fixed := rowMarkerCells + allProjectsGlyphCells + nameW + allProjectsLabelW + allProjectsProgW + inboxW + 4*len(allProjectsGap)
+	if act {
+		fixed += activityCellsW + len(allProjectsGap)
+	}
 	return max(width-fixed, 1)
+}
+
+// allProjectsNarrowActivity is whether a narrow row's first line holds the
+// LAST 24H cells between the tasks bar and the widest inbox cell (decisions
+// A7). It is decided once for every row, from the columns, so the cells and
+// the inbox line up down the list; when they do not fit the cells give way,
+// because the inbox is what the owner acts on.
+func allProjectsNarrowActivity(nameW, inboxW, width int) bool {
+	need := rowMarkerCells + nameW + allProjectsProgW + activityCellsW + inboxW + 3*len(allProjectsGap)
+	return need <= width
 }
 
 // allProjectsHeads is the column heads in muted (§4.1 item 2), set over the
 // columns the rows use. Below allProjectsWideWidth they head the first of a
 // project's two lines (name, tasks, inbox), since the state and the sentence
 // sit under the name there.
-func allProjectsHeads(nameW, inboxW, width int, wide bool) string {
+//
+// act is whether the LAST 24H column is drawn at all; below
+// allProjectsWideWidth it is headed only when the rows have room for it
+// (allProjectsNarrowActivity), so the head never names a column the rows
+// left out.
+func allProjectsHeads(nameW, inboxW, width int, wide, act bool) string {
 	var s string
 	if wide {
 		s = strings.Repeat(" ", rowMarkerCells+allProjectsGlyphCells) +
 			padRight("PROJECT", nameW) + allProjectsGap +
 			padRight("STATE", allProjectsLabelW) + allProjectsGap +
 			padRight("TASKS", allProjectsProgW) + allProjectsGap +
-			padRight("NOW", allProjectsSentenceW(nameW, inboxW, width)) + allProjectsGap +
-			"INBOX"
+			padRight("NOW", allProjectsSentenceW(nameW, inboxW, width, act)) + allProjectsGap
+		if act {
+			s += padRight(activityHead, activityCellsW) + allProjectsGap
+		}
+		s += "INBOX"
 	} else {
 		s = strings.Repeat(" ", rowMarkerCells) +
 			padRight("PROJECT", nameW) + allProjectsGap +
-			padRight("TASKS", allProjectsProgW) + allProjectsGap +
-			"INBOX"
+			padRight("TASKS", allProjectsProgW) + allProjectsGap
+		if act && allProjectsNarrowActivity(nameW, inboxW, width) {
+			s += padRight(activityHead, activityCellsW) + allProjectsGap
+		}
+		s += "INBOX"
 	}
 	return mutedStyle().Render(truncate(s, width))
 }
@@ -338,7 +388,8 @@ func allProjectsHeads(nameW, inboxW, width int, wide bool) string {
 // config order inside. spans[i] is where rows[i] sits, its heading included
 // when it is the first of its group, so scrolling to it brings the heading
 // along. Rows must be in group order; a run of one group is one heading.
-func allProjectsListLines(rows []projectrows.Row, cursor, width int, wide bool) (lines []string, spans []lineSpan) {
+// act is the LAST 24H column; its zero value draws none.
+func allProjectsListLines(rows []projectrows.Row, cursor, width int, wide bool, act activityCol) (lines []string, spans []lineSpan) {
 	nameW, inboxW := allProjectsColumns(rows)
 	spans = make([]lineSpan, len(rows))
 	for i := 0; i < len(rows); i++ {
@@ -353,9 +404,9 @@ func allProjectsListLines(rows []projectrows.Row, cursor, width int, wide bool) 
 		}
 		sel := i == cursor
 		if wide {
-			lines = append(lines, allProjectsWideLine(rows[i], sel, nameW, inboxW, width))
+			lines = append(lines, allProjectsWideLine(rows[i], sel, nameW, inboxW, width, act))
 		} else {
-			lines = append(lines, allProjectsNarrowLines(rows[i], sel, nameW, width)...)
+			lines = append(lines, allProjectsNarrowLines(rows[i], sel, nameW, inboxW, width, act)...)
 		}
 		spans[i] = lineSpan{from: from, to: len(lines)}
 	}
@@ -372,26 +423,33 @@ func allProjectsState(r projectrows.Row) (glyph, word string) {
 
 // allProjectsWideLine is one project on one line: the cursor's rail, the
 // state's glyph, the name, the state word, the progress bar, the sentence cut
-// with "…" and the inbox cell.
-func allProjectsWideLine(r projectrows.Row, selected bool, nameW, inboxW, width int) string {
+// with "…", the LAST 24H cells when act is on, and the inbox cell.
+func allProjectsWideLine(r projectrows.Row, selected bool, nameW, inboxW, width int, act activityCol) string {
 	glyph, word := allProjectsState(r)
-	sentW := allProjectsSentenceW(nameW, inboxW, width)
+	sentW := allProjectsSentenceW(nameW, inboxW, width, act.on)
 	line := rowMarker(selected) + glyph + " " +
 		padRight(truncate(r.Name, nameW), nameW) + allProjectsGap +
 		padRight(truncate(word, allProjectsLabelW), allProjectsLabelW) + allProjectsGap +
 		allProjectsBar(r, allProjectsProgW) + allProjectsGap +
-		padRight(truncate(r.Detail, sentW), sentW) + allProjectsGap +
-		truncate(allProjectsInbox(r), inboxW)
+		padRight(truncate(r.Detail, sentW), sentW) + allProjectsGap
+	if act.on {
+		line += act.cells(r.Root) + allProjectsGap
+	}
+	line += truncate(allProjectsInbox(r), inboxW)
 	return theme.row(truncate(line, width), width, selected, "")
 }
 
 // allProjectsNarrowLines is one project on two lines (§2): the name, the
-// progress bar and the inbox cell; then, under the name, the state's glyph
-// and word and the sentence.
-func allProjectsNarrowLines(r projectrows.Row, selected bool, nameW, width int) []string {
+// progress bar, the LAST 24H cells when they fit (allProjectsNarrowActivity)
+// and the inbox cell; then, under the name, the state's glyph and word and
+// the sentence.
+func allProjectsNarrowLines(r projectrows.Row, selected bool, nameW, inboxW, width int, act activityCol) []string {
 	glyph, word := allProjectsState(r)
 	first := rowMarker(selected) + padRight(truncate(r.Name, nameW), nameW) + allProjectsGap +
 		allProjectsBar(r, allProjectsProgW)
+	if act.on && allProjectsNarrowActivity(nameW, inboxW, width) {
+		first += allProjectsGap + act.cells(r.Root)
+	}
 	if x := allProjectsInbox(r); x != "" {
 		first += allProjectsGap + x
 	}
@@ -593,15 +651,16 @@ func (m Model) renderAllProjects() string {
 	if lay.list {
 		wide := allProjectsLinesPerRow(m.width) == 1
 		nameW, inboxW := allProjectsColumns(m.allProjectsRows)
-		lines = append(lines, allProjectsHeads(nameW, inboxW, w, wide))
-		list, spans := allProjectsListLines(m.allProjectsRows, m.allProjectsCursor, w, wide)
+		act := m.allProjectsActivity()
+		lines = append(lines, allProjectsHeads(nameW, inboxW, w, wide, act.on))
+		list, spans := allProjectsListLines(m.allProjectsRows, m.allProjectsCursor, w, wide, act)
 		cur := spans[clampInt(m.allProjectsCursor, 0, len(spans)-1)]
 		start, end := allProjectsWindow(cur.from, cur.to, lay.listRows, len(list))
-		// A list shorter than its share is not padded: the rule and the
-		// panel follow it at once, and the rows left over fall above the
-		// chips, where §4.1's THIS WEEK will go (T16.8). The panel still
-		// keeps its place while the owner moves, because the number of
-		// rows does not change with the cursor.
+		// A list shorter than its share is not padded: the rule, the panel
+		// and the THIS WEEK chart follow it at once, and the rows left over
+		// fall above the chips. The panel and the chart still keep their
+		// place while the owner moves, because the number of rows does not
+		// change with the cursor.
 		lines = append(lines, list[start:end]...)
 		first, last := -1, -1
 		for i, s := range spans {
@@ -622,6 +681,16 @@ func (m Model) renderAllProjects() string {
 				panel = append(panel, "")
 			}
 			lines = append(lines, panel...)
+		}
+		if lay.chartRows > 0 {
+			// The usage reset is told in the zone the reader built the days
+			// in, so the chart and its usage line speak one clock; the
+			// location is data the read carried, not a clock read here.
+			usage := ""
+			if m.buildKnown && m.build.UsageKnown {
+				usage = usagetext.WeekLine(m.build.Usage.Windows, m.homeActivity.Week.Days[6].Location())
+			}
+			lines = append(lines, weekChartLines(m.homeActivity.Week, usage, w)...)
 		}
 	}
 	for len(lines) < lay.height-1 {

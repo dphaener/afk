@@ -160,3 +160,54 @@ func TestSegmentStale(t *testing.T) {
 		})
 	}
 }
+
+// TestWeekLine: the tighter-window row is load-bearing, since the reset shown
+// must belong to the window that binds, and the tighter window without a reset
+// must drop the reset rather than borrow the other window's. The per-model row
+// is load-bearing because a per-model weekly window must never stand in for
+// the all-models week. The non-UTC row pins that the reset is shown in the
+// owner's zone, not in the zone it was stored in.
+func TestWeekLine(t *testing.T) {
+	thu := time.Date(2026, 10, 22, 15, 57, 0, 0, time.UTC)
+	fri := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
+	est := time.FixedZone("UTC-5", -5*60*60)
+	cases := []struct {
+		name string
+		ws   []usagestate.Window
+		loc  *time.Location
+		want string
+	}{
+		{"both windows with reset", []usagestate.Window{
+			{Kind: provider.WindowWeekly, UsedPct: 62, ResetsAt: tp(thu)},
+			{Kind: provider.WindowSession, UsedPct: 28, ResetsAt: tp(fri)}}, nil,
+			"week 62% · 5-hour 28% · resets Thu 15:57"},
+		{"session is tighter", []usagestate.Window{
+			{Kind: provider.WindowWeekly, UsedPct: 20, ResetsAt: tp(thu)},
+			{Kind: provider.WindowSession, UsedPct: 90, ResetsAt: tp(fri)}}, nil,
+			"week 20% · 5-hour 90% · resets Fri 09:30"},
+		{"only weekly", []usagestate.Window{
+			{Kind: provider.WindowWeekly, UsedPct: 62, ResetsAt: tp(thu)}}, nil,
+			"week 62% · resets Thu 15:57"},
+		{"only session", []usagestate.Window{
+			{Kind: provider.WindowSession, UsedPct: 28, ResetsAt: tp(thu)}}, nil,
+			"5-hour 28% · resets Thu 15:57"},
+		{"none", nil, nil, ""},
+		{"per model only", []usagestate.Window{
+			{Kind: provider.WindowWeeklyModel, Scope: "Opus", UsedPct: 88, ResetsAt: tp(thu)}}, nil, ""},
+		{"tighter window without reset", []usagestate.Window{
+			{Kind: provider.WindowWeekly, UsedPct: 62},
+			{Kind: provider.WindowSession, UsedPct: 28, ResetsAt: tp(thu)}}, nil,
+			"week 62% · 5-hour 28%"},
+		{"non-UTC zone", []usagestate.Window{
+			{Kind: provider.WindowWeekly, UsedPct: 62, ResetsAt: tp(thu)},
+			{Kind: provider.WindowSession, UsedPct: 28, ResetsAt: tp(fri)}}, est,
+			"week 62% · 5-hour 28% · resets Thu 10:57"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := WeekLine(c.ws, c.loc); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}

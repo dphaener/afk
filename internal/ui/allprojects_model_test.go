@@ -621,3 +621,148 @@ func TestAllProjectsEveryProjectCache(t *testing.T) {
 		}
 	})
 }
+
+// activitySeam is a fake LoadActivity: it counts its calls and records the
+// roots and time of the last one.
+type activitySeam struct {
+	calls int
+	roots []string
+	now   time.Time
+}
+
+func (s *activitySeam) load(roots []string, now time.Time) HomeActivity {
+	s.calls++
+	s.roots, s.now = roots, now
+	return HomeActivity{Lines: map[string][12]int{"/p/alpha": {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4}}, WeekKnown: true}
+}
+
+// landAll applies every message cmd produces, and the messages their
+// follow-up Cmds produce, so a rows read that starts an activity read lands
+// both. It goes one level deeper than collectMsgs and no further, which is
+// enough here and cannot loop on the re-armed tickers.
+func landAll(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	for _, msg := range collectMsgs(t, cmd) {
+		var next tea.Cmd
+		m, next = update(t, m, msg)
+		for _, msg := range collectMsgs(t, next) {
+			switch msg.(type) {
+			case activityLoadedMsg, allProjectsLoadedMsg:
+				m, _ = update(t, m, msg)
+			}
+		}
+	}
+	return m
+}
+
+// TestAllProjectsActivityReads pins when Deps.LoadActivity is called (T16.8):
+// on the first rows, when the set of projects changes and on the scan tick,
+// and never on the 2s refresh. Load-bearing rows: "the 2s tick never reads"
+// (with the screen open the tick reads the rows every two seconds, and the
+// logs must not ride along), "same projects read nothing" (the guard that
+// makes that so), and "nil seam", which must draw no column and no glyph
+// rather than an empty one.
+func TestAllProjectsActivityReads(t *testing.T) {
+	tick := tickMsg(time.Unix(2_000_000, 0))
+	scan := scanTickMsg(time.Unix(2_000_000, 0))
+	setup := func(t *testing.T) (Model, *activitySeam) {
+		m, _, _ := allProjectsModel(t)
+		seam := &activitySeam{}
+		m.deps.LoadActivity = seam.load
+		return m, seam
+	}
+
+	t.Run("the first rows read once, for the readable projects", func(t *testing.T) {
+		m, seam := setup(t)
+		m = openAllProjects(t, m)
+		m = landAll(t, m, m.activityOnNewRoots())
+		if seam.calls != 1 {
+			t.Fatalf("calls = %d, want 1", seam.calls)
+		}
+		want := "/p/alpha,/p/beta,/p/epsilon,/p/eta,/p/zeta,/repo"
+		if got := strings.Join(seam.roots, ","); got != want {
+			t.Fatalf("roots = %s, want %s (sorted, gone and unreadable left out)", got, want)
+		}
+		if !seam.now.Equal(m.deps.Now()) {
+			t.Fatalf("now = %v, want the dashboard's clock %v", seam.now, m.deps.Now())
+		}
+		if !m.homeActivityKnown || m.homeActivity.Lines["/p/alpha"][11] != 4 {
+			t.Fatalf("the read was not stored: %+v", m.homeActivity)
+		}
+	})
+	t.Run("rows landing start the read", func(t *testing.T) {
+		m, seam := setup(t)
+		m, cmd := update(t, m, allProjectsLoadedMsg{seq: 1, res: AllProjects{Rows: allProjectsFixture()}})
+		if !hasMsg[activityLoadedMsg](collectMsgs(t, cmd)) || seam.calls != 1 {
+			t.Fatalf("the first rows did not start a read (%d calls)", seam.calls)
+		}
+	})
+	t.Run("same projects read nothing", func(t *testing.T) {
+		m, seam := setup(t)
+		m = landAll(t, m, func() tea.Msg { return allProjectsLoadedMsg{seq: 1, res: AllProjects{Rows: allProjectsFixture()}} })
+		_, cmd := update(t, m, allProjectsLoadedMsg{seq: 2, res: AllProjects{Rows: allProjectsFixture()}})
+		if cmd != nil || seam.calls != 1 {
+			t.Fatalf("a rows read with the same projects read the logs again (%d calls)", seam.calls)
+		}
+	})
+	t.Run("a new set of projects reads", func(t *testing.T) {
+		m, seam := setup(t)
+		m = landAll(t, m, func() tea.Msg { return allProjectsLoadedMsg{seq: 1, res: AllProjects{Rows: allProjectsFixture()}} })
+		_, cmd := update(t, m, allProjectsLoadedMsg{seq: 2, res: AllProjects{Rows: allProjectsFixture()[:2]}})
+		if !hasMsg[activityLoadedMsg](collectMsgs(t, cmd)) || seam.calls != 2 {
+			t.Fatalf("a changed set of projects did not read (%d calls)", seam.calls)
+		}
+	})
+	t.Run("the 2s tick never reads", func(t *testing.T) {
+		m, seam := setup(t)
+		m = openAllProjects(t, m)
+		m = landAll(t, m, m.activityOnNewRoots())
+		for i := 0; i < 5; i++ {
+			_, cmd := update(t, m, tick)
+			m = landAll(t, m, cmd)
+		}
+		if seam.calls != 1 {
+			t.Fatalf("calls = %d after five ticks, want still 1", seam.calls)
+		}
+	})
+	t.Run("the scan tick reads", func(t *testing.T) {
+		m, seam := setup(t)
+		m = openAllProjects(t, m)
+		m = landAll(t, m, m.activityOnNewRoots())
+		_, cmd := update(t, m, scan)
+		if !hasMsg[activityLoadedMsg](collectMsgs(t, cmd)) || seam.calls != 2 {
+			t.Fatalf("the scan tick did not read (%d calls)", seam.calls)
+		}
+	})
+	t.Run("the scan tick with no rows reads nothing", func(t *testing.T) {
+		m, seam := setup(t)
+		m.deps.LoadAllProjects = nil
+		_, cmd := update(t, m, scan)
+		if hasMsg[activityLoadedMsg](collectMsgs(t, cmd)) || seam.calls != 0 {
+			t.Fatalf("a scan tick with no rows read the logs (%d calls)", seam.calls)
+		}
+	})
+	t.Run("a read in flight blocks a second", func(t *testing.T) {
+		m, seam := setup(t)
+		m = openAllProjects(t, m)
+		m.activityRefreshing.Store(true)
+		_, cmd := update(t, m, scan)
+		if hasMsg[activityLoadedMsg](collectMsgs(t, cmd)) || seam.calls != 0 {
+			t.Fatalf("a second read started while one was in flight (%d calls)", seam.calls)
+		}
+	})
+	t.Run("nil seam", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		m = openAllProjects(t, m)
+		for i := 0; i < 3; i++ {
+			_, cmd := update(t, m, tick)
+			m = landAll(t, m, cmd)
+		}
+		_, cmd := update(t, m, scan)
+		m = landAll(t, m, cmd)
+		frame := render(m)
+		if strings.Contains(frame, activityHead) || strings.Contains(frame, weekChartTitle) || strings.ContainsAny(frame, "▁▂▃▄▅▆▇") {
+			t.Fatalf("with no reader the screen drew activity:\n%s", frame)
+		}
+	})
+}

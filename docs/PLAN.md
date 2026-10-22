@@ -4228,6 +4228,7 @@ Amended 2026-10-22 (T16.7 done): the inbox overlay's item screen is the answer s
 - **Acceptance:** table tests of the bucketing (an empty log, a log older than 24 hours, a busy hour, a
   file cut mid-line) and of the per-day sums; against a scratch build with throwaway logs, the line and
   chart match; `make check` is green.
+Amended 2026-10-22 (T16.8 done): the counting is the new package `internal/activity` (`Count`, `WeekSums`, `Level`, `Busiest`, and `Tail`, which reads at most `MaxRead` = 1 MB and drops a cut first line); the dashboard reads the logs through its own seam `Deps.LoadActivity(roots, now)` (wired by `dash_activity.go`), started when the every-project rows arrive with a new set of roots and on every 60s project-scan tick, never on the 2s refresh; the result is `ui.HomeActivity` (cells keyed by project root, one `activity.Week`), drawn by `internal/ui/activityview.go` (`activityCells`, `weekChartLines`); the usage line is `usagetext.WeekLine`; `projectrows.Row` and both log formats are unchanged; `allProjectsLayoutFor` takes a `chart` flag and gives the chart's two rows only when the list keeps one project. See `## T16.8` in `docs/decisions.md`.
 
 #### T16.9 — Prove it (owner + agent)
 - **Depends on:** T16.8

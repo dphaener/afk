@@ -4231,3 +4231,29 @@ Decided while building:
 - **Digits stop at nine.** An item with more than nine options cannot pick option 10 by a digit. No item has that many today (recorded in `issues.md`).
 - **The Project chip.** `a answer` goes last in the chip row, so it is the first to be dropped on a narrow terminal. The footer's help line does not carry it, because that line already truncates on a normal screen.
 - **Before the inbox is read.** At Project and in the Agent, `a` says the inbox is not read yet, as `i` does, instead of opening on an item it cannot name.
+
+## T16.8
+
+T16.8 adds the activity column and the week chart to the home screen of `docs/dash-design.md` §4.1. These are the decisions the master plan left open, made while planning the task (2026-10-22), numbered as in the work plan's assumptions.
+
+- **When the logs are read (A1).** On their own read, started when the home rows first arrive or the set of projects changes, and then once a minute with the project scan. Never on the 2s refresh. Activity is counted in two-hour steps, so a minute's lag cannot be seen.
+- **Where the counting lives (A2).** In a new package, `internal/activity`: pure counting over lines, and a reader that takes at most the last 1 MB of a file. The dashboard gets numbers only, keyed by the project's folder. The rows the web page shares are not changed.
+- **Cells (A3).** Twelve two-hour steps ending now. A cell's height is its count against the busiest step of any project. An empty step is a low faint `▁`, a busy one `▁`–`▇` in the working colour, so "nothing" reads apart from "a little".
+- **Days (A4)** are the seven calendar days ending today, in the dashboard's own time zone.
+- **The chart (A5)** is two rows under the panel: `THIS WEEK`, the week's total and the usage line; then each day as its name, a bar and the number, oldest first. The oldest days go first when the screen is narrow, and the whole chart goes when it would push the last project out of the list.
+- **The usage line (A6)** is `week NN% · 5-hour NN% · resets <day time>` from the reading the dashboard already holds; the reset is the tighter window's. A missing window is left out, and with no reading there is no line.
+- **Below 100 columns (A7)** the activity line sits on a project's first line, between the tasks bar and the inbox cell, and is left out when it does not fit.
+- **Tests (A8)** are table tests written with the code; the saved screens are regenerated. **Nothing had to be in place first (A9):** T16.7 is merged.
+- **This section and the new `CONTEXT.md` terms belong to the change.**
+
+Decided while building (2026-10-22):
+
+- **A row with no reading is blank.** A project not read yet, gone or unreadable draws twelve blank cells, not faint `▁`, so "no data" reads apart from "no activity".
+- **The roots come from every project's cached rows**, so the minute's scan reads the logs while the home screen is closed and the column is already there when it opens.
+- **The two logs fail apart.** A bad decision log blanks that project's cells but its token ledger still counts toward the week, and the other way round. A missing log is not an error.
+- **The tail reader starts one byte early,** so a cut that lands just after a line break keeps that whole line.
+- **The week's heading says `tokens`** after the total (`THIS WEEK  5.1M tokens`), so the number says what it counts.
+- **Day bars have eight heights** and the busiest day is a full block `█`; activity cells keep seven (`▁`–`▇`).
+- **The chart and its reset time use the same time zone,** the one the reader built the days in, so the screen reads no clock of its own.
+- **Below 100 columns the cells are on or off for every row at once,** so cells and inbox line up down the list; when they do not fit, the cells give way and the inbox stays.
+- **The saved home screen now carries a usage reading,** so the week's usage line shows; at 80 columns that also narrows the header and cuts the band, as it already did with a reading.

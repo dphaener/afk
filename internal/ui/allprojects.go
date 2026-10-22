@@ -18,6 +18,11 @@
 // then on every discovery tick. Every project's ledger, inbox and state file
 // is a handful of reads each, so paying it every two seconds for a screen
 // nobody is looking at would be waste.
+//
+// The LAST 24H cells and the THIS WEEK sums (T16.8) have their own seam,
+// Deps.LoadActivity, read on the project scan and when the set of projects
+// changes, never on the discovery tick: they come from logs that grow
+// without bound, counted in two-hour steps a minute's lag cannot move.
 package ui
 
 import (
@@ -179,6 +184,80 @@ func (m Model) allProjectsReadCmd() tea.Cmd {
 		res := load()
 		return allProjectsLoadedMsg{res: res, gen: gen, seq: seq, at: time.Now()}
 	}
+}
+
+// activityLoadedMsg carries one finished LoadActivity read and the roots it
+// was for.
+type activityLoadedMsg struct {
+	res   HomeActivity
+	roots []string
+}
+
+// activityRootsNow is the sorted set of projects the home screen's activity
+// is read for: every row of the every-project cache but a gone or unreadable
+// one, which have no logs to read and draw blank cells. The cache, not the
+// screen's rows, because the scan tick reads while the screen is closed too,
+// so the column is drawn the moment the screen opens.
+func (m Model) activityRootsNow() []string {
+	var roots []string
+	for _, r := range m.everyProject.Rows {
+		if r.State == projectrows.StateGone || r.State == projectrows.StateUnreadable || r.Root == "" {
+			continue
+		}
+		roots = append(roots, r.Root)
+	}
+	slices.Sort(roots)
+	return slices.Compact(roots)
+}
+
+// activityOnNewRoots starts an activity read when a rows read has landed with
+// a set of projects the last activity read was not for: the first rows at
+// start (there was no read), a project added or removed. A rows read with the
+// same set starts nothing, which is what keeps the 2s refresh of an open
+// screen (whose rows arrive this way) from reading the logs every two
+// seconds.
+func (m Model) activityOnNewRoots() tea.Cmd {
+	roots := m.activityRootsNow()
+	if len(roots) == 0 || slices.Equal(roots, m.activityRoots) {
+		return nil
+	}
+	return m.activityReadCmd(roots)
+}
+
+// activityReadCmd reads the logs of roots off the Update goroutine. It is nil
+// with no reader wired. The guard follows allProjectsReadCmd's: a read still
+// out (a slow disk under one project) makes a second one a no-op rather than
+// a pile-up, and is released in this goroutine so a dropped message cannot
+// leave it held. now is taken here, in Update, so the reader is handed the
+// time rather than reading a clock the tests cannot pin.
+func (m Model) activityReadCmd(roots []string) tea.Cmd {
+	load := m.deps.LoadActivity
+	if load == nil {
+		return nil
+	}
+	now := m.deps.Now()
+	refreshing := m.activityRefreshing
+	return func() tea.Msg {
+		// A nil guard is a Model built as a bare struct literal, which only a
+		// test does.
+		if refreshing != nil {
+			if !refreshing.CompareAndSwap(false, true) {
+				return nil
+			}
+			defer refreshing.Store(false)
+		}
+		return activityLoadedMsg{res: load(roots, now), roots: roots}
+	}
+}
+
+// applyActivityLoaded stores a finished activity read. The roots are recorded
+// when the read lands, not when it starts, so a read the guard turned away
+// does not count as done and the next rows read tries again.
+func (m Model) applyActivityLoaded(msg activityLoadedMsg) Model {
+	m.homeActivity = msg.res
+	m.homeActivityKnown = true
+	m.activityRoots = msg.roots
+	return m
 }
 
 // applyEveryProject stores a finished read in the every-project cache. Unlike

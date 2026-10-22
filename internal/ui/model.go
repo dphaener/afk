@@ -364,6 +364,18 @@ type Deps struct {
 	// only the root package (`afk dash`) wires it. A nil LoadAllProjects means
 	// the screen cannot open, and esc at Project says so.
 	LoadAllProjects func() AllProjects
+	// LoadActivity reads the home screen's LAST 24H cells and THIS WEEK sums
+	// (T16.8) from the decision log and the token ledger of each project at
+	// roots, counted against now. It runs on the project scan (once a
+	// minute, and when the set of home rows changes), never on the 2s
+	// refresh: the cells are two hours wide, so a minute's lag cannot be
+	// seen, and the logs grow without bound. It is called only inside a
+	// tea.Cmd (activityReadCmd), never from Update or View.
+	//
+	// It has NO default, like LoadAllProjects: it reads the real files, and
+	// only the root package wires it. A nil LoadActivity means the column and
+	// the chart are not drawn at all.
+	LoadActivity func(roots []string, now time.Time) HomeActivity
 	// ApprovePlan turns the new plan at review in the project at root into a
 	// build, the way `afk plan approve --project root` does (T7.8): it writes
 	// afk.toml, commits and pushes the plan, starts the ledger, lists the
@@ -1324,6 +1336,15 @@ type Model struct {
 	everyProjectSeq int64
 	everyProjectAt  time.Time
 	allProjectsSeq  *atomic.Int64
+	// homeActivity is the last LoadActivity read (activityview.go) and
+	// homeActivityKnown whether one has landed. activityRoots are the sorted
+	// roots that read was for, so a rows read with the same set of projects
+	// starts no new one; activityRefreshing is its in-flight guard, a pointer
+	// for the reason buildRefreshing is.
+	homeActivity       HomeActivity
+	homeActivityKnown  bool
+	activityRoots      []string
+	activityRefreshing *atomic.Bool
 	// allProjectsFollow is the folder an add from the screen just listed: the
 	// next read that has a row for it puts the cursor there, so the owner
 	// sees the row they made. It is cleared when that happens and when the
@@ -2172,6 +2193,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		taskTokensLoading:     new(atomic.Bool),
 		allProjectsRefreshing: new(atomic.Bool),
 		allProjectsSeq:        new(atomic.Int64),
+		activityRefreshing:    new(atomic.Bool),
 		list:                  newSessionList(d.Now),
 		detailViewport:        viewport.New(),
 		initialSession:        deps.InitialSessionName,
@@ -2437,6 +2459,15 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, read)
 			}
 		}
+		// The home screen's activity is read again on this tick and on no
+		// other (Deps.LoadActivity), from the rows already held: this tick's
+		// own rows read lands later and starts a read only if the set of
+		// projects changed.
+		if roots := m.activityRootsNow(); len(roots) > 0 {
+			if read := m.activityReadCmd(roots); read != nil {
+				cmds = append(cmds, read)
+			}
+		}
 		return m, tea.Batch(cmds...)
 
 	case projectScanMsg:
@@ -2619,7 +2650,11 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyBuildResumed(msg)
 
 	case allProjectsLoadedMsg:
-		return m.applyAllProjectsLoaded(msg), nil
+		m = m.applyAllProjectsLoaded(msg)
+		return m, m.activityOnNewRoots()
+
+	case activityLoadedMsg:
+		return m.applyActivityLoaded(msg), nil
 
 	case allProjectsPausedMsg:
 		return m.applyAllProjectsPaused(msg)
