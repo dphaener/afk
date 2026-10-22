@@ -1,40 +1,40 @@
  afk Dashboard                                                                                                          
-╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
-│ Sessions                                  ││ feat-auth                                                               │
-│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
-│         ╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮──────── │
-│ ▌ ◐ feat│ type an action's name                                                                            │         │
-│   ◐ Bill│                                                                                                  │ng       │
-│   ◐ fix-│ go in                               enter  — Go in a level, or open what is selected             │         │
-│   ✓ feat│ go back                             esc    — Go back a level, or close what is open              │         │
-│   ◐ scra│ jump                                /      — Jump to another project                             │         │
-│   ✕ old-│ inbox                               i      — the inbox has not been read yet                     │         │
-│         │ details                             d      — Show the selected session's details                 │         │
-│         │ read usage                          R      — this dashboard cannot read usage                    │         │
-│         │ keys                                ?      — Show every key, level by level                      │         │
-│         │ quit                                q      — Leave the dashboard; every session keeps running    │         │
-│         │ start a new plan                           — starting a plan is not available here               │         │
-│         │ add a project                       +      — works on All projects                               │         │
-│         │ remove the project                  -      — works on All projects                               │         │
-│         │ answer the oldest                   a      — works on All projects                               │         │
-│         │ pause or resume the build           p      — this project has no build                           │         │
-│         │ new session                         n      — Start a new session from a plan or a branch         │         │
-│         │ one-off session                     o      — Start a one-off session with no plan                │         │
-│         │ clean session                       c      — Clean the selected session and its worktree         │         │
-│         │ restart agent                       r      — only a stopped or stuck agent can be restarted      │         │
-│         │ edit label                          l      — Give the selected session a display label           │         │
-│         │ set this task's status              s      — this dashboard cannot change the ledger             │         │
-│         │ show this task's tokens             t      — this dashboard cannot read the token ledger         │         │
-│         │ mouse                               m      — works in the agent, after ctrl+]                    │         │
-│         │ extend the plan                            — Start a planning session that adds work to the plan │         │
-│         │ amend the plan                             — Change the plan; asks what to change in a sentence  │         │
-│         │ fix a bug                                  — Find and fix a bug; asks what is broken             │         │
-│         │ reconcile the plan with a document         — Fit the plan to a document; asks for its path       │         │
-│         │ check the plan                             — checking the plan is not available here             │         │
-│         │ approve the plan                           — approving is not available here                     │         │
-│         ╰─────────────────────────────────────────────────────── type to search · enter runs · esc closes ─╯         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────────────────────────── enter: open · c: clean · l: label ─╯
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Sessio╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮ojects │  
+  │       │ type an action's name                                                                            │       │  
+  │ ╭─────│                                                                                                  │─────╮ │  
+  │ │ 1 Se│ go in                               enter      — Go in a level, or open what is selected         │     │ │  
+  │ │  ▾ N│ go back                             esc        — Go back a level, or close what is open          │     │ │  
+  │ │ ▌ ◐ │ jump                                /          — Jump to another project                         │     │ │  
+  │ │   ◐ │ inbox                               i          — the inbox has not been read yet                 │     │ │  
+  │ │   ✕ │ details                             d          — Show the selected session's details             │     │ │  
+  │ │  ▾ W│ read usage                          R          — this dashboard cannot read usage                │     │ │  
+  │ │   ◐ │ keys                                ?          — Show every key, level by level                  │     │ │  
+  │ │   ◐ │ quit                                q          — Leave the dashboard; every session keeps runni… │     │ │  
+  │ │  ▾ D│ start a new plan                               — starting a plan is not available here           │     │ │  
+  │ │   ✓ │ add a project                       +          — works on All projects                           │     │ │  
+  │ │     │ remove the project                  -          — works on All projects                           │     │ │  
+  │ │     │ answer the oldest                   a          — works on All projects                           │     │ │  
+  │ │     │ pause or resume the build           p          — this project has no build                       │     │ │  
+  │ │     │ new session                         n          — Start a new session from a plan or a branch     │     │ │  
+  │ │     │ one-off session                     o          — Start a one-off session with no plan            │     │ │  
+  │ │     │ clean session                       c          — Clean the selected session and its worktree     │     │ │  
+  │ │     │ restart agent                       r          — only a stopped or stuck agent can be restarted  │     │ │  
+  │ │     │ edit label                          l          — Give the selected session a display label       │     │ │  
+  │ │     │ next section                        tab        — Move to the next section: Sessions, Build, Inb… │     │ │  
+  │ │     │ previous section                    shift+tab  — Move to the previous section                    │     │ │  
+  │ │     │ sessions section                    1          — Move to the Sessions section                    │     │ │  
+  │ │     │ build section                       2          — Move to the Build section, the plan's tasks     │     │ │  
+  │ │     │ inbox section                       3          — Move to the Inbox section, the open items       │     │ │  
+  │ ╰─────│ set this task's status              s          — this dashboard cannot change the ledger         │     │ │  
+  │ ╭─────│ show this task's tokens             t          — this dashboard cannot read the token ledger     │     │ │  
+  │ │ feat│ mouse                               m          — works in the agent, after ctrl+]                │     │ │  
+  │ │─────│ extend the plan                                — Start a planning session that adds work to the… │     │ │  
+  │ │ bran│ amend the plan                                 — Change the plan; asks what to change in a sent… │─────╯ │  
+  │ │ phas│ fix a bug                                      — Find and fix a bug; asks what is broken         │─────╮ │  
+  │ │ diff│ reconcile the plan with a document             — Fit the plan to a document; asks for its path   │     │ │  
+  │ │ host│ check the plan                                 — checking the plan is not available here         │     │ │  
+  │ ╰─────│ approve the plan                               — approving is not available here                 │─────╯ │  
+  │  tab/1╰─────────────────────────────────────────────────────── type to search · enter runs · esc closes ─╯       │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 enter run · ↑/↓ move · type filter · esc close · ctrl+c quit                                                            

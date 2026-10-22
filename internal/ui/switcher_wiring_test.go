@@ -553,8 +553,10 @@ func TestSwitcherCountsForTheActiveProject(t *testing.T) {
 				//
 				// Since T16.1 the name is on the list pane's title strip, its
 				// first inner row ("│ alpha …"), so that row is skipped too;
-				// the overlay is centred, so its row never starts there.
-				stripped := xansi.Strip(line)
+				// the overlay is centred, so its row never starts there. Since
+				// T16.4 the project view is a box two columns in from each
+				// side (§3.8), so the margin is trimmed before the check.
+				stripped := strings.TrimLeft(xansi.Strip(line), " ")
 				if strings.HasPrefix(stripped, "╭") || strings.HasPrefix(stripped, "╰") ||
 					strings.HasPrefix(stripped, "│ alpha ") {
 					continue
@@ -1160,8 +1162,13 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 				m = switcherSelectByPath(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 
+				// b-1 asks the owner something, so it shares Needs you with
+				// the fault row and stays row 0 in the list's screen order
+				// (T16.4), where a fault row otherwise comes first.
+				first := runningSess("b-1")
+				first.AwaitingInput = true
 				m, armCmd := update(t, m, rememberedLoad(m.projectGen,
-					runningSess("b-1"),
+					first,
 					faultSess("b-2", session.KindWorktreeMissing, "worktree directory no longer exists"),
 					runningSess("b-3"),
 				))

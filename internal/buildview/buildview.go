@@ -53,6 +53,11 @@ type Snapshot struct {
 // Row is one master-plan task as the Build tab shows it.
 type Row struct {
 	ID, Title, Status, Detail string
+	// Session is the session the ledger says ran or runs this task, "" when
+	// none. The Project view links a session to its task through it. The
+	// ledger is the only record of that link: status.json has no task field,
+	// and its schema is a contract.
+	Session string
 	// Owner is true for a task that is the owner's to do.
 	Owner bool
 }
@@ -85,11 +90,12 @@ func Rows(in RowsInput) []Row {
 			e = ledger.Entry{ID: t.ID, Status: ledger.Pending}
 		}
 		rows = append(rows, Row{
-			ID:     t.ID,
-			Title:  t.Title,
-			Status: string(e.Status),
-			Detail: detail(t, e, in),
-			Owner:  t.Owner(),
+			ID:      t.ID,
+			Title:   t.Title,
+			Status:  string(e.Status),
+			Detail:  detail(t, e, in),
+			Session: e.Session,
+			Owner:   t.Owner(),
 		})
 	}
 	return rows

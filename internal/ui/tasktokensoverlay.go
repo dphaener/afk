@@ -1,5 +1,8 @@
 // tasktokensoverlay.go is the "show this task's tokens" overlay (T7.12): the
-// Build tab cursor's task, as `afk tokens <task>` prints it.
+// Build section cursor's task, as `afk tokens <task>` prints it, under the
+// task's status, title and detail. Until T16.5 builds the details overlay it
+// is also a task's details: enter on a Build row and `t` both open it
+// (T16.4, A4), and the head is the part enter is for.
 //
 // It is the plan-check overlay's shape (plancheckoverlay.go) with less to do.
 // It holds a copy of the record taken when it opened, it never reads a file
@@ -20,6 +23,8 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/dphaener/afk/internal/buildview"
 )
 
 // taskTokensKeys is the overlay's help line. They are the plan check's
@@ -43,10 +48,12 @@ const (
 // taskTokensOverlay is the overlay's state.
 type taskTokensOverlay struct {
 	// rec is the copy taken at open, and task the cursor's task then, for a
-	// record that does not carry its own id. The body is built from them
-	// alone.
+	// record that does not carry its own id. row is the task's build row as
+	// it was at open, for the head; its zero value draws no head. The body is
+	// built from them alone.
 	rec    TaskTokens
 	task   string
+	row    buildview.Row
 	body   viewport.Model
 	width  int
 	height int
@@ -54,8 +61,8 @@ type taskTokensOverlay struct {
 
 // newTaskTokensOverlay builds the overlay over a record copy. The caller sizes
 // it (sizeTaskTokens) before it is drawn.
-func newTaskTokensOverlay(rec TaskTokens, task string) taskTokensOverlay {
-	o := taskTokensOverlay{rec: rec, task: task, body: viewport.New()}
+func newTaskTokensOverlay(rec TaskTokens, task string, row buildview.Row) taskTokensOverlay {
+	o := taskTokensOverlay{rec: rec, task: task, row: row, body: viewport.New()}
 	o.SetSize(1, 1)
 	return o
 }
@@ -100,6 +107,34 @@ func taskTokensContent(rec TaskTokens, task string, width int) []string {
 	return []string{"Task " + id, taskTokensNoneText}
 }
 
+// taskDetailsHead is the lines above the token table: the task's id and
+// status word, its title, and its detail (what the build says about it now:
+// a pull request, who it waits on), wrapped to width so nothing is cut, then
+// a blank line. A row with no id (the overlay opened with no build row) has
+// no head.
+func taskDetailsHead(row buildview.Row, width int) []string {
+	if row.ID == "" {
+		return nil
+	}
+	width = max(width, 1)
+	head := []string{truncate(row.ID+"  "+buildStatusStyle(row.Status).Render(row.Status), width)}
+	if row.Title != "" {
+		head = append(head, wrapLines(row.Title, width)...)
+	}
+	if row.Detail != "" {
+		for _, ln := range wrapLines(row.Detail, width) {
+			head = append(head, theme.dim.Render(ln))
+		}
+	}
+	return append(head, "")
+}
+
+// taskDetailsContent is the whole body: the head, then the tokens as
+// taskTokensContent words them.
+func taskDetailsContent(rec TaskTokens, task string, row buildview.Row, width int) []string {
+	return append(taskDetailsHead(row, width), taskTokensContent(rec, task, width)...)
+}
+
 // widestLine is the widest of lines in cells.
 func widestLine(lines []string) int {
 	w := 0
@@ -119,9 +154,9 @@ func wrapLines(s string, width int) []string {
 // taskTokensMinWidth, never over the terminal) and as tall as its lines, up
 // to taskTokensMaxRows. The widest the terminal allows is worked out first,
 // because which table is shown depends on it.
-func taskTokensSizeFor(rec TaskTokens, task string, termW, termH int) (lines []string, width, height int) {
+func taskTokensSizeFor(rec TaskTokens, task string, row buildview.Row, termW, termH int) (lines []string, width, height int) {
 	maxW, _ := modalContentDims(termW, termH, termW, 3)
-	lines = taskTokensContent(rec, task, maxW)
+	lines = taskDetailsContent(rec, task, row, maxW)
 	want := max(widestLine(lines), taskTokensMinWidth)
 	width, height = modalContentDims(termW, termH, want, min(len(lines), taskTokensMaxRows))
 	return lines, width, height
@@ -133,7 +168,7 @@ func taskTokensSizeFor(rec TaskTokens, task string, termW, termH int) (lines []s
 // copy. The table is chosen again here, so a resize can switch between the
 // full and the compact one.
 func (o *taskTokensOverlay) SetSize(termW, termH int) {
-	lines, w, h := taskTokensSizeFor(o.rec, o.task, termW, termH)
+	lines, w, h := taskTokensSizeFor(o.rec, o.task, o.row, termW, termH)
 	o.width, o.height = max(w, 1), max(h, 1)
 	o.body.SetWidth(o.width)
 	o.body.SetHeight(o.height)
@@ -188,12 +223,17 @@ func (o taskTokensOverlay) View() string {
 	return strings.Join(lines, "\n")
 }
 
-// openTaskTokensOverlay opens the overlay over the held record. Nothing else
-// about the dashboard changes, so closing it returns to exactly what was
-// under it: the Build tab with the right side focused.
+// openTaskTokensOverlay opens the overlay over the held record, with the
+// cursor's build row for its head when the cursor is on the record's task.
+// Nothing else about the dashboard changes, so closing it returns to exactly
+// what was under it: the Build section with the keyboard.
 func (m *Model) openTaskTokensOverlay() {
 	m.taskTokensOpen = true
-	m.taskTokensView = newTaskTokensOverlay(m.taskTokens, m.taskTokensID)
+	var row buildview.Row
+	if i := m.buildCursorIndex; i >= 0 && i < len(m.build.Rows) && m.build.Rows[i].ID == m.taskTokensID {
+		row = m.build.Rows[i]
+	}
+	m.taskTokensView = newTaskTokensOverlay(m.taskTokens, m.taskTokensID, row)
 	m.sizeTaskTokens()
 	// A toast floats over the top right corner, which is where this box can
 	// reach on a narrow terminal.
@@ -213,7 +253,12 @@ func (m *Model) sizeTaskTokens() {
 // The keys are on the footer's help line (renderHelp).
 func (m Model) renderTaskTokensModal() string {
 	o := m.taskTokensView
-	return renderModalBox("Tokens", o.hint(), o.View(), o.width, o.height)
+	title := "Tokens"
+	if o.row.ID != "" {
+		// With the head the box is the task's details, not only its tokens.
+		title = "Task details"
+	}
+	return renderModalBox(title, o.hint(), o.View(), o.width, o.height)
 }
 
 // taskTokensComponentKey is inputTaskTokens' fall-through: every key but

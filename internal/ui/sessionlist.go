@@ -125,8 +125,9 @@ func newSessionList(now func() time.Time) list.Model {
 	// The list's own filter is unreachable since T16.2 removed the session
 	// filter (`/` is the project switcher now, A3): a binding with no keys
 	// can never match, and no key is routed to this component anyway. The
-	// filter line above the rows is left in place so this task does not
-	// move the list's layout; T16.4 redraws the list.
+	// filter line above the rows is left in place: the list still draws
+	// beside the overview `d` opens and below 100 columns, and the project
+	// view's Sessions section draws its own rows (projectviewrender.go).
 	l.KeyMap.Filter = key.NewBinding()
 
 	l.Styles.TitleBar = lipgloss.NewStyle()
@@ -144,4 +145,33 @@ func selectListIndex(l *list.Model, i int) {
 		return
 	}
 	l.Select(i)
+}
+
+// orderSessionsForScreen puts m.sessions in the order the project view's
+// Sessions section draws them (screenOrderIndex) and returns where the
+// session at sel now is, so a reorder keeps the selection on its session.
+// Already in order, which is every rebuild whose rows kept their groups, it
+// changes nothing and sel stands.
+func (m *Model) orderSessionsForScreen(sel int) int {
+	order := screenOrderIndex(m.sessions)
+	moved := false
+	for i, j := range order {
+		if i != j {
+			moved = true
+			break
+		}
+	}
+	if !moved {
+		return sel
+	}
+	ordered := make([]Session, len(order))
+	newSel := sel
+	for i, j := range order {
+		ordered[i] = m.sessions[j]
+		if j == sel {
+			newSel = i
+		}
+	}
+	m.sessions = ordered
+	return newSel
 }

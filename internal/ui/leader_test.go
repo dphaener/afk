@@ -313,6 +313,12 @@ func TestKeyTableIsTheDecidedTable(t *testing.T) {
 		{"c", actionClean, atProject},
 		{"r", actionRestart, atProject},
 		{"l", actionEditLabel, atProject},
+		// The project view's sections (T16.4).
+		{"tab", actionSectionNext, atProject},
+		{"shift+tab", actionSectionPrev, atProject},
+		{"1", actionSectionSessions, atProject},
+		{"2", actionSectionBuild, atProject},
+		{"3", actionSectionInbox, atProject},
 		{"s", actionTaskStatus, atProject},
 		{"t", actionTaskTokens, atProject},
 		{"m", actionMouseToggle, atAgent},

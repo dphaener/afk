@@ -979,8 +979,11 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+t in inbox goes to the component", inputInbox, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
 		{"ctrl+backslash in inbox goes to the component", inputInbox, routeConds{paneOpen: true}, ctrlBackslash, keyDecision{kind: routeComponent}},
 		{"pgup in inbox goes to the component", inputInbox, routeConds{}, tea.KeyPressMsg{Code: tea.KeyPgUp}, keyDecision{kind: routeComponent}},
-		// The sixth digit exists for the Build tab in a git-spice repo.
-		{"6 in detail jumps to a tab", inputDetail, routeConds{}, press('6', "6"), keyDecision{routeAction, actionDetailTabJump}},
+		// Five digits: the five session tabs in a git-spice repo. The sixth
+		// was the Build tab's until T16.4 made Build a section, so it is no
+		// key in the overview now.
+		{"5 in detail jumps to a tab", inputDetail, routeConds{}, press('5', "5"), keyDecision{routeAction, actionDetailTabJump}},
+		{"6 in detail is ignored", inputDetail, routeConds{}, press('6', "6"), keyDecision{kind: routeIgnored}},
 		{"6 in normal is ignored", inputNormal, routeConds{}, press('6', "6"), keyDecision{kind: routeIgnored}},
 
 		// ctrl+w: bound nowhere since resize mode went (W3.T1 of T16.2); a

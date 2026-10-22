@@ -707,13 +707,13 @@ func levelActionCases() map[modeAction]levelActionCase {
 		m.allProjectsRows = allProjectsFixture()
 		return m
 	}
-	// buildTab is the Build tab with the keyboard on the overview and the
-	// cursor on the current task, with the status and tokens seams wired.
+	// buildTab is the Build section with the keyboard and the cursor on the
+	// current task, with the status and tokens seams wired.
 	buildTab := func(t *testing.T) Model {
 		m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 		m.deps.SetTaskStatus = func(string, string, string, []string) TaskStatusResult { return TaskStatusResult{} }
 		m.deps.LoadTaskTokens = func(string, string) TaskTokens { return TaskTokens{} }
-		return openBuildTab(t, m)
+		return openBuildSection(t, m)
 	}
 	tokensTab := func(t *testing.T) Model {
 		m := buildTab(t)
@@ -788,6 +788,18 @@ func levelActionCases() map[modeAction]levelActionCase {
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputPickTaskStatus }},
 		actionTaskTokens: {setup: tokensTab,
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.taskTokensOpen }},
+		// The section keys start from Inbox, so 1 (Sessions) has somewhere
+		// to move from; tab and shift+tab start from Sessions, the default.
+		actionSectionNext: {setup: list1,
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.focusedSection() == sectionBuild }},
+		actionSectionPrev: {setup: list1,
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.focusedSection() == sectionInbox }},
+		actionSectionSessions: {setup: func(t *testing.T) Model { m := list1(t); m.section = sectionInbox; return m },
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.focusedSection() == sectionSessions }},
+		actionSectionBuild: {setup: list1,
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.focusedSection() == sectionBuild }},
+		actionSectionInbox: {setup: list1,
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.focusedSection() == sectionInbox }},
 		actionMouseToggle: {setup: pane,
 			ran: func(b, a Model, _ tea.Cmd) bool { return a.mouseCapture != b.mouseCapture }},
 		// The plan actions are found by any word of their name now that

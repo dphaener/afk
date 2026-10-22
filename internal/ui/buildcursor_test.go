@@ -93,7 +93,7 @@ func TestBuildCursorLanding(t *testing.T) {
 }
 
 // buildCursorModel is a dashboard of the given size with the build read in
-// and `b` pressed, so the Build tab is up with the keyboard on the right.
+// and `2` pressed, so the project view's Build section has the keyboard.
 func buildCursorModel(t *testing.T, w, h int, snap buildview.Snapshot) Model {
 	t.Helper()
 	m := testModel(sess("alpha"))
@@ -101,9 +101,9 @@ func buildCursorModel(t *testing.T, w, h int, snap buildview.Snapshot) Model {
 	m.sizeSessionList()
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: w, Height: h})
 	m = withBuild(t, m, snap)
-	m = openBuildTab(t, m)
-	if !m.buildCursorShown() {
-		t.Fatalf("setup: the Build tab's cursor is not shown (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
+	m = openBuildSection(t, m)
+	if !m.buildCursorOnTask() {
+		t.Fatalf("setup: the Build section's cursor is not on a task (section=%v focus=%v)", m.focusedSection(), m.focus)
 	}
 	m.clearStatus()
 	return m
@@ -118,29 +118,23 @@ func longBuild(n int) buildview.Snapshot {
 	return snap
 }
 
-// detailWidth is the detail box's content width in the model's frame.
-func detailWidth(m Model) int {
-	_, mainOuter, _ := m.layoutDims()
-	return detailContentWidth(mainOuter)
-}
-
-// cursorLine is the plain text of the body line the cursor is drawn on, or ""
-// when no line has the marker.
+// cursorLine is the plain text of the frame from the Build cursor's marker to
+// the end of its line, or "" when no line has the marker.
 func cursorLine(m Model) string {
-	for _, ln := range strings.Split(xansi.Strip(m.detailBody(detailWidth(m))), "\n") {
-		if strings.HasPrefix(ln, buildCursorMarker+" ") {
-			return ln
+	for _, ln := range strings.Split(render(m), "\n") {
+		if i := strings.Index(ln, buildCursorMarker+" "); i >= 0 {
+			return ln[i:]
 		}
 	}
 	return ""
 }
 
-// TestBuildCursorKeys drives the detail side's movement keys on the Build tab
-// and on the Overview. The load-bearing rows are "starts on the current task"
-// (the first read lands there, not on the first row) and the Overview row:
-// the same keys must keep scrolling every other tab exactly as before.
+// TestBuildCursorKeys drives the move keys in the Build section. The
+// load-bearing rows are "starts on the current task" (the first read lands
+// there, not on the first row) and the Sessions row: the same keys with
+// Sessions focused must move the session list and leave the task cursor
+// where it is.
 func TestBuildCursorKeys(t *testing.T) {
-	ctrl := func(r rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl} }
 	cases := []struct {
 		name   string
 		keys   []tea.Msg
@@ -154,8 +148,6 @@ func TestBuildCursorKeys(t *testing.T) {
 		{name: "end", keys: []tea.Msg{tea.KeyPressMsg{Code: tea.KeyEnd}}, wantID: "T5.1"},
 		{name: "end then home", keys: []tea.Msg{tea.KeyPressMsg{Code: tea.KeyEnd}, tea.KeyPressMsg{Code: tea.KeyHome}}, wantID: "T1.1"},
 		{name: "page down clamps to the last", keys: []tea.Msg{tea.KeyPressMsg{Code: tea.KeyPgDown}}, wantID: "T5.1"},
-		{name: "half page down", keys: []tea.Msg{ctrl('d')}, wantID: "T5.1"},
-		{name: "half page up", keys: []tea.Msg{ctrl('u')}, wantID: "T1.1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,22 +164,15 @@ func TestBuildCursorKeys(t *testing.T) {
 		})
 	}
 
-	t.Run("the Overview still scrolls", func(t *testing.T) {
-		m := buildCursorModel(t, 120, 12, buildTabSnap())
-		m, _ = update(t, m, keyRune('1'))
-		if m.activeDetailTab() != tabOverview || m.buildCursorShown() {
-			t.Fatalf("setup: tab=%v cursor shown=%v, want the Overview and no cursor", m.activeDetailTab(), m.buildCursorShown())
-		}
-		if m.detailViewport.TotalLineCount() <= m.detailViewport.Height() {
-			t.Fatalf("setup: the Overview fits (%d lines in %d rows), so it cannot scroll", m.detailViewport.TotalLineCount(), m.detailViewport.Height())
-		}
+	t.Run("with Sessions focused the keys move the list", func(t *testing.T) {
+		m := withBuild(t, testModel(sess("alpha"), sess("beta")), buildTabSnap())
 		before := m.buildCursorID
 		m, _ = update(t, m, keyDown)
-		if m.detailViewport.YOffset() != 1 {
-			t.Errorf("down on the Overview left the offset at %d, want 1", m.detailViewport.YOffset())
+		if s, _ := m.selected(); s.Name != "beta" {
+			t.Errorf("down in Sessions selected %q, want beta", s.Name)
 		}
 		if m.buildCursorID != before {
-			t.Errorf("down on the Overview moved the Build cursor to %q", m.buildCursorID)
+			t.Errorf("down in Sessions moved the Build cursor to %q", m.buildCursorID)
 		}
 	})
 }
@@ -220,14 +205,14 @@ func TestBuildCursorFollowsItsTask(t *testing.T) {
 	}
 }
 
-// TestBuildCursorScrolledIntoView pins that in a window too short for the
+// TestBuildCursorScrolledIntoView pins that in a section too short for the
 // plan the cursor's row is always on screen: after end, after page keys, and
-// after home, which must also bring the summary back. The row's line is
-// computed by the model from buildRowsTop; the check here reads the frame, so
-// a miscount there shows up as a missing marker.
+// after home, which must also bring the summary back. The section scrolls
+// round the cursor's line, counted from buildRowsTop; the check here reads
+// the frame, so a miscount there shows up as a missing marker.
 func TestBuildCursorScrolledIntoView(t *testing.T) {
 	snap := longBuild(40)
-	m := buildCursorModel(t, 100, 16, snap)
+	m := buildCursorModel(t, 100, 20, snap)
 	steps := []struct {
 		name   string
 		key    tea.Msg
@@ -253,31 +238,27 @@ func TestBuildCursorScrolledIntoView(t *testing.T) {
 	}
 	m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyHome})
 	m.clearStatus()
-	if m.detailViewport.YOffset() != 0 || !strings.Contains(render(m), "0/40 done") {
-		t.Errorf("home left the offset at %d; the summary should be back on screen", m.detailViewport.YOffset())
+	if !strings.Contains(render(m), "0/40 done") {
+		t.Errorf("home did not bring the summary back on screen:\n%s", render(m))
 	}
 }
 
-// TestBuildCursorHiddenWithTheList pins the Must NOT: with the session list
-// holding the keyboard the tab is drawn exactly as before the cursor existed,
-// no marker and no gutter, and the scroll keys there are the list's.
-func TestBuildCursorHiddenWithTheList(t *testing.T) {
+// TestBuildCursorHiddenOutsideBuild pins that the cursor is drawn only while
+// the Build section has the keyboard: with Sessions focused no row carries the
+// marker or the selection, the rows keep their gutter so the columns do not
+// move, and the move keys there are the session list's.
+func TestBuildCursorHiddenOutsideBuild(t *testing.T) {
 	m := buildCursorModel(t, 120, 40, buildTabSnap())
-	m, _ = update(t, m, keyEsc)
-	if m.focus != focusList || m.buildCursorShown() {
-		t.Fatalf("setup: focus=%v cursor shown=%v, want the list and no cursor", m.focus, m.buildCursorShown())
+	m, _ = update(t, m, keyRune('1'))
+	if m.focusedSection() != sectionSessions || m.buildCursorOnTask() {
+		t.Fatalf("setup: section=%v cursor on a task=%v, want Sessions and no cursor", m.focusedSection(), m.buildCursorOnTask())
 	}
-	w := detailWidth(m)
-	body := xansi.Strip(m.detailBody(w))
-	if strings.Contains(body, buildCursorMarker) {
-		t.Errorf("the marker is drawn with the list focused:\n%s", body)
+	frame := render(m)
+	if strings.Contains(frame, buildCursorMarker+" ") {
+		t.Errorf("the marker is drawn with Sessions focused:\n%s", frame)
 	}
-	want := xansi.Strip(strings.Join(buildTabLines(defaultLeaderKey, m.build, m.planStatus, w), "\n"))
-	if !strings.HasSuffix(body, want) {
-		t.Errorf("the tab with the list focused is not the cursor-less layout:\n%s\n--- want suffix\n%s", body, want)
-	}
-	if !strings.Contains(body, "\nT1.1  done") {
-		t.Errorf("the first row is not at the left edge (a gutter is drawn):\n%s", body)
+	if !strings.Contains(frame, "  T1.1  done") {
+		t.Errorf("the first row lost its gutter:\n%s", frame)
 	}
 }
 
@@ -289,14 +270,15 @@ func TestBuildCursorRowsKeepTheirColumns(t *testing.T) {
 	snap := buildTabSnap()
 	for _, width := range []int{120, 80, 50, 30, 20} {
 		t.Run(fmt.Sprintf("width %d", width), func(t *testing.T) {
-			lines := buildTabLinesAt(defaultLeaderKey, snap, PlanStatus{}, width, 3)
-			text := plain(lines[buildRowsTop(defaultLeaderKey, snap, PlanStatus{}, width):])
+			lines := buildSectionLines(defaultLeaderKey, snap, PlanStatus{}, width, buildMarks{cursor: 3, linked: -1})
+			top := buildRowsTop(defaultLeaderKey, snap, PlanStatus{}, width)
+			text := plain(lines[top:])
 			if len(text) != len(snap.Rows) {
 				t.Fatalf("%d row lines, want %d", len(text), len(snap.Rows))
 			}
 			marked := 0
 			for i, ln := range text {
-				if w := xansi.StringWidth(lines[buildRowsTop(defaultLeaderKey, snap, PlanStatus{}, width)+i]); w > width {
+				if w := xansi.StringWidth(lines[top+i]); w > width {
 					t.Errorf("row %d is %d cells, over %d", i, w, width)
 				}
 				r := snap.Rows[i]

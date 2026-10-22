@@ -4144,3 +4144,22 @@ Decided while building (2026-10-21):
 - **`a` waits for the project to load.** It switches to the project first and opens the inbox on the item once that project's inbox has been read, so it never shows another project's items.
 - **`p` reads the selected row's state at All projects,** where the active project's build guard would be the wrong project's.
 - **At 80×24 the chips row is cut before `- remove`;** the status bar still names every key. Left for T16.9's terminal check.
+
+## T16.4
+
+T16.4 draws the Project level of `docs/dash-design.md` §4.2 as three sections. These are the decisions the master plan left open, made while planning the task (2026-10-21), numbered as in the work plan's assumptions.
+
+- **A session's task comes from the ledger (A1).** The build row carries the session that ran it, taken from the ledger entry already read, preferring an unfinished row over a done one. `status.json` gains no field.
+- **Section focus is its own piece of state (A2).** The dashboard's focus and level are unchanged; a pure function moves the section.
+- **`d` keeps opening today's overview (A3)** with its tabs Overview, Waves, Stack, Notes and Diff (`1`-`5`) until T16.5 turns it into the details overlay. `esc` returns to the sections.
+- **A task's details (A4)** are today's task tokens box with the task's status, title and detail added above the tokens. `t` and `enter` on a task open it.
+- **Session groups (A5):** Needs you (awaiting input, a fault or failed), Working (everything unfinished), Done. Empty groups are hidden; name order inside a group.
+- **The right word on a session row (A6):** `asks you` when it awaits input, `open it` when its host is running, nothing otherwise.
+- **The read-only pane (A7)** shows branch, phase and loop, task, the question, diff, verdict and host, and leaves out an empty line. The question is the oldest open inbox item for the session, else for its task, since `status.json` holds no question text.
+- **The Inbox section (A8)** has one row per open item; `enter` opens today's inbox overlay on it until T16.7 redraws the answer screen.
+- **Open pull requests in the band (A9)** are counted from Build rows that are shipping. Nothing is read from GitHub.
+- **Placement (A10):** the project view is an overlay over the dimmed home screen when All projects has rows, else on the plain ground.
+- **Chips and status bar (A11)** list only keys that work now; `a` inside a project waits for T16.7.
+- **The mouse (A12):** a click focuses a section and selects the row; the wheel moves the focused section. Clicking the overview no longer means `d`.
+- **Decided while building (2026-10-22).** Below 100 columns the project view takes the full body width with no dimmed margin, because two columns of home screen are worth less than room for the one section. A session with no `host.json` (a standalone `/afk:go`) is not counted as a fault, so it stays in Working; a session paused for usage stays in Working too. `s` and `t` work only with the Build section focused and otherwise say to press `2` or `tab`. The overlay dims only the home screen's body; the top bar and status bar stay at full strength. A mouse click focuses a section and selects the row but opens nothing.
+- **This section and the new `CONTEXT.md` terms belong to the change.**

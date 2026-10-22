@@ -252,3 +252,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Finished group**: the home screen's group of projects that are finished and need nothing from the owner; under the FINISHED heading, last.
 - **Band**: the one line of counts across the top of the home screen: each group's count, the open inbox items with the blocking ones, and usage when there is a reading.
 - **Selected panel**: the part of the home screen under the rule that says what the selected project waits on, the question in full and what answering it unblocks.
+- **Section**: a numbered pane inside the project view: Sessions, Build, Inbox; `tab` and `1`-`3` move between them.
+- **Read-only pane**: the selected session's summary under Sessions; it never takes the keyboard.
+- **Linked row**: the row in another section that belongs to the selection, filled with the strip colour and ending `◂ name`.

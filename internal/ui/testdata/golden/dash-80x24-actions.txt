@@ -1,24 +1,24 @@
  afk Dashboard                                                                  
-╭────────────────────────────╮╭────────────────────────────────────────────────╮
+╭──────────────────────────────────────────────────────────────────────────────╮
 │ ╭─ actions ────────────────────────────────────────────────────────────────╮ │
 │ │ type an action's name                                                    │ │
 │ │                                                                          │ │
-│ │ go in                               enter  — Go in a level, or open wha… │ │
-│ │ go back                             esc    — Go back a level, or close … │ │
-│ │ jump                                /      — Jump to another project     │ │
-│ │ inbox                               i      — the inbox has not been rea… │ │
-│ │ details                             d      — Show the selected session'… │ │
-│ │ read usage                          R      — this dashboard cannot read… │ │
-│ │ keys                                ?      — Show every key, level by l… │ │
-│ │ quit                                q      — Leave the dashboard; every… │ │
-│ │ start a new plan                           — starting a plan is not ava… │ │
-│ │ add a project                       +      — works on All projects       │ │
-│ │ remove the project                  -      — works on All projects       │ │
-│ │ answer the oldest                   a      — works on All projects       │ │
-│ │ pause or resume the build           p      — this project has no build   │ │
-│ │ new session                         n      — Start a new session from a… │ │
-│ │ one-off session                     o      — Start a one-off session wi… │ │
-│ │ clean session                       c      — Clean the selected session… │ │
+│ │ go in                               enter      — Go in a level, or open… │ │
+│ │ go back                             esc        — Go back a level, or cl… │ │
+│ │ jump                                /          — Jump to another project │ │
+│ │ inbox                               i          — the inbox has not been… │ │
+│ │ details                             d          — Show the selected sess… │ │
+│ │ read usage                          R          — this dashboard cannot … │ │
+│ │ keys                                ?          — Show every key, level … │ │
+│ │ quit                                q          — Leave the dashboard; e… │ │
+│ │ start a new plan                               — starting a plan is not… │ │
+│ │ add a project                       +          — works on All projects   │ │
+│ │ remove the project                  -          — works on All projects   │ │
+│ │ answer the oldest                   a          — works on All projects   │ │
+│ │ pause or resume the build           p          — this project has no bu… │ │
+│ │ new session                         n          — Start a new session fr… │ │
+│ │ one-off session                     o          — Start a one-off sessio… │ │
+│ │ clean session                       c          — Clean the selected ses… │ │
 │ ╰─────────────────────────────── type to search · enter runs · esc closes ─╯ │
-╰────────────────────────────╯╰──────────── enter: open · c: clean · l: label ─╯
+╰──────────────────────────────────────────────────────────────────────────────╯
 enter run · ↑/↓ move · type filter · esc close · ctrl+c quit                    

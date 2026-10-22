@@ -140,6 +140,21 @@ func sampleState(name string) discover.SessionState {
 
 func sess(name string) Session { return Session{SessionState: sampleState(name)} }
 
+// namedIndex is the position of the row called name in m.sessions, a fault
+// row included. The list is kept in the project view's screen order (T16.4:
+// Needs you, Working, Done), so a test that puts rows of different groups in
+// a list finds them by name rather than by the order it gave them in.
+func namedIndex(t *testing.T, m Model, name string) int {
+	t.Helper()
+	for i := range m.sessions {
+		if m.sessions[i].Name == name {
+			return i
+		}
+	}
+	t.Fatalf("no row named %q", name)
+	return -1
+}
+
 // staleSess is the row internal/discover produces for a `.afk/{name}/`
 // whose status.json its parser rejected: every status-derived field zeroed,
 // StatusStale set, and KindStaleStatus — a kind internal/session does NOT
@@ -1265,7 +1280,11 @@ func TestTogglePaneSummary(t *testing.T) {
 		{
 			name: "switching sessions while hidden: the arriving pane installs behind the overview (load-bearing: only ctrl+t changes the view)",
 			setup: func(t *testing.T, m Model) Model {
+				// The list is kept in screen order (name order inside a
+				// group), so "other" sorts first: sess is selected by name.
 				m.setSessions([]Session{runningSess("sess"), runningSess("other")})
+				i, _ := m.sessionIndex("sess")
+				m.selectSessionIndex(i)
 				return behindOverview(t, m)
 			},
 			act: func(t *testing.T, m Model) (Model, tea.Cmd) {
@@ -1273,7 +1292,8 @@ func TestTogglePaneSummary(t *testing.T) {
 				// pane only for the SELECTED session: leaving the cursor on "sess" would
 				// hide the arriving pane for that reason instead of for the view, and
 				// the row would pass while asserting nothing.
-				m.selectSessionIndex(1)
+				i, _ := m.sessionIndex("other")
+				m.selectSessionIndex(i)
 				return update(t, m, paneAttachedMsg{pane: newFakePane("OTHER"), name: "other"})
 			},
 			checks: func(t *testing.T, m Model, cmd tea.Cmd) {
@@ -4253,6 +4273,9 @@ func TestToggleWithHiddenPaneTargetsTheSelectedAgent(t *testing.T) {
 	hiddenOldPane := func(t *testing.T, target Session) Model {
 		t.Helper()
 		m := testModel(runningSess("a"), target)
+		// The list is in screen order, where a fault row comes first, so the
+		// rows are selected by name.
+		m.selectSessionIndex(namedIndex(t, m, "a"))
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("A"), name: "a"})
 		m, _ = update(t, m, keyEnter)
 		m, _ = flipView(t, m)
@@ -4261,7 +4284,7 @@ func TestToggleWithHiddenPaneTargetsTheSelectedAgent(t *testing.T) {
 			t.Fatalf("setup: view=%v focus=%v pane=%q, want a's pane behind the overview with the list focused",
 				m.view, m.focus, m.paneName)
 		}
-		m.selectSessionIndex(1)
+		m.selectSessionIndex(namedIndex(t, m, target.Name))
 		return m
 	}
 	// toSelectedAgent is the user's route: enter opens the selected row's
@@ -4349,7 +4372,7 @@ func TestToggleWithHiddenPaneTargetsTheSelectedAgent(t *testing.T) {
 		{"pending selected row", func() Session { s := runningSess("b"); s.Pending = true; return s }(), func(*Model) {}},
 		{"fault selected row", faultSess("b", session.KindWorktreeMissing, "gone"), func(*Model) {}},
 		{"cleaning selected row", runningSess("b"), func(m *Model) {
-			m.cleaningSessions = map[cleanID]bool{cleanIDFor(m.sessions[1]): true}
+			m.cleaningSessions = map[cleanID]bool{cleanIDFor(m.sessions[namedIndex(t, *m, "b")]): true}
 		}},
 	}
 	for _, tc := range invalid {
@@ -5827,7 +5850,7 @@ func TestSpinnerRendersOnTheHelpRow(t *testing.T) {
 			if !strings.HasPrefix(footer, want) {
 				t.Fatalf("footer = %q, want it to lead with the spinner frame %q", footer, want)
 			}
-			if !strings.Contains(footer, "preview") {
+			if !strings.Contains(footer, "j/k move") {
 				t.Fatalf("footer = %q, want the help line still rendered behind the spinner", footer)
 			}
 			if w := lipgloss.Width(strings.TrimRight(footer, " ")); w > m.width {
@@ -6006,8 +6029,12 @@ func TestViewDoesNotPanic(t *testing.T) {
 
 	m := testModel(rich, stale, awaiting, pending)
 	// The overview's panels are what this exercises; in the agent view a row
-	// with no live agent draws the agent placeholder instead.
-	m.view = viewOverview
+	// with no live agent draws the agent placeholder instead. The overview is
+	// drawn with the keyboard on it, as `d` gives it (the project view takes
+	// the body otherwise, T16.4), and rich is selected by name because the
+	// list is in screen order.
+	m.view, m.focus = viewOverview, focusRight
+	m.selectSessionIndex(namedIndex(t, m, "rich"))
 	m.lastLoad = time.Unix(999_000, 0)
 	m.status = "some status"
 
@@ -6024,8 +6051,8 @@ func TestViewDoesNotPanic(t *testing.T) {
 	// The placeholder's detail pane is a separate branch from the panel loop, so
 	// it needs the cursor parked on it to be rendered at all.
 	onPending := testModel(rich, pending)
-	onPending.view = viewOverview
-	onPending.selectSessionIndex(1)
+	onPending.view, onPending.focus = viewOverview, focusRight
+	onPending.selectSessionIndex(namedIndex(t, onPending, "pending"))
 	pendingOut := render(onPending)
 	for _, want := range []string{"pending", "creating session"} {
 		if !strings.Contains(pendingOut, want) {
@@ -8784,8 +8811,14 @@ func TestPaneVersusDetailRenderSelection(t *testing.T) {
 		wantPane bool
 	}{
 		{
-			name:     "cursor moved off the paned session renders that row's detail",
-			arrange:  func(_ *testing.T, m *Model) { m.selectSessionIndex(1) },
+			// The overview has the keyboard, as `d` gives it: at Project the
+			// body is otherwise the project view (T16.4), which draws no
+			// overview to name the row in.
+			name: "cursor moved off the paned session renders that row's detail",
+			arrange: func(_ *testing.T, m *Model) {
+				m.selectSessionIndex(1)
+				m.focus, m.view = focusRight, viewOverview
+			},
 			wantPane: false,
 		},
 		{
@@ -9187,6 +9220,8 @@ func TestEnterDifferentTargetBeatsStalePreviewInEitherDeliveryOrder(t *testing.T
 func TestSurplusArrivalStillHonoursExplicitFocusRequest(t *testing.T) {
 	installed, surplus := newFakePane("B-PREVIEW"), newFakePane("B-FROM-ENTER")
 	m := testModel(runningSess("b"), runningSess("a"))
+	// The list is kept in name order inside a group, so b is selected by name.
+	m.selectSessionIndex(namedIndex(t, m, "b"))
 
 	m, _ = update(t, m, paneAttachedMsg{pane: installed, name: "b", preview: true})
 	if m.paneName != "b" || m.paneOwnsKeyboard() {
@@ -9386,9 +9421,10 @@ func TestSuccessfulPreviewArrivalWritesNoStatus(t *testing.T) {
 // narrowest terminal anyone runs) and 40 (the plan's floor for this
 // assertion) — via lipgloss.Width, rather than pinning one legacy column
 // count (92) that only ever described the OLD hand-rolled ladder's output.
-// The movement keys' "preview" label — this test's original point — still
-// has to survive both, since it is the first thing renderNormalHelpKeyMap
-// orders.
+// The movement keys — this test's original point, when they were labelled
+// "preview" — still have to survive both: since the project view (T16.4) the
+// line leads with the section keys and "j/k move", which every section moves
+// with, so those are what the narrowest line must keep.
 func TestHelpLineAdvertisesPreviewWithoutGrowing(t *testing.T) {
 	for _, width := range []int{80, 40} {
 		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
@@ -9396,7 +9432,7 @@ func TestHelpLineAdvertisesPreviewWithoutGrowing(t *testing.T) {
 			m.width = width
 			help := xansi.Strip(m.renderHelp())
 
-			for _, want := range []string{m.keys.Up.Help().Key, m.keys.Down.Help().Key, "preview"} {
+			for _, want := range []string{projectSectionKeysLabel, "j/k", "move"} {
 				if !strings.Contains(help, want) {
 					t.Fatalf("help = %q, want it to contain %q", help, want)
 				}
@@ -12562,9 +12598,12 @@ func TestApplyLoadedNotifiesSessionTransitions(t *testing.T) {
 				{sess("a"), runningSess("b")},
 				{phased(sess("a"), state.PhaseDone), stoppedSess("b")},
 			},
+			// The events come in the list's order, which is the project
+			// view's screen order (T16.4): b's dead host is Needs you, ahead
+			// of a, which is Done.
 			want: []backgroundEvent{
-				{notifySuccess, bgFinished, "a finished"},
 				{notifyWarn, bgHostDied, "b host died"},
+				{notifySuccess, bgFinished, "a finished"},
 			},
 		},
 	}
@@ -13198,9 +13237,14 @@ func TestMovingOffThePanedRowDetachesIt(t *testing.T) {
 
 	t.Run("tick reshuffle", func(t *testing.T) {
 		m, fp := attached(t)
+		// The list is kept in screen order (T16.4), so the reshuffle is b
+		// starting to ask the owner something: it moves to Needs you, ahead
+		// of a, and the held index lands on it.
+		asks := runningSess("b")
+		asks.AwaitingInput = true
 		m, _ = update(t, m, sessionsLoadedMsg{
 			gen:      m.projectGen,
-			sessions: []Session{runningSess("b"), runningSess("a")},
+			sessions: []Session{runningSess("a"), asks},
 			at:       time.Unix(3, 0),
 		})
 		if s, _ := m.selected(); s.Name != "b" {

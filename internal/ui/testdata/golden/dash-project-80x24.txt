@@ -1,0 +1,24 @@
+ afk Dashboard                                    inbox 3 · 2 blocking  i: inbox
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                                  esc · all projects │
+│  1 of 7 tasks done  ·  build paused  ·  3 open · 2 blocking in inbox  ·  1…  │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ 1 Sessions · 2 Build · 3 Inbox                                         6 │ │
+│ │  ▾ Needs you                                                          3  │ │
+│ │ ▌ ◐ feat-auth           executing     3/7                       asks you │ │
+│ │   ◐ fix-login-redirect  planning        –                       asks you │ │
+│ │   ✕ old-migration       broken          –                                │ │
+│ │  ▾ Working                                                            2  │ │
+│ │   ◐ Billing v2          reviewing     7/7                        open it │ │
+│ │   ◐ scratch-1           one-off         –                        open it │ │
+│ │  ▾ Done                                                               1  │ │
+│ │   ✓ feat-search         done          5/5                                │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│  tab/1-3  section   j/k  move   enter  open   d  details   n  new session    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+tab/1-3 section · j/k move · enter open · d details · n new session · c clean… …

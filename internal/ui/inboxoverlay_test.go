@@ -494,7 +494,7 @@ func TestInboxKeys(t *testing.T) {
 		if got := m.inbox.input.Value(); got != "quit? b i j k :" {
 			t.Fatalf("the answer field holds %q, want what was typed", got)
 		}
-		if m.detailTab == tabBuild || m.leaderOpen || m.formOpen {
+		if m.focusedSection() != sectionSessions || m.leaderOpen || m.formOpen {
 			t.Error("a typed letter acted on the dashboard underneath")
 		}
 		if len(*calls) != 0 {

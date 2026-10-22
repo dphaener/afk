@@ -169,22 +169,23 @@ var (
 	scenarioX = keyRune('x')
 	scenarioQ = keyRune('q')
 	scenarioR = keyRune('r')
-	scenarioB = keyRune('b')
+	scenario2 = keyRune('2')
 	scenarioI = keyRune('i')
 )
 
-// loadScenarioBuild hands the model a build with one task, so `b` has a tab to
-// open wherever the dashboard, and not the agent, has the keyboard.
+// loadScenarioBuild hands the model a build with one task, so `2` has a Build
+// section to move to wherever the dashboard, and not the agent, has the
+// keyboard.
 func loadScenarioBuild(h *scenarioHarness) {
 	h.m, _ = update(h.t, h.m, buildLoadedMsg{snap: buildSnap("/repo"), gen: h.m.projectGen})
 }
 
-// assertNotOnBuildTab fails the scenario if a key meant for the agent moved
-// the detail tab behind it.
-func assertNotOnBuildTab(h *scenarioHarness) {
+// assertNotOnBuildSection fails the scenario if a key meant for the agent
+// moved the project view's section behind it.
+func assertNotOnBuildSection(h *scenarioHarness) {
 	h.t.Helper()
-	if h.m.detailTab == tabBuild {
-		h.t.Errorf("b typed into the agent moved the detail tab to Build")
+	if h.m.focusedSection() != sectionSessions {
+		h.t.Errorf("2 typed into the agent moved the section to %v", h.m.focusedSection())
 	}
 }
 
@@ -287,20 +288,20 @@ func TestFocusScenario(t *testing.T) {
 			},
 		},
 		{
-			// The build data is loaded first so `b` WOULD open the Build tab
-			// from the list: the row then proves the agent's focus is what
-			// stops it, not a missing build.
-			name: "b typed into a focused agent goes to the agent and does nothing else",
+			// The build data is loaded first so `2` WOULD move to the Build
+			// section from the project view: the row then proves the agent's
+			// focus is what stops it, not a missing build.
+			name: "2 typed into a focused agent goes to the agent and does nothing else",
 			rows: []Session{runningSess("alpha")},
 			steps: []scenarioStep{
 				{name: "the build arrives", act: loadScenarioBuild, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "b is typing", msg: scenarioB, want: with(list, func(s *scenarioState) {
+				{name: "2 is typing", msg: scenario2, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.forwarded = focusRight, "agent", "alpha", 1
 				})},
-				{name: "the tab did not move", act: assertNotOnBuildTab, want: with(list, func(s *scenarioState) {
+				{name: "the section did not move", act: assertNotOnBuildSection, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
 				})},
 				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},

@@ -1073,7 +1073,7 @@ func (m Model) answerInboxCmd(id, text string, blocking bool) tea.Cmd {
 // does not un-park anything itself: the build loop reads the inbox on its
 // next pass and starts the task again, which is why the notice says "within a
 // few seconds" and not "now". A fresh read is asked for so the list and the
-// Build tab's count are current without waiting for the tick.
+// Build section's count are current without waiting for the tick.
 //
 // A refusal stays on the item and says what happened. When the overlay has
 // been closed, or has moved to another item, since the send, the same

@@ -176,12 +176,12 @@ func detailsBlockedReason(c leaderConds) string {
 //   - `p` works at Project only until T16.3 gives All projects a selected
 //     project to pause (A4).
 //   - `/` opens today's project switcher until T16.6 widens it (A3).
-//   - `s` and `t` (the leader's S and T) need the overview's Build tab to
-//     have the keyboard until T16.4 builds the Build section (A4); their
-//     blocked reasons say so.
-//   - tab, shift+tab and 1–3 (change section) and 1–5 (change a Details
-//     tab) belong to the surfaces T16.4 and T16.5 build, which own them as
-//     an overlay owns its keys.
+//   - `s` and `t` (the leader's S and T) need the project view's Build
+//     section to have the keyboard (T16.4); their blocked reasons say so.
+//   - tab, shift+tab and 1–3 change the project view's section (T16.4). The
+//     overview `d` gives the keyboard to keeps the same keys for its own
+//     tabs (1–5) while it has the keyboard: levelKey hands them to the
+//     overview's mode first there, as an overlay owns its keys.
 //
 // "start a new plan" has two rows for one action: `n` at All projects, as
 // §5 binds it, and by name at Project and the Agent, where `n` is new
@@ -303,13 +303,33 @@ func keyTableRows() []keyRow {
 			blocked: reasonAsLeader(actionEditLabel),
 		},
 		{
+			action: actionSectionNext, key: "tab", levels: atProject,
+			name: "next section", help: "Move to the next section: Sessions, Build, Inbox",
+		},
+		{
+			action: actionSectionPrev, key: "shift+tab", levels: atProject,
+			name: "previous section", help: "Move to the previous section",
+		},
+		{
+			action: actionSectionSessions, key: "1", levels: atProject,
+			name: "sessions section", help: "Move to the Sessions section",
+		},
+		{
+			action: actionSectionBuild, key: "2", levels: atProject,
+			name: "build section", help: "Move to the Build section, the plan's tasks",
+		},
+		{
+			action: actionSectionInbox, key: "3", levels: atProject,
+			name: "inbox section", help: "Move to the Inbox section, the open items",
+		},
+		{
 			action: actionTaskStatus, key: "s", levels: atProject,
 			name: "set this task's status", help: "Change the selected Build task's status, as afk ledger set does",
 			blocked: reasonAsLeader(actionTaskStatus),
 		},
 		{
 			action: actionTaskTokens, key: "t", levels: atProject,
-			name: "show this task's tokens", help: "Show how many tokens the selected Build task used, as afk tokens does",
+			name: "show this task's tokens", help: "Show the selected Build task's details and the tokens it used, as afk tokens does",
 			blocked: reasonAsLeader(actionTaskTokens),
 		},
 		{

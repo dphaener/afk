@@ -1,11 +1,11 @@
  afk Dashboard                                    inbox 1 · 1 blocking  i: inbox
-╭────────────────────────────╮╭────────────────────────────────────────────────╮
-│ Sessions                   ││ Build                                          │
-│     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff   B… │
-│                            ││ ────────────────────────────────────────────── │
-│ ▌ ◐ feat-auth      EXEC  ● ││ 1/7 done · T1.2: executing                     │
-│   ◐ Billing v2     REVW    ││ paused: p or afk resume starts it again        │
-│   ◐ fix-login-red… PLAN  ● ││ 1 item needs you · i: inbox                    │
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                                  esc · all projects │
+│  1 of 7 tasks done  ·  build paused  ·  1 open · 1 blocking in inbox  ·  1…  │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ 1 Sessions · 2 Build · 3 Inbox                                       1/7 │ │
+│ │ 1/7 done · T1.2: executing                                               │ │
+│ │ paused: p or afk resume starts it again                                  │ │
 │ ╭─ Set the task's status? ─────────────────────────────────────────────────╮ │
 │ │                                                                          │ │
 │ │ T2.3 Login redirect                                                      │ │
@@ -14,11 +14,11 @@
 │ │ The build loop may start it on its next pass.                            │ │
 │ │                                                                          │ │
 │ ╰───────────────────────────────────────────────── y: set · n/esc: cancel ─╯ │
-│                            ││                                                │
-│                            ││                                                │
-│                            ││                                                │
-│                            ││                                                │
-│                            ││                                                │
-│                            ││                                                │
-╰────────────────────────────╯╰──────────────────────────── esc: back to list ─╯
+│ │   T3.2  pending   Pick a mail provider  ready · yours to do              │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│  tab/1-3  section   j/k  move   enter  open   d  details   n  new session    │
+╰──────────────────────────────────────────────────────────────────────────────╯
 y set · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit              

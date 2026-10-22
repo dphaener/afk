@@ -247,7 +247,15 @@ func TestSelectionMemoryRecordsTheSettledRow(t *testing.T) {
 			m := testModel(tt.sessions...)
 			m.deps.OpenHostPane = refusingOpen(t, "a recorded cursor move must not dial")
 
-			m, cmd := update(t, m, keyDown)
+			// The list is in the project view's screen order (T16.4), where a
+			// fault row is above a: the move starts on a and goes towards the
+			// row under test, whichever side of a it is.
+			m.selectSessionIndex(namedIndex(t, m, "a"))
+			move := keyDown
+			if namedIndex(t, m, tt.wantRow) < namedIndex(t, m, "a") {
+				move = keyUp
+			}
+			m, cmd := update(t, m, move)
 
 			if s, ok := m.selected(); !ok || s.Name != tt.wantRow {
 				t.Fatalf("setup: the move landed on %q (ok=%v), want %q", s.Name, ok, tt.wantRow)

@@ -1696,22 +1696,25 @@ func TestDashboardMouseForwardsByFocus(t *testing.T) {
 				if originX >= 0 {
 					t.Fatalf("the pane is drawn at Project, at (%d, %d)", originX, originY)
 				}
-				x, y := rightRegionCell(m)
+				// Every kind of event over the project view stays with the
+				// dashboard: the keyboard stays on the project view, and
+				// nothing reaches the session's pane (T16.4 A12).
+				x, y := findSentinel(render(m), "live")
+				if x < 0 {
+					t.Fatalf("the session's row is not on the project view:\n%s", xansi.Strip(render(m)))
+				}
 				for _, msg := range []tea.MouseMsg{
 					tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown},
 					tea.MouseMotionMsg{X: x, Y: y, Button: tea.MouseLeft},
+					mouseAt(x, y),
 				} {
-					if nm, cmd := update(t, m, msg); cmd != nil || nm.focus != focusList {
-						t.Errorf("%T with focus=list: cmd=%v focus=%v, want no Cmd and focus unchanged",
-							msg, cmd != nil, nm.focus)
+					if nm, _ := update(t, m, msg); nm.focus != focusList || nm.level() != levelProject {
+						t.Errorf("%T with focus=list: focus=%v level=%v, want the project view to keep the keyboard",
+							msg, nm.focus, nm.level())
 					}
 				}
-				nm, _ := update(t, m, mouseAt(x, y))
-				if nm.focus != focusRight || nm.view != viewOverview {
-					t.Errorf("click over the overview left focus=%v view=%v, want the overview focused", nm.focus, nm.view)
-				}
 				if len(fp.mice) != 0 {
-					t.Fatalf("focus=list forwarded %v, want nothing (click is consumed)", fp.mice)
+					t.Fatalf("focus=list forwarded %v, want nothing", fp.mice)
 				}
 				return
 			}
@@ -1740,66 +1743,182 @@ func TestDashboardMouseForwardsByFocus(t *testing.T) {
 	}
 }
 
-// rightRegionCell is a cell on the Project's right side, the overview: five
-// columns into it, two rows under the top of the body.
-func rightRegionCell(m Model) (x, y int) {
-	listOuter, _, _, headerRows, _ := m.mouseFrameLayout()
-	return sidebarRenderedWidth(listOuter) + 5, headerRows + 2
+// projectMouseModel is the project view at w×h with every section holding
+// rows (projectViewSnap: sessions alpha and beta, T1.2 linked to alpha, two
+// open items) and a live pane connected for alpha, so a test can show that
+// nothing it does with the mouse reaches the session.
+func projectMouseModel(t *testing.T, w, h int) (Model, *fakePane) {
+	t.Helper()
+	fp := newFakePane("X")
+	m := testModel(runningSess("alpha"), sess("beta"))
+	m.width, m.height = w, h
+	m.pane, m.paneName = fp, "alpha"
+	m = withBuild(t, m, projectViewSnap())
+	m.clearStatus()
+	return m, fp
 }
 
-// TestMouseClickFocusesRightSide pins the click entrance at Project: with the
-// list focused a left click on the right side is `d` (showDetails) — the
-// overview takes the keyboard, whatever the view was and whether or not a
-// pane is connected for the row. It never connects or dials: the click was on
-// the overview, not on an agent (W3.T1 of T16.2). Nothing is forwarded.
-func TestMouseClickFocusesRightSide(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		prep func(m *Model)
+// cellOfText is the screen cell where text starts in m's frame, failing the
+// test when the frame does not show it.
+func cellOfText(t *testing.T, m Model, text string) (x, y int) {
+	t.Helper()
+	x, y = findSentinel(render(m), text)
+	if x < 0 {
+		t.Fatalf("%q is not on screen:\n%s", text, xansi.Strip(render(m)))
+	}
+	return x, y
+}
+
+// TestMouseOnTheProjectView pins the mouse at Project since T16.4 (A12): a
+// left click on a section focuses it and selects the row clicked, the wheel
+// moves the focused section, and nothing opens or reaches the session.
+// Load-bearing rows:
+//
+//   - "task row" and "item row": a click in a section without the keyboard
+//     both moves the focus there and lands its cursor on the clicked row,
+//     which is the whole of the click's meaning; a click that only focused
+//     would leave enter acting on a row the owner did not point at.
+//   - "session row": the session is selected as a move key would select it,
+//     and the keyboard stays on the project view (no agent opens: enter does
+//     that).
+//   - "section strip": a click on a section's strip focuses it and moves no
+//     cursor.
+//   - "band" and "home screen margin": off every section a click does
+//     nothing, so a click beside the box cannot move a selection.
+//   - "narrow": below 100 columns the one section shown is hit-tested the
+//     same way.
+func TestMouseOnTheProjectView(t *testing.T) {
+	cases := []struct {
+		name    string
+		w, h    int
+		prep    func(t *testing.T, m Model) Model
+		at      func(t *testing.T, m Model) (int, int)
+		section projectSection
+		check   func(t *testing.T, m Model)
 	}{
-		{"agent view, pane installed", func(*Model) {}},
-		{"agent view, no pane", func(m *Model) { m.pane, m.paneName = nil, "" }},
-		{"overview view", func(m *Model) { m.view = viewOverview }},
-	} {
+		{"task row", 120, 40, nil,
+			func(t *testing.T, m Model) (int, int) { return cellOfText(t, m, "T3.1") },
+			sectionBuild,
+			func(t *testing.T, m Model) {
+				if m.buildCursorID != "T3.1" || !m.buildTaskSelected() {
+					t.Errorf("build cursor = %q (selected %v), want T3.1", m.buildCursorID, m.buildTaskSelected())
+				}
+			}},
+		{"item row", 120, 40, nil,
+			func(t *testing.T, m Model) (int, int) { return cellOfText(t, m, "n-2") },
+			sectionInbox,
+			func(t *testing.T, m Model) {
+				if it, ok := m.selectedInboxItem(); !ok || it.ID != "n-2" {
+					t.Errorf("inbox item = %q (%v), want n-2", it.ID, ok)
+				}
+			}},
+		{"session row", 120, 40,
+			func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('2')); return m },
+			func(t *testing.T, m Model) (int, int) { return cellOfText(t, m, "beta ") },
+			sectionSessions,
+			func(t *testing.T, m Model) {
+				if s, _ := m.selected(); s.Name != "beta" {
+					t.Errorf("selected %q, want beta", s.Name)
+				}
+			}},
+		{"section strip", 120, 40, nil,
+			func(t *testing.T, m Model) (int, int) { return cellOfText(t, m, "3 Inbox") },
+			sectionInbox,
+			func(t *testing.T, m Model) {
+				if m.inboxCursorIndex != 0 {
+					t.Errorf("inbox cursor moved to %d", m.inboxCursorIndex)
+				}
+			}},
+		{"band", 120, 40, nil,
+			func(t *testing.T, m Model) (int, int) { return cellOfText(t, m, "tasks done") },
+			sectionSessions, nil},
+		{"home screen margin", 120, 40, nil,
+			func(t *testing.T, m Model) (int, int) {
+				_, y := cellOfText(t, m, "T3.1")
+				return 0, y
+			},
+			sectionSessions, nil},
+		{"narrow", 80, 24,
+			func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('2')); return m },
+			func(t *testing.T, m Model) (int, int) { return cellOfText(t, m, "T4.1") },
+			sectionBuild,
+			func(t *testing.T, m Model) {
+				if m.buildCursorID != "T4.1" {
+					t.Errorf("build cursor = %q, want T4.1", m.buildCursorID)
+				}
+			}},
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, fp, _, _, _, _ := mouseModel(t)
-			tc.prep(&m)
-			x, y := rightRegionCell(m)
-			nm, cmd := update(t, m, mouseAt(x, y))
-			if nm.focus != focusRight || nm.view != viewOverview || nm.level() != levelProject {
-				t.Errorf("focus=%v view=%v level=%v, want the overview focused at Project", nm.focus, nm.view, nm.level())
+			m, fp := projectMouseModel(t, tc.w, tc.h)
+			if tc.prep != nil {
+				m = tc.prep(t, m)
 			}
-			if cmd != nil {
-				t.Errorf("a click on the overview must not dial, got a Cmd")
+			x, y := tc.at(t, m)
+			nm, _ := update(t, m, mouseAt(x, y))
+			if nm.focusedSection() != tc.section {
+				t.Errorf("section = %v, want %v", nm.focusedSection(), tc.section)
 			}
-			if len(fp.mice) != 0 || fp.closed != 0 {
-				t.Errorf("click forwarded %v closed %d, want consumed and the pane kept", fp.mice, fp.closed)
+			if nm.focus != focusList || nm.level() != levelProject || nm.taskTokensOpen || nm.inboxOpen {
+				t.Errorf("focus=%v level=%v tokens=%v inbox=%v, want nothing opened", nm.focus, nm.level(), nm.taskTokensOpen, nm.inboxOpen)
+			}
+			if tc.check != nil {
+				tc.check(t, nm)
+			}
+			if len(fp.mice) != 0 {
+				t.Errorf("forwarded %v, want nothing to reach the session", fp.mice)
+			}
+			// A click that keeps alpha selected keeps its pane; moving the
+			// selection lets the pane go as a move key does (the preview
+			// follows the selection), which is not the click's own doing.
+			if s, _ := nm.selected(); s.Name == "alpha" && fp.closed != 0 {
+				t.Errorf("closed the pane %d time(s), want it kept", fp.closed)
 			}
 		})
 	}
-	t.Run("right click does not focus", func(t *testing.T) {
-		m, _, _, _, _, _ := mouseModel(t)
-		x, y := rightRegionCell(m)
-		nm, cmd := update(t, m, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseRight})
-		if nm.focus != focusList || cmd != nil {
-			t.Errorf("right click: focus=%v cmd=%v, want unchanged", nm.focus, cmd != nil)
+
+	t.Run("wheel moves the focused section", func(t *testing.T) {
+		m, fp := projectMouseModel(t, 120, 40)
+		m, _ = update(t, m, keyRune('2'))
+		before := m.buildCursorIndex
+		// Over the Sessions section: the wheel follows the keyboard, not the
+		// pointer.
+		x, y := cellOfText(t, m, "beta ")
+		m, _ = update(t, m, tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
+		if m.buildCursorIndex != before+1 || m.focusedSection() != sectionBuild {
+			t.Errorf("build cursor %d -> %d in section %v, want one row down in Build", before, m.buildCursorIndex, m.focusedSection())
+		}
+		m, _ = update(t, m, tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelUp})
+		if m.buildCursorIndex != before {
+			t.Errorf("wheel up left the cursor at %d, want %d", m.buildCursorIndex, before)
+		}
+		if s, _ := m.selected(); s.Name != "alpha" || len(fp.mice) != 0 {
+			t.Errorf("selected %q, forwarded %v; want alpha kept and nothing forwarded", s.Name, fp.mice)
 		}
 	})
-	t.Run("release does not focus", func(t *testing.T) {
-		m, _, _, _, _, _ := mouseModel(t)
-		x, y := rightRegionCell(m)
+	t.Run("right click does nothing", func(t *testing.T) {
+		m, _ := projectMouseModel(t, 120, 40)
+		x, y := cellOfText(t, m, "T3.1")
+		nm, cmd := update(t, m, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseRight})
+		if nm.focusedSection() != sectionSessions || cmd != nil {
+			t.Errorf("right click: section=%v cmd=%v, want unchanged", nm.focusedSection(), cmd != nil)
+		}
+	})
+	t.Run("release does nothing", func(t *testing.T) {
+		m, _ := projectMouseModel(t, 120, 40)
+		x, y := cellOfText(t, m, "T3.1")
 		nm, _ := update(t, m, tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
-		if nm.focus != focusList {
-			t.Errorf("release moved focus to %v", nm.focus)
+		if nm.focusedSection() != sectionSessions {
+			t.Errorf("release moved the focus to %v", nm.focusedSection())
 		}
 	})
 	t.Run("mouse released to the terminal", func(t *testing.T) {
-		m, _, _, _, _, _ := mouseModel(t)
+		m, _ := projectMouseModel(t, 120, 40)
 		m.mouseCapture = false
-		x, y := rightRegionCell(m)
+		x, y := cellOfText(t, m, "T3.1")
 		nm, _ := update(t, m, mouseAt(x, y))
-		if nm.focus != focusList {
-			t.Errorf("click with capture off moved focus to %v", nm.focus)
+		if nm.focusedSection() != sectionSessions {
+			t.Errorf("click with capture off moved the focus to %v", nm.focusedSection())
 		}
 	})
 }
@@ -2694,9 +2813,11 @@ func TestHelpLineAt80KeepsTheDiscoverableKeysAndTheCaptureState(t *testing.T) {
 			m.mouseCapture = capture
 
 			shown := helpLineAt80(m)
+			// The project view's line (T16.4) leads with the section keys,
+			// the moves and enter, the keys that find everything on it.
 			for _, want := range []string{
-				m.keys.Up.Help().Key + " " + m.keys.Up.Help().Desc,
-				m.keys.Down.Help().Key + " " + m.keys.Down.Help().Desc,
+				projectSectionKeysLabel + " section",
+				"j/k move",
 				m.keys.Focus.Help().Key + " " + m.keys.Focus.Help().Desc,
 			} {
 				if !strings.Contains(shown, want) {

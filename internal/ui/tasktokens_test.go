@@ -75,7 +75,7 @@ func (s *tokensSeam) load(root, task string) TaskTokens {
 	return s.rec(task)
 }
 
-// tokensBuildTab is the Build tab with the keyboard on the right and the
+// tokensBuildTab is the Build section with the keyboard and the
 // cursor on the current task (T1.2), with the tokens seam wired to s. The
 // read the first build load issues is NOT run, so no record is held yet.
 func tokensBuildTab(t *testing.T, s *tokensSeam) Model {
@@ -85,9 +85,9 @@ func tokensBuildTab(t *testing.T, s *tokensSeam) Model {
 		m.deps.LoadTaskTokens = s.load
 	}
 	m = withBuild(t, m, buildTabSnap())
-	m = openBuildTab(t, m)
-	if !m.buildCursorShown() || m.buildCursorID != "T1.2" {
-		t.Fatalf("setup: cursor shown=%v on %q, want T1.2", m.buildCursorShown(), m.buildCursorID)
+	m = openBuildSection(t, m)
+	if !m.buildCursorOnTask() || m.buildCursorID != "T1.2" {
+		t.Fatalf("setup: cursor shown=%v on %q, want T1.2", m.buildCursorOnTask(), m.buildCursorID)
 	}
 	return m
 }
@@ -153,8 +153,8 @@ func TestTaskTokensRowTotal(t *testing.T) {
 	const cursor = 1
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			lines := buildTabLinesWith(defaultLeaderKey, snap, PlanStatus{}, tc.width, cursor, tc.total)
-			without := buildTabLinesAt(defaultLeaderKey, snap, PlanStatus{}, tc.width, cursor)
+			lines := buildSectionLines(defaultLeaderKey, snap, PlanStatus{}, tc.width, buildMarks{cursor: cursor, linked: -1, total: tc.total})
+			without := buildSectionLines(defaultLeaderKey, snap, PlanStatus{}, tc.width, buildMarks{cursor: cursor, linked: -1})
 			if len(lines) != len(without) {
 				t.Fatalf("%d lines with the total, %d without; a row grew a line", len(lines), len(without))
 			}
@@ -191,7 +191,7 @@ func TestTaskTokensRowTotal(t *testing.T) {
 // total. Load-bearing rows: only a recorded ledger gives one ("none" and
 // "unreadable" must not, or the row would claim a cost nobody measured), a
 // record held for another task gives none (the row must not show a
-// neighbour's cost while its own is read), and the list having the keyboard
+// neighbour's cost while its own is read), and the Sessions section having the keyboard
 // draws no cursor and so no total. Each frame is drawn 240 columns wide so a
 // missing total can only mean there was none to draw.
 func TestTaskTokensRowTotalFromModel(t *testing.T) {
@@ -213,11 +213,11 @@ func TestTaskTokensRowTotalFromModel(t *testing.T) {
 			m, _ = update(t, m, keyDown)
 			return m
 		}, ""},
-		{"list has the keyboard", func(t *testing.T, m Model) Model {
+		{"Sessions has the keyboard", func(t *testing.T, m Model) Model {
 			m = holdTokens(t, m, tokensFixture("T1.2"))
-			m, _ = pressAction(t, m, keyEscMsg())
-			if m.focus != focusList {
-				t.Fatal("setup: the list does not have the keyboard")
+			m, _ = pressAction(t, m, keyRune('1'))
+			if m.focusedSection() != sectionSessions {
+				t.Fatal("setup: the Sessions section does not have the keyboard")
 			}
 			return m
 		}, ""},
@@ -353,8 +353,8 @@ func TestTaskTokensOverlay(t *testing.T) {
 			if m.taskTokensOpen {
 				t.Fatal("esc did not close the overlay")
 			}
-			if got := activeInputMode(m.modeSnapshot()); got != inputDetail || !m.buildCursorShown() {
-				t.Fatalf("after esc mode = %v cursor shown = %v, want the Build tab with the keyboard", got, m.buildCursorShown())
+			if got := activeInputMode(m.modeSnapshot()); got != inputNormal || !m.buildCursorOnTask() {
+				t.Fatalf("after esc mode = %v cursor on a task = %v, want the Build section with the keyboard", got, m.buildCursorOnTask())
 			}
 		})
 	}
@@ -425,7 +425,7 @@ func TestTaskTokensStale(t *testing.T) {
 
 // TestTaskTokensBlocked is the row's reasons in S's order, and the action
 // asked directly while blocked. Load-bearing: the seam comes first (sending
-// the owner to the Build tab would not help without it), and a blocked
+// the owner to the Build section would not help without it), and a blocked
 // action calls no seam and opens nothing.
 func TestTaskTokensBlocked(t *testing.T) {
 	ready := leaderConds{leader: defaultLeaderKey, canLoadTaskTokens: true, buildTabFocused: true, buildTaskSelected: true}
@@ -437,7 +437,7 @@ func TestTaskTokensBlocked(t *testing.T) {
 	}{
 		{"runs", ready, ""},
 		{"no seam outranks everything", leaderConds{}, taskTokensNoSeam},
-		{"not on the Build tab", with(func(c *leaderConds) { c.buildTabFocused = false; c.buildTaskSelected = false }), taskStatusOpenBuildFirst(defaultLeaderKey)},
+		{"not in the Build section", with(func(c *leaderConds) { c.buildTabFocused = false; c.buildTaskSelected = false }), taskStatusOpenBuildFirst(defaultLeaderKey)},
 		{"no task under the cursor", with(func(c *leaderConds) { c.buildTaskSelected = false }), taskTokensNoTask},
 	}
 	for _, tc := range cases {
@@ -460,13 +460,13 @@ func TestTaskTokensBlocked(t *testing.T) {
 		if cmd != nil || len(s.calls) != 0 || gm.taskTokensOpen {
 			t.Fatalf("blocked action: cmd=%v calls=%v open=%v", cmd != nil, s.calls, gm.taskTokensOpen)
 		}
-		if !strings.Contains(gm.status, "Build tab") {
-			t.Errorf("notice = %q, want it to send the owner to the Build tab", gm.status)
+		if !strings.Contains(gm.status, "Build section") {
+			t.Errorf("notice = %q, want it to send the owner to the Build section", gm.status)
 		}
 	})
 	t.Run("blocked with no seam calls nothing", func(t *testing.T) {
 		m := tokensBuildTab(t, nil)
-		got, cmd := m.applyKeyAction(inputDetail, actionTaskTokens, tea.KeyPressMsg{})
+		got, cmd := m.applyKeyAction(inputNormal, actionTaskTokens, tea.KeyPressMsg{})
 		gm := got.(Model)
 		if cmd != nil || gm.taskTokensOpen {
 			t.Fatal("the action ran with no seam")
@@ -490,8 +490,8 @@ func TestTaskTokensActionWithoutRecord(t *testing.T) {
 	}{
 		{"opens on arrival", func(t *testing.T, m Model) Model { return m }, true},
 		{"cursor moved meanwhile", func(t *testing.T, m Model) Model { m, _ = update(t, m, keyDown); return m }, false},
-		{"keyboard back on the list", func(t *testing.T, m Model) Model {
-			m, _ = pressAction(t, m, keyEscMsg())
+		{"keyboard back on Sessions", func(t *testing.T, m Model) Model {
+			m, _ = pressAction(t, m, keyRune('1'))
 			return m
 		}, false},
 	}

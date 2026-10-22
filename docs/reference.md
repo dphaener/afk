@@ -615,7 +615,7 @@ afk ledger set T4.2 superseded --replaced-by T4.2a,T4.2b
 afk next        # names the first task still to do
 ```
 
-In the dashboard, `s` on the Build tab does the same for the task under the cursor, through the same code, after a yes. Running the same command twice changes nothing the second time. Several of these commands can run at once; they take turns using a lock file.
+In the dashboard, `s` on the Build section does the same for the task under the cursor, through the same code, after a yes. Running the same command twice changes nothing the second time. Several of these commands can run at once; they take turns using a lock file.
 
 **Exit codes:** 0 when the task has the status (changed now or already), 1 when the plan or ledger could not be used or the task is not in the plan, 2 when the command was written wrongly (for example an unknown status).
 
@@ -735,7 +735,7 @@ afk tokens [--project PATH] [--record] [SESSION|TASK]
 ```
 
 - No argument — Totals per task, read from the ledger.
-- `TASK` — A task id such as `T1.4`: that task's lines from the ledger. Use this for a session that has been cleaned. `afk dash` shows the same table for the selected Build tab task (`t`).
+- `TASK` — A task id such as `T1.4`: that task's lines from the ledger. Use this for a session that has been cleaned. `afk dash` shows the same table for the selected Build section task (`t`).
 - `SESSION` — A session name: reads the session's transcripts now, including its sub-agents, and prints a header (session, task or `no task`, number of calls) and the table. The task id is the first `T<n>.<n>` in `.afk/<session>/description.md`.
 - `--record` — Only with a session name. After printing, adds the session's lines to the ledger. A session that already has lines in the ledger is not added again; the command prints `already recorded` and changes nothing.
 - `--project PATH` — The project to work in. Defaults to the current directory.
