@@ -1,4 +1,4 @@
-// taskstatus.go is the Build tab's "set this task's status" (T7.11): the
+// taskstatus.go is the Build section's "set this task's status" (T7.11): the
 // `s` key (the leader's S until T16.2), the status picker it opens, the one-line step
 // asking for the replacing ids when the choice is superseded, the y/n confirm,
 // and the notice its result becomes.
@@ -55,7 +55,7 @@ const (
 const (
 	// taskStatusNoSeam is the row's reason when the seam is not wired.
 	taskStatusNoSeam = "this dashboard cannot change the ledger"
-	// taskStatusNoTask is the row's reason on a Build tab with no task under
+	// taskStatusNoTask is the row's reason in a Build section with no task under
 	// the cursor (an empty plan, or a plan that cannot be read).
 	taskStatusNoTask = "no task to set"
 	// taskStatusCancelled is n and esc said back, on every step, so the
@@ -66,20 +66,21 @@ const (
 	taskStatusBusy = "A task's status is still being set. Wait for it to finish, then try again."
 	// taskStatusProjectChanged is a y that lands after a project switch: the
 	// confirm named a task in a project the dashboard has left.
-	taskStatusProjectChanged = "The project changed, so nothing was set. Open the Build tab and try again."
+	taskStatusProjectChanged = "The project changed, so nothing was set. Go to the project's Build section and try again."
 	// taskStatusNoAnswer stands in for an empty result text, so the owner is
 	// never left without word of what the change did.
 	taskStatusNoAnswer = "Could not tell whether the task's status changed. Run afk ledger list to see it."
 )
 
-// taskStatusOpenBuildFirst is the row's reason away from the Build tab, or on
-// it with the session list holding the keyboard: the cursor that names the
-// task is drawn only when the right side has the keyboard (buildCursorShown).
-// The key is read from the key table, so the reason cannot name a key that
-// does not give the overview the keyboard; tab then reaches the Build tab,
-// until T16.4 makes Build a section of its own.
+// taskStatusOpenBuildFirst is the row's reason while another section of the
+// project view (or the overview, or another level) has the keyboard: the
+// cursor that names the task is the Build section's, and it acts only while
+// that section has the keyboard (buildSectionFocused). Both keys that reach
+// it are read from the key table, so the reason cannot name a key that does
+// not move there.
 func taskStatusOpenBuildFirst(leader string) string {
-	return "open the Build tab first (" + keyName(leader, levelProject, actionDetails) + ", then tab)"
+	return "go to the Build section first (" + keyName(leader, levelProject, actionSectionBuild) +
+		" or " + keyName(leader, levelProject, actionSectionNext) + ")"
 }
 
 // taskStatusAlreadyNotice is the picker's answer when the current status is
@@ -111,9 +112,9 @@ type taskStatusTarget struct {
 // taskStatusBlockedReason is the row's reason, and the action asks it again
 // when it runs, so the row and the action cannot disagree.
 //
-// The seam comes first: without it opening the Build tab would not help, and
-// the reason must not send the owner there. The task comes last because only
-// on the Build tab with the right side focused is there a cursor to have one.
+// The seam comes first: without it going to the Build section would not
+// help, and the reason must not send the owner there. The task comes last
+// because only in the focused Build section is there a cursor to have one.
 func taskStatusBlockedReason(c leaderConds) string {
 	switch {
 	case !c.canSetTaskStatus:
@@ -139,7 +140,7 @@ func taskStatusConfirmText(id, old, new string, replacedBy []string) string {
 	return taskstatus.ConfirmText(id, old, new, replacedBy)
 }
 
-// openTaskStatus is `s` on the Build tab: the picker for the task
+// openTaskStatus is `s` in the Build section: the picker for the task
 // under the cursor, highlighted on its current status. No file is read and no
 // seam is called.
 //

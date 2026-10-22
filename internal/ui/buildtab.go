@@ -10,17 +10,18 @@ import (
 	"github.com/dphaener/afk/internal/ledger"
 )
 
-// This file is the Build tab: the master plan's tasks with their ledger
-// status, under a short summary of where the build stands. It draws from the
-// snapshot the model already holds (builddata.go) and reads nothing itself.
+// This file is the Build section's content (T16.4; it was the overview's
+// Build tab before): the master plan's tasks with their ledger status, under
+// a short summary of where the build stands. It draws from the snapshot the
+// model already holds (builddata.go) and reads nothing itself.
 //
-// The tab is about the project, not the selected session, so nothing here
-// takes a Session: it reads the same on every row and with no row at all.
-// It only shows. While the right side has the keyboard it draws a cursor on
-// one task row (buildcursor.go), which is where the dashboard points at a
-// task; it still writes nothing. Starting the build is not done from the
-// dashboard at all. Pausing and resuming are, by the `p` key, but
-// not from this file: see buildpause.go.
+// The section is about the project, not the selected session, so its lines
+// are a pure function of the snapshot and two marks: the cursor's row
+// (buildcursor.go), drawn selected while the section has the keyboard, and
+// the selected session's task, drawn as a linked row ending "◂ name"
+// (§3.5). It writes nothing. Starting the build is not done from the
+// dashboard at all. Pausing and resuming are, by the `p` key, but not from
+// this file: see buildpause.go.
 
 // buildColumnGap is the space between two columns of a task row.
 const buildColumnGap = 2
@@ -31,8 +32,7 @@ const buildIDMaxWidth = 12
 
 // hasBuild reports whether the project has a build to show: a snapshot has
 // arrived since the project became active, and it found a master plan or a
-// ledger. It is the one gate for the Build tab's place in the strip and for
-// the `b` key, so the two cannot disagree.
+// ledger. It is the gate for the pause key and for the Build section's rows.
 //
 // It is false until the first read lands and again after a project switch
 // (forgetBuild), which is what keeps the outgoing project's tasks off the
@@ -41,53 +41,41 @@ func (m Model) hasBuild() bool {
 	return m.buildKnown && m.build.HasBuild
 }
 
-// buildPanel is the Build tab's one panel. It ignores ctx.Session on purpose.
-type buildPanel struct{}
-
-func (buildPanel) Title() string { return "Build" }
-
-func (buildPanel) Render(ctx panelContext, width int) []string {
-	if !ctx.BuildCursorShown {
-		return buildTabLinesAt(ctx.Leader, ctx.Build, ctx.PlanStatus, width, -1)
-	}
-	return buildTabLinesWith(ctx.Leader, ctx.Build, ctx.PlanStatus, width, ctx.BuildCursor, ctx.BuildCursorTotal)
+// buildMarks is what the Build section marks on its rows: the cursor's row
+// (cursor, -1 for none), the selected session's task (linked, -1 for none,
+// with linkedTo the session's name) and the short token total the cursor's
+// row ends with when it has room (total, "" for none).
+type buildMarks struct {
+	cursor   int
+	linked   int
+	linkedTo string
+	total    string
 }
 
-// buildTabLines is the Build tab's content at the given width: the summary
-// block, a blank line, then one line per master-plan task. Every line is at
-// most width cells, so the detail pane's soft wrap never folds one and the
-// row count stays one per task.
-//
-// It is a pure function of the snapshot so the whole layout is table-testable
-// without a Model. It is the tab with no cursor, as it is drawn while the
-// session list has the keyboard.
+// noBuildMarks draws the rows with nothing marked.
+var noBuildMarks = buildMarks{cursor: -1, linked: -1}
+
+// buildTabLines is the Build section's content with nothing marked: the
+// summary block, a blank line, then one line per master-plan task. It is the
+// layout's pure core, pinned by the table tests without a Model.
 func buildTabLines(leader string, snap buildview.Snapshot, plan PlanStatus, width int) []string {
-	return buildTabLinesAt(leader, snap, plan, width, -1)
+	return buildSectionLines(leader, snap, plan, width, noBuildMarks)
 }
 
-// buildRowsTop is how many lines of buildTabLinesAt come before the first task
-// row: the summary block and the blank line under it. It is computed from
-// buildSummaryLines, the function that writes those lines, so the model's
-// count of where the cursor's row is (revealBuildCursor) cannot drift from
-// what is drawn.
+// buildRowsTop is how many lines of buildSectionLines come before the first
+// task row: the summary block and the blank line under it. It is computed
+// from buildSummaryLines, the function that writes those lines, so the
+// section's count of where the cursor's row is (buildSectionWindow) cannot
+// drift from what is drawn.
 func buildRowsTop(leader string, snap buildview.Snapshot, plan PlanStatus, width int) int {
 	return len(buildSummaryLines(leader, snap, plan, max(width, 1))) + 1
 }
 
-// buildTabLinesAt is buildTabLines with the cursor on row cursor, or with no
-// cursor when cursor is negative. With a cursor every row is drawn behind a
-// two-cell gutter (buildRowGutter), so the rows do not shift sideways as the
-// cursor moves, and laid out two cells narrower so the columns keep their
-// trim order inside the same width.
-func buildTabLinesAt(leader string, snap buildview.Snapshot, plan PlanStatus, width, cursor int) []string {
-	return buildTabLinesWith(leader, snap, plan, width, cursor, "")
-}
-
-// buildTabLinesWith is buildTabLinesAt with the cursor's row ending in total,
-// the task's short token total, when the row has room for it
-// (buildCursorRowLines). An empty total, or no cursor, draws exactly what
-// buildTabLinesAt draws.
-func buildTabLinesWith(leader string, snap buildview.Snapshot, plan PlanStatus, width, cursor int, total string) []string {
+// buildSectionLines is the Build section's content at the given width with
+// marks: the summary block, a blank line, then one line per task. Every line
+// is exactly width cells or less, one per task, so the section's windowing
+// (buildSectionWindow) can count rows as lines.
+func buildSectionLines(leader string, snap buildview.Snapshot, plan PlanStatus, width int, marks buildMarks) []string {
 	if width < 1 {
 		width = 1
 	}
@@ -102,58 +90,62 @@ func buildTabLinesWith(leader string, snap buildview.Snapshot, plan PlanStatus, 
 		return append(lines, "", theme.dim.Render(truncate("The master plan has no tasks.", width)))
 	}
 	lines = append(lines, "")
-	if cursor < 0 {
-		return append(lines, buildRowLines(snap.Rows, width)...)
-	}
-	return append(lines, buildCursorRowLines(snap.Rows, width, cursor, total)...)
+	return append(lines, buildSectionRowLines(snap.Rows, width, marks)...)
 }
 
 // buildRowGutter is the cells the cursor's gutter takes on the left of every
-// row while the cursor is shown: the marker and a space.
+// row: the marker and a space. Every row has it, marked or not, so the
+// columns do not shift sideways as the cursor moves or the section gains and
+// loses the keyboard.
 const buildRowGutter = 2
 
 // buildCursorMarker is the cursor's glyph. It is the chevron and not the
-// session list's rail (cursorRail) on purpose: the rail is that list's sign
-// that the keyboard is on the left, and the Build tab's cursor is shown only
-// while it is on the right.
+// session list's rail (cursorRail) so the two cursors read apart when both
+// sections are on screen; the selection fill (§3.5) is what says which one
+// has the keyboard.
 const buildCursorMarker = "›"
 
-// buildCursorRowLines is buildRowLines inside a gutter, with the row at
-// cursor marked and painted in the session list's selected-row style.
+// buildSectionRowLines lays the task rows out behind the gutter, with the
+// cursor's row drawn selected and the linked row drawn linked (theme.row:
+// selected outranks linked, so the linked task under the cursor reads as the
+// selection).
 //
-// The rows are laid out at width minus the gutter by buildRowLines itself, so
-// the rule it keeps (the detail goes first, then the title is cut, the id and
-// status always show) holds exactly as it does without a cursor. The selected
-// row goes through spanStyle for the reason padSessionRow does: Render alone
-// would paint the background only up to the first styled cell (the id).
+// The rows are laid out at width minus the gutter by buildRowLayout itself,
+// so the rule it keeps (the detail goes first, then the title is cut, the id
+// and status always show) holds exactly as it does with nothing marked. A
+// linked row ends in "◂ name"; spread gives that the room it needs and cuts
+// the row's text first, because the link is what the row is marked for.
 //
 // total, when not empty, is the cursor's task's short token total (T7.12). It
-// follows the row's content after the usual column gap, and only when the
-// row shows everything it has (its whole id, title and detail) and the total
-// still fits beside them. So the total is the first thing a narrowing tab
-// gives up, before the detail and the title, which buildRowLines then narrows
-// exactly as it would with no total; the row stays one line either way.
-func buildCursorRowLines(rows []buildview.Row, width, cursor int, total string) []string {
+// follows the row's content after the usual column gap, and only when the row
+// shows everything it has (its whole id, title and detail) and the total
+// still fits beside them. So the total is the first thing a narrowing section
+// gives up, before the detail and the title.
+func buildSectionRowLines(rows []buildview.Row, width int, marks buildMarks) []string {
 	innerW := max(width-buildRowGutter, 1)
 	inner, whole := buildRowLayout(rows, innerW)
 	out := make([]string, len(inner))
 	for i, ln := range inner {
-		if i != cursor {
-			out[i] = truncate(strings.Repeat(" ", buildRowGutter)+ln, width)
-			continue
-		}
-		if total != "" && whole[i] {
-			if withTotal := ln + strings.Repeat(" ", buildColumnGap) + theme.dim.Render(total); lipgloss.Width(withTotal) <= innerW {
-				ln = withTotal
+		selected := i == marks.cursor
+		gutter := strings.Repeat(" ", buildRowGutter)
+		if selected {
+			gutter = buildCursorMarker + " "
+			if marks.total != "" && whole[i] {
+				if withTotal := ln + strings.Repeat(" ", buildColumnGap) + theme.dim.Render(marks.total); lipgloss.Width(withTotal) <= innerW {
+					ln = withTotal
+				}
 			}
 		}
-		line := truncate(theme.rowCursor.Render(buildCursorMarker)+" "+ln, width)
-		out[i] = theme.rowSelected.Width(width).Render(spanStyle(line, theme.rowSelected))
+		linkedTo := ""
+		if i == marks.linked {
+			linkedTo = marks.linkedTo
+		}
+		out[i] = theme.row(gutter+ln, width, selected, linkedTo)
 	}
 	return out
 }
 
-// buildSummaryLines is the block above the task rows. Each line is a separate
+// buildSummaryLines is the block above the Build section's task rows. Each line is a separate
 // fact, and a line is left out when its fact does not hold, so a healthy
 // build with an empty inbox is one line. leader is the leader key the inbox
 // line names (the Model's, which config.toml sets).
@@ -239,8 +231,8 @@ func buildRowLines(rows []buildview.Row, width int) []string {
 // buildRowLayout is buildRowLines that also says, row by row, whether the row
 // shows everything it has: its id uncut, its title uncut and its detail when
 // it has one. The cursor's row adds its token total only to a whole row
-// (buildCursorRowLines), which is what makes the total go before the detail
-// and the title as the tab narrows. The answer comes from the same branch
+// (buildSectionRowLines), which is what makes the total go before the detail
+// and the title as the section narrows. The answer comes from the same branch
 // that lays the row out, so it cannot disagree with what is drawn.
 func buildRowLayout(rows []buildview.Row, width int) ([]string, []bool) {
 	idW, statusW, titleW, detailW := 0, 0, 0, 0
@@ -285,7 +277,7 @@ func buildRowLayout(rows []buildview.Row, width int) ([]string, []bool) {
 }
 
 // buildStatusStyle colours a ledger status with styles the theme already has:
-// done is dim (finished work is the least urgent thing on the tab), running
+// done is dim (finished work is the least urgent thing in the section), running
 // and shipping take the session list's live-host colour, parked takes the
 // awaiting flag because it waits on the owner, and failed is error text.
 // Pending and any word this function does not know are left plain, so a new

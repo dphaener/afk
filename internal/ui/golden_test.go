@@ -576,30 +576,69 @@ func TestGoldenInbox(t *testing.T) {
 	})
 }
 
-// TestGoldenBuildTab pins the Build tab at 120×40 over the fixture dashboard,
-// reached the way a user reaches it: the build's data arrives, then `d` and
-// tab to Build (openBuildTab). The
-// notice that key raises is cleared before the frame is taken, because a toast
-// floats over the pane's top corner and would hide the tab strip, which is
-// the part of this frame a layout change is most likely to move.
+// TestGoldenBuildTab pins the project view with its Build section focused at
+// 120×40 over the fixture dashboard, reached the way a user reaches it: the
+// build's data arrives, then `2` (openBuildSection). Any notice is cleared
+// before the frame is taken, because a toast floats over the pane's top
+// corner and would hide the strip.
 func TestGoldenBuildTab(t *testing.T) {
 	m := goldenModel(t, 120, 40)
 	m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
-	m = openBuildTab(t, m)
-	if m.activeDetailTab() != tabBuild || m.focus != focusRight {
-		t.Fatalf("d and tab did not open the Build tab (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
-	}
+	m = openBuildSection(t, m)
 	m.clearStatus()
 	assertGolden(t, "dash-build-120x40", render(m))
 }
 
-// TestGoldenBuildCursor pins the Build tab's task cursor (T7.11) at both
-// sizes, reached the way a user moves it: d and tab, then the arrow keys. At 120×40
-// it is moved two rows down from the current task, so the frame shows the
-// gutter on every row and the selection on a row that is not where the cursor
-// starts. At 80×24 it is sent to the last task with end, the case where the
-// rows are laid out two cells narrower and the cursor's row has to be scrolled
-// into a window that cannot show the whole tab.
+// TestGoldenProjectView pins the project view (§4.2) as it opens, Sessions
+// focused, with the build and the inbox read in. Load-bearing rows:
+//
+//   - dash-project-120x40: the three numbered sections, the group headings,
+//     the read-only pane with the selected session's question in full, and
+//     the selected session's task drawn as a linked row ending "◂ feat-auth"
+//     (the ledger names feat-auth on T1.2). The home screen has no rows here
+//     (the fixture is project-less), so the box stands on the plain ground,
+//     two blank columns each side.
+//   - dash-project-home-120x40: the same box as §3.8's overlay, the screen
+//     less two columns each side, over the dimmed home screen, whose rows
+//     show in the margins.
+//   - dash-project-80x24: below 100 columns one section fills the body, its
+//     strip names all three ("1 Sessions · 2 Build · 3 Inbox"), and there is
+//     no read-only pane.
+func TestGoldenProjectView(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w, h int
+		home bool
+	}{
+		{"dash-project-120x40", 120, 40, false},
+		{"dash-project-home-120x40", 120, 40, true},
+		{"dash-project-80x24", 80, 24, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := goldenModel(t, tc.w, tc.h)
+			if tc.home {
+				m.allProjectsKnown = true
+				m.allProjectsRows = allProjectsFixture()
+			}
+			snap := goldenInbox()
+			snap.Rows[1].Session = "feat-auth"
+			m, _ = update(t, m, buildLoadedMsg{snap: snap, gen: m.projectGen})
+			if s, _ := m.selected(); s.Name != "feat-auth" {
+				t.Fatalf("fixture broken: selected %q, want feat-auth", s.Name)
+			}
+			m.clearStatus()
+			assertGolden(t, tc.name, render(m))
+		})
+	}
+}
+
+// TestGoldenBuildCursor pins the Build section's task cursor (T7.11) at both
+// sizes, reached the way a user moves it: `2`, then the arrow keys. At
+// 120×40 it is moved two rows down from the current task, so the frame shows
+// the gutter on every row and the selection on a row that is not where the
+// cursor starts. At 80×24 it is sent to the last task with end; that width
+// draws the Build section alone (the narrow project view), so the frame pins
+// the cursor there and the section's strip naming all three.
 func TestGoldenBuildCursor(t *testing.T) {
 	cases := []struct {
 		name string
@@ -613,12 +652,12 @@ func TestGoldenBuildCursor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := goldenModel(t, tc.w, tc.h)
 			m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
-			m = openBuildTab(t, m)
+			m = openBuildSection(t, m)
 			for _, k := range tc.keys {
 				m, _ = update(t, m, k)
 			}
-			if !m.buildCursorShown() {
-				t.Fatalf("the cursor is not shown (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
+			if !m.buildCursorOnTask() {
+				t.Fatalf("the cursor is not on a task (section=%v focus=%v)", m.focusedSection(), m.focus)
 			}
 			m.clearStatus()
 			assertGolden(t, tc.name, render(m))
@@ -627,7 +666,7 @@ func TestGoldenBuildCursor(t *testing.T) {
 }
 
 // TestGoldenTaskStatusConfirm pins the "set this task's status" confirm
-// (T7.11) at both sizes, reached the way a person reaches it: d and tab, the
+// (T7.11) at both sizes, reached the way a person reaches it: `2`, the
 // cursor moved to the failed task, s, the highlight moved to pending, and
 // enter. The frame shows the change, what follows from it and the y/n hint;
 // at 80×24 the dialog is narrowest and the consequence has to wrap. The seam
@@ -647,7 +686,7 @@ func TestGoldenTaskStatusConfirm(t *testing.T) {
 				return TaskStatusResult{}
 			}
 			m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
-			m = openBuildTab(t, m)
+			m = openBuildSection(t, m)
 			for m.buildCursorID != "T2.3" {
 				before := m.buildCursorIndex
 				m, _ = update(t, m, keyDown)
@@ -671,11 +710,10 @@ func TestGoldenTaskStatusConfirm(t *testing.T) {
 
 // TestGoldenTaskTokens pins the tokens overlay (T7.12) at both sizes, reached
 // the way a person reaches it: the build read lands and the cursor's task's
-// tokens are read, then d and tab, then t. At 120x40 the box shows the
-// command's full table, cache columns included; at 80x24 the full table does
-// not fit and the compact one is shown. The cursor row behind the box has no
-// room for its short total at either size (the detail pane is narrower than
-// the terminal), so it is drawn without one. The seam answers the fixture
+// tokens are read, then `2`, then t. The box is the task's details: the
+// task's id, status, title and detail over the tokens. At 120x40 the box shows
+// the command's full table, cache columns included; at 80x24 the full table
+// does not fit and the compact one is shown. The seam answers the fixture
 // record and is called only by the read the build load issued.
 func TestGoldenTaskTokens(t *testing.T) {
 	for _, size := range []struct {
@@ -690,7 +728,7 @@ func TestGoldenTaskTokens(t *testing.T) {
 			m.deps.LoadTaskTokens = func(root, task string) TaskTokens { return tokensFixture(task) }
 			m, cmd := update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
 			m, _ = update(t, m, runTokensCmd(t, cmd))
-			m = openBuildTab(t, m)
+			m = openBuildSection(t, m)
 			m = pressKey(t, m, keyRune('t'))
 			if !m.taskTokensOpen {
 				t.Fatal("t did not open the overlay")

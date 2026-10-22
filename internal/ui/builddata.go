@@ -123,9 +123,10 @@ func (m Model) applyBuildLoaded(msg buildLoadedMsg) Model {
 	m.build = msg.snap
 	m.buildKnown = true
 	// The cursor follows its task across the read, or lands next to where
-	// the task was (landBuildCursor). syncDetailViewport, below or in
-	// rebuildListItems, then keeps its row on screen.
+	// the task was (landBuildCursor); the Build section scrolls round it when
+	// it is drawn. The Inbox section's cursor follows its item the same way.
 	m.buildCursorID, m.buildCursorIndex = landBuildCursor(m.buildCursorID, m.buildCursorIndex, msg.snap.Current, msg.snap.Rows)
+	m.inboxCursorID, m.inboxCursorIndex = landInboxCursor(m.inboxCursorID, m.inboxCursorIndex, openInboxItems(msg.snap.Items))
 	// An open inbox overlay follows the files: it takes the new items here,
 	// keeping its cursor and anything typed (refreshInbox).
 	m.refreshInbox()
@@ -141,12 +142,7 @@ func (m Model) applyBuildLoaded(msg buildLoadedMsg) Model {
 	// every two-second tick for nothing would be work with no effect.
 	if m.stampUsagePauses() {
 		m.rebuildListItems(m.listSelection())
-		return m
 	}
-	// The Build tab's lines come from the snapshot, so the viewport the scroll
-	// keys move is re-seeded here, as rebuildListItems does for a session
-	// load. Without it the clamp ceiling would be the previous snapshot's.
-	m.syncDetailViewport()
 	return m
 }
 
@@ -164,6 +160,10 @@ func (m *Model) forgetBuild() {
 	// The cursor's task belongs to the outgoing project's plan. With no id the
 	// incoming project's first read starts it on that build's current task.
 	m.buildCursorID, m.buildCursorIndex = "", 0
+	// The project view opens on its Sessions section in every project, and
+	// the inbox cursor's item is the outgoing project's.
+	m.section = sectionSessions
+	m.inboxCursorID, m.inboxCursorIndex = "", 0
 	if m.buildRefreshing != nil {
 		m.buildRefreshing = new(atomic.Bool)
 	}

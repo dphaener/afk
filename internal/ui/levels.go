@@ -24,8 +24,9 @@ type level int
 const (
 	// levelAllProjects is the home screen: every project on one page.
 	levelAllProjects level = iota
-	// levelProject is one project: its sessions with the overview beside
-	// them (until T16.4 redraws it).
+	// levelProject is one project: the project view's three sections,
+	// Sessions, Build and Inbox (T16.4), or the session list beside the
+	// overview while `d` has given the overview the keyboard.
 	levelProject
 	// levelAgent is one session's agent, drawn as a pane over the dimmed
 	// Project. Every key but the leader goes to the agent here.

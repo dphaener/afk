@@ -159,7 +159,7 @@ const (
 	// and nothing is removed without an explicit y.
 	inputConfirmProjectRemove
 	// inputPickTaskStatus, inputTaskStatusReplacedBy and
-	// inputConfirmTaskStatus are the Build tab's "set this task's status"
+	// inputConfirmTaskStatus are the Build section's "set this task's status"
 	// (T7.11, taskstatus.go): the status picker, the one-line step asking for
 	// the replacing ids when the choice is superseded, and the y/n confirm.
 	// The picker has the provider picker's shape and the confirm the remove
@@ -170,8 +170,9 @@ const (
 	inputTaskStatusReplacedBy
 	inputConfirmTaskStatus
 	// inputTaskTokens is the tokens overlay (Model.taskTokensOpen,
-	// tasktokensoverlay.go, T7.12): the Build tab cursor's task as `afk
-	// tokens` prints it, in a scrollable box. It is the plan check's kind of
+	// tasktokensoverlay.go, T7.12): the Build section cursor's task, its
+	// status, title and detail over its tokens as `afk tokens` prints them,
+	// in a scrollable box (the task's details until T16.5). It is the plan check's kind of
 	// overlay, not a footer modal: it asks nothing, and a create's failure
 	// report must still outrank it.
 	inputTaskTokens
@@ -444,9 +445,9 @@ type modeLayer struct {
 //     and both right-side focuses so a pane that arrives focused under it
 //     cannot take the scroll keys.
 //   - The tokens overlay (T7.12) sits directly below the check-the-plan
-//     overlay, for the same reasons: it is opened only by `t` on the Build
-//     tab (or when a read it waited on lands, and then only while the Build
-//     tab has the keyboard), so no other overlay is up when it appears.
+//     overlay, for the same reasons: it is opened only by `t` or enter in the
+//     Build section (or when a read it waited on lands, and then only while
+//     the Build section has the keyboard), so no other overlay is up when it appears.
 //   - The all-projects screen sits directly below the tokens overlay. It is
 //     the All projects level, opened by esc from the session list, so no
 //     overlay is up when it appears. It outranks the form and
@@ -630,17 +631,29 @@ const (
 	actionProjectAdd
 	actionProjectRemove
 	// actionTaskStatus is "set this task's status" (T7.11, `s`): it opens
-	// the status picker for the Build tab's cursor row (taskstatus.go). It
-	// runs only on the Build tab with the right side focused.
+	// the status picker for the Build section's cursor row (taskstatus.go).
+	// It runs only while the project view's Build section has the keyboard.
 	actionTaskStatus
 	// actionTaskTokens is "show this task's tokens" (T7.12, `t`): it opens
-	// the tokens overlay for the Build tab's cursor row (tasktokens.go). It
-	// runs only on the Build tab with the right side focused.
+	// the task's details, its tokens under its status, title and detail, for
+	// the Build section's cursor row (tasktokens.go). It runs only while the
+	// Build section has the keyboard.
 	actionTaskTokens
 	// actionRefreshUsage is "read usage" (T7.13, `R`): it takes a fresh
 	// usage reading through Deps.RefreshUsage, off the screen-drawing path,
 	// and the header shows it when it lands (usagerefresh.go).
 	actionRefreshUsage
+	// The project view's section keys (T16.4, projectview.go nextSection):
+	// tab and shift+tab step through the three sections with wrap, and 1, 2
+	// and 3 go straight to Sessions, Build and Inbox. They are actions of
+	// their own, not one action reading its key, because a `:` row runs an
+	// action with no key pressed (runLevelAction), and each must still know
+	// where it goes.
+	actionSectionNext
+	actionSectionPrev
+	actionSectionSessions
+	actionSectionBuild
+	actionSectionInbox
 
 	// Modal answers.
 	actionConfirm      // y/Y in the two y/n confirmations; enter in the provider picker
@@ -722,6 +735,11 @@ var actionNames = map[modeAction]string{
 	actionTaskStatus:          "task-status",
 	actionTaskTokens:          "task-tokens",
 	actionRefreshUsage:        "refresh-usage",
+	actionSectionNext:         "section-next",
+	actionSectionPrev:         "section-prev",
+	actionSectionSessions:     "section-sessions",
+	actionSectionBuild:        "section-build",
+	actionSectionInbox:        "section-inbox",
 	actionConfirm:             "confirm",
 	actionDeny:                "deny",
 	actionCancel:              "cancel",
@@ -842,12 +860,14 @@ type modeSpec struct {
 	keys modeKeyMap
 }
 
-// The detail pane's tab keys, bound only in detail mode: from the list they
-// would re-tab the right pane, which list focus must never control (plan
-// objective 2). One binding carries all six digits, so help lists "jump to
-// tab" as one row. Six is the longest the strip gets: the five session tabs
-// in a git-spice repo plus Build (visibleDetailTabs). A digit past the last
-// visible tab does nothing (switchDetailTab).
+// The detail pane's tab keys, bound only in detail mode: from the list the
+// same keys change the project view's section (the key table's rows at
+// Project), and levelKey hands them to this mode only while the overview has
+// the keyboard. One binding carries all five digits, so help lists "jump to
+// tab" as one row. Five is the longest the strip gets: the five session tabs
+// in a git-spice repo (visibleDetailTabs). Build was a sixth until T16.4 made
+// it a section of the project view. A digit past the last visible tab does
+// nothing (switchDetailTab).
 var (
 	detailTabNextKey = key.NewBinding(
 		key.WithKeys("tab"),
@@ -858,8 +878,8 @@ var (
 		key.WithHelp("shift+tab", "previous tab"),
 	)
 	detailTabJumpKey = key.NewBinding(
-		key.WithKeys("1", "2", "3", "4", "5", "6"),
-		key.WithHelp("1-6", "jump to tab"),
+		key.WithKeys("1", "2", "3", "4", "5"),
+		key.WithHelp("1-5", "jump to tab"),
 	)
 )
 

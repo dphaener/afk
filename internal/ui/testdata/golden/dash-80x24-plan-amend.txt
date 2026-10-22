@@ -1,24 +1,24 @@
  afk Dashboard                                                                  
-╭────────────────────────────╮╭────────────────────────────────────────────────╮
-│ Sessions                   ││ feat-auth                                      │
-│     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff      │
-│                            ││ ────────────────────────────────────────────── │
-│ ▌ ◐ feat-auth      EXEC  ● ││ feat-auth  feat-auth → main                    │
-│   ◐ Billing v2     REVW    ││ ◐ executing  loop 3  updated 2026-07-10T00:00… │
-│   ◐ fix-login-red… PLAN  ● ││                                                │
-│   ✓ feat-search    DONE    ││ ● Awaiting input · press enter to answer       │
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                                  esc · all projects │
+│                                                                              │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ 1 Sessions · 2 Build · 3 Inbox                                         6 │ │
+│ │  ▾ Needs you                                                          3  │ │
+│ │ ▌ ◐ feat-auth           executing     3/7                       asks you │ │
+│ │   ◐ fix-login-redirect  planning        –                       asks you │ │
 │ ╭─ Amend the plan ─────────────────────────────────────────────────────────╮ │
 │ │                                                                          │ │
 │ │ What do you want to change? Say it in a sentence.                        │ │
 │ │ > Add a search page.                                                     │ │
 │ │                                                                          │ │
 │ ╰───────────────────────────────────────────── enter: start · esc: cancel ─╯ │
-│                            ││   ○ W2.T1 Migrate legacy sessions              │
-│                            ││   ○ W2.T2 Add logout endpoint                  │
-│                            ││   ○ W2.T3 Rotate refresh tokens                │
-│                            ││   ○ W2.T4 Remove legacy table                  │
-│                            ││                                                │
-│                            ││ Stack     main › feat-auth                     │
-│                            ││                                             0% │
-╰────────────────────────────╯╰──────────── enter: open · c: clean · l: label ─╯
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│  tab/1-3  section   j/k  move   enter  open   d  details   n  new session    │
+╰──────────────────────────────────────────────────────────────────────────────╯
 enter start · esc cancel · ctrl+g release mouse · ctrl+c quit                   

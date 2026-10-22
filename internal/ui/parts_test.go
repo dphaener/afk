@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/palette"
@@ -241,6 +242,33 @@ func TestPartPane(t *testing.T) {
 		got := s.section(2, "Build", "", "", 20, 4, false)
 		if !strings.Contains(xansi.Strip(got), " 2 Build ") {
 			t.Errorf("section strip = %q", xansi.Strip(got))
+		}
+	})
+	t.Run("narrow section names all three", func(t *testing.T) {
+		names := []string{"Sessions", "Build", "Inbox"}
+		for _, focused := range []bool{false, true} {
+			got := s.sectionTabs(names, 1, "1/7", "row", 50, 4, focused)
+			lines := strings.Split(xansi.Strip(got), "\n")
+			if len(lines) != 4 || lines[1] != "│ 1 Sessions · 2 Build · 3 Inbox             1/7 │" {
+				t.Errorf("focused=%v: narrow section =\n%s", focused, strings.Join(lines, "\n"))
+			}
+			// The shown section is the bold one; the others are not.
+			if c := cellOf(t, got, 15, 1); c.Style.Attrs&uv.AttrBold == 0 {
+				t.Errorf("focused=%v: the shown name is not bold", focused)
+			}
+			if c := cellOf(t, got, 2, 1); c.Style.Attrs&uv.AttrBold != 0 {
+				t.Errorf("focused=%v: a name not shown is bold", focused)
+			}
+			if !focused {
+				if c := cellOf(t, got, 2, 1); hexOf(c.Style.Fg) != palette.Tide.Muted {
+					t.Errorf("a name not shown is %s, want muted", hexOf(c.Style.Fg))
+				}
+			}
+		}
+		// Too narrow for the names and the context: the context goes first.
+		got := xansi.Strip(s.sectionTabs(names, 0, "1/7", "", 34, 3, false))
+		if line := strings.Split(got, "\n")[1]; line != "│ 1 Sessions · 2 Build · 3 Inbox │" {
+			t.Errorf("cut strip = %q", line)
 		}
 	})
 	t.Run("read-only", func(t *testing.T) {

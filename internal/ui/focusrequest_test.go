@@ -860,9 +860,11 @@ func TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview(t *testing.T) {
 		return session.HostProcess{PID: 4242}, nil
 	}
 
-	// The cursor sits on a RUNNING row, so this move genuinely arms a preview —
-	// the live timer the click has to invalidate.
-	m, armed := update(t, m, keyDown)
+	// The move lands on a RUNNING row, so it genuinely arms a preview — the
+	// live timer the click has to invalidate. The list is kept in name order
+	// inside a group (T16.4), so other is above target and the move is up.
+	m.selectSessionIndex(namedIndex(t, m, "target"))
+	m, armed := update(t, m, keyUp)
 	if armed == nil {
 		t.Fatalf("setup: the move onto a running row must arm a preview")
 	}

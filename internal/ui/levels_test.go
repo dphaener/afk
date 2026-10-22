@@ -157,12 +157,13 @@ func TestDecideKey(t *testing.T) {
 		{"n", doRun(actionPlanNew), doRun(actionNewSession), doClose},
 		{"+", doRun(actionProjectAdd), doNothing, doClose},
 		{"-", doRun(actionProjectRemove), doNothing, doClose},
-		// Sections and Details tabs belong to T16.4 and T16.5's surfaces.
-		{"tab", doNothing, doNothing, doClose},
-		{"shift+tab", doNothing, doNothing, doClose},
-		{"1", doNothing, doNothing, doClose},
-		{"2", doNothing, doNothing, doClose},
-		{"3", doNothing, doNothing, doClose},
+		// tab, shift+tab and 1–3 change the project view's section (T16.4);
+		// 4 and 5 are the Details tabs' (T16.5's surface) and no key here.
+		{"tab", doNothing, doRun(actionSectionNext), doClose},
+		{"shift+tab", doNothing, doRun(actionSectionPrev), doClose},
+		{"1", doNothing, doRun(actionSectionSessions), doClose},
+		{"2", doNothing, doRun(actionSectionBuild), doClose},
+		{"3", doNothing, doRun(actionSectionInbox), doClose},
 		{"4", doNothing, doNothing, doClose},
 		{"5", doNothing, doNothing, doClose},
 		{"o", doNothing, doRun(actionScratch), doClose},

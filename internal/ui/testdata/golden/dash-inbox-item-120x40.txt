@@ -1,40 +1,40 @@
  afk Dashboard                                                                            inbox 3 · 2 blocking  i: inbox
-╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
-│ Sessions                                  ││ feat-auth                                                               │
-│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff   Build       tab/1-6: switch │
-│                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
-│   ◐ Billing v2          REVIEWING   7/7   ││ ◐ executing  loop 3  updated 2026-07-10T00:00:00Z  ◐ host running       │
-│   ◐ fix-login-redirect  PLANNING      – ● ││                                                                         │
-│   ✓ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
-│   ◐ scratch-1           SCRATCH       –   ││                                                                         │
-│   ✕ old-migration       BROKEN        –   ││ Progress  █████████░░░░░░░░░░░ 3/7                                      │
-│               ╭─ Inbox · k7m2pq ─────────────────────────────────────────────────────────────────────╮               │
-│               │ Drop the legacy_sessions table?                                                      │               │
-│               │ question · T2.2 · session feat-auth · raised 3 hours ago · the task waits for your   │               │
-│               │ answer                                                                               │               │
-│               │                                                                                      │               │
-│               │ The migration in T2.2 removes legacy_sessions. Two reports in admin/ still read it.  │               │
-│               │                                                                                      │               │
-│               │ Dropping it now breaks those reports until T3.1 moves them to the new table.         │               │
-│               │                                                                                      │               │
-│               │ Options                                                                              │               │
-│               │   1. Drop it now and fix the reports in T3.1                                         │               │
-│               │   2. Keep it for one release (recommended)                                           │               │
-│               │   3. Leave it and close T2.2                                                         │pping          │
-│               │                                                                                      │               │
-│               │ type an answer, or a number to pick an option                                        │               │
-│               │ > 2                                                                                  │               │
-│               ╰──────────────────────────────────────────────────────────────────────────────────────╯               │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────────────────────────── enter: open · c: clean · l: label ─╯
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Sessions                                                                                      esc · all projects │  
+  │  1 of 7 tasks done  ·  build paused  ·  3 open · 2 blocking in inbox  ·  1 pull request(s) open                  │  
+  │ ╭────────────────────────────────────────────────╮ ╭───────────────────────────────────────────────────────────╮ │  
+  │ │ 1 Sessions                                   6 │ │ 2 Build                                               1/7 │ │  
+  │ │  ▾ Needs you                                3  │ │ 1/7 done · T1.2: executing                                │ │  
+  │ │ ▌ ◐ feat-auth       executing     3/7 asks you │ │ paused: p or afk resume starts it again                   │ │  
+  │ │   ◐ fix-login-red…  planning        – asks you │ │ 2 items need you · i: inbox                               │ │  
+  │ │   ✕ old-migration   broken          –          │ │                                                           │ │  
+  │ │  ▾ Working                                  2  │ │   T1.1  done      Session model  PR #12 · 4c30e4a         │ │  
+  │ │   ◐ Billin╭─ Inbox · k7m2pq ─────────────────────────────────────────────────────────────────────╮executing  │ │  
+  │ │   ◐ scratc│ Drop the legacy_sessions table?                                                      │PR #14     │ │  
+  │ │  ▾ Done   │ question · T2.2 · session feat-auth · raised 3 hours ago · the task waits for your   │ou: q-3    │ │  
+  │ │   ✓ feat-s│ answer                                                                               │           │ │  
+  │ │           │                                                                                      │1          │ │  
+  │ │           │ The migration in T2.2 removes legacy_sessions. Two reports in admin/ still read it.  │           │ │  
+  │ │           │                                                                                      │           │ │  
+  │ │           │ Dropping it now breaks those reports until T3.1 moves them to the new table.         │           │ │  
+  │ │           │                                                                                      │           │ │  
+  │ ╰───────────│ Options                                                                              │           │ │  
+  │ ╭───────────│   1. Drop it now and fix the reports in T3.1                                         │           │ │  
+  │ │ feat-auth │   2. Keep it for one release (recommended)                                           │           │ │  
+  │ │───────────│   3. Leave it and close T2.2                                                         │           │ │  
+  │ │ branch  fe│                                                                                      │           │ │  
+  │ │ phase   ex│ type an answer, or a number to pick an option                                        │           │ │  
+  │ │ need    Dr│ > 2                                                                                  │           │ │  
+  │ │         mi╰──────────────────────────────────────────────────────────────────────────────────────╯           │ │  
+  │ │         legacy_sessions. Two reports in admin/ │ │                                                           │ │  
+  │ │         still read it.                         │ │                                                           │ │  
+  │ │                                                │ ╰───────────────────────────────────────────────────────────╯ │  
+  │ │         Dropping it now breaks those reports   │ ╭───────────────────────────────────────────────────────────╮ │  
+  │ │         until T3.1 moves them to the new       │ │ 3 Inbox                                            3 open │ │  
+  │ │         table.                                 │ │ ! k7m2pq  question  T2.2  Drop the legacy_sessions table? │ │  
+  │ │ diff    +412/-88 · 9 file(s) vs main           │ │ ! r4x9wd  failure   T2.3  Login redirect failed its chec… │ │  
+  │ │ host    running                                │ │   b3n8ht  notice    T3.1  Used the staging key for the s… │ │  
+  │ ╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────╯ │  
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 enter send answer · esc clear, then back · pgup scroll up · pgdn scroll down · ctrl+g close inbox                       

@@ -1,40 +1,40 @@
  afk Dashboard                                                                                                          
-╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
-│ Sessions                                  ││ feat-auth                                                               │
-│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
-│                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ feat-auth  feat-auth → main                                             │
-│   ◐ Billing v2          REVIEWING   7/7   ││ ◐ executing  loop 3  updated 2026-07-10T00:00:00Z  ◐ host running       │
-│   ◐ fix-login-redirect  PLANNING      – ● ││                                                                         │
-│   ✓ feat-search         DONE        5/5   ││ ● Awaiting input · press enter to answer                                │
-│   ◐ scratch-1           SCRATCH       –   ││                                                                         │
-│   ✕ old-migration       BROKEN        –   ││ Progress  █████████░░░░░░░░░░░ 3/7                                      │
-│                                           ││ Diff      +412/-88 · 9 file(s) vs main                                  │
-│                                           ││ Verdict   — not reviewed yet                                            │
-│                                           ││                                                                         │
-│                                           ││ Ready (4)                                                               │
-│                                           ││   ○ W2.T1 Migrate legacy sessions                                       │
-│                                           ││   ○ W2.T2 Add logout endpoint                                           │
-│                     ╭─ Clean session ──────────────────────────────────────────────────────────╮                     │
-│                     │                                                                          │                     │
-│                     │ Clean session "feat-auth" (phase: executing) — branch not merged to main │                     │
-│                     │ Worktree goes; archive kept.                                             │                     │
-│                     │                                                                          │                     │
-│                     ╰─────────────────────────── y: clean · d: +delete branch · n/esc: cancel ─╯                     │
-│                                           ││   legacy_sessions has no FK to users — confirm before dropping          │
-│                                           ││   rate limiter test flaky under -race                                   │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────────────────────────── enter: open · c: clean · l: label ─╯
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Sessions                                                                                      esc · all projects │  
+  │                                                                                                                  │  
+  │ ╭────────────────────────────────────────────────╮ ╭───────────────────────────────────────────────────────────╮ │  
+  │ │ 1 Sessions                                   6 │ │ 2 Build                                                   │ │  
+  │ │  ▾ Needs you                                3  │ │ Reading the build…                                        │ │  
+  │ │ ▌ ◐ feat-auth       executing     3/7 asks you │ │                                                           │ │  
+  │ │   ◐ fix-login-red…  planning        – asks you │ │                                                           │ │  
+  │ │   ✕ old-migration   broken          –          │ │                                                           │ │  
+  │ │  ▾ Working                                  2  │ │                                                           │ │  
+  │ │   ◐ Billing v2      reviewing     7/7  open it │ │                                                           │ │  
+  │ │   ◐ scratch-1       one-off         –  open it │ │                                                           │ │  
+  │ │  ▾ Done                                     1  │ │                                                           │ │  
+  │ │   ✓ feat-search     done          5/5          │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                 ╭─ Clean session ──────────────────────────────────────────────────────────╮                 │ │  
+  │ │                 │                                                                          │                 │ │  
+  │ │                 │ Clean session "feat-auth" (phase: executing) — branch not merged to main │                 │ │  
+  │ │                 │ Worktree goes; archive kept.                                             │                 │ │  
+  │ │                 │                                                                          │                 │ │  
+  │ │                 ╰─────────────────────────── y: clean · d: +delete branch · n/esc: cancel ─╯                 │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ ╰────────────────────────────────────────────────╯ │                                                           │ │  
+  │ ╭────────────────────────────────────────────────╮ │                                                           │ │  
+  │ │ feat-auth                                      │ │                                                           │ │  
+  │ │────────────────────────────────────────────────│ │                                                           │ │  
+  │ │ branch  feat-auth                              │ ╰───────────────────────────────────────────────────────────╯ │  
+  │ │ phase   executing · loop 3                     │ ╭───────────────────────────────────────────────────────────╮ │  
+  │ │ diff    +412/-88 · 9 file(s) vs main           │ │ 3 Inbox                                                   │ │  
+  │ │ host    running                                │ │ Reading the inbox…                                        │ │  
+  │ ╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────╯ │  
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 y clean · d +delete branch · d delete anyway · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit               

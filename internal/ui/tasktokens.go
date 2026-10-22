@@ -1,4 +1,4 @@
-// tasktokens.go is how the Build tab learns how many tokens the task under its
+// tasktokens.go is how the Build section learns how many tokens the task under its
 // cursor used (T7.12): the record type the root package fills in, the read
 // issued on the refresh tick and when the cursor lands on another task, and
 // the `t` key (the leader's T until T16.2) that opens the record in an overlay
@@ -64,7 +64,7 @@ type TaskTokens struct {
 const (
 	// taskTokensNoSeam is the row's reason when the seam is not wired.
 	taskTokensNoSeam = "this dashboard cannot read the token ledger"
-	// taskTokensNoTask is the row's reason on a Build tab with no task under
+	// taskTokensNoTask is the row's reason in a Build section with no task under
 	// the cursor (an empty plan, or a plan that cannot be read).
 	taskTokensNoTask = "no task selected"
 	// taskTokensNoneText is what the overlay says under "Task <id>" for a
@@ -86,8 +86,8 @@ type taskTokensLoadedMsg struct {
 // taskTokensBlockedReason is the row's reason, and the action asks it again
 // when it runs, so the row and the action cannot disagree. The order is
 // taskStatusBlockedReason's, for the same reasons: the seam first, because
-// without it opening the Build tab would not help, and the task last, because
-// only on the Build tab with the right side focused is there a cursor.
+// without it going to the Build section would not help, and the task last,
+// because only in the focused Build section is there a cursor.
 func taskTokensBlockedReason(c leaderConds) string {
 	switch {
 	case !c.canLoadTaskTokens:
@@ -100,7 +100,7 @@ func taskTokensBlockedReason(c leaderConds) string {
 	return ""
 }
 
-// taskTokensCmd reads the token record of the task under the Build tab's
+// taskTokensCmd reads the token record of the task under the Build section's
 // cursor. It returns nil with no seam, no build root (no snapshot yet, or
 // none since a project switch) or no cursor task, so an unwired dashboard
 // issues nothing.
@@ -148,7 +148,8 @@ func (m Model) taskTokensCmd() tea.Cmd {
 //
 // A pending open (the action ran before the record was held) opens here when
 // this is its task and the owner is still where the action was run: the Build
-// tab with the right side focused and nothing else over it. Otherwise it is
+// section with the keyboard and nothing else over it (no overlay, no modal:
+// the input mode is still the project view's own). Otherwise it is
 // dropped, since an overlay appearing over whatever the owner moved on to
 // would take the keyboard from them.
 func (m Model) applyTaskTokensLoaded(msg taskTokensLoadedMsg) (tea.Model, tea.Cmd) {
@@ -166,12 +167,9 @@ func (m Model) applyTaskTokensLoaded(msg taskTokensLoadedMsg) (tea.Model, tea.Cm
 	pending := m.taskTokensPending
 	m.taskTokensPending = ""
 	if pending == msg.task && taskTokensBlockedReason(m.leaderConditions()) == "" &&
-		activeInputMode(m.modeSnapshot()) == inputDetail {
+		activeInputMode(m.modeSnapshot()) == inputNormal {
 		m.openTaskTokensOverlay()
 	}
-	// The cursor's row reads its total from the record, so the viewport the
-	// scroll keys move is re-seeded, as applyBuildLoaded does.
-	m.syncDetailViewport()
 	return m, nil
 }
 
@@ -193,14 +191,14 @@ func (m *Model) forgetTaskTokens() {
 // "" with no cursor drawn, no record for this task yet, nothing recorded, or
 // a ledger that could not be read, and the row then shows no total.
 func (m Model) buildCursorTotal() string {
-	if !m.buildCursorShown() || m.buildCursorID == "" || m.taskTokensID != m.buildCursorID ||
+	if !m.buildCursorOnTask() || m.buildCursorID == "" || m.taskTokensID != m.buildCursorID ||
 		m.taskTokens.State != TaskTokensRecorded {
 		return ""
 	}
 	return m.taskTokens.Short
 }
 
-// openTaskTokens is `t` on the Build tab: the overlay for the task
+// openTaskTokens is `t` in the Build section: the task's details overlay for the task
 // under the cursor. With the record already held (the refresh tick read it)
 // it opens at once and reads nothing. Otherwise it reads now and opens when
 // that task's record lands (applyTaskTokensLoaded); the seam is still only

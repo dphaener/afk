@@ -344,7 +344,7 @@ type Deps struct {
 	// LoadPlanStatus reads the planning session's state and the plan checker's
 	// result for the project whose folder is repo (a linked worktree is
 	// resolved to its main checkout by the loader, because .afk/plan and the
-	// master plan live there). It exists so the Build tab and the master-plan
+	// master plan live there). It exists so the Build section and the master-plan
 	// overview can say what `afk plan status` and `afk plan lint` would, and so
 	// the approve action can tell a new plan at review from anything else. It
 	// is called only from inside a tea.Cmd, never from Update or View.
@@ -426,7 +426,7 @@ type Deps struct {
 	// It reads only the token ledger. It never reads a transcript and never
 	// records tokens, so the dashboard cannot add to the ledger it shows;
 	// recording stays `afk tokens --record`. It is called on the refresh tick
-	// and when the Build tab's cursor lands on another task, and only inside
+	// and when the Build section's cursor lands on another task, and only inside
 	// a tea.Cmd (tasktokens.go), never from Update or View.
 	//
 	// It has NO default, for LoadBuild's reason: it reads the real
@@ -1247,13 +1247,30 @@ type Model struct {
 	build      buildview.Snapshot
 	buildKnown bool
 
-	// buildCursorID and buildCursorIndex are the Build tab's cursor: the task
-	// it is on and that task's row. The id is what the cursor follows across
-	// reads; the index is where it lands when the id has left the list
+	// buildCursorID and buildCursorIndex are the Build section's cursor: the
+	// task it is on and that task's row. The id is what the cursor follows
+	// across reads; the index is where it lands when the id has left the list
 	// (landBuildCursor). Both are re-landed on every build read and cleared
 	// with the snapshot on a project switch (forgetBuild).
 	buildCursorID    string
 	buildCursorIndex int
+
+	// section is the project view's focused section (T16.4, projectview.go):
+	// Sessions, Build or Inbox. The zero value reads as Sessions
+	// (focusedSection), so a Model built as a bare literal starts where New
+	// starts it. It is a field beside focus rather than a new focus value: the
+	// level (levels.go) and the input mode are derived from focus and view,
+	// and a third focus value would have to be taught to every one of their
+	// call sites for a choice that only the Project screen reads. It goes
+	// back to Sessions on a project switch (forgetBuild).
+	section projectSection
+
+	// inboxCursorID and inboxCursorIndex are the Inbox section's cursor over
+	// the open items, kept by id for the reason the Build cursor is: the
+	// inbox is read again every two seconds and an item can be answered from
+	// the web page between two reads (landInboxCursor).
+	inboxCursorID    string
+	inboxCursorIndex int
 
 	// buildRefreshing keeps one slow build read from being stacked on itself
 	// by the refresh ticker, the way stackRefreshing does for the stack. It is
@@ -1269,7 +1286,7 @@ type Model struct {
 	planStatusRefreshing *atomic.Bool
 
 	// taskTokens is the token record Deps.LoadTaskTokens last returned for
-	// the Build tab cursor's task, and taskTokensID the task it is for ("" when
+	// the Build section cursor's task, and taskTokensID the task it is for ("" when
 	// none is held). Only one is held: only the cursor's row shows a total.
 	// taskTokensPending is the task "show this task's tokens" is waiting on
 	// when it ran before the record was held, and taskTokensLoading the
@@ -1319,7 +1336,7 @@ type Model struct {
 	projectAddNote   string
 	projectRemoveRow projectrows.Row
 
-	// The Build tab's "set this task's status" (T7.11, taskstatus.go).
+	// The Build section's "set this task's status" (T7.11, taskstatus.go).
 	// taskStatus is a copy of the cursor's task taken when the picker
 	// opened, so y changes exactly the task the dialog names whatever the
 	// two-second build read does to the rows meanwhile. taskStatusPick is the
@@ -3214,13 +3231,14 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 //     the rest. A click outside the box does NOT leave the Agent: the way out
 //     is the leader then esc, and a stray click beside the box taking the
 //     keyboard away from the agent would be worse than one that does nothing.
-//   - Project with the list focused: nothing reaches the right side. Wheel,
-//     motion and release events over it are dropped. A left click on the
-//     overview is the pointer form of `d` (showDetails): the overview is what
-//     is drawn there since the Agent became a level of its own (W3.T1 of
-//     T16.2), so a click on it gives it the keyboard rather than opening an
-//     agent the click never pointed at.
-//   - Project with the overview focused: a click in the list region moves
+//   - Project with the project view drawn (the keyboard on its sections): a
+//     left click on a section focuses it and selects the row clicked
+//     (projectClick); a wheel notch moves the focused section's selection
+//     (projectWheel). Nothing reaches a pane, and a click opens nothing:
+//     enter does. Before T16.4 a click on the right side was `d`; the right
+//     side is now the Build and Inbox sections, so that is gone (A12).
+//   - Project with the overview `d` opened focused: the session list is
+//     drawn beside it as before T16.4, and a click in the list region moves
 //     focus back to the list; the list has no mouse behaviour of its own, so
 //     that is the whole effect. Other events are dropped by routeMouse, which
 //     forwards only to a drawn pane.
@@ -3249,20 +3267,23 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	click, isClick := msg.(tea.MouseClickMsg)
-	leftClick := isClick && click.Mouse().Button == tea.MouseLeft
 
 	if m.focus == focusList {
-		if !leftClick {
+		// The empty state stands where the project view would be when there
+		// is no project; it has nothing to click.
+		if !m.hasActiveProject() {
 			return m, nil
 		}
-		x, y := click.Mouse().X, click.Mouse().Y
-		if _, inRight := m.mouseRegion(x, y); inRight {
-			return m.showDetails()
+		if isClick && click.Mouse().Button == tea.MouseLeft {
+			return m.projectClick(click.Mouse().X, click.Mouse().Y)
+		}
+		if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+			return m.projectWheel(wheel.Mouse().Button)
 		}
 		return m, nil
 	}
 
-	// focus=right.
+	// focus=right: the overview `d` opened, beside the session list.
 	if isClick {
 		x, y := click.Mouse().X, click.Mouse().Y
 		if inList, _ := m.mouseRegion(x, y); inList {
@@ -3276,10 +3297,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// mouseRegion classifies a screen cell against the body's two columns: the
-// session list (the sidebar's rendered width) and the right side (everything
-// right of it), both bounded vertically by the body rows between the header
-// and the footer. A cell in the header or footer is in neither.
+// mouseRegion classifies a screen cell against the body's two columns while
+// the overview `d` opened is drawn beside the session list: the session list
+// (the sidebar's rendered width) and the right side (everything right of it),
+// both bounded vertically by the body rows between the header and the footer.
+// A cell in the header or footer is in neither. The project view has its own
+// regions, its sections (projectHitAt).
 func (m Model) mouseRegion(x, y int) (inList, inRight bool) {
 	listOuter, _, bodyHeight, headerRows, _ := m.mouseFrameLayout()
 	if y < headerRows || y >= headerRows+bodyHeight || x < 0 {
@@ -3483,7 +3506,7 @@ func (m Model) switchDetailTab(a modeAction, k tea.KeyPressMsg) (tea.Model, tea.
 	if m.shouldRenderPane() {
 		return m, nil
 	}
-	tabs := visibleDetailTabs(m.stack, m.hasBuild())
+	tabs := visibleDetailTabs(m.stack)
 	cur := slices.Index(tabs, m.activeDetailTab())
 	switch a {
 	case actionDetailTabNext:
@@ -3616,6 +3639,19 @@ func (m Model) levelKey(mode inputMode, k tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		return m.placeholderKey(k)
 	}
 	o := decideKey(lv, overlayNone, armed, m.leaderKey.name, k.String())
+	if mode == inputDetail && o.kind == outcomeRun && sectionKeyFor(o.action) != "" {
+		// The overview `d` gave the keyboard to is still at the Project
+		// level, where the key table says tab, shift+tab and 1–3 change the
+		// project view's section. While it has the keyboard they are its own
+		// tab keys instead (inputDetail's rules), as an overlay owns its
+		// keys: the section strip is not on screen behind the overview, and
+		// a tab key that moved it would change something nobody can see.
+		reg := m.modes()
+		if dec := reg.route(mode, m.routeConditions(), k); dec.kind == routeAction {
+			return m.applyKeyAction(mode, dec.action, k)
+		}
+		return m, nil
+	}
 	switch o.kind {
 	case outcomeOpenStrip:
 		m.keyStripOpen = true
@@ -3670,8 +3706,11 @@ func (m Model) sendLeaderToPane() {
 // At All projects it opens the selected project, as enter on the screen
 // always has (switchFromAllProjects); with no project open and the screen not
 // drawn (the empty state stands in for All projects there) it opens the
-// screen. At Project it opens the selected session's agent (openAgent). The
-// Agent has no level below it, so enter is not a key there.
+// screen. At Project it opens what the focused section's selection suggests
+// (projectGoIn): a session's agent, a task's details or an inbox item. The
+// overview `d` gives the keyboard to is about the selected session, so enter
+// there still opens that session's agent. The Agent has no level below it, so
+// enter is not a key there.
 func (m Model) levelGoIn(lv level) (tea.Model, tea.Cmd) {
 	switch lv {
 	case levelAllProjects:
@@ -3685,7 +3724,10 @@ func (m Model) levelGoIn(lv level) (tea.Model, tea.Cmd) {
 		}
 		return m.toggleAllProjects()
 	case levelProject:
-		return m.openAgent()
+		if m.focus == focusRight {
+			return m.openAgent()
+		}
+		return m.projectGoIn()
 	}
 	return m, nil
 }
@@ -3797,7 +3839,18 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.pauseToggle()
 	case actionAnswerOldest:
 		return m.answerOldest()
+	case actionSectionNext, actionSectionPrev, actionSectionSessions, actionSectionBuild, actionSectionInbox:
+		return m.changeSection(a)
+	}
 
+	// The list's move keys move inside the project view's focused section:
+	// the session list in Sessions (below), the task cursor in Build and the
+	// item cursor in Inbox (moveInSection).
+	if mode == inputNormal && isListMove(a) && m.focusedSection() != sectionSessions && m.hasActiveProject() {
+		return m.moveInSection(a)
+	}
+
+	switch a {
 	// schedulePreview runs AFTER the list has moved, in every direction: arming
 	// first would target the row the selection just left. Every one of these
 	// mutates m.list through the addressable local m — a value receiver here
@@ -4131,10 +4184,6 @@ func (m *Model) syncDetailViewport() {
 	rows, _ := detailRowBudget(bodyHeight, m.detailViewport.TotalLineCount())
 	m.detailViewport.SetHeight(rows)
 	m.detailViewport.SetYOffset(m.detailViewport.YOffset())
-	// While the Build tab's cursor is shown the scroll keys move the cursor
-	// and not the view, so the offset follows the cursor's row: after a key,
-	// after a read that moved the row, after a resize or a tab switch.
-	m.revealBuildCursor(contentW)
 }
 
 // resetDetailScroll snaps the detail viewport to the top when the selected
@@ -4169,18 +4218,6 @@ func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.syncDetailViewport()
-	if m.buildCursorShown() {
-		// The Build tab with the keyboard on the right: the same keys move
-		// the task cursor (buildcursor.go). Every other tab, and this one
-		// from the session list, scrolls as below. A move onto another
-		// task reads that task's tokens for its row and the overlay.
-		prevTask := m.buildCursorID
-		m.moveBuildCursorFor(a)
-		if m.buildCursorID != prevTask {
-			return m, m.taskTokensCmd()
-		}
-		return m, nil
-	}
 	switch a {
 	case actionDetailScrollUp:
 		m.detailViewport.ScrollUp(1)
@@ -5039,7 +5076,7 @@ func (m Model) leaderConditions() leaderConds {
 		canSetTaskStatus:  m.deps.SetTaskStatus != nil,
 		canLoadTaskTokens: m.deps.LoadTaskTokens != nil,
 		canRefreshUsage:   m.deps.RefreshUsage != nil,
-		buildTabFocused:   m.focus == focusRight && m.detailDrawn() && m.activeDetailTab() == tabBuild,
+		buildTabFocused:   m.buildSectionFocused(),
 		planKnown:         m.planStatus.Known,
 		planErr:           m.planStatus.Err != "",
 		planSession:       m.planStatus.Session,
@@ -5057,7 +5094,7 @@ func (m Model) leaderConditions() leaderConds {
 	// The cursor's index is checked against its id as well as the rows'
 	// length: the picker reads the row at the index, and a cursor whose two
 	// halves disagreed would open it on another task.
-	if m.buildCursorShown() && m.buildCursorID != "" && m.buildCursorIndex < len(m.build.Rows) &&
+	if m.buildCursorOnTask() && m.buildCursorID != "" && m.buildCursorIndex < len(m.build.Rows) &&
 		m.build.Rows[m.buildCursorIndex].ID == m.buildCursorID {
 		c.buildTaskSelected = true
 	}
@@ -6368,18 +6405,12 @@ func (m *Model) mergePendingSpawns(sel int) int {
 }
 
 // insertPlaceholder splices an inert "creating…" row for name into m.sessions at
-// its sorted position and returns the selection's new position, so it stays on
-// whatever session it was pointing at (an insertion at or before it shifts that
-// session down by one).
+// its place in screen order (screenInsertAt: in Working, by name) and returns
+// the selection's new position, so it stays on whatever session it was
+// pointing at (an insertion at or before it shifts that session down by one).
 func (m *Model) insertPlaceholder(name string, sel int) int {
-	at := len(m.sessions)
-	for i := range m.sessions {
-		if m.sessions[i].Name > name {
-			at = i
-			break
-		}
-	}
 	row := Session{SessionState: discover.SessionState{Name: name}, Pending: true}
+	at := screenInsertAt(m.sessions, row)
 	m.sessions = append(m.sessions, Session{})
 	copy(m.sessions[at+1:], m.sessions[at:])
 	m.sessions[at] = row
@@ -7009,7 +7040,8 @@ func (m Model) applyLoaded(msg sessionsLoadedMsg) Model {
 	// clamp-the-old-index behaviour the cursor field had.
 	sel := m.listSelection()
 	previous := m.sessions
-	m.sessions = msg.sessions
+	// Screen order before sel is applied, for setSessions' reason.
+	m.sessions = inScreenOrder(msg.sessions)
 	// Both of these re-apply model-side corrections over a result that replaced
 	// m.sessions wholesale, and both must run on EVERY pass or they last one tick.
 	sel = m.mergePendingSpawns(sel)
@@ -8041,9 +8073,14 @@ func indexOfProject(projects []project.Project, path string) (int, bool) {
 // setSessions replaces the session list. It is the only assignment to
 // m.sessions outside the two placeholder splicers, which mutate the slice and
 // then call rebuildListItems themselves.
+//
+// The new list is put in screen order before sel is applied to it, as
+// applyLoaded does, so sel keeps meaning a place on the screen: holding the
+// index (rebuildListItems) of a list in some other order would select
+// whatever session that order happened to put there.
 func (m *Model) setSessions(sessions []Session) {
 	sel := m.listSelection()
-	m.sessions = sessions
+	m.sessions = inScreenOrder(sessions)
 	m.rebuildListItems(sel)
 }
 
@@ -8069,6 +8106,13 @@ func (m *Model) rebuildListItems(sel int) {
 	before, hadBefore := m.selected()
 	// Fresh rows from discovery carry no usage pause; the build snapshot does.
 	m.stampUsagePauses()
+	// The rows are stored in the order the Sessions section draws them, so
+	// the cursor walks what the screen shows (screenOrderIndex). A row whose
+	// group changed since the slice was ordered (a pause stamped just above,
+	// a dead host marked model-side) moves here, and sel moves with the
+	// session it pointed at rather than staying on a position another
+	// session now holds.
+	sel = m.orderSessionsForScreen(sel)
 	items := make([]list.Item, len(m.sessions))
 	for i := range m.sessions {
 		items[i] = sessionItem{session: m.sessions[i]}

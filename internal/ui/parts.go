@@ -204,6 +204,51 @@ func (s styleSet) section(n int, name, context, body string, w, h int, focused b
 	return s.pane(fmt.Sprintf("%d %s", n, name), context, body, w, h, focused)
 }
 
+// sectionTabs is §4.2's narrow section: below 100 columns one section fills
+// the project view's body, and its strip names every section in order
+// ("1 Sessions · 2 Build · 3 Inbox"), the one shown in bold and the others
+// muted, so the digit that brings each one back is still on screen. current
+// is the 0-based index of the section shown. Same box and focus rule as
+// section.
+func (s styleSet) sectionTabs(names []string, current int, context, body string, w, h int, focused bool) string {
+	return s.framedPane(s.sectionTabsStrip(names, current, context, w-2, focused), body, w, h, focused)
+}
+
+// sectionTabsStrip is sectionTabs' strip: titleStrip's fill and padding with
+// every section named. The shown name is bold; the others are muted on the
+// strip fill, and faint on the accent fill, where muted would be a blue on a
+// blue that cannot be read. When the names and the context do not both fit,
+// the context gives way first, as titleStrip's does, and then the names are
+// cut with "…".
+func (s styleSet) sectionTabsStrip(names []string, current int, context string, width int, focused bool) string {
+	st := s.titleStripStyle(focused).Bold(false)
+	if width < 2 {
+		return fillLine("", st, width)
+	}
+	other := lipgloss.NewStyle().Foreground(tok(s.tokens.Muted))
+	if focused {
+		other = lipgloss.NewStyle().Faint(true)
+	}
+	parts := make([]string, len(names))
+	plain := 0
+	for i, n := range names {
+		label := fmt.Sprintf("%d %s", i+1, n)
+		plain += lipgloss.Width(label)
+		if i == current {
+			parts[i] = lipgloss.NewStyle().Bold(true).Render(label)
+		} else {
+			parts[i] = other.Render(label)
+		}
+	}
+	const sep = " · "
+	plain += len(sep) * max(len(names)-1, 0)
+	inner := width - 2
+	if context != "" && plain+1+lipgloss.Width(context) > inner {
+		context = ""
+	}
+	return fillLine(" "+spread(truncate(strings.Join(parts, sep), inner), context, inner)+" ", st, width)
+}
+
 // readOnlyPane is §3.4's read-only pane (the selected session's summary): a
 // plain strip with no fill and muted text, a rule in line under it, then the
 // body. It never takes the keyboard, so it has no focused form.

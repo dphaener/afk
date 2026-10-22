@@ -100,6 +100,31 @@ func layModal(frame, box string, width, height int) string {
 	).Render()
 }
 
+// composeProjectOver lays the project view's box over the home screen's body
+// at (x, y), the place projectBoxRect gives it, rather than centred: the
+// mouse measures its clicks from that same rectangle, so the box cannot be
+// placed by a centring that rounds differently.
+//
+// home is dimmed first as composeModal dims a frame (dimFrame, overlayDim),
+// since the project view is an overlay over the home screen (§4.2, §3.9).
+// dim is false only when something will be laid over the result and dim it
+// in turn — the Agent, whose composeAgent dims the whole frame under it —
+// because every layer under the top one is dimmed exactly once: dimming the
+// home screen here too would push it twice as far back behind the agent.
+//
+// It works on the body alone, not the whole frame, so the top bar and the
+// status bar, which belong to the Project the keyboard is on, keep their
+// full colours.
+func composeProjectOver(home, box string, x, y int, dim bool, profile colorprofile.Profile) string {
+	if dim {
+		home = dimFrame(home, theme.tokens, overlayDim, profile)
+	}
+	return lipgloss.NewCompositor(
+		lipgloss.NewLayer(home),
+		lipgloss.NewLayer(box).X(max(x, 0)).Y(max(y, 0)).Z(1),
+	).Render()
+}
+
 // composeAgent lays the Agent's pane (box) over the Project frame at (x, y),
 // the place agentBoxRect gives it, rather than centred: the agent box is
 // §3.8's "screen less 1 column each side" between the top bar and the status

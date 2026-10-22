@@ -4,10 +4,10 @@ import (
 	"github.com/dphaener/afk/internal/buildview"
 )
 
-// This file is the Build tab's cursor: which task row the owner is on while
-// the right side has the keyboard. The tab was a read-only list that the
-// scroll keys moved as a whole; a row the owner can point at is what lets a
-// later action (setting a task's status) say which task it means.
+// This file is the Build section's cursor: which task row the owner is on
+// while the project view's Build section has the keyboard (T16.4; it was the
+// overview's Build tab before). A row the owner can point at is what lets an
+// action (setting a task's status, its details) say which task it means.
 //
 // The cursor is remembered by task id and not only by row number. The build
 // snapshot is read again every two seconds and its rows can change order or
@@ -67,78 +67,52 @@ func buildRowIndex(rows []buildview.Row, id string) int {
 	return -1
 }
 
-// buildCursorShown reports whether the Build tab draws its cursor: the Build
-// tab is the active tab, the detail box is what the main region shows, the
-// right side has the keyboard, and there is at least one task row. It is the
-// one gate for the gutter, for the scroll keys moving the cursor instead of
-// the view, and for keeping the cursor's row on screen, so the three cannot
-// disagree: a cursor the keys move but the frame does not draw, or the other
-// way round, would be worse than none.
-//
-// It is false while the session list has the keyboard, which is what keeps
-// the tab exactly as it was drawn before the cursor existed in that state.
-func (m Model) buildCursorShown() bool {
-	return m.focus == focusRight && m.detailDrawn() && m.activeDetailTab() == tabBuild &&
-		m.build.Problem == "" && len(m.build.Rows) > 0
+// buildSectionFocused reports whether the project view's Build section has
+// the keyboard: a project is open, the dashboard is at the Project level with
+// the keyboard on the project view (not on the overview `d` opened, which
+// is the right side's), and the focused section is Build. It is the one
+// answer `s` and `t` are refused by (leaderConditions' buildTabFocused) and
+// the one a pending tokens read opens its overlay under, so the two cannot
+// disagree about where the owner is.
+func (m Model) buildSectionFocused() bool {
+	return m.hasActiveProject() && m.level() == levelProject && m.focus == focusList &&
+		m.focusedSection() == sectionBuild
 }
 
-// moveBuildCursorFor is the detail side's scroll keys on the Build tab: the
-// same actions that scroll every other tab move the cursor here, by one row,
-// half a page, a page, or to the first or last task. A page is the rows the
-// detail box shows, which syncDetailViewport has just set as the viewport's
-// height. The viewport is then brought round the cursor's row by
-// syncDetailViewport (revealBuildCursor), not scrolled here, so there is one
-// place that decides the offset while the cursor is shown.
+// buildCursorOnTask reports whether the Build section's cursor is on a task
+// the owner can act on: the section is focused and the snapshot has rows to
+// be on. It replaced the Build tab's "cursor shown" gate; the section draws
+// the cursor's row selected only while this holds (projectviewrender.go), so
+// a cursor the keys act on is always the one on screen.
+func (m Model) buildCursorOnTask() bool {
+	return m.buildSectionFocused() && m.build.Problem == "" && len(m.build.Rows) > 0
+}
+
+// moveBuildCursorFor is the move keys in the Build section: one row, a page
+// (the rows the section shows, buildSectionPage) or to the first or last
+// task. The section scrolls itself round the cursor when it is drawn
+// (buildSectionWindow), so nothing here keeps an offset.
 func (m *Model) moveBuildCursorFor(a modeAction) {
 	n := len(m.build.Rows)
-	page := max(m.detailViewport.Height(), 1)
-	half := max(page/2, 1)
+	if n == 0 {
+		return
+	}
+	page := max(m.buildSectionPage(), 1)
 	i := m.buildCursorIndex
 	switch a {
-	case actionDetailScrollUp:
+	case actionCursorUp:
 		i = moveBuildCursor(i, -1, n)
-	case actionDetailScrollDown:
+	case actionCursorDown:
 		i = moveBuildCursor(i, 1, n)
-	case actionDetailHalfPageUp:
-		i = moveBuildCursor(i, -half, n)
-	case actionDetailHalfPageDown:
-		i = moveBuildCursor(i, half, n)
-	case actionDetailPageUp:
+	case actionPageUp:
 		i = moveBuildCursor(i, -page, n)
-	case actionDetailPageDown:
+	case actionPageDown:
 		i = moveBuildCursor(i, page, n)
-	case actionDetailGotoTop:
+	case actionListTop:
 		i = 0
-		// The first task is not the top of the tab: the summary sits above
-		// it, and home should show it as it does on every other tab.
-		m.detailViewport.GotoTop()
-	case actionDetailGotoBottom:
+	case actionListBottom:
 		i = n - 1
 	}
 	m.buildCursorIndex = i
 	m.buildCursorID = m.build.Rows[i].ID
-	m.syncDetailViewport()
-}
-
-// revealBuildCursor scrolls the detail viewport the least it has to so the
-// cursor's row is on screen. The row's line is counted from the same pieces
-// composeDetailBody and buildTabLines put above it (detailStripLines, then
-// buildRowsTop), never guessed, so a summary that grows a line (the build
-// paused, an inbox item) cannot leave the cursor one row off screen.
-//
-// It runs from syncDetailViewport, on Update's goroutine, after the content
-// and height are set.
-func (m *Model) revealBuildCursor(contentW int) {
-	if !m.buildCursorShown() {
-		return
-	}
-	line := detailStripLines + buildRowsTop(m.leaderKey.name, m.build, m.planStatus, contentW) + m.buildCursorIndex
-	top := m.detailViewport.YOffset()
-	h := max(m.detailViewport.Height(), 1)
-	switch {
-	case line < top:
-		m.detailViewport.SetYOffset(line)
-	case line >= top+h:
-		m.detailViewport.SetYOffset(line - h + 1)
-	}
 }

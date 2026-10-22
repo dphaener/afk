@@ -4161,6 +4161,7 @@ Amended 2026-10-21 (T16.3 done): `projectrows.GroupOf`/`Grouped` give the four g
   selected session (a row each for a session with a task, one without, and a task with no session);
   saved screens at 120×40 and 80×24; against a scratch build, `tab` and `2` move focus and `enter` on a
   task opens its details; `make check` is green.
+Amended 2026-10-22 (T16.4 done): Project is drawn by `projectviewrender.go` from the pure functions in `internal/ui/projectview.go` (`groupSessions`, `linkedTaskFor`, `sessionSummaryLines`, `nextSection`, `projectEnterTarget`, `projectBandText`); `buildview.Row.Session` carries the ledger entry's session and is the only session→task link (`status.json` unchanged); the overview's Build tab is gone, so its digits are `1`–`5` (Overview, Waves, Stack, Notes, Diff) and `d` still opens it beside the session list until T16.5; a task's details are the task tokens box with status, title and detail added (`t` and `enter` on a task), the thing T16.5 turns into the details overlay; `enter` on an inbox item opens today's inbox overlay on it until T16.7; `s`/`t` refuse outside the Build section with a notice naming `2`/`tab`; below 100 columns the project view takes the full body width with no overlay margin; `leaderConds.buildTabFocused` keeps its name but now means the Build section is focused.
 
 #### T16.5 — The agent and the details overlay
 - **Depends on:** T16.4

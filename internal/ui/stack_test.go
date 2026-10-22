@@ -377,7 +377,10 @@ func TestViewIncludesStackAndDiffPanels(t *testing.T) {
 	m.stack = stackState{Detected: true, Branches: branches}
 
 	// The Overview summarises both: the branch's place in the stack as one
-	// path, and the diff as one fact line.
+	// path, and the diff as one fact line. It is drawn while `d` gives it the
+	// keyboard: at Project the body is otherwise the project view (T16.4).
+	m = focusOverview(t, m)
+	m.status = "" // the focus toast covers the right pane's top rows
 	out := render(m)
 	for _, want := range []string{"Stack", "main › feat-a", "+4/-1"} {
 		if !strings.Contains(out, want) {
@@ -386,8 +389,6 @@ func TestViewIncludesStackAndDiffPanels(t *testing.T) {
 	}
 
 	// The Stack tab has the whole tree, siblings and owners included.
-	m = focusOverview(t, m)
-	m.status = "" // the focus toast covers the right pane's top rows
 	m, _ = update(t, m, keyRune('3'))
 	out = render(m)
 	for _, want := range []string{"main", "feat-b", "feat-c", "[feat-a]"} {

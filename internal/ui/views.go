@@ -70,11 +70,14 @@ func (m Model) View() tea.View {
 
 	// The body is the level under any Agent: All projects, the empty state
 	// (which stands in for All projects with no project at all), or the
-	// Project, which is the session list beside the overview. At Project the
-	// right side ALWAYS draws the overview (W3.T1 of T16.2): the agent is a
-	// level of its own, drawn over this frame below, so a pane connected for
-	// the selected row stays connected behind the overview and is simply not
-	// drawn until enter goes into it (A5).
+	// Project. The Project is the project view of §4.2
+	// (projectviewrender.go), drawn under the Agent too: from 100 columns an
+	// overlay over the dimmed home screen (projectBody), below that one
+	// section filling the body. While the overview `d` opened has the
+	// keyboard it is the session list beside the overview, as before T16.4.
+	// The agent is a level of its own, drawn over this frame below, so a pane
+	// connected for the selected row stays connected behind it and is simply
+	// not drawn until enter goes into it (A5).
 	var body string
 	// paneShown records whether the Agent below actually PAINTED the pane, so
 	// the cursor block after SetContent cannot be reached from any other
@@ -94,6 +97,8 @@ func (m Model) View() tea.View {
 		// for — so the whole two-region split is replaced by one explanatory
 		// block. Full body width, matching layoutDims' own split.
 		body = m.renderEmptyState(listOuter+mainOuter, bodyHeight)
+	} else if m.projectViewDrawn() {
+		body = m.projectBody(bodyHeight)
 	} else {
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
 			m.renderList(listOuter, bodyHeight), m.renderDetail(mainOuter, bodyHeight))
@@ -433,6 +438,32 @@ func (m Model) renderAgentPlaceholder(outerW, outerH int) string {
 	}
 	return theme.pane(paneStripName(title), hint, strings.Join(lines, "\n"),
 		paneOuterWidth(contentW), outerH, true)
+}
+
+// projectBody is the body at Project while the project view is drawn: the
+// view's box where projectBoxRect puts it. From projectWideWidth columns it is
+// §3.8's overlay over the home screen, dimmed (composeProjectOver) — except
+// under the Agent, which dims the whole frame itself, so the home screen is
+// dimmed once either way. When the home screen has no rows (a dashboard
+// started inside a project config.toml does not list, before or without any
+// listed project) there is nothing to show under the box, so it stands on the
+// plain ground at the same size: the margins are blank, and the ground paint
+// colours them. Below projectWideWidth the box is the whole body.
+func (m Model) projectBody(bodyHeight int) string {
+	x, _, w, h := projectBoxRect(m.width, 0, bodyHeight)
+	box := m.renderProjectView(w, h)
+	if x == 0 {
+		return box
+	}
+	if !m.allProjectsKnown || len(m.allProjectsRows) == 0 {
+		margin := strings.Repeat(" ", x)
+		lines := strings.Split(box, "\n")
+		for i, ln := range lines {
+			lines[i] = margin + ln + margin
+		}
+		return strings.Join(lines, "\n")
+	}
+	return composeProjectOver(m.renderAllProjects(), box, x, 0, m.level() != levelAgent, m.deps.ColorProfile)
 }
 
 // agentFullWidthBelow is the terminal width below which the agent box takes
@@ -1129,13 +1160,13 @@ func (m Model) usagePieces() (long, short string) {
 
 // inboxPieces styles the active project's inbox counts for the header. They
 // come from the build snapshot the refresh tick already loads (m.build), the
-// same read the Build tab's summary line counts with buildview.OpenCounts, so
-// the header and the tab can never disagree and View still touches no file.
+// same read the Build section's summary line counts with buildview.OpenCounts, so
+// the header and the section can never disagree and View still touches no file.
 //
 // It asks only for m.buildKnown, not m.build.HasBuild: the inbox is read
 // whether or not the project has a master plan, and an owner with a question
 // waiting needs to hear about it either way. Files the loader could not read
-// (m.build.Unreadable) are not items and are not counted; the Build tab is
+// (m.build.Unreadable) are not items and are not counted; the Build section is
 // where they are reported.
 //
 // The hint is left off while the agent pane owns the keyboard, because there
@@ -1239,7 +1270,7 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 //
 // The blocking count outlasts the badge, both hints and the short usage
 // because it asks the owner to act in THIS project: a task is stopped until
-// they answer, and no other part of the frame says so outside the Build tab.
+// they answer, and no other part of the frame says so outside the Build section.
 // The short usage outlives the badge because it says whether the build is
 // being held back, which the reader cannot see anywhere else on the row,
 // while the badge says what they already know. The usage goes before the
@@ -2053,33 +2084,35 @@ func (m Model) tableHelp(lv level, a modeAction, desc string, c leaderConds) key
 	return keyHelpBinding(m.leaderKey.name, lv, a, desc, enabled)
 }
 
-// renderNormalHelpKeyMap builds the help.KeyMap for the session list at
-// Project (inputNormal with a project open). Short is the movement keys, the
-// two level keys (enter opens the selected session's agent, esc goes to All
-// projects), the two actions a person most often comes to the list for (a new
-// session, a session's details), restart only while it acts on the selected
-// row (help never offers a key that would do nothing, and a stopped or stuck
-// agent is the state a person comes to the footer to find a key for), and
-// the two keys that find everything else: `:` and `?`. There is no full
-// help: `?` opens the keys overlay (keysoverlay.go) instead.
+// renderNormalHelpKeyMap builds the help.KeyMap for the project view
+// (inputNormal with a project open). It is the chips' list (projectChipList):
+// the section keys, the moves, enter on the selection, `d`, a new session,
+// clean and pause, then esc back to All projects, restart only while it acts
+// on the selected row (help never offers a key that would do nothing, and a
+// stopped or stuck agent is the state a person comes to the footer to find a
+// key for), and the two keys that find everything else: `:` and `?`. There is
+// no full help: `?` opens the keys overlay (keysoverlay.go) instead.
 //
 // The item order matters, since help.Model truncates from the right.
 func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
-	reg := m.modes()
-	moves := append([]key.Binding(nil), reg.spec(inputNormal).keys.bindings...)
 	c := m.leaderConditions()
-	up := findBinding(moves, m.keys.Up.Keys())
-	down := findBinding(moves, m.keys.Down.Keys())
-	focus := m.keys.Focus
-	focus.SetEnabled(m.normalBindingEnabled(focus))
-
-	short := []key.Binding{up, down, focus, m.tableHelp(levelProject, actionGoBack, "all projects", c)}
-	short = append(short, m.tableHelp(levelProject, actionNewSession, "new", c))
+	short := []key.Binding{
+		key.NewBinding(key.WithKeys("tab"), key.WithHelp(projectSectionKeysLabel, "section")),
+		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "move")),
+	}
+	enter := key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open"))
+	enter.SetEnabled(m.projectEnterTarget() != enterNothing)
+	short = append(short, enter,
+		m.tableHelp(levelProject, actionDetails, "details", c),
+		m.tableHelp(levelProject, actionNewSession, "new session", c),
+		m.tableHelp(levelProject, actionClean, "clean…", c),
+		m.tableHelp(levelProject, actionPauseToggle, "pause", c),
+		m.tableHelp(levelProject, actionGoBack, "all projects", c),
+	)
 	if m.restartKeyLive() {
 		short = append(short, m.tableHelp(levelProject, actionRestart, "restart", c))
 	}
 	short = append(short,
-		m.tableHelp(levelProject, actionDetails, "details", c),
 		m.tableHelp(levelProject, actionActionsSearch, "actions", c),
 		m.tableHelp(levelProject, actionKeys, "keys", c),
 	)
@@ -2950,11 +2983,6 @@ func (m Model) detailBoxLabels() (title, hint string) {
 	if ok {
 		title = displayName(s)
 	}
-	if m.detailDrawn() && m.activeDetailTab() == tabBuild {
-		// The Build tab is about the project, so the box does not name a
-		// session over it.
-		title = "Build"
-	}
 	if m.detailOwnsKeyboard() {
 		return title, m.detailReleaseHint()
 	}
@@ -3059,18 +3087,13 @@ func (m Model) detailBody(contentW int) string {
 // no-selection, placeholder and worktree-fault messages, or the tab strip plus
 // the active tab's panels. detailBody is its only caller.
 //
-// A project with a build draws the tab strip in every one of those states.
-// The Build tab is about the project and not the selected row, so it has to
-// be reachable, and read the same, with a placeholder or a fault selected and
-// with no session at all. A build with nothing running is exactly when the
-// task list is the thing to look at. Without a build the three messages stand
-// alone, as they always have.
+// Every tab is about the selected session, so a row with none to show (no
+// selection, a placeholder, a fault) shows its message alone. The project's
+// build was a tab here until T16.4 made it the project view's Build section.
 func (m Model) composeDetailBody(contentW int) string {
 	var b strings.Builder
 	s, ok := m.selected()
-	hasBuild := m.hasBuild()
-	notice := rowNotice(m.leaderKey.name, s, ok)
-	if notice != "" && !hasBuild {
+	if notice := rowNotice(m.leaderKey.name, s, ok); notice != "" {
 		return notice
 	}
 
@@ -3079,27 +3102,15 @@ func (m Model) composeDetailBody(contentW int) string {
 	// fixture above every tab: the strip is the pane's title row now, and a
 	// head repeated over Waves or Stack would cost two rows on the tab that
 	// most needs them.
-	// The strip and the rule are detailStripLines lines; the Build tab's
-	// cursor counts on that (revealBuildCursor).
-	tabs := visibleDetailTabs(m.stack, hasBuild)
+	tabs := visibleDetailTabs(m.stack)
 	active := m.activeDetailTab()
 	b.WriteString(renderTabStrip(tabs, active, contentW))
 	b.WriteString("\n")
 	b.WriteString(theme.dim.Render(strings.Repeat("─", contentW)))
 	b.WriteString("\n")
 
-	if notice != "" && active != tabBuild {
-		// Every other tab is about the selected session, and this row has
-		// none to show: the message takes the tab's place under the strip.
-		b.WriteString(notice)
-		return b.String()
-	}
-
 	ctx := panelContext{
-		Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), Build: m.build, PlanStatus: m.planStatus,
-		BuildCursorShown: m.buildCursorShown(), BuildCursor: m.buildCursorIndex,
-		BuildCursorTotal: m.buildCursorTotal(),
-		Leader:           m.leaderKey.name,
+		Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), PlanStatus: m.planStatus,
 	}
 	spec := detailTabSpecs()[active]
 	rendered := 0
@@ -3193,10 +3204,6 @@ const (
 	tabStack
 	tabNotes
 	tabDiff
-	// tabBuild is the project's build: the master plan's tasks with their
-	// ledger status (buildtab.go). It is last so the digit keys of the tabs
-	// before it never move, and it is shown only when the project has a build.
-	tabBuild
 	detailTabCount
 )
 
@@ -3230,48 +3237,32 @@ func detailTabSpecs() [detailTabCount]detailTabSpec {
 				}
 				return "No base branch recorded to diff against."
 			}},
-		tabBuild: {name: "Build", panels: []panel{buildPanel{}},
-			empty: func(Session) string { return "No build to show." }},
 	}
 }
 
 // visibleDetailTabs is the strip, in order, for a repo whose stack state is
 // st: every session tab except Stack, which appears only when git-spice is
 // detected — the same rule stackPanel itself follows ("never a placeholder
-// panel for non-gs users") — and then Build, only when the project has a
-// build to show (hasBuild, Model.hasBuild). The digit keys index THIS slice,
-// so `3` is Notes in a plain git repo and Stack in a git-spice one. Build is
-// appended last for that reason: a build arriving, or a project switch taking
-// it away, must not move the digit of a tab the user already knows.
-func visibleDetailTabs(st stackState, hasBuild bool) []detailTab {
+// panel for non-gs users"). The digit keys index THIS slice, so `3` is Notes
+// in a plain git repo and Stack in a git-spice one. The project's build was a
+// sixth tab until T16.4 made it the project view's Build section.
+func visibleDetailTabs(st stackState) []detailTab {
 	tabs := []detailTab{tabOverview, tabWaves}
 	if st.Detected {
 		tabs = append(tabs, tabStack)
 	}
-	tabs = append(tabs, tabNotes, tabDiff)
-	if hasBuild {
-		tabs = append(tabs, tabBuild)
-	}
-	return tabs
+	return append(tabs, tabNotes, tabDiff)
 }
 
 // activeDetailTab is m.detailTab when the current project can show it, else
 // the Overview — the case is a Stack tab chosen before a rescan found
-// git-spice gone, a Build tab whose project was switched away from (the tab
-// comes back by itself when the new project's build data arrives, because the
-// stored choice is kept), or a zero-value Model.
+// git-spice gone, or a zero-value Model.
 func (m Model) activeDetailTab() detailTab {
-	if slices.Contains(visibleDetailTabs(m.stack, m.hasBuild()), m.detailTab) {
+	if slices.Contains(visibleDetailTabs(m.stack), m.detailTab) {
 		return m.detailTab
 	}
 	return tabOverview
 }
-
-// detailStripLines is the lines composeDetailBody writes above a tab's
-// content: the tab strip (exactly one row, renderTabStrip) and the rule under
-// it. The Build tab's cursor adds it to the row's place in the tab to find the
-// row's line in the detail body.
-const detailStripLines = 2
 
 // renderTabStrip draws the tab names on one line, the active one in the panel
 // title style and the rest dim, with a right-aligned key hint when the width
@@ -3693,7 +3684,7 @@ func (m Model) boxDetailBody(body string, contentW, outerH int, title string, fo
 	}
 	// The pane part is sizedBox(detailBox, contentW+2, innerH) cell for cell
 	// plus the title strip's row, with the interior painted panel and a
-	// selected row's fill (the Build tab's cursor) carried to the border.
+	// selected row's fill carried to the border.
 	return theme.pane(title, "", block, paneOuterWidth(contentW),
 		innerH+paneStripRows+boxBorderCells, focused)
 }
@@ -3738,29 +3729,10 @@ type panelContext struct {
 	// pure function of its context — the same reason sessionDelegate carries
 	// Deps.Now instead of calling the clock itself.
 	Now time.Time
-	// Build is the project's build snapshot, for the Build tab. It is the one
-	// field that is not about the selected session.
-	Build buildview.Snapshot
 	// PlanStatus is the project's planning status and plan check, for the
-	// plan line on the master-plan overview and the Build tab. Like Build it is
+	// plan line on the master-plan overview. It is the one field that is
 	// about the project and not the selected session.
 	PlanStatus PlanStatus
-	// BuildCursorShown and BuildCursor are the Build tab's cursor: whether it
-	// is drawn (Model.buildCursorShown) and the index of its row. They are a
-	// separate flag and index, not one index with a "none" value, so a
-	// panelContext built without them draws the tab with no cursor.
-	BuildCursorShown bool
-	BuildCursor      int
-	// BuildCursorTotal is the short token total the cursor's row ends with
-	// when there is room (Model.buildCursorTotal), or "" for none. It is a
-	// string and not the record, so the tab is drawn from what is held and
-	// nothing here can read the ledger.
-	BuildCursorTotal string
-	// Leader is the leader key's name (Model.leaderKey.name), for the Build
-	// tab's inbox line, which names the inbox chord. The leader is set in
-	// config.toml (T9.2), so it is passed in like everything else a panel
-	// draws.
-	Leader string
 }
 
 // wavesPanel renders the plan's waves and tasks with their checkbox states.

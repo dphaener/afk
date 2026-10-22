@@ -1,40 +1,40 @@
  afk Dashboard                                                                                                          
-╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
-│ Sessions                                  ││ feat-auth                                                               │
-│     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
-│                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ◐ feat-auth           EXECUTING   3/7 ● ││ Wave 1: Foundations                                                     │
-│   ◐ Billing v2          REVIEWING   7/7   ││   ✓ W1.T1 Add session model                                             │
-│   ◐ fix-login-redirect  PLANNING      – ● ││   ✓ W1.T2 Wire auth middleware                                          │
-│   ✓ feat-search         DONE        5/5   ││   ✓ W1.T3 Seed admin user                                               │
-│   ◐ scratch-1           SCRATCH       –   ││ Wave 2: Migration                                                       │
-│   ✕ old-migration       BROKEN        –   ││   ○ W2.T1 Migrate legacy sessions                                       │
-│                                           ││   ○ W2.T2 Add logout endpoint                                           │
-│                                           ││   ○ W2.T3 Rotate refresh tokens                                         │
-│                                           ││   ○ W2.T4 Remove legacy table                                           │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-│                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────────────────────────── enter: open · c: clean · l: label ─╯
-↑/k preview↑ · ↓/j preview↓ · enter open · esc all projects · n new · d details · : actions · ? keys                    
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Sessions                                                                                      esc · all projects │  
+  │                                                                                                                  │  
+  │ ╭────────────────────────────────────────────────╮ ╭───────────────────────────────────────────────────────────╮ │  
+  │ │ 1 Sessions                                   6 │ │ 2 Build                                                   │ │  
+  │ │  ▾ Needs you                                3  │ │ Reading the build…                                        │ │  
+  │ │ ▌ ◐ feat-auth       executing     3/7 asks you │ │                                                           │ │  
+  │ │   ◐ fix-login-red…  planning        – asks you │ │                                                           │ │  
+  │ │   ✕ old-migration   broken          –          │ │                                                           │ │  
+  │ │  ▾ Working                                  2  │ │                                                           │ │  
+  │ │   ◐ Billing v2      reviewing     7/7  open it │ │                                                           │ │  
+  │ │   ◐ scratch-1       one-off         –  open it │ │                                                           │ │  
+  │ │  ▾ Done                                     1  │ │                                                           │ │  
+  │ │   ✓ feat-search     done          5/5          │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ │                                                │ │                                                           │ │  
+  │ ╰────────────────────────────────────────────────╯ │                                                           │ │  
+  │ ╭────────────────────────────────────────────────╮ │                                                           │ │  
+  │ │ feat-auth                                      │ │                                                           │ │  
+  │ │────────────────────────────────────────────────│ │                                                           │ │  
+  │ │ branch  feat-auth                              │ ╰───────────────────────────────────────────────────────────╯ │  
+  │ │ phase   executing · loop 3                     │ ╭───────────────────────────────────────────────────────────╮ │  
+  │ │ diff    +412/-88 · 9 file(s) vs main           │ │ 3 Inbox                                                   │ │  
+  │ │ host    running                                │ │ Reading the inbox…                                        │ │  
+  │ ╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────╯ │  
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+tab/1-3 section · j/k move · enter open · d details · n new session · c clean… · esc all projects · : actions · ? keys  

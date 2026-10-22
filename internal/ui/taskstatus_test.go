@@ -29,23 +29,22 @@ func (s *taskStatusSeam) set(root, id, status string, replacedBy []string) TaskS
 	return s.res
 }
 
-// taskStatusModel is the Build tab of buildTabSnap with the keyboard on the
-// right, the cursor on its current task (T1.2) and the seam wired to a
-// recorder.
+// taskStatusModel is the Build section of buildTabSnap with the keyboard,
+// the cursor on its current task (T1.2) and the seam wired to a recorder.
 func taskStatusModel(t *testing.T) (Model, *taskStatusSeam) {
 	t.Helper()
 	seam := &taskStatusSeam{res: TaskStatusResult{Outcome: TaskStatusChanged, Text: "T3.2: failed → pending"}}
 	m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 	m.deps.SetTaskStatus = seam.set
-	m = openBuildTab(t, m)
-	if !m.buildCursorShown() {
-		t.Fatalf("setup: the Build tab's cursor is not shown (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
+	m = openBuildSection(t, m)
+	if !m.buildCursorOnTask() {
+		t.Fatalf("setup: the Build section's cursor is not on a task (section=%v focus=%v)", m.focusedSection(), m.focus)
 	}
 	m.clearStatus()
 	return m, seam
 }
 
-// taskStatusCursorOn moves the Build tab's cursor to the task id with the
+// taskStatusCursorOn moves the Build section's cursor to the task id with the
 // arrow keys, the way the owner does.
 func taskStatusCursorOn(t *testing.T, m Model, id string) Model {
 	t.Helper()
@@ -112,7 +111,7 @@ func TestTaskStatusBlockedReason(t *testing.T) {
 		{"runs on a selected task", ok, ""},
 		{"no seam wins over everything", leaderConds{}, taskStatusNoSeam},
 		{"from the list", with(func(c *leaderConds) { c.buildTabFocused = false; c.buildTaskSelected = false }),
-			"open the Build tab first (d, then tab)"},
+			"go to the Build section first (2 or tab)"},
 		{"no task", with(func(c *leaderConds) { c.buildTaskSelected = false }), taskStatusNoTask},
 	}
 	for _, tt := range tests {
@@ -146,12 +145,12 @@ func TestTaskStatusRowDimmed(t *testing.T) {
 			m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 			m.deps.SetTaskStatus = seam.set
 			return m, seam
-		}, "open the Build tab first (d, then tab)"},
-		{"the Build tab has no tasks", func(t *testing.T) (Model, *taskStatusSeam) {
+		}, "go to the Build section first (2 or tab)"},
+		{"the Build section has no tasks", func(t *testing.T) (Model, *taskStatusSeam) {
 			seam := &taskStatusSeam{}
 			m := withBuild(t, testModel(sess("alpha")), buildview.Snapshot{Root: "/repo", HasBuild: true})
 			m.deps.SetTaskStatus = seam.set
-			m = openBuildTab(t, m)
+			m = openBuildSection(t, m)
 			return m, seam
 		}, taskStatusNoTask},
 	}
@@ -183,7 +182,7 @@ func TestTaskStatusRowDimmed(t *testing.T) {
 		if cmd != nil || m.modal != inputNormal {
 			t.Fatalf("modal %v, cmd %v; want nothing but a notice", m.modal, cmd != nil)
 		}
-		if m.status != "Open the Build tab first (d, then tab)." {
+		if m.status != "Go to the Build section first (2 or tab)." {
 			t.Errorf("status %q", m.status)
 		}
 	})
