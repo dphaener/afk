@@ -33,6 +33,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dphaener/afk/internal/projectrows"
+	"github.com/dphaener/afk/internal/usagestate"
 )
 
 // AllProjects is one read of every project's row. It is declared here and
@@ -52,6 +53,12 @@ type AllProjects struct {
 	// cost no extra read. A project with no plan, or whose plan or inbox could
 	// not be read, has no entry.
 	Tasks map[string][]JumpTask
+	// Usage is the machine's last usage reading and UsageKnown whether there
+	// is one. The home screen's band and week line need it before any project
+	// is open: m.build only has a reading once a project has been read, so a
+	// dashboard started outside a project would show no usage without this.
+	Usage      usagestate.File
+	UsageKnown bool
 	// Err is a failure to read config.toml itself. A project that could not
 	// be read is a row (StateUnreadable), never an Err: one broken project
 	// must not hide the others. With Err set Rows is ignored and the screen
@@ -272,6 +279,7 @@ func (m Model) applyEveryProject(msg allProjectsLoadedMsg) Model {
 	m.everyProject = msg.res
 	m.everyProjectSeq = msg.seq
 	m.everyProjectAt = msg.at
+	m.homeUsage, m.homeUsageKnown = msg.res.Usage, msg.res.UsageKnown
 	return m
 }
 

@@ -5168,10 +5168,10 @@ func TestFocusStateReflectedInView(t *testing.T) {
 	m := testModel(sess("a"))
 	m, _ = update(t, m, paneAttachedMsg{pane: fp, name: "a"})
 
-	// Unfocused: the help and title advertise how to focus.
+	// Unfocused: the help and title advertise how to type in the pane.
 	unfocused := render(m)
-	if !strings.Contains(unfocused, "focus") {
-		t.Fatalf("unfocused View should mention focusing; out:\n%s", unfocused)
+	if !strings.Contains(unfocused, "type in it") {
+		t.Fatalf("unfocused View should say how to type in the pane; out:\n%s", unfocused)
 	}
 
 	// Focused: the help/title advertise the detach chord.

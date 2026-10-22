@@ -26,6 +26,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/projectrows"
+	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/usagetext"
 )
 
@@ -93,16 +94,28 @@ func needStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(tok(theme.tokens.Need))
 }
 
+// homeUsageReading is the usage reading the home screen shows: the build
+// snapshot's when it has one (a project is open, and its tick is the newer
+// reading), else the one the every-project read carried, so a dashboard
+// started outside a project still shows usage.
+func (m Model) homeUsageReading() (usagestate.File, bool) {
+	if m.buildKnown && m.build.UsageKnown {
+		return m.build.Usage, true
+	}
+	return m.homeUsage, m.homeUsageKnown
+}
+
 // allProjectsUsage is the band's usage reading: the tightest window's used
 // percent, from the snapshot the build tick already holds (m.build), never
 // from usage.json, because View must not touch the disk. False with no
 // reading, and the band then leaves usage out rather than show a 0% that was
 // never measured.
 func (m Model) allProjectsUsage() (int, bool) {
-	if !m.buildKnown || !m.build.UsageKnown {
+	f, known := m.homeUsageReading()
+	if !known {
 		return 0, false
 	}
-	w, ok := usagetext.Tightest(m.build.Usage.Windows)
+	w, ok := usagetext.Tightest(f.Windows)
 	if !ok {
 		return 0, false
 	}
@@ -269,6 +282,16 @@ func allProjectsLayoutFor(contentH, linesPerRow int, head []string, list, chart 
 		panel = max(contentH-fixed-linesPerRow, 1)
 		rows = contentH - fixed - panel
 	}
+	// A project that takes several lines is drawn whole or not at all, so the
+	// list gets a whole number of projects' lines and the spare lines go to
+	// the panel. Left in the list they would show the last project's first
+	// line alone (the half row at 80x24). Only when the list still holds one
+	// project: the floor above already gave it that.
+	if linesPerRow > 1 && rows > linesPerRow {
+		spare := rows % linesPerRow
+		rows -= spare
+		panel += spare
+	}
 	lay.listRows, lay.panelRows = max(rows, 1), panel
 	return lay
 }
@@ -312,6 +335,31 @@ func allProjectsWindow(from, to, area, total int) (start, end int) {
 	}
 	start = min(start, from)
 	return start, min(start+area, total)
+}
+
+// allProjectsWholeRows moves a window's edges onto project boundaries, so no
+// project is drawn with only some of its lines. The group headings share the
+// list's lines, so a window of whole-project size can still begin or end
+// inside a project. A start inside a project moves down past it (the cursor's
+// project begins at or after the start, so it is never the one skipped); the
+// end is then re-measured from the new start and, when it falls inside a
+// project, stops before it. The cursor's project stays whole: its end is a
+// boundary no later than the old end.
+func allProjectsWholeRows(spans []lineSpan, start, end, area, total int) (int, int) {
+	for _, s := range spans {
+		if s.from < start && start < s.to {
+			start = s.to
+			break
+		}
+	}
+	end = min(start+area, total)
+	for _, s := range spans {
+		if s.from < end && end < s.to && s.from > start {
+			end = s.from
+			break
+		}
+	}
+	return start, end
 }
 
 // lineSpan is the lines [from, to) a project takes in the list.
@@ -656,6 +704,7 @@ func (m Model) renderAllProjects() string {
 		list, spans := allProjectsListLines(m.allProjectsRows, m.allProjectsCursor, w, wide, act)
 		cur := spans[clampInt(m.allProjectsCursor, 0, len(spans)-1)]
 		start, end := allProjectsWindow(cur.from, cur.to, lay.listRows, len(list))
+		start, end = allProjectsWholeRows(spans, start, end, lay.listRows, len(list))
 		// A list shorter than its share is not padded: the rule, the panel
 		// and the THIS WEEK chart follow it at once, and the rows left over
 		// fall above the chips. The panel and the chart still keep their
@@ -687,8 +736,8 @@ func (m Model) renderAllProjects() string {
 			// in, so the chart and its usage line speak one clock; the
 			// location is data the read carried, not a clock read here.
 			usage := ""
-			if m.buildKnown && m.build.UsageKnown {
-				usage = usagetext.WeekLine(m.build.Usage.Windows, m.homeActivity.Week.Days[6].Location())
+			if f, ok := m.homeUsageReading(); ok {
+				usage = usagetext.WeekLine(f.Windows, m.homeActivity.Week.Days[6].Location())
 			}
 			lines = append(lines, weekChartLines(m.homeActivity.Week, usage, w)...)
 		}

@@ -13,6 +13,8 @@ import (
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/projectrows"
+	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
 )
 
@@ -34,7 +36,8 @@ func dashAllProjectsTestParts(t *testing.T, cfgHome string, reviews []daemonstat
 			*sessionCalls = append(*sessionCalls, root)
 			return []web.SessionView{{Name: "t1-2", Phase: "executing"}}
 		},
-		now: func() time.Time { return dashBuildNow },
+		now:   func() time.Time { return dashBuildNow },
+		usage: func() (usagestate.File, bool) { return usagestate.File{}, false },
 	}
 }
 
@@ -463,5 +466,33 @@ func TestReadDashProjectRowTasks(t *testing.T) {
 	bare := projectrows.Input{Name: "b", Root: t.TempDir()}
 	if jt := readDashProjectRow(p, &bare, nil); jt != nil {
 		t.Errorf("tasks = %v, want nil for a project with no plan", jt)
+	}
+}
+
+// TestLoadDashAllProjectsUsage pins that the machine's usage reading rides
+// along with the every-project read (T16.9 F7), so home shows usage when the
+// dashboard starts outside a project. Load-bearing: no reading stays unknown.
+func TestLoadDashAllProjectsUsage(t *testing.T) {
+	f := usagestate.File{Windows: []usagestate.Window{{Kind: provider.WindowWeekly, UsedPct: 41}}}
+	cases := []struct {
+		name  string
+		usage func() (usagestate.File, bool)
+		known bool
+	}{
+		{"reading passes through", func() (usagestate.File, bool) { return f, true }, true},
+		{"no reading", func() (usagestate.File, bool) { return usagestate.File{}, false }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgHome := t.TempDir()
+			writeDashAllProjectsConfig(t, cfgHome, nil, nil)
+			var calls []string
+			p := dashAllProjectsTestParts(t, cfgHome, nil, &calls)
+			p.usage = tc.usage
+			got := loadDashAllProjects(p, "")
+			if got.UsageKnown != tc.known || (tc.known && (len(got.Usage.Windows) != 1 || got.Usage.Windows[0].UsedPct != 41)) {
+				t.Fatalf("usage = %+v known %v, want known %v", got.Usage, got.UsageKnown, tc.known)
+			}
+		})
 	}
 }

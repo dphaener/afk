@@ -201,7 +201,7 @@ type focusWatcher interface {
 	Close() error
 }
 
-// fsnotifyWatcher adapts *fsnotify.Watcher to focusWatcher.
+// fsnotifyWatcher wraps *fsnotify.Watcher as the focusWatcher interface.
 //
 // Errors are not surfaced to the dashboard — there is nothing useful it could do
 // about a watch overflow that beats degrading to the fallback poll — but they MUST

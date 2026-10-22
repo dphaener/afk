@@ -1,6 +1,6 @@
- afk Dashboard  ● 4 more need you elsewhere         usage: Week (all models) 62%
+ afk Dashboard  ● 7 more need you elsewhere         usage: Week (all models) 62%
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ All projects                                                        1–3 of 8 │
+│ All projects                                                        1–2 of 8 │
 │  ● 5 need you  ◐ 1 running  ○ 1 quiet  ✓ 1 finished   inbox 3 · 2 blocking…  │
 │   PROJECT  TASKS           LAST 24H      INBOX                               │
 │  ▾ NEEDS YOU                                                              5  │
@@ -8,8 +8,6 @@
 │ ▌ ○ paused · Paused: no new task will start until you resume it. A task tha… │
 │   gamma    -                                                                 │
 │   ✕ gone · The project folder does not exist. Check its path in config.toml. │
-│   delta    -                                                                 │
-│   ✕ can't read · reading /p/delta/.afk/build/ledger.json: invalid character… │
 │ ─ beta ───────────────────────────────────────────────────────────────────── │
 │ Waits on question bbbbb3                                                     │
 │ Which database should the cache use?                                         │
@@ -17,8 +15,10 @@
 │ Redis needs a server on the VM.                                              │
 │ Unblocks W1.T3 Add the cache                                                 │
 │                                                                              │
+│                                                                              │
 │ THIS WEEK  5.1M tokens              week 62% · 5-hour 28% · resets Thu 15:57 │
 │ Thu ▃ 850.0k  Fri ▅ 1.2M  Sat ▁ 40.0k  Sun █ 2.3M  Mon ▃ 610.0k              │
+│                                                                              │
 │  enter  open project   a  answer   p  pause / resume   n  new plan   +  add  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 enter open · ↑/k up · ↓/j down · a answer · p pause · : actions · ? keys …      

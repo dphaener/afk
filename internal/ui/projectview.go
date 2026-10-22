@@ -201,7 +201,7 @@ func sessionSummaryLines(s Session, linked *buildview.Row, items []inbox.Item) [
 		v := q.Title
 		if q.Body != "" {
 			if v != "" {
-				v += " "
+				v += " — "
 			}
 			v += q.Body
 		}

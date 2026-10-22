@@ -1575,7 +1575,18 @@ type otherProjectAwaiting struct {
 // active project's own by up to a minute; that is by design, not a bug to
 // reconcile, which is why this reads neither m.interval nor m.lastLoad.
 func (m Model) awaitingElsewhere() []otherProjectAwaiting {
-	return needCountsElsewhere(m.needsYouNow(), m.needsYouActivePath())
+	return needCountsElsewhere(m.needsYouNow(), m.elsewhereActivePath())
+}
+
+// elsewhereActivePath is the project "elsewhere" is measured from. At All
+// projects the owner is in no project, so nothing is "here" and every project
+// counts; anywhere else it is the active project. needsYouActivePath itself
+// stays as it is, because the landing code and the Agent band rely on it.
+func (m Model) elsewhereActivePath() string {
+	if currentLevel(m.levelFacts()) == levelAllProjects {
+		return ""
+	}
+	return m.needsYouActivePath()
 }
 
 // renderFooter is the help line, and nothing else.
@@ -2166,7 +2177,31 @@ func (m Model) renderDetailHelpKeyMap() curatedKeyMap {
 		with = append(with, own[0], m.keys.Restart)
 		own = append(with, own[1:]...)
 	}
-	return curatedKeyMap{short: own, full: own}
+	// The jump key's help names the tabs that are drawn: without a stack the
+	// overlay has four, so "1-5" would offer a digit that does nothing. Only
+	// the help text is replaced; the keys stay the registry's.
+	last := len(visibleDetailTabs(m.stack))
+	adjusted := make([]key.Binding, len(own))
+	for i, b := range own {
+		if sameKeys(b.Keys(), detailTabJumpKey.Keys()) {
+			b = key.NewBinding(key.WithKeys(b.Keys()...), key.WithHelp(fmt.Sprintf("1-%d", last), b.Help().Desc))
+		}
+		adjusted[i] = b
+	}
+	return curatedKeyMap{short: adjusted, full: adjusted}
+}
+
+// sameKeys reports whether two key lists are equal, in order.
+func sameKeys(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // renderPaneHelpKeyMap builds inputPane's (the Agent's) help.KeyMap, plus

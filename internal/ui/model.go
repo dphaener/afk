@@ -56,6 +56,7 @@ import (
 	"github.com/dphaener/afk/internal/spice"
 	"github.com/dphaener/afk/internal/state"
 	"github.com/dphaener/afk/internal/termpane"
+	"github.com/dphaener/afk/internal/usagestate"
 )
 
 // paneHandle is the subset of *termpane.Pane the dashboard drives. Referring
@@ -1335,7 +1336,12 @@ type Model struct {
 	everyProject    AllProjects
 	everyProjectSeq int64
 	everyProjectAt  time.Time
-	allProjectsSeq  *atomic.Int64
+	// homeUsage is the usage reading that read carried, and homeUsageKnown
+	// whether it had one; the home screen falls back on it when no project
+	// has filled m.build.
+	homeUsage      usagestate.File
+	homeUsageKnown bool
+	allProjectsSeq *atomic.Int64
 	// homeActivity is the last LoadActivity read (activityview.go) and
 	// homeActivityKnown whether one has landed. activityRoots are the sorted
 	// roots that read was for, so a rows read with the same set of projects
@@ -3261,11 +3267,11 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	}
 	// A PREVIEW says nothing. It was not requested, so it has no standing to write
 	// over whatever the user was reading — and nothing is lost by the silence: the
-	// pane's own title line names the session and carries the "[enter/f to focus]"
+	// pane's own title line names the session and carries the "[enter/f to type in it]"
 	// hint (renderPane), which is where that guidance is looked for anyway.
 	//
 	// A honored CLICK is the one open whose wording is neither of the two below: it
-	// arrives already focused, so "enter/f to focus" would advise a chord the user
+	// arrives already focused, so "enter/f to type in it" would advise a chord the user
 	// has no need of, and "switched to" would bury the fact that the keyboard has
 	// moved. It gets focusPane's own wording instead. This rides on the message
 	// rather than on focusOnArrival, which cannot stand in for it: startup and
@@ -3290,7 +3296,7 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		case honourFocus, fromDetails:
 			text = focusRequestHonoredStatus(m.leaderKey.name, msg.name)
 		default:
-			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to focus, " + keyName(m.leaderKey.name, levelAgent, actionGoBack) + " to return"
+			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to type in it, " + keyName(m.leaderKey.name, levelAgent, actionGoBack) + " to return"
 		}
 		m.notify(notifyInfo, m.withPaneLead(msg.name, text))
 	}
@@ -4305,7 +4311,7 @@ func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 // rendering in the pane (A5).
 func (m Model) releasePaneFocus() (tea.Model, tea.Cmd) {
 	m.focus = focusList
-	m.notify(notifyInfo, "input goes to the dashboard — "+m.paneName+" still running in the pane · "+m.keys.Focus.Help().Key+" to focus")
+	m.notify(notifyInfo, "input goes to the dashboard — "+m.paneName+" still running · "+m.keys.Focus.Help().Key+" to open it again")
 	return m, nil
 }
 
@@ -5252,7 +5258,7 @@ func (m *Model) connect(req paneOpenRequest) tea.Cmd {
 	// A dial for this session is ALREADY outstanding — almost always a preview
 	// whose settle timer fired just before the keypress. Dialing again would
 	// connect a second client, and the host answers that by sending Stolen to
-	// the first, so the pane this keypress is meant to focus would be torn down
+	// the first, so the pane this keypress is meant to type into would be torn down
 	// as it arrived. Claim that dial instead and let the arrival already on its
 	// way install the pane focused (see inFlightOpen and applyPaneAttached).
 	// Bumping previewGen makes every other pending/dispatched preview stale;
@@ -5410,7 +5416,7 @@ func (m Model) agentKeyHint() string {
 // applyKeyAction; this helper is pane-only.
 func (m Model) focusPane() (tea.Model, tea.Cmd) {
 	if m.pane == nil {
-		m.notify(notifyWarn, "no session pane to focus")
+		m.notify(notifyWarn, "no session pane to open")
 		return m, nil
 	}
 	m.showAndFocusPane()
@@ -5633,7 +5639,7 @@ func (m Model) maybeOpenInitialPane() (tea.Model, tea.Cmd) {
 	// drawn only for the selected row (paneForSelection), and the first load
 	// leaves the cursor on row 0, so without this a startup pane for any other
 	// row connects and is never shown: the right side draws row 0's overview,
-	// "opened X · enter/f to focus" focuses row 0 instead of X, and the
+	// "opened X · enter/f to type in it" focuses row 0 instead of X, and the
 	// connection holds X's one client slot behind it. Found by walking through
 	// `afk dash --open` against a built binary (docs/decisions.md, T0.6).
 	//
@@ -7743,7 +7749,7 @@ func (m Model) resolveFocusTarget(project, name string) (focusTarget, bool) {
 	}
 	for _, st := range m.projectSessions[project] {
 		// Fault rows are skipped for sessionIndex's reason: no host, nothing
-		// to focus. The cache is the one by-name resolver sessionByName's own
+		// to open. The cache is the one by-name resolver sessionByName's own
 		// skip cannot cover, because it never passes through m.sessions.
 		if st.Name != name || isWorktreeFault(st.Kind) {
 			continue

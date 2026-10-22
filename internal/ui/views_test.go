@@ -1151,7 +1151,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 
 	t.Run("open", func(t *testing.T) {
 		m, _ := update(t, newModel(), paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
-		if want := "opened alpha · enter/x to focus, ctrl+] esc to return"; m.status != want {
+		if want := "opened alpha · enter/x to type in it, ctrl+] esc to return"; m.status != want {
 			t.Fatalf("open status = %q, want %q", m.status, want)
 		}
 	})
@@ -1160,7 +1160,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 		m.focus = focusRight // connect moves the focus at request time
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha", focusOnArrival: true})
 		m = pressKey(t, m, keyEscMsg())
-		if want := "input goes to the dashboard — alpha still running in the pane · enter/x to focus"; m.status != want {
+		if want := "input goes to the dashboard — alpha still running · enter/x to open it again"; m.status != want {
 			t.Fatalf("release status = %q, want %q", m.status, want)
 		}
 	})
@@ -1753,6 +1753,35 @@ func TestHostIndicatorUsesTheStateMapping(t *testing.T) {
 			}
 			if xansi.Strip(got) != tc.glyph {
 				t.Errorf("glyph = %q, want %q", xansi.Strip(got), tc.glyph)
+			}
+		})
+	}
+}
+
+// TestDetailHelpJumpRange pins F11: the details help names the tab digits that
+// are drawn. Load-bearing: the plain-repo row, where "1-5" would offer a digit
+// that does nothing; the key binding itself is unchanged.
+func TestDetailHelpJumpRange(t *testing.T) {
+	cases := []struct {
+		name string
+		st   stackState
+		want string
+	}{
+		{"no stack shows four tabs", stackState{}, "1-4"},
+		{"a stack shows five tabs", stackState{Detected: true}, "1-5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel(sess("alpha"))
+			m.stack = tc.st
+			var got string
+			for _, b := range m.renderDetailHelpKeyMap().short {
+				if b.Help().Desc == "jump to tab" {
+					got = b.Help().Key
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("jump help key = %q, want %q", got, tc.want)
 			}
 		})
 	}

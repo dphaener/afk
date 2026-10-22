@@ -175,3 +175,44 @@ func TestDialogOverOverlayDimsOnce(t *testing.T) {
 		})
 	}
 }
+
+// TestModalBoxFillsWithPanel pins docs/dash-design.md §1 and §3.8: an overlay
+// is a pane, so an empty cell inside any modal's box is panel, not the bg
+// that paintGround would otherwise fill it with. The probed cell is the right
+// padding cell of the first content row, which no text ever reaches. Load-
+// bearing rows: each modal goes through renderModalBox by its own renderer
+// (the ctrl+] strip, actions, jump), plus a bare box standing for the keys,
+// answer and inbox overlays, which call it directly; "ANSI" — at 16 colours
+// nothing is painted, so the cell keeps the terminal's own background.
+func TestModalBoxFillsWithPanel(t *testing.T) {
+	restoreTide(t)
+	boxes := []struct {
+		name string
+		draw func() string
+	}{
+		{"key strip", func() string { return renderKeyStrip("ctrl+]", 80) }},
+		{"actions", func() string { return leaderDialog{leader: "ctrl+]"}.view(80, 24) }},
+		{"jump", func() string { return jumpDialog{leader: "ctrl+]"}.view(80, 24) }},
+		{"keys, answer and inbox", func() string { return renderModalBox("keys", "esc", "hi", 30, 3) }},
+	}
+	profiles := []struct {
+		name    string
+		profile colorprofile.Profile
+		want    string
+	}{
+		{"true colour", colorprofile.TrueColor, "#0c1629"},
+		{"ANSI", colorprofile.ANSI, "nil"},
+	}
+	for _, p := range profiles {
+		for _, b := range boxes {
+			t.Run(p.name+"/"+b.name, func(t *testing.T) {
+				useThemeFor(palette.Tide, p.profile)
+				box := b.draw()
+				got := cellOf(t, box, lipgloss.Width(box)-3, 1)
+				if hexOf(got.Style.Bg) != p.want {
+					t.Errorf("padding cell bg = %s, want %s", hexOf(got.Style.Bg), p.want)
+				}
+			})
+		}
+	}
+}

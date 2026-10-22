@@ -22,12 +22,12 @@
 // The outcome leads, in plain words, saying what happened. Then a "·"
 // divider, then a hint naming the key that acts on it. One line each. When
 // there is no useful key there is no hint and no divider — "no session pane
-// to focus" is the whole message.
+// to open" is the whole message.
 //
 // The rules that shape holds to:
 //
-//   - No "→" arrows, and no parenthesised hints. "opened x · enter to focus",
-//     never "opened x (press enter to focus)".
+//   - No "→" arrows, and no parenthesised hints. "opened x · enter to type in it",
+//     never "opened x (press enter to type in it)".
 //   - "r to restart", not "press r to restart it": the hint names the key
 //     and the verb it performs, nothing more.
 //   - Key names are spelled the way bubbles/key spells a chord — "ctrl+]",
