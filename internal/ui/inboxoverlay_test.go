@@ -265,11 +265,12 @@ func TestInboxColumnsFor(t *testing.T) {
 	}
 }
 
-// TestInboxItemLines is the item screen's content as a table over the pure
-// function. Load-bearing rows: the options are numbered from 1 and the
-// recommended one is marked (the number is what the owner types); an answered
-// item names where the answer came from; and text from the file cannot carry
-// an escape sequence onto the screen.
+// TestInboxItemLines is the answer screen's scrolling content as a table over
+// the pure function. Load-bearing rows: the facts line carries the id (what
+// `afk inbox answer` takes) and the title is there in full, while the options
+// are NOT (they are the choices under the body, and an answered item shows
+// its answer instead); an answered item names where the answer came from; and
+// text from the file cannot carry an escape sequence onto the screen.
 func TestInboxItemLines(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	items := inboxItems()
@@ -283,22 +284,23 @@ func TestInboxItemLines(t *testing.T) {
 			name: "an open blocking question",
 			item: items[0],
 			want: []string{
-				"question · T2.2 · session feat-auth · raised 3 hours ago · the task waits for your answer",
+				"question · qst234 · T2.2 · from feat-auth · raised 3 hours ago · the task waits for your answer",
+				"Drop the legacy_sessions table?",
 				"The migration removes legacy_sessions.",
-				"Options", "1. Drop it now", "2. Keep it for one release (recommended)",
 			},
-			absent: []string{"Answer:", "Assumed answer", "1. Drop it now (recommended)"},
+			absent: []string{"Answer:", "Assumed answer", "Options", "1. Drop it now", "Keep it for one release"},
 		},
 		{
 			name:   "a notice with an assumed answer",
 			item:   items[2],
-			want:   []string{"notice · raised 2 days ago · does not hold a task up", "Assumed answer: staging is fine for now"},
-			absent: []string{"Options", "Answer:", "session"},
+			want:   []string{"notice · ntc892 · raised 2 days ago · does not hold a task up", "Assumed answer: staging is fine for now"},
+			absent: []string{"Options", "Answer:", "from "},
 		},
 		{
-			name: "answered from the web page",
-			item: items[3],
-			want: []string{"held the task up until it was answered", "Answer: Postal", "Answered 2 minutes ago from the web page."},
+			name:   "answered from the web page",
+			item:   items[3],
+			want:   []string{"held the task up until it was answered", "Answer: Postal", "Answered 2 minutes ago from the web page."},
+			absent: []string{"Mailer", "1. Postal"},
 		},
 		{
 			name: "answered from the dashboard",
@@ -313,7 +315,7 @@ func TestInboxItemLines(t *testing.T) {
 		{
 			name:   "a time that cannot be read is left out",
 			item:   inbox.Item{ID: "abc234", Kind: "notice", Title: "t", CreatedAt: "yesterday"},
-			want:   []string{"notice · does not hold a task up"},
+			want:   []string{"notice · abc234 · does not hold a task up"},
 			absent: []string{"raised"},
 		},
 		{
@@ -418,11 +420,13 @@ func TestInboxLongBodyScrolls(t *testing.T) {
 	}
 }
 
-// TestInboxKeys is the key routing on both screens, through Update. The
-// load-bearing rows are the ones about not quitting: `q` and ctrl+c are the
-// dashboard's quit keys everywhere else, and here one is a letter of the
-// answer and the other does nothing, because a quit would lose what was
-// typed. The esc rows pin the two stages on the item screen.
+// TestInboxKeys is the key routing on the list and on the answer screen in
+// both its states, through Update. The load-bearing rows are the ones about
+// not quitting: `q` and ctrl+c are the dashboard's quit keys everywhere else,
+// and here `q` does nothing while choosing and is a letter in the field,
+// because a quit would lose what was typed. The esc rows pin where back goes:
+// out of the field keeping its text, then to the list when the item was
+// opened from it, and out of the overlay when it was opened straight on.
 func TestInboxKeys(t *testing.T) {
 	t.Run("the list: move, read, close", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
@@ -480,42 +484,75 @@ func TestInboxKeys(t *testing.T) {
 		})
 	}
 
-	t.Run("the item: q and every other letter is text, and nothing quits", func(t *testing.T) {
+	t.Run("choosing: q and every other letter do nothing, and nothing quits", func(t *testing.T) {
 		m, calls := inboxModel(t, 120, 40, nil)
 		m = openInboxItem(t, m, 0)
-		m = typeInbox(t, m, "quit? b i j k :")
+		m = typeInbox(t, m, "qbi:x ")
+		m, _ = update(t, m, chord('c'))
+		if m.quitting {
+			t.Fatal("a key quit the dashboard from the answer screen")
+		}
+		if !m.inboxOpen || m.inbox.screen != inboxScreenItem || m.inbox.item.ID != "qst234" {
+			t.Fatalf("a letter left the answer screen (open=%v screen=%v item=%q)", m.inboxOpen, m.inbox.screen, m.inbox.item.ID)
+		}
+		if m.inbox.typing || m.inbox.input.Value() != "" || m.inbox.choice != 1 {
+			t.Fatalf("typing=%v text=%q choice=%d, want still choosing on the recommended option", m.inbox.typing, m.inbox.input.Value(), m.inbox.choice)
+		}
+		if m.focusedSection() != sectionSessions || m.leaderOpen || m.formOpen {
+			t.Error("a letter acted on the dashboard underneath")
+		}
+		if len(*calls) != 0 {
+			t.Errorf("letters sent %d answers", len(*calls))
+		}
+	})
+
+	t.Run("typing: q and every other letter is text, and nothing quits", func(t *testing.T) {
+		m, calls := inboxModel(t, 120, 40, nil)
+		m = openInboxItem(t, m, 0)
+		m, _ = update(t, m, keyRune('3'))
+		if !m.inbox.typing || m.inbox.choice != 2 {
+			t.Fatalf("3 on a two-option item: typing=%v choice=%d, want the field on the last choice", m.inbox.typing, m.inbox.choice)
+		}
+		m = typeInbox(t, m, "quit? b i j k 1 :")
 		m, _ = update(t, m, chord('c'))
 		if m.quitting {
 			t.Fatal("a key quit the dashboard from the answer field")
 		}
-		if !m.inboxOpen || m.inbox.screen != inboxScreenItem {
-			t.Fatalf("typing left the item screen (open=%v screen=%v)", m.inboxOpen, m.inbox.screen)
-		}
-		if got := m.inbox.input.Value(); got != "quit? b i j k :" {
+		if got := m.inbox.input.Value(); got != "quit? b i j k 1 :" {
 			t.Fatalf("the answer field holds %q, want what was typed", got)
 		}
-		if m.focusedSection() != sectionSessions || m.leaderOpen || m.formOpen {
-			t.Error("a typed letter acted on the dashboard underneath")
-		}
-		if len(*calls) != 0 {
-			t.Errorf("typing sent %d answers", len(*calls))
+		if m.inbox.item.ID != "qst234" || len(*calls) != 0 {
+			t.Errorf("typing moved the item (%q) or sent %d answers", m.inbox.item.ID, len(*calls))
 		}
 	})
 
-	t.Run("the item: esc clears the text, then goes back, then closes", func(t *testing.T) {
+	t.Run("a digit past the last choice does nothing", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
-		m = openInboxItem(t, m, 2)
+		m = openInboxItem(t, m, 0)
+		m, _ = update(t, m, keyRune('9'))
+		if m.inbox.choice != 1 || m.inbox.typing {
+			t.Fatalf("9 on a three-choice item: choice=%d typing=%v", m.inbox.choice, m.inbox.typing)
+		}
+	})
+
+	t.Run("esc in the field keeps the text and goes back to the choices, then to the list, then closes", func(t *testing.T) {
+		m, _ := inboxModel(t, 120, 40, nil)
+		m = openInboxItem(t, m, 0)
+		m, _ = update(t, m, keyRune('3'))
 		m = typeInbox(t, m, "draft")
 		m, _ = update(t, m, keyEsc)
-		if m.inbox.screen != inboxScreenItem || m.inbox.input.Value() != "" {
-			t.Fatalf("first esc: screen=%v text=%q, want the item with the text cleared", m.inbox.screen, m.inbox.input.Value())
+		if m.inbox.screen != inboxScreenItem || m.inbox.typing || m.inbox.input.Value() != "draft" {
+			t.Fatalf("first esc: screen=%v typing=%v text=%q, want the choices with the text kept", m.inbox.screen, m.inbox.typing, m.inbox.input.Value())
+		}
+		if view := xansi.Strip(m.inbox.View()); !strings.Contains(view, "> draft") {
+			t.Errorf("the kept text is not shown under the choices:\n%s", view)
 		}
 		m, _ = update(t, m, keyEsc)
 		if !m.inboxOpen || m.inbox.screen != inboxScreenList {
 			t.Fatalf("second esc: open=%v screen=%v, want the list", m.inboxOpen, m.inbox.screen)
 		}
-		if m.inbox.cursor != 2 {
-			t.Errorf("back on the list the cursor is on %d, want the item just read (2)", m.inbox.cursor)
+		if m.inbox.cursor != 0 {
+			t.Errorf("back on the list the cursor is on %d, want the item just read (0)", m.inbox.cursor)
 		}
 		m, _ = update(t, m, keyEsc)
 		if m.inboxOpen {
@@ -523,40 +560,80 @@ func TestInboxKeys(t *testing.T) {
 		}
 	})
 
-	t.Run("the item: ctrl+g closes the overlay outright", func(t *testing.T) {
+	t.Run("an item with no options opens in the field and esc goes back to the list", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
-		m = openInboxItem(t, m, 0)
-		m = typeInbox(t, m, "draft")
-		m, _ = update(t, m, keyCtrlG)
-		if m.inboxOpen || m.quitting {
-			t.Fatalf("open=%v quitting=%v, want closed and running", m.inboxOpen, m.quitting)
+		m = openInboxItem(t, m, 2)
+		if !m.inbox.typing {
+			t.Fatal("an item with no options did not open in the field")
+		}
+		m = typeInbox(t, m, "q")
+		m, _ = update(t, m, keyEsc)
+		if !m.inboxOpen || m.inbox.screen != inboxScreenList || m.inbox.cursor != 2 {
+			t.Fatalf("esc: open=%v screen=%v cursor=%d, want the list on item 2", m.inboxOpen, m.inbox.screen, m.inbox.cursor)
+		}
+	})
+
+	t.Run("opened straight on an item, esc closes the overlay", func(t *testing.T) {
+		for _, id := range []string{"qst234", "ntc892", "ans345"} {
+			m, _ := inboxModel(t, 120, 40, nil)
+			m = m.openInboxOn(id)
+			if !m.inboxOpen || m.inbox.screen != inboxScreenItem || m.inbox.fromList {
+				t.Fatalf("%s: open=%v screen=%v fromList=%v", id, m.inboxOpen, m.inbox.screen, m.inbox.fromList)
+			}
+			m, _ = update(t, m, keyEsc)
+			if m.inboxOpen {
+				t.Errorf("%s: esc went to a list the owner never saw instead of closing", id)
+			}
+		}
+	})
+
+	t.Run("ctrl+g closes the overlay outright, choosing or typing", func(t *testing.T) {
+		for _, typing := range []bool{false, true} {
+			m, _ := inboxModel(t, 120, 40, nil)
+			m = openInboxItem(t, m, 0)
+			if typing {
+				m, _ = update(t, m, keyRune('3'))
+				m = typeInbox(t, m, "draft")
+			}
+			m, _ = update(t, m, keyCtrlG)
+			if m.inboxOpen || m.quitting {
+				t.Fatalf("typing=%v: open=%v quitting=%v, want closed and running", typing, m.inboxOpen, m.quitting)
+			}
 		}
 	})
 
 	t.Run("text typed for one item is not carried to the next", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
 		m = openInboxItem(t, m, 0)
+		m, _ = update(t, m, keyRune('3'))
 		m = typeInbox(t, m, "for the first")
+		m, _ = update(t, m, keyEsc)
+		m, _ = update(t, m, keyDown)
+		if m.inbox.item.ID != "fal567" || m.inbox.input.Value() != "" {
+			t.Fatalf("down moved to %q with %q in the field, want fal567 and an empty field", m.inbox.item.ID, m.inbox.input.Value())
+		}
 		m, _ = update(t, m, keyCtrlG)
 		m = openInboxItem(t, m, 2)
 		if got := m.inbox.input.Value(); got != "" {
-			t.Fatalf("the second item's field starts with %q", got)
+			t.Fatalf("the next item's field starts with %q", got)
 		}
 	})
 
-	t.Run("an answered item has no field and enter does nothing", func(t *testing.T) {
+	t.Run("an answered item has no choices and no field and enter does nothing", func(t *testing.T) {
 		m, calls := inboxModel(t, 120, 40, nil)
 		m = openInboxItem(t, m, 3)
 		view := xansi.Strip(m.inbox.View())
-		if strings.Contains(view, "> ") || strings.Contains(view, "type an answer") {
-			t.Errorf("an answered item shows an answer field:\n%s", view)
+		for _, bad := range []string{"> ", inboxChooseHeading, ownChoiceLabel, "of 3"} {
+			if strings.Contains(view, bad) {
+				t.Errorf("an answered item shows %q:\n%s", bad, view)
+			}
 		}
 		for _, want := range []string{"Answer: Postal", "from the web page"} {
 			if !strings.Contains(view, want) {
 				t.Errorf("missing %q in:\n%s", want, view)
 			}
 		}
-		m = typeInbox(t, m, "again")
+		m = typeInbox(t, m, "1again")
 		m, cmd := update(t, m, keyEnter)
 		if cmd != nil || len(*calls) != 0 {
 			t.Fatalf("enter on an answered item issued a command or sent an answer (calls=%d)", len(*calls))
@@ -570,42 +647,147 @@ func TestInboxKeys(t *testing.T) {
 		}
 	})
 
-	t.Run("a paste goes into the answer field", func(t *testing.T) {
+	t.Run("a paste goes into the field only while it has the keys", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
 		m = openInboxItem(t, m, 0)
+		m, _ = update(t, m, tea.PasteMsg{Content: "sk-live-123"})
+		if got := m.inbox.input.Value(); got != "" {
+			t.Fatalf("a paste while choosing went into the unseen field: %q", got)
+		}
+		m, _ = update(t, m, keyRune('3'))
 		m, _ = update(t, m, tea.PasteMsg{Content: "sk-live-123"})
 		if got := m.inbox.input.Value(); got != "sk-live-123" {
 			t.Fatalf("after a paste the field holds %q", got)
 		}
 	})
+}
 
-	t.Run("the hint beside the field names the numbers only when there are options", func(t *testing.T) {
-		m, _ := inboxModel(t, 120, 40, nil)
-		m = openInboxItem(t, m, 0)
-		if view := xansi.Strip(m.inbox.View()); !strings.Contains(view, inboxAnswerOptionsHint) {
-			t.Errorf("an item with options does not say a number picks one:\n%s", view)
+// TestInboxAnswerScreen pins what the answer screen draws for one item: the
+// strip naming the inbox and the project with the item's place among the
+// open ones, CHOOSE ONE with the options numbered, the recommended one
+// labelled and selected, the last choice to write one's own, and the line on
+// what happens next. The load-bearing rows are the selection (the fill is on
+// exactly the selected choice, drawn by §3.5's row) and the count, which
+// skips answered items because the arrows do.
+func TestInboxAnswerScreen(t *testing.T) {
+	m, _ := inboxModel(t, 120, 40, nil)
+	m = openInboxItem(t, m, 0)
+	view := plain(strings.Split(m.inbox.View(), "\n"))
+	text := strings.Join(view, "\n")
+	if !strings.HasPrefix(strings.TrimSpace(view[0]), "Inbox · main") || !strings.HasSuffix(strings.TrimSpace(view[0]), "1 of 3 · ↑↓ other items") {
+		t.Errorf("strip = %q, want the inbox, the project and 1 of 3", view[0])
+	}
+	for _, want := range []string{
+		inboxChooseHeading,
+		"1. Drop it now",
+		"2. Keep it for one release  recommended",
+		"3. " + ownChoiceLabel,
+		"T2.2 starts again within a few seconds of your answer",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
 		}
-		m, _ = update(t, m, keyEsc)
-		m, _ = update(t, m, keyRune('j'))
-		m, _ = update(t, m, keyRune('j'))
-		m, _ = update(t, m, keyEnter)
-		view := xansi.Strip(m.inbox.View())
-		if strings.Contains(view, "a number") || !strings.Contains(view, inboxAnswerHint) {
-			t.Errorf("an item with no options offers numbers:\n%s", view)
+	}
+	raw := strings.Split(m.inbox.View(), "\n")
+	c := answerChoices(m.inbox.item)[1]
+	if inboxChoiceLines(1, c, m.inbox.width, true)[0] == inboxChoiceLines(1, c, m.inbox.width, false)[0] {
+		t.Fatal("fixture broken: a selected choice draws the same as an unselected one, so the rows below prove nothing")
+	}
+	if got, want := raw[inboxLineIndex(view, "Keep it")], inboxChoiceLines(1, answerChoices(m.inbox.item)[1], m.inbox.width, true)[0]; got != want {
+		t.Errorf("the selected choice is not drawn with the row selection:\n got %q\nwant %q", got, want)
+	}
+	if got, want := raw[inboxLineIndex(view, "Drop it now")], inboxChoiceLines(0, answerChoices(m.inbox.item)[0], m.inbox.width, false)[0]; got != want {
+		t.Errorf("an unselected choice is drawn selected:\n got %q\nwant %q", got, want)
+	}
+
+	m, _ = update(t, m, keyRune('1'))
+	moved := strings.Split(m.inbox.View(), "\n")
+	if got, want := moved[inboxLineIndex(view, "Drop it now")], inboxChoiceLines(0, answerChoices(m.inbox.item)[0], m.inbox.width, true)[0]; got != want {
+		t.Errorf("1 did not move the selection fill to the first choice:\n got %q\nwant %q", got, want)
+	}
+
+	t.Run("a notice that blocks nothing says so", func(t *testing.T) {
+		m, _ := inboxModel(t, 120, 40, nil)
+		m = openInboxItem(t, m, 2)
+		text := strings.Join(plain(strings.Split(m.inbox.View(), "\n")), "\n")
+		if !strings.Contains(text, "Nothing waits on this; afk keeps your answer for the record") || !strings.Contains(text, "3 of 3") {
+			t.Errorf("the notice's screen:\n%s", text)
+		}
+		if strings.Contains(text, inboxOtherItemsHint) {
+			t.Errorf("the strip offers the arrows while they type into the field:\n%s", text)
 		}
 	})
 }
 
-// TestInboxEmptyAnswer: enter with nothing typed, or only spaces, sends
-// nothing and says so under the field. "Sends nothing" is the load-bearing
-// half: an empty answer written to the file would be an item that reads as
-// open forever while the store refuses every later answer to it.
+// inboxLineIndex is the first line of lines holding sub, or -1.
+func inboxLineIndex(lines []string, sub string) int {
+	for i, ln := range lines {
+		if strings.Contains(ln, sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestInboxMovesBetweenItems drives ↑ and ↓ on the answer screen over a
+// fixture with an answered item between two open ones. Load-bearing rows: the
+// answered item is skipped (there is nothing to answer on it, and the count
+// does not include it), the ends stay put rather than wrapping, and each item
+// starts fresh on its recommended option.
+func TestInboxMovesBetweenItems(t *testing.T) {
+	items := []inbox.Item{
+		{ID: "aaa234", Kind: "question", Blocking: true, Title: "First", Options: []string{"a", "b"}, Recommended: "b"},
+		{ID: "bbb234", Kind: "question", Title: "Answered", Options: []string{"x"}, Answer: "x", AnsweredVia: inbox.ViaCLI},
+		{ID: "ccc234", Kind: "question", Blocking: true, Title: "Second", Options: []string{"c", "d", "e"}},
+	}
+	m, _ := inboxModel(t, 120, 40, nil)
+	m = withBuild(t, m, buildview.Snapshot{Root: "/main", Items: items})
+	m = m.openInboxOn("aaa234")
+	cases := []struct {
+		name       string
+		key        tea.Msg
+		wantID     string
+		wantChoice int
+		wantCount  string
+	}{
+		{"up at the first item stays", keyUp, "aaa234", 1, "1 of 2"},
+		{"down skips the answered item", keyDown, "ccc234", 0, "2 of 2"},
+		{"down at the last item stays", keyRune('j'), "ccc234", 0, "2 of 2"},
+		{"k goes back, on the recommended option again", keyRune('k'), "aaa234", 1, "1 of 2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ = update(t, m, tc.key)
+			if m.inbox.item.ID != tc.wantID || m.inbox.choice != tc.wantChoice {
+				t.Fatalf("item=%q choice=%d, want %q on %d", m.inbox.item.ID, m.inbox.choice, tc.wantID, tc.wantChoice)
+			}
+			if got := m.inbox.stripContext(); got != tc.wantCount+" · "+inboxOtherItemsHint {
+				t.Errorf("strip context = %q, want %q", got, tc.wantCount)
+			}
+		})
+	}
+}
+
+// TestInboxEmptyAnswer: enter in the field with nothing typed, or only
+// spaces, sends nothing and says so under the field. "Sends nothing" is the
+// load-bearing half: an empty answer written to the file would be an item
+// that reads as open forever while the store refuses every later answer to
+// it. The no-options row matters because that item opens in the field with
+// no choice to fall back on.
 func TestInboxEmptyAnswer(t *testing.T) {
-	for _, tc := range []struct{ name, text string }{{"nothing typed", ""}, {"only spaces", "   "}} {
+	for _, tc := range []struct {
+		name  string
+		index int
+		keys  string
+	}{
+		{"own answer, nothing typed", 0, "3"},
+		{"own answer, only spaces", 0, "3   "},
+		{"no options, nothing typed", 2, ""},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, calls := inboxModel(t, 120, 40, nil)
-			m = openInboxItem(t, m, 0)
-			m = typeInbox(t, m, tc.text)
+			m = openInboxItem(t, m, tc.index)
+			m = typeInbox(t, m, tc.keys)
 			m, cmd := update(t, m, keyEnter)
 			if cmd != nil {
 				t.Fatalf("enter on an empty answer issued a command (%T)", cmd())
@@ -613,8 +795,8 @@ func TestInboxEmptyAnswer(t *testing.T) {
 			if len(*calls) != 0 {
 				t.Fatalf("an empty answer was sent: %+v", *calls)
 			}
-			if m.inbox.screen != inboxScreenItem {
-				t.Fatal("the empty answer left the item screen")
+			if m.inbox.screen != inboxScreenItem || !m.inbox.typing {
+				t.Fatal("the empty answer left the field")
 			}
 			if got := boxText(m); !strings.Contains(got, inboxEmptyAnswerNote) {
 				t.Errorf("the box does not say %q:\n%s", inboxEmptyAnswerNote, got)
@@ -628,27 +810,47 @@ func TestInboxEmptyAnswer(t *testing.T) {
 	}
 }
 
-// TestInboxAnswerSent is the successful answer. Load-bearing rows:
+// TestInboxAnswerSent is the successful answer, one row per way to give it.
+// Load-bearing rows:
 //
+//   - an option goes out as its NUMBER, a digit or enter on the recommended
+//     one alike: the store resolves an in-range number to that option exactly
+//     as `afk inbox answer <id> 2` does, so the item file comes out the same
+//     as from the command line;
+//   - an own answer goes out exactly as typed, a bare "2" included: the store
+//     turns a number into its option, and resolving it here too would pick
+//     the wrong option when the options are themselves numbers;
 //   - the seam is called with the SNAPSHOT's root (/main), not the folder the
 //     dashboard was started in (/repo), because the inbox lives in the main
 //     checkout and the dashboard may be running inside a session's worktree;
-//   - the text goes out exactly as typed, a bare "2" included: the store
-//     turns a number into its option, and resolving it here too would pick
-//     the wrong option when the options are themselves numbers;
 //   - nothing is written on the Update goroutine: the call count is zero
 //     until the returned command runs;
+//   - after the answer the screen goes back to where it was opened from: the
+//     list, or out of the overlay when opened straight on the item;
 //   - the two notices differ on whether a task was waiting.
 func TestInboxAnswerSent(t *testing.T) {
 	cases := []struct {
 		name       string
+		openOn     string // "" opens item index from the list
 		index      int
-		text       string
+		keys       []tea.Msg
 		wantID     string
+		wantText   string
 		wantNotice string
 	}{
-		{"a number on a blocking question", 0, "2", "qst234", "Answered qst234. The task carries on within a few seconds."},
-		{"free text on a notice that blocks nothing", 2, "use production", "ntc892", "Answered ntc892."},
+		{"an option by its digit", "", 0, []tea.Msg{keyRune('1'), keyEnter}, "qst234", "1",
+			"Answered qst234. The task carries on within a few seconds."},
+		{"the recommended option by enter alone", "", 0, []tea.Msg{keyEnter}, "qst234", "2",
+			"Answered qst234. The task carries on within a few seconds."},
+		{"an own answer", "", 0, append(append([]tea.Msg{keyRune('3')}, keyRunes("keep it, and tell me who reads it")...), keyEnter), "qst234",
+			"keep it, and tell me who reads it", "Answered qst234. The task carries on within a few seconds."},
+		{"an own answer that is a number goes out as typed", "", 0, []tea.Msg{keyRune('3'), keyRune('2'), keyEnter}, "qst234", "2",
+			"Answered qst234. The task carries on within a few seconds."},
+		{"an item with no options", "", 2, append(keyRunes("use production"), keyEnter), "ntc892", "use production", "Answered ntc892."},
+		{"down to the next item, then answered", "", 0, append(append([]tea.Msg{keyDown}, keyRunes("retry it")...), keyEnter), "fal567",
+			"retry it", "Answered fal567. The task carries on within a few seconds."},
+		{"opened straight on the item", "qst234", 0, []tea.Msg{keyEnter}, "qst234", "2",
+			"Answered qst234. The task carries on within a few seconds."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -666,9 +868,15 @@ func TestInboxAnswerSent(t *testing.T) {
 				loads++
 				return inboxSnap()
 			}
-			m = openInboxItem(t, m, tc.index)
-			m = typeInbox(t, m, tc.text)
-			m, cmd := update(t, m, keyEnter)
+			if tc.openOn != "" {
+				m = m.openInboxOn(tc.openOn)
+			} else {
+				m = openInboxItem(t, m, tc.index)
+			}
+			var cmd tea.Cmd
+			for _, k := range tc.keys {
+				m, cmd = update(t, m, k)
+			}
 			if len(*calls) != 0 {
 				t.Fatal("the answer was written from Update, not from a command")
 			}
@@ -685,25 +893,40 @@ func TestInboxAnswerSent(t *testing.T) {
 			if len(msgs) != 1 {
 				t.Fatalf("the send produced %d messages, want one", len(msgs))
 			}
-			if want := (answerCall{"/main", tc.wantID, tc.text}); len(*calls) != 1 || (*calls)[0] != want {
+			if want := (answerCall{"/main", tc.wantID, tc.wantText}); len(*calls) != 1 || (*calls)[0] != want {
 				t.Fatalf("seam calls = %+v, want exactly %+v", *calls, want)
 			}
 
 			m, refresh := update(t, m, msgs[0])
-			if !m.inboxOpen || m.inbox.screen != inboxScreenList {
-				t.Fatalf("after the answer: open=%v screen=%v, want the list", m.inboxOpen, m.inbox.screen)
-			}
 			if m.status != tc.wantNotice {
 				t.Errorf("notice = %q, want %q", m.status, tc.wantNotice)
-			}
-			if row := xansi.Strip(strings.Split(m.inbox.View(), "\n")[tc.index]); !strings.Contains(row, "answered") {
-				t.Errorf("the answered item's row does not say so yet: %q", row)
 			}
 			if !hasMsg[buildLoadedMsg](collectMsgs(t, refresh)) || loads != 1 {
 				t.Errorf("the answer did not ask for a fresh read of the inbox (loads=%d)", loads)
 			}
+			if tc.openOn != "" {
+				if m.inboxOpen {
+					t.Fatal("an answer to an item opened straight on stayed in the overlay")
+				}
+				return
+			}
+			if !m.inboxOpen || m.inbox.screen != inboxScreenList {
+				t.Fatalf("after the answer: open=%v screen=%v, want the list", m.inboxOpen, m.inbox.screen)
+			}
+			if row := xansi.Strip(strings.Split(m.inbox.View(), "\n")[m.inbox.cursor]); !strings.Contains(row, tc.wantID) || !strings.Contains(row, "answered") {
+				t.Errorf("the answered item's row does not say so yet: %q", row)
+			}
 		})
 	}
+}
+
+// keyRunes is one key press per rune of s.
+func keyRunes(s string) []tea.Msg {
+	var out []tea.Msg
+	for _, r := range s {
+		out = append(out, keyRune(r))
+	}
+	return out
 }
 
 // TestInboxAnswerRefused is the table of sends that did not save. In every row
@@ -764,7 +987,9 @@ func TestInboxAnswerRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, calls := inboxModel(t, 120, 40, tc.reply)
 			m = openInboxItem(t, m, 0)
-			m = typeInbox(t, m, "1")
+			// The own-answer choice, then "1" typed: the field's text is what
+			// a refusal must keep.
+			m = typeInbox(t, m, "31")
 			m, cmd := update(t, m, keyEnter)
 			msgs := collectMsgs(t, cmd)
 			if len(msgs) != 1 || len(*calls) != 1 {
@@ -823,7 +1048,7 @@ func TestInboxAnswerRefused(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
 		m.deps.AnswerInbox = nil
 		m = openInboxItem(t, m, 0)
-		m = typeInbox(t, m, "1")
+		m = typeInbox(t, m, "31")
 		m, cmd := update(t, m, keyEnter)
 		if cmd != nil {
 			t.Fatalf("a send with no seam issued a command (%T)", cmd())
@@ -885,7 +1110,7 @@ func TestInboxFollowsTheFiles(t *testing.T) {
 	t.Run("the item keeps the typed text and takes the newest copy", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
 		m = openInboxItem(t, m, 0)
-		m = typeInbox(t, m, "half an ans")
+		m = typeInbox(t, m, "3half an ans")
 		snap := inboxSnap()
 		snap.Items[0].Body = "The body was rewritten."
 		snap.Items = append([]inbox.Item{fresh}, snap.Items...)
@@ -904,13 +1129,13 @@ func TestInboxFollowsTheFiles(t *testing.T) {
 	t.Run("an item answered from the phone turns into its answered view", func(t *testing.T) {
 		m, calls := inboxModel(t, 120, 40, nil)
 		m = openInboxItem(t, m, 0)
-		m = typeInbox(t, m, "half an ans")
+		m = typeInbox(t, m, "3half an ans")
 		snap := inboxSnap()
 		snap.Items[0].Answer, snap.Items[0].AnsweredAt, snap.Items[0].AnsweredVia = "Drop it now", inboxStamp(0), inbox.ViaWeb
 		m = withBuild(t, m, snap)
 		view := xansi.Strip(m.inbox.View())
-		if strings.Contains(view, "> ") {
-			t.Errorf("the field is still shown on an answered item:\n%s", view)
+		if strings.Contains(view, "> ") || strings.Contains(view, inboxChooseHeading) {
+			t.Errorf("the field or the choices are still shown on an answered item:\n%s", view)
 		}
 		if box := boxText(m); !strings.Contains(box, "Answer: Drop it now") || !strings.Contains(box, "from the web page") {
 			t.Errorf("the stored answer is not shown:\n%s", box)
@@ -1101,8 +1326,16 @@ func TestInboxKeyIsInTheKeyTable(t *testing.T) {
 		t.Errorf("the list screen's footer = %q", line)
 	}
 	om, _ = update(t, om, keyEnter)
-	if line := xansi.Strip(om.renderHelp()); !strings.Contains(line, "send answer") || !strings.Contains(line, "clear, then back") || !strings.Contains(line, "close inbox") {
-		t.Errorf("the item screen's footer = %q", line)
+	if line := xansi.Strip(om.renderHelp()); !strings.Contains(line, "1-3 choose") || !strings.Contains(line, "enter send") || !strings.Contains(line, "other items") || !strings.Contains(line, "esc back") {
+		t.Errorf("the answer screen's footer while choosing = %q", line)
+	}
+	om, _ = update(t, om, keyRune('3'))
+	if line := xansi.Strip(om.renderHelp()); !strings.Contains(line, "send answer") || !strings.Contains(line, "back to the choices") || !strings.Contains(line, "close inbox") {
+		t.Errorf("the answer screen's footer while typing = %q", line)
+	}
+	om, _ = update(t, om, keyEsc)
+	if line := xansi.Strip(om.renderHelp()); !strings.Contains(line, "write my own answer") {
+		t.Errorf("enter on the own-answer choice is not said to open the field: %q", line)
 	}
 	om, _ = update(t, om, keyEsc)
 	for range 3 {

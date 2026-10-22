@@ -313,7 +313,7 @@ func TestKeyTableIsTheDecidedTable(t *testing.T) {
 		{"n", actionPlanNew, atAllProjects},
 		{"+", actionProjectAdd, atAllProjects},
 		{"-", actionProjectRemove, atAllProjects},
-		{"a", actionAnswerOldest, atAllProjects},
+		{"a", actionAnswerOldest, atEveryLevel},
 		{"p", actionPauseToggle, atAllProjects | atProject},
 		{"n", actionNewSession, atProject},
 		{"o", actionScratch, atProject},

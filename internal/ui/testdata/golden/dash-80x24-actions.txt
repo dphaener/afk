@@ -16,7 +16,7 @@
 │ │ start a new plan                               — starting a plan is not… │ │
 │ │ add a project                       +          — works on All projects   │ │
 │ │ remove the project                  -          — works on All projects   │ │
-│ │ answer the oldest                   a          — works on All projects   │ │
+│ │ answer the oldest                   a          — Answer the oldest inbo… │ │
 │ │ pause or resume the build           p          — this project has no bu… │ │
 │ │ new session                         n          — Start a new session fr… │ │
 │ ╰─────────────────────────────── type to search · enter runs · esc closes ─╯ │

@@ -591,8 +591,9 @@ const (
 	// actionPauseToggle is `p`, one toggle replacing the leader's P and U:
 	// pause a running build, resume a paused or stopped one.
 	actionPauseToggle
-	// actionAnswerOldest is `a` at All projects: open the inbox of the
-	// project holding the oldest blocking item (answerOldest, allprojects.go).
+	// actionAnswerOldest is `a` at every level: open the answer screen on the
+	// oldest blocking item, across every project at All projects and in the
+	// active project elsewhere (answerOldest, allprojects.go).
 	actionAnswerOldest
 	// actionNeedNext and actionNeedPrev are `]` and `[`: go to the next or
 	// previous thing that needs the owner, across every project

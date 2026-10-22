@@ -281,8 +281,10 @@ func keyTableRows() []keyRow {
 			blocked: reasonAsProjectEdit(actionProjectRemove),
 		},
 		{
-			action: actionAnswerOldest, key: "a", levels: atAllProjects,
-			name: "answer the oldest", help: "Answer the oldest inbox item that blocks a task, across every project",
+			// In the Agent this is the leader then `a`: the answer screen
+			// opens over the Project, as `i` does (agentActionStays).
+			action: actionAnswerOldest, key: "a", levels: atEveryLevel,
+			name: "answer the oldest", help: "Answer the oldest inbox item that blocks a task (every project at All projects, this project elsewhere)",
 		},
 		{
 			action: actionPauseToggle, key: "p", levels: atAllProjects | atProject,

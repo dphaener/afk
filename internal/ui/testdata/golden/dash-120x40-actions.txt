@@ -16,7 +16,7 @@
   │ │     │ start a new plan                               — starting a plan is not available here           │     │ │  
   │ │     │ add a project                       +          — works on All projects                           │     │ │  
   │ │     │ remove the project                  -          — works on All projects                           │     │ │  
-  │ │     │ answer the oldest                   a          — works on All projects                           │     │ │  
+  │ │     │ answer the oldest                   a          — Answer the oldest inbox item that blocks a tas… │     │ │  
   │ │     │ pause or resume the build           p          — this project has no build                       │     │ │  
   │ │     │ new session                         n          — Start a new session from a plan or a branch     │     │ │  
   │ │     │ one-off session                     o          — Start a one-off session with no plan            │     │ │  
@@ -35,6 +35,6 @@
   │ │ diff│ amend the plan                                 — Change the plan; asks what to change in a sent… │     │ │  
   │ │ host│ fix a bug                                      — Find and fix a bug; asks what is broken         │     │ │  
   │ ╰─────│ reconcile the plan with a document             — Fit the plan to a document; asks for its path   │─────╯ │  
-  │  tab/1╰─────────────────────────────────────────────────────── type to search · enter runs · esc closes ─╯       │  
+  │  tab/1╰─────────────────────────────────────────────────────── type to search · enter runs · esc closes ─╯er     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 enter run · ↑/↓ move · type filter · esc close · ctrl+c quit                                                            

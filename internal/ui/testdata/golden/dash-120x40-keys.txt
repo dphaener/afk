@@ -19,22 +19,22 @@
   │      usage --refresh does                                                in a sentence                           │  
   │ ?    Show every key, level by level                      fix a bug       Find and fix a bug; asks what is        │  
   │ q    Leave the dashboard; every session keeps running                    broken                                  │  
-  │                                                          reconcile the plan with a document                      │  
-  │ All projects                                                             Fit the plan to a document; asks for    │  
-  │ j k ↑ ↓ pgup pgdn home end                                               its path                                │  
-  │                 Move the selection                       check the plan  Show the plan's errors and warnings,    │  
-  │ enter           Go in a level, or open what is                           as afk plan lint does                   │  
-  │                 selected                                 approve the plan                                        │  
-  │ n               Plan a project that has no plan; asks                    Approve a new plan and start its        │  
-  │                 for its folder or a new name                             build, as afk plan approve does         │  
-  │ +               Put a folder on the daemon's list, as    start a new plan                                        │  
-  │                 afk project add does                                     Plan a project that has no plan; asks   │  
-  │ -               Take the selected project off the                        for its folder or a new name            │  
+  │ a    Answer the oldest inbox item that blocks a task     reconcile the plan with a document                      │  
+  │      (every project at All projects, this project                        Fit the plan to a document; asks for    │  
+  │      elsewhere)                                                          its path                                │  
+  │                                                          check the plan  Show the plan's errors and warnings,    │  
+  │ All projects                                                             as afk plan lint does                   │  
+  │ j k ↑ ↓ pgup pgdn home end                               approve the plan                                        │  
+  │                 Move the selection                                       Approve a new plan and start its        │  
+  │ enter           Go in a level, or open what is                           build, as afk plan approve does         │  
+  │                 selected                                 start a new plan                                        │  
+  │ n               Plan a project that has no plan; asks                    Plan a project that has no plan; asks   │  
+  │                 for its folder or a new name                             for its folder or a new name            │  
+  │ +               Put a folder on the daemon's list, as                                                            │  
+  │                 afk project add does                                                                             │  
+  │ -               Take the selected project off the                                                                │  
   │                 daemon's list; its files stay                                                                    │  
-  │ a               Answer the oldest inbox item that                                                                │  
-  │                 blocks a task, across every project                                                              │  
   │ p               Hold the build so no new task starts,                                                            │  
-  │                 or let a paused one carry on                                                                     │  
-  ╰───────────────────────────────────────────────────────────────── / search · j/k scroll · esc close · 1–30 of 61 ─╯  
+  ╰───────────────────────────────────────────────────────────────── / search · j/k scroll · esc close · 1–30 of 62 ─╯  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 / search · j/k scroll · esc close · ctrl+c quit                                                                         

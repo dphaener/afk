@@ -260,3 +260,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Needs you**: something only the owner can move on: a session waiting on them, an inbox item that blocks a task, a plan to approve, a broken session or a gone project; the dashboard keeps them in one order across every project.
 - **Next needing you**: the item after the one in view in that order; `]` goes to it and `[` to the one before, and the Agent's band names it.
 - **Jump search**: the `/` box that finds any project, session or task across every project and goes there; things that need the owner come first.
+- **Answer screen**: the inbox item screen of `a` and `enter` on an inbox row: the item's choices numbered `1`–`n`, a "Write my own answer" field, and a line on what happens next.

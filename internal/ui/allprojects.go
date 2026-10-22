@@ -417,6 +417,9 @@ func oldestBlockingRow(rows []projectrows.Row) (projectrows.Row, bool) {
 // (the active project just closes the screen) and has the inbox open on the
 // item once that project's snapshot is in memory; nothing is read here.
 func (m Model) answerOldest() (tea.Model, tea.Cmd) {
+	if m.level() != levelAllProjects {
+		return m.answerOldestHere()
+	}
 	r, ok := oldestBlockingRow(m.allProjectsRows)
 	if !ok {
 		m.notify(notifyInfo, nothingBlockingNotice)
@@ -445,6 +448,29 @@ func (m Model) answerOldest() (tea.Model, tea.Cmd) {
 	nm.inboxFollow = r.Wait.ItemID
 	return nm, cmd
 }
+
+// answerOldestHere is `a` at Project and in the Agent: the oldest item in the
+// active project that holds a task up, on the answer screen. From the Agent
+// runLevelAction has already moved the keyboard to the list, so this opens
+// over the Project exactly as `i` does. Without a read snapshot there is no
+// item to name (and no id for inboxFollow to wait on), so it says the inbox
+// is not read yet, as `i` does, rather than guess.
+func (m Model) answerOldestHere() (tea.Model, tea.Cmd) {
+	if !m.buildKnown {
+		m.notify(notifyInfo, inboxNotReadNotice)
+		return m, nil
+	}
+	it, ok := oldestBlockingItem(m.build.Items)
+	if !ok {
+		m.notify(notifyInfo, nothingBlockingHereNotice)
+		return m, nil
+	}
+	return m.openInboxOn(it.ID), nil
+}
+
+// nothingBlockingHereNotice is `a` at Project or in the Agent with no blocking
+// item in the active project.
+const nothingBlockingHereNotice = "Nothing in this project's inbox holds a task up."
 
 // nothingBlockingNotice is `a` with no blocking item in any project.
 const nothingBlockingNotice = "Nothing in any inbox holds a task up."

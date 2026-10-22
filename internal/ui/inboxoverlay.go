@@ -1,6 +1,11 @@
 // inboxoverlay.go implements the inbox overlay (the `i` keybinding): the
-// project's inbox items as a list, one item in full, and a one-line input to
-// answer it.
+// project's inbox items as a list, and the answer screen of
+// docs/dash-design.md §4.5 for one item: the item in full, its options
+// numbered as choices with afk's recommendation labelled, a last choice that
+// opens a one-line field for an answer of the owner's own, and a line on what
+// the answer sets going. Every way to an item (enter on the list, `a`, enter
+// on the Project's Inbox section, a needs-you landing) arrives here through
+// openInboxOn or the list, so they all get the same screen.
 //
 // The component follows the switcher's shape (switcher.go): it is
 // self-contained, it holds a copy of the data the parent gave it, it never
@@ -19,6 +24,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,9 +44,10 @@ import (
 // Update matches against these same values, so the footer cannot name a key
 // the overlay does not answer.
 //
-// There is deliberately no quit key among them. On the item screen every
-// letter is text for the answer, and an overlay that quit on one screen and
-// typed on the other would lose a half-written answer to a habit.
+// There is deliberately no quit key among them. In the answer field every
+// letter is text, and an overlay that quit on one screen and typed on another
+// would lose a half-written answer to a habit; `q` is also inert while
+// choosing, so the habit never gets the chance to form.
 var (
 	inboxUpKey = key.NewBinding(
 		key.WithKeys("up", "k"),
@@ -58,19 +65,44 @@ var (
 		key.WithKeys("esc", "ctrl+g"),
 		key.WithHelp("esc", "close"),
 	)
+	// inboxChooseKey is the digits of the answer screen. Its help names the
+	// item's own range (inboxOverlay.helpKeys rebuilds it); the keys stop at
+	// 9 because a digit is one keypress and there is no two-key chord here.
+	inboxChooseKey = key.NewBinding(
+		key.WithKeys("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+		key.WithHelp("1-9", "choose"),
+	)
 	inboxSendKey = key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "send"),
+	)
+	// inboxWriteKey is enter while the selection is on "Write my own
+	// answer": it opens the field instead of sending.
+	inboxWriteKey = key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "write my own answer"),
+	)
+	inboxSendTypedKey = key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "send answer"),
 	)
-	// Two stages, as the palette's esc: clear what was typed first, go back
-	// only once there is nothing left to clear.
+	// inboxOtherItemKey is the arrows while choosing: the previous or next
+	// open item, so a run of questions can be answered without going back to
+	// the list between them.
+	inboxOtherItemKey = key.NewBinding(
+		key.WithKeys("up", "down", "k", "j"),
+		key.WithHelp("↑↓", "other items"),
+	)
 	inboxBackKey = key.NewBinding(
 		key.WithKeys("esc"),
-		key.WithHelp("esc", "clear, then back"),
-	)
-	inboxBackAnsweredKey = key.NewBinding(
-		key.WithKeys("esc"),
 		key.WithHelp("esc", "back"),
+	)
+	// inboxLeaveFieldKey is esc in the field of an item that has options: it
+	// goes back to the choices and keeps the text, so a wrong turn into the
+	// field costs nothing.
+	inboxLeaveFieldKey = key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "back to the choices"),
 	)
 	inboxScrollUpKey = key.NewBinding(
 		key.WithKeys("pgup"),
@@ -86,24 +118,44 @@ var (
 	)
 )
 
-// inboxListKeys and inboxItemKeys are each screen's help line. The registry
-// advertises both (inboxModeKeys); the footer shows the one for the screen
-// that is up (inboxOverlay.helpKeys).
+// inboxListKeys and the three item helps are each screen's help line. The
+// registry advertises all of them (inboxModeKeys); the footer shows the one
+// for the screen and state that is up (inboxOverlay.helpKeys).
 func inboxListKeys() []key.Binding {
 	return []key.Binding{inboxOpenKey, inboxUpKey, inboxDownKey, inboxCloseKey}
 }
 
-func inboxItemKeys() []key.Binding {
-	return []key.Binding{inboxSendKey, inboxBackKey, inboxScrollUpKey, inboxScrollDownKey, inboxCloseAllKey}
+// inboxChoosingKeys is the answer screen while choosing. n is how many
+// choices the item has, so the digits' help says the range that works.
+func inboxChoosingKeys(n int, onOwn bool) []key.Binding {
+	choose := inboxChooseKey
+	choose.SetHelp(fmt.Sprintf("1-%d", min(max(n, 1), 9)), "choose")
+	enter := inboxSendKey
+	if onOwn {
+		enter = inboxWriteKey
+	}
+	return []key.Binding{choose, enter, inboxOtherItemKey, inboxBackKey, inboxScrollUpKey, inboxScrollDownKey, inboxCloseAllKey}
+}
+
+// inboxTypingKeys is the answer field. withChoices is whether esc goes back to
+// the choices (an item with options) or out of the item (one without).
+func inboxTypingKeys(withChoices bool) []key.Binding {
+	back := inboxBackKey
+	if withChoices {
+		back = inboxLeaveFieldKey
+	}
+	return []key.Binding{inboxSendTypedKey, back, inboxScrollUpKey, inboxScrollDownKey, inboxCloseAllKey}
 }
 
 func inboxAnsweredItemKeys() []key.Binding {
-	return []key.Binding{inboxBackAnsweredKey, inboxScrollUpKey, inboxScrollDownKey, inboxCloseAllKey}
+	return []key.Binding{inboxBackKey, inboxScrollUpKey, inboxScrollDownKey, inboxCloseAllKey}
 }
 
-// inboxModeKeys is the mode's whole help surface, both screens.
+// inboxModeKeys is the mode's whole help surface, every screen and state.
 func inboxModeKeys() []key.Binding {
-	return append(inboxListKeys(), inboxItemKeys()...)
+	keys := append(inboxListKeys(), inboxChooseKey, inboxSendKey, inboxWriteKey, inboxSendTypedKey,
+		inboxOtherItemKey, inboxBackKey, inboxLeaveFieldKey)
+	return append(keys, inboxScrollUpKey, inboxScrollDownKey, inboxCloseAllKey)
 }
 
 // What the overlay and the `i` key say. They are constants because the tests
@@ -114,8 +166,9 @@ const (
 	inboxEmptyAnswerNote     = "The answer was empty. Type an answer and send it again."
 	inboxAlreadyAnsweredNote = "This item already has an answer, and the first answer is the one that is kept. Nothing was changed."
 	inboxSendingNote         = "Saving the answer…"
-	inboxAnswerHint          = "type an answer"
-	inboxAnswerOptionsHint   = "type an answer, or a number to pick an option"
+	inboxChooseHeading       = "CHOOSE ONE"
+	inboxRecommendedLabel    = "recommended"
+	inboxOtherItemsHint      = "↑↓ other items"
 )
 
 // inboxModalWidth is the overlay's preferred content width: a title and a
@@ -184,6 +237,22 @@ type inboxOverlay struct {
 	item  inbox.Item
 	input textinput.Model
 	body  viewport.Model
+	// choice is the selected line of the item's choices (answerChoices), and
+	// typing is whether the keys go to the answer field rather than choosing.
+	// An item with no options is always opened typing: its one choice is the
+	// field.
+	choice int
+	typing bool
+	// fromList is whether the item was opened from the list screen. It
+	// decides where esc and a saved answer go back to: the list when the
+	// owner came from it, and out of the overlay when they came straight to
+	// the item (`a`, enter on the Project's Inbox section, a needs-you
+	// landing), so they land where they started and not on a list they never
+	// saw.
+	fromList bool
+	// project is the active project's name for the strip, "" when there is
+	// none to name. The parent sets it; the component reads no project state.
+	project string
 	// foot is the item screen's lines under the scrolling body: the input and
 	// whatever is said about the last send. It is laid out in layout(), not
 	// in View, because its height decides the viewport's.
@@ -233,16 +302,26 @@ func newInboxInput() textinput.Model {
 // there would land on a copy.
 func (o *inboxOverlay) SetSize(width, height int) {
 	o.width, o.height = max(width, 1), max(height, 1)
-	// The field's width excludes its "> " prompt, and one cell is kept for
-	// the cursor at the end of a full line.
-	o.input.SetWidth(max(o.width-4, 1))
+	o.input.SetWidth(inboxFieldWidth(o.width))
 	o.layout()
+}
+
+// inboxFieldIndent is the answer field's indent under the choices, the width
+// of "1. " after the choices' own two-cell indent, so the field reads as
+// belonging to "Write my own answer".
+const inboxFieldIndent = "     "
+
+// inboxFieldWidth is the field's text width at a content width: the indent
+// and the "> " prompt are taken off, and one cell is kept for the cursor at
+// the end of a full line.
+func inboxFieldWidth(width int) int {
+	return max(width-len(inboxFieldIndent)-3, 1)
 }
 
 // wantRows is how many content rows the current screen would like at a
 // content width. Both screens are sized to what they hold, so two items, or a
 // one-line notice, do not float in a tall empty box: the list by its rows,
-// an item by its title, its wrapped text and the rows under it, up to the cap
+// an item by its strip, its wrapped text and the rows under it, up to the cap
 // where the body starts to scroll.
 //
 // The width is a parameter and not o.width because the parent asks this
@@ -269,8 +348,8 @@ func (o inboxOverlay) showing(id string) bool {
 //
 // The list keeps its cursor on the same item, by id, so a new item arriving
 // above it does not move the selection under the owner's hand. The item
-// screen keeps whatever is typed and takes the item's newest copy, which is
-// how an item answered from the phone turns into its answered view.
+// screen keeps whatever is typed and chosen and takes the item's newest copy,
+// which is how an item answered from the phone turns into its answered view.
 //
 // One rule guards against an older snapshot: a copy held here that has an
 // answer is never replaced by one that has none. An item's answer is never
@@ -311,13 +390,21 @@ func (o *inboxOverlay) setItems(items []inbox.Item, unreadable int, now time.Tim
 	if o.screen == inboxScreenItem {
 		if i := o.indexOf(o.item.ID); i >= 0 {
 			o.item = o.items[i]
-			if !o.item.Open() && o.sending != o.item.ID && o.note != inboxAlreadyAnsweredNote {
-				// It was answered from somewhere else, and the field is gone.
-				// A note about the text that was in it (an empty answer) has
-				// nothing left to be about. The note for a refused send stays:
-				// it is the explanation for the view the owner is now reading.
-				o.note = ""
+			if !o.item.Open() {
+				// It was answered from somewhere else, and the field and the
+				// choices are gone.
+				o.typing = false
+				if o.sending != o.item.ID && o.note != inboxAlreadyAnsweredNote {
+					// A note about the text that was in the field (an empty
+					// answer) has nothing left to be about. The note for a
+					// refused send stays: it is the explanation for the view
+					// the owner is now reading.
+					o.note = ""
+				}
 			}
+			// The options can be rewritten under the owner (the file is
+			// edited in place), so the selection is kept inside them.
+			o.choice = min(o.choice, len(answerChoices(o.item))-1)
 		}
 	}
 	o.layout()
@@ -343,19 +430,25 @@ func (o *inboxOverlay) replace(it inbox.Item) {
 }
 
 // answered records a successful send: the item's stored copy goes into the
-// list and, if that item is still the one on screen, the overlay goes back to
-// the list.
-func (o *inboxOverlay) answered(it inbox.Item) {
+// list and, if that item is still the one on screen, the screen goes back to
+// where it was opened from. It reports true when that is out of the overlay,
+// for the parent to close it: the component cannot close itself outside
+// Update.
+func (o *inboxOverlay) answered(it inbox.Item) (closed bool) {
 	o.replace(it)
 	if o.sending == it.ID {
 		o.sending = ""
 	}
 	if o.showing(it.ID) {
 		o.item = it
+		if !o.fromList {
+			return true
+		}
 		o.backToList()
-		return
+		return false
 	}
 	o.layout()
+	return false
 }
 
 // refused records a send that did not save. stored is the item as the store
@@ -371,6 +464,9 @@ func (o *inboxOverlay) refused(id string, stored *inbox.Item, note string) {
 	if o.showing(id) {
 		if stored != nil {
 			o.item = *stored
+			if !o.item.Open() {
+				o.typing = false
+			}
 		}
 		o.note, o.noteKind = note, inboxNoteProblem
 	}
@@ -382,24 +478,43 @@ func (o *inboxOverlay) backToList() {
 		o.cursor = i
 	}
 	o.screen = inboxScreenList
-	o.input = newInboxInput()
-	o.input.SetWidth(max(o.width-4, 1))
+	o.resetInput()
+	o.typing = false
 	o.note = ""
 	o.layout()
 }
 
-func (o *inboxOverlay) openItem() tea.Cmd {
+// resetInput builds a fresh, empty answer field at the current width.
+func (o *inboxOverlay) resetInput() {
+	o.input = newInboxInput()
+	o.input.SetWidth(inboxFieldWidth(o.width))
+}
+
+// openItem opens the item under the list's cursor. fromList is where esc and
+// a saved answer go back to (inboxOverlay.fromList).
+func (o *inboxOverlay) openItem(fromList bool) tea.Cmd {
 	if o.cursor < 0 || o.cursor >= len(o.items) {
 		return nil
 	}
-	o.item = o.items[o.cursor]
+	o.fromList = fromList
 	o.screen = inboxScreenItem
-	o.input = newInboxInput()
-	o.input.SetWidth(max(o.width-4, 1))
+	return o.showItem(o.items[o.cursor])
+}
+
+// showItem puts one item on the answer screen with a fresh field, so text
+// typed for one item can never be sent as the answer to another, and the
+// selection on the recommended option. An item with no options goes straight
+// to the field, since writing an answer is the only thing to do with it. The
+// returned Cmd is the field's cursor blink when the field is up.
+func (o *inboxOverlay) showItem(it inbox.Item) tea.Cmd {
+	o.item = it
+	o.resetInput()
+	o.choice = answerStartChoice(it)
+	o.typing = it.Open() && len(it.Options) == 0
 	o.note = ""
 	o.body.GotoTop()
 	o.layout()
-	if !o.item.Open() {
+	if !o.typing {
 		return nil
 	}
 	return o.input.Focus()
@@ -408,14 +523,16 @@ func (o *inboxOverlay) openItem() tea.Cmd {
 // Update routes one message through the overlay and reports what it decided.
 //
 // A message that is not a keypress is the answer field's own traffic (its
-// cursor blink, a paste) and goes to the field when one is showing.
+// cursor blink, a paste) and goes to the field only while it has the keys:
+// a paste while choosing would otherwise land in a field the owner cannot
+// see and be sent the next time they open it.
 //
 // tea.KeyPressMsg and not the tea.KeyMsg interface, for the reason
 // switcher.Update gives: a key release must never fire a binding twice.
 func (o *inboxOverlay) Update(msg tea.Msg) (tea.Cmd, inboxResult) {
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
-		if o.screen == inboxScreenItem && o.item.Open() {
+		if o.screen == inboxScreenItem && o.item.Open() && o.typing {
 			var cmd tea.Cmd
 			o.input, cmd = o.input.Update(msg)
 			o.layout()
@@ -438,7 +555,7 @@ func (o *inboxOverlay) updateList(k tea.KeyPressMsg) (tea.Cmd, inboxResult) {
 	case key.Matches(k, inboxDownKey):
 		o.cursor = max(min(o.cursor+1, len(o.items)-1), 0)
 	case key.Matches(k, inboxOpenKey):
-		return o.openItem(), inboxResult{}
+		return o.openItem(true), inboxResult{}
 	}
 	// Every other key is swallowed: a stray letter on the list must not act
 	// on the dashboard underneath.
@@ -446,57 +563,105 @@ func (o *inboxOverlay) updateList(k tea.KeyPressMsg) (tea.Cmd, inboxResult) {
 	return nil, inboxResult{}
 }
 
+// goBack leaves the item for where it was opened from: the list, or out of
+// the overlay.
+func (o *inboxOverlay) goBack() (tea.Cmd, inboxResult) {
+	if !o.fromList {
+		return nil, inboxResult{Kind: inboxClosed}
+	}
+	o.backToList()
+	return nil, inboxResult{}
+}
+
 func (o *inboxOverlay) updateItem(k tea.KeyPressMsg) (tea.Cmd, inboxResult) {
-	open := o.item.Open()
 	switch {
 	case key.Matches(k, inboxCloseAllKey):
 		return nil, inboxResult{Kind: inboxClosed}
-	case key.Matches(k, inboxBackKey):
-		if open && o.input.Value() != "" {
-			o.input.Reset()
-			o.note = ""
-			o.layout()
-			return nil, inboxResult{}
-		}
-		o.backToList()
-		return nil, inboxResult{}
 	case key.Matches(k, inboxScrollUpKey):
 		o.body.PageUp()
 		return nil, inboxResult{}
 	case key.Matches(k, inboxScrollDownKey):
 		o.body.PageDown()
 		return nil, inboxResult{}
-	case key.Matches(k, inboxSendKey):
-		if !open || o.sending == o.item.ID {
+	}
+	switch {
+	case !o.item.Open():
+		return o.updateAnswered(k)
+	case o.typing:
+		return o.updateTyping(k)
+	}
+	return o.updateChoosing(k)
+}
+
+// updateAnswered is an answered item: there is nothing to choose or type, so
+// the line keys scroll and everything else but esc is swallowed.
+func (o *inboxOverlay) updateAnswered(k tea.KeyPressMsg) (tea.Cmd, inboxResult) {
+	switch {
+	case key.Matches(k, inboxBackKey):
+		return o.goBack()
+	case key.Matches(k, inboxUpKey):
+		o.body.ScrollUp(1)
+	case key.Matches(k, inboxDownKey):
+		o.body.ScrollDown(1)
+	}
+	return nil, inboxResult{}
+}
+
+// updateChoosing is the answer screen with the selection on the choices. A
+// digit selects, enter sends the selected option (or opens the field on the
+// last choice), the arrows go to the other open items, and every other key,
+// `q` included, does nothing.
+func (o *inboxOverlay) updateChoosing(k tea.KeyPressMsg) (tea.Cmd, inboxResult) {
+	choices := answerChoices(o.item)
+	switch {
+	case key.Matches(k, inboxBackKey):
+		return o.goBack()
+	case key.Matches(k, inboxChooseKey):
+		idx := int(k.String()[0] - '1')
+		if idx >= len(choices) {
 			return nil, inboxResult{}
 		}
-		text := o.input.Value()
-		if strings.TrimSpace(text) == "" {
-			o.note, o.noteKind = inboxEmptyAnswerNote, inboxNoteProblem
-			o.layout()
-			return nil, inboxResult{}
+		o.choice = idx
+		if o.noteKind == inboxNoteProblem {
+			o.note = ""
 		}
-		o.sending = o.item.ID
-		o.note, o.noteKind = inboxSendingNote, inboxNoteInfo
+		if choices[idx].Own {
+			return o.startTyping(), inboxResult{}
+		}
 		o.layout()
-		return nil, inboxResult{Kind: inboxSend, ID: o.item.ID, Text: text, Blocking: o.item.Blocking}
-	}
-
-	if !open {
-		// No field to type into. The line keys scroll, since nothing else
-		// wants them here; everything else is swallowed.
-		switch {
-		case key.Matches(k, inboxUpKey):
-			o.body.ScrollUp(1)
-		case key.Matches(k, inboxDownKey):
-			o.body.ScrollDown(1)
-		}
 		return nil, inboxResult{}
+	case key.Matches(k, inboxSendKey):
+		if o.choice >= 0 && o.choice < len(choices) && choices[o.choice].Own {
+			return o.startTyping(), inboxResult{}
+		}
+		return o.send(choices, "")
+	case key.Matches(k, inboxUpKey):
+		return o.moveItem(-1), inboxResult{}
+	case key.Matches(k, inboxDownKey):
+		return o.moveItem(1), inboxResult{}
 	}
+	return nil, inboxResult{}
+}
 
-	// Everything else is text for the answer: letters, digits, the arrows
-	// that move the cursor, `q`, ctrl+c. A problem note is about the text as
-	// it was, so typing clears it.
+// updateTyping is the answer field: every key but enter and esc is text, `q`
+// and ctrl+c included, because a quit would lose what was typed.
+func (o *inboxOverlay) updateTyping(k tea.KeyPressMsg) (tea.Cmd, inboxResult) {
+	switch {
+	case key.Matches(k, inboxBackKey):
+		if len(o.item.Options) == 0 {
+			// The field is the item's only choice, so there are no choices
+			// to go back to.
+			return o.goBack()
+		}
+		// The text stays: going back to look at the options again is not
+		// a reason to lose a written answer.
+		o.typing = false
+		o.layout()
+		return nil, inboxResult{}
+	case key.Matches(k, inboxSendTypedKey):
+		return o.send(answerChoices(o.item), o.input.Value())
+	}
+	// A problem note is about the text as it was, so typing clears it.
 	if o.noteKind == inboxNoteProblem {
 		o.note = ""
 	}
@@ -506,23 +671,109 @@ func (o *inboxOverlay) updateItem(k tea.KeyPressMsg) (tea.Cmd, inboxResult) {
 	return cmd, inboxResult{}
 }
 
-// helpKeys is the footer's help line for the screen that is up.
+// startTyping moves the keys into the answer field, on the last choice.
+func (o *inboxOverlay) startTyping() tea.Cmd {
+	o.choice = len(answerChoices(o.item)) - 1
+	o.typing = true
+	o.layout()
+	return o.input.Focus()
+}
+
+// send hands the selected choice's answer to the parent. While typing the
+// selection is the own-answer choice, so own is what is sent; while choosing
+// it is an option, sent as its number (answerTextFor says why). The text goes
+// out untrimmed and unresolved: the store does both under the inbox lock.
+func (o *inboxOverlay) send(choices []answerChoice, own string) (tea.Cmd, inboxResult) {
+	if o.sending == o.item.ID {
+		return nil, inboxResult{}
+	}
+	idx := o.choice
+	if o.typing {
+		idx = len(choices) - 1
+	}
+	text, ok := answerTextFor(choices, idx, own)
+	if !ok {
+		o.note, o.noteKind = inboxEmptyAnswerNote, inboxNoteProblem
+		o.layout()
+		return nil, inboxResult{}
+	}
+	o.sending = o.item.ID
+	o.note, o.noteKind = inboxSendingNote, inboxNoteInfo
+	o.layout()
+	return nil, inboxResult{Kind: inboxSend, ID: o.item.ID, Text: text, Blocking: o.item.Blocking}
+}
+
+// moveItem goes to the open item step places from this one, in the list's
+// order, and stays put at either end or when this item is no longer among the
+// open ones. Answered items are skipped: there is nothing to answer on them.
+func (o *inboxOverlay) moveItem(step int) tea.Cmd {
+	var open []inbox.Item
+	at := -1
+	for _, it := range o.items {
+		if !it.Open() {
+			continue
+		}
+		if it.ID == o.item.ID {
+			at = len(open)
+		}
+		open = append(open, it)
+	}
+	next := at + step
+	if at < 0 || next < 0 || next >= len(open) {
+		return nil
+	}
+	if i := o.indexOf(open[next].ID); i >= 0 {
+		o.cursor = i
+	}
+	return o.showItem(open[next])
+}
+
+// helpKeys is the footer's help line for the screen and state that is up.
 func (o inboxOverlay) helpKeys() []key.Binding {
 	switch {
 	case o.screen == inboxScreenList:
 		return inboxListKeys()
-	case o.item.Open():
-		return inboxItemKeys()
+	case !o.item.Open():
+		return inboxAnsweredItemKeys()
+	case o.typing:
+		return inboxTypingKeys(len(o.item.Options) > 0)
 	}
-	return inboxAnsweredItemKeys()
+	choices := answerChoices(o.item)
+	onOwn := o.choice >= 0 && o.choice < len(choices) && choices[o.choice].Own
+	return inboxChoosingKeys(len(choices), onOwn)
 }
 
-// title is the text on the box's top edge.
+// title is the text on the box's top edge. The answer screen has none: its
+// strip, the first content row, names the inbox and the project.
 func (o inboxOverlay) title() string {
 	if o.screen == inboxScreenItem {
-		return "Inbox · " + o.item.ID
+		return ""
 	}
 	return "Inbox"
+}
+
+// stripName is the answer screen's strip name: the inbox and whose it is.
+func (o inboxOverlay) stripName() string {
+	if o.project == "" {
+		return "Inbox"
+	}
+	return "Inbox · " + o.project
+}
+
+// stripContext is the strip's right side: where this item is among the open
+// ones and, while the arrows move between them, that they do. In the field
+// the arrows are the field's, so only the count is said. An item that is not
+// among the open ones (answered, or gone from the inbox) has no place.
+func (o inboxOverlay) stripContext() string {
+	pos, total := answerItemPosition(o.items, o.item.ID)
+	if pos == 0 || !o.item.Open() {
+		return ""
+	}
+	count := fmt.Sprintf("%d of %d", pos, total)
+	if o.typing {
+		return count
+	}
+	return count + " · " + inboxOtherItemsHint
 }
 
 // hint is the text on the box's bottom edge: where the reader is, when there
@@ -572,7 +823,7 @@ func (o *inboxOverlay) layout() {
 		return
 	}
 	o.foot = o.footLines(o.width)
-	// The title takes a row and the body needs at least one. On a terminal
+	// The strip takes a row and the body needs at least one. On a terminal
 	// too short for all of it the foot gives way from the top, so the field
 	// and the note under it are the last things to go.
 	for len(o.foot) > 0 && 2+len(o.foot) > o.height {
@@ -583,8 +834,13 @@ func (o *inboxOverlay) layout() {
 	o.body.SetContent(strings.Join(inboxItemLines(o.item, o.now, o.width), "\n"))
 }
 
-// footLines is the item screen under the body: for an open item a blank row,
-// what to type, the field and any note; for an answered one only a note.
+// footLines is the answer screen under the scrolling body. For an open item:
+// CHOOSE ONE and the numbered choices with the selection filled, the field
+// under the last choice while it has the keys or holds text (for an item
+// with no options, the field alone under its label), the line on
+// what happens next, and any note. For an answered one only a note. The
+// choices are here and not in the body so a long log never scrolls them out
+// of sight of the digits that pick them.
 func (o inboxOverlay) footLines(width int) []string {
 	width = max(width, 1)
 	var note []string
@@ -603,12 +859,44 @@ func (o inboxOverlay) footLines(width int) []string {
 		}
 		return append([]string{""}, note...)
 	}
-	hint := inboxAnswerHint
-	if len(o.item.Options) > 0 {
-		hint = inboxAnswerOptionsHint
+	var foot []string
+	if len(o.item.Options) == 0 {
+		// The own answer is the only choice, so there is nothing to choose
+		// between: the label heads the field instead of a list of one.
+		foot = []string{"", theme.dim.Render(truncate(ownChoiceLabel, width)),
+			truncate(inboxFieldIndent+o.input.View(), width)}
+	} else {
+		foot = []string{"", theme.dim.Render(truncate(inboxChooseHeading, width))}
+		for i, c := range answerChoices(o.item) {
+			foot = append(foot, inboxChoiceLines(i, c, width, i == o.choice)...)
+		}
+		if o.typing || o.input.Value() != "" {
+			foot = append(foot, truncate(inboxFieldIndent+o.input.View(), width))
+		}
 	}
-	foot := []string{"", theme.dim.Render(truncate(hint, width)), truncate(o.input.View(), width)}
+	if next := answerNextLine(o.item); next != "" {
+		foot = append(foot, "")
+		for _, ln := range strings.Split(lipgloss.Wrap(next, width, ""), "\n") {
+			foot = append(foot, theme.dim.Render(truncate(ln, width)))
+		}
+	}
 	return append(foot, note...)
+}
+
+// inboxChoiceLines is one choice: its number, its text cleaned of anything
+// that would repaint the screen, `recommended` after afk's suggestion, wrapped
+// under its own text so a long option still reads as one. The selected
+// choice is drawn with §3.5's row selection on every line it wraps to.
+func inboxChoiceLines(i int, c answerChoice, width int, selected bool) []string {
+	text := inboxClean(c.Label, true)
+	if c.Recommended {
+		text += "  " + theme.dim.Render(inboxRecommendedLabel)
+	}
+	lines := inboxHanging(fmt.Sprintf("  %d. ", i+1), text, width)
+	for j, ln := range lines {
+		lines[j] = theme.row(ln, width, selected, "")
+	}
+	return lines
 }
 
 // View draws the screen that is up, every line cut to the content width and
@@ -616,7 +904,7 @@ func (o inboxOverlay) footLines(width int) []string {
 func (o inboxOverlay) View() string {
 	var lines []string
 	if o.screen == inboxScreenItem {
-		lines = append(lines, theme.sessionName.Render(truncate(inboxClean(o.item.Title, true), o.width)))
+		lines = append(lines, theme.titleStrip(o.stripName(), o.stripContext(), o.width, true))
 		lines = append(lines, strings.Split(o.body.View(), "\n")...)
 		lines = append(lines, o.foot...)
 	} else {
@@ -749,11 +1037,13 @@ func padRight(s string, width int) string {
 	return s
 }
 
-// inboxItemLines is the scrolling part of the item screen, wrapped to width:
-// what kind of item it is and where it came from, the body, the options
-// numbered from 1, the assumed answer, and the stored answer when there is
-// one. It is a pure function of its arguments so the layout is table-testable
-// without a Model.
+// inboxItemLines is the scrolling part of the answer screen, wrapped to
+// width: what kind of item it is, its id and where it came from, the title in
+// bold, the body, the assumed answer, and the stored answer when there is
+// one. The options are not here: they are the choices under the body
+// (inboxOverlay.footLines), and an answered item shows its answer instead of
+// them. It is a pure function of its arguments so the layout is
+// table-testable without a Model.
 //
 // Everything that came from the item's file goes through inboxClean first. A
 // failure item's body is the end of a log, and a log holds escape sequences
@@ -776,11 +1066,14 @@ func inboxItemLines(it inbox.Item, now time.Time, width int) []string {
 	}
 
 	facts := []string{it.Kind}
+	if it.ID != "" {
+		facts = append(facts, it.ID)
+	}
 	if it.Task != "" {
 		facts = append(facts, it.Task)
 	}
 	if it.Session != "" {
-		facts = append(facts, "session "+it.Session)
+		facts = append(facts, "from "+it.Session)
 	}
 	if ago := inboxAgo(it.CreatedAt, now); ago != "" {
 		facts = append(facts, "raised "+ago)
@@ -795,20 +1088,16 @@ func inboxItemLines(it inbox.Item, now time.Time, width int) []string {
 	}
 	lines := wrap(strings.Join(facts, " · "), theme.dim, false)
 
+	// The title is cut to one line, not wrapped, as the list cuts it: a
+	// failure's title can run to a paragraph, and wrapped it would push the
+	// body, the part that explains the item, off the first page.
+	if title := inboxClean(it.Title, true); title != "" {
+		lines = append(lines, "", theme.sessionName.Render(truncate(title, width)))
+	}
+
 	if body := inboxClean(it.Body, false); body != "" {
 		lines = append(lines, "")
 		lines = append(lines, wrap(body, lipgloss.Style{}, true)...)
-	}
-
-	if len(it.Options) > 0 {
-		lines = append(lines, "", theme.dim.Render(truncate("Options", width)))
-		for i, opt := range it.Options {
-			text := inboxClean(opt, true)
-			if opt == it.Recommended {
-				text += " (recommended)"
-			}
-			lines = append(lines, inboxHanging(fmt.Sprintf("  %d. ", i+1), text, width)...)
-		}
 	}
 
 	if assumed := inboxClean(it.Assumed, true); assumed != "" {
@@ -946,6 +1235,7 @@ func (m Model) openInbox() (tea.Model, tea.Cmd) {
 	}
 	m.inboxOpen = true
 	m.inbox = newInboxOverlay(m.build.Items, m.build.Unreadable, m.deps.Now(), 1, 1)
+	m.inbox.project = m.inboxProjectName()
 	m.sizeInbox()
 	// A toast floats over the top right corner, which is where this box is.
 	m.clearStatus()
@@ -963,10 +1253,24 @@ func (m Model) openInboxOn(id string) Model {
 	}
 	if i := m.inbox.indexOf(id); i >= 0 {
 		m.inbox.cursor = i
-		_ = m.inbox.openItem()
+		_ = m.inbox.openItem(false)
 		m.sizeInbox()
 	}
 	return m
+}
+
+// inboxProjectName is the project the answer screen's strip names: the active
+// project's name, the one its pane strip shows (sessionListLabel), else the
+// last part of the inbox's root, else "" for the strip to say "Inbox" alone.
+// Not sessionListLabel itself, whose fallback is the word "Sessions".
+func (m Model) inboxProjectName() string {
+	if idx := m.activeProject; idx >= 0 && idx < len(m.projects) {
+		return m.projects[idx].Name
+	}
+	if m.build.Root != "" {
+		return filepath.Base(m.build.Root)
+	}
+	return ""
 }
 
 // inboxSize is the overlay's content size for the current terminal and the
@@ -1009,8 +1313,8 @@ func (m Model) renderInboxModal() string {
 
 // inboxComponentKey is inputInbox's fall-through. Every key reaches the
 // overlay, which has no parent rules at all: not the quit chord and not the
-// mouse chord. On the item screen each key is either one of the overlay's own
-// or text for the answer, and a chord that quit the dashboard from under a
+// mouse chord. On the answer screen each key is either one of the overlay's
+// own or text for the answer, and a chord that quit the dashboard from under a
 // half-typed answer would lose it. esc and ctrl+g are always a way out, so
 // the overlay is not a trap.
 func (m Model) inboxComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1069,7 +1373,8 @@ func (m Model) answerInboxCmd(id, text string, blocking bool) tea.Cmd {
 
 // applyInboxAnswered folds one answer's outcome into the Model.
 //
-// A success goes back to the list and says the task carries on. The dashboard
+// A success goes back to where the item was opened from (the list, or out of
+// the overlay) and says the task carries on. The dashboard
 // does not un-park anything itself: the build loop reads the inbox on its
 // next pass and starts the task again, which is why the notice says "within a
 // few seconds" and not "now". A fresh read is asked for so the list and the
@@ -1085,8 +1390,13 @@ func (m Model) applyInboxAnswered(msg inboxAnsweredMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.err == nil {
 		if m.inboxOpen {
-			m.inbox.answered(msg.item)
-			m.sizeInbox()
+			if m.inbox.answered(msg.item) {
+				// Opened straight on the item: the answer is the end of the
+				// errand, so the owner lands back where they started.
+				m.inboxOpen = false
+			} else {
+				m.sizeInbox()
+			}
 		}
 		text := "Answered " + msg.id + "."
 		if msg.blocking {

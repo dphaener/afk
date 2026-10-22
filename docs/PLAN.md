@@ -4211,6 +4211,7 @@ Amended 2026-10-22 (T16.6 done): the order is the pure `needsYouItems` in `inter
   choice (an option, the recommended one, an own answer, an item with no options); against a scratch
   build, answering a throwaway item writes the same file `afk inbox answer` would; `make check` is
   green.
+Amended 2026-10-22 (T16.7 done): the inbox overlay's item screen is the answer screen (`inboxoverlay.go`, pure parts in `internal/ui/answerscreen.go`: `answerChoices`, `answerStartChoice`, `answerTextFor`, `oldestBlockingItem`, `answerNextLine`, `answerItemPosition`), reached from every entrance through `openInboxOn`, so `needsyoulanding.go` needed no change; an option is sent as its digit string for the store to resolve, as `afk inbox answer <id> 2` does; the overlay has two states (choosing, typing) and `fromList` decides where `esc` and a sent answer go back; `a` is one key-table row at every level (`answerOldest` dispatches on the level, `answerOldestHere` for Project and the Agent) and the Project chips end with `a answer`; digits pick options 1–9 only. See `## T16.7` in `docs/decisions.md`.
 
 #### T16.8 — Activity and the week
 - **Depends on:** T16.7
