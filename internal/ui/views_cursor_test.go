@@ -165,12 +165,18 @@ func TestViewCursorFollowsFocusedPane(t *testing.T) {
 			// The no-crop claim, stated arithmetically rather than through
 			// dashboardOrigin, so a reintroduced crop term cannot pass by
 			// moving both sides together.
-			_, _, _, headerRows, frameRows := m.mouseFrameLayout()
+			// The Agent's band row (§4.3) sits under the title strip, on any
+			// box with more than two inner rows.
+			_, _, bodyHeight, headerRows, frameRows := m.mouseFrameLayout()
 			regionCols, _ := m.paneRegionSize()
 			titleRows := lipgloss.Height(paneTitleBlock(m.paneName, m.paneTitleHint(), regionCols))
-			if originY != headerRows+1+titleRows {
-				t.Errorf("origin Y = %d, want %d (headerRows %d + 1 border + %d title rows, unshifted)",
-					originY, headerRows+1+titleRows, headerRows, titleRows)
+			bandRows := 0
+			if bodyHeight-boxBorderCells-titleRows > 2 {
+				bandRows = 1
+			}
+			if originY != headerRows+1+titleRows+bandRows {
+				t.Errorf("origin Y = %d, want %d (headerRows %d + 1 border + %d title rows + %d band rows, unshifted)",
+					originY, headerRows+1+titleRows+bandRows, headerRows, titleRows, bandRows)
 			}
 			if tc.height == 5 && frameRows <= tc.height {
 				t.Fatalf("frame is %d rows at terminal height %d — this row must overflow to test anything",

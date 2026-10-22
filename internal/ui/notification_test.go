@@ -223,13 +223,13 @@ func TestRepeatedRefusalToastsAgain(t *testing.T) {
 // Update has done anything with it.
 func TestNotifyStampsBeforeHandleReturns(t *testing.T) {
 	m := testModel(sess("a"))
-	next, _ := m.handle(keyRune('d')) // d gives the overview the keyboard, and says so
+	next, _ := m.handle(keyRune('R')) // R with no usage reader says why it cannot read
 	got, ok := next.(Model)
 	if !ok {
 		t.Fatalf("handle returned %T, want ui.Model", next)
 	}
 	if got.status == "" {
-		t.Fatalf("d should have notified")
+		t.Fatalf("R should have notified")
 	}
 	if got.statusChangedAt != got.deps.Now() {
 		t.Fatalf("statusChangedAt = %v, want the clock's %v before Update returns", got.statusChangedAt, got.deps.Now())

@@ -320,6 +320,59 @@ func projectEnterTarget(sec projectSection, haveSession, haveTask, haveItem bool
 	return enterNothing
 }
 
+// sessionOpens is what enter on a session opens: its Agent, or its details
+// overlay over the Project.
+type sessionOpens int
+
+const (
+	opensAgent sessionOpens = iota
+	opensDetails
+)
+
+// sessionEnterFacts are the plain facts sessionEnterTarget decides from. The
+// Model reads them off the selected row and its own connection state
+// (Model.sessionEnterFacts); nothing here looks at a host.
+type sessionEnterFacts struct {
+	// hostRunning is the row's (advisory) live-host flag.
+	hostRunning bool
+	// pending, cleaning and worktreeFault are the rows that have no agent
+	// whatever the host flag says: a create still in flight, a clean in
+	// flight, a worktree with no session of its own.
+	pending, cleaning, worktreeFault bool
+	// restarting is a host restart this dashboard dispatched for the row and
+	// has not heard back from; dialing an attach it has outstanding for it.
+	restarting, dialing bool
+	// pane is a pane installed for the row.
+	pane bool
+}
+
+// sessionEnterTarget is what enter on a session opens (docs/dash-design.md
+// §4.3, last paragraph). A session with an agent to show opens its Agent: a
+// live host, a restart or a dial of ours under way (the Agent's placeholder
+// says "restarting…" or "connecting…" until the pane lands), or a pane
+// already installed. Everything else (stopped, pending, cleaning, a worktree
+// fault) has no agent, and an Agent for it would be an empty box, so it
+// opens the session's details, where the facts about it are. Enter never
+// restarts a host: `r` in those details is the restart (restartSelected).
+//
+// The pane row is checked first because an installed pane is drawn whatever
+// discovery says about the host (HostRunning is advisory, and a host that has
+// just exited still has its last screen in the pane). The no-agent kinds come
+// before the restart and dial rows because restartSelected and connect refuse
+// to start either for them, so a restart or dial seen with one of them is a
+// stale record and not an agent on its way.
+func sessionEnterTarget(f sessionEnterFacts) sessionOpens {
+	switch {
+	case f.pane:
+		return opensAgent
+	case f.pending, f.cleaning, f.worktreeFault:
+		return opensDetails
+	case f.hostRunning, f.restarting, f.dialing:
+		return opensAgent
+	}
+	return opensDetails
+}
+
 // projectBandInput is what the band sums up. State is the project's state in
 // words as the home screen already shows it.
 type projectBandInput struct {

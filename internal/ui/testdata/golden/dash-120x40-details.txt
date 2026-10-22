@@ -1,0 +1,40 @@
+ afk Dashboard                                                                                                          
+  ╭───────────────────────────────────────────────────────────────╭────────────────────────────────────────────────────╮
+  │ Sessions                                                      │ Details · feat-auth                       esc back │
+  │                                                               │  1 Overview  2 Waves  3 Stack  4 Notes  5 Diff     │
+  │ ╭────────────────────────────────────────────────╮ ╭──────────│ SESSION                                            │
+  │ │ 1 Sessions                                   6 │ │ 2 Build  │ Phase     ◐ executing  loop 3                      │
+  │ │  ▾ Needs you                                3  │ │ Reading t│ Host      ◐ running                                │
+  │ │ ▌ ◐ feat-auth       executing     3/7 asks you │ │          │ Branch    feat-auth → main                         │
+  │ │   ◐ fix-login-red…  planning        – asks you │ │          │ Stack     main › feat-auth                         │
+  │ │   ✕ old-migration   broken          –          │ │          │ Updated   2026-07-10T00:00:00Z                     │
+  │ │  ▾ Working                                  2  │ │          │                                                    │
+  │ │   ◐ Billing v2      reviewing     7/7  open it │ │          │ ● Awaiting input · answer it in the agent          │
+  │ │   ◐ scratch-1       one-off         –  open it │ │          │                                                    │
+  │ │  ▾ Done                                     1  │ │          │ PROGRESS                                           │
+  │ │   ✓ feat-search     done          5/5          │ │          │ Tasks     █████████░░░░░░░░░░░ 3/7                 │
+  │ │                                                │ │          │ Diff      +412/-88 · 9 file(s) vs main             │
+  │ │                                                │ │          │ Verdict   — not reviewed yet                       │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │ READY                                              │
+  │ │                                                │ │          │ Ready (4)                                          │
+  │ │                                                │ │          │   ○ W2.T1 Migrate legacy sessions                  │
+  │ │                                                │ │          │   ○ W2.T2 Add logout endpoint                      │
+  │ │                                                │ │          │   ○ W2.T3 Rotate refresh tokens                    │
+  │ │                                                │ │          │   ○ W2.T4 Remove legacy table                      │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │ ISSUES                                             │
+  │ │                                                │ │          │ legacy_sessions has no FK to users — confirm befo… │
+  │ │                                                │ │          │ rate limiter test flaky under -race                │
+  │ ╰────────────────────────────────────────────────╯ │          │                                                    │
+  │ ╭────────────────────────────────────────────────╮ │          │                                                    │
+  │ │ feat-auth                                      │ │          │                                                    │
+  │ │────────────────────────────────────────────────│ │          │                                                    │
+  │ │ branch  feat-auth                              │ ╰──────────│                                                    │
+  │ │ phase   executing · loop 3                     │ ╭──────────│                                                    │
+  │ │ diff    +412/-88 · 9 file(s) vs main           │ │ 3 Inbox  │                                                    │
+  │ │ host    running                                │ │ Reading t│                                                    │
+  │ ╰────────────────────────────────────────────────╯ ╰──────────│                                                    │
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  │                                                    │
+  ╰───────────────────────────────────────────────────────────────╰────────────────────────────────────────────────────╯
+esc back · tab next tab · shift+tab previous tab · 1-5 jump to tab · ↑/k scroll up · ↓/j scroll down …                  

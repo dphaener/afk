@@ -179,7 +179,7 @@ func TestScratchSessionRowShowsNoBranchLine(t *testing.T) {
 func TestScratchSessionDetailHeaderHasNoBranchSubLineOrLoopCount(t *testing.T) {
 	m := testModel(scratchSess("scratch-1"))
 
-	detail := m.renderDetail(80, 30)
+	detail := m.renderDetailsOverlay(80, 30)
 
 	if strings.Contains(detail, "→") {
 		t.Errorf("expected no branch sub-line in scratch detail header, got:\n%s", detail)
@@ -221,7 +221,7 @@ func TestScratchSessionDetailHasNoWavesPanel(t *testing.T) {
 // say the session has no plan by design rather than "No plan file.".
 func TestScratchSessionDetailPanelSectionAbsent(t *testing.T) {
 	m := testModel(scratchSess("scratch-1"))
-	detail := m.renderDetail(80, 30)
+	detail := m.renderDetailsOverlay(80, 30)
 
 	for _, banned := range []string{"No plan file.", "No plan yet", "Review Verdict", "Progress"} {
 		if strings.Contains(detail, banned) {
@@ -230,7 +230,7 @@ func TestScratchSessionDetailPanelSectionAbsent(t *testing.T) {
 	}
 
 	m, _ = update(t, focusOverview(t, m), keyRune('2'))
-	waves := xansi.Strip(m.renderDetail(80, 30))
+	waves := xansi.Strip(m.renderDetailsOverlay(80, 30))
 	if !strings.Contains(waves, "A one-off session has no plan.") {
 		t.Errorf("expected the Waves tab to say a one-off has no plan, got:\n%s", waves)
 	}
@@ -248,7 +248,7 @@ func TestNormalSessionDetailHeaderUnaffected(t *testing.T) {
 	s.LoopCount = 2
 	m := testModel(s)
 
-	detail := m.renderDetail(80, 30)
+	detail := m.renderDetailsOverlay(80, 30)
 
 	if !strings.Contains(detail, s.Branch+" → "+s.BaseBranch) {
 		t.Errorf("expected branch sub-line preserved for a normal session, got:\n%s", detail)
@@ -434,23 +434,23 @@ func TestMainRegionBoxesFillTheMainRegion(t *testing.T) {
 				{"detail", func(t *testing.T, w, h int) string {
 					m := testModel(sess("alpha"))
 					m.width = width
-					return m.renderDetail(w, h)
+					return m.renderDetailsOverlay(w, h)
 				}},
 				{"detail no selection", func(t *testing.T, w, h int) string {
 					m := testModel()
 					m.width = width
-					return m.renderDetail(w, h)
+					return m.renderDetailsOverlay(w, h)
 				}},
 				{"detail pending", func(t *testing.T, w, h int) string {
 					m := testModel(pending)
 					m.width = width
-					return m.renderDetail(w, h)
+					return m.renderDetailsOverlay(w, h)
 				}},
 				{"detail fault", func(t *testing.T, w, h int) string {
 					s := faultSess("busted", session.KindWorktreeMissing, "worktree directory no longer exists")
 					m := testModel(s)
 					m.width = width
-					return m.renderDetail(w, h)
+					return m.renderDetailsOverlay(w, h)
 				}},
 			}
 
@@ -594,7 +594,7 @@ func TestFaultRowDetailPaneStatesTheFaultNotEmptyPanels(t *testing.T) {
 	s := faultSess("busted", session.KindWorktreeMissing, "worktree directory no longer exists")
 	m := testModel(s)
 
-	detail := m.renderDetail(80, 30)
+	detail := m.renderDetailsOverlay(80, 30)
 
 	if !strings.Contains(detail, "busted") {
 		t.Errorf("detail pane missing the name:\n%s", detail)
@@ -667,7 +667,7 @@ func TestDetailPaneClipsToItsHeightBudget(t *testing.T) {
 			m.sizeSessionList()
 
 			_, mainOuter, bodyHeight := m.layoutDims()
-			detail := m.renderDetail(mainOuter, bodyHeight)
+			detail := m.renderDetailsOverlay(mainOuter, bodyHeight)
 
 			if got := lipgloss.Height(detail); got != bodyHeight {
 				t.Errorf("detail height = %d, want exactly the %d-row budget", got, bodyHeight)
@@ -784,8 +784,8 @@ func TestScrollReadout(t *testing.T) {
 // the readout takes the box's last inner row when, and only when, the body
 // has more lines than that inner height. The box is sized off the body's OWN
 // line count so the exact-fit and overflow-by-one rows straddle the boundary
-// by a single row — the place an off-by-one in detailRowBudget or
-// boxDetailBody would show. The overflow-by-one row also asserts the body's
+// by a single row — the place an off-by-one in detailsBodyBudget or
+// renderDetailsOverlay would show. The overflow-by-one row also asserts the body's
 // last line is reachable, since reserving the readout row shrinks the visible
 // page and the Model viewport must shrink with it — and it resizes by sending
 // a real tea.WindowSizeMsg through Update rather than poking m.height and
@@ -795,7 +795,7 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 	m := testModel(bigPlanSession("alpha"))
 	m.detailTab = tabWaves // the Overview shows one wave; only the Waves tab overflows
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
-	_, mainOuter, _ := m.layoutDims()
+	mainOuter, _ := m.detailsSize()
 	contentW := detailContentWidth(mainOuter)
 	body := strings.Split(xansi.Strip(m.detailBody(contentW)), "\n")
 	total := len(body)
@@ -807,10 +807,10 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 	}
 
 	t.Run("exact fit: no readout, last row is content", func(t *testing.T) {
-		// The box's inner rows are the title strip (paneStripRows) and the
-		// body under it.
-		outerH := total + boxBorderCells + paneStripRows
-		frame := m.renderDetail(mainOuter, outerH)
+		// The box's inner rows are the title strip (paneStripRows), the tab
+		// row (detailsTabRows) and the body under them.
+		outerH := total + boxBorderCells + paneStripRows + detailsTabRows
+		frame := m.renderDetailsOverlay(mainOuter, outerH)
 		if lipgloss.Height(frame) != outerH {
 			t.Fatalf("frame is %d rows, want %d", lipgloss.Height(frame), outerH)
 		}
@@ -824,8 +824,8 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 	})
 
 	t.Run("overflow by one: readout, and the last line still reachable", func(t *testing.T) {
-		outerH := total + boxBorderCells + paneStripRows - 1
-		if row := lastInnerRow(m.renderDetail(mainOuter, outerH)); !strings.Contains(row, "0%") {
+		outerH := total + boxBorderCells + paneStripRows + detailsTabRows - 1
+		if row := lastInnerRow(m.renderDetailsOverlay(mainOuter, outerH)); !strings.Contains(row, "0%") {
 			t.Fatalf("overflowing frame's last row is %q, want a 0%% readout at the top", row)
 		}
 		m := focusOverview(t, m)
@@ -839,7 +839,7 @@ func TestDetailReadoutAppearsOnlyOnOverflow(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			m, _ = update(t, m, keyDown)
 		}
-		frame := m.renderDetail(mainOuter, outerH)
+		frame := m.renderDetailsOverlay(mainOuter, outerH)
 		if !strings.Contains(xansi.Strip(frame), last) {
 			t.Fatalf("body's last line %q is unreachable when the readout row is reserved:\n%s", last, xansi.Strip(frame))
 		}
@@ -886,7 +886,7 @@ func TestDetailShortMessagesSoftWrapAtNarrowWidths(t *testing.T) {
 				t.Fatalf("fixture geometry drifted: contentW = %d at 80 cols, want 46", got)
 			}
 
-			frame := m.renderDetail(mainOuter, bodyHeight)
+			frame := m.renderDetailsOverlay(mainOuter, bodyHeight)
 			if got := lipgloss.Height(frame); got != bodyHeight {
 				t.Errorf("frame is %d rows, want the %d-row budget", got, bodyHeight)
 			}
@@ -1099,62 +1099,23 @@ func TestDetailBoxFocusedBlurredStylesAreGeometryNeutral(t *testing.T) {
 	}
 }
 
-// TestBoxDetailBodyRendersWithTheGivenFocus is the render-level companion
-// to TestDetailBoxStyleAccentOnAllFourEdgesWhenFocused: boxDetailBody draws
-// the detail box with the pane part, and its focused parameter must reach
-// the pane's border on all four sides and its title strip, rather than being
-// accepted and ignored — the wiring mistake where only labelBorders' bottom
-// repaint would show a change. Load-bearing: the left edge cell (only the
-// pane's own border draws it) and the strip's fill.
-func TestBoxDetailBodyRendersWithTheGivenFocus(t *testing.T) {
+// TestDetailsOverlayDrawsTheAccentPane is the render-level check of the
+// overlay's box: the pane part with the accent border on its left edge (only
+// the pane's own border draws it), the accent strip, and the strip's name
+// first. The overlay always has the keyboard while it is drawn, so there is
+// no blurred form to compare.
+func TestDetailsOverlayDrawsTheAccentPane(t *testing.T) {
 	m := testModel(sess("alpha"))
-	_, mainOuter, bodyHeight := m.layoutDims()
-	contentW := detailContentWidth(mainOuter)
-	for _, focused := range []bool{false, true} {
-		border, strip := palette.Tide.Line, palette.Tide.Strip
-		if focused {
-			border, strip = palette.Tide.Accent, palette.Tide.Accent
-		}
-		got := m.boxDetailBody(m.detailBody(contentW), contentW, bodyHeight, "alpha", focused)
-		if c := cellOf(t, got, 0, 2); hexOf(c.Style.Fg) != border {
-			t.Errorf("focused=%v: left edge fg = %s, want %s", focused, hexOf(c.Style.Fg), border)
-		}
-		if c := cellOf(t, got, 1, 1); hexOf(c.Style.Bg) != strip {
-			t.Errorf("focused=%v: title strip bg = %s, want %s", focused, hexOf(c.Style.Bg), strip)
-		}
-		if line := strings.Split(xansi.Strip(got), "\n")[1]; !strings.HasPrefix(line, "│ alpha") {
-			t.Errorf("focused=%v: strip row = %q, want the title first", focused, line)
-		}
+	w, h := m.detailsSize()
+	got := m.renderDetailsOverlay(w, h)
+	if c := cellOf(t, got, 0, 2); hexOf(c.Style.Fg) != palette.Tide.Accent {
+		t.Errorf("left edge fg = %s, want %s", hexOf(c.Style.Fg), palette.Tide.Accent)
 	}
-}
-
-// TestDetailFocusReleasesSidebarAccent is plan step 5: only one box may carry
-// the accent border at a time. Before this task listBoxStyle only checked
-// form-open and pane-focus, so it kept the sidebar's accent while the detail
-// pane took over the keyboard — two boxes claiming ownership at once,
-// contradicting styles.go's documented convention (the accent marks who owns
-// the keyboard).
-func TestDetailFocusReleasesSidebarAccent(t *testing.T) {
-	accent := theme.paneBoxFocused.GetBorderTopForeground()
-
-	m := testModel(runningSess("alpha"))
-	if m.listBoxStyle().GetBorderTopForeground() != accent {
-		t.Fatalf("precondition: sidebar should carry the accent before the detail pane is focused")
+	if c := cellOf(t, got, 1, 1); hexOf(c.Style.Bg) != palette.Tide.Accent {
+		t.Errorf("title strip bg = %s, want %s", hexOf(c.Style.Bg), palette.Tide.Accent)
 	}
-	if m.detailBoxStyle().GetBorderTopForeground() == accent {
-		t.Fatalf("precondition: the detail box should be blurred before it is focused")
-	}
-
-	m, _ = update(t, m, keyEnter)
-	if !m.detailOwnsKeyboard() {
-		t.Fatalf("precondition: enter should focus the detail pane")
-	}
-
-	if m.detailBoxStyle().GetBorderTopForeground() != accent {
-		t.Error("focused detail pane should carry the accent border")
-	}
-	if m.listBoxStyle().GetBorderTopForeground() == accent {
-		t.Error("focused detail pane: the sidebar must drop the accent border")
+	if line := strings.Split(xansi.Strip(got), "\n")[1]; !strings.HasPrefix(line, "│ Details · alpha") {
+		t.Errorf("strip row = %q, want the title first", line)
 	}
 }
 
@@ -1175,32 +1136,6 @@ func TestCombinedFocusPresentationUsesOneBinding(t *testing.T) {
 	full := xansi.Strip(renderModeHelp(m.renderNormalHelpKeyMap(), true, 100000))
 	if got := strings.Count(full, focus.Key); got != 1 || strings.Count(full, focus.Desc) != 1 {
 		t.Fatalf("full help has %d copies of %q, want one: %q", got, want, full)
-	}
-	_, edge := m.detailBoxLabels()
-	if !strings.Contains(edge, focus.Key+": "+focus.Desc) {
-		t.Errorf("detail edge = %q, want %q", edge, focus.Key+": "+focus.Desc)
-	}
-}
-
-func TestPendingAndFaultDetailEdgesUseCombinedFocusBinding(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		sess Session
-	}{
-		{name: "pending", sess: Session{SessionState: sampleState("alpha"), Pending: true}},
-		{name: "worktree fault", sess: faultSess("alpha", session.KindWorktreeMissing, "gone")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := testModel(tc.sess)
-			m.keys.Focus = key.NewBinding(
-				key.WithKeys("enter", "x"),
-				key.WithHelp("enter/x", "focus current"),
-			)
-			_, edge := m.detailBoxLabels()
-			if !strings.Contains(edge, "enter/x: focus current") {
-				t.Fatalf("detail edge = %q, want binding-derived focus guidance", edge)
-			}
-		})
 	}
 }
 
@@ -1229,17 +1164,18 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 			t.Fatalf("release status = %q, want %q", m.status, want)
 		}
 	})
-	// ctrl+t is a right-side key, so the round trip starts with enter. Back in
-	// the agent view the keyboard is in the session, and the toast names the
-	// way out rather than a focus key the user no longer needs.
-	t.Run("view round trip", func(t *testing.T) {
+	// The details round trip from the agent (ctrl+] d, then esc) says
+	// nothing: opening clears the notice so no toast covers the overlay's
+	// corner, and back in the agent its strip already names the way out, so
+	// no toast names a focus key the user no longer needs.
+	t.Run("details round trip", func(t *testing.T) {
 		m := newModel()
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
 		m, _ = update(t, m, keyEnter)
 		m = flipViewKey(t, m)
 		m = flipViewKey(t, m)
-		if want := "input goes to alpha · ctrl+] esc to return"; m.status != want {
-			t.Fatalf("round-trip status = %q, want %q", m.status, want)
+		if m.status != "" || !m.paneOwnsKeyboard() {
+			t.Fatalf("round-trip status = %q, pane focused %v; want no notice and the agent focused", m.status, m.paneOwnsKeyboard())
 		}
 	})
 }
@@ -1304,39 +1240,6 @@ func TestNormalHelpAt80KeepsCombinedFocus(t *testing.T) {
 	}
 }
 
-// TestDetailBoxFocusChangesDimensionsNotAtAll is plan step 2's second guard:
-// the frame's width and row count must be byte-for-byte identical whether the
-// detail pane is focused or not — the indicator must consume no vertical
-// space. If it did, syncDetailViewport (model.go) and this frame would size
-// from the same detailRowBudget call but disagree on the ACTUAL rows drawn,
-// reproducing the exact off-by-N regression the plan's Context describes.
-func TestDetailBoxFocusChangesDimensionsNotAtAll(t *testing.T) {
-	m := testModel(bigPlanSession("alpha"))
-	m.detailTab = tabWaves
-	_, mainOuter, bodyHeight := m.layoutDims()
-
-	blurred := m.renderDetail(mainOuter, bodyHeight)
-
-	focused, _ := update(t, m, keyEnter)
-	if !focused.detailOwnsKeyboard() {
-		t.Fatalf("precondition: enter should focus the detail pane")
-	}
-	focusedFrame := focused.renderDetail(mainOuter, bodyHeight)
-
-	if gotW, wantW := lipgloss.Width(focusedFrame), lipgloss.Width(blurred); gotW != wantW {
-		t.Errorf("focused frame width = %d, want %d (blurred)", gotW, wantW)
-	}
-	if gotH, wantH := lipgloss.Height(focusedFrame), lipgloss.Height(blurred); gotH != wantH {
-		t.Errorf("focused frame height = %d, want %d (blurred)", gotH, wantH)
-	}
-
-	blurredLines := strings.Split(blurred, "\n")
-	focusedLines := strings.Split(focusedFrame, "\n")
-	if len(blurredLines) != len(focusedLines) {
-		t.Fatalf("row count differs: blurred=%d focused=%d", len(blurredLines), len(focusedLines))
-	}
-}
-
 // TestDetailFocusedFooterFitsWidth80KeepsReleaseKeys is plan step 6: at width
 // 80 the focused footer must still show the release keys in full. W2.T1's
 // truncation-survival ordering (release first) is what this depends on — see
@@ -1355,44 +1258,8 @@ func TestDetailFocusedFooterFitsWidth80KeepsReleaseKeys(t *testing.T) {
 	if got := lipgloss.Width(footer); got > m.width {
 		t.Fatalf("focused footer is %d cells wide, want at most %d", got, m.width)
 	}
-	if !strings.Contains(xansi.Strip(footer), "esc back to list") {
+	if !strings.Contains(xansi.Strip(footer), "esc back") {
 		t.Errorf("focused footer at width 80 dropped the release key, got: %q", footer)
-	}
-	if !strings.Contains(footer, "back to list") {
-		t.Errorf("focused footer at width 80 dropped the release key's description, got: %q", footer)
-	}
-}
-
-// TestDetailBoxLabelsShowsReleaseHintWhileFocused is plan step 7: the detail
-// box's bottom-edge hint advertises enter/c/l while blurred, all three of
-// which the focused mode ignores (inputDetail's rule table, mode.go, does not
-// bind them). Focused, the hint must name the actual way out instead of
-// advertising dead keys. The text is read from mode.go's own release binding
-// (via findBinding, not a duplicated literal) so the two cannot drift.
-func TestDetailBoxLabelsShowsReleaseHintWhileFocused(t *testing.T) {
-	m := testModel(runningSess("alpha"))
-	_, blurredHint := m.detailBoxLabels()
-	focus := m.keys.Focus.Help()
-	if !strings.Contains(blurredHint, focus.Key+": "+focus.Desc) {
-		t.Fatalf("precondition: blurred hint should advertise the combined focus binding, got %q", blurredHint)
-	}
-
-	m, _ = update(t, m, keyEnter)
-	if !m.detailOwnsKeyboard() {
-		t.Fatalf("precondition: enter should focus the detail pane")
-	}
-
-	title, hint := m.detailBoxLabels()
-	if title != "alpha" {
-		t.Errorf("title = %q, want the session name unaffected by focus", title)
-	}
-	if strings.Contains(hint, focus.Desc) || strings.Contains(hint, "clean") || strings.Contains(hint, "label") {
-		t.Errorf("focused hint = %q, must not advertise the dead normal-mode keys", hint)
-	}
-	reg := m.modes()
-	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc"})
-	if !strings.Contains(hint, release.Help().Key) || !strings.Contains(hint, release.Help().Desc) {
-		t.Errorf("focused hint = %q, want it to name the release binding %q: %q", hint, release.Help().Key, release.Help().Desc)
 	}
 }
 
@@ -1559,7 +1426,7 @@ func TestHintsNameTheKeys(t *testing.T) {
 	}{
 		{"session list", strip(list), []string{"enter open", "esc all projects", ": actions", "? keys"}},
 		{"focused agent pane", strip(pane), []string{"input → session · ", "ctrl+] afk keys", "ctrl+] m mouse:"}},
-		{"focused detail pane", strip(detail), []string{"esc back to list"}},
+		{"focused detail pane", strip(detail), []string{"esc back"}},
 	}
 	for _, tc := range footers {
 		t.Run("footer: "+tc.name, func(t *testing.T) {

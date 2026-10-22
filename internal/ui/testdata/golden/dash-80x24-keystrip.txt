@@ -1,8 +1,8 @@
  afk Dashboard                                                                  
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Agent · feat-auth                     keys go to the agent · ctrl+] esc back │
+│  ◐ executing  ·  +412 −88  ·  loop 3   next needing you: fix-login-redirect  │
 │ agent output                                                                 │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -19,6 +19,6 @@
 │                         │ :      actions           i      inbox              │
 │                         │ d      details           R      read usage         │
 │                         │ ?      keys              q      quit               │
-│                         │ m      mouse             ctrl+] send ctrl+]        │
+│  ctrl+] esc  back   ctrl│ m      mouse             ctrl+] send ctrl+]        │
 ╰─────────────────────────╰────────────────────── esc back · other keys close ─╯
 waiting for an afk key · esc back · ctrl+] sends ctrl+] to the agent            

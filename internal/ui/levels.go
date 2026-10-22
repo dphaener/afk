@@ -25,8 +25,8 @@ const (
 	// levelAllProjects is the home screen: every project on one page.
 	levelAllProjects level = iota
 	// levelProject is one project: the project view's three sections,
-	// Sessions, Build and Inbox (T16.4), or the session list beside the
-	// overview while `d` has given the overview the keyboard.
+	// Sessions, Build and Inbox (T16.4). The details overlay `d` opens is
+	// drawn over it and does not change the level (T16.5).
 	levelProject
 	// levelAgent is one session's agent, drawn as a pane over the dimmed
 	// Project. Every key but the leader goes to the agent here.
@@ -59,6 +59,13 @@ type levelFacts struct {
 	// focus and view mirror Model.focus and Model.view.
 	focus paneFocus
 	view  rightView
+	// agentShown is "the Agent box has something to draw": a pane for the
+	// selected row (Model.shouldRenderPane) or the agent placeholder
+	// (Model.agentPlaceholderDrawn). A row with no live agent has neither,
+	// and the right side focused on it (a restart that failed, a host that
+	// stopped under the placeholder) is the Project: an Agent level with
+	// nothing on it would send every key to an agent that is not there.
+	agentShown bool
 }
 
 // currentLevel derives the level from the facts.
@@ -68,17 +75,17 @@ type levelFacts struct {
 // focus left on the right from before a project closed must not put the
 // keyboard into an agent nobody can see.
 //
-// The Agent is the right side focused with the agent view, whether or not a
-// live pane is installed. A session with no live agent shows the agent
-// placeholder there, and that placeholder is still the Agent level (A6): its
-// esc goes back to Project like the pane's. modeState's pane fact is
-// deliberately not read here — it decides whether keys reach a PTY, which is
-// the wiring's business, not which level is on screen.
+// The Agent is the right side focused with the agent view and something in
+// the agent box: the live pane, or the agent placeholder for a row whose
+// agent is connecting, restarting or lost. The placeholder is still the Agent
+// level (A6): its esc goes back to Project like the pane's. Which of the two
+// it is stays the wiring's business (modeState's pane and placeholder facts
+// decide whether keys reach a PTY); here only "is anything there" counts.
 func currentLevel(f levelFacts) level {
 	switch {
 	case f.allProjectsOpen || !f.hasActiveProject:
 		return levelAllProjects
-	case f.focus == focusRight && f.view == viewAgent:
+	case f.focus == focusRight && f.view == viewAgent && f.agentShown:
 		return levelAgent
 	}
 	return levelProject

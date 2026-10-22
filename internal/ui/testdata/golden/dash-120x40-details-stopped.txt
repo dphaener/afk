@@ -1,0 +1,40 @@
+ afk Dashboard                                                                                                          
+  ╭───────────────────────────────────────────────────────────────╭────────────────────────────────────────────────────╮
+  │ Sessions                                                      │ Details · feat-search                     esc back │
+  │                                                               │  1 Overview  2 Waves  3 Stack  4 Notes  5 Diff     │
+  │ ╭────────────────────────────────────────────────╮ ╭──────────│ SESSION                                            │
+  │ │ 1 Sessions                                   6 │ │ 2 Build  │ Phase     ✓ done                                   │
+  │ │  ▾ Needs you                                3  │ │ Reading t│ Host      ○ stopped                                │
+  │ │   ◐ feat-auth       executing     3/7 asks you │ │          │ Branch    feat-search → main                       │
+  │ │   ◐ fix-login-red…  planning        – asks you │ │          │ Updated   2026-07-10T00:00:00Z                     │
+  │ │   ✕ old-migration   broken          –          │ │          │                                                    │
+  │ │  ▾ Working                                  2  │ │          │ PROGRESS                                           │
+  │ │   ◐ Billing v2      reviewing     7/7  open it │ │          │ Tasks     ████████████████████ 5/5                 │
+  │ │   ◐ scratch-1       one-off         –  open it │ │          │ Diff      +88/-12 · 4 file(s) vs main              │
+  │ │  ▾ Done                                     1  │ │          │ Verdict   — not reviewed yet                       │
+  │ │ ▌ ✓ feat-search     done          5/5          │ │          │                                                    │
+  │ │                                                │ │          │ READY                                              │
+  │ │                                                │ │          │ No plan file.                                      │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ ╰────────────────────────────────────────────────╯ │          │                                                    │
+  │ ╭────────────────────────────────────────────────╮ │          │                                                    │
+  │ │ feat-search                                    │ │          │                                                    │
+  │ │────────────────────────────────────────────────│ │          │                                                    │
+  │ │ branch  feat-search                            │ ╰──────────│                                                    │
+  │ │ phase   done                                   │ ╭──────────│                                                    │
+  │ │ diff    +88/-12 · 4 file(s) vs main            │ │ 3 Inbox  │                                                    │
+  │ │ host    not running                            │ │ Reading t│                                                    │
+  │ ╰────────────────────────────────────────────────╯ ╰──────────│                                                    │
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  │                                                    │
+  ╰───────────────────────────────────────────────────────────────╰─  r  restart ──────────────────────────────────────╯
+esc back · r restart · tab next tab · shift+tab previous tab · 1-5 jump to tab · ↑/k scroll up · ↓/j scroll down …      

@@ -82,12 +82,13 @@ const (
 	// inputPane is a focused pane, the Agent level: every key but the leader
 	// forwards to the child.
 	inputPane
-	// inputDetail is a FOCUSED detail pane: the summary/diff view in the main
-	// region owns the keyboard so its viewport can be scrolled with the keys a
-	// user reaches for. It is a second, distinct focus concept from inputPane
-	// — that one routes keys into a child session, this one moves a viewport
-	// this process owns — and the two are mutually exclusive by construction
-	// (see modeSnapshot's two conjunctions).
+	// inputDetail is the details overlay (Model.detailsOpen,
+	// detailsoverlay.go, §4.4, T16.5): the selected session's tabs over the
+	// dimmed Project or Agent. Its keys are the tab keys, the scroll keys,
+	// esc to close, q and ctrl+c to quit, and `?` and `:`, which open over
+	// it. Opened from the Agent the pane stays installed and focused behind
+	// it, so this mode outranks inputPane: the overlay has the keyboard, and
+	// esc hands it back to the agent by closing, with no focus to restore.
 	inputDetail
 	// inputInbox is the inbox overlay (Model.inboxOpen): a list of the
 	// project's inbox items and, one level in, an item with a field to answer
@@ -172,7 +173,8 @@ const (
 	// inputTaskTokens is the tokens overlay (Model.taskTokensOpen,
 	// tasktokensoverlay.go, T7.12): the Build section cursor's task, its
 	// status, title and detail over its tokens as `afk tokens` prints them,
-	// in a scrollable box (the task's details until T16.5). It is the plan check's kind of
+	// in a scrollable box (a task's details: `d` is for sessions, A3 of
+	// T16.5). It is the plan check's kind of
 	// overlay, not a footer modal: it asks nothing, and a create's failure
 	// report must still outrank it.
 	inputTaskTokens
@@ -185,6 +187,15 @@ const (
 	// keysoverlay.go, §4.9): every key, level by level, with `/` narrowing
 	// the rows. Every key but ctrl+c is the overlay's, as in the plan check.
 	inputKeys
+	// inputPlaceholder is the agent placeholder (A6 of T16.2): the Agent
+	// level for a row that has an agent but no pane yet, or a lost one
+	// (agentPlaceholderDrawn). There is no agent to send keys to, so its own
+	// keys act alone (Model.placeholderKey): enter connects, r restarts, and
+	// the leader shows the key strip. It was inputDetail by derivation until
+	// T16.5 made that mode the details overlay's; it is a layer of its own
+	// now so the right side focused with nothing drawn on it cannot pass for
+	// either.
+	inputPlaceholder
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -250,6 +261,8 @@ func (m inputMode) String() string {
 		return "key-strip"
 	case inputKeys:
 		return "keys"
+	case inputPlaceholder:
+		return "placeholder"
 	}
 	return "unknown"
 }
@@ -318,6 +331,14 @@ type modeState struct {
 	keyStrip bool
 	// keysOpen mirrors Model.keysOpen.
 	keysOpen bool
+	// detailsOpen mirrors Model.detailsOpen.
+	detailsOpen bool
+	// placeholder is Model.agentPlaceholderDrawn(): the right side, focused
+	// in the agent view, draws the agent placeholder for a row with an
+	// agent and no pane. It is a fact of its own rather than "right focus
+	// and no pane", because a row with no live agent draws nothing there,
+	// and the keyboard must not land on a surface that is not drawn.
+	placeholder bool
 }
 
 // modeSnapshot builds the modeState the dispatch derives from. This is the
@@ -339,6 +360,8 @@ func (m Model) modeSnapshot() modeState {
 		leaderOpen:      m.leaderOpen,
 		keyStrip:        m.keyStripOpen,
 		keysOpen:        m.keysOpen,
+		detailsOpen:     m.detailsOpen,
+		placeholder:     m.agentPlaceholderDrawn(),
 	}
 }
 
@@ -351,13 +374,12 @@ func (m Model) paneOwnsKeyboard() bool {
 	return m.focus == focusRight && m.shouldRenderPane()
 }
 
-// detailOwnsKeyboard is paneOwnsKeyboard's complement on the right side: the
-// right side is focused and the pane is NOT the drawn surface, so the
-// overview's viewport is what the keys move. The two are exclusive by
-// construction — one focus value, one drawn surface — which is what lets `f`
-// mean "focus whatever is in the main region" with no ambiguity.
+// detailOwnsKeyboard reports whether the details overlay is up and so has
+// the keyboard (inputDetail). Since T16.5 it is the overlay's flag and not a
+// focus: the overlay outranks the pane, so a pane behind it still reports
+// paneOwnsKeyboard's focus while every key goes to the overlay.
 func (m Model) detailOwnsKeyboard() bool {
-	return m.focus == focusRight && !m.shouldRenderPane()
+	return m.detailsOpen
 }
 
 // modes builds this Model's dispatch registry from its own keymap.
@@ -463,28 +485,28 @@ type modeLayer struct {
 //     SCREEN — so no keystroke can land in a running session the user cannot
 //     see, and Esc always cancels the form, after which the still-focused pane
 //     resumes. It becomes live behavior only when W4.T2 wires the dispatch.
-//   - A focused DETAIL pane sits directly above normal mode and below
-//     everything else: it is the weakest claim on the keyboard there is, so
-//     every modal, the search, the switcher, the form and a focused pane all
-//     outrank it. Its position relative to inputPane is
-//     declared rather than relied on — the two predicates are exclusive by
-//     construction (one focus value; the pane either is or is not the drawn
-//     surface) — but a hand-ordered table shadows a misplaced row silently,
-//     so the order is pinned by TestActiveInputModePrecedenceMatrix rather
-//     than left implicit.
-//   - The pane and detail layers are the two-axis focus model as predicates.
-//     Right focus in agent view WITH a pane for the selected row is the pane;
-//     right focus in anything else is the detail — the overview, or, in agent
-//     view with no pane for a row that has an agent, the agent placeholder
-//     (connecting, restarting, lost). The placeholder is not a separate layer:
-//     Model.levelKey intercepts inputDetail when agentPlaceholderDrawn and
-//     hands the key to placeholderKey, so it shares detail's place in this
-//     table (weakest right-side claim) while answering only its own keys.
-//     Either way the keyboard follows the drawn surface and never falls
-//     through to normal mode, where typed keys would hit list bindings. List
-//     focus is normal mode whatever the right side shows: with the list
-//     focused nothing on the right owns the keyboard, however live the pane
-//     is.
+//   - The details overlay (T16.5) sits directly below the form and above
+//     the pane: opened from the Agent, the pane stays installed and focused
+//     behind it, and only this rank keeps the scroll keys out of the agent.
+//     Every overlay above it outranks it because none opens over it by a
+//     key: `:` closes it before running an action that opens one
+//     (detailsActionStays), and `?` and `:` themselves sit higher still, so
+//     they take the keyboard over it and give it back on close. The modals
+//     outrank it for the switcher's reason (a restart's confirm or a create's
+//     failure report must get the keyboard).
+//   - The pane and placeholder layers are the two-axis focus model as
+//     predicates. Right focus in agent view WITH a pane for the selected row
+//     is the pane; with no pane, for a row that has an agent (connecting,
+//     restarting, lost), it is the agent placeholder, whose own keys act
+//     alone (Model.levelKey hands them to placeholderKey). The two are
+//     exclusive by construction (the placeholder fact is false whenever a
+//     pane belongs to the row). Right focus with nothing drawn on the right —
+//     a row with no live agent, reached by a non-key path such as a
+//     restart that failed — is neither, and falls to normal mode at the
+//     Project level (currentLevel's agentShown fact), where the keys work on
+//     the project view that is on screen. List focus is normal mode whatever
+//     the right side shows: with the list focused nothing on the right owns
+//     the keyboard, however live the pane is.
 //   - There is no resize mode since W3.T1 of T16.2: the Agent is drawn over
 //     the Project rather than beside the list, so nothing on screen is split
 //     and there is no divider to move.
@@ -514,8 +536,9 @@ var modePrecedence = []modeLayer{
 	{inputTaskTokens, func(s modeState) bool { return s.taskTokensOpen }},
 	{inputAllProjects, func(s modeState) bool { return s.allProjectsOpen }},
 	{inputForm, func(s modeState) bool { return s.formOpen }},
+	{inputDetail, func(s modeState) bool { return s.detailsOpen }},
 	{inputPane, func(s modeState) bool { return s.focus == focusRight && s.view == viewAgent && s.pane }},
-	{inputDetail, func(s modeState) bool { return s.focus == focusRight }},
+	{inputPlaceholder, func(s modeState) bool { return s.focus == focusRight && s.view == viewAgent && s.placeholder }},
 	{inputNormal, func(modeState) bool { return true }},
 }
 
@@ -569,8 +592,8 @@ const (
 	// actionAnswerOldest is `a` at All projects: open the inbox of the
 	// project holding the oldest blocking item (answerOldest, allprojects.go).
 	actionAnswerOldest
-	// actionDetails is `d`, the selected session's details. Until T16.5
-	// builds the details overlay it gives the overview the keyboard (A2).
+	// actionDetails is `d`, the selected session's details: the details
+	// overlay (showDetails, detailsoverlay.go, T16.5).
 	actionDetails
 
 	// Session-list and overview actions.
@@ -603,6 +626,9 @@ const (
 	actionDetailTabNext
 	actionDetailTabPrev
 	actionDetailTabJump
+	// actionDetailsClose is esc in the details overlay (detailsoverlay.go):
+	// it closes, and the keyboard is back where the overlay was opened.
+	actionDetailsClose
 	actionInbox // i: openInbox
 	// The five plan actions (planstart.go). They have no key: the `:`
 	// search reaches them by name only (keyTable).
@@ -716,6 +742,7 @@ var actionNames = map[modeAction]string{
 	actionDetailTabNext:       "detail-tab-next",
 	actionDetailTabPrev:       "detail-tab-prev",
 	actionDetailTabJump:       "detail-tab-jump",
+	actionDetailsClose:        "details-close",
 	actionInbox:               "inbox",
 	actionPlanExtend:          "plan-extend",
 	actionPlanAmend:           "plan-amend",
@@ -860,10 +887,10 @@ type modeSpec struct {
 	keys modeKeyMap
 }
 
-// The detail pane's tab keys, bound only in detail mode: from the list the
-// same keys change the project view's section (the key table's rows at
-// Project), and levelKey hands them to this mode only while the overview has
-// the keyboard. One binding carries all five digits, so help lists "jump to
+// The details overlay's tab keys, bound only in detail mode: at Project the
+// same keys change the project view's section (the key table's rows), and
+// the overlay's layer outranks the level's while it is up, so they reach
+// these rules only then. One binding carries all five digits, so help lists "jump to
 // tab" as one row. Five is the longest the strip gets: the five session tabs
 // in a git-spice repo (visibleDetailTabs). Build was a sixth until T16.4 made
 // it a section of the project view. A digit past the last visible tab does
@@ -1273,26 +1300,46 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		keys: modeKeyMap{bindings: []key.Binding{keys.Leader}},
 	}
 
-	// Detail mode is a focused overview, at Project. Its rule set is
-	// ENUMERATED rather than inherited: the fall-through is routeIgnored, so
-	// everything this table and the key table omit is swallowed, which is the
-	// point. A scroll gesture must never open, clean or steal a session, and
-	// "ignored" is the only disposition that guarantees it for keys nobody
-	// has thought of yet.
+	// Detail mode is the details overlay (detailsoverlay.go, §4.4), at
+	// Project or over the Agent. Its rule set is ENUMERATED rather than
+	// inherited: the fall-through is routeIgnored, so everything this table
+	// omits is swallowed, which is the point. A scroll gesture must never
+	// open, clean or steal a session, and over the Agent no key may reach the
+	// agent behind it: "ignored" is the only disposition that guarantees both
+	// for keys nobody has thought of yet.
 	//
-	// The rules are the overview's own keys: the three tab keys, because
-	// switching tabs is reading — the same gesture as scrolling — and the ten
-	// scroll keys: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end.
-	// esc, ctrl+c and the action letters are the key table's, which levelKey
-	// asks first. These scroll and tab keys are bound in this mode only: from
-	// the list they would drive the right pane.
+	// The rules are the overlay's own keys: esc closes it, the three tab keys
+	// (switching tabs is reading, the same gesture as scrolling), the ten
+	// scroll keys (up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end), q
+	// and ctrl+c quit, and `?` and `:` open over it. The overlay has the
+	// keyboard over the Agent too, so the leader is not needed for any of
+	// them; the leader itself is swallowed there, since a strip that opened
+	// over the overlay would offer keys for the agent behind it.
 	//
 	// The bindings are ordered for TRUNCATION SURVIVAL, not for rule fidelity:
-	// position here decides what a narrow terminal still shows, so the tab
-	// keys lead and the scroll keys — the most numerous — sort last.
+	// position here decides what a narrow terminal still shows, so the way
+	// out and the tab keys lead and the scroll keys — the most numerous —
+	// sort last.
+	detailsClose := key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "back"),
+	)
+	detailsQuit := key.NewBinding(
+		key.WithKeys("q", "ctrl+c"),
+		key.WithHelp("q", "quit"),
+	)
+	detailsActions := key.NewBinding(
+		key.WithKeys(":"),
+		key.WithHelp(":", "actions"),
+	)
+	detailsKeys := key.NewBinding(
+		key.WithKeys("?"),
+		key.WithHelp("?", "keys"),
+	)
 	r[inputDetail] = modeSpec{
 		mode: inputDetail,
 		rules: []modeRule{
+			{binding: detailsClose, action: actionDetailsClose},
 			{binding: detailTabNextKey, action: actionDetailTabNext},
 			{binding: detailTabPrevKey, action: actionDetailTabPrev},
 			{binding: detailTabJumpKey, action: actionDetailTabJump},
@@ -1304,13 +1351,30 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: detailPageDown, action: actionDetailPageDown},
 			{binding: detailGotoTop, action: actionDetailGotoTop},
 			{binding: detailGotoBottom, action: actionDetailGotoBottom},
+			{binding: detailsQuit, action: actionQuit},
+			{binding: detailsActions, action: actionActionsSearch},
+			{binding: detailsKeys, action: actionKeys},
 		},
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
-			detailTabNextKey, detailTabPrevKey, detailTabJumpKey,
+			detailsClose, detailTabNextKey, detailTabPrevKey, detailTabJumpKey,
 			detailFocusUp, detailFocusDown, detailHalfPageUp, detailHalfPageDown,
 			detailPageUp, detailPageDown, detailGotoTop, detailGotoBottom,
+			detailsActions, detailsKeys, detailsQuit,
 		}},
+	}
+
+	// Placeholder mode is the agent placeholder (A6 of T16.2): the Agent for
+	// a row with an agent but no pane. Every key is Model.levelKey's, which
+	// hands the strip-closed keys to placeholderKey (enter connects, r
+	// restarts, the leader shows the key strip) and the strip-open ones to
+	// decideKey, as in the pane. The bindings are help-only, for a caller
+	// that reads the registry; the status bar names the live ones itself
+	// (renderHelp), on the never-advertise-a-no-op rule.
+	r[inputPlaceholder] = modeSpec{
+		mode: inputPlaceholder,
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{keys.Focus, keys.Restart, keys.Leader}},
 	}
 
 	// Form mode transcribes the old handleFormKey's top-level table (its

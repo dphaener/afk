@@ -255,3 +255,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Section**: a numbered pane inside the project view: Sessions, Build, Inbox; `tab` and `1`-`3` move between them.
 - **Read-only pane**: the selected session's summary under Sessions; it never takes the keyboard.
 - **Linked row**: the row in another section that belongs to the selection, filled with the strip colour and ending `◂ name`.
+- **Details overlay**: the 54-column pane on the right (full width below 100 columns) that `d` opens over any level for the selected session, with the tabs Overview, Waves, Stack, Notes and Diff; `esc` goes back to where it was opened.
+- **Agent band**: the line under the Agent's title strip that sums up the session (phase, task, diff, loop, host) and names the next session in the project that needs the owner.

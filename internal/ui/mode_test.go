@@ -25,25 +25,22 @@ import (
 //   - "switcher over form" is unreachable in practice but declared so the
 //     frame (views.go renders switcher first) and the keyboard can never
 //     disagree; enshrining the opposite order would split them.
-//   - The four (focus, view, pane) rows under "the two axes" are the whole
-//     focus model as data. "list focus with a pane in agent view" is the one
-//     that encodes the user's rule — with the list focused nothing on the
-//     right owns the keyboard, however live the pane is — and "right focus in
-//     agent view without a pane" pins that the keyboard follows the DRAWN
-//     surface (the overview, since there is nothing else to draw) rather
-//     than falling to normal mode, where typed keys would hit list bindings.
+//   - The (focus, view, pane, placeholder) rows under "the two axes" are the
+//     whole focus model as data. "list focus with a pane in agent view" is
+//     the one that encodes the user's rule — with the list focused nothing on
+//     the right owns the keyboard, however live the pane is — and "right
+//     focus in agent view with nothing drawn" pins that the keyboard follows
+//     the DRAWN surface: with nothing in the agent box the project view is
+//     what is on screen, so its keys answer (T16.5 removed the overview that
+//     used to stand there).
 //   - "right focus, overview view, pane present" pins that the view axis
-//     outranks the pane's existence: an installed pane behind the overview
-//     does not claim the keyboard. This is the row that replaces the old
-//     "focused flag hidden behind the summary" corner.
-//   - The inputDetail rows pin the layer's POSITION, directly above normal
-//     mode and below everything else. modePrecedence is hand-ordered and a
-//     row slipped above a modal is shadowed silently, with no error — move
-//     the entry up and these rows are what turns it red. The "right focus in
-//     overview" row is also what decides esc: filterClear binds esc in
-//     inputNormal and the release binds it here, so an applied filter
-//     survives the release because this mode outranks normal, not because of
-//     any rule ordering.
+//     outranks the pane's existence: an installed pane in the overview view
+//     does not claim the keyboard.
+//   - The details rows pin the overlay's layer (T16.5): above the pane, which
+//     it is laid over in the Agent, and below the overlays, the form and the
+//     modals. modePrecedence is hand-ordered and a row slipped to the wrong
+//     place is shadowed silently, with no error — move the entry and these
+//     rows are what turns it red.
 //   - The inbox rows pin the overlay's place: below every modal, the actions
 //     dialog and the switcher, above everything else. "inbox over focused pane" is
 //     the one that matters in use: an attach can land focused under the open
@@ -93,19 +90,65 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputPane,
 		},
 		{
-			name:  "right focus in agent view without a pane: the drawn overview owns it",
+			name:  "right focus in agent view with the placeholder drawn: the placeholder owns it",
+			state: modeState{focus: focusRight, view: viewAgent, placeholder: true},
+			want:  inputPlaceholder,
+		},
+		{
+			name:  "right focus in agent view with nothing drawn: the Project's keys (load-bearing)",
 			state: modeState{focus: focusRight, view: viewAgent},
-			want:  inputDetail,
+			want:  inputNormal,
 		},
 		{
 			name:  "right focus, overview view, no pane",
 			state: modeState{focus: focusRight, view: viewOverview},
-			want:  inputDetail,
+			want:  inputNormal,
 		},
 		{
 			name:  "right focus, overview view, pane present: the view outranks the pane",
 			state: modeState{focus: focusRight, view: viewOverview, pane: true},
+			want:  inputNormal,
+		},
+
+		// The details overlay (T16.5). "details over a focused pane" is the
+		// row it cannot work without: opened from the Agent the pane stays
+		// focused behind it, and if the pane outranked it every scroll key
+		// would reach the agent. The form row pins it under the overlays,
+		// and the keys and leader rows that `?` and `:` open over it.
+		{
+			name:  "details alone",
+			state: modeState{detailsOpen: true},
 			want:  inputDetail,
+		},
+		{
+			name:  "details over a focused pane (load-bearing)",
+			state: modeState{detailsOpen: true, focus: focusRight, view: viewAgent, pane: true},
+			want:  inputDetail,
+		},
+		{
+			name:  "details over the placeholder",
+			state: modeState{detailsOpen: true, focus: focusRight, view: viewAgent, placeholder: true},
+			want:  inputDetail,
+		},
+		{
+			name:  "the form outranks details",
+			state: modeState{detailsOpen: true, formOpen: true},
+			want:  inputForm,
+		},
+		{
+			name:  "keys over details",
+			state: modeState{detailsOpen: true, keysOpen: true},
+			want:  inputKeys,
+		},
+		{
+			name:  "leader over details",
+			state: modeState{detailsOpen: true, leaderOpen: true},
+			want:  inputLeader,
+		},
+		{
+			name:  "a modal outranks details",
+			state: modeState{detailsOpen: true, modal: inputConfirmRestart},
+			want:  inputConfirmRestart,
 		},
 
 		{
@@ -651,6 +694,27 @@ func TestModeSnapshot(t *testing.T) {
 			want: modeState{keysOpen: true},
 		},
 		{
+			name: "details open",
+			mut:  func(m *Model) { m.detailsOpen = true },
+			want: modeState{detailsOpen: true},
+		},
+		{
+			name: "the agent placeholder for a running row with no pane",
+			mut: func(m *Model) {
+				*m = testModel(runningSess("sess"))
+				m.focus = focusRight
+			},
+			want: modeState{focus: focusRight, placeholder: true},
+		},
+		{
+			name: "a stopped row draws no placeholder (load-bearing: nothing drawn takes no keys)",
+			mut: func(m *Model) {
+				*m = testModel(sess("sess"))
+				m.focus = focusRight
+			},
+			want: modeState{focus: focusRight},
+		},
+		{
 			name: "leader open",
 			mut:  func(m *Model) { m.leaderOpen = true },
 			want: modeState{leaderOpen: true},
@@ -787,7 +851,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"enter in plan open offer is swallowed", inputConfirmPlanOpen, routeConds{}, enter, keyDecision{kind: routeIgnored}},
 		{"ctrl+c in switcher quits", inputSwitcher, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in normal is the key table's (quit)", inputNormal, routeConds{}, ctrlC, keyDecision{kind: routeIgnored}},
-		{"ctrl+c in detail is the key table's (quit)", inputDetail, routeConds{}, ctrlC, keyDecision{kind: routeIgnored}},
+		{"ctrl+c in detail quits (the overlay's own rule)", inputDetail, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in form is swallowed by the component", inputForm, routeConds{}, ctrlC, keyDecision{kind: routeComponent}},
 		{"ctrl+c in pane forwards to the child", inputPane, routeConds{}, ctrlC, keyDecision{kind: routeChild}},
 
@@ -815,7 +879,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"esc in form is the form-cancel gesture", inputForm, routeConds{}, esc, keyDecision{routeAction, actionFormCancel}},
 		{"esc in switcher goes to the component (two-stage)", inputSwitcher, routeConds{}, esc, keyDecision{kind: routeComponent}},
 		{"esc in normal is the key table's (go back)", inputNormal, routeConds{}, esc, keyDecision{kind: routeIgnored}},
-		{"esc in detail is the key table's (go back)", inputDetail, routeConds{}, esc, keyDecision{kind: routeIgnored}},
+		{"esc in detail closes the overlay", inputDetail, routeConds{}, esc, keyDecision{routeAction, actionDetailsClose}},
 		{"esc in pane forwards to the child", inputPane, routeConds{}, esc, keyDecision{kind: routeChild}},
 
 		// enter, per mode. In normal mode Enter and f are two physical keys for
@@ -850,7 +914,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 
 		// q: quit only in normal and detail.
 		{"q in normal is ignored (ctrl+] q)", inputNormal, routeConds{}, q, keyDecision{kind: routeIgnored}},
-		{"q in detail is ignored", inputDetail, routeConds{}, q, keyDecision{kind: routeIgnored}},
+		{"q in detail quits (the overlay's own rule)", inputDetail, routeConds{}, q, keyDecision{routeAction, actionQuit}},
 		{"q in switcher filters (component)", inputSwitcher, routeConds{}, q, keyDecision{kind: routeComponent}},
 		{"q in form types (component)", inputForm, routeConds{}, q, keyDecision{kind: routeComponent}},
 		{"q in pane forwards to the child", inputPane, routeConds{}, q, keyDecision{kind: routeChild}},

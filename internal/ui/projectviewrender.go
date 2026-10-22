@@ -22,8 +22,8 @@
 // plain ground when the home screen has no rows to show). Below that one
 // section fills the box, the whole body wide, and its strip names all three
 // (sectionTabs); the read-only pane is left out there, since `d` shows the
-// overview, which carries the same facts. The overview `d` opens takes the
-// body as it did before T16.4 at every width, until T16.5 makes it an overlay.
+// details overlay (detailsoverlay.go), which carries the same facts. The
+// overlay is laid over this view, at every width, and changes nothing in it.
 //
 // The mouse reads the same geometry (projectBoxRect, projectLayout,
 // projectHitAt), and each section's lines and scroll come from one function
@@ -88,15 +88,6 @@ func (m Model) focusedSection() projectSection {
 		return sectionSessions
 	}
 	return m.section
-}
-
-// projectViewDrawn reports whether the body is the project view: the
-// keyboard is not on the overview `d` opened, which still draws the session
-// list beside it until T16.5 makes `d` an overlay. The Agent is drawn over
-// the project view, so it counts as drawn there. Every width draws it: below
-// projectWideWidth it is the narrow layout (projectNarrow).
-func (m Model) projectViewDrawn() bool {
-	return !(m.focus == focusRight && m.level() == levelProject)
 }
 
 // projectNarrow reports whether the project view is the narrow layout, one
@@ -215,8 +206,9 @@ func (m Model) projectEnterTarget() enterTarget {
 	return projectEnterTarget(m.focusedSection(), haveSession, m.buildTaskSelected(), haveItem)
 }
 
-// projectGoIn is enter at Project: a session opens its agent (openAgent), a
-// task its details (openTaskDetails), an inbox item the inbox on that item
+// projectGoIn is enter at Project: a session opens its agent, or its details
+// when it has no live agent (openAgent, sessionEnterTarget), a task its
+// details (openTaskDetails), an inbox item the inbox on that item
 // (openInboxOn). An empty section opens nothing and says nothing: the
 // section's own line ("Nothing open.") already says why.
 func (m Model) projectGoIn() (tea.Model, tea.Cmd) {

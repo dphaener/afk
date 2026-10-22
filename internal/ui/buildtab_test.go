@@ -400,7 +400,7 @@ func TestBuildSectionByKey(t *testing.T) {
 		}
 	})
 
-	t.Run("a live agent pane is hidden behind the overview, never closed", func(t *testing.T) {
+	t.Run("a live agent pane stays drawn under the details, never closed", func(t *testing.T) {
 		m := withBuild(t, testModel(runningSess("alpha")), buildTabSnap())
 		pane := newFakePane("agent screen")
 		m.pane, m.paneName, m.view, m.focus = pane, "alpha", viewAgent, focusRight
@@ -411,11 +411,8 @@ func TestBuildSectionByKey(t *testing.T) {
 		if m.pane == nil || pane.closed != 0 {
 			t.Fatalf("d closed the pane (closed=%d)", pane.closed)
 		}
-		if m.shouldRenderPane() || m.view != viewOverview || m.focus != focusRight {
-			t.Fatalf("view=%v focus=%v, want the overview focused over the hidden pane", m.view, m.focus)
-		}
-		if !strings.Contains(m.status, "alpha still running") {
-			t.Errorf("notice = %q, want it to say the session is still running", m.status)
+		if !m.shouldRenderPane() || !m.detailsOpen || m.focus != focusRight {
+			t.Fatalf("drawn=%v details=%v focus=%v, want the details over the drawn agent", m.shouldRenderPane(), m.detailsOpen, m.focus)
 		}
 		if len(pane.keys)+len(pane.texts) != 0 {
 			t.Errorf("the leader then d reached the session")
@@ -495,9 +492,9 @@ func TestBuildSectionDropsOnAProjectSwitch(t *testing.T) {
 	}
 }
 
-// overviewFrame is m's frame with the overview `d` opens given the keyboard
-// and its notice cleared: the session list beside the overview, which is
-// where the list's PHASE column and the overview's words are drawn since the
+// overviewFrame is m's frame with the details overlay `d` opens over the
+// project view and its notice cleared: the Sessions row and the Overview's
+// words side by side, which is where both are drawn since the
 // project view (T16.4) took the body at Project.
 func overviewFrame(t *testing.T, m Model) string {
 	t.Helper()
@@ -533,32 +530,32 @@ func TestPausedForUsageNeverReadsAsStopped(t *testing.T) {
 			name:    "paused with a wake time",
 			sess:    stoppedSess("alpha"),
 			paused:  map[string]string{"alpha": "Mon 5 Jan 15:04"},
-			want:    []string{"PAUSED", "paused for usage until Mon 5 Jan 15:04"},
-			wantNot: []string{"host stopped", "EXECUTING"},
+			want:    []string{"alpha  paused", "paused for usage until Mon 5 Jan 15:04"},
+			wantNot: []string{"stopped"},
 			notice:  "is paused for usage",
 		},
 		{
 			name:    "paused with no wake time",
 			sess:    stoppedSess("alpha"),
 			paused:  map[string]string{"alpha": ""},
-			want:    []string{"PAUSED", "paused for usage"},
-			wantNot: []string{"host stopped", "until"},
+			want:    []string{"alpha  paused", "paused for usage"},
+			wantNot: []string{"stopped", "until"},
 			notice:  "is paused for usage",
 		},
 		{
 			name:    "not in the ledger's paused set",
 			sess:    stoppedSess("alpha"),
 			paused:  map[string]string{"other": ""},
-			want:    []string{"host stopped", "EXECUTING"},
-			wantNot: []string{"PAUSED", "paused for usage"},
+			want:    []string{"○ stopped", "◐ executing"},
+			wantNot: []string{"paused"},
 			notice:  "is stopped",
 		},
 		{
 			name:    "paused in the ledger but running",
 			sess:    runningSess("alpha"),
 			paused:  map[string]string{"alpha": ""},
-			want:    []string{"host running", "EXECUTING"},
-			wantNot: []string{"PAUSED", "paused for usage", "host stopped"},
+			want:    []string{"◐ running", "◐ executing"},
+			wantNot: []string{"paused", "stopped"},
 			notice:  "is stopped",
 		},
 	}
@@ -586,7 +583,7 @@ func TestPausedForUsageNeverReadsAsStopped(t *testing.T) {
 	t.Run("a session load after the build keeps the row paused", func(t *testing.T) {
 		m := withBuild(t, testModel(stoppedSess("alpha")), snap(map[string]string{"alpha": ""}))
 		m.setSessions([]Session{stoppedSess("alpha")})
-		if frame := overviewFrame(t, m); !strings.Contains(frame, "PAUSED") {
+		if frame := overviewFrame(t, m); !strings.Contains(frame, "paused for usage") {
 			t.Errorf("fresh rows from discovery lost the pause:\n%s", frame)
 		}
 	})
@@ -594,7 +591,7 @@ func TestPausedForUsageNeverReadsAsStopped(t *testing.T) {
 	t.Run("the pause clears when the ledger drops it", func(t *testing.T) {
 		m := withBuild(t, testModel(stoppedSess("alpha")), snap(map[string]string{"alpha": ""}))
 		m = withBuild(t, m, snap(nil))
-		if frame := overviewFrame(t, m); strings.Contains(frame, "PAUSED") || !strings.Contains(frame, "host stopped") {
+		if frame := overviewFrame(t, m); strings.Contains(frame, "paused") || !strings.Contains(frame, "○ stopped") {
 			t.Errorf("the row still reads as paused after the ledger cleared it:\n%s", frame)
 		}
 	})

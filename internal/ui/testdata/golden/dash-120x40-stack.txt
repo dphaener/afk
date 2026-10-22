@@ -1,40 +1,40 @@
  afk Dashboard                                                                                                          
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Sessions                                                                                      esc · all projects │  
-  │                                                                                                                  │  
-  │ ╭────────────────────────────────────────────────╮ ╭───────────────────────────────────────────────────────────╮ │  
-  │ │ 1 Sessions                                   6 │ │ 2 Build                                                   │ │  
-  │ │  ▾ Needs you                                3  │ │ Reading the build…                                        │ │  
-  │ │ ▌ ◐ feat-auth       executing     3/7 asks you │ │                                                           │ │  
-  │ │   ◐ fix-login-red…  planning        – asks you │ │                                                           │ │  
-  │ │   ✕ old-migration   broken          –          │ │                                                           │ │  
-  │ │  ▾ Working                                  2  │ │                                                           │ │  
-  │ │   ◐ Billing v2      reviewing     7/7  open it │ │                                                           │ │  
-  │ │   ◐ scratch-1       one-off         –  open it │ │                                                           │ │  
-  │ │  ▾ Done                                     1  │ │                                                           │ │  
-  │ │   ✓ feat-search     done          5/5          │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ ╰────────────────────────────────────────────────╯ │                                                           │ │  
-  │ ╭────────────────────────────────────────────────╮ │                                                           │ │  
-  │ │ feat-auth                                      │ │                                                           │ │  
-  │ │────────────────────────────────────────────────│ │                                                           │ │  
-  │ │ branch  feat-auth                              │ ╰───────────────────────────────────────────────────────────╯ │  
-  │ │ phase   executing · loop 3                     │ ╭───────────────────────────────────────────────────────────╮ │  
-  │ │ diff    +412/-88 · 9 file(s) vs main           │ │ 3 Inbox                                                   │ │  
-  │ │ host    running                                │ │ Reading the inbox…                                        │ │  
-  │ ╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────╯ │  
-  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause                 │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-tab/1-3 section · j/k move · enter open · d details · n new session · c clean… · esc all projects · : actions · ? keys  
+  ╭───────────────────────────────────────────────────────────────╭────────────────────────────────────────────────────╮
+  │ Sessions                                                      │ Details · feat-auth                       esc back │
+  │                                                               │  1 Overview  2 Waves  3 Stack  4 Notes  5 Diff     │
+  │ ╭────────────────────────────────────────────────╮ ╭──────────│ ○ main                                             │
+  │ │ 1 Sessions                                   6 │ │ 2 Build  │ ├── ● feat-auth [feat-auth]                        │
+  │ │  ▾ Needs you                                3  │ │ Reading t│ │   ╰── ○ feat-billing [feat-billing]              │
+  │ │ ▌ ◐ feat-auth       executing     3/7 asks you │ │          │ ╰── ○ fix-login-redirect [fix-login-redirect]      │
+  │ │   ◐ fix-login-red…  planning        – asks you │ │          │                                                    │
+  │ │   ✕ old-migration   broken          –          │ │          │                                                    │
+  │ │  ▾ Working                                  2  │ │          │                                                    │
+  │ │   ◐ Billing v2      reviewing     7/7  open it │ │          │                                                    │
+  │ │   ◐ scratch-1       one-off         –  open it │ │          │                                                    │
+  │ │  ▾ Done                                     1  │ │          │                                                    │
+  │ │   ✓ feat-search     done          5/5          │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ │                                                │ │          │                                                    │
+  │ ╰────────────────────────────────────────────────╯ │          │                                                    │
+  │ ╭────────────────────────────────────────────────╮ │          │                                                    │
+  │ │ feat-auth                                      │ │          │                                                    │
+  │ │────────────────────────────────────────────────│ │          │                                                    │
+  │ │ branch  feat-auth                              │ ╰──────────│                                                    │
+  │ │ phase   executing · loop 3                     │ ╭──────────│                                                    │
+  │ │ diff    +412/-88 · 9 file(s) vs main           │ │ 3 Inbox  │                                                    │
+  │ │ host    running                                │ │ Reading t│                                                    │
+  │ ╰────────────────────────────────────────────────╯ ╰──────────│                                                    │
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  │                                                    │
+  ╰───────────────────────────────────────────────────────────────╰────────────────────────────────────────────────────╯
+esc back · tab next tab · shift+tab previous tab · 1-5 jump to tab · ↑/k scroll up · ↓/j scroll down …                  

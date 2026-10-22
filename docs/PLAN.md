@@ -4179,6 +4179,7 @@ Amended 2026-10-22 (T16.4 done): Project is drawn by `projectviewrender.go` from
   the agent's size follows the terminal; saved screens; against a scratch build with a stand-in agent,
   the agent fills the overlay, `C-] d` opens the details over it dimmed and `Escape` returns to the
   agent with its keys going to it; `make check` is green.
+Amended 2026-10-22 (T16.5 done): `d` (and `ctrl+] d`) opens the details overlay (`Model.detailsOpen`, `detailsFrom`, `detailsFor`, input mode `inputDetail`, drawn by `detailsoverlay.go`, 54 columns on the right from 100 columns up, full width below) and the overview beside the session list is gone, though `rightView`/`viewOverview` and a few other unused helpers remain for later clean-up; `sessionEnterTarget` in `projectview.go` is the pure decision of what `enter` opens (Agent for a pane or a running/restarting/dialing host, details otherwise, and always details for pending, cleaning or a worktree fault) and `rowHasAgent` is built on it; `r restart` works inside the details only where its chip shows (bottom border); the Agent box is band 1 row + terminal + chips 1 row (`agentBoxRows` in `agentview.go`), so `agentContentDims` and `paneScreenGeometry` include them while `paneContentOrigin` (shared with `afk attach`) does not; the band's "next needing you" (`nextNeedingYou`) is the first other awaiting session of the same project in screen order, which T16.6 replaces, and no `ctrl+] ]` chip exists until T16.6 adds `]`.
 
 #### T16.6 — Jump, and the next thing that needs you
 - **Depends on:** T16.5

@@ -172,8 +172,10 @@ func TestRenderPaneKeepsGeometryWithTitleStrip(t *testing.T) {
 	if !strings.HasPrefix(title, "│ Agent · a ") || !strings.Contains(title, hint) {
 		t.Errorf("title row = %q, want \"Agent · a\" and %q", title, hint)
 	}
-	if body := xansi.Strip(gotLines[2]); !strings.HasPrefix(body, "│ SCREEN-BODY") {
-		t.Errorf("emulator row = %q, want it at the border plus one cell", body)
+	// The band (§4.3) is the row under the strip, and the emulator's first
+	// row is under the band.
+	if body := xansi.Strip(gotLines[3]); !strings.HasPrefix(body, "│ SCREEN-BODY") {
+		t.Errorf("emulator row = %q, want it under the band at the border plus one cell", body)
 	}
 	inner := gotLines[1][strings.Index(gotLines[1], "│")+len("│") : strings.LastIndex(gotLines[1], "│")]
 	if at, ok := bgActiveAtEveryCell(inner, fill); !ok {
@@ -1041,13 +1043,23 @@ func TestFitFrameKeepsTheHeadRowsLikeTheRenderer(t *testing.T) {
 // cell across and its border and one-row title strip down, written out here
 // rather than through agentBoxRect so a wrong box in production fails these
 // tests instead of moving both sides together.
+//
+// Since T16.5 the Agent's band (§4.3) sits between the strip and the agent's
+// first row, one more row down, except on a box with only two inner rows or
+// fewer (the body's floor of 4 rows), where the terminal keeps the row and
+// the band is left out. That rule is written out here too, not read from
+// agentBoxRows, for the same reason.
 func dashboardOrigin(m Model) (x, y int) {
-	_, _, _, headerRows, _ := m.mouseFrameLayout()
+	_, _, bodyHeight, headerRows, _ := m.mouseFrameLayout()
 	boxX := 1
 	if m.width < 100 {
 		boxX = 0
 	}
-	return boxX + 2, headerRows + 1 + 1
+	band := 0
+	if bodyHeight-2-1 >= 2 {
+		band = 1
+	}
+	return boxX + 2, headerRows + 1 + 1 + band
 }
 
 // attachOrigin is the same duplication on attach's side, for the same reason.
@@ -1065,8 +1077,8 @@ func attachOrigin(m attachModel) (x, y int) {
 // against the sum again — that is the claim that matters, and it is the one a
 // changed View composition would break.
 func TestMouseFrameLayoutAgreesWithLayoutDims(t *testing.T) {
-	for _, width := range []int{20, 40, 80, 200} {
-		for _, height := range []int{4, 5, 6, 7, 10, 24, 60} {
+	for _, width := range []int{20, 40, 80, 100, 120, 200} {
+		for _, height := range []int{4, 5, 6, 7, 10, 24, 30, 40, 60} {
 			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
 				m, _ := frameModel("live", width, height, true)
 
@@ -1084,6 +1096,97 @@ func TestMouseFrameLayoutAgreesWithLayoutDims(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestAgentPaneSizeFollowsTheTerminal pins the Agent's size (§4.3, A6): the
+// agent's terminal is the Agent box less its border, its padding across, and
+// its border, strip, band and chips rows down, at every place that size is
+// used — paneRegionSize, the size attachPaneCmd dials the host with, and the
+// Resize relayout sends — and the mouse origin is the cell the frame draws the
+// agent's first row in, with the band on the row above and the chips on the
+// row under its last.
+//
+// The three sizes are load-bearing: 120×40 and 100×30 are the inset box
+// (one column each side) on either side of nothing, 80×24 is the full-width
+// box below agentFullWidthBelow. The literal rows are asserted as well as the
+// formula, so a change that moved the box and the arithmetic together still
+// fails.
+func TestAgentPaneSizeFollowsTheTerminal(t *testing.T) {
+	cases := []struct {
+		width, height        int
+		wantCols, wantRows   int
+		wantOriginX, wantOrY int
+	}{
+		{120, 40, 114, 33, 3, 4},
+		{100, 30, 94, 23, 3, 4},
+		{80, 24, 76, 17, 2, 4},
+	}
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("%dx%d", c.width, c.height), func(t *testing.T) {
+			m, fp := frameModel("live", c.width, c.height, true)
+			cols, rows := m.paneRegionSize()
+			if cols != c.wantCols || rows != c.wantRows {
+				t.Fatalf("paneRegionSize = %dx%d, want %dx%d", cols, rows, c.wantCols, c.wantRows)
+			}
+			_, _, bodyHeight, headerRows, _ := m.mouseFrameLayout()
+			_, _, w, h := agentBoxRect(m.width, headerRows, bodyHeight)
+			const bandRows, chipsRows = 1, 1
+			if want := h - boxBorderCells - paneStripRows - bandRows - chipsRows; rows != want {
+				t.Errorf("rows = %d, want box height %d less border, strip, band and chips = %d", rows, h, want)
+			}
+			if want := w - boxBorderCells - 2; cols != want {
+				t.Errorf("cols = %d, want box width %d less border and padding = %d", cols, w, want)
+			}
+
+			// The size the host is dialled with is the same.
+			var dialled hostPaneConfig
+			m.deps.OpenHostPane = func(cfg hostPaneConfig) (paneHandle, error) {
+				dialled = cfg
+				return newFakePane(""), nil
+			}
+			m.attachPaneCmd(paneOpenRequest{name: "live"})()
+			if dialled.Cols != cols || dialled.Rows != rows {
+				t.Errorf("attachPaneCmd dialled %dx%d, want %dx%d", dialled.Cols, dialled.Rows, cols, rows)
+			}
+
+			// And the size a terminal resize sends the agent.
+			m2, _ := update(t, m, tea.WindowSizeMsg{Width: c.width, Height: c.height})
+			if len(fp.resizes) == 0 {
+				t.Fatal("a resize sent the agent no Resize")
+			}
+			if got := fp.resizes[len(fp.resizes)-1]; got != [2]int{cols, rows} {
+				t.Errorf("relayout resized the agent to %dx%d, want %dx%d", got[0], got[1], cols, rows)
+			}
+
+			// The origin is where the frame draws the agent's first row.
+			marks := make([]string, rows)
+			for i := range marks {
+				marks[i] = fmt.Sprintf("R%02dX", i)
+			}
+			fp.render = strings.Join(marks, "\n")
+			frame := render(m2)
+			ox, oy, _, _ := m2.paneScreenGeometry()
+			if ox != c.wantOriginX || oy != c.wantOrY {
+				t.Errorf("origin = (%d, %d), want (%d, %d)", ox, oy, c.wantOriginX, c.wantOrY)
+			}
+			if x, y := findSentinel(frame, marks[0]); x != ox || y != oy {
+				t.Errorf("the agent's first row is drawn at (%d, %d), the origin says (%d, %d)", x, y, ox, oy)
+			}
+			if _, y := findSentinel(frame, marks[rows-1]); y != oy+rows-1 {
+				t.Errorf("the agent's last row is drawn on line %d, want %d", y, oy+rows-1)
+			}
+			lines := strings.Split(xansi.Strip(frame), "\n")
+			if band := lines[oy-1]; !strings.Contains(band, "host running") {
+				t.Errorf("the row above the agent is %q, want the band", band)
+			}
+			if chips := lines[oy+rows]; !strings.Contains(chips, "ctrl+] esc") || !strings.Contains(chips, "back") {
+				t.Errorf("the row under the agent is %q, want the chips", chips)
+			}
+			if border := lines[oy+rows+1]; !strings.Contains(border, "╰") {
+				t.Errorf("the chips are not on the last inner row: the row under them is %q", border)
+			}
+		})
 	}
 }
 
@@ -1150,12 +1253,14 @@ func TestDashboardContentOriginMatchesTheRenderedFrame(t *testing.T) {
 		// wantX is the agent box's left edge (§3.8: column 1 from 100
 		// columns, column 0 below) plus the box's border and padding cell.
 		// The 90/100 pair is load-bearing: it straddles agentFullWidthBelow.
-		{"live", 80, 24, 2, 3},
-		{"live", 120, 40, 3, 3},
-		{longName, 60, 20, 2, 3},
-		{longName, 70, 20, 2, 3},
-		{longName, 90, 24, 2, 3},
-		{longName, 100, 30, 3, 3},
+		// wantY is the top bar, the box's border, the strip and the band
+		// (§4.3): row 4.
+		{"live", 80, 24, 2, 4},
+		{"live", 120, 40, 3, 4},
+		{longName, 60, 20, 2, 4},
+		{longName, 70, 20, 2, 4},
+		{longName, 90, 24, 2, 4},
+		{longName, 100, 30, 3, 4},
 	}
 	for _, c := range cases {
 		label := fmt.Sprintf("%dx%d name=%d", c.width, c.height, len(c.name))
@@ -1644,8 +1749,8 @@ func TestDashboardMouseIsDroppedWhenTheDashboardOwnsInput(t *testing.T) {
 
 			col, line := findSentinel(render(m), paneSentinel)
 			if c.paneVisible {
-				if col != 2 || line != 3 {
-					t.Errorf("the pane should still be on screen at (2, 3) — the guard is about input "+
+				if col != 2 || line != 4 {
+					t.Errorf("the pane should still be on screen at (2, 4) — the guard is about input "+
 						"ownership, not visibility — but the frame has it at (%d, %d)", col, line)
 				}
 			} else if col >= 0 {
@@ -1718,8 +1823,8 @@ func TestDashboardMouseForwardsByFocus(t *testing.T) {
 				}
 				return
 			}
-			if originX != 2 || originY != 3 {
-				t.Fatalf("the frame puts the content at (%d, %d), want (2, 3)", originX, originY)
+			if originX != 2 || originY != 4 {
+				t.Fatalf("the frame puts the content at (%d, %d), want (2, 4)", originX, originY)
 			}
 			wheel := tea.MouseWheelMsg{
 				X: originX + 5, Y: originY + 2,
@@ -1923,15 +2028,15 @@ func TestMouseOnTheProjectView(t *testing.T) {
 	})
 }
 
-// TestMouseClickInListReturnsFocus: with the overview focused, a click in the
-// list region moves focus to the list and forwards nothing; the list has no
-// other mouse behaviour, so selection is untouched. A wheel over the list is
-// dropped without moving focus. In the Agent the list is under the agent box,
-// so the same click does NOT leave the Agent (the leader then esc does): that
-// row is load-bearing, since a stray click beside the agent's screen must not
-// take the keyboard away from the agent.
+// TestMouseClickInListReturnsFocus: in the Agent the list is under the agent
+// box, so a click on it does NOT leave the Agent (the leader then esc does),
+// forwards nothing and moves no selection, and a wheel over it is dropped.
+// That is load-bearing, since a stray click beside the agent's screen must
+// not take the keyboard away from the agent. The overview row it once had
+// went with the overview (T16.5); the details overlay's mouse is
+// TestDetailsMouse's.
 func TestMouseClickInListReturnsFocus(t *testing.T) {
-	for _, view := range []rightView{viewAgent, viewOverview} {
+	for _, view := range []rightView{viewAgent} {
 		m, fp, _, originY, _, _ := mouseModel(t)
 		m.view = view
 		m.focus = focusRight
