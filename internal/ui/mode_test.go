@@ -16,14 +16,14 @@ import (
 //     close (model.go:1613-1620 documents it as uncovered): the defined answer
 //     is that the form wins, because it is what is on screen. If this row
 //     flips, W4.T2 will wire keystrokes into an invisible child session.
-//   - "spawn error over open switcher" pins modal > switcher, which is
+//   - "spawn error over open jump" pins modal > jump, which is
 //     reachable (spawnFinishedMsg is async) and documented at model.go:872-895.
 //     If it flips, a spawn failure's only readable record loses the keyboard.
-//   - "switcher over focused pane" pins the documented focusOnArrival case:
+//   - "jump over focused pane" pins the documented focusOnArrival case:
 //     keys must go to the overlay the user is looking at, not the pane behind
 //     it.
-//   - "switcher over form" is unreachable in practice but declared so the
-//     frame (views.go renders switcher first) and the keyboard can never
+//   - "jump over form" is unreachable in practice but declared so the
+//     frame (views.go renders jump first) and the keyboard can never
 //     disagree; enshrining the opposite order would split them.
 //   - The (focus, view, pane, placeholder) rows under "the two axes" are the
 //     whole focus model as data. "list focus with a pane in agent view" is
@@ -42,7 +42,7 @@ import (
 //     place is shadowed silently, with no error — move the entry and these
 //     rows are what turns it red.
 //   - The inbox rows pin the overlay's place: below every modal, the actions
-//     dialog and the switcher, above everything else. "inbox over focused pane" is
+//     dialog and the jump search, above everything else. "inbox over focused pane" is
 //     the one that matters in use: an attach can land focused under the open
 //     overlay, and the keys being typed are an answer, not input for a
 //     session the box is covering.
@@ -195,9 +195,9 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputPlanText,
 		},
 		{
-			name:  "switcher alone",
-			state: modeState{switcherOpen: true},
-			want:  inputSwitcher,
+			name:  "jump alone",
+			state: modeState{jumpOpen: true},
+			want:  inputJump,
 		},
 		{
 			name:  "form alone",
@@ -227,9 +227,9 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputInbox,
 		},
 		{
-			name:  "switcher over inbox",
-			state: modeState{switcherOpen: true, inboxOpen: true},
-			want:  inputSwitcher,
+			name:  "jump over inbox",
+			state: modeState{jumpOpen: true, inboxOpen: true},
+			want:  inputJump,
 		},
 		{
 			name:  "plan check alone",
@@ -263,8 +263,8 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputKeys,
 		},
 		{
-			name:  "keys over switcher",
-			state: modeState{keysOpen: true, switcherOpen: true},
+			name:  "keys over jump",
+			state: modeState{keysOpen: true, jumpOpen: true},
 			want:  inputKeys,
 		},
 		{
@@ -391,9 +391,9 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputForm,
 		},
 		{
-			name:  "switcher over focused detail",
-			state: modeState{switcherOpen: true, focus: focusRight, view: viewOverview},
-			want:  inputSwitcher,
+			name:  "jump over focused detail",
+			state: modeState{jumpOpen: true, focus: focusRight, view: viewOverview},
+			want:  inputJump,
 		},
 		{
 			name:  "confirm clean over focused detail: modal wins",
@@ -406,8 +406,8 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputForm,
 		},
 		{
-			name:  "spawn error over open switcher: modal wins",
-			state: modeState{modal: inputSpawnError, switcherOpen: true},
+			name:  "spawn error over open jump: modal wins",
+			state: modeState{modal: inputSpawnError, jumpOpen: true},
 			want:  inputSpawnError,
 		},
 		{
@@ -421,25 +421,25 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputConfirmClean,
 		},
 		{
-			name:  "switcher over focused pane: switcher wins",
-			state: modeState{switcherOpen: true, focus: focusRight, pane: true},
-			want:  inputSwitcher,
+			name:  "jump over focused pane: jump wins",
+			state: modeState{jumpOpen: true, focus: focusRight, pane: true},
+			want:  inputJump,
 		},
 		{
-			name:  "switcher over form: switcher wins",
-			state: modeState{switcherOpen: true, formOpen: true},
-			want:  inputSwitcher,
+			name:  "jump over form: jump wins",
+			state: modeState{jumpOpen: true, formOpen: true},
+			want:  inputJump,
 		},
 		{
 			name: "everything at once: modal wins",
 			state: modeState{
-				modal:        inputEditLabel,
-				switcherOpen: true,
-				formOpen:     true,
-				focus:        focusRight,
-				view:         viewOverview,
-				pane:         true,
-				keysOpen:     true,
+				modal:    inputEditLabel,
+				jumpOpen: true,
+				formOpen: true,
+				focus:    focusRight,
+				view:     viewOverview,
+				pane:     true,
+				keysOpen: true,
 			},
 			want: inputEditLabel,
 		},
@@ -464,8 +464,8 @@ func TestActiveInputModePrecedenceMatrix(t *testing.T) {
 			want:  inputLeader,
 		},
 		{
-			name:  "leader over the switcher",
-			state: modeState{leaderOpen: true, switcherOpen: true},
+			name:  "leader over the jump search",
+			state: modeState{leaderOpen: true, jumpOpen: true},
 			want:  inputLeader,
 		},
 		{
@@ -521,14 +521,14 @@ func TestActiveInputModeModalAlwaysWins(t *testing.T) {
 							for _, pane := range bools {
 								for _, keys := range bools {
 									s := modeState{
-										modal:        modal,
-										switcherOpen: sw,
-										formOpen:     form,
-										keyStrip:     strip,
-										focus:        focus,
-										view:         view,
-										pane:         pane,
-										keysOpen:     keys,
+										modal:    modal,
+										jumpOpen: sw,
+										formOpen: form,
+										keyStrip: strip,
+										focus:    focus,
+										view:     view,
+										pane:     pane,
+										keysOpen: keys,
 									}
 									if got := activeInputMode(s); got != modal {
 										t.Errorf("activeInputMode(%+v) = %v, want %v", s, got, modal)
@@ -600,9 +600,9 @@ func TestModeSnapshot(t *testing.T) {
 			want: modeState{modal: inputConfirmPlanOpen},
 		},
 		{
-			name: "switcher active",
-			mut:  func(m *Model) { m.switcherOpen = true },
-			want: modeState{switcherOpen: true},
+			name: "jump active",
+			mut:  func(m *Model) { m.jumpOpen = true },
+			want: modeState{jumpOpen: true},
 		},
 		{
 			name: "form active",
@@ -751,10 +751,10 @@ func press(code rune, text string) tea.KeyPressMsg {
 //
 //   - ctrl+g rows: the mouse chord is still claimable from every overlay,
 //     form, prompt, confirm and resize mode (T7.2 left their keys alone, A4),
-//     the switcher and the inbox overlay excepted as before. On the list and
+//     the jump search and the inbox overlay excepted as before. On the list and
 //     the overview it is ignored (ctrl+] g), and in the pane it is the
 //     agent's.
-//   - ctrl+c rows: quits from modals, the switcher, the list and the
+//   - ctrl+c rows: quits from modals, the jump search, the list and the
 //     overview (A3: a stuck dashboard can always be left), component
 //     fall-through in the form (TestFormSwallowsQuitKeysEscIsOnlyExit), child
 //     in a focused pane (the session owns SIGINT).
@@ -762,7 +762,7 @@ func press(code rune, text string) tea.KeyPressMsg {
 //     the list and the overview. A rule growing back in the pane would take
 //     the key from every agent the dashboard hosts.
 //   - "q" and "y" rows: q quits nowhere but resize mode now (it is filter
-//     text in the switcher, prompt text in the label editor, the child's own
+//     text in the jump search, prompt text in the label editor, the child's own
 //     byte in a pane, and ctrl+] q on the list); y must confirm ONLY in
 //     the two y/n modals.
 //   - esc rows: in normal mode esc closes the full help first, then clears a
@@ -814,7 +814,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		key   tea.KeyPressMsg
 		want  keyDecision
 	}{
-		// ctrl+g: everywhere but the switcher.
+		// ctrl+g: everywhere but the jump search.
 		{"ctrl+g in normal is ignored (ctrl+] g)", inputNormal, routeConds{}, ctrlG, keyDecision{kind: routeIgnored}},
 		{"ctrl+g in pane forwards to the child", inputPane, routeConds{}, ctrlG, keyDecision{kind: routeChild}},
 		{"ctrl+g in form", inputForm, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
@@ -825,7 +825,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+g in plan form", inputPlanText, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in plan open offer", inputConfirmPlanOpen, routeConds{}, ctrlG, keyDecision{routeAction, actionMouseToggle}},
 		{"ctrl+g in detail is ignored (ctrl+] g)", inputDetail, routeConds{}, ctrlG, keyDecision{kind: routeIgnored}},
-		{"ctrl+g in switcher goes to the list", inputSwitcher, routeConds{}, ctrlG, keyDecision{kind: routeComponent}},
+		{"ctrl+g in jump goes to the box", inputJump, routeConds{}, ctrlG, keyDecision{kind: routeComponent}},
 
 		// ctrl+c: the universal escape hatch, except where documented.
 		{"ctrl+c in confirm clean quits", inputConfirmClean, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
@@ -849,7 +849,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"esc in plan open offer cancels", inputConfirmPlanOpen, routeConds{}, esc, keyDecision{routeAction, actionCancel}},
 		{"q in plan open offer is swallowed", inputConfirmPlanOpen, routeConds{}, q, keyDecision{kind: routeIgnored}},
 		{"enter in plan open offer is swallowed", inputConfirmPlanOpen, routeConds{}, enter, keyDecision{kind: routeIgnored}},
-		{"ctrl+c in switcher quits", inputSwitcher, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
+		{"ctrl+c in jump quits", inputJump, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in normal is the key table's (quit)", inputNormal, routeConds{}, ctrlC, keyDecision{kind: routeIgnored}},
 		{"ctrl+c in detail quits (the overlay's own rule)", inputDetail, routeConds{}, ctrlC, keyDecision{routeAction, actionQuit}},
 		{"ctrl+c in form is swallowed by the component", inputForm, routeConds{}, ctrlC, keyDecision{kind: routeComponent}},
@@ -860,7 +860,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+t in normal is ignored", inputNormal, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
 		{"ctrl+t in detail is ignored (ctrl+] t)", inputDetail, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
 		{"ctrl+t in form goes to the component", inputForm, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
-		{"ctrl+t in switcher goes to the list", inputSwitcher, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
+		{"ctrl+t in jump goes to the box", inputJump, routeConds{}, ctrlT, keyDecision{kind: routeComponent}},
 		{"ctrl+t in confirm clean is swallowed", inputConfirmClean, routeConds{}, ctrlT, keyDecision{kind: routeIgnored}},
 
 		// ctrl+\: the escalating chord and its pane guard.
@@ -877,7 +877,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"esc in edit label cancels", inputEditLabel, routeConds{}, esc, keyDecision{routeAction, actionCancel}},
 		{"esc in spawn error dismisses", inputSpawnError, routeConds{}, esc, keyDecision{routeAction, actionDismiss}},
 		{"esc in form is the form-cancel gesture", inputForm, routeConds{}, esc, keyDecision{routeAction, actionFormCancel}},
-		{"esc in switcher goes to the component (two-stage)", inputSwitcher, routeConds{}, esc, keyDecision{kind: routeComponent}},
+		{"esc in jump goes to the component (two-stage)", inputJump, routeConds{}, esc, keyDecision{kind: routeComponent}},
 		{"esc in normal is the key table's (go back)", inputNormal, routeConds{}, esc, keyDecision{kind: routeIgnored}},
 		{"esc in detail closes the overlay", inputDetail, routeConds{}, esc, keyDecision{routeAction, actionDetailsClose}},
 		{"esc in pane forwards to the child", inputPane, routeConds{}, esc, keyDecision{kind: routeChild}},
@@ -890,7 +890,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"enter in spawn error dismisses", inputSpawnError, routeConds{}, enter, keyDecision{routeAction, actionDismiss}},
 		{"enter in edit label saves", inputEditLabel, routeConds{}, enter, keyDecision{routeAction, actionSubmit}},
 		{"enter in form is the submit gesture", inputForm, routeConds{}, enter, keyDecision{routeAction, actionFormSubmit}},
-		{"enter in switcher goes to the component", inputSwitcher, routeConds{}, enter, keyDecision{kind: routeComponent}},
+		{"enter in jump goes to the component", inputJump, routeConds{}, enter, keyDecision{kind: routeComponent}},
 		{"enter in confirm clean is swallowed", inputConfirmClean, routeConds{}, enter, keyDecision{kind: routeIgnored}},
 		{"enter in confirm restart is swallowed", inputConfirmRestart, routeConds{}, enter, keyDecision{kind: routeIgnored}},
 
@@ -915,7 +915,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		// q: quit only in normal and detail.
 		{"q in normal is ignored (ctrl+] q)", inputNormal, routeConds{}, q, keyDecision{kind: routeIgnored}},
 		{"q in detail quits (the overlay's own rule)", inputDetail, routeConds{}, q, keyDecision{routeAction, actionQuit}},
-		{"q in switcher filters (component)", inputSwitcher, routeConds{}, q, keyDecision{kind: routeComponent}},
+		{"q in jump types (component)", inputJump, routeConds{}, q, keyDecision{kind: routeComponent}},
 		{"q in form types (component)", inputForm, routeConds{}, q, keyDecision{kind: routeComponent}},
 		{"q in pane forwards to the child", inputPane, routeConds{}, q, keyDecision{kind: routeChild}},
 		{"q in confirm clean is swallowed", inputConfirmClean, routeConds{}, q, keyDecision{kind: routeIgnored}},
@@ -923,7 +923,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		// Navigation and stray text.
 		{"up in normal moves the cursor", inputNormal, routeConds{}, up, keyDecision{routeAction, actionCursorUp}},
 		{"up in detail scrolls the viewport", inputDetail, routeConds{}, up, keyDecision{routeAction, actionDetailScrollUp}},
-		{"up in switcher goes to the list", inputSwitcher, routeConds{}, up, keyDecision{kind: routeComponent}},
+		{"up in jump goes to the box", inputJump, routeConds{}, up, keyDecision{kind: routeComponent}},
 		{"shift+up in normal is ignored", inputNormal, routeConds{}, shiftUp, keyDecision{kind: routeIgnored}},
 		{"shift+down in normal is ignored", inputNormal, routeConds{}, shiftDown, keyDecision{kind: routeIgnored}},
 		{"ctrl+u in normal is ignored", inputNormal, routeConds{}, chord('u'), keyDecision{kind: routeIgnored}},
@@ -966,7 +966,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"b in pane forwards to the child", inputPane, routeConds{}, press('b', "b"), keyDecision{kind: routeChild}},
 		{"b in pane forwards to the child even with a pane open", inputPane, routeConds{paneOpen: true}, press('b', "b"), keyDecision{kind: routeChild}},
 		{"b in form types (component)", inputForm, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
-		{"b in switcher filters (component)", inputSwitcher, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
+		{"b in jump types (component)", inputJump, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
 		{"b in edit label goes to the textinput", inputEditLabel, routeConds{}, press('b', "b"), keyDecision{kind: routeComponent}},
 		{"b in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('b', "b"), keyDecision{kind: routeIgnored}},
 		// i: the inbox overlay, on the same terms as b.
@@ -975,20 +975,20 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"i in pane forwards to the child", inputPane, routeConds{}, press('i', "i"), keyDecision{kind: routeChild}},
 		{"i in pane forwards to the child even with a pane open", inputPane, routeConds{paneOpen: true}, press('i', "i"), keyDecision{kind: routeChild}},
 		{"i in form types (component)", inputForm, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
-		{"i in switcher filters (component)", inputSwitcher, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
+		{"i in jump types (component)", inputJump, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
 		{"i in edit label goes to the textinput", inputEditLabel, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
 		{"i in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('i', "i"), keyDecision{kind: routeIgnored}},
 		// P and U: pause and resume the build, on the same terms as b and i. The
 		// lower-case letters keep their own meanings, which the last four rows
 		// pin: a rule matching without regard to case would turn the project
-		// switcher's key into a pause.
+		// jump's key into a pause.
 		{"P in normal is ignored (ctrl+] P)", inputNormal, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
 		{"P in detail is ignored", inputDetail, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
 		{"P in pane forwards to the child", inputPane, routeConds{}, press('P', "P"), keyDecision{kind: routeChild}},
 		{"P in pane forwards to the child even with a pane open", inputPane, routeConds{paneOpen: true}, press('P', "P"), keyDecision{kind: routeChild}},
 		{"P in inbox is text (component)", inputInbox, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
 		{"P in form types (component)", inputForm, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
-		{"P in switcher goes to the component", inputSwitcher, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
+		{"P in jump goes to the component", inputJump, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
 		{"P in edit label goes to the textinput", inputEditLabel, routeConds{}, press('P', "P"), keyDecision{kind: routeComponent}},
 		{"P in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('P', "P"), keyDecision{kind: routeIgnored}},
 		{"U in normal is ignored (ctrl+] U)", inputNormal, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
@@ -997,7 +997,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"U in pane forwards to the child even with a pane open", inputPane, routeConds{paneOpen: true}, press('U', "U"), keyDecision{kind: routeChild}},
 		{"U in inbox is text (component)", inputInbox, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
 		{"U in form types (component)", inputForm, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
-		{"U in switcher goes to the component", inputSwitcher, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
+		{"U in jump goes to the component", inputJump, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
 		{"U in edit label goes to the textinput", inputEditLabel, routeConds{}, press('U', "U"), keyDecision{kind: routeComponent}},
 		{"U in confirm clean is swallowed", inputConfirmClean, routeConds{}, press('U', "U"), keyDecision{kind: routeIgnored}},
 		{"p in normal is ignored (ctrl+] p)", inputNormal, routeConds{}, press('p', "p"), keyDecision{kind: routeIgnored}},
@@ -1013,7 +1013,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"enter in inbox goes to the component", inputInbox, routeConds{}, enter, keyDecision{kind: routeComponent}},
 		{"i in inbox is text (component)", inputInbox, routeConds{}, press('i', "i"), keyDecision{kind: routeComponent}},
 		// The plan check holds nothing typed, so ctrl+c quits over it as over
-		// the switcher; every other key, the leader included, is the
+		// the jump search; every other key, the leader included, is the
 		// overlay's, which is what keeps the dialog shut while it is up.
 		{"ctrl+c in plan check quits", inputPlanCheck, routeConds{}, ctrlC, keyDecision{kind: routeAction, action: actionQuit}},
 		{"esc in plan check goes to the component", inputPlanCheck, routeConds{}, esc, keyDecision{kind: routeComponent}},
@@ -1056,7 +1056,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+w in detail is ignored", inputDetail, routeConds{}, ctrlW, keyDecision{kind: routeIgnored}},
 		{"ctrl+w in pane forwards to the child", inputPane, routeConds{}, ctrlW, keyDecision{kind: routeChild}},
 		{"ctrl+w in form goes to the component", inputForm, routeConds{}, ctrlW, keyDecision{kind: routeComponent}},
-		{"ctrl+w in switcher goes to the list", inputSwitcher, routeConds{}, ctrlW, keyDecision{kind: routeComponent}},
+		{"ctrl+w in jump goes to the box", inputJump, routeConds{}, ctrlW, keyDecision{kind: routeComponent}},
 		{"ctrl+w in confirm clean is swallowed", inputConfirmClean, routeConds{}, ctrlW, keyDecision{kind: routeIgnored}},
 
 		{"h in normal is ignored", inputNormal, routeConds{}, press('h', "h"), keyDecision{kind: routeIgnored}},
@@ -1073,7 +1073,7 @@ func TestRouteKeyMatrix(t *testing.T) {
 		{"ctrl+] in detail is no rule (decideKey: nothing at Project)", inputDetail, routeConds{}, ctrlBracket, keyDecision{kind: routeIgnored}},
 		{"ctrl+] in pane is no rule (decideKey opens the strip first)", inputPane, routeConds{}, ctrlBracket, keyDecision{kind: routeChild}},
 		{"ctrl+] in leader goes to the dialog", inputLeader, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
-		{"ctrl+] in switcher goes to the component", inputSwitcher, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
+		{"ctrl+] in jump goes to the component", inputJump, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
 		{"ctrl+] in inbox goes to the component", inputInbox, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
 		{"ctrl+] in form goes to the component", inputForm, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
 		{"ctrl+] in edit label goes to the textinput", inputEditLabel, routeConds{}, ctrlBracket, keyDecision{kind: routeComponent}},
@@ -1278,12 +1278,11 @@ func TestModeRegistryCoversEveryMode(t *testing.T) {
 }
 
 // TestModeKeyMapsAdvertiseTheModalAnswers pins the help surface Wave 6 renders
-// from: the answers each modal accepts, the switcher's component-owned keys,
+// from: the answers each modal accepts, the jump search's component-owned keys,
 // and the form's gestures must be readable off the mode's keymap. The
-// switcher's "R" row is load-bearing — the global keyMap deliberately omits R
-// (defaultKeyMap's comment on Project), so this keymap is the ONLY structured
-// record that the key exists, and losing it makes rescan undiscoverable to
-// the palette.
+// jump's enter and esc rows are load-bearing: the box stages them in
+// jumpKeyDecision, not as rules, so this keymap is the only record the
+// footer can name them from.
 func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 	reg := newModeRegistry(defaultKeyMap())
 
@@ -1312,9 +1311,9 @@ func TestModeKeyMapsAdvertiseTheModalAnswers(t *testing.T) {
 		{"plan open offer advertises y", inputConfirmPlanOpen, "y"},
 		{"plan open offer advertises n", inputConfirmPlanOpen, "n"},
 		{"plan open offer advertises esc", inputConfirmPlanOpen, "esc"},
-		{"switcher advertises R", inputSwitcher, "R"},
-		{"switcher advertises enter", inputSwitcher, "enter"},
-		{"switcher advertises esc", inputSwitcher, "esc"},
+		{"jump advertises enter", inputJump, "enter"},
+		{"jump advertises esc", inputJump, "esc"},
+		{"jump advertises up", inputJump, "up"},
 		{"form advertises tab", inputForm, "tab"},
 		{"form advertises shift+tab", inputForm, "shift+tab"},
 		{"form advertises esc", inputForm, "esc"},

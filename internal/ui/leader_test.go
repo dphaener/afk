@@ -181,6 +181,7 @@ func TestLeaderBlockedReason(t *testing.T) {
 	ready := leaderConds{
 		leader:           defaultLeaderKey,
 		hasActiveProject: true,
+		canJump:          true,
 		selected:         true,
 		paneOpen:         true,
 		hasBuild:         true,
@@ -229,8 +230,11 @@ func TestLeaderBlockedReason(t *testing.T) {
 		// and a status not read yet are said by the action in a sentence.
 		{"check the plan runs with only the seam", actionPlanCheck, leaderConds{canCheckPlan: true}, ""},
 		{"check the plan needs the seam", actionPlanCheck, with(func(c *leaderConds) { c.canCheckPlan = false }), "not available"},
-		{"projects needs a project", actionProjects, with(func(c *leaderConds) { c.hasActiveProject = false }), "no projects"},
-		{"projects with a project", actionProjects, ready, ""},
+		// The jump search (T16.6) needs only something to list, not an open
+		// project: it works at All projects before any project is open (A7).
+		{"jump needs something to list", actionProjects, with(func(c *leaderConds) { c.canJump = false }), "nothing to jump to"},
+		{"jump with no project open", actionProjects, with(func(c *leaderConds) { c.hasActiveProject = false }), ""},
+		{"jump with a project", actionProjects, ready, ""},
 
 		{"clean needs a selection", actionClean, with(func(c *leaderConds) { c.selected = false }), "no session selected"},
 		{"clean runs with a pane open (load-bearing)", actionClean, ready, ""},
@@ -294,7 +298,10 @@ func TestKeyTableIsTheDecidedTable(t *testing.T) {
 		{"j", actionMove, atAllProjects | atProject},
 		{"enter", actionGoIn, atAllProjects | atProject},
 		{"esc", actionGoBack, atEveryLevel},
-		// `/` opens today's project switcher until T16.6 (A3).
+		// The next and previous thing that needs you (T16.6).
+		{"]", actionNeedNext, atEveryLevel},
+		{"[", actionNeedPrev, atEveryLevel},
+		// `/` is the jump search (T16.6).
 		{"/", actionProjects, atEveryLevel},
 		{":", actionActionsSearch, atEveryLevel},
 		{"i", actionInbox, atEveryLevel},

@@ -4195,6 +4195,7 @@ Amended 2026-10-22 (T16.5 done): `d` (and `ctrl+] d`) opens the details overlay 
   session and a task matching; against a scratch build with two throwaway projects each with one
   waiting session, `]` from All projects opens the first agent and `C-] ]` from there opens the second;
   `make check` is green.
+Amended 2026-10-22 (T16.6 done): the order is the pure `needsYouItems` in `internal/ui/needsyou.go` (kinds needSession, needInbox, needPlan, needBroken, needGone; `stepNeedsYou` steps and wraps from a `needHere` that also carries `At`, the item the last `]`/`[` landed on, cleared by any list move), and the landing code is `needsyoulanding.go`; other projects come from the Model's every-project cache (`m.everyProject`), filled by the home screen's reader on the scan tick at every level and every 2s while All projects is open, and `ui.AllProjects` now carries each project's task list (`JumpTask`) for the jump search; a blocking inbox item lands on today's inbox list on that item, which T16.7's answer screen should replace in `needsyoulanding.go`; the project switcher (`switcher.go`) is gone, `/` opens `jump.go` everywhere, its `R` rescan went with it, and the open counts are still recorded but order nothing.
 
 #### T16.7 — Answer an inbox item
 - **Depends on:** T16.6

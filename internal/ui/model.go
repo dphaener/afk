@@ -826,10 +826,11 @@ type Deps struct {
 	// start-up task takes dash.go's wiring of it out (.afk/t16-2/issues.md).
 	RememberSidebarPct func(pct int) error
 	// LoadProjectOpens returns how many times each project has been
-	// deliberately opened — keyed by Project.Path, the same key the switcher's
-	// rows and the per-project session cache use — for New to seed
-	// projectOpens from. It is the middle tier of the switcher's row order
-	// (sortSwitcherProjects in switcher.go). Called exactly once, at startup;
+	// deliberately opened — keyed by Project.Path, the same key the project
+	// list and the per-project session cache use — for New to seed
+	// projectOpens from. It ordered the project switcher's rows until the
+	// jump search replaced it (T16.6); the count is still kept and written,
+	// so the file stays right for whatever reads it next. Called exactly once, at startup;
 	// nothing later in this package calls it again, so the in-memory map plus
 	// this run's own increments are what every ordering decision reads.
 	//
@@ -1314,6 +1315,15 @@ type Model struct {
 	allProjectsConfigPath string
 	allProjectsGen        int
 	allProjectsRefreshing *atomic.Bool
+	// everyProject is the newest read of every project's row and task list,
+	// kept at every level (T16.6) apart from the screen's own rows above.
+	// everyProjectSeq is the start number of the read it came from,
+	// everyProjectAt when that read finished, and allProjectsSeq the shared
+	// counter that numbers reads as they start.
+	everyProject    AllProjects
+	everyProjectSeq int64
+	everyProjectAt  time.Time
+	allProjectsSeq  *atomic.Int64
 	// allProjectsFollow is the folder an add from the screen just listed: the
 	// next read that has a row for it puts the cursor there, so the owner
 	// sees the row they made. It is cleared when that happens and when the
@@ -1323,6 +1333,14 @@ type Model struct {
 	// to. The inbox opens on it when the snapshot of the project switched to
 	// lands (applyBuildLoaded); a project switch clears it.
 	inboxFollow string
+	// needAt is the item the last `]` or `[` landed on, with the project
+	// and level it landed at (T16.6). needHereNow passes it on as where the
+	// owner is only while they are still there, and a cursor move clears
+	// it, so the next `]` steps past a plan or a gone project rather than
+	// landing on it again.
+	needAt        needKey
+	needAtProject string
+	needAtLevel   level
 
 	// The add form and the remove confirm of the all-projects screen
 	// (T7.10, projectedit.go). projectAddInput is the form's one field, used
@@ -1407,10 +1425,10 @@ type Model struct {
 	lastLoad        time.Time
 	// loadFailingSince is when the current run of discovery failures began,
 	// zero while discovery is healthy. It exists because lastLoad cannot carry
-	// this: switcherSessions reads lastLoad as "a load has landed for the
-	// current project" (see its doc), so making it mean "a load SUCCEEDED"
-	// would quietly change the switcher under a failing discovery. The header
-	// reports staleness from this instead.
+	// this: lastLoad means "a load has landed for the current project", and
+	// making it mean "a load SUCCEEDED" would quietly change what reads it
+	// under a failing discovery. The header reports staleness from this
+	// instead.
 	loadFailingSince time.Time
 
 	// status is a transient one-line message (pane/restart outcomes, exec
@@ -1769,7 +1787,8 @@ type Model struct {
 	// that case, which is also the only consumer.
 	//
 	// Exactly two paths set it, and both are user intent to land somewhere.
-	// The first is switcherComponentKey's switcherChosen case: the other two
+	// The first is a project switch the owner chose (jumpToProject, enter on
+	// an All projects row, and the needs-you and `a` landings): the other two
 	// switchProjectCmds callers deliberately do not. applyFocusRequest already
 	// dispatches its own explicit open after the switch, and arming a preview
 	// on top of it would race a second dial against the one the click itself
@@ -1977,35 +1996,31 @@ type Model struct {
 	form     newForm
 	formOpen bool
 
-	// switcher is the project-switcher overlay's state; switcherOpen is the
-	// "is it open" flag, alongside formOpen rather than folded into modal —
-	// modals are mutually exclusive, and this genuinely coexists with the other
-	// three facts modeSnapshot reads.
+	// jump is the jump search's state (jump.go, §4.6); jumpOpen is its "is
+	// it open" flag, alongside formOpen rather than folded into modal —
+	// modals are mutually exclusive, and this genuinely coexists with them.
 	//
-	// Its place in modePrecedence is above the form and the pane and below every
-	// modal. Three states can therefore coexist with it and each resolves the
-	// same way:
+	// Its place in modePrecedence is the project switcher's, which it
+	// replaced (T16.6): above the form and the pane and below every modal.
+	// Three states can therefore coexist with it and each resolves the same
+	// way:
 	//
-	//   - A pane, visible or hidden. The overlay draws over it; the pane keeps
-	//     running and stays connected (opening the switcher is not selecting a
-	//     project — switchProject is what detaches).
-	//   - A FOCUSED pane, reachable only by a focusOnArrival attach landing while
-	//     the overlay is already up, since a focused pane swallows `p` itself.
-	//     Keys go to the overlay, because the overlay is what is on screen.
-	//   - A modal, which OUTRANKS the overlay: rows 1-4 of modePrecedence come
-	//     first, so a spawn failure arriving underneath takes the keyboard until
-	//     it is dismissed, and dismissing it hands the keyboard back here.
-	//
-	// The struct is deliberately NOT zeroed on close: its own doc comment warns
-	// that the zero value nil-derefs on Update/View, so keeping the last-built
-	// one makes an accidental render harmless rather than a panic.
-	switcher     switcher
-	switcherOpen bool
+	//   - A pane, visible or hidden. The box draws over it; the pane keeps
+	//     running and stays connected (opening the search is not choosing
+	//     anything — the landing is what switches or detaches).
+	//   - A FOCUSED pane, reachable only by a focusOnArrival attach landing
+	//     while the box is already up, since a focused pane takes `/` itself.
+	//     Keys go to the box, because the box is what is on screen.
+	//   - A modal, which OUTRANKS the box: a spawn failure arriving
+	//     underneath takes the keyboard until it is dismissed, and dismissing
+	//     it hands the keyboard back here.
+	jump     jumpDialog
+	jumpOpen bool
 
 	// inbox is the inbox overlay's state (inboxoverlay.go); inboxOpen is the
-	// "is it open" flag, beside switcherOpen for the reason it sits beside
+	// "is it open" flag, beside jumpOpen for the reason it sits beside
 	// formOpen: an overlay coexists with a modal, so it cannot
-	// be folded into the single-valued modal field. Like the switcher's, the
+	// be folded into the single-valued modal field. The
 	// struct is not zeroed on close: its zero value has an unbuilt input and
 	// viewport, and keeping the last-built one makes a stray render harmless.
 	inbox     inboxOverlay
@@ -2156,6 +2171,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		planStatusRefreshing:  new(atomic.Bool),
 		taskTokensLoading:     new(atomic.Bool),
 		allProjectsRefreshing: new(atomic.Bool),
+		allProjectsSeq:        new(atomic.Int64),
 		list:                  newSessionList(d.Now),
 		detailViewport:        viewport.New(),
 		initialSession:        deps.InitialSessionName,
@@ -2217,6 +2233,10 @@ func (m Model) Init() tea.Cmd {
 		// The listed read is its own Cmd beside the scan, not a step inside it:
 		// it is one small file, and the scan answers only after its whole walk.
 		m.listedCmd(), m.scanCmd(), m.scanTickCmd())
+	// The every-project cache is read once at start too (T16.6), as a Cmd.
+	if read := m.everyProjectCmd(); read != nil {
+		cmds = append(cmds, read)
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -2409,7 +2429,15 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// exists to be independent of the discovery tick above. Reading the
 		// project list here is what makes a project added with `afk project add`
 		// appear without a restart.
-		return m, tea.Batch(m.listedCmd(), m.scanCmd(), m.scanTickCmd())
+		cmds := []tea.Cmd{m.listedCmd(), m.scanCmd(), m.scanTickCmd()}
+		// The every-project cache is refreshed on this slow tick while the
+		// screen is closed; while it is open the 2s tick already reads.
+		if !m.allProjectsOpen {
+			if read := m.everyProjectCmd(); read != nil {
+				cmds = append(cmds, read)
+			}
+		}
+		return m, tea.Batch(cmds...)
 
 	case projectScanMsg:
 		return m.applyProjectScan(msg)
@@ -2483,8 +2511,8 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Leaving the flag set (exactly as the error case does) lets the next
 			// tick's load, by then past the first resize, consume it. The guard
 			// is on the flag rather than on which path armed it because nothing
-			// makes an early switcher arm impossible: openSwitcher gates only on
-			// hasActiveProject, not on m.ready. A switcher switch before the
+			// makes an early arm impossible: the jump search opens without
+			// waiting for m.ready. A jump switch before the
 			// first resize is merely unlikely, and deferring it one load is the
 			// same right answer there.
 			m.previewOnNextLoad = false
@@ -2891,16 +2919,15 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// once did) split mode ownership in half: a form outranked by a modal
 		// would keep feeding its cursor while the modal held the keyboard.
 		//
-		// Only two modes have a component that takes an arbitrary tea.Msg
-		// since T16.2 removed the session list's filter prompt. The
-		// switcher's is deliberately not one of them: switcher.Update takes a
-		// tea.KeyPressMsg specifically (see its doc on why it does not match the
-		// tea.KeyMsg interface), so there is nothing to route here.
+		// Only a few modes have a component that takes an arbitrary tea.Msg
+		// since T16.2 removed the session list's filter prompt. The jump
+		// search is not one of them: its query is plain state with no
+		// component behind it (jump.go), so there is nothing to route here.
 		mode := activeInputMode(m.modeSnapshot())
-		// A list.FilterMatchesMsg names no sender, and three lists in this
-		// package can ask for one: the sidebar's, the switcher's, and the
-		// creation form's base picker. The two overlay lists own it only while
-		// their surface owns input; every other mode's belongs to the sidebar,
+		// A list.FilterMatchesMsg names no sender, and two lists in this
+		// package can ask for one: the sidebar's and the creation form's base
+		// picker. The form's list owns it only while the form owns input;
+		// every other mode's belongs to the sidebar,
 		// whose own result can land after Enter has already returned the mode to
 		// normal or after a modal opened over it. Applying the wrong one puts
 		// another list's items into this one — the sidebar goes blank and
@@ -2912,7 +2939,7 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// change.
 		if matches, ok := msg.(list.FilterMatchesMsg); ok {
 			switch mode {
-			case inputForm, inputSwitcher:
+			case inputForm:
 			default:
 				var cmd tea.Cmd
 				m.list, cmd = m.list.Update(matches)
@@ -2941,19 +2968,6 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case inputPlanText:
 			var cmd tea.Cmd
 			m.planTextInput, cmd = m.planTextInput.Update(msg)
-			return m, cmd
-		case inputSwitcher:
-			// The overlay's filter input's cursor blink, and the
-			// list.FilterMatchesMsg its query produces, both arrive here as
-			// non-key traffic, like the label prompt's. switcher.Update forwards anything that
-			// isn't a tea.KeyPressMsg straight to its list.Model and reports
-			// switcherNone, so discarding the result is correct by
-			// construction; only the Cmd (blink, pagination) needs to
-			// survive. Without this case the filter's own match-narrowing
-			// message had nowhere to land: the prompt and query text still
-			// rendered (list.go draws those from FilterInput/filterState
-			// directly), which is why the missing narrowing read as working.
-			cmd, _ := m.switcher.Update(msg)
 			return m, cmd
 		case inputInbox:
 			// The answer field's cursor blink. The overlay reports no result
@@ -3745,6 +3759,11 @@ func agentActionStays(a modeAction) bool {
 	switch a {
 	case actionMouseToggle, actionQuit, actionRefreshUsage, actionActionsSearch, actionDetails, actionGoBack, actionKeys:
 		return true
+	case actionNeedNext, actionNeedPrev:
+		// `]` and `[` decide the keyboard's place themselves, by where they
+		// land: another agent keeps it on the agent with no stop at the
+		// list in between, and a project landing hands it to the list.
+		return true
 	}
 	return false
 }
@@ -3836,8 +3855,18 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.pauseToggle()
 	case actionAnswerOldest:
 		return m.answerOldest()
+	case actionNeedNext:
+		return m.stepNeedsYouKey(true)
+	case actionNeedPrev:
+		return m.stepNeedsYouKey(false)
 	case actionSectionNext, actionSectionPrev, actionSectionSessions, actionSectionBuild, actionSectionInbox:
 		return m.changeSection(a)
+	}
+
+	// A move is the owner leaving where `]` last landed them: from here the
+	// next `]` starts from the new selection.
+	if isListMove(a) {
+		m.clearNeedAt()
 	}
 
 	// The list's move keys move inside the project view's focused section:
@@ -3936,7 +3965,7 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		}
 		return m.moveProviderPick(delta)
 	case actionProjects:
-		return m.openSwitcher()
+		return m.openJump()
 	case actionClean:
 		return m.cleanRequested()
 	case actionRestart:
@@ -4070,8 +4099,8 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 	switch mode {
 	case inputForm:
 		return m.formComponentKey(k)
-	case inputSwitcher:
-		return m.switcherComponentKey(k)
+	case inputJump:
+		return m.jumpComponentKey(k)
 	case inputLeader:
 		return m.leaderComponentKey(k)
 	case inputInbox:
@@ -4118,7 +4147,6 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 // grid with stale wrap points.
 func (m *Model) relayout() {
 	m.sizeFormComponents()
-	m.sizeSwitcher()
 	m.sizeInbox()
 	m.sizePlanCheck()
 	m.sizeTaskTokens()
@@ -4440,7 +4468,7 @@ func (m Model) requestQuit() (tea.Model, tea.Cmd) {
 // background and the new session gets its own host, so it does not disturb
 // whatever is currently rendered (see the spawnFinishedMsg handler).
 func (m Model) openNewForm() (tea.Model, tea.Cmd) {
-	// Inert in the empty state for the same reason openSwitcher is: a session
+	// Inert in the empty state: a session
 	// needs a repo to be created in, and View draws the empty-state block instead
 	// of the form — opening it here would trap the keyboard in an invisible form.
 	if !m.hasActiveProject() {
@@ -4546,7 +4574,8 @@ func (m Model) cancelForm() (tea.Model, tea.Cmd) {
 	// live filter from Filtering to FilterApplied, so gating on Filtering alone
 	// would close the whole form on the user's first press after they narrowed
 	// the list — the opposite of the documented two-level behavior, and the same
-	// trap switcher.go's own two-stage Esc gates on "!= Unfiltered" to avoid.
+	// trap the old project switcher's two-stage Esc gated on "!= Unfiltered"
+	// to avoid.
 	if m.form.focusIndex == formFocusBase && m.form.baseList.FilterState() != list.Unfiltered {
 		m.form.resetFilterKeepingSelection()
 		return m, nil
@@ -4666,7 +4695,7 @@ func (m Model) submitNewForm() (tea.Model, tea.Cmd) {
 // would have to be unwound on cancel.
 //
 // Inert in the empty state with today's warning, on the same predicate
-// openScratch, openNewForm and openSwitcher use: a dialog offering to create a
+// openScratch and openNewForm use: a dialog offering to create a
 // session where none can be created would only fail one keypress later.
 func (m Model) openProviderPicker() (tea.Model, tea.Cmd) {
 	if !m.hasActiveProject() {
@@ -4744,8 +4773,8 @@ func (m Model) cancelProviderPick() (tea.Model, tea.Cmd) {
 // method returns. Guessing against pendingSpawns alone would let a name
 // reappear on the very next press.
 func (m Model) openScratch(providerName string) (tea.Model, tea.Cmd) {
-	// Inert in the empty state, on the same predicate openNewForm and
-	// openSwitcher use: a session needs a repo to be created in.
+	// Inert in the empty state, on the same predicate openNewForm
+	// uses: a session needs a repo to be created in.
 	if !m.hasActiveProject() {
 		m.notify(notifyWarn, "no active project to create a session in")
 		return m, nil
@@ -4828,195 +4857,159 @@ func (m Model) applyScratchDirs(msg scratchDirsListedMsg) (tea.Model, tea.Cmd) {
 	return m, m.spawnScratchCmd(name, msg.provider)
 }
 
-// openSwitcher opens the project-switcher overlay (the `p` keybinding).
+// openJump opens the jump search (`/` at every level, the leader then `/`
+// in the Agent, §4.6). The rows are a snapshot of what is in memory now
+// (jumpFactsNow); opening reads nothing and dials nothing, and the box never
+// refreshes itself while it is up (jump.go).
 //
-// It is allowed while a pane is open and deliberately leaves it ALONE: the pane
-// keeps running and stays connected, exactly as it does behind the overview.
-// Selecting a different project is what detaches it (switchProject), so the
-// cost of a glance at the project list is never a dropped connection.
+// It is allowed while a pane is open and deliberately leaves it ALONE: the
+// pane keeps running and stays connected, exactly as it does behind the
+// Project. Only a landing that leaves the session detaches it, so the cost
+// of a glance at the list is never a dropped connection.
 //
-// The component is rebuilt on every open rather than kept warm, which is what
-// makes the rows current: it holds a snapshot of the data it was constructed
-// from and never refreshes itself (see switcher.go).
-func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
-	// Inert in the empty state, on the SAME predicate View branches on. With no
-	// active project there is nothing to switch to, and View draws the empty-state
-	// block instead of the two-region body — so an overlay opened here used to be
-	// an invisible key trap: every keypress routed to a component that was not on
-	// screen, and `q` (documented as quit) silently stopped quitting.
-	if !m.hasActiveProject() {
-		m.notify(notifyWarn, "no projects to switch between")
-		return m, nil
-	}
-	m.switcherOpen = true
-	width, height := m.switcherListSize()
-	m.switcher = newSwitcher(m.projects, m.switcherSessions(), m.projectOpens, width, height)
+// It opens at All projects with no project open too (A7), since the home
+// screen's rows are in memory there. The key's blocked reason
+// (jumpBlockedReason) keeps it shut only when there is nothing at all to
+// list, the empty state, where a box with no rows would be a key trap in
+// front of the one screen that says what to do.
+func (m Model) openJump() (tea.Model, tea.Cmd) {
+	m.jump = newJumpDialog(jumpRows(m.jumpFactsNow()), m.leaderKey.name)
+	m.jumpOpen = true
+	m.clearStatus()
 	return m, nil
 }
 
-// switcherComponentKey is inputSwitcher's fall-through: the overlay's own
-// component gets the key, and this translates its result into the parent's side
-// of the interaction.
+// jumpFactsNow is the jump rows' facts from memory: the projects in
+// home-screen order with their sessions and cached rows, the same builder
+// `]` uses (needsYouProjectsNow), and each project's tasks from the
+// every-project cache, re-keyed from the row's main checkout to the project
+// list's path as the projects are.
+func (m Model) jumpFactsNow() jumpFacts {
+	tasks := make(map[string][]JumpTask, len(m.everyProject.Tasks))
+	for root, ts := range m.everyProject.Tasks {
+		tasks[m.needPathForRoot(root)] = ts
+	}
+	return jumpFacts{Projects: m.needsYouProjectsNow(), Tasks: tasks}
+}
+
+// canJump reports whether the jump search has anything to list: a project
+// open, a project in the list, or a row in the every-project cache.
+func (m Model) canJump() bool {
+	return m.hasActiveProject() || len(m.projects) > 0 || len(m.everyProject.Rows) > 0
+}
+
+// jumpComponentKey is inputJump's fall-through: every key but ctrl+c reaches
+// the box, and this carries out what jumpKeyDecision decided. Type, clear
+// and move change only the box. Close and go close it first, so the landing
+// sees the dashboard with the box gone.
 //
-// EVERYTHING except the quit chord reaches here, and that is the contract with
-// switcher.go: the two-stage Esc (clears an active filter, dismisses only once
-// FilterState is Unfiltered) and the R-is-rescan-except-while-Filtering rule are
-// staged inside switcher.Update. Declaring esc/enter/R as rules in the
-// switcher's spec would implement them a second time, and the second copy is
-// the one that would go stale.
-//
-// Its spec's single rule is the ctrl+c chord, which quits — matching the modals,
-// where it is the sole global exception. Being a rule means it applies
-// mid-filter too, unlike the creation form, which lets it through to the
-// component. The form has a name buffer worth protecting from a stray chord; a
-// filter query is throwaway, and an overlay that could trap the keyboard would
-// be worse than a lost search term. It is ctrl+c alone, not q as well: `q` has
-// to reach the list as an ordinary key (it filters, and it is a perfectly good
-// character in a project name).
-//
-// The mouse chord is likewise absent from the spec, unlike in the form and the
-// spawn-error modal. Those two leave something on screen worth selecting; the
-// overlay replaces the pane in the main region, so there is no session output to
-// select behind it, and one Esc away is the state where the chord works again.
-func (m Model) switcherComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// The Cmd is forwarded whatever the outcome: it is the list's own filter-input
-	// blink and pagination work (switcher.go returns nothing else), and dropping it
-	// leaves filtering unrendered.
-	cmd, res := m.switcher.Update(k)
-	switch res.Kind {
-	case switcherDismissed:
-		m.switcherOpen = false
-		return m, cmd
-	case switcherRescan:
-		// Dispatched on the spot rather than left to the scan ticker: that ticker
-		// runs on a 60-second cadence, so waiting for it is indistinguishable from
-		// `R` doing nothing. The overlay stays open — `R` means "refresh this
-		// list", and applyProjectScan rebuilds it when the result lands.
-		// The project list is read again too, so `R` after `afk project add`
-		// shows the new project (applyListedProjects rebuilds for that one).
-		return m, tea.Batch(cmd, m.listedCmd(), m.scanCmd())
-	case switcherChosen:
-		m.switcherOpen = false
-		// switchProject owns every consequence of the choice — repointing m.repo,
-		// detaching the pane, clearing session-scoped state, and returning the
-		// per-project command trio — and it no-ops on the already-active path, so
-		// re-selecting the current project costs the open pane nothing. Its Model
-		// return value must be kept (previewGen is bumped inside it).
-		//
-		// The one-shot preview flag is armed here, ONLY when a switch actually
-		// happened: a no-op re-select (res.Path already active) returns nm with
-		// repo unchanged, and arming there would preview row 0 on the NEXT ordinary
-		// tick with no switch to justify it. repo is compared rather than
-		// activeProject because it mirrors switchProjectCmds's own no-op condition
-		// (path == m.activeProjectPath()) exactly: that method assigns m.repo only
-		// on a real switch, so comparing it here is reading the same check back
-		// from the result, not a claim that two distinct paths can normalize to one
-		// repo.
-		nm, switchCmd := m.switchProject(res.Path)
-		if nm.repo != m.repo {
-			nm.previewOnNextLoad = true
-			// Recorded under the SAME guard as the preview arm, and for a
-			// sibling reason: a no-op re-select of the already-active project
-			// is documented as doing nothing (README), so counting it would
-			// let a held-down Enter inflate the row the cursor already sits
-			// on until it outranks every project the user actually visits.
-			// res.Path is what switchProjectCmds just assigned to nm.repo, so
-			// this is the resolved entry path the counts map is keyed by.
-			nm.recordProjectOpen(res.Path)
+// Its spec's single rule is the ctrl+c chord, which quits, as over the `:`
+// search: the box holds a throwaway query, and a box that could trap the
+// keyboard would be worse than a lost search. `q` is a letter here.
+func (m Model) jumpComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	o := m.jump.decide(k, m.width, m.height)
+	switch o.kind {
+	case jumpClose:
+		m.jumpOpen = false
+	case jumpGo:
+		m.jumpOpen = false
+		return m.jumpLand(o.row)
+	case jumpType, jumpClear, jumpMove:
+		m.jump.apply(o)
+	}
+	return m, nil
+}
+
+// jumpLand goes to row (§4.6): a project opens its view, a session its agent
+// and a task its project with the task selected in Build. Wherever it lands
+// the owner has moved, so the last `]` landing is forgotten and the next `]`
+// starts from here.
+func (m Model) jumpLand(r jumpRow) (tea.Model, tea.Cmd) {
+	m.clearNeedAt()
+	m.focus = focusList
+	switch r.kind {
+	case jumpSession:
+		item := needItem{
+			Kind: needSession, ProjectPath: r.projectPath, ProjectName: r.projectName,
+			Session: r.session, WorktreePath: r.worktree, Scratch: r.scratch, HostRunning: r.hostRunning,
 		}
-		return nm, tea.Batch(cmd, switchCmd)
+		if r.fault {
+			// A worktree fault has no agent: it is opened where what is wrong
+			// with it shows, the project view with it selected, as `]` does
+			// for a broken session.
+			item.Kind = needBroken
+			nm, cmd := m.landNeedProject(item, r.session)
+			return nm, cmd
+		}
+		// W3.T1's agent landing, enter's rule: no live agent opens the
+		// session's details instead.
+		nm, cmd := m.landNeedAgent(item)
+		return nm, cmd
+	case jumpTask:
+		nm, cmd, ok := m.jumpToProject(r)
+		if !ok {
+			return nm, cmd
+		}
+		nm.selectBuildTask(r.taskID)
+		return nm, cmd
 	}
-	return m, cmd
+	nm, cmd, _ := m.jumpToProject(r)
+	return nm, cmd
 }
 
-// switcherChromeRows is what renderSwitcherModal draws around the list inside
-// the box: nothing — the title is on the box's top edge (labelBorders) and the
-// keys are on the footer's help line, so the list is the whole body.
-const switcherChromeRows = 0
-
-// switcherModalWidth is the switcher's preferred content width: room for a
-// project name, its session count and the awaiting dot, and most of its help
-// line. switcherMaxRows caps the list before it pages. modalContentDims clamps
-// both to the terminal.
-const (
-	switcherModalWidth = 64
-	switcherMaxRows    = 12
-)
-
-// switcherListSize is the switcher list's content size for the current
-// terminal: the modal's content width, and as many rows as there are projects
-// (plus the filter row list.Model reserves) up to switcherMaxRows — a box
-// sized to two projects should not float twelve blank rows under them.
-// Independent of the two-region split; the modal floats over it.
-func (m Model) switcherListSize() (width, height int) {
-	rows := max(3, min(switcherMaxRows, len(m.projects))) + 1 // + the filter row
-	w, h := modalContentDims(m.width, m.height, switcherModalWidth, rows+switcherChromeRows)
-	return w, max(3, h-switcherChromeRows)
+// jumpToProject opens r's project at Project, as enter on its home-screen
+// row does (switchFromAllProjects): a gone or unreadable project says why
+// and stays, the active project just closes All projects, and any other
+// switches with the one-shot preview armed and the open counted. It reports
+// false when it did not land in the project.
+//
+// switchProject owns every consequence of the switch — repointing m.repo,
+// detaching the pane, clearing session-scoped state — and its Model must be
+// kept (previewGen is bumped inside it). The preview and the count are only
+// for a real switch: switchProject leaves m.repo alone for the path already
+// active, and arming there would preview row 0 on the next ordinary tick
+// with no switch to justify it, while counting would let a held-down enter
+// inflate the open count of the project the owner is already in.
+func (m Model) jumpToProject(r jumpRow) (Model, tea.Cmd, bool) {
+	if r.hasRow {
+		switch r.row.State {
+		case projectrows.StateGone:
+			m.notify(notifyWarn, allProjectsGoneNotice(r.row.Name))
+			return m, nil, false
+		case projectrows.StateUnreadable:
+			m.notify(notifyWarn, allProjectsUnreadableNotice(r.row))
+			return m, nil, false
+		}
+	}
+	if r.projectPath == m.needsYouActivePath() {
+		m.allProjectsOpen = false
+		return m, nil, true
+	}
+	if _, ok := indexOfProject(m.projects, r.projectPath); !ok {
+		m.notify(notifyInfo, allProjectsNotListedNotice(r.projectName))
+		return m, nil, false
+	}
+	m.allProjectsOpen = false
+	nm, cmd := m.switchProject(r.projectPath)
+	if nm.repo != m.repo {
+		nm.previewOnNextLoad = true
+		nm.recordProjectOpen(r.projectPath)
+	}
+	return nm, cmd, true
 }
 
-// sizeSwitcher applies the current layout to an open overlay. Called on resize,
-// for the same reason sizeFormComponents is: View has a value receiver, so any
-// sizing it applied would land on a copy and be thrown away.
-func (m *Model) sizeSwitcher() {
-	if !m.switcherOpen || m.width == 0 {
-		return
+// selectBuildTask focuses the project view's Build section with its cursor
+// on task id. In a project whose build is in memory the cursor moves now;
+// after a switch the snapshot is not read yet, and the id is enough:
+// applyBuildLoaded's landBuildCursor keeps a cursor id the new rows hold, so
+// the first read lands the cursor on the task. The switch has already reset
+// the section and the cursor (forgetBuild), which is why this runs after it.
+func (m *Model) selectBuildTask(id string) {
+	m.section = sectionBuild
+	m.buildCursorID = id
+	if i := buildRowIndex(m.build.Rows, id); m.buildKnown && i >= 0 {
+		m.buildCursorIndex = i
 	}
-	m.switcher.SetSize(m.switcherListSize())
-}
-
-// refreshSwitcher rebuilds an open overlay from the current project list.
-//
-// The component holds a snapshot and never refreshes itself — switcher.go puts
-// that on the parent explicitly — so a scan that changed the list has to rebuild
-// it or `R` after creating a project would appear to do nothing at all.
-//
-// The caller decides WHEN, and applyProjectScan does it only for a list that
-// actually changed: rebuilding resets the cursor and any live filter, and the
-// scan ticker fires into an overlay the user has open and is aiming with.
-// Session counts are the thing given up, and they are the cheaper of the two —
-// they refresh on the next open, whereas a selection that jumps under the user's
-// hands can switch them to the wrong project.
-func (m *Model) refreshSwitcher() {
-	if !m.switcherOpen {
-		return
-	}
-	width, height := m.switcherListSize()
-	m.switcher = newSwitcher(m.projects, m.switcherSessions(), m.projectOpens, width, height)
-}
-
-// switcherSessions is the per-project session data the overlay renders: the scan
-// cache, with the ACTIVE project's entry taken from m.sessions instead.
-//
-// The cache is refreshed on the scan ticker (60s) while m.sessions is refreshed
-// on the discovery tick (2s), so for the one project whose rows are on screen
-// beside the overlay the cache is a stale copy of data this Model already holds
-// fresh — and a count that disagrees with the sidebar the user is looking at
-// reads as a bug in the count.
-//
-// The swap is gated on a discovery result having landed for the CURRENT project
-// (lastLoad is set by applyLoaded and cleared by switchProject) rather than done
-// unconditionally. Without that gate, the startup window and the moment just
-// after a switch — both of which have an empty session list by construction —
-// would overwrite a perfectly good cached count with zero.
-//
-// The map is copied rather than edited: m.projectSessions belongs to the last
-// scan result, and Update mutating it in place would edit a value another Model
-// copy is still reading from.
-func (m Model) switcherSessions() map[string][]discover.SessionState {
-	active := m.activeProjectPath()
-	if active == "" || m.lastLoad.IsZero() {
-		return m.projectSessions
-	}
-	merged := make(map[string][]discover.SessionState, len(m.projectSessions)+1)
-	for path, states := range m.projectSessions {
-		merged[path] = states
-	}
-	live := make([]discover.SessionState, len(m.sessions))
-	for i, s := range m.sessions {
-		live[i] = s.SessionState
-	}
-	merged[active] = live
-	return merged
 }
 
 // openActions is `:` (the leader then `:` in the Agent): the actions search
@@ -5044,6 +5037,7 @@ func (m Model) leaderConditions() leaderConds {
 	c := leaderConds{
 		leader:            m.leaderKey.name,
 		hasActiveProject:  m.hasActiveProject(),
+		canJump:           m.canJump(),
 		paneOpen:          conds.paneOpen,
 		hasBuild:          m.hasBuild(),
 		buildKnown:        m.buildKnown,
@@ -7744,17 +7738,11 @@ func (m Model) scanEnabled() bool {
 // a rescan can reorder the list and an index reused across two different lists
 // silently repoints the dashboard at a different project mid-use.
 //
-// An OPEN switcher overlay is rebuilt afterwards, but only when the LIST changed:
-// the component holds a snapshot it never refreshes itself, so a rescan that
-// found a new project has to rebuild it or `R` looks broken — while rebuilding on
-// every pass would reset the cursor and any live filter under the hands of a user
-// the scan ticker happened to fire on. See refreshSwitcher.
+// An open jump search is left as it is: it holds a snapshot taken when it
+// opened (jump.go), and rows moving under the highlight would send the owner
+// somewhere they did not aim. The new project shows the next time it opens.
 func (m Model) applyProjectScan(msg projectScanMsg) (tea.Model, tea.Cmd) {
-	before := m.projects
 	nm, cmds := m.applyScanResult(msg)
-	if !sameProjectPaths(before, nm.projects) {
-		nm.refreshSwitcher()
-	}
 	// The rendezvous refresh runs AFTER the list is settled: it adds and removes
 	// per the projects that survived the union, not per what the walk reported.
 	nm, rzCmds := nm.applyRendezvous(msg)
@@ -7973,13 +7961,14 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	m.attachInFlight = inFlightOpen{}
 	m.restartInFlight = inFlightRestart{}
 	m.paneLost = lostPane{}
-	// A focus-request switch racing in behind an earlier switcher switch's still-
+	// A focus-request switch racing in behind an earlier jump switch's still-
 	// in-flight load must not inherit that switch's arm — applyFocusRequest owns
 	// its own explicit open for ITS switch, so previewOnNextLoad must start false
-	// for every fresh switch and only switcherComponentKey re-sets it afterward.
+	// for every fresh switch and only an owner's switch (jumpToProject and its
+	// kin) re-sets it afterward.
 	m.previewOnNextLoad = false
 	// The selection arm is cleared for the mirror-image reason, and it applies to
-	// BOTH directions: a switcher switch behind a still-in-flight focus-request
+	// BOTH directions: a jump switch behind a still-in-flight focus-request
 	// load must not restore that click's target instead of the incoming project's
 	// own remembered row, and a second click must not land on the first one's
 	// session. applyFocusRequest re-sets it after this returns, for the switch it
@@ -7996,25 +7985,6 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// same-named session elsewhere. Clearing it would instead let two concurrent
 	// cleans run against one worktree, which is the destructive direction.
 	return m, m.projectCmds()
-}
-
-// sameProjectPaths reports whether two project lists name the same paths in the
-// same order — the question "would the switcher's rows be different?". Pinned
-// flags cannot answer it differently on their own, and nor can the computed
-// display names (mergeProjects derives both from the path set). A LISTED name
-// can: renaming a project in config.toml changes a label and no path. That is
-// deliberately not a rebuild — it would reset the cursor of an open switcher —
-// so the new name shows the next time the switcher is opened.
-func sameProjectPaths(a, b []project.Project) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Path != b[i].Path {
-			return false
-		}
-	}
-	return true
 }
 
 // indexOfProject finds path in projects. An empty path never matches, so a Model

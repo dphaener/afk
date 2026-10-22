@@ -416,7 +416,7 @@ func TestHeaderAdvertisesOneOffAndLabelKeys(t *testing.T) {
 // detailBox surface at once: sizedBox's argument is the content-PLUS-padding
 // size, so every renderer here passes contentW+2 (contentW = mainOuter-4,
 // theme.detailBox is Padding(0, 1)) and the rendered block comes out exactly
-// mainOuter wide — the width renderSwitcher and renderPane already fill.
+// mainOuter wide — the width renderPane already fills.
 // Width() is exact in lipgloss, so the pre-fix deficit reproduces as a block
 // measuring mainOuter-2, not as a silent no-op; this is the test that turns
 // red if any surface's +2 is "simplified" away, including renderDetail's
@@ -1462,8 +1462,8 @@ func TestHintsNameTheKeys(t *testing.T) {
 
 	t.Run("texts name the key", func(t *testing.T) {
 		for _, tc := range []struct{ name, got, want string }{
-			{"header switch hint", headerSwitchHint(defaultLeaderKey, levelProject), "/: projects"},
-			{"header switch hint in the agent", headerSwitchHint(defaultLeaderKey, levelAgent), "ctrl+] /: projects"},
+			{"header switch hint", headerSwitchHint(defaultLeaderKey, levelProject), "/: jump"},
+			{"header switch hint in the agent", headerSwitchHint(defaultLeaderKey, levelAgent), "ctrl+] /: jump"},
 			{"header inbox hint", headerInboxHint(defaultLeaderKey, levelProject), "i: inbox"},
 			{"wedge banner hint", wedgeHintDashboard(defaultLeaderKey), "ctrl+] esc then r"},
 			{"pane focus hint", paneFocusHint(defaultLeaderKey), "ctrl+] esc"},

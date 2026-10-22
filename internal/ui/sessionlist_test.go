@@ -288,18 +288,23 @@ func TestDiscoveryTickStillDoesNotBumpThePreviewGen(t *testing.T) {
 }
 
 // TestFilterMatchesMsgIsNotStolenFromTheOverlayLists pins the message-ownership
-// rule. Three lists in this package can ask for a filter result and the message
-// names no sender, so applying the switcher's to the sidebar would put project
-// rows into the session list — every row would fail its type assertion, the
-// sidebar would render blank, and selected() would answer false with the user's
-// cursor apparently on a session.
+// rule. Two lists in this package can ask for a filter result (the sidebar and
+// the creation form's base picker) and the message names no sender, so
+// applying the form's to the sidebar would put branch rows into the session
+// list — every row would fail its type assertion, the sidebar would render
+// blank, and selected() would answer false with the user's cursor apparently
+// on a session. The project switcher's list was a third until the jump search,
+// which has no list component, replaced it (T16.6).
 func TestFilterMatchesMsgIsNotStolenFromTheOverlayLists(t *testing.T) {
 	m := testModel(sess("alpha"), sess("beta"))
 	m.projects = scannedProjects("/p/a", "/p/b")
 	m.activeProject = 0
-	m.switcherOpen = true
+	m = pressKey(t, m, keyRune('n'))
+	if !m.formOpen {
+		t.Fatal("setup: n did not open the creation form")
+	}
 
-	// A result shaped like the switcher's: items that are NOT sessionItems.
+	// A result shaped like the form's: items that are NOT sessionItems.
 	foreign := list.FilterMatchesMsg(nil)
 	got, _ := update(t, m, foreign)
 

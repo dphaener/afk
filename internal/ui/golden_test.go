@@ -62,10 +62,8 @@ func assertGolden(t *testing.T, name, frame string) {
 // The header used to be the main reason this clock exists: it carried a
 // "refreshed Xs ago · every Ys" cadence string keyed off lastLoad, and the
 // offset below was picked to make it read "4s ago". That string is gone, so
-// no frame renders lastLoad as text any more. It is still set, and still
-// matters: switcherSessions (model.go) gates its live-session swap on
-// lastLoad being non-zero, so the switcher fixture's per-project counts
-// depend on it.
+// no frame renders lastLoad as text any more. It is still set so a frame that
+// reads it some day reads a fixed time.
 var goldenNow = time.Unix(1_000_000, 0)
 
 // goldenSessions is the six-row fixture the mockups were drawn from, one row
@@ -198,7 +196,7 @@ func goldenStack() []spice.Branch {
 }
 
 // goldenModel is a dashboard sized to w×h through the same tea.WindowSizeMsg
-// the program receives, so every sizer (list, form, switcher, detail
+// the program receives, so every sizer (list, form, jump search, detail
 // viewport) is in the state a real resize leaves it in — not the shortcut
 // testModel takes.
 //
@@ -241,22 +239,32 @@ func TestGoldenDashboardFrames(t *testing.T) {
 }
 
 // TestGoldenModals pins two floating overlays at 120×40 over the fixture
-// dashboard: the project switcher and the creation form. Each is opened
-// through its own key (`/`, `n`) so the frame is the one a user sees.
+// dashboard: the jump search and the creation form. Each is opened through
+// its own key (`/`, `n`) so the frame is the one a user sees. The jump's
+// fixture has every kind of row: two projects, the active project's
+// sessions, a waiting session in the other project (put first, as it needs
+// the owner) and two cached tasks.
 func TestGoldenModals(t *testing.T) {
 	open := func(t *testing.T, m Model, k tea.KeyPressMsg) Model {
 		m, cmd := update(t, m, k)
 		return pumpForm(t, m, cmd, 0)
 	}
-	t.Run("dash-120x40-switcher", func(t *testing.T) {
+	t.Run("dash-120x40-jump", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
 		m.projects = []project.Project{{Path: "/repo", Name: "api"}, {Path: "/repos/afk", Name: "afk"}}
 		m.activeProject = 0
-		m = open(t, m, keyRune('/').(tea.KeyPressMsg))
-		if !m.switcherOpen {
-			t.Fatal("/ did not open the switcher")
+		m.projectSessions = map[string][]discover.SessionState{
+			"/repos/afk": {{Name: "fix-flaky-test", AwaitingInput: true, HostRunning: true, Phase: "executing"}},
 		}
-		assertGolden(t, "dash-120x40-switcher", render(m))
+		m.everyProject = AllProjects{Tasks: map[string][]JumpTask{"/repo": {
+			{ID: "W1.T1", Title: "Add the login page", Status: "done"},
+			{ID: "W1.T2", Title: "Wire the session store", Status: "running"},
+		}}}
+		m = open(t, m, keyRune('/').(tea.KeyPressMsg))
+		if !m.jumpOpen {
+			t.Fatal("/ did not open the jump search")
+		}
+		assertGolden(t, "dash-120x40-jump", render(m))
 	})
 	t.Run("dash-120x40-form", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
@@ -518,16 +526,15 @@ func TestGoldenDetailsOverlay(t *testing.T) {
 // header's named attention line, and the "p: switch projects" hint all at
 // once.
 //
-// Three projects, like dash-120x40-switcher's fixture, but with
-// m.projectSessions populated so the sort in awaitingElsewhere (and in the
-// switcher, which shares the comparator) has awaiting counts to order by:
+// Three projects, but with
+// m.projectSessions populated so awaitingElsewhere has counts to order by:
 // "alpha" is active (path "/repo", matching goldenModel's own session
 // fixture, so the sidebar's existing session rows still make sense under an
 // "alpha" title) and carries no entry in projectSessions, so it is excluded
 // from the attention line by path even though it is also the first project
 // alphabetically. "beta" and "gamma" are both "other" and both awaiting,
-// which is the row that proves attentionNamed's ordering (by
-// sortSwitcherProjects, not by map iteration) and its "N awaiting in X · M in
+// which is the row that proves attentionNamed's ordering (by the needs-you
+// order, not by map iteration) and its "N awaiting in X · M in
 // Y" joining both hold at once — beta sorts first only because "beta" <
 // "gamma", not because of insertion order in the map literal below.
 func TestGoldenMultiProjectDashboard(t *testing.T) {

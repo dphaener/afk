@@ -23,6 +23,7 @@ package ui
 import (
 	"slices"
 	"sync/atomic"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -40,6 +41,12 @@ type AllProjects struct {
 	// ConfigPath is the config.toml the list was read from, named in the
 	// empty-list line and the unreadable line.
 	ConfigPath string
+	// Tasks are each project's master-plan tasks keyed by the row's Root, for
+	// the jump search (T16.6) to find a task by name from any level. They come
+	// from the plan and ledger the reader already loaded for the row, so they
+	// cost no extra read. A project with no plan, or whose plan or inbox could
+	// not be read, has no entry.
+	Tasks map[string][]JumpTask
 	// Err is a failure to read config.toml itself. A project that could not
 	// be read is a row (StateUnreadable), never an Err: one broken project
 	// must not hide the others. With Err set Rows is ignored and the screen
@@ -47,12 +54,24 @@ type AllProjects struct {
 	Err error
 }
 
+// JumpTask is one master-plan task as the jump search lists it: its id, its
+// title and its ledger status in words ("pending", "running", "done" ...).
+type JumpTask struct {
+	ID, Title, Status string
+}
+
 // allProjectsLoadedMsg carries one finished read. gen is the opening the read
 // was started under (Model.allProjectsGen), so a read that lands after the
-// screen was closed, or after it was closed and opened again, is dropped.
+// screen was closed, or after it was closed and opened again, is dropped by
+// the screen. seq and at serve the every-project cache instead (see
+// applyEveryProject): seq numbers reads in the order they started and at is
+// when this one finished, both stamped in the Cmd so Update never reads a
+// clock or a counter that is not its own.
 type allProjectsLoadedMsg struct {
 	res AllProjects
 	gen int
+	seq int64
+	at  time.Time
 }
 
 // allProjectsPausedMsg and allProjectsResumedMsg carry the outcome of a pause
@@ -115,12 +134,33 @@ func allProjectsNotListedNotice(name string) string {
 // behind by the refresh ticker, and it is released in this goroutine so a
 // dropped message cannot leave it held.
 func (m Model) allProjectsCmd() tea.Cmd {
+	if !m.allProjectsOpen {
+		return nil
+	}
+	return m.allProjectsReadCmd()
+}
+
+// everyProjectCmd reads every project's row for the cache that lives whatever
+// level the dashboard is at (T16.6): `]`, the top bar and the jump search all
+// need other projects' rows while the screen is closed. It shares
+// allProjectsCmd's single-flight guard, so a read for the screen and one for
+// the cache never run side by side, and it is nil only when no reader is wired.
+// A read it starts lands with the screen's generation, so the screen drops it
+// when closed; only the cache keeps it.
+func (m Model) everyProjectCmd() tea.Cmd {
+	return m.allProjectsReadCmd()
+}
+
+// allProjectsReadCmd is the read both callers share. It is nil with no reader
+// wired.
+func (m Model) allProjectsReadCmd() tea.Cmd {
 	load := m.deps.LoadAllProjects
-	if load == nil || !m.allProjectsOpen {
+	if load == nil {
 		return nil
 	}
 	gen := m.allProjectsGen
 	refreshing := m.allProjectsRefreshing
+	counter := m.allProjectsSeq
 	return func() tea.Msg {
 		// A nil guard is a Model built as a bare struct literal, which only a
 		// test does.
@@ -130,8 +170,30 @@ func (m Model) allProjectsCmd() tea.Cmd {
 			}
 			defer refreshing.Store(false)
 		}
-		return allProjectsLoadedMsg{res: load(), gen: gen}
+		// The number is taken once the guard is held, so reads are numbered in
+		// the order they really ran; a nil counter is a bare-struct Model.
+		var seq int64
+		if counter != nil {
+			seq = counter.Add(1)
+		}
+		res := load()
+		return allProjectsLoadedMsg{res: res, gen: gen, seq: seq, at: time.Now()}
 	}
+}
+
+// applyEveryProject stores a finished read in the every-project cache. Unlike
+// the screen it ignores the generation and whether the screen is open: the
+// cache is for readers at every level. It takes a read only when it started
+// after the one the cache holds (a slower, older read landing late must not
+// roll the cache back), and never an Err, which keeps what is there.
+func (m Model) applyEveryProject(msg allProjectsLoadedMsg) Model {
+	if msg.res.Err != nil || msg.seq < m.everyProjectSeq {
+		return m
+	}
+	m.everyProject = msg.res
+	m.everyProjectSeq = msg.seq
+	m.everyProjectAt = msg.at
+	return m
 }
 
 // applyAllProjectsLoaded stores a finished read.
@@ -146,6 +208,7 @@ func (m Model) allProjectsCmd() tea.Cmd {
 // was on, wherever the sort moved it, so a row whose state changed under the
 // owner's hands does not move the highlight to another project.
 func (m Model) applyAllProjectsLoaded(msg allProjectsLoadedMsg) Model {
+	m = m.applyEveryProject(msg)
 	if !m.allProjectsOpen || msg.gen != m.allProjectsGen {
 		return m
 	}
@@ -279,6 +342,7 @@ func (m Model) moveAllProjects(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.allProjectsCursor = clampInt(m.allProjectsCursor+delta, 0, len(m.allProjectsRows)-1)
+	m.clearNeedAt()
 	return m, nil
 }
 
@@ -286,13 +350,13 @@ func (m Model) moveAllProjects(delta int) (tea.Model, tea.Cmd) {
 //
 // A gone or unreadable row does not switch: there is no folder to show, or
 // none the dashboard can read, and the notice says why. The active project
-// closes the screen and does nothing else, as re-picking it in the switcher
-// does. Any other row switches exactly as the switcher does — the same
-// switchProject, the same one-shot preview arm and the same open count — so
-// the two ways to change project cannot behave differently.
+// closes the screen and does nothing else, as picking it in the jump search
+// does. Any other row switches exactly as the jump search does (jumpToProject)
+// — the same switchProject, the same one-shot preview arm and the same open
+// count — so the two ways to change project cannot behave differently.
 //
-// The switcher's entry for a project is found by path. The rows carry the
-// main checkout; the switcher's start-up row keeps the folder the dashboard
+// The project list's entry for a project is found by path. The rows carry the
+// main checkout; the list's start-up row keeps the folder the dashboard
 // was started in, which for a linked worktree is not the main checkout, so
 // that row is also matched through Deps.LaunchMainCheckout (as
 // isActiveProjectRoot does).
@@ -322,7 +386,7 @@ func (m Model) switchFromAllProjects() (tea.Model, tea.Cmd) {
 	nm, cmd := m.switchProject(path)
 	if nm.repo != m.repo {
 		// Armed and counted only on a real switch, for the reasons
-		// switcherComponentKey gives.
+		// jumpToProject gives.
 		nm.previewOnNextLoad = true
 		nm.recordProjectOpen(path)
 	}

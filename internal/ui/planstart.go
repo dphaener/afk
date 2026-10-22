@@ -498,9 +498,9 @@ func (m Model) applyPlanStarted(msg planStartedMsg) (tea.Model, tea.Cmd) {
 // applyListedResult asks for one when the listed folders change, so its row
 // has session counts without waiting a minute for the scan ticker.
 //
-// The switch records the open (recordProjectOpen) as the switcher's does,
+// The switch records the open (recordProjectOpen) as the jump search's does,
 // since the owner chose this project. It does NOT arm previewOnNextLoad as
-// the switcher does: that flag previews the remembered or first row on the
+// the jump search does: that flag previews the remembered or first row on the
 // next load, and this switch already makes an explicit open of master-plan
 // (openPaneFor clears the flag for exactly that reason, as it does for a
 // click-to-focus switch).
@@ -510,7 +510,6 @@ func (m Model) applyPlanNewOpened(msg planStartedMsg) (tea.Model, tea.Cmd) {
 	switched := false
 	if res.Root != "" && !m.isActiveProjectRoot(res.Root) {
 		added := m.addStartedProject(res.Root)
-		before := m.projects
 		was := m.activeProjectPath()
 		gen := m.projectGen
 		m.projects = m.mergedProjects()
@@ -521,9 +520,6 @@ func (m Model) applyPlanNewOpened(msg planStartedMsg) (tea.Model, tea.Cmd) {
 			var settle []tea.Cmd
 			m, settle = m.settleActiveProject(was)
 			cmds = append(cmds, settle...)
-		}
-		if !sameProjectPaths(before, m.projects) {
-			m.refreshSwitcher()
 		}
 		var switchCmds []tea.Cmd
 		m, switchCmds = m.switchProjectCmds(res.Root)

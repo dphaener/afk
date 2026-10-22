@@ -5,7 +5,9 @@
 │ │                                                                          │ │
 │ │ go in                               enter      — Go in a level, or open… │ │
 │ │ go back                             esc        — Go back a level, or cl… │ │
-│ │ jump                                /          — Jump to another project │ │
+│ │ next needing you                    ]          — Go to the next thing t… │ │
+│ │ prev needing you                    [          — Go to the previous thi… │ │
+│ │ jump                                /          — Jump to a project, ses… │ │
 │ │ inbox                               i          — the inbox has not been… │ │
 │ │ details                             d          — Show the selected sess… │ │
 │ │ read usage                          R          — this dashboard cannot … │ │
@@ -17,8 +19,6 @@
 │ │ answer the oldest                   a          — works on All projects   │ │
 │ │ pause or resume the build           p          — this project has no bu… │ │
 │ │ new session                         n          — Start a new session fr… │ │
-│ │ one-off session                     o          — Start a one-off sessio… │ │
-│ │ clean session                       c          — Clean the selected ses… │ │
 │ ╰─────────────────────────────── type to search · enter runs · esc closes ─╯ │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 enter run · ↑/↓ move · type filter · esc close · ctrl+c quit                    

@@ -172,10 +172,9 @@ func detailsBlockedReason(c leaderConds) string {
 // then the actions reached by name only. It is docs/dash-design.md §5 row
 // for row, less what later tasks build:
 //
-//   - `]`, `[` and `a` are not bound yet (A4); T16.6 and T16.7 build them.
+//   - `a` works at All projects only until T16.7 (A4).
 //   - `p` works at Project only until T16.3 gives All projects a selected
 //     project to pause (A4).
-//   - `/` opens today's project switcher until T16.6 widens it (A3).
 //   - `s` and `t` (the leader's S and T) need the project view's Build
 //     section to have the keyboard (T16.4); their blocked reasons say so.
 //   - tab, shift+tab and 1–3 change the project view's section (T16.4). The
@@ -219,8 +218,21 @@ func keyTableRows() []keyRow {
 			name: "go back", help: "Go back a level, or close what is open",
 		},
 		{
+			// In the Agent, the leader then `]` can land on another agent
+			// with the keyboard kept on the agent (agentActionStays).
+			action: actionNeedNext, key: "]", levels: atEveryLevel,
+			name: "next needing you", help: "Go to the next thing that needs you, across every project",
+		},
+		{
+			action: actionNeedPrev, key: "[", levels: atEveryLevel,
+			name: "prev needing you", help: "Go to the previous thing that needs you, across every project",
+		},
+		{
+			// The jump search (§4.6), also at All projects with no project
+			// open. In the Agent the leader then `/` opens it over the
+			// Project, as every overlay key does (agentActionStays).
 			action: actionProjects, key: "/", levels: atEveryLevel,
-			name: "jump", help: "Jump to another project",
+			name: "jump", help: "Jump to a project, session or task",
 			blocked: reasonAsLeader(actionProjects),
 		},
 		{

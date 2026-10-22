@@ -640,7 +640,7 @@ func TestPlanStartNewWithoutTheSeam(t *testing.T) {
 }
 
 // newPlanRoot is the folder the new-plan tests start in: another project,
-// in neither the switcher's list nor any search folder.
+// in neither the project list nor any search folder.
 const newPlanRoot = "/code/fresh"
 
 // TestPlanStartNewResults folds each kind of new-plan result into the
@@ -648,7 +648,7 @@ const newPlanRoot = "/code/fresh"
 //
 // Load-bearing rows:
 //   - "started in another folder": the dashboard switches to it, lists it in
-//     the switcher (not Pinned), records the open, and dials master-plan in
+//     the project list (not Pinned), records the open, and dials master-plan in
 //     that root with the row armed for the next load. Opening before the
 //     switch would be undone by it, so the dial's root is the proof of order.
 //   - "resumed in another folder": a reopened session switches too.
@@ -765,9 +765,9 @@ func TestPlanStartNewResults(t *testing.T) {
 }
 
 // TestPlanStartNewEndToEnd is the action through the dialog, the form and
-// the result, then the switcher: the started folder is the project on
+// the result, then the jump search: the started folder is the project on
 // screen, the master-plan row is selected once discovery lists it, and the
-// switcher (ctrl+] p) shows a row for it.
+// jump search (/) shows a row for it.
 func TestPlanStartNewEndToEnd(t *testing.T) {
 	m, rec := planModel(t, sess("a"))
 	rec.reply = PlanStartResult{Outcome: PlanStarted, Root: newPlanRoot}
@@ -794,11 +794,11 @@ func TestPlanStartNewEndToEnd(t *testing.T) {
 	}
 	m.focus = focusList
 	m, _ = update(t, m, keyRune('/'))
-	if !m.switcherOpen {
-		t.Fatal("/ did not open the switcher")
+	if !m.jumpOpen {
+		t.Fatal("/ did not open the jump search")
 	}
 	if frame := render(m); !strings.Contains(frame, "fresh") || !strings.Contains(frame, "api") {
-		t.Errorf("the switcher does not list both projects:\n%s", frame)
+		t.Errorf("the jump search does not list both projects:\n%s", frame)
 	}
 }
 

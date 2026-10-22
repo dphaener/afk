@@ -19,6 +19,6 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│  ctrl+] esc  back   ctrl+] d  details   ctrl+] m  mouse                      │
+│  ctrl+] esc  back   ctrl+] ]  next needing you   ctrl+] d  details           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 input → session · ctrl+] afk keys · ctrl+] m mouse: pane                        

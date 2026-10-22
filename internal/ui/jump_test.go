@@ -3,61 +3,865 @@ package ui
 import (
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	xansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/project"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/session"
+	"github.com/dphaener/afk/internal/state"
 )
+
+// This file is the jump search's tests (jump.go, T16.6): the pure rows,
+// matching and key decision as tables, then the wiring through Update — the
+// box over a running pane, its key precedence, each landing, and the project
+// switches it makes (the preview and remembered-selection arms and the open
+// counts a switch records), which the project switcher's suite pinned before
+// the jump search replaced it.
 
 // --- helpers ---
 
 var (
-	// keyP is the switcher's key since T16.2: `/`, jump (A3), which until
-	// T16.6 opens the project switcher.
-	keyP     = keyRune('/')
-	keyR     = keyRune('R')
+	// keyJump is the jump search's key: `/` at every level.
+	keyJump  = keyRune('/')
 	keyCtrlT = tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl}
 	keyCtrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 )
 
-// switcherWiringProjects is the list every test here opens the overlay over:
+// keyEscMsg is a bare esc press, shared by every test file in the package.
+func keyEscMsg() tea.KeyMsg { return tea.KeyPressMsg{Code: tea.KeyEsc} }
+
+// openJumpOverlay presses `/` and asserts it opened, so every test below
+// starts from a box opened through the real key path rather than from a
+// hand-set flag.
+func openJumpOverlay(t *testing.T, m Model) Model {
+	t.Helper()
+	m = pressKey(t, m, keyJump)
+	if !m.jumpOpen {
+		t.Fatalf("`/` did not open the jump search (status %q)", m.status)
+	}
+	return m
+}
+
+// jumpSelect moves an open box's highlight onto the first visible row match
+// accepts, by pressing down, so a test lands on the row it means whatever
+// the needs-you order puts above it.
+func jumpSelect(t *testing.T, m Model, what string, match func(jumpRow) bool) Model {
+	t.Helper()
+	hits := m.jump.visible()
+	for range hits {
+		if h := m.jump.highlight; h < len(hits) && match(hits[h].row) {
+			return m
+		}
+		m, _ = update(t, m, keyDown)
+	}
+	t.Fatalf("no jump row for %s among %d rows", what, len(hits))
+	return m
+}
+
+// jumpSelectProject selects the project row whose path is target.
+func jumpSelectProject(t *testing.T, m Model, target string) Model {
+	t.Helper()
+	return jumpSelect(t, m, "project "+target, func(r jumpRow) bool {
+		return r.kind == jumpProject && r.projectPath == target
+	})
+}
+
+// jumpProjectPaths is the project rows the open box lists, by path, in its
+// order.
+func jumpProjectPaths(m Model) []string {
+	var paths []string
+	for _, r := range m.jump.rows {
+		if r.kind == jumpProject {
+			paths = append(paths, r.projectPath)
+		}
+	}
+	return paths
+}
+
+// typeQuery types q into the open box one key at a time.
+func typeQuery(t *testing.T, m Model, q string) Model {
+	t.Helper()
+	for _, r := range q {
+		m, _ = update(t, m, keyRune(r))
+	}
+	return m
+}
+
+// jumpKeys is a row's identity as the tables below compare it.
+func jumpKeys(rows []jumpRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.kind.String() + ":" + r.projectName + ":" + r.name
+	}
+	return out
+}
+
+// jp is a project in the facts, its row built by needsRow when edit is not
+// nil-and-absent: hasRow false leaves it without a home-screen row.
+func jp(path, name string, row *projectrows.Row, sessions ...Session) needsYouProject {
+	p := needsYouProject{Path: path, Name: name, Sessions: sessions}
+	if row != nil {
+		p.Row, p.HasRow = *row, true
+	}
+	return p
+}
+
+func rowPtr(r projectrows.Row) *projectrows.Row { return &r }
+
+// --- the pure parts ---
+
+// TestJumpRows pins the order of the rows and which rows are put first
+// because they need the owner (§4.6, A6). Load-bearing rows:
+//
+//   - "kinds then names" is the order with nothing waiting: projects,
+//     sessions, tasks, each by name ignoring case, path breaking a tie of
+//     names (the two "same" projects), so the order is total.
+//   - "needs-you first, in ]'s order" puts a waiting session, a plan to
+//     approve and a gone project ahead of everything, in the order `]`
+//     walks them: beta's waiting session first (beta is in NEEDS YOU on the
+//     home screen), then alpha's plan; inside a project waiting sessions
+//     come before the plan.
+//   - "a blocking item ranks its task" puts the task the oldest blocking
+//     item holds up first, and "...falls back to its project" ranks the
+//     project when that task is not listed, so the item is never lost.
+//   - "pending and stale awaiting" leave out a creating… placeholder and do
+//     not rank a done session whose awaiting flag is stale.
+//   - "a label" shows the label and still matches the on-disk name (see
+//     TestJumpFilter).
+func TestJumpRows(t *testing.T) {
+	waiting := Session{SessionState: waitingState("ask")}
+	done := sess("old")
+	done.Phase = state.PhaseDone
+	done.AwaitingInput = true
+	pending := sess("new")
+	pending.Pending = true
+	labelled := sess("feat-x")
+	labelled.Label = "Feature X"
+	plan := needsRow("alpha", "/p/alpha", 0, func(in *projectrows.Input) { in.PlanWaiting = true })
+	gone := needsRow("gamma", "/p/gamma", 2, func(in *projectrows.Input) { in.Gone = true })
+	quiet := needsRow("beta", "/p/beta", 1, nil)
+	blocking := needsRow("beta", "/p/beta", 1, func(in *projectrows.Input) {
+		in.Open, in.Blocking = 1, 1
+		in.Wait = projectrows.Wait{ItemID: "q1", CreatedAt: "2026-10-20T09:00:00Z", Task: "W2.T1"}
+	})
+
+	tests := []struct {
+		name  string
+		facts jumpFacts
+		want  []string
+		// ranked is how many rows at the top need the owner.
+		ranked int
+	}{
+		{
+			name: "kinds then names",
+			facts: jumpFacts{
+				Projects: []needsYouProject{
+					jp("/z/same", "same", nil, sess("zed"), sess("Alpha-s")),
+					jp("/a/same", "same", nil),
+					jp("/p/b", "Beta", nil),
+				},
+				Tasks: map[string][]JumpTask{"/p/b": {{ID: "W2.T1", Title: "Two"}, {ID: "W1.T1", Title: "One"}}},
+			},
+			want: []string{
+				"project:Beta:Beta", "project:same:same", "project:same:same",
+				"session:same:Alpha-s", "session:same:zed",
+				"task:Beta:W1.T1 One", "task:Beta:W2.T1 Two",
+			},
+		},
+		{
+			name: "needs-you first, in ]'s order",
+			facts: jumpFacts{Projects: []needsYouProject{
+				jp("/p/alpha", "alpha", rowPtr(plan), sess("calm"), waiting),
+				jp("/p/beta", "beta", rowPtr(quiet)),
+				jp("/p/gamma", "gamma", rowPtr(gone)),
+			}},
+			want: []string{
+				"session:alpha:ask", "project:alpha:alpha", "project:gamma:gamma",
+				"project:beta:beta", "session:alpha:calm",
+			},
+			ranked: 3,
+		},
+		{
+			name: "a blocking item ranks its task",
+			facts: jumpFacts{
+				Projects: []needsYouProject{jp("/p/beta", "beta", rowPtr(blocking))},
+				Tasks:    map[string][]JumpTask{"/p/beta": {{ID: "W1.T1", Title: "One"}, {ID: "W2.T1", Title: "Two"}}},
+			},
+			want:   []string{"task:beta:W2.T1 Two", "project:beta:beta", "task:beta:W1.T1 One"},
+			ranked: 1,
+		},
+		{
+			name:   "a blocking item whose task is not listed falls back to its project",
+			facts:  jumpFacts{Projects: []needsYouProject{jp("/p/beta", "beta", rowPtr(blocking))}},
+			want:   []string{"project:beta:beta"},
+			ranked: 1,
+		},
+		{
+			name:  "pending and stale awaiting",
+			facts: jumpFacts{Projects: []needsYouProject{jp("/p/a", "a", nil, done, pending)}},
+			want:  []string{"project:a:a", "session:a:old"},
+		},
+		{
+			name:  "a label",
+			facts: jumpFacts{Projects: []needsYouProject{jp("/p/a", "a", nil, labelled)}},
+			want:  []string{"project:a:a", "session:a:Feature X"},
+		},
+		{
+			name:  "a project given twice counts once",
+			facts: jumpFacts{Projects: []needsYouProject{jp("/p/a", "a", nil), jp("/p/a", "a", nil)}},
+			want:  []string{"project:a:a"},
+		},
+		{
+			name: "nothing at all",
+			want: []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := jumpRows(tt.facts)
+			if got := jumpKeys(rows); !slices.Equal(got, tt.want) {
+				t.Fatalf("rows = %v, want %v", got, tt.want)
+			}
+			ranked := 0
+			for _, r := range rows {
+				if r.needRank >= 0 {
+					ranked++
+				}
+			}
+			if ranked != tt.ranked {
+				t.Errorf("%d rows need the owner, want %d", ranked, tt.ranked)
+			}
+			for i := range ranked {
+				if rows[i].needRank < 0 {
+					t.Errorf("row %d (%s) is not ranked but sits among the ranked rows", i, jumpKeys(rows)[i])
+				}
+			}
+		})
+	}
+}
+
+// TestJumpMatch pins the subsequence match. Load-bearing rows: "letters
+// spread out" (a subsequence, not a substring), "case" (ignored both ways),
+// "earliest letters" (the positions underlined are the first that fit), and
+// "out of order" (order matters, or every name with the letters would
+// match).
+func TestJumpMatch(t *testing.T) {
+	tests := []struct {
+		name, query, text string
+		want              []int
+		ok                bool
+	}{
+		{"empty query matches with nothing marked", "", "afk", nil, true},
+		{"letters spread out", "afd", "afk-dashboard", []int{0, 1, 4}, true},
+		{"case", "AfK", "aFk", []int{0, 1, 2}, true},
+		{"earliest letters", "a", "banana", []int{1}, true},
+		{"out of order", "ka", "afk", nil, false},
+		{"longer than the text", "afkk", "afk", nil, false},
+		{"not there", "z", "afk", nil, false},
+		{"runes, not bytes", "é", "café", []int{3}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := jumpMatch(tt.query, tt.text)
+			if ok != tt.ok || !slices.Equal(got, tt.want) {
+				t.Errorf("jumpMatch(%q, %q) = %v, %v; want %v, %v", tt.query, tt.text, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+// TestJumpFilter pins which rows a query keeps and the letters it marks.
+// Load-bearing rows: "a task's title" marks the title's letters at their
+// place after the id, "not across id and title" keeps a task only when one
+// of the two holds every letter, "the hidden name" matches a labelled
+// session on its on-disk name and marks nothing (that name is not on
+// screen), and "spaces" are dropped from the query.
+func TestJumpFilter(t *testing.T) {
+	labelled := sess("feat-x")
+	labelled.Label = "Feature X"
+	rows := jumpRows(jumpFacts{
+		Projects: []needsYouProject{jp("/p/afk", "afk", nil, labelled)},
+		Tasks:    map[string][]JumpTask{"/p/afk": {{ID: "W1.T1", Title: "Jump box"}}},
+	})
+	tests := []struct {
+		name  string
+		query string
+		want  map[string][]int // row name → marks
+	}{
+		{"empty keeps every row", "", map[string][]int{"afk": nil, "Feature X": nil, "W1.T1 Jump box": nil}},
+		{"a task's id", "w1t", map[string][]int{"W1.T1 Jump box": {0, 1, 3}}},
+		{"a task's title", "jbx", map[string][]int{"W1.T1 Jump box": {6, 11, 13}}},
+		{"not across id and title", "t1j", map[string][]int{}},
+		{"the shown name", "fx", map[string][]int{"Feature X": {0, 8}}},
+		{"the hidden name", "t-x", map[string][]int{"Feature X": nil}},
+		{"spaces", "w1 t1", map[string][]int{"W1.T1 Jump box": {0, 1, 3, 4}}},
+		{"no match", "qqq", map[string][]int{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := map[string][]int{}
+			for _, h := range jumpFilter(rows, tt.query) {
+				got[h.row.name] = h.marks
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("kept %v, want %v", got, tt.want)
+			}
+			for name, marks := range tt.want {
+				g, ok := got[name]
+				if !ok || !slices.Equal(g, marks) {
+					t.Errorf("row %q marks = %v (kept %v), want %v", name, g, ok, marks)
+				}
+			}
+		})
+	}
+}
+
+// TestJumpKeyDecision is the box's key table. Load-bearing rows: "j types"
+// and "q types" (letters always type, §4.6; j is not a move here and q not
+// quit), "esc clears a query" before "esc closes" (two-stage esc), "enter
+// with nothing matching" (the box stays open so the query can be fixed),
+// "the leader closes", and the page rows (a page, no wrap).
+func TestJumpKeyDecision(t *testing.T) {
+	hits := []jumpHit{{row: jumpRow{kind: jumpProject, name: "a"}}, {row: jumpRow{kind: jumpSession, name: "b"}}}
+	tests := []struct {
+		name      string
+		key       tea.KeyPressMsg
+		query     string
+		hits      []jumpHit
+		highlight int
+		want      jumpOutcome
+	}{
+		{"enter goes to the highlighted row", tea.KeyPressMsg{Code: tea.KeyEnter}, "", hits, 1, jumpOutcome{kind: jumpGo, row: hits[1].row}},
+		{"enter with nothing matching", tea.KeyPressMsg{Code: tea.KeyEnter}, "zz", nil, 0, jumpOutcome{}},
+		{"esc clears a query", tea.KeyPressMsg{Code: tea.KeyEsc}, "ab", hits, 0, jumpOutcome{kind: jumpClear}},
+		{"esc closes", tea.KeyPressMsg{Code: tea.KeyEsc}, "", hits, 0, jumpOutcome{kind: jumpClose}},
+		{"the leader closes", leaderKeyPress, "ab", hits, 0, jumpOutcome{kind: jumpClose}},
+		{"up wraps", tea.KeyPressMsg{Code: tea.KeyUp}, "", hits, 0, jumpOutcome{kind: jumpMove, delta: -1, wrap: true}},
+		{"down wraps", tea.KeyPressMsg{Code: tea.KeyDown}, "", hits, 0, jumpOutcome{kind: jumpMove, delta: 1, wrap: true}},
+		{"pgup moves a page", tea.KeyPressMsg{Code: tea.KeyPgUp}, "", hits, 0, jumpOutcome{kind: jumpMove, delta: -5}},
+		{"pgdown moves a page", tea.KeyPressMsg{Code: tea.KeyPgDown}, "", hits, 0, jumpOutcome{kind: jumpMove, delta: 5}},
+		{"backspace edits", tea.KeyPressMsg{Code: tea.KeyBackspace}, "ab", hits, 0, jumpOutcome{kind: jumpType, backspace: true}},
+		{"j types", tea.KeyPressMsg{Code: 'j', Text: "j"}, "", hits, 0, jumpOutcome{kind: jumpType, text: "j"}},
+		{"q types", tea.KeyPressMsg{Code: 'q', Text: "q"}, "", hits, 0, jumpOutcome{kind: jumpType, text: "q"}},
+		{"/ types", tea.KeyPressMsg{Code: '/', Text: "/"}, "", hits, 0, jumpOutcome{kind: jumpType, text: "/"}},
+		{"a chord with no text is ignored", keyCtrlT, "", hits, 0, jumpOutcome{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := jumpKeyDecision(tt.key, defaultLeaderKey, tt.query, tt.hits, tt.highlight, 5)
+			if got.kind != tt.want.kind || got.row.name != tt.want.row.name || got.text != tt.want.text ||
+				got.backspace != tt.want.backspace || got.delta != tt.want.delta || got.wrap != tt.want.wrap {
+				t.Errorf("decision = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestJumpDialogApply pins what the box does with its own outcomes.
+// Load-bearing rows: "a query edit goes back to the top" (the highlight can
+// never index past a list the query shortened), "down wraps" and "a page
+// stops at the end".
+func TestJumpDialogApply(t *testing.T) {
+	rows := []jumpRow{{name: "aa"}, {name: "ab"}, {name: "b"}}
+	for i := range rows {
+		rows[i].fields = []jumpField{{text: rows[i].name}}
+	}
+	tests := []struct {
+		name          string
+		query         string
+		highlight     int
+		o             jumpOutcome
+		wantQuery     string
+		wantHighlight int
+	}{
+		{"a query edit goes back to the top", "", 2, jumpOutcome{kind: jumpType, text: "a"}, "a", 0},
+		{"backspace drops the last rune", "aé", 1, jumpOutcome{kind: jumpType, backspace: true}, "a", 0},
+		{"backspace on nothing", "", 0, jumpOutcome{kind: jumpType, backspace: true}, "", 0},
+		{"clear", "ab", 0, jumpOutcome{kind: jumpClear}, "", 0},
+		{"down wraps", "", 2, jumpOutcome{kind: jumpMove, delta: 1, wrap: true}, "", 0},
+		{"up wraps", "", 0, jumpOutcome{kind: jumpMove, delta: -1, wrap: true}, "", 2},
+		{"a page stops at the end", "", 1, jumpOutcome{kind: jumpMove, delta: 10}, "", 2},
+		{"a page stops at the top", "", 1, jumpOutcome{kind: jumpMove, delta: -10}, "", 0},
+		{"a move with nothing matching", "zz", 0, jumpOutcome{kind: jumpMove, delta: 1, wrap: true}, "zz", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := jumpDialog{rows: rows, query: tt.query, highlight: tt.highlight}
+			d.apply(tt.o)
+			if d.query != tt.wantQuery || d.highlight != tt.wantHighlight {
+				t.Errorf("query, highlight = %q, %d; want %q, %d", d.query, d.highlight, tt.wantQuery, tt.wantHighlight)
+			}
+		})
+	}
+}
+
+// TestJumpNameCell pins the underline and the cut. Load-bearing: a mark past
+// the cut is dropped (its letter is not on screen) and the cell is always
+// exactly width cells, so the columns after it line up.
+func TestJumpNameCell(t *testing.T) {
+	underlined := jumpMatchStyle.Render("b")
+	tests := []struct {
+		name  string
+		text  string
+		marks []int
+		width int
+		want  string
+	}{
+		{"padded", "abc", nil, 5, "abc  "},
+		{"a mark", "abc", []int{1}, 4, "a" + underlined + "c "},
+		{"cut", "abcdef", nil, 4, "abc…"},
+		{"a mark past the cut", "abcdef", []int{4}, 4, "abc…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := jumpNameCell(tt.text, tt.marks, tt.width)
+			if got != tt.want {
+				t.Errorf("jumpNameCell = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// --- the box through Update ---
+
+// jumpWorld is newNeedsWorld with something to find of every kind: project
+// a is named "jumpy", b holds the session "jump-fix" and a stopped one, and
+// a has two tasks, one titled "Make the jump box". Every project is quiet,
+// so nothing is put first.
+func jumpWorld(t *testing.T) *needsWorld {
+	t.Helper()
+	running := sampleState("jump-fix")
+	running.HostRunning = true
+	running.HostPID = 4242
+	stopped := sampleState("asleep")
+	sessions := map[string][]discover.SessionState{
+		"/repo": {sampleState("home")},
+		"/p/b":  {running, stopped},
+	}
+	rows := []projectrows.Row{needsRow("jumpy", "/p/a", 0, nil), needsRow("b", "/p/b", 1, nil)}
+	w := newNeedsWorld(t, sessions, rows)
+	w.m.projects[1].Name = "jumpy"
+	w.m.everyProject.Tasks = map[string][]JumpTask{
+		"/p/a": {{ID: "W1.T1", Title: "Write the docs", Status: "done"}, {ID: "W2.T1", Title: "Make the jump box", Status: "pending"}},
+	}
+	return w
+}
+
+// TestJumpFindsAProjectASessionAndATask is the acceptance jump test: one
+// query finds a project, a session and a task across two projects, and
+// leaves out what does not match; enter on the task lands on its project at
+// Project with the Build section focused and the task selected once the
+// switched project's build is read.
+func TestJumpFindsAProjectASessionAndATask(t *testing.T) {
+	w := jumpWorld(t)
+	w.m = openJumpOverlay(t, w.m)
+	w.m = typeQuery(t, w.m, "jmp")
+
+	var got []string
+	for _, h := range w.m.jump.visible() {
+		got = append(got, h.row.kind.String()+":"+h.row.name)
+	}
+	want := []string{"project:jumpy", "session:jump-fix", "task:W2.T1 Make the jump box"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("rows for \"jmp\" = %v, want %v", got, want)
+	}
+	frame := render(w.m)
+	for _, s := range []string{"jumpy", "jump-fix", "W2.T1 Make the jump box", "> jmp"} {
+		if !strings.Contains(frame, s) {
+			t.Errorf("the box does not show %q:\n%s", s, frame)
+		}
+	}
+
+	w.m = jumpSelect(t, w.m, "the task", func(r jumpRow) bool { return r.kind == jumpTask })
+	var cmd tea.Cmd
+	w.m, cmd = update(t, w.m, keyEnter)
+	w.settle(t, cmd)
+	if w.m.jumpOpen || w.m.repo != "/p/a" {
+		t.Fatalf("open = %v, repo = %q; want the box closed and project a open", w.m.jumpOpen, w.m.repo)
+	}
+	w.m, _ = update(t, w.m, buildLoadedMsg{gen: w.m.projectGen, snap: buildview.Snapshot{Rows: []buildview.Row{
+		{ID: "W1.T1", Title: "Write the docs"}, {ID: "W2.T1", Title: "Make the jump box"},
+	}}})
+	if w.m.level() != levelProject || !w.m.buildSectionFocused() || w.m.buildCursorID != "W2.T1" || w.m.buildCursorIndex != 1 {
+		t.Errorf("level = %v, build focused = %v, cursor = %q at %d; want Project, Build focused, on W2.T1 at 1",
+			w.m.level(), w.m.buildSectionFocused(), w.m.buildCursorID, w.m.buildCursorIndex)
+	}
+}
+
+// TestJumpLandings pins where enter on each kind of row lands (§4.6).
+// Load-bearing rows: "another project" (a switch with the preview armed and
+// the open counted, as enter on its home-screen row does), "the active
+// project from All projects" (closes the screen, no switch), "a gone
+// project" (says why and stays), "a session elsewhere" (the agent landing:
+// a switch, then a dial for that session's worktree, no preview), "a stopped
+// session" (its details, no dial: enter's rule), "a worktree fault" (its
+// project view with it selected, since it has no agent) and "a task in the
+// active project" (Build focused with the cursor on it at once).
+func TestJumpLandings(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(w *needsWorld)
+		pick  func(r jumpRow) bool
+		check func(t *testing.T, w *needsWorld)
+	}{
+		{
+			name: "another project",
+			pick: func(r jumpRow) bool { return r.kind == jumpProject && r.projectPath == "/p/b" },
+			check: func(t *testing.T, w *needsWorld) {
+				if w.m.repo != "/p/b" || w.m.level() != levelProject || len(w.opened) != 0 {
+					t.Fatalf("repo = %q, level = %v, dials = %d; want /p/b at Project and no dial", w.m.repo, w.m.level(), len(w.opened))
+				}
+				if w.m.projectOpens["/p/b"] != 1 {
+					t.Errorf("opens of /p/b = %d, want the switch counted once", w.m.projectOpens["/p/b"])
+				}
+			},
+		},
+		{
+			name:  "the active project from All projects",
+			setup: func(w *needsWorld) { w.openHome(t, "/p/b") },
+			pick:  func(r jumpRow) bool { return r.kind == jumpProject && r.projectPath == "/repo" },
+			check: func(t *testing.T, w *needsWorld) {
+				if w.m.repo != "/repo" || w.m.allProjectsOpen || w.m.level() != levelProject {
+					t.Fatalf("repo = %q, home open = %v; want /repo at Project", w.m.repo, w.m.allProjectsOpen)
+				}
+			},
+		},
+		{
+			name: "a gone project",
+			setup: func(w *needsWorld) {
+				w.m.everyProject.Rows[1] = needsRow("b", "/p/b", 1, func(in *projectrows.Input) { in.Gone = true })
+			},
+			pick: func(r jumpRow) bool { return r.kind == jumpProject && r.projectPath == "/p/b" },
+			check: func(t *testing.T, w *needsWorld) {
+				if w.m.repo != "/repo" || !strings.Contains(w.m.status, "is gone") {
+					t.Fatalf("repo = %q, status = %q; want no switch and the gone notice", w.m.repo, w.m.status)
+				}
+			},
+		},
+		{
+			name: "a session elsewhere",
+			pick: func(r jumpRow) bool { return r.kind == jumpSession && r.session == "jump-fix" },
+			check: func(t *testing.T, w *needsWorld) {
+				if w.m.repo != "/p/b" || len(w.opened) != 1 || w.opened[0].Name != "jump-fix" || w.opened[0].Worktree != "/wt/jump-fix" {
+					t.Fatalf("repo = %q, dials = %+v; want /p/b and one dial for jump-fix at /wt/jump-fix", w.m.repo, w.opened)
+				}
+				if w.m.level() != levelAgent || w.m.paneName != "jump-fix" {
+					t.Errorf("level = %v, pane = %q; want the Agent on jump-fix", w.m.level(), w.m.paneName)
+				}
+				if w.m.previewOnNextLoad {
+					t.Error("an agent landing armed a preview, which would race a second dial")
+				}
+			},
+		},
+		{
+			name: "a stopped session",
+			pick: func(r jumpRow) bool { return r.kind == jumpSession && r.session == "asleep" },
+			check: func(t *testing.T, w *needsWorld) {
+				if w.m.repo != "/p/b" || len(w.opened) != 0 || !w.m.detailsOpen || w.m.detailsFor != "asleep" {
+					t.Fatalf("repo = %q, dials = %d, details = %v for %q; want /p/b with asleep's details and no dial",
+						w.m.repo, len(w.opened), w.m.detailsOpen, w.m.detailsFor)
+				}
+			},
+		},
+		{
+			name: "a worktree fault",
+			setup: func(w *needsWorld) {
+				w.m.setSessions([]Session{sess("home"), faultSess("lost", session.KindWorktreeMissing, "worktree directory no longer exists")})
+			},
+			pick: func(r jumpRow) bool { return r.kind == jumpSession && r.session == "lost" },
+			check: func(t *testing.T, w *needsWorld) {
+				s, ok := w.m.selected()
+				if w.m.level() != levelProject || !ok || s.Name != "lost" || len(w.opened) != 0 {
+					t.Fatalf("level = %v, selected = %q (%v), dials = %d; want Project on the fault row and no dial",
+						w.m.level(), s.Name, ok, len(w.opened))
+				}
+			},
+		},
+		{
+			name: "a task in the active project",
+			setup: func(w *needsWorld) {
+				w.m.everyProject.Tasks["/repo"] = []JumpTask{{ID: "R1", Title: "Home task"}, {ID: "R2", Title: "Other"}}
+				w.m.build = buildview.Snapshot{Rows: []buildview.Row{{ID: "R1"}, {ID: "R2"}}}
+				w.m.buildKnown = true
+			},
+			pick: func(r jumpRow) bool { return r.kind == jumpTask && r.taskID == "R2" },
+			check: func(t *testing.T, w *needsWorld) {
+				if w.m.repo != "/repo" || !w.m.buildSectionFocused() || w.m.buildCursorID != "R2" || w.m.buildCursorIndex != 1 {
+					t.Fatalf("repo = %q, build focused = %v, cursor = %q at %d; want /repo, Build focused on R2 at 1",
+						w.m.repo, w.m.buildSectionFocused(), w.m.buildCursorID, w.m.buildCursorIndex)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := jumpWorld(t)
+			if tt.setup != nil {
+				tt.setup(w)
+			}
+			w.m = openJumpOverlay(t, w.m)
+			w.m = jumpSelect(t, w.m, tt.name, tt.pick)
+			var cmd tea.Cmd
+			w.m, cmd = update(t, w.m, keyEnter)
+			w.settle(t, cmd)
+			if w.m.jumpOpen {
+				t.Fatal("enter on a row must close the box")
+			}
+			tt.check(t, w)
+		})
+	}
+}
+
+// TestJumpNoMatch is the failure path: a query nothing matches shows the
+// empty-result line, enter does nothing and keeps the box open with the
+// query, the first esc clears the query and the second closes the box.
+func TestJumpNoMatch(t *testing.T) {
+	w := jumpWorld(t)
+	w.m = openJumpOverlay(t, w.m)
+	w.m = typeQuery(t, w.m, "zzzq")
+	if frame := render(w.m); !strings.Contains(frame, jumpNoMatch) {
+		t.Fatalf("no empty-result line:\n%s", frame)
+	}
+	var cmd tea.Cmd
+	w.m, cmd = update(t, w.m, keyEnter)
+	if cmd != nil || !w.m.jumpOpen || w.m.jump.query != "zzzq" || w.m.repo != "/repo" {
+		t.Fatalf("enter with no match: cmd %v, open %v, query %q, repo %q; want nothing done", cmd != nil, w.m.jumpOpen, w.m.jump.query, w.m.repo)
+	}
+	w.m, _ = update(t, w.m, keyEscMsg())
+	if !w.m.jumpOpen || w.m.jump.query != "" {
+		t.Fatalf("first esc: open %v, query %q; want the query cleared and the box open", w.m.jumpOpen, w.m.jump.query)
+	}
+	w.m, _ = update(t, w.m, keyEscMsg())
+	if w.m.jumpOpen {
+		t.Fatal("second esc did not close the box")
+	}
+}
+
+// TestJumpOpensAtAllProjectsWithNoActiveProject pins A7: a dashboard
+// started outside any project, on All projects, opens the jump search over
+// its rows and lands on a project from it. Before T16.6 `/` there only said
+// there were no projects to switch between.
+func TestJumpOpensAtAllProjectsWithNoActiveProject(t *testing.T) {
+	m := testModel()
+	m.repo = ""
+	m.projects = []project.Project{{Path: "/p/a", Name: "a"}, {Path: "/p/b", Name: "b"}}
+	m.activeProject = -1
+	rows := []projectrows.Row{needsRow("a", "/p/a", 0, nil), needsRow("b", "/p/b", 1, nil)}
+	m.deps.LoadAllProjects = (&allProjectsSeam{res: AllProjects{Rows: rows}}).load
+	m.everyProject = AllProjects{Rows: rows}
+	m.allProjectsOpen = true
+	if m.hasActiveProject() || m.level() != levelAllProjects {
+		t.Fatal("setup: want All projects with no project open")
+	}
+	m = openJumpOverlay(t, m)
+	if got := jumpProjectPaths(m); !slices.Equal(got, []string{"/p/a", "/p/b"}) {
+		t.Fatalf("project rows = %v, want both listed projects", got)
+	}
+	m = jumpSelectProject(t, m, "/p/b")
+	m, _ = update(t, m, keyEnter)
+	if m.activeProjectPath() != "/p/b" || m.allProjectsOpen {
+		t.Errorf("active = %q, home open = %v; want b open at Project", m.activeProjectPath(), m.allProjectsOpen)
+	}
+}
+
+// TestJumpFromTheAgent pins `ctrl+] /`: the leader then `/` opens the box
+// from the Agent, and every key typed into it stays in the box — none
+// reaches the agent behind it, since only the leader may reach afk while the
+// agent has the keyboard and the box, once open, is what is on screen.
+func TestJumpFromTheAgent(t *testing.T) {
+	m, fp, _ := jumpWiringModel(t)
+	m, _ = update(t, m, keyEnter)
+	if m.level() != levelAgent || !m.paneOwnsKeyboard() {
+		t.Fatal("setup: enter did not open the Agent")
+	}
+	m, _ = pressAction(t, m, keyJump)
+	if !m.jumpOpen {
+		t.Fatal("ctrl+] / did not open the jump search")
+	}
+	m = typeQuery(t, m, "jq")
+	if m.jump.query != "jq" {
+		t.Errorf("query = %q, want the letters typed into the box", m.jump.query)
+	}
+	if len(fp.keys) != 0 || len(fp.texts) != 0 {
+		t.Errorf("the agent got %v/%v, want nothing", fp.keys, fp.texts)
+	}
+	m, _ = update(t, m, keyEscMsg())
+	m, _ = update(t, m, keyEscMsg())
+	if m.jumpOpen || m.pane != fp {
+		t.Errorf("open = %v, pane kept = %v; want the box closed and the pane still connected", m.jumpOpen, m.pane == fp)
+	}
+}
+
+// TestJumpKeepsItsSnapshotUnderAScan pins the snapshot: a scan that lands
+// under an open box with a new project leaves the rows and the highlight
+// where they are, and the new project is there the next time it opens.
+// Rebuilding under the owner's hands would move the row they are aiming at.
+func TestJumpKeepsItsSnapshotUnderAScan(t *testing.T) {
+	m, _, _ := jumpWiringModel(t)
+	m = openJumpOverlay(t, m)
+	m, _ = update(t, m, keyDown)
+	before := jumpProjectPaths(m)
+
+	m, _ = update(t, m, projectScanMsg{projects: scannedProjects("/roots/alpha", "/roots/beta", "/roots/gamma", "/roots/delta")})
+
+	if !m.jumpOpen || m.jump.highlight != 1 || !slices.Equal(jumpProjectPaths(m), before) {
+		t.Fatalf("open = %v, highlight = %d, projects = %v; want the snapshot %v kept at 1",
+			m.jumpOpen, m.jump.highlight, jumpProjectPaths(m), before)
+	}
+	m, _ = update(t, m, keyEscMsg())
+	m = openJumpOverlay(t, m)
+	if got := jumpProjectPaths(m); !slices.Contains(got, "/roots/delta") {
+		t.Errorf("reopened rows = %v, want the scanned delta", got)
+	}
+}
+
+// TestJumpOpensOverTheRunningPane is the overlay contract in one frame: the
+// box floats over the dashboard as a modal (modal.go) with its rows on
+// screen, and the pane behind it is left running and connected.
+func TestJumpOpensOverTheRunningPane(t *testing.T) {
+	m, fp, _ := jumpWiringModel(t)
+	m = openJumpOverlay(t, m)
+
+	view := render(m)
+	for _, name := range []string{"alpha", "beta", "gamma", "jump", jumpPlaceholder} {
+		if !strings.Contains(view, name) {
+			t.Errorf("View is missing %q:\n%s", name, view)
+		}
+	}
+
+	// Opening the box is not choosing anything: nothing detaches.
+	if m.pane != fp || fp.closed != 0 {
+		t.Errorf("pane = %v closed %d times, want the same pane still attached", m.pane, fp.closed)
+	}
+	if m.paneName != "one" || m.view == viewOverview {
+		t.Errorf("paneName = %q viewOverview = %t, want %q and false", m.paneName, m.view == viewOverview, "one")
+	}
+	if len(fp.keys) != 0 || len(fp.texts) != 0 {
+		t.Errorf("`/` was forwarded to the session as %v/%v, want nothing", fp.keys, fp.texts)
+	}
+
+	// Esc closes the box and enter puts the pane on screen, proving it
+	// stayed alive underneath.
+	m, _ = update(t, m, keyEscMsg())
+	if m.jumpOpen {
+		t.Error("esc did not close the box")
+	}
+	m, _ = update(t, m, keyEnter)
+	if after := render(m); !strings.Contains(after, paneSentinel) {
+		t.Errorf("the pane should be rendered in the Agent after esc and enter:\n%s", after)
+	}
+}
+
+// TestJumpKeyPrecedence is the routing table for an OPEN box. Every row is a
+// way the box could leak a key to something behind it:
+//
+//   - ctrl+t pins that the box keeps a chord with no text from the pane.
+//   - down moves the box and never the session list; the cursor invariant
+//     below is checked for every row for that reason.
+//   - j, q, n and c type into the query (§4.6): j does not move, q does not
+//     quit, n does not open the creation form, c does not start a clean.
+//   - ctrl+c is the sole global exception, as in the `:` search.
+func TestJumpKeyPrecedence(t *testing.T) {
+	tests := []struct {
+		name           string
+		key            tea.KeyMsg
+		wantOpen       bool
+		wantIndex      int
+		wantQuery      string
+		wantQuitting   bool
+		wantPaneClosed int
+	}{
+		{name: "ctrl+t does nothing", key: keyCtrlT, wantOpen: true},
+		{name: "down moves the box", key: keyDown, wantOpen: true, wantIndex: 1},
+		{name: "j types", key: keyRune('j'), wantOpen: true, wantQuery: "j"},
+		{name: "q types, not quit", key: keyRune('q'), wantOpen: true, wantQuery: "q"},
+		{name: "n types, no creation form", key: keyRune('n'), wantOpen: true, wantQuery: "n"},
+		{name: "c types, no clean", key: keyRune('c'), wantOpen: true, wantQuery: "c"},
+		{name: "esc closes the box", key: keyEscMsg()},
+		{
+			name: "ctrl+c quits", key: keyCtrlC, wantOpen: true,
+			wantQuitting: true, wantPaneClosed: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, fp, _ := jumpWiringModel(t)
+			m = openJumpOverlay(t, m)
+
+			m, _ = update(t, m, tt.key)
+
+			if m.jumpOpen != tt.wantOpen {
+				t.Errorf("jumpOpen = %t, want %t", m.jumpOpen, tt.wantOpen)
+			}
+			if m.jump.highlight != tt.wantIndex || m.jump.query != tt.wantQuery {
+				t.Errorf("highlight, query = %d, %q; want %d, %q", m.jump.highlight, m.jump.query, tt.wantIndex, tt.wantQuery)
+			}
+			if m.quitting != tt.wantQuitting {
+				t.Errorf("quitting = %t, want %t", m.quitting, tt.wantQuitting)
+			}
+			if fp.closed != tt.wantPaneClosed {
+				t.Errorf("pane closed %d times, want %d", fp.closed, tt.wantPaneClosed)
+			}
+			if m.listSelection() != 0 {
+				t.Errorf("cursor = %d, want 0 — the session list must not move", m.listSelection())
+			}
+			if m.formOpen {
+				t.Error("the creation form must not open from under the box")
+			}
+			if m.modal != inputNormal {
+				t.Errorf("mode = %v, want inputNormal", m.modal)
+			}
+			if m.view == viewOverview {
+				t.Error("the pane behind the box must not be hidden")
+			}
+			// Both channels: forwardKeyToPane routes a printable rune through
+			// SendText and only a special key through SendKey.
+			if len(fp.keys) != 0 || len(fp.texts) != 0 {
+				t.Errorf("forwarded %v/%v to the session, want nothing", fp.keys, fp.texts)
+			}
+		})
+	}
+}
+
+// jumpWiringProjects is the list every test here opens the overlay over:
 // three basenames that do not collide, so project.DisplayNames leaves them bare
 // and an assertion can look for the name it wrote.
-func switcherWiringProjects() []project.Project {
+func jumpWiringProjects() []project.Project {
 	return scannedProjects("/roots/alpha", "/roots/beta", "/roots/gamma")
 }
 
-// switcherWiringModel builds the state these assertions need: three projects
+// jumpWiringModel builds the state these assertions need: three projects
 // with the first active, two sessions, a VISIBLE pane on the selected one, and a
 // populated scan cache.
 //
 // The visible pane is the load-bearing part of the fixture — most of what this
 // file pins is what the overlay must NOT do to a running session behind it — so
 // the helper asserts the pane really is on screen before handing the Model back.
-func switcherWiringModel(t *testing.T) (Model, *fakePane, *perProjectSpy) {
+func jumpWiringModel(t *testing.T) (Model, *fakePane, *perProjectSpy) {
 	t.Helper()
 	spy := &perProjectSpy{}
 	d := spy.deps()
 	// Layer a per-project discovery fixture over the spy's always-nil stub,
 	// preserving the spy's own call recording (spy.snapshot() is what
-	// TestSwitcherEnterSwitchesTheActiveProject asserts against): beta's real
+	// TestJumpEnterSwitchesTheActiveProject asserts against): beta's real
 	// load needs to return an actual HostRunning row, the shape switchProjectCmds'
 	// loadCmd sees in production, for
-	// TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands's positive row.
+	// TestJumpSwitchPreviewsTheFirstSessionOnceItsLoadLands's positive row.
 	spyDiscover := d.Discover
 	d.Discover = func(repo string) ([]discover.SessionState, error) {
 		_, _ = spyDiscover(repo)
-		return switcherWiringDiscoverFixture(repo), nil
+		return jumpWiringDiscoverFixture(repo), nil
 	}
-	d.Projects = switcherWiringProjects()
+	d.Projects = jumpWiringProjects()
 	d.ActiveProjectIndex = 0
 	m := New("/roots/alpha", time.Second, d)
 	m.ready = true
@@ -71,7 +875,7 @@ func switcherWiringModel(t *testing.T) (Model, *fakePane, *perProjectSpy) {
 			// A findable, HostRunning row: resolveFocusTarget looks up a
 			// non-active project's session by name in THIS cache (never in
 			// Discover's live result), which is what the focus-request row of
-			// TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands needs to
+			// TestJumpSwitchPreviewsTheFirstSessionOnceItsLoadLands needs to
 			// resolve a click on beta's "beta-target" before the switch. No
 			// existing test asserts this slice's length or contents (grepped),
 			// so extending it here is safe.
@@ -89,55 +893,21 @@ func switcherWiringModel(t *testing.T) (Model, *fakePane, *perProjectSpy) {
 	return m, fp, spy
 }
 
-// switcherWiringDiscoverFixture is what the live Discover seam returns per
-// project in switcherWiringModel. Only beta carries a real row (a single
+// jumpWiringDiscoverFixture is what the live Discover seam returns per
+// project in jumpWiringModel. Only beta carries a real row (a single
 // HostRunning session, so "row 0" is unambiguous regardless of any sort the
 // list applies) — every other project answers empty, matching the spy's
 // original always-nil stub.
-func switcherWiringDiscoverFixture(repo string) []discover.SessionState {
+func jumpWiringDiscoverFixture(repo string) []discover.SessionState {
 	if repo == "/roots/beta" {
 		return []discover.SessionState{runningSess("beta-one").SessionState}
 	}
 	return nil
 }
 
-// openSwitcherOverlay presses `/` and asserts it opened, so every test below
-// starts from an overlay opened through the real key path rather than from a
-// hand-set flag.
-func openSwitcherOverlay(t *testing.T, m Model) Model {
-	t.Helper()
-	m = pressKey(t, m, keyP)
-	if !m.switcherOpen {
-		t.Fatal("`/` did not open the project switcher")
-	}
-	return m
-}
-
-// switcherSelectByPath moves an open overlay's cursor onto the row whose
-// path is target, by pressing down until list.SelectedItem matches. Tests
-// use this instead of a fixed number of keyDown presses to reach a row: the
-// overlay's rows are ordered by sortSwitcherProjects (switcher.go) — tier by
-// awaiting-input, then count, then name — not by scan order, and this
-// fixture's beta is unconditionally awaiting-input, so a hardcoded index
-// silently means a different project than intended the moment the sort's
-// tie-break inputs change. Selecting by identity keeps a test anchored to
-// WHICH project it means to land on regardless of where the sort puts it.
-func switcherSelectByPath(t *testing.T, m Model, target string) Model {
-	t.Helper()
-	items := m.switcher.list.Items()
-	for i := 0; i < len(items); i++ {
-		if it, ok := m.switcher.list.SelectedItem().(switcherItem); ok && it.path == target {
-			return m
-		}
-		m, _ = update(t, m, keyDown)
-	}
-	t.Fatalf("no switcher row found for path %q among %d rows", target, len(items))
-	return m
-}
-
 // scanSeams wires the two scan seams onto Deps so scanCmd is live: the pipeline
-// is inert without both (see scanEnabled), and the rescan assertion needs a real
-// Cmd to collect.
+// is inert without both (see scanEnabled), and the listed-project rows need a
+// real Cmd to collect.
 func scanSeams(d Deps, found ...string) Deps {
 	d.LoadConfig = func() (SearchSettings, string, error) {
 		return SearchSettings{
@@ -152,136 +922,20 @@ func scanSeams(d Deps, found ...string) Deps {
 
 // --- tests ---
 
-// TestSwitcherOpensOverTheRunningPane is the `p` contract in one frame: the
-// switcher floats over the dashboard as a modal (modal.go) with its rows on
-// screen, and the pane behind it is left running and connected. The pane may
-// or may not still be visible around the box — that depends on where the box
-// lands — so nothing is asserted about it; the mouse guard below rests on the
-// input MODE (routeMouse drops events unless normal or pane mode owns input),
-// not on the pane being off-screen.
-func TestSwitcherOpensOverTheRunningPane(t *testing.T) {
-	m, fp, _ := switcherWiringModel(t)
-	m = openSwitcherOverlay(t, m)
-
-	view := render(m)
-	for _, name := range []string{"alpha", "beta", "gamma", "Projects"} {
-		if !strings.Contains(view, name) {
-			t.Errorf("View is missing the overlay row %q:\n%s", name, view)
-		}
-	}
-
-	// Opening the switcher is not selecting a project: nothing detaches.
-	if m.pane != fp || fp.closed != 0 {
-		t.Errorf("pane = %v closed %d times, want the same pane still attached", m.pane, fp.closed)
-	}
-	if m.paneName != "one" || m.view == viewOverview {
-		t.Errorf("paneName = %q viewOverview = %t, want %q and false", m.paneName, m.view == viewOverview, "one")
-	}
-	if len(fp.keys) != 0 || len(fp.texts) != 0 {
-		t.Errorf("`p` was forwarded to the session as %v/%v, want nothing", fp.keys, fp.texts)
-	}
-
-	// Esc closes the overlay and enter puts the pane on screen, proving it
-	// stayed alive underneath.
-	m, _ = update(t, m, keyEscMsg())
-	if m.switcherOpen {
-		t.Error("esc did not close the overlay")
-	}
-	m, _ = update(t, m, keyEnter)
-	if after := render(m); !strings.Contains(after, paneSentinel) {
-		t.Errorf("the pane should be rendered in the Agent after esc and enter:\n%s", after)
-	}
-}
-
-// TestSwitcherKeyPrecedence is the routing table for an OPEN overlay. Every row
-// is a specific failure the plan named:
-//
-//   - ctrl+t is the row this file exists for. The Toggle rule exists in the
-//     pane and normal specs but NOT the switcher's, which is how the overlay
-//     keeps ctrl+t from hiding the pane behind it.
-//   - down/j pin that movement drives the overlay and never the session list;
-//     the cursor invariant below is checked for every row for that reason.
-//   - q pins that the global Quit binding — which covers BOTH q and ctrl+c — is
-//     not consulted here: q is an ordinary key inside the overlay.
-//   - ctrl+c is the sole global exception, matching the two modal modes.
-//   - n and c pin that neither the creation form nor a clean confirmation can be
-//     opened from under the overlay.
-func TestSwitcherKeyPrecedence(t *testing.T) {
-	tests := []struct {
-		name           string
-		key            tea.KeyMsg
-		wantOpen       bool
-		wantIndex      int
-		wantQuitting   bool
-		wantPaneClosed int
-	}{
-		{name: "ctrl+t does not toggle the pane behind the overlay", key: keyCtrlT, wantOpen: true},
-		{name: "down moves the overlay", key: keyDown, wantOpen: true, wantIndex: 1},
-		{name: "j moves the overlay", key: keyRune('j'), wantOpen: true, wantIndex: 1},
-		{name: "q is an ordinary key, not quit", key: keyRune('q'), wantOpen: true},
-		{name: "n does not open the creation form", key: keyRune('n'), wantOpen: true},
-		{name: "c does not start a clean confirmation", key: keyRune('c'), wantOpen: true},
-		{name: "esc closes the overlay", key: keyEscMsg()},
-		{
-			name: "ctrl+c quits", key: keyCtrlC, wantOpen: true,
-			wantQuitting: true, wantPaneClosed: 1,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m, fp, _ := switcherWiringModel(t)
-			m = openSwitcherOverlay(t, m)
-
-			m, _ = update(t, m, tt.key)
-
-			if m.switcherOpen != tt.wantOpen {
-				t.Errorf("switcherOpen = %t, want %t", m.switcherOpen, tt.wantOpen)
-			}
-			if got := m.switcher.list.Index(); got != tt.wantIndex {
-				t.Errorf("overlay index = %d, want %d", got, tt.wantIndex)
-			}
-			if m.quitting != tt.wantQuitting {
-				t.Errorf("quitting = %t, want %t", m.quitting, tt.wantQuitting)
-			}
-			if fp.closed != tt.wantPaneClosed {
-				t.Errorf("pane closed %d times, want %d", fp.closed, tt.wantPaneClosed)
-			}
-			if m.listSelection() != 0 {
-				t.Errorf("cursor = %d, want 0 — the session list must not move", m.listSelection())
-			}
-			if m.formOpen {
-				t.Error("the creation form must not open from under the overlay")
-			}
-			if m.modal != inputNormal {
-				t.Errorf("mode = %v, want inputNormal", m.modal)
-			}
-			if m.view == viewOverview {
-				t.Error("the pane behind the overlay must not be hidden")
-			}
-			// Both channels, not just keys: forwardKeyToPane routes a printable
-			// rune through SendText and only a special key through SendKey, so
-			// checking one of them would miss half the rows in this table.
-			if len(fp.keys) != 0 || len(fp.texts) != 0 {
-				t.Errorf("forwarded %v/%v to the session, want nothing", fp.keys, fp.texts)
-			}
-		})
-	}
-}
-
-// TestSwitcherEnterSwitchesTheActiveProject pins the other half of the pane
+// TestJumpEnterSwitchesTheActiveProject pins the other half of the pane
 // rule: merely OPENING the overlay leaves the pane attached
-// (TestSwitcherOpensOverTheRunningPane), but SELECTING a different project
+// (TestJumpOpensOverTheRunningPane), but SELECTING a different project
 // detaches it, which is W3.T1's specified teardown. The spy assertion is what
 // makes "dispatches load/stack/branches" mean "against the NEW project" rather
 // than merely "dispatched".
-func TestSwitcherEnterSwitchesTheActiveProject(t *testing.T) {
-	m, fp, spy := switcherWiringModel(t)
-	m = openSwitcherOverlay(t, m)
+func TestJumpEnterSwitchesTheActiveProject(t *testing.T) {
+	m, fp, spy := jumpWiringModel(t)
+	m = openJumpOverlay(t, m)
 
-	m = switcherSelectByPath(t, m, "/roots/beta")
+	m = jumpSelectProject(t, m, "/roots/beta")
 	m, cmd := update(t, m, keyEnter)
 
-	if m.switcherOpen {
+	if m.jumpOpen {
 		t.Error("choosing a project must close the overlay")
 	}
 	if m.repo != "/roots/beta" || m.activeProject != 1 {
@@ -306,18 +960,18 @@ func TestSwitcherEnterSwitchesTheActiveProject(t *testing.T) {
 	}
 }
 
-// TestSwitcherEnterOnTheActiveProjectIsANoOp pins that Enter routes through
+// TestJumpEnterOnTheActiveProjectIsANoOp pins that Enter routes through
 // switchProject rather than doing its own repointing: the method no-ops on the
 // already-active path, which is what keeps the pane holding the session the user
 // is watching from being torn down by a stray Enter.
-func TestSwitcherEnterOnTheActiveProjectIsANoOp(t *testing.T) {
-	m, fp, _ := switcherWiringModel(t)
-	m = openSwitcherOverlay(t, m)
-	m = switcherSelectByPath(t, m, "/roots/alpha")
+func TestJumpEnterOnTheActiveProjectIsANoOp(t *testing.T) {
+	m, fp, _ := jumpWiringModel(t)
+	m = openJumpOverlay(t, m)
+	m = jumpSelectProject(t, m, "/roots/alpha")
 
 	m, cmd := update(t, m, keyEnter)
 
-	if m.switcherOpen {
+	if m.jumpOpen {
 		t.Error("Enter must close the overlay even when it selects the active project")
 	}
 	if cmd != nil {
@@ -328,40 +982,12 @@ func TestSwitcherEnterOnTheActiveProjectIsANoOp(t *testing.T) {
 	}
 }
 
-// TestSwitcherRescanDispatchesAScanImmediately pins the rescan result: the
-// parent turns it into a scan Cmd on the spot rather than waiting out the
-// scan ticker, which for a 60s interval is the difference between `R` working
-// and `R` looking broken. The overlay deliberately stays open — `R` means
-// "refresh this list", not "close it".
-func TestSwitcherRescanDispatchesAScanImmediately(t *testing.T) {
-	spy := &perProjectSpy{}
-	d := scanSeams(spy.deps(), "/roots/alpha", "/roots/beta")
-	d.Projects = switcherWiringProjects()
-	d.ActiveProjectIndex = 0
-	m := New("/roots/alpha", time.Second, d)
-	m.ready = true
-	m.width, m.height = 120, 40
-
-	m = openSwitcherOverlay(t, m)
-	m, cmd := update(t, m, keyR)
-
-	if !m.switcherOpen {
-		t.Error("a rescan must leave the overlay open")
-	}
-	if cmd == nil {
-		t.Fatal("`R` dispatched no Cmd, want a scan")
-	}
-	if msgs := collectMsgs(t, cmd); !hasMsg[projectScanMsg](msgs) {
-		t.Errorf("collected %v, want a projectScanMsg", msgs)
-	}
-}
-
-// TestSwitcherMouseIsDroppedWhileTheOverlayIsUp is the mouse half of the
+// TestJumpMouseIsDroppedWhileTheOverlayIsUp is the mouse half of the
 // precedence rule. Both rows aim at the pane's own content origin — the one
 // coordinate that is guaranteed to be forwarded when nothing owns input — so a
 // missing guard fails here rather than passing by accident on a dropped
 // out-of-region event.
-func TestSwitcherMouseIsDroppedWhileTheOverlayIsUp(t *testing.T) {
+func TestJumpMouseIsDroppedWhileTheOverlayIsUp(t *testing.T) {
 	tests := []struct {
 		name  string
 		event func(x, y int) tea.MouseMsg
@@ -380,8 +1006,8 @@ func TestSwitcherMouseIsDroppedWhileTheOverlayIsUp(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m, fp, originX, originY, _, _ := mouseModel(t)
-			m.projects = switcherWiringProjects()
-			m = openSwitcherOverlay(t, m)
+			m.projects = jumpWiringProjects()
+			m = openJumpOverlay(t, m)
 
 			m, cmd := update(t, m, tt.event(originX, originY))
 
@@ -398,17 +1024,17 @@ func TestSwitcherMouseIsDroppedWhileTheOverlayIsUp(t *testing.T) {
 	}
 }
 
-// TestPWhileThePaneIsFocusedReachesTheSession pins the precondition that makes
+// TestSlashWhileThePaneIsFocusedReachesTheSession pins the precondition that makes
 // "overlay open AND pane focused" all but unreachable: a focused pane owns every
 // key, `/` included, so the overlay cannot be opened from there at all. Without
 // this row, the precedence chosen for that combination would look arbitrary.
-func TestPWhileThePaneIsFocusedReachesTheSession(t *testing.T) {
-	m, fp, _ := switcherWiringModel(t)
+func TestSlashWhileThePaneIsFocusedReachesTheSession(t *testing.T) {
+	m, fp, _ := jumpWiringModel(t)
 	m.focus = focusRight
 
-	m, _ = update(t, m, keyP)
+	m, _ = update(t, m, keyJump)
 
-	if m.switcherOpen {
+	if m.jumpOpen {
 		t.Error("`/` must not open the overlay while the pane owns the keyboard")
 	}
 	if len(fp.texts) != 1 || fp.texts[0] != "/" {
@@ -417,19 +1043,19 @@ func TestPWhileThePaneIsFocusedReachesTheSession(t *testing.T) {
 }
 
 // TestSpawnErrorModalOutranksTheOverlay pins the third interaction the plan
-// asks for explicitly. The modal rows of modePrecedence outrank the switcher, so
+// asks for explicitly. The modal rows of modePrecedence outrank the jump search, so
 // a background create that failed while the overlay was up takes the keyboard:
 // esc dismisses the MODAL and the overlay is still there underneath. Pinning it
 // is the point — the alternative is discovering it as a bug report.
 func TestSpawnErrorModalOutranksTheOverlay(t *testing.T) {
-	m, _, _ := switcherWiringModel(t)
-	m = openSwitcherOverlay(t, m)
+	m, _, _ := jumpWiringModel(t)
+	m = openJumpOverlay(t, m)
 
 	m, _ = update(t, m, spawnFinishedMsg{name: "three", err: errors.New("boom")})
 	if m.modal != inputSpawnError {
 		t.Fatalf("mode = %v, want inputSpawnError", m.modal)
 	}
-	if !m.switcherOpen {
+	if !m.jumpOpen {
 		t.Error("the failed create must not close the overlay")
 	}
 
@@ -437,172 +1063,13 @@ func TestSpawnErrorModalOutranksTheOverlay(t *testing.T) {
 	if m.modal != inputNormal {
 		t.Errorf("mode = %v, want the modal dismissed first", m.modal)
 	}
-	if !m.switcherOpen {
+	if !m.jumpOpen {
 		t.Error("the first esc belongs to the modal, not to the overlay")
 	}
 
 	m, _ = update(t, m, keyEscMsg())
-	if m.switcherOpen {
+	if m.jumpOpen {
 		t.Error("the second esc should close the overlay")
-	}
-}
-
-// TestSwitcherRebuildsOnlyWhenTheProjectListChanges pins how an OPEN overlay
-// tracks a scan that lands underneath it. The component holds a snapshot and
-// never refreshes itself (switcher.go's package doc puts that on the parent), so
-// both rows matter and for opposite reasons: an unchanged list must NOT rebuild,
-// or the 60s ticker yanks the selection out from under a user who is aiming at a
-// row; a changed list MUST rebuild, or `R` after creating a project appears to do
-// nothing at all.
-func TestSwitcherRebuildsOnlyWhenTheProjectListChanges(t *testing.T) {
-	tests := []struct {
-		name      string
-		scanned   []string
-		wantRows  int
-		wantIndex int
-	}{
-		{
-			name:      "an unchanged list keeps the selection",
-			scanned:   []string{"/roots/alpha", "/roots/beta", "/roots/gamma"},
-			wantRows:  3,
-			wantIndex: 1,
-		},
-		{
-			name:      "a changed list rebuilds the rows",
-			scanned:   []string{"/roots/alpha", "/roots/beta", "/roots/gamma", "/roots/delta"},
-			wantRows:  4,
-			wantIndex: 0,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m, _, _ := switcherWiringModel(t)
-			m = openSwitcherOverlay(t, m)
-			m, _ = update(t, m, keyDown)
-			if m.switcher.list.Index() != 1 {
-				t.Fatal("precondition: the overlay's cursor should be on the second row")
-			}
-
-			m, _ = update(t, m, projectScanMsg{projects: scannedProjects(tt.scanned...)})
-
-			if got := len(m.switcher.list.Items()); got != tt.wantRows {
-				t.Errorf("overlay rows = %d, want %d", got, tt.wantRows)
-			}
-			if got := m.switcher.list.Index(); got != tt.wantIndex {
-				t.Errorf("overlay index = %d, want %d", got, tt.wantIndex)
-			}
-			if !m.switcherOpen {
-				t.Error("a scan result must not close the overlay")
-			}
-		})
-	}
-}
-
-// TestSwitcherCountsForTheActiveProject pins where each row's session count
-// comes from. The scan cache is refreshed on the 60s scan ticker while
-// m.sessions is refreshed every 2s, so for the ONE project whose rows are on
-// screen beside the overlay the cache is a stale copy of data the Model already
-// holds fresh — and a count that disagrees with the sidebar the user is looking
-// at reads as a bug.
-//
-// The "before the first load" row is the reason the swap is gated on lastLoad
-// rather than done unconditionally: a Model whose discovery has not reported yet
-// (startup, or the moment after a switch) has an empty session list that would
-// otherwise overwrite a perfectly good cached count with zero.
-func TestSwitcherCountsForTheActiveProject(t *testing.T) {
-	tests := []struct {
-		name     string
-		sessions []Session
-		loaded   bool
-		want     string
-	}{
-		{
-			name:     "a loaded active project counts its live sessions",
-			sessions: []Session{sess("one"), sess("two")},
-			loaded:   true,
-			want:     "2 sessions",
-		},
-		{
-			name:   "before the first load the cache stands in",
-			loaded: false,
-			want:   "1 session",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m, _, _ := switcherWiringModel(t)
-			m.setSessions(tt.sessions)
-			if !tt.loaded {
-				m.lastLoad = time.Time{}
-			}
-			m = openSwitcherOverlay(t, m)
-
-			var alpha string
-			for _, line := range strings.Split(render(m), "\n") {
-				// The session list box's own top/bottom border now carries the
-				// active project's name too (W3.T1's sessionListLabel), and it
-				// renders before the switcher overlay's row in render(m)'s line
-				// order. Matching "alpha" alone finds that border first and never
-				// reaches the row this test actually wants. Skip border lines by
-				// their leading corner glyph (after stripping ANSI, since
-				// paintEdge colors the corner) rather than by project name, so a
-				// future label change to either the border or the overlay row
-				// can't silently swap which one this test reads. The overlay's
-				// own rows start with the box's left edge (`│`), which must stay
-				// eligible — it is a candidate row, not chrome to skip.
-				//
-				// Since T16.1 the name is on the list pane's title strip, its
-				// first inner row ("│ alpha …"), so that row is skipped too;
-				// the overlay is centred, so its row never starts there. Since
-				// T16.4 the project view is a box two columns in from each
-				// side (§3.8), so the margin is trimmed before the check.
-				stripped := strings.TrimLeft(xansi.Strip(line), " ")
-				if strings.HasPrefix(stripped, "╭") || strings.HasPrefix(stripped, "╰") ||
-					strings.HasPrefix(stripped, "│ alpha ") {
-					continue
-				}
-				if strings.Contains(line, "alpha") {
-					alpha = line
-					break
-				}
-			}
-			if alpha == "" {
-				t.Fatalf("no rendered line contains the active project's row:\n%s", render(m))
-			}
-			if !strings.Contains(alpha, tt.want) {
-				t.Errorf("alpha row = %q, want it to contain %q", alpha, tt.want)
-			}
-		})
-	}
-}
-
-// TestSwitcherOpensOverAnEmptyProjectList pins that `p` is not silently inert
-// for a Model that has no projects — every testModel in this package is one, and
-// so is a dashboard launched before its first scan lands. It must open, render,
-// and close without panicking; W5.T1 owns what the empty list actually says.
-//
-// Enter with nothing selected is the component's own no-op (there is no row to
-// choose, so it reports switcherNone), and the parent must not paper over that
-// with a close of its own: `esc` is the documented dismissal and staying open is
-// what makes a keypress into an empty list harmless.
-func TestSwitcherOpensOverAnEmptyProjectList(t *testing.T) {
-	m := testModel(sess("one"))
-
-	m = openSwitcherOverlay(t, m)
-	_ = render(m)
-
-	m, cmd := update(t, m, keyEnter)
-	if cmd != nil {
-		t.Error("Enter on an empty overlay must dispatch nothing")
-	}
-	if !m.switcherOpen || m.repo != "/repo" {
-		t.Errorf("switcherOpen = %t repo = %q, want the overlay open and the repo untouched",
-			m.switcherOpen, m.repo)
-	}
-
-	m, _ = update(t, m, keyEscMsg())
-	if m.switcherOpen {
-		t.Error("esc must close an empty overlay")
 	}
 }
 
@@ -663,9 +1130,9 @@ func collectMsgsPreview(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	return collectMsgsWithDeadline(t, cmd, previewCollectDeadline)
 }
 
-// TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands is the regression
+// TestJumpSwitchPreviewsTheFirstSessionOnceItsLoadLands is the regression
 // test for the bug this wave exists to fix: switching projects through the
-// switcher clears m.sessions and dispatches the load trio (switchProjectCmds),
+// jump search clears m.sessions and dispatches the load trio (switchProjectCmds),
 // but nothing arms a preview when that load lands — unlike a cursor move, which
 // calls schedulePreview() itself. A user who switches projects sees an empty
 // pane area until they press a key, even though a session is right there,
@@ -699,12 +1166,12 @@ func collectMsgsPreview(t *testing.T, cmd tea.Cmd) []tea.Msg {
 //     must be dropped whole — neither installed nor allowed to consume the
 //     arm — and the correctly-stamped load that follows must still work.
 //   - Row 7 is the narrower same-project click race: a focus request for a
-//     session in the project the switcher just switched TO never calls
+//     session in the project the jump search just switched TO never calls
 //     switchProjectCmds at all (resolveFocusTarget answers from m.sessions
 //     for the active project, so target.project stays empty), so nothing
 //     resets previewOnNextLoad on that path — only the explicit open itself,
 //     via openPaneFor, can supersede the pending arm.
-func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
+func TestJumpSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func(t *testing.T)
@@ -712,9 +1179,9 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 		{
 			name: "switching projects arms a preview once the new project's first load lands",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m, _, _ := jumpWiringModel(t)
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, switchCmd := update(t, m, keyEnter)
 				if m.repo != "/roots/beta" {
 					t.Fatalf("precondition: the switch must land on beta, got %q", m.repo)
@@ -756,7 +1223,7 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 		{
 			name: "re-selecting the already-active project arms nothing on its next load",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				// Moved off the paned row ("one") BEFORE opening the overlay. The
 				// no-op re-select must not arm anything REGARDLESS of which row the
 				// next load selects, but if that row were the one already on
@@ -766,8 +1233,8 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 				// one. Landing the reload's selection on a DIFFERENT, HostRunning
 				// row removes that cover.
 				m, _ = update(t, m, keyDown)
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/alpha")
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/alpha")
 				m, switchCmd := update(t, m, keyEnter)
 				if switchCmd != nil {
 					t.Fatalf("precondition: re-selecting the active project must dispatch nothing, got a Cmd")
@@ -789,9 +1256,9 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 		{
 			name: "a failed first load after the switch does not arm, but the next success does",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m, _, _ := jumpWiringModel(t)
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 				if m.repo != "/roots/beta" {
 					t.Fatalf("precondition: the switch must land on beta, got %q", m.repo)
@@ -815,9 +1282,9 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 		{
 			name: "a second load after the switch does not re-arm — the flag is one-shot",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m, _, _ := jumpWiringModel(t)
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, switchCmd := update(t, m, keyEnter)
 
 				loaded, ok := firstSessionsLoaded(collectMsgsPreview(t, switchCmd))
@@ -838,7 +1305,7 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 		{
 			name: "a focus-request switch arms nothing — its own explicit open owns the attach",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				m.deps.OpenHostPane = func(cfg hostPaneConfig) (paneHandle, error) {
 					return newFakePane("BETA-TARGET"), nil
 				}
@@ -888,10 +1355,10 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 		{
 			name: "a stale-generation load from before the switch is dropped whole",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				staleGen := m.projectGen
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 				if m.repo != "/roots/beta" {
 					t.Fatalf("precondition: the switch must land on beta, got %q", m.repo)
@@ -929,9 +1396,9 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 		{
 			name: "a same-project focus-request click racing the switch's pending arm clears it",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m, _, _ := jumpWiringModel(t)
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 				if m.repo != "/roots/beta" {
 					t.Fatalf("precondition: the switch must land on beta, got %q", m.repo)
@@ -998,7 +1465,7 @@ func TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands(t *testing.T) {
 // comment (model.go): applyScanResult's fallback-to-first-project promotion
 // (D7 — an active index of -1 resolved to the first discovered project) is
 // automatic reconciliation, not a user selection, and must arm no preview the
-// way a switcher choice does. The fixture gives the promoted project a real,
+// way a jump choice does. The fixture gives the promoted project a real,
 // HostRunning row so a wrongly-armed flag would have something to preview —
 // an empty list would let this pass for the wrong reason.
 func TestApplyScanResultPromotionArmsNoPreview(t *testing.T) {
@@ -1037,7 +1504,7 @@ func TestApplyScanResultPromotionArmsNoPreview(t *testing.T) {
 // --- restoring the remembered selection ---------------------------------------
 
 // rememberedLoad is the load every row below hand-builds instead of taking the
-// one switchProjectCmds actually dispatched. switcherWiringDiscoverFixture
+// one switchProjectCmds actually dispatched. jumpWiringDiscoverFixture
 // answers beta with a SINGLE row, so a load taken from the real trio can only
 // ever leave the cursor on row 0 — "the remembered row was restored" and "the
 // restore did nothing" would be the same observation, and every row here would
@@ -1053,7 +1520,7 @@ func betaRows() []Session {
 	return []Session{runningSess("b-1"), runningSess("b-2"), runningSess("b-3")}
 }
 
-// startupSelectionModel is the startup counterpart of switcherWiringModel: a
+// startupSelectionModel is the startup counterpart of jumpWiringModel: a
 // New-built Model whose LoadSelections seam remembers one row for the launch
 // repo, left deliberately NOT ready. Rows (f) and (g) become ready by sending a
 // real tea.WindowSizeMsg through Update — the arrival the consumption guard
@@ -1072,14 +1539,14 @@ func startupRows() []Session {
 	return []Session{runningSess("s-1"), runningSess("s-2"), runningSess("s-3")}
 }
 
-// TestSwitcherRestoresTheRememberedSelectionOnLoad is the restore half of the
+// TestJumpRestoresTheRememberedSelectionOnLoad is the restore half of the
 // selection-memory feature: the row the user was last on comes back, by NAME,
-// on the first load after a switcher switch and on the first load at startup.
+// on the first load after a jump switch and on the first load at startup.
 //
 // Rows (a) and (f) are the load-bearing TDD rows — they exercise the restore
 // itself and must fail against code that only ever previews row 0. Row (h) is
 // the second one: it pins the `m.ready` half of the consumption guard, which a
-// restore built for the switcher path alone would not have (ready is always
+// restore built for the jump search path alone would not have (ready is always
 // true by the time a switch can happen). The rest pin what must NOT change:
 //
 //   - Row (b) is W3.T1's phantom name (a pending placeholder's guessed name
@@ -1099,18 +1566,18 @@ func startupRows() []Session {
 //   - Row (g) is `--open <name>`: an explicit startup pane request already
 //     names the session to show, so New arms nothing and the load must leave
 //     both the cursor and that open alone.
-func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
+func TestJumpRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func(t *testing.T)
 	}{
 		{
-			name: "(a) a switcher switch restores the remembered row by name and previews it",
+			name: "(a) a jump switch restores the remembered row by name and previews it",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				m.rememberedSelection = map[string]string{"/roots/beta": "b-2"}
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 				if m.repo != "/roots/beta" {
 					t.Fatalf("precondition: the switch must land on beta, got %q", m.repo)
@@ -1133,10 +1600,10 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 		{
 			name: "(b) a remembered name that is not in the list falls back to row 0",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				m.rememberedSelection = map[string]string{"/roots/beta": "b-9"}
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 
 				m, armCmd := update(t, m, rememberedLoad(m.projectGen, betaRows()...))
@@ -1156,10 +1623,10 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 		{
 			name: "(c) a remembered name present only as a worktree-fault row falls back to row 0",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				m.rememberedSelection = map[string]string{"/roots/beta": "b-2"}
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 
 				// b-1 asks the owner something, so it shares Needs you with
@@ -1188,7 +1655,7 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 		{
 			name: "(d) a focus-request switch selects and remembers the focused session on its first load, arming no preview",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				m.rememberedSelection = map[string]string{"/roots/beta": "b-2"}
 				m.deps.OpenHostPane = func(cfg hostPaneConfig) (paneHandle, error) {
 					return newFakePane("BETA-TARGET"), nil
@@ -1208,7 +1675,7 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 					t.Fatalf("precondition: the focus request must switch to beta, got %q", m.repo)
 				}
 				// The click's own explicit open is driven to completion for
-				// TestSwitcherSwitchPreviewsTheFirstSessionOnceItsLoadLands's row-5
+				// TestJumpSwitchPreviewsTheFirstSessionOnceItsLoadLands's row-5
 				// reason: while it is outstanding, schedulePreview's own refusal
 				// would silence a wrongly-restored row just as well as a
 				// correctly-unrestored one.
@@ -1239,7 +1706,7 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 		{
 			name: "(d2) a focus-request switch whose target is absent from the first load falls back to row 0 and remembers nothing new",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				m.rememberedSelection = map[string]string{"/roots/beta": "b-2"}
 				m.deps.OpenHostPane = func(cfg hostPaneConfig) (paneHandle, error) {
 					return newFakePane("BETA-TARGET"), nil
@@ -1278,9 +1745,9 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 			},
 		},
 		{
-			name: "(d3) a switcher switch after a focus-request switch does not inherit the focus arm",
+			name: "(d3) a jump switch after a focus-request switch does not inherit the focus arm",
 			run: func(t *testing.T) {
-				m, _, _ := switcherWiringModel(t)
+				m, _, _ := jumpWiringModel(t)
 				m.rememberedSelection = map[string]string{"/roots/beta": "b-2", "/roots/alpha": "a-2"}
 				m.deps.OpenHostPane = func(cfg hostPaneConfig) (paneHandle, error) {
 					return newFakePane("BETA-TARGET"), nil
@@ -1296,27 +1763,24 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 					dir: "/rendezvous/beta",
 				}
 				// Beta's own load is deliberately never delivered: the point of this
-				// row is what a switcher switch does with no help from it, not what
+				// row is what a jump switch does with no help from it, not what
 				// happens once it lands.
 				m, _ = update(t, m, req)
 				if m.repo != "/roots/beta" {
 					t.Fatalf("precondition: the focus request must switch to beta, got %q", m.repo)
 				}
 				// A click moves the focus right at request time (plan W3.T1 e),
-				// and `p` is a list key: hand the keyboard back to the list first.
+				// and `/` is a list key: hand the keyboard back to the list first.
 				m, _ = update(t, m, chord('\\'))
 
-				m = openSwitcherOverlay(t, m)
-				// The overlay's cursor never seeds from m.activeProject, and beta
-				// (still active here) sorts first because it is unconditionally
-				// awaiting-input in this fixture — so alpha is selected explicitly
-				// to keep this row's intent, a real switch away from beta, working
-				// regardless of where the tier sort (sortSwitcherProjects) places
-				// either project.
-				m = switcherSelectByPath(t, m, "/roots/alpha")
+				m = openJumpOverlay(t, m)
+				// alpha's project row is selected by identity, so this row's
+				// intent, a real switch away from beta, holds wherever the
+				// jump's order (needs-you first) puts either project.
+				m = jumpSelectProject(t, m, "/roots/alpha")
 				m, _ = update(t, m, keyEnter)
 				if m.repo != "/roots/alpha" {
-					t.Fatalf("precondition: the switcher switch must land back on alpha, got %q", m.repo)
+					t.Fatalf("precondition: the jump switch must land back on alpha, got %q", m.repo)
 				}
 
 				m, armCmd := update(t, m, rememberedLoad(m.projectGen,
@@ -1324,14 +1788,14 @@ func TestSwitcherRestoresTheRememberedSelectionOnLoad(t *testing.T) {
 				))
 
 				if s, ok := m.selected(); !ok || s.Name != "a-2" {
-					t.Errorf("selected = %q (ok=%t), want the switcher's own remembered %q, never the stale focus-request target %q", s.Name, ok, "a-2", "beta-target")
+					t.Errorf("selected = %q (ok=%t), want the jump search's own remembered %q, never the stale focus-request target %q", s.Name, ok, "a-2", "beta-target")
 				}
 				armed, ok := firstPreviewTimer(collectMsgsPreview(t, armCmd))
 				if !ok {
-					t.Fatal("the switcher's own restore must still arm a preview for the row it restored")
+					t.Fatal("the jump search's own restore must still arm a preview for the row it restored")
 				}
 				if armed.name != "a-2" {
-					t.Errorf("armed preview name = %q, want the switcher's own remembered %q", armed.name, "a-2")
+					t.Errorf("armed preview name = %q, want the jump search's own remembered %q", armed.name, "a-2")
 				}
 			},
 		},
@@ -1496,10 +1960,8 @@ func countOpenFlushes(msgs []tea.Msg) int {
 	return n
 }
 
-// projectOpensModel is the fixture the ordering rows need and
-// switcherWiringModel cannot be: its beta is unconditionally awaiting input, so
-// the awaiting tier decides row 0 there no matter what the counts say. Nothing
-// here awaits, which is what lets an increment be OBSERVED in the row order.
+// projectOpensModel is the fixture the open-count rows use: three projects
+// with nothing awaiting and a recording RecordProjectOpen seam.
 //
 // opens is what the load seam answers, copied on the way in so a row can assert
 // against its own literal afterwards.
@@ -1507,7 +1969,7 @@ func projectOpensModel(t *testing.T, opens map[string]int) (Model, *openSpy) {
 	t.Helper()
 	spy := &openSpy{}
 	d := testDeps()
-	d.Projects = switcherWiringProjects()
+	d.Projects = jumpWiringProjects()
 	d.ActiveProjectIndex = 0
 	d.LoadProjectOpens = func() map[string]int {
 		seeded := make(map[string]int, len(opens))
@@ -1524,20 +1986,6 @@ func projectOpensModel(t *testing.T, opens map[string]int) (Model, *openSpy) {
 	return m, spy
 }
 
-// switcherRowPaths is the order the overlay is currently rendering, by project
-// path — the observable the ordering rows assert on, since a row's index is
-// exactly what a wrongly-wired counts map would change.
-func switcherRowPaths(m Model) []string {
-	items := m.switcher.list.Items()
-	paths := make([]string, 0, len(items))
-	for _, item := range items {
-		if it, ok := item.(switcherItem); ok {
-			paths = append(paths, it.path)
-		}
-	}
-	return paths
-}
-
 // TestProjectOpensLaunchProjectPath is the pure core of New's launch recording:
 // the resolved project path when the active index is in range, and "" — record
 // nothing — otherwise.
@@ -1545,7 +1993,7 @@ func switcherRowPaths(m Model) []string {
 // The out-of-range rows are the load-bearing ones. They are where this function
 // differs from selectionKeyFor, which falls back to the launch repo: a count
 // keyed on a repo spelling no project entry carries would rank a project that
-// is not in the switcher's list at all, and leave the real entry at zero.
+// is not in the jump search's list at all, and leave the real entry at zero.
 func TestProjectOpensLaunchProjectPath(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1615,14 +2063,14 @@ func TestProjectOpensNewSeedsAndRecordsTheLaunch(t *testing.T) {
 		},
 		{
 			name:      "no seam still records the launch project",
-			projects:  switcherWiringProjects(),
+			projects:  jumpWiringProjects(),
 			active:    0,
 			wantOpens: map[string]int{"/roots/alpha": 1},
 			wantDirty: map[string]int{"/roots/alpha": 1},
 		},
 		{
 			name:     "the launch project increments the count the seam loaded",
-			projects: switcherWiringProjects(),
+			projects: jumpWiringProjects(),
 			active:   0,
 			load: func() map[string]int {
 				return map[string]int{"/roots/alpha": 3, "/roots/beta": 7}
@@ -1632,7 +2080,7 @@ func TestProjectOpensNewSeedsAndRecordsTheLaunch(t *testing.T) {
 		},
 		{
 			name:     "launched outside any repo records nothing and keeps the loaded counts",
-			projects: switcherWiringProjects(),
+			projects: jumpWiringProjects(),
 			active:   -1,
 			load: func() map[string]int {
 				return map[string]int{"/roots/beta": 2}
@@ -1670,86 +2118,6 @@ func TestProjectOpensNewSeedsAndRecordsTheLaunch(t *testing.T) {
 	}
 }
 
-// TestProjectOpensReachTheSwitcher is the wiring both call sites exist for: the
-// counts the Model holds decide the overlay's row order, and an increment
-// reorders it on the next open with no rescan in between — which is the whole
-// point of holding the tally in memory rather than re-reading the state file.
-//
-// The seeded fixture is one where usage order and alphabetical order actively
-// DISAGREE (gamma opened five times, alpha and beta never), so a call site that
-// still passed an empty map would render alpha, beta, gamma and fail row 1
-// rather than passing by coincidence.
-//
-// The m.projects assertion is the hazard this wave was designed around: the
-// sorted order must never be written back, because sameProjectPaths compares
-// that slice BY POSITION to decide whether an open overlay needs rebuilding —
-// a usage-ordered m.projects would make every scan tick look like a reorder.
-func TestProjectOpensReachTheSwitcher(t *testing.T) {
-	m, _ := projectOpensModel(t, map[string]int{"/roots/gamma": 5})
-
-	m = openSwitcherOverlay(t, m)
-	want := []string{"/roots/gamma", "/roots/alpha", "/roots/beta"}
-	if got := switcherRowPaths(m); !pathsEqual(got, want) {
-		t.Errorf("overlay rows = %v, want %v (gamma most used, alpha opened at launch)", got, want)
-	}
-	if got, scan := projectPaths(m.projects), []string{"/roots/alpha", "/roots/beta", "/roots/gamma"}; !pathsEqual(got, scan) {
-		t.Errorf("m.projects = %v, want the scan order %v left untouched", got, scan)
-	}
-
-	m = switcherSelectByPath(t, m, "/roots/beta")
-	m, _ = update(t, m, keyEnter)
-	if m.repo != "/roots/beta" {
-		t.Fatalf("setup: the switch must land on beta, got %q", m.repo)
-	}
-	if got := m.projectOpens["/roots/beta"]; got != 1 {
-		t.Fatalf("setup: beta's count = %d, want the switch to have recorded 1", got)
-	}
-
-	m = openSwitcherOverlay(t, m)
-	want = []string{"/roots/gamma", "/roots/alpha", "/roots/beta"}
-	if got := switcherRowPaths(m); !pathsEqual(got, want) {
-		t.Errorf("overlay rows after one open of beta = %v, want %v (beta ties alpha, name breaks it)", got, want)
-	}
-
-	m = switcherSelectByPath(t, m, "/roots/beta")
-	m, _ = update(t, m, keyEnter)
-	if m.switcherOpen {
-		t.Fatal("setup: re-selecting the active project must still close the overlay")
-	}
-	m.projectOpens["/roots/beta"] = 9
-
-	m = openSwitcherOverlay(t, m)
-	want = []string{"/roots/beta", "/roots/gamma", "/roots/alpha"}
-	if got := switcherRowPaths(m); !pathsEqual(got, want) {
-		t.Errorf("overlay rows = %v, want %v — the tally must reorder rows with no rescan", got, want)
-	}
-	if got, scan := projectPaths(m.projects), []string{"/roots/alpha", "/roots/beta", "/roots/gamma"}; !pathsEqual(got, scan) {
-		t.Errorf("m.projects = %v, want the scan order %v left untouched", got, scan)
-	}
-}
-
-// TestProjectOpensReachTheRefreshedSwitcher is the SECOND call site, and it
-// needs its own row because openSwitcher and refreshSwitcher construct the
-// component independently: a scan that lands under an open overlay rebuilds it,
-// and a rebuild that forgot the counts would silently drop back to alphabetical
-// order under the user's hands while the overlay is up.
-func TestProjectOpensReachTheRefreshedSwitcher(t *testing.T) {
-	m, _ := projectOpensModel(t, map[string]int{"/roots/gamma": 5})
-	m = openSwitcherOverlay(t, m)
-
-	m, _ = update(t, m, projectScanMsg{
-		projects: scannedProjects("/roots/alpha", "/roots/beta", "/roots/gamma", "/roots/delta"),
-	})
-
-	if !m.switcherOpen {
-		t.Fatal("setup: a scan result must not close the overlay")
-	}
-	want := []string{"/roots/gamma", "/roots/alpha", "/roots/beta", "/roots/delta"}
-	if got := switcherRowPaths(m); !pathsEqual(got, want) {
-		t.Errorf("rebuilt overlay rows = %v, want %v", got, want)
-	}
-}
-
 // TestProjectOpensRecordsDeliberateActivationsOnly is the rule the counts mean
 // anything at all under: an open is the user NAMING a project, and every other
 // way the active project can change is not one.
@@ -1769,11 +2137,11 @@ func TestProjectOpensRecordsDeliberateActivationsOnly(t *testing.T) {
 		wantDirty map[string]int
 	}{
 		{
-			name: "a switcher choice of another project is recorded",
+			name: "a jump choice of another project is recorded",
 			act: func(t *testing.T) Model {
 				m, _ := projectOpensModel(t, nil)
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/beta")
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/beta")
 				m, _ = update(t, m, keyEnter)
 				if m.repo != "/roots/beta" {
 					t.Fatalf("setup: the switch must land on beta, got %q", m.repo)
@@ -1787,8 +2155,8 @@ func TestProjectOpensRecordsDeliberateActivationsOnly(t *testing.T) {
 			name: "re-selecting the active project records nothing",
 			act: func(t *testing.T) Model {
 				m, _ := projectOpensModel(t, nil)
-				m = openSwitcherOverlay(t, m)
-				m = switcherSelectByPath(t, m, "/roots/alpha")
+				m = openJumpOverlay(t, m)
+				m = jumpSelectProject(t, m, "/roots/alpha")
 				m, cmd := update(t, m, keyEnter)
 				if cmd != nil {
 					t.Fatal("setup: re-selecting the active project must dispatch nothing")
@@ -1844,11 +2212,11 @@ func TestProjectOpensRecordsDeliberateActivationsOnly(t *testing.T) {
 func TestProjectOpensFlushOnTick(t *testing.T) {
 	m, spy := projectOpensModel(t, nil)
 
-	m = openSwitcherOverlay(t, m)
-	m = switcherSelectByPath(t, m, "/roots/beta")
+	m = openJumpOverlay(t, m)
+	m = jumpSelectProject(t, m, "/roots/beta")
 	m, _ = update(t, m, keyEnter)
-	m = openSwitcherOverlay(t, m)
-	m = switcherSelectByPath(t, m, "/roots/alpha")
+	m = openJumpOverlay(t, m)
+	m = jumpSelectProject(t, m, "/roots/alpha")
 	m, _ = update(t, m, keyEnter)
 	if got, want := m.dirtyOpens, map[string]int{"/roots/alpha": 2, "/roots/beta": 1}; !maps.Equal(got, want) {
 		t.Fatalf("setup: dirtyOpens = %#v, want %#v", got, want)
@@ -1886,7 +2254,7 @@ func TestProjectOpensFlushOnTick(t *testing.T) {
 // anyway rather than growing an entry per open that nothing will ever flush.
 func TestProjectOpensTickWithNilSeamClearsTheSet(t *testing.T) {
 	d := testDeps()
-	d.Projects = switcherWiringProjects()
+	d.Projects = jumpWiringProjects()
 	d.ActiveProjectIndex = 0
 	m := New("/roots/alpha", time.Second, d)
 	m.ready = true

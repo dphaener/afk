@@ -1,4 +1,4 @@
- afk Dashboard                                                                                               /: projects
+ afk Dashboard  ● 1 needs you in afk                                                                             /: jump
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ api  /repo                                                                                    esc · all projects │  
   │                                                                                                                  │  
@@ -10,21 +10,21 @@
   │ │   ✕ old-migration   broken          –          │ │                                                           │ │  
   │ │  ▾ Working                                  2  │ │                                                           │ │  
   │ │   ◐ Billing v2      reviewing     7/7  open it │ │                                                           │ │  
-  │ │   ◐ scratch-1       one-off         –  open it │ │                                                           │ │  
-  │ │  ▾ Done                                     1  │ │                                                           │ │  
-  │ │   ✓ feat-search     done          5/5          │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                     ╭─ Projects ───────────────────────────────────────────────────────╮                     │ │  
-  │ │                     │                                                                  │                     │ │  
-  │ │                     │ api                                                 6 sessions ● │                     │ │  
-  │ │                     │ afk                                                 0 sessions   │                     │ │  
-  │ │                     │                                                                  │                     │ │  
-  │ │                     ╰──────────────────────────────────────────────────────────────────╯                     │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
-  │ │                                                │ │                                                           │ │  
+  │ │   ◐ scratch-╭─ jump ───────────────────────────────────────────────────────────────────────────╮             │ │  
+  │ │  ▾ Done     │ type a project, session or task                                                  │             │ │  
+  │ │   ✓ feat-sea│                                                                                  │             │ │  
+  │ │             │ ● feat-auth                                         api  session  awaiting input │             │ │  
+  │ │             │ ● fix-login-redirect                                api  session  awaiting input │             │ │  
+  │ │             │ ✕ old-migration                                     api  session  BROKEN         │             │ │  
+  │ │             │ ● fix-flaky-test                                    afk  session  awaiting input │             │ │  
+  │ │             │ ○ afk                                                    project                 │             │ │  
+  │ │             │ ○ api                                                    project                 │             │ │  
+  │ │             │ ◐ Billing v2                                        api  session  reviewing      │             │ │  
+  │ │             │ ✓ feat-search                                       api  session  done           │             │ │  
+  │ │             │ ○ scratch-1                                         api  session  scratch        │             │ │  
+  │ │             │ ✓ W1.T1 Add the login page                          api  task     done           │             │ │  
+  │ │             │ ◐ W1.T2 Wire the session store                      api  task     running        │             │ │  
+  │ │             ╰───────────────────────────────── type to search · enter goes there · esc closes ─╯             │ │  
   │ │                                                │ │                                                           │ │  
   │ ╰────────────────────────────────────────────────╯ │                                                           │ │  
   │ ╭────────────────────────────────────────────────╮ │                                                           │ │  
@@ -37,4 +37,4 @@
   │ ╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────╯ │  
   │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-enter switch · ↑/↓ move · / filter · R rescan · esc close · ctrl+c quit                                                 
+enter go there · ↑/↓ move · type search · esc clear, close · ctrl+c quit                                                

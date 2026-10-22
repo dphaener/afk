@@ -7,34 +7,34 @@
   │                                                                                                                  │  
   │ Everywhere (in the agent, press ctrl+] first)            Agent, after ctrl+]                                     │  
   │ esc  Go back a level, or close what is open              ctrl+] d       Show the selected session's details      │  
-  │ /    Jump to another project                             ctrl+] m       Let the terminal select text, or take    │  
-  │ :    Search every action by name, the ones with no key                  the mouse back                           │  
-  │      too                                                 ctrl+] ctrl+]  Send ctrl+] itself to the agent          │  
-  │ i    Read and answer the inbox                                                                                   │  
-  │ R    Take a fresh usage reading for the header, as afk   By name, from :                                         │  
-  │      usage --refresh does                                extend the plan                                         │  
-  │ ?    Show every key, level by level                                      Start a planning session that adds      │  
-  │ q    Leave the dashboard; every session keeps running                    work to the plan                        │  
-  │                                                          amend the plan  Change the plan; asks what to change    │  
-  │ All projects                                                             in a sentence                           │  
-  │ j k ↑ ↓ pgup pgdn home end                               fix a bug       Find and fix a bug; asks what is        │  
-  │                 Move the selection                                       broken                                  │  
-  │ enter           Go in a level, or open what is           reconcile the plan with a document                      │  
-  │                 selected                                                 Fit the plan to a document; asks for    │  
-  │ n               Plan a project that has no plan; asks                    its path                                │  
-  │                 for its folder or a new name             check the plan  Show the plan's errors and warnings,    │  
-  │ +               Put a folder on the daemon's list, as                    as afk plan lint does                   │  
-  │                 afk project add does                     approve the plan                                        │  
-  │ -               Take the selected project off the                        Approve a new plan and start its        │  
-  │                 daemon's list; its files stay                            build, as afk plan approve does         │  
-  │ a               Answer the oldest inbox item that        start a new plan                                        │  
-  │                 blocks a task, across every project                      Plan a project that has no plan; asks   │  
-  │ p               Hold the build so no new task starts,                    for its folder or a new name            │  
+  │ ]    Go to the next thing that needs you, across every   ctrl+] m       Let the terminal select text, or take    │  
+  │      project                                                            the mouse back                           │  
+  │ [    Go to the previous thing that needs you, across     ctrl+] ctrl+]  Send ctrl+] itself to the agent          │  
+  │      every project                                                                                               │  
+  │ /    Jump to a project, session or task                  By name, from :                                         │  
+  │ :    Search every action by name, the ones with no key   extend the plan                                         │  
+  │      too                                                                 Start a planning session that adds      │  
+  │ i    Read and answer the inbox                                           work to the plan                        │  
+  │ R    Take a fresh usage reading for the header, as afk   amend the plan  Change the plan; asks what to change    │  
+  │      usage --refresh does                                                in a sentence                           │  
+  │ ?    Show every key, level by level                      fix a bug       Find and fix a bug; asks what is        │  
+  │ q    Leave the dashboard; every session keeps running                    broken                                  │  
+  │                                                          reconcile the plan with a document                      │  
+  │ All projects                                                             Fit the plan to a document; asks for    │  
+  │ j k ↑ ↓ pgup pgdn home end                                               its path                                │  
+  │                 Move the selection                       check the plan  Show the plan's errors and warnings,    │  
+  │ enter           Go in a level, or open what is                           as afk plan lint does                   │  
+  │                 selected                                 approve the plan                                        │  
+  │ n               Plan a project that has no plan; asks                    Approve a new plan and start its        │  
+  │                 for its folder or a new name                             build, as afk plan approve does         │  
+  │ +               Put a folder on the daemon's list, as    start a new plan                                        │  
+  │                 afk project add does                                     Plan a project that has no plan; asks   │  
+  │ -               Take the selected project off the                        for its folder or a new name            │  
+  │                 daemon's list; its files stay                                                                    │  
+  │ a               Answer the oldest inbox item that                                                                │  
+  │                 blocks a task, across every project                                                              │  
+  │ p               Hold the build so no new task starts,                                                            │  
   │                 or let a paused one carry on                                                                     │  
-  │                                                                                                                  │  
-  │ Project                                                                                                          │  
-  │ j k ↑ ↓ pgup pgdn home end                                                                                       │  
-  │                 Move the selection                                                                               │  
-  ╰───────────────────────────────────────────────────────────────── / search · j/k scroll · esc close · 1–30 of 57 ─╯  
+  ╰───────────────────────────────────────────────────────────────── / search · j/k scroll · esc close · 1–30 of 61 ─╯  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 / search · j/k scroll · esc close · ctrl+c quit                                                                         

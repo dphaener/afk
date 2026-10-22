@@ -9,6 +9,7 @@ import (
 
 	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/ledger"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/state"
 )
 
@@ -96,8 +97,7 @@ func TestAgentBandText(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			in := agentBandFacts(c.s, c.found, c.task, nil)
-			in.Next = c.next
+			in := agentBandFacts(c.s, c.found, c.task, c.next)
 			got := agentBandText(in, c.width)
 			if got != c.want {
 				t.Errorf("band = %q, want %q", got, c.want)
@@ -112,10 +112,14 @@ func TestAgentBandText(t *testing.T) {
 	}
 }
 
-// TestNextNeedingYou pins the band's right part (A2). Load-bearing rows:
-// "the current session itself is excluded" (the Agent you are in is not the
-// next one) and "Sessions order" (Needs you first, by name, which is the
-// order the Sessions section shows, not the order the slice came in).
+// TestNextNeedingYou pins the band's right part (A2, A5): the item `]`
+// would go to from the session in view, across every project. Load-bearing
+// rows: "the current session itself is excluded" (the only thing needing you
+// is what you are looking at, so the band says nothing rather than naming
+// it), "another project's session names its project" (a bare name could be
+// in any project, and `]` leaves this one), "wraps round" (the next after
+// the last is the first, as `]` goes) and "Sessions order" (by name inside
+// Needs you, the order the Sessions section shows, not the slice's).
 func TestNextNeedingYou(t *testing.T) {
 	asking := func(name string) Session {
 		s := runningSess(name)
@@ -124,24 +128,38 @@ func TestNextNeedingYou(t *testing.T) {
 	}
 	doneAsking := asking("done-one")
 	doneAsking.Phase = state.PhaseDone
+	project := func(path string, sessions ...Session) needsYouProject {
+		return needsYouProject{Path: path, Name: strings.TrimPrefix(path, "/"), Sessions: sessions}
+	}
+	planning := func(p needsYouProject) needsYouProject {
+		p.Row, p.HasRow = projectrows.Row{Root: p.Path, Name: p.Name, PlanWaiting: true}, true
+		return p
+	}
 
 	cases := []struct {
 		name     string
+		projects []needsYouProject
 		current  string
-		sessions []Session
 		want     string
 	}{
-		{"none awaits input", "a", []Session{runningSess("a"), runningSess("b")}, ""},
-		{"one other awaits input", "a", []Session{runningSess("a"), asking("b")}, "b"},
-		{"the current session itself is excluded", "a", []Session{asking("a"), runningSess("b")}, ""},
-		{"Sessions order: by name inside Needs you", "a", []Session{runningSess("a"), asking("zeta"), asking("beta")}, "beta"},
-		{"a finished session's stale flag does not count", "a", []Session{runningSess("a"), doneAsking}, ""},
-		{"no sessions", "a", nil, ""},
+		{"none awaits input", []needsYouProject{project("/alpha", runningSess("a"), runningSess("b"))}, "a", ""},
+		{"one other awaits input", []needsYouProject{project("/alpha", runningSess("a"), asking("b"))}, "a", "b"},
+		{"the current session itself is excluded", []needsYouProject{project("/alpha", asking("a"), runningSess("b"))}, "a", ""},
+		{"Sessions order: by name inside Needs you", []needsYouProject{project("/alpha", runningSess("a"), asking("zeta"), asking("beta"))}, "a", "beta"},
+		{"a finished session's stale flag does not count", []needsYouProject{project("/alpha", runningSess("a"), doneAsking)}, "a", ""},
+		{"no sessions", []needsYouProject{project("/alpha")}, "a", ""},
+		{"another project's session names its project",
+			[]needsYouProject{project("/alpha", asking("a")), project("/beta", asking("fix-login"))}, "a", "fix-login · beta"},
+		{"another project's plan to approve",
+			[]needsYouProject{project("/alpha", asking("a")), planning(project("/beta"))}, "a", "beta: plan to approve"},
+		{"wraps round to an earlier project",
+			[]needsYouProject{project("/beta", asking("fix-login")), project("/alpha", asking("a"))}, "a", "fix-login · beta"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := nextNeedingYou(c.current, c.sessions); got != c.want {
-				t.Errorf("nextNeedingYou = %q, want %q", got, c.want)
+			items := needsYouItems(needsYouFacts{Projects: c.projects})
+			if got := nextNeedingYouLabel(items, "/alpha", c.current); got != c.want {
+				t.Errorf("nextNeedingYouLabel = %q, want %q", got, c.want)
 			}
 		})
 	}
@@ -174,11 +192,11 @@ func TestAgentBoxRows(t *testing.T) {
 	}
 }
 
-// TestAgentChips pins the Agent's chips row (§4.3, A7). Load-bearing rows:
-// "wide" (the four keys that work now, named with the leader, and no
-// `ctrl+] ]` until T16.6 builds it), "narrow" (a chip that does not fit
-// whole is dropped with the ones after it) and "a configured leader" (the
-// chips read the leader from the key table, not a constant).
+// TestAgentChips pins the Agent's chips row (§4.3, T16.6 A5). Load-bearing
+// rows: "wide" (all five chips at 114 columns, `ctrl+] ]` second after back,
+// named with the leader), "narrow" (a chip that does not fit whole is
+// dropped with the ones after it) and "a configured leader" (the chips read
+// the leader from the key table, not a constant).
 func TestAgentChips(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -189,17 +207,17 @@ func TestAgentChips(t *testing.T) {
 	}{
 		{
 			name: "wide", leader: defaultLeaderKey, width: 114,
-			want:    []string{"ctrl+] esc  back", "ctrl+] d  details", "ctrl+] m  mouse", "ctrl+] ctrl+]  send ctrl+]"},
-			without: []string{"ctrl+] ]"},
+			want: []string{"ctrl+] esc  back", "ctrl+] ]  next needing you", "ctrl+] d  details", "ctrl+] m  mouse",
+				"ctrl+] ctrl+]  send ctrl+]"},
 		},
 		{
-			name: "narrow", leader: defaultLeaderKey, width: 40,
-			want:    []string{"ctrl+] esc  back", "ctrl+] d  details"},
-			without: []string{"mouse", "send"},
+			name: "narrow", leader: defaultLeaderKey, width: 50,
+			want:    []string{"ctrl+] esc  back", "ctrl+] ]  next needing you"},
+			without: []string{"details", "mouse", "send"},
 		},
 		{
 			name: "a configured leader", leader: "ctrl+a", width: 114,
-			want:    []string{"ctrl+a esc  back", "ctrl+a ctrl+a  send ctrl+a"},
+			want:    []string{"ctrl+a esc  back", "ctrl+a ]  next needing you", "ctrl+a ctrl+a  send ctrl+a"},
 			without: []string{"ctrl+]"},
 		},
 	}

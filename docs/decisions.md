@@ -4178,3 +4178,28 @@ T16.5 makes the Agent the screen of `docs/dash-design.md` §4.3 and turns `d` in
 - **Tests (A8)** are table tests written with the code, and each task regenerates the saved screens it moves. **Nothing had to be in place first (A9):** T16.4 is merged.
 - **Decided while building (2026-10-22).** The details overlay sits directly below the forms and above the Agent's own keys, so every existing "an overlay outranks" rule still holds; `:` closes it first unless the action is quit, the mouse, a usage read, the keys list or details itself, and `?` and `:` open over it and return to it. A right focus with nothing in the Agent's box is treated as Project with its normal keys, so the keyboard can never be trapped. `enter` on a session with no live agent (stopped, pending, cleaning, or a worktree fault) opens its details, and a click on a stopped host's notification does the same. `r` in the details works only where the `r restart` chip shows (a stopped host, or a wedged one behind the usual confirm); the chip sits in the overlay's bottom edge so it costs no body row. After a restart, the Agent opens with the keyboard on it unless the owner closed the details meanwhile. The Agent's band names the session's phase, task, diff, loop and host in plain text and drops pieces from the right on a narrow screen, keeping "next needing you" until it will not fit even alone; on a box too short for band, chips and terminal, the chips go first, then the band. The details drop the old head line, since the strip names the session.
 - **This section and the new `CONTEXT.md` terms belong to the change.**
+
+## T16.6
+
+T16.6 adds `]` and `[` (the next and previous thing that needs the owner, across every project) and turns `/` into the jump search of `docs/dash-design.md` §4.6. These are the decisions the master plan left open, made while planning the task (2026-10-22), numbered as in the work plan's assumptions.
+
+- **What needs you, and in what order (A1).** Five kinds: a session waiting on you, an inbox item that blocks a task (one per project, the oldest, since the answer screen pages through the rest), a plan to approve, a broken session, and a gone project (a project that cannot be read counts as gone). Projects come in the home screen's order (those that need you first, then the order of `config.toml`), and inside a project waiting sessions come first, then the blocking item, the plan, broken sessions and gone. So `]` walks the screen from top to bottom.
+- **Where `]` and `[` start (A2)** is whatever is in view: the agent's session in the Agent, the selected session at Project, the selected project at All projects. From there they go to the next or previous item and wrap round; when nothing needs you, a notice says so.
+- **Where each one lands (A3).** A waiting session opens its agent (or its details when no agent is running, as `enter` does). A blocking item opens its project with today's inbox list on that item, until T16.7 brings the answer screen. A plan to approve and a broken session open the project. A gone project cannot be opened, so the home screen selects it and says why.
+- **Other projects are read without blocking (A4).** The home screen's reader now also runs every minute or so at every level, not only while the home screen is open, and its result is kept in memory. The keys only ever use what is already in memory.
+- **Wording (A5).** The top bar counts every kind in other projects: `● 2 need you in beta · 1 in gamma`, or `● 3 more need you elsewhere` when that does not fit; the order in which the top bar gives up pieces is unchanged. The Agent's band says `next needing you:` and names the project when it is another one, and the Agent's chips gain `ctrl+] ]`.
+- **The jump search (A6)** lists projects, sessions and tasks from what is already in memory (each project's tasks come from the home screen's read, which already loads them), matches the letters you type in order and underlines them, and puts what needs you first. `enter` opens a project's view, a session's agent, or a task's project with the task selected in Build.
+- **The project switcher goes (A7).** The jump search replaces it at `/`, also at All projects before any project is open, and the top bar's hint reads `/: jump`.
+- **Tests (A8)** are table tests written with the code, and each task regenerates the saved screens it moves. **Nothing had to be in place first (A9):** T16.5 is merged.
+- **This section and the new `CONTEXT.md` terms belong to the change.**
+
+Decided while building:
+
+- **Landings remember the last item.** `]` after landing on a plan or a gone project would otherwise land on the same item again, so the dashboard remembers the last item it landed on and steps from it until the owner moves the cursor or changes level.
+- **One thing reads "needs".** The top bar says `● 1 needs you in beta` and `● 1 more needs you elsewhere` for a count of one, and `need` otherwise.
+- **The jump search opens only when there is something to list.** With no project known it says "there is nothing to jump to yet" instead of opening an empty box. Enter with no match does nothing, and the box stays open.
+- **Spaces in the query are dropped**, so `w1 t1` finds `W1.T1`. A task matches on its id or its title, never on letters spread across both.
+- **A blocking inbox item ranks the row of the task it holds up** in the jump search; a plan to approve and a gone project rank the project row.
+- **The project open counts are kept** though the jump search no longer orders by them, so the UI state file keeps its shape.
+- **The project-list notice no longer names the switcher:** it reads "The dashboard keeps the projects it had."
+- **The leader closes the jump search**, as it closes the `:` search.

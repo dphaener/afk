@@ -57,21 +57,21 @@ type agentBandInput struct {
 	Diff  string // "+a −r"
 	Loop  int    // the conductor's loop count; 0 says nothing
 	Host  string // the host's glyph and word, from stateLook
-	Next  string // the next other session that awaits input
+	Next  string // what `]` goes to next, across every project (needLabel)
 }
 
 // agentBandFacts turns the session the Agent shows into the band's facts.
 // found false (the session left the list under an open Agent) leaves its
 // pieces out rather than showing a zero session's "unknown" phase. task is
 // the id of the build task linked to the session (linkedTaskFor), "" for
-// none, and sessions the project's sessions (for next needing you).
+// none, and next the band's right part (nextNeedingYouLabel), "" for none.
 //
 // The diff is left out where the overview would say something other than a
 // count (a one-off has no base, a stale status zeroed its numbers, a missing
 // base or a git error is an error, not a diff) and when it is +0 −0: the
 // band is one row and an empty diff says nothing the owner can act on.
-func agentBandFacts(s Session, found bool, task string, sessions []Session) agentBandInput {
-	in := agentBandInput{Next: nextNeedingYou(s.Name, sessions)}
+func agentBandFacts(s Session, found bool, task, next string) agentBandInput {
+	in := agentBandInput{Next: next}
 	if !found {
 		return in
 	}
@@ -97,22 +97,9 @@ func agentBandFacts(s Session, found bool, task string, sessions []Session) agen
 	return in
 }
 
-// nextNeedingYou is the band's right part (A2): the first session other than
-// current that awaits input, in the Sessions section's order (Needs you
-// first, by name), "" when there is none. It looks only at this project's
-// sessions; T16.6 replaces it with the order across every project.
-func nextNeedingYou(current string, sessions []Session) string {
-	for _, s := range inScreenOrder(sessions) {
-		if s.Name != current && showsAwaitingInput(s) {
-			return s.Name
-		}
-	}
-	return ""
-}
-
 // agentBandText lays the band's pieces out in width cells: the left part
 // (phase, task, diff, loop, host, in that order) at the start and
-// "next needing you: <session>" at the end. When they do not all fit, pieces
+// "next needing you: <item>" at the end. When they do not all fit, pieces
 // drop from the right of the left part; next needing you goes last, only
 // when it does not fit even alone, and then the left part gets back the room
 // it gave up for it. The band never wraps or cuts a piece in half: a cut
@@ -176,14 +163,14 @@ type agentChip struct {
 	word   string
 }
 
-// agentChipList is §4.3's chips, less `ctrl+] ]` (next that needs you),
-// which T16.6 brings with `]` itself (A7): the chips name only keys that work
-// now. Every chip with an action names its key through keyName at the Agent
-// level, so it carries the configured leader. The last is the leader typed
-// twice, which the leader passes through to the agent as itself (leader.go).
+// agentChipList is §4.3's chips, `ctrl+] ]` second after back. Every chip
+// with an action names its key through keyName at the Agent level, so it
+// carries the configured leader. The last is the leader typed twice, which
+// the leader passes through to the agent as itself (leader.go).
 func agentChipList(leader string) []agentChip {
 	return []agentChip{
 		{action: actionGoBack, word: "back"},
+		{action: actionNeedNext, word: "next needing you"},
 		{action: actionDetails, word: "details"},
 		{action: actionMouseToggle, word: "mouse"},
 		{key: leader + " " + leader, word: "send " + leader},
@@ -228,7 +215,8 @@ func (m Model) agentBand(name string, contentW int) string {
 	if i, ok := linkedTaskFor(name, m.build.Rows); ok {
 		task = m.build.Rows[i].ID
 	}
-	return theme.band(agentBandText(agentBandFacts(s, found, task, m.sessions), max(contentW-2, 0)), contentW)
+	next := nextNeedingYouLabel(m.needsYouNow(), m.needsYouActivePath(), name)
+	return theme.band(agentBandText(agentBandFacts(s, found, task, next), max(contentW-2, 0)), contentW)
 }
 
 // agentBody is the Agent box's body under the strip: the band, the agent's

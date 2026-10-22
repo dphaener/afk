@@ -249,7 +249,7 @@ Opens the full-screen terminal dashboard, which has three levels: All projects, 
 
 **Where it starts.** Inside a project's repo: Project, with All projects behind it. Anywhere else: All projects. With `--project`: that project's view. With `--open`: the session's Agent.
 
-**Keys.** At All projects and Project a key works alone (`n`, `c`, `r`, `p`, `i`, `/` and so on). In the Agent every key goes to the agent; `ctrl+]` (the leader) then a key runs that key, `ctrl+]` twice sends one to the agent, and a key the strip does not list closes it and sends nothing. `:` searches every action by name and `?` lists the keys.
+**Keys.** At All projects and Project a key works alone (`n`, `c`, `r`, `p`, `i`, `/` and so on). In the Agent every key goes to the agent; `ctrl+]` (the leader) then a key runs that key, `ctrl+]` twice sends one to the agent, and a key the strip does not list closes it and sends nothing. `/` opens the jump search (any project, session or task, what needs you first), `]` and `[` go to the next and the previous thing that needs you in any project, `:` searches every action by name and `?` lists the keys.
 
 **Exit codes:** `0` on a normal quit, `1` when it cannot start (no working directory or home, or a `--project` path it cannot resolve), `2` for an unknown flag.
 
@@ -820,7 +820,7 @@ A one-off (`--scratch`) runs the bare CLI for its provider: `claude`, `codex`, o
 
 A host restart resumes the conversation by its id (the `session_id` in status.json) with the provider's resume argv in the table above. A dashboard relaunch of a stopped session reads the same sidecar, so a stopped Codex or OpenCode session relaunches under its own CLI, not `claude`. A sidecar naming an unknown provider is an error, never a fallback to `claude`.
 
-**From the dashboard.** The dashboard's `n` form's Provider selector (see [the dashboard](dashboard.md)) creates a session under any provider. Picking `codex` ticks Autonomous, and the form won't submit `codex` with Autonomous unticked. The `o` key opens a provider picker that defaults to Claude (see the `o` key above), and `afk new --scratch --provider codex` (or `opencode`) creates a one-off for another provider from a shell. Non-default sessions show their provider on the row, in the detail head, and in the project switcher's filter. Claude sessions don't show anything extra.
+**From the dashboard.** The dashboard's `n` form's Provider selector (see [the dashboard](dashboard.md)) creates a session under any provider. Picking `codex` ticks Autonomous, and the form won't submit `codex` with Autonomous unticked. The `o` key opens a provider picker that defaults to Claude (see the `o` key above), and `afk new --scratch --provider codex` (or `opencode`) creates a one-off for another provider from a shell. Non-default sessions show their provider on the row and in the detail head. Claude sessions don't show anything extra.
 
 ### One-off Sessions
 

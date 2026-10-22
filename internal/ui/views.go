@@ -136,7 +136,7 @@ func (m Model) View() tea.View {
 	// replacing a region of it, so the list and the pane a person was reading
 	// stay on screen behind the box. The order matches modePrecedence — the
 	// `:` actions search outranks the keys overlay, which outranks the
-	// switcher, which outranks the inbox, which outranks the plan check,
+	// jump search, which outranks the inbox, which outranks the plan check,
 	// which outranks the tokens overlay, which outranks the form — so the
 	// frame and the key routing agree on which surface is on top. They are
 	// mutually exclusive in practice (each owns every key while it is up), so
@@ -155,8 +155,10 @@ func (m Model) View() tea.View {
 		overlay = m.leader.view(m.width, m.height)
 	case m.keysOpen:
 		overlay = m.renderKeysModal()
-	case m.switcherOpen:
-		overlay = m.renderSwitcherModal()
+	case m.jumpOpen:
+		// Like the `:` search, the jump search sizes its own box from a
+		// snapshot of rows taken at open (jump.go): drawing it reads nothing.
+		overlay = m.jump.view(m.width, m.height)
 	case m.inboxOpen:
 		overlay = m.renderInboxModal()
 	case m.planCheckOpen:
@@ -212,7 +214,7 @@ func (m Model) View() tea.View {
 	}
 	// A confirmation or prompt (m.modal) outranks every overlay in
 	// modePrecedence, so it is composed last and lands on top — a create that
-	// fails while the switcher is open reports over the switcher. Over an
+	// fails while the jump search is open reports over it. Over an
 	// overlay it dims only that overlay's box (composeModalOver): the screen
 	// under both is already dimmed once. Over the Agent alone the agent box
 	// was dimmed above, so the dialog goes on as it is.
@@ -858,8 +860,10 @@ func (m Model) listBoxStyle() lipgloss.Style {
 // sized in openNewForm and on resize, NOT here — View takes a value receiver, so
 // sizing applied here lands on a copy and is discarded. It reuses the existing
 // detailBox/theme styles rather than introducing new ones. sizedBox gets
-// contentW+2, not contentW: its argument includes detailBox's Padding(0, 1) —
-// see renderSwitcher's doc for the full arithmetic.
+// contentW+2, not contentW: a lipgloss block size includes padding, so
+// handing it contentW would put the wrap point two columns inside the width
+// the content was laid out to, and every full-width line would wrap inside
+// its own box. contentW+2 puts the wrap point exactly at contentW.
 func (m Model) renderNewFormModal() string {
 	contentW, contentH := m.formModalDims()
 
@@ -931,29 +935,6 @@ func (m Model) renderNewFormModal() string {
 	// The form's keys are on the footer's help line, which stays on screen
 	// under the modal and already follows the active mode.
 	return renderModalBox("New session", "", b.String(), contentW, contentH)
-}
-
-// renderSwitcher draws the project-switcher overlay into the MAIN region — the
-// same region renderNewForm and renderPane take over, inside the existing
-// two-region split, with no layout math of its own. The list was already sized to
-// this space by switcherListSize (View cannot size it: its value receiver would
-// throw the mutation away), so all that happens here is composition.
-//
-// contentW is the box's final usable text width — outerW less the border (2)
-// and theme.detailBox's own Padding(0,1) (2) — and switcherListSize computes
-// the SAME number for the list it sizes, so the two must never diverge. But
-// sizedBox's argument is not that number: a lipgloss block size still includes
-// padding (renderPane's contentW+2 does the identical thing for paneBox), so
-// handing it contentW directly asks for a box whose wrap point sits 2 columns
-// inside contentW — every row the list fills to width then wraps inside its
-// own box. Passing contentW+2 puts the wrap point exactly at contentW, matching
-// what the list was told its width is.
-func (m Model) renderSwitcherModal() string {
-	contentW, listH := m.switcherListSize()
-
-	// The switcher's keys are on the footer's help line, which stays on screen
-	// under the modal and already follows the active mode.
-	return renderModalBox("Projects", "", m.switcher.View(), contentW, listH+switcherChromeRows)
 }
 
 // emptyStateConfigExample is the TOML the empty state shows the user to add to
@@ -1051,13 +1032,10 @@ func (m Model) renderEmptyState(outerW, outerH int) string {
 // can show: which OTHER projects have sessions waiting on a person. afk's
 // whole premise is detached hosts that outlive the UI, so work continues in
 // projects this dashboard is not pointed at, and without this line the only
-// way to find out is to open the switcher and read it.
+// way to find out is to go and look.
 //
-// It no longer defers to the switcher either. The old `if m.switcherOpen`
-// branch blanked the project name and position counter so the header would
-// not repeat what the overlay below it already listed; with those pieces
-// gone there is nothing left to blank, and the attention line is worth
-// keeping on screen precisely while the user is choosing where to go.
+// It does not defer to an open jump search either: the attention line is
+// worth keeping on screen precisely while the owner is choosing where to go.
 func (m Model) renderHeader() string {
 	return headerLine(m.headerPieces(), m.width)
 }
@@ -1067,7 +1045,8 @@ func (m Model) renderHeader() string {
 // cannot drift apart.
 const headerBadgeText = "afk Dashboard"
 
-// headerSwitchHint is the header's one affordance, in theme.dim — the
+// headerSwitchHint is the header's one affordance, the jump search's key
+// (`/: jump`), in theme.dim — the
 // register the box-edge hints already use, because this is something the
 // user can press, not something that happened.
 //
@@ -1075,7 +1054,7 @@ const headerBadgeText = "afk Dashboard"
 // projects and Project, after the leader in the Agent. A function of the
 // leader because config.toml sets it (T9.2).
 func headerSwitchHint(leader string, lv level) string {
-	return keyName(leader, lv, actionProjects) + ": projects"
+	return keyName(leader, lv, actionProjects) + ": jump"
 }
 
 // headerInboxHint is the inbox segment's affordance, styled and named the way
@@ -1106,12 +1085,12 @@ type headerPieces struct {
 	// part that distinguishes a blink from an outage. Deleting it restores
 	// neither of the two signals it replaced.
 	stale string
-	// attention names the projects — "● 2 awaiting in gamma · 1 in delta" —
+	// attention names the projects — "● 2 need you in gamma · 1 in delta" —
 	// while attentionShort collapses them into one phrase —
-	// "● 6 awaiting in 4 other projects". The ladder trades the first for the
-	// second when the width runs out. BOTH are "" when nothing is awaiting
-	// elsewhere: an empty attention line is the correct rendering of a quiet
-	// day, and "0 awaiting" is not a fact worth a row.
+	// "● 6 more need you elsewhere". The ladder trades the first for the
+	// second when the width runs out. BOTH are "" when nothing needs the
+	// owner elsewhere: an empty attention line is the correct rendering of a
+	// quiet day, and "0 need you" is not a fact worth a row.
 	attention      string
 	attentionShort string
 	// usage is the governor's stored decision and the tightest usage window —
@@ -1175,13 +1154,12 @@ func (m Model) headerPieces() headerPieces {
 	p.attention = attentionNamed(others)
 	p.attentionShort = attentionAggregate(others)
 	// A "shorter" form that is not shorter is no degradation. With a single
-	// other project the aggregate spells out "in 1 other project" (18 cells)
-	// where the named form spells that project's actual name, which is
-	// usually fewer — so adopting it unconditionally would make rung 2 of the
+	// other project the aggregate spells out "more need you elsewhere"
+	// where the named form spells that project's actual name, which is often
+	// fewer cells — so adopting it unconditionally would make rung 2 of the
 	// ladder unreachable and, worse, hand the narrowest rung the WIDER string
 	// to truncate. The aggregate is taken only when it earns its place, which
 	// for one project means a name longer than the phrase that replaces it.
-	// That is exactly when the singular "in 1 other project" is worth having.
 	if lipgloss.Width(p.attentionShort) >= lipgloss.Width(p.attention) {
 		p.attentionShort = p.attention
 	}
@@ -1240,14 +1218,14 @@ func (m Model) inboxPieces() (long, short, hint string) {
 	return long, short, hint
 }
 
-// attentionNamed is the attention line with the projects named: a warning
-// dot, then one clause per project in awaitingElsewhere's order — which is
-// the switcher's own order, so the header and the overlay can never disagree
-// about which project matters most.
+// attentionNamed is the attention line with the projects named, §3.1's
+// "● 2 need you in beta · 1 in gamma": a warning dot, then one clause per
+// project in awaitingElsewhere's order, which is the order `]` walks.
 //
-// Only the first clause carries the word "awaiting". Repeating it per
+// Only the first clause carries the words "need you". Repeating them per
 // project buys nothing once the reader has the frame, and the header's
-// budget is cells.
+// budget is cells. One thing "needs you", so the verb follows the first
+// count.
 func attentionNamed(others []otherProjectAwaiting) string {
 	if len(others) == 0 {
 		return ""
@@ -1256,7 +1234,7 @@ func attentionNamed(others []otherProjectAwaiting) string {
 	for i, o := range others {
 		clause := fmt.Sprintf("%d in %s", o.count, o.name)
 		if i == 0 {
-			clause = fmt.Sprintf("%d awaiting in %s", o.count, o.name)
+			clause = fmt.Sprintf("%d %s you in %s", o.count, needVerb(o.count), o.name)
 		}
 		parts = append(parts, theme.headerCount.Render(clause))
 	}
@@ -1264,11 +1242,19 @@ func attentionNamed(others []otherProjectAwaiting) string {
 		strings.Join(parts, theme.headerCount.Render(" · "))
 }
 
+// needVerb is "need" or, for one thing, "needs".
+func needVerb(n int) string {
+	if n == 1 {
+		return "needs"
+	}
+	return "need"
+}
+
 // attentionAggregate is the attention line collapsed to one phrase for the
-// widths that cannot hold the names: the total awaiting across every other
-// project, and how many projects that is. It reuses awaitingGlyph and
+// widths that cannot hold the names, §3.1's "● 3 more need you elsewhere":
+// the total across every other project. It reuses awaitingGlyph and
 // theme.awaitingFlag so the dot means the same thing here as it does in the
-// list's flag column and in the switcher's rows.
+// list's flag column.
 func attentionAggregate(others []otherProjectAwaiting) string {
 	if len(others) == 0 {
 		return ""
@@ -1277,12 +1263,8 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 	for _, o := range others {
 		total += o.count
 	}
-	noun := "projects"
-	if len(others) == 1 {
-		noun = "project"
-	}
 	return theme.awaitingFlag.Render(awaitingGlyph) + " " +
-		theme.headerCount.Render(fmt.Sprintf("%d awaiting in %d other %s", total, len(others), noun))
+		theme.headerCount.Render(fmt.Sprintf("%d more %s you elsewhere", total, needVerb(total)))
 }
 
 // headerLine lays the pieces out for width: the badge, the staleness signal
@@ -1333,8 +1315,8 @@ func attentionAggregate(others []otherProjectAwaiting) string {
 //
 // The attention line goes before the blocking count because the count is the
 // active project's own, read from its files on this tick, while the attention
-// line's counts lag by up to a minute (awaitingElsewhere) and can be read
-// from the switcher. Both then go before the staleness signal, because
+// line's counts lag by up to a minute (awaitingElsewhere) and can be had
+// again with `]`. Both then go before the staleness signal, because
 // staleness is not one more fact competing with the others: it is the
 // statement that the others cannot be trusted. A frozen list invalidates
 // everything else on the frame, so a header showing "● 3 awaiting in gamma"
@@ -1570,64 +1552,30 @@ func (m Model) awaitingCount() int {
 }
 
 // otherProjectAwaiting is one entry of awaitingElsewhere's result: a project
-// other than the active one, and how many of its sessions are awaiting
-// input. W2.T1 renders these into the header's attention line.
+// other than the active one, and how many things in it need the owner.
 type otherProjectAwaiting struct {
 	name  string
 	count int
 }
 
-// awaitingElsewhere reports which projects OTHER than the active one have at
-// least one session awaiting input, each paired with how many. It is pure
-// and reads only in-memory state — no dialing, no IPC, no file reads — because
-// it runs on the dashboard's render path, which must never block.
+// awaitingElsewhere is the top bar's attention count: per project OTHER than
+// the active one, how many things need the owner there, every kind `]` walks
+// (a waiting session, a blocking inbox item, a plan to approve, a broken
+// session, a gone project). It is needCountsElsewhere over needsYouNow, the
+// same order `]` uses, so the project the top bar names first is the one `]`
+// reaches first, and nothing reads a file or dials: it runs on the render
+// path, which must never block.
 //
-// The result is ordered by sortSwitcherProjects (switcher.go), the exact
-// comparator newSwitcher itself sorts by, so the header and the switcher can
-// never disagree about which project matters most. Unlike newSwitcher's own
-// per-project awaiting bool (also reused here, from its construction loop),
-// this counts awaiting sessions rather than reducing to true/false, because
-// the header wants to say how many. A project with zero awaiting sessions is
-// omitted entirely — the caller distinguishes "nothing awaiting elsewhere"
-// (nil/empty result) from "some other project has zero" this way, so it must
-// never render "0 awaiting" or "0 elsewhere".
+// A project with nothing is omitted entirely, so an empty result means
+// nothing elsewhere and the top bar never says "0".
 //
-// The active project is excluded by path, not by index: when m.activeProject
-// is out of range, activePath below comes out "" (no entry in m.projects has
-// that path), so every known project counts as "other" — the same tolerance
-// headerPieces already gives an out-of-range index, rather than a panic.
-//
-// The data source is m.projectSessions, which the ~60s scanTickMsg handler
-// (applyProjectScan) writes — NOT the 2s tickMsg discovery path that keeps
-// m.sessions and m.lastLoad current for the active project. So these counts
-// can lag the active project's own by up to a minute; that is by design, not
-// a bug to reconcile, which is why this reads neither m.interval nor
-// m.lastLoad (both describe the 2s tick's freshness, not this data's).
+// The other projects' sessions come from m.projectSessions, which the ~60s
+// scan writes, and their rows from the every-project cache, refreshed on the
+// same cadence while the home screen is closed. So these counts can lag the
+// active project's own by up to a minute; that is by design, not a bug to
+// reconcile, which is why this reads neither m.interval nor m.lastLoad.
 func (m Model) awaitingElsewhere() []otherProjectAwaiting {
-	activePath := ""
-	if idx := m.activeProject; idx >= 0 && idx < len(m.projects) {
-		activePath = m.projects[idx].Path
-	}
-
-	sorted := sortSwitcherProjects(m.projects, m.projectSessions, m.projectOpens)
-
-	var others []otherProjectAwaiting
-	for _, p := range sorted {
-		if p.Path == activePath {
-			continue
-		}
-		n := 0
-		for _, s := range m.projectSessions[p.Path] {
-			if s.AwaitingInput {
-				n++
-			}
-		}
-		if n == 0 {
-			continue
-		}
-		others = append(others, otherProjectAwaiting{name: p.Name, count: n})
-	}
-	return others
+	return needCountsElsewhere(m.needsYouNow(), m.needsYouActivePath())
 }
 
 // renderFooter is the help line, and nothing else.
@@ -2070,8 +2018,8 @@ type curatedKeyMap struct {
 func (k curatedKeyMap) ShortHelp() []key.Binding  { return k.short }
 func (k curatedKeyMap) FullHelp() [][]key.Binding { return [][]key.Binding{k.full} }
 
-// renderModeHelp is renderHelp's and the two overlays' (renderNewForm,
-// renderSwitcher) shared final step: hand a help.KeyMap to bubbles/help and
+// renderModeHelp is renderHelp's and the form overlay's (renderNewForm)
+// shared final step: hand a help.KeyMap to bubbles/help and
 // get back the existing footer voice — one muted color for the whole line (no
 // per-key/per-desc two-tone; Styles is the zero value so nothing but the
 // outer theme.helpLine.Render call adds color, which is the byte-for-byte
@@ -2758,8 +2706,8 @@ func cell(s string, w int, align lipgloss.Position) string {
 }
 
 // awaitingGlyph is the flag column's awaiting-input mark. It is the same dot
-// the project switcher draws for a project with a waiting session, so the two
-// surfaces say "needs you" the same way.
+// every surface draws for a thing that needs the owner, so they all say
+// "needs you" the same way.
 //
 // It is §3.6's needs-you glyph, read from stateLook so it cannot drift from
 // the mapping.
@@ -2914,8 +2862,8 @@ func taskCount(s Session) string {
 
 // padSessionRow pads a finished row out to the row width — BOTH branches, not
 // just the selected one. An unselected row left at its natural length renders
-// shorter than the highlight bar, which is the switcher's W7.T1 defect (2)
-// replayed on this surface: the padded row was the only one ever exactly as
+// shorter than the highlight bar, which was the old project switcher's
+// W7.T1 defect (2) replayed on this surface: the padded row was the only one ever exactly as
 // wide as the containing box's wrap point, so the wrap read as selection-only.
 // The unselected branch changes only trailing whitespace, never how a row
 // looks.
@@ -2980,8 +2928,8 @@ func renderFaultRow(s Session, selected bool, width int, marker string, l rowLay
 // cells wide: the border (one cell a side) and detailBox's Padding(0, 1) trim
 // four, floored at 10 so a very narrow terminal still gets a readable column.
 // The pane part lays the body inside one cell of padding each side, and the
-// panels draw lines up to contentW wide — see renderSwitcher's doc for the
-// full arithmetic.
+// panels draw lines up to contentW wide — see renderNewFormModal's doc for
+// why the box is sized contentW+2.
 //
 // Pure, and the ONLY place this arithmetic lives: renderDetailsOverlay sizes
 // the frame with it and syncDetailViewport (model.go) seeds the Model's

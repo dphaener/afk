@@ -194,7 +194,7 @@ func TestDetailFocusModeDerivation(t *testing.T) {
 				m := focusOverview(t, testModel(runningSess("alpha")))
 				// spawnFinishedMsg raises this modal asynchronously, so it can
 				// land over any surface — the same reachability modePrecedence's
-				// own comment records for the switcher.
+				// own comment records for the jump search.
 				m.modal = inputSpawnError
 				return m
 			},
@@ -212,13 +212,13 @@ func TestDetailFocusModeDerivation(t *testing.T) {
 			wantDetail: true,
 		},
 		{
-			name: "the project switcher over a focused detail pane still owns the keyboard",
+			name: "the jump search over a focused detail pane still owns the keyboard",
 			setup: func(t *testing.T) Model {
 				m := focusOverview(t, testModel(runningSess("alpha")))
-				m.switcherOpen = true
+				m.jumpOpen = true
 				return m
 			},
-			wantMode:   inputSwitcher,
+			wantMode:   inputJump,
 			wantDetail: true,
 		},
 		{

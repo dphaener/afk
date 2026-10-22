@@ -106,6 +106,8 @@ func TestDecideKey(t *testing.T) {
 		{"leader twice passes one through", call{levelAgent, overlayNone, true, leader}, doPass},
 		{"leader then q quits", call{levelAgent, overlayNone, true, "q"}, doQuit},
 		{"leader then m toggles the mouse", call{levelAgent, overlayNone, true, "m"}, doRun(actionMouseToggle)},
+		{"leader then ] goes to the next that needs you", call{levelAgent, overlayNone, true, "]"}, doRun(actionNeedNext)},
+		{"] alone in the agent goes to the agent", call{levelAgent, overlayNone, false, "]"}, doSend},
 		{"all projects ctrl+c quits", call{levelAllProjects, overlayNone, false, "ctrl+c"}, doQuit},
 		{"project ctrl+c quits", call{levelProject, overlayNone, false, "ctrl+c"}, doQuit},
 		{"project letter runs alone", call{levelProject, overlayNone, false, "n"}, doRun(actionNewSession)},
@@ -145,10 +147,11 @@ func TestDecideKey(t *testing.T) {
 		{"end", doMove, doMove, doClose},
 		{"enter", doGoIn, doGoIn, doClose},
 		{"esc", doGoBack, doGoBack, doGoBack},
-		// ] [ are not bound yet (A4): T16.6 builds them. a is bound at All
+		// ] [ go to the next and previous thing that needs you at every
+		// level, after the leader in the Agent (T16.6). a is bound at All
 		// projects only (T16.3); Project's a is T16.7's.
-		{"]", doNothing, doNothing, doClose},
-		{"[", doNothing, doNothing, doClose},
+		{"]", doRun(actionNeedNext), doRun(actionNeedNext), doRun(actionNeedNext)},
+		{"[", doRun(actionNeedPrev), doRun(actionNeedPrev), doRun(actionNeedPrev)},
 		{"a", doRun(actionAnswerOldest), doNothing, doClose},
 		{"/", doRun(actionProjects), doRun(actionProjects), doRun(actionProjects)},
 		{":", doRun(actionActionsSearch), doRun(actionActionsSearch), doRun(actionActionsSearch)},

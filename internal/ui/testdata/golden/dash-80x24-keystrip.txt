@@ -13,9 +13,9 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│                                                                              │
 │                         ╭─ afk keys ─────────────────────────────────────────╮
-│                         │ esc    go back           /      jump               │
+│                         │ esc    go back           ]      next needing you   │
+│                         │ [      prev needing you  /      jump               │
 │                         │ :      actions           i      inbox              │
 │                         │ d      details           R      read usage         │
 │                         │ ?      keys              q      quit               │
