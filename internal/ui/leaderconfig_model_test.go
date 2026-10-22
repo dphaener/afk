@@ -61,41 +61,43 @@ func leaderFromPane(t *testing.T, leader string) (Model, *fakePane) {
 	return m, fp
 }
 
-// TestConfiguredLeaderOpensTheDialog presses keys through Update with
-// config.toml's [dash] leader set (T9.2) and checks whether the dialog is open
-// and the exact bytes the agent would read (agentBytes, a real x/vt encoder).
-// Load-bearing rows:
-//   - the three "ctrl+o opens" rows: a configured leader has to open the
-//     dialog from every place a person presses it, which proves keys.Leader
-//     and the mode registry use the Model's leader, not a package constant.
+// TestConfiguredLeaderOpensTheStrip presses keys through Update with
+// config.toml's [dash] leader set (T9.2) and checks whether the key strip is
+// open and the exact bytes the agent would read (agentBytes, a real x/vt
+// encoder). Load-bearing rows:
+//   - "ctrl+o opens the strip from the agent pane": a configured leader has
+//     to work where it is a key, which proves decideKey is handed the
+//     Model's leader, not a package constant.
+//   - the list and detail rows: keys work alone at Project since T16.2, so
+//     the configured leader opens nothing there either.
 //   - "ctrl+o twice in the pane types one 0x0F": the pass-through sends the
 //     configured key (m.leaderKey.key), encoded by x/vt, not a hard-coded
 //     ctrl+]. With the old literal this row reads 0x1D.
-//   - the two "ctrl+] with ctrl+o" rows: once another leader is set, ctrl+]
-//     is no longer bound, so it opens nothing and in the pane goes to the
-//     agent like any other chord.
+//   - "ctrl+] with ctrl+o goes to the agent": once another leader is set,
+//     ctrl+] is no longer bound, so in the pane it goes to the agent like any
+//     other chord.
 //   - "refused q falls back": a refused leader must leave the dashboard
-//     usable, so ctrl+] still opens the dialog and q is not swallowed.
+//     usable, so ctrl+] still opens the strip and q is not swallowed.
 //   - "unset is ctrl+]": the default is unchanged for an owner who never set
 //     a leader.
-func TestConfiguredLeaderOpensTheDialog(t *testing.T) {
+func TestConfiguredLeaderOpensTheStrip(t *testing.T) {
 	cases := []struct {
 		name      string
 		leader    string
 		model     func(t *testing.T, leader string) (Model, *fakePane)
 		keys      []tea.KeyPressMsg
-		wantOpen  bool
+		wantStrip bool
 		wantBytes string
 	}{
-		{name: "ctrl+o opens from the list", leader: "ctrl+o", model: leaderFromList, keys: []tea.KeyPressMsg{ctrlOPress}, wantOpen: true},
-		{name: "ctrl+o opens from the detail side", leader: "ctrl+o", model: leaderFromDetail, keys: []tea.KeyPressMsg{ctrlOPress}, wantOpen: true},
-		{name: "ctrl+o opens from the agent pane", leader: "ctrl+o", model: leaderFromPane, keys: []tea.KeyPressMsg{ctrlOPress}, wantOpen: true},
+		{name: "ctrl+o opens nothing from the list", leader: "ctrl+o", model: leaderFromList, keys: []tea.KeyPressMsg{ctrlOPress}},
+		{name: "ctrl+o opens nothing from the detail side", leader: "ctrl+o", model: leaderFromDetail, keys: []tea.KeyPressMsg{ctrlOPress}},
+		{name: "ctrl+o opens the strip from the agent pane", leader: "ctrl+o", model: leaderFromPane, keys: []tea.KeyPressMsg{ctrlOPress}, wantStrip: true},
 		{name: "ctrl+o twice in the pane types one 0x0F", leader: "ctrl+o", model: leaderFromPane, keys: []tea.KeyPressMsg{ctrlOPress, ctrlOPress}, wantBytes: "\x0f"},
 		{name: "ctrl+] with ctrl+o opens nothing from the list", leader: "ctrl+o", model: leaderFromList, keys: []tea.KeyPressMsg{leaderKeyPress}},
 		{name: "ctrl+] with ctrl+o goes to the agent from the pane", leader: "ctrl+o", model: leaderFromPane, keys: []tea.KeyPressMsg{leaderKeyPress}, wantBytes: "\x1d"},
-		{name: "refused q falls back to ctrl+]", leader: "q", model: leaderFromList, keys: []tea.KeyPressMsg{leaderKeyPress}, wantOpen: true},
+		{name: "refused q falls back to ctrl+]", leader: "q", model: leaderFromPane, keys: []tea.KeyPressMsg{leaderKeyPress}, wantStrip: true},
 		{name: "refused q is not the leader in the pane", leader: "q", model: leaderFromPane, keys: []tea.KeyPressMsg{keyRune('q').(tea.KeyPressMsg)}},
-		{name: "unset is ctrl+]", leader: "", model: leaderFromDetail, keys: []tea.KeyPressMsg{leaderKeyPress}, wantOpen: true},
+		{name: "unset is ctrl+]", leader: "", model: leaderFromPane, keys: []tea.KeyPressMsg{leaderKeyPress}, wantStrip: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,11 +105,11 @@ func TestConfiguredLeaderOpensTheDialog(t *testing.T) {
 			for _, k := range tc.keys {
 				m, _ = update(t, m, k)
 			}
-			if m.leaderOpen != tc.wantOpen {
-				t.Fatalf("leaderOpen = %v, want %v", m.leaderOpen, tc.wantOpen)
+			if m.keyStripShown() != tc.wantStrip {
+				t.Fatalf("strip shown = %v, want %v", m.keyStripShown(), tc.wantStrip)
 			}
-			if onScreen := strings.Contains(render(m), "type to filter, or press an action's key"); onScreen != tc.wantOpen {
-				t.Fatalf("dialog on screen = %v, want %v", onScreen, tc.wantOpen)
+			if onScreen := strings.Contains(render(m), keyStripWaiting); onScreen != tc.wantStrip {
+				t.Fatalf("strip on screen = %v, want %v", onScreen, tc.wantStrip)
 			}
 			if len(fp.texts) == 0 {
 				if got := agentBytes(t, fp); got != tc.wantBytes {
@@ -130,36 +132,36 @@ func TestConfiguredLeaderNamesItsKey(t *testing.T) {
 		screen func(t *testing.T) string
 		want   string
 	}{
-		{"list footer", func(t *testing.T) string {
-			m, _ := leaderFromList(t, "ctrl+o")
+		{"pane footer", func(t *testing.T) string {
+			m, _ := leaderFromPane(t, "ctrl+o")
 			return render(m)
-		}, "ctrl+o actions"},
-		{"full help", func(t *testing.T) string {
-			m, _ := leaderFromList(t, "ctrl+o")
-			m.helpShowAll = true
+		}, "ctrl+o afk keys"},
+		{"pane mouse hint", func(t *testing.T) string {
+			m, _ := leaderFromPane(t, "ctrl+o")
 			return render(m)
-		}, "ctrl+o n"},
-		{"dialog footer", func(t *testing.T) string {
+		}, "ctrl+o m mouse:"},
+		{"key strip", func(t *testing.T) string {
 			m, _ := leaderFromPane(t, "ctrl+o")
 			m, _ = update(t, m, ctrlOPress)
 			return render(m)
-		}, "ctrl+o close, or pass it to the agent"},
+		}, "send ctrl+o"},
+		{"actions search from the agent", func(t *testing.T) string {
+			m, _ := leaderFromPane(t, "ctrl+o")
+			m, _ = update(t, m, ctrlOPress)
+			m, _ = update(t, m, keyRune(':'))
+			return render(m)
+		}, "ctrl+o i"},
 		{"focused pane title", func(t *testing.T) string {
 			m, _ := leaderFromPane(t, "ctrl+o")
 			return m.paneTitleHint()
-		}, "[focused · ctrl+o \\ back to list]"},
-		{"removed-key notice", func(t *testing.T) string {
-			m := leaderConfiguredModel("ctrl+o", sess("a"))
-			m, _ = update(t, m, keyRune('n'))
-			return m.status
-		}, "n moved: press ctrl+o then n"},
+		}, "keys go to the agent · ctrl+o esc back"},
 		{"focus notice", func(t *testing.T) string {
 			m, _ := leaderFromPane(t, "ctrl+o")
 			return m.status
-		}, "ctrl+o \\ to return"},
+		}, "ctrl+o esc to return"},
 		{"wedge hint", func(t *testing.T) string {
 			return wedgeHintDashboard(leaderConfiguredModel("ctrl+o").leaderKey.name)
-		}, "press ctrl+o r to restart"},
+		}, "press ctrl+o esc then r to restart"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -114,69 +114,98 @@ func quitDash(m tea.Model) {
 	_, _ = m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 }
 
-// TestDashUsageNamesTheLeader pins the dashboard's key help to the leader
-// model in internal/ui: every action runs after ctrl+], and the list keys
-// are the ones that still act without it. The stale rows are the old action
-// keys — a user who reads `ctrl+t` or `n new` here presses a key that now
-// does nothing. The leader rows are checked one by one, not as a block, so a
-// reworded line still fails if its key is missing.
-func TestDashUsageNamesTheLeader(t *testing.T) {
+// TestDashUsageNamesTheLevelsAndKeys pins the dashboard's key help to the
+// three-level model in internal/ui: the start rows, the levels, and the keys
+// that work alone. The stale rows are the T7.2 leader chords: a user who reads
+// `ctrl+] n` here presses a chord that no longer does that.
+func TestDashUsageNamesTheLevelsAndKeys(t *testing.T) {
 	fs := flag.NewFlagSet("dash", flag.ContinueOnError)
 	var out bytes.Buffer
 	dashUsage(&out, fs)
 	got := out.String()
 
 	for _, want := range []string{
-		"preview running session in agent pane",
-		"enter      focus the right side",
-		"tab        next tab on the right side",
-		"esc        back to the list from the right side",
-		"ctrl+c     quit from the list and the overview",
-		"ctrl+] (the default leader key)",
+		"opens on that project's view; esc goes to All projects",
+		"opens on All projects",
+		"--project PATH     opens that project's view",
+		"--open NAME        opens that session's Agent with the keyboard on it",
+		"enter goes in one level",
+		"(ctrl+] by default)",
 		`leader = "ctrl+o"`,
-		"ctrl+] n    create a session",
-		"ctrl+] o    create a one-off session",
-		"ctrl+] p    open the project switcher",
-		"ctrl+] c    confirm clean",
-		"ctrl+] r    restart a stopped session",
-		"ctrl+] l    edit the session's label",
-		"ctrl+] /    filter sessions by name",
-		"ctrl+] x    clear the filter",
-		"ctrl+] b    show the Build tab",
-		"ctrl+] i    open the inbox",
-		"ctrl+] P    pause the build",
-		"ctrl+] U    resume the build",
-		"ctrl+] f    focus the right side",
-		"ctrl+] t    switch the right side between agent and overview",
-		"ctrl+] \\    close the pane from the list",
-		"ctrl+] g    hand the mouse to the terminal",
-		"ctrl+] w    resize the panes",
-		"ctrl+] ?    show the full key help",
-		"ctrl+] q    quit",
+		"enter      go in a level",
+		"esc        go back a level",
+		":          search every action by name",
+		"?          show every key, level by level",
+		"q          quit",
+		"leader     pressed twice, sends the leader itself to the agent",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dash usage missing %q:\n%s", want, got)
 		}
 	}
-	// The old keys must not appear as ways to run an action. The bare letters
-	// are checked with their column padding so a leader row cannot match them.
 	for _, stale := range []string{
-		"ctrl+t ",
-		"ctrl-\\",
-		"ctrl-g",
+		"ctrl+] n ",
+		"ctrl+] c ",
+		"ctrl+] w ",
+		"ctrl+] /",
+		"ctrl+] P",
+		"ctrl+] \\",
 		"enter/f",
-		"n new",
-		"c clean",
-		"q quit",
-		"p open the project switcher",
-		"  r          restart",
-		"  n          create",
-		"  c          confirm",
-		"  q          quit",
+		"focus the right side",
+		"resize the panes",
 	} {
 		if strings.Contains(got, stale) {
 			t.Errorf("dash usage retains old key %q:\n%s", stale, got)
 		}
+	}
+}
+
+// TestDashStartLevel pins where the dashboard opens (docs/dash-design.md §5).
+// Load-bearing rows: "elsewhere with projects" (the change from promoting
+// the first project), "--open inside a project" (the Agent, not the list) and
+// "--open with a missing name" (the level is still decided from the project:
+// whether the name exists is the Model's toast, not this decision). The
+// --project rows use inside=true: a path the owner named that resolves to a
+// repo is "in a project" exactly as the working directory is.
+func TestDashStartLevel(t *testing.T) {
+	tests := []struct {
+		name       string
+		inside     bool
+		open       bool
+		noProjects bool
+		want       ui.StartLevel
+	}{
+		{"inside a project", true, false, false, ui.StartProject},
+		{"elsewhere with projects", false, false, false, ui.StartAllProjects},
+		{"elsewhere with none", false, false, true, ui.StartAllProjects},
+		{"--project", true, false, false, ui.StartProject},
+		{"--project, no other projects", true, false, true, ui.StartProject},
+		{"--open inside a project", true, true, false, ui.StartAgent},
+		{"--open with a missing name", true, true, true, ui.StartAgent},
+		{"--open elsewhere", false, true, false, ui.StartAllProjects},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dashStartLevel(tt.inside, tt.open, tt.noProjects); got != tt.want {
+				t.Errorf("dashStartLevel(inside=%t, open=%t, noProjects=%t) = %d, want %d",
+					tt.inside, tt.open, tt.noProjects, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDashDepsCarryTheStartLevel pins that dashDeps feeds the decision from
+// what the startup path found: an active project index, --open, and the list.
+func TestDashDepsCarryTheStartLevel(t *testing.T) {
+	proj := []project.Project{{Path: "/x/api", Name: "api"}}
+	if got := dashDeps("", dashLocation{}, nil, -1).StartLevel; got != ui.StartAllProjects {
+		t.Errorf("no project in view: StartLevel = %d, want StartAllProjects", got)
+	}
+	if got := dashDeps("", dashLocation{}, proj, 0).StartLevel; got != ui.StartProject {
+		t.Errorf("project in view: StartLevel = %d, want StartProject", got)
+	}
+	if got := dashDeps("s", dashLocation{}, proj, 0).StartLevel; got != ui.StartAgent {
+		t.Errorf("--open in a project: StartLevel = %d, want StartAgent", got)
 	}
 }
 

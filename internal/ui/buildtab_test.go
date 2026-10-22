@@ -180,7 +180,7 @@ func TestBuildTabSummary(t *testing.T) {
 		{
 			name: "paused",
 			snap: base(func(s *buildview.Snapshot) { s.Paused = true }),
-			want: []string{"paused: U or afk resume starts it again"},
+			want: []string{"paused: p or afk resume starts it again"},
 		},
 		{
 			name: "stopped with the task and the reason",
@@ -196,7 +196,7 @@ func TestBuildTabSummary(t *testing.T) {
 				Problem: "The master plan at /repo/docs/PLAN.md could not be read.",
 				Items:   []inbox.Item{item("q-1", true, false)},
 			},
-			want:    []string{"The master plan at /repo/docs/PLAN.md could not be read.", "1 item needs you · ctrl+] i: inbox"},
+			want:    []string{"The master plan at /repo/docs/PLAN.md could not be read.", "1 item needs you · i: inbox"},
 			wantNot: []string{"done", "no tasks", "T1.1"},
 		},
 		{
@@ -204,7 +204,7 @@ func TestBuildTabSummary(t *testing.T) {
 			snap: base(func(s *buildview.Snapshot) {
 				s.Items = []inbox.Item{item("q-1", true, false), item("q-2", true, false), item("n-1", false, false)}
 			}),
-			want:    []string{"2 items need you · ctrl+] i: inbox"},
+			want:    []string{"2 items need you · i: inbox"},
 			wantNot: []string{"open items"},
 		},
 		{
@@ -212,13 +212,13 @@ func TestBuildTabSummary(t *testing.T) {
 			snap: base(func(s *buildview.Snapshot) {
 				s.Items = []inbox.Item{item("n-1", false, false), item("n-2", false, false), item("q-1", true, true)}
 			}),
-			want:    []string{"2 open items · ctrl+] i: inbox"},
+			want:    []string{"2 open items · i: inbox"},
 			wantNot: []string{"need you"},
 		},
 		{
 			name: "one open item",
 			snap: base(func(s *buildview.Snapshot) { s.Items = []inbox.Item{item("n-1", false, false)} }),
-			want: []string{"1 open item · ctrl+] i: inbox"},
+			want: []string{"1 open item · i: inbox"},
 		},
 		{
 			name:    "every item answered",
@@ -287,35 +287,46 @@ func withBuild(t *testing.T, m Model, snap buildview.Snapshot) Model {
 	return m
 }
 
-var keyB = keyRune('b')
-
-// TestBuildKey drives `b` through Update. The load-bearing rows:
-//
-//   - "no session selected" is assumption A2 of the plan: a build with
-//     nothing running is when the task list matters most, and the detail pane
-//     used to have nothing to draw there.
-//   - the two "no build" rows must leave focus, view and tab exactly as they
-//     were. A key that moved the keyboard to a tab that is not drawn would
-//     strand it.
-//   - "a plan that cannot be read" still opens the tab: the reason is on it,
-//     and hiding the tab would hide the reason.
-//   - "a live agent pane" is hidden, never closed. Closing it would cost the
-//     owner the session they were watching, for a look at a list.
-func TestBuildKey(t *testing.T) {
-	t.Run("from the list focuses the right side on Build", func(t *testing.T) {
-		m := withBuild(t, testModel(sess("alpha"), sess("beta")), buildTabSnap())
-		m, cmd := pressAction(t, m, keyB)
-		if cmd != nil {
-			t.Fatalf("b returned a command (%T); it must only change what is shown", cmd())
+// openBuildTab reaches the Build tab the way a person does since T16.2 took
+// away `b`: `d` gives the overview the keyboard, then tab moves through its
+// tabs to Build. It fails the test if the tab is not reached, so a later
+// assertion is about the tab.
+func openBuildTab(t *testing.T, m Model) Model {
+	t.Helper()
+	m, _ = update(t, m, keyRune('d'))
+	for range 8 {
+		if m.activeDetailTab() == tabBuild {
+			break
 		}
+		m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	}
+	if m.activeDetailTab() != tabBuild || !m.detailOwnsKeyboard() {
+		t.Fatalf("setup: tab %v, overview focused %v; want the Build tab with the keyboard", m.activeDetailTab(), m.detailOwnsKeyboard())
+	}
+	return m
+}
+
+// TestBuildTabByDetails drives the way to the Build tab since T16.2 took away
+// `b`: `d` gives the overview the keyboard, and tab moves to Build (until
+// T16.4 makes Build a section of the project view). The load-bearing rows:
+//
+//   - "d then tab reaches Build": the tab is reachable at all, with the
+//     keyboard on it so esc releases it.
+//   - the "no build" row: a project with no master plan has no Build tab to
+//     reach, so tab must never land on one.
+//   - "a plan that cannot be read" still shows the tab: the reason is on it,
+//     and hiding the tab would hide the reason.
+//   - "a live agent pane" is hidden by d, never closed. Closing it would
+//     cost the owner the session they were watching, for a look at a list.
+func TestBuildTabByDetails(t *testing.T) {
+	t.Run("d then tab reaches Build with the overview focused", func(t *testing.T) {
+		m := withBuild(t, testModel(sess("alpha"), sess("beta")), buildTabSnap())
+		m = openBuildTab(t, m)
 		if m.focus != focusRight || m.view != viewOverview {
 			t.Fatalf("focus=%v view=%v, want the right side on the overview", m.focus, m.view)
 		}
 		if got := activeInputMode(m.modeSnapshot()); got != inputDetail {
-			t.Fatalf("mode = %v, want detail so esc and ctrl+\\ release it", got)
-		}
-		if got := m.activeDetailTab(); got != tabBuild {
-			t.Fatalf("active tab = %v, want Build", got)
+			t.Fatalf("mode = %v, want detail so esc releases it", got)
 		}
 		// The body is read directly, not off the frame: focusing the right side
 		// raises a toast that floats over the pane's top corner.
@@ -341,7 +352,7 @@ func TestBuildKey(t *testing.T) {
 
 	t.Run("reads the same on every row", func(t *testing.T) {
 		m := withBuild(t, testModel(sess("alpha"), sess("beta")), buildTabSnap())
-		m, _ = pressAction(t, m, keyB)
+		m = openBuildTab(t, m)
 		// Both bodies are read with the list holding the keyboard: with the
 		// right side focused the tab also draws its task cursor, which is
 		// not what this row compares.
@@ -356,31 +367,11 @@ func TestBuildKey(t *testing.T) {
 		}
 	})
 
-	t.Run("no session selected still shows the tab", func(t *testing.T) {
-		m := withBuild(t, testModel(), buildTabSnap())
-		if _, ok := m.selected(); ok {
-			t.Fatal("fixture broken: a session is selected")
-		}
-		m, _ = pressAction(t, m, keyB)
-		if m.focus != focusRight || m.activeDetailTab() != tabBuild {
-			t.Fatalf("focus=%v tab=%v, want the right side on Build", m.focus, m.activeDetailTab())
-		}
-		frame := render(m)
-		for _, want := range []string{"Overview", "Build", "1/7 done", "T1.1", "superseded"} {
-			if !strings.Contains(frame, want) {
-				t.Errorf("frame is missing %q", want)
-			}
-		}
-		if strings.Contains(frame, "Select a session to see details.") {
-			t.Errorf("the Build tab shows the no-selection message")
-		}
-	})
-
 	t.Run("a placeholder or fault row still shows the tab", func(t *testing.T) {
 		pending := Session{Pending: true}
 		pending.Name = "being-made"
 		m := withBuild(t, testModel(pending), buildTabSnap())
-		m, _ = pressAction(t, m, keyB)
+		m = openBuildTab(t, m)
 		body := xansi.Strip(m.detailBody(70))
 		if !strings.Contains(body, "1/7 done") || strings.Contains(body, "creating session") {
 			t.Errorf("a placeholder row hid the Build tab:\n%s", body)
@@ -395,28 +386,21 @@ func TestBuildKey(t *testing.T) {
 		name string
 		prep func(t *testing.T, m Model) Model
 	}{
-		{"no build data yet shows the notice and changes nothing", func(_ *testing.T, m Model) Model { return m }},
-		{"no master plan shows the notice and changes nothing", func(t *testing.T, m Model) Model {
+		{"no build data yet has no Build tab", func(_ *testing.T, m Model) Model { return m }},
+		{"no master plan has no Build tab", func(t *testing.T, m Model) Model {
 			return withBuild(t, m, buildview.Snapshot{Root: "/repo"})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := tc.prep(t, testModel(sess("alpha")))
-			m.detailTab = tabWaves
-			before := render(m)
-			// The handler directly: the dialog dims the build row with no build
-			// and runs nothing, so only this call reaches the refusal.
-			m, cmd := runAction(m, actionBuild)
-			if cmd != nil {
-				t.Fatalf("b returned a command (%T)", cmd())
+			m, _ = update(t, m, keyRune('d'))
+			for range 8 {
+				m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+				if m.activeDetailTab() == tabBuild {
+					t.Fatal("tab landed on a Build tab in a project with no build")
+				}
 			}
-			if m.status != noBuildNotice {
-				t.Errorf("notice = %q, want %q", m.status, noBuildNotice)
-			}
-			if m.focus != focusList || m.view != viewAgent || m.detailTab != tabWaves {
-				t.Errorf("focus=%v view=%v tab=%v moved; the key must change nothing", m.focus, m.view, m.detailTab)
-			}
-			if strings.Contains(before, "Build") || slicesContainsTab(visibleDetailTabs(m.stack, m.hasBuild()), tabBuild) {
+			if strings.Contains(render(m), "Build") || slicesContainsTab(visibleDetailTabs(m.stack, m.hasBuild()), tabBuild) {
 				t.Errorf("a project with no build shows a Build tab")
 			}
 		})
@@ -425,10 +409,7 @@ func TestBuildKey(t *testing.T) {
 	t.Run("a plan that cannot be read shows the reason and no rows", func(t *testing.T) {
 		problem := "The master plan at /repo/docs/PLAN.md could not be read."
 		m := withBuild(t, testModel(sess("alpha")), buildview.Snapshot{Root: "/repo", HasBuild: true, Problem: problem})
-		m, _ = pressAction(t, m, keyB)
-		if m.activeDetailTab() != tabBuild {
-			t.Fatalf("active tab = %v, want Build", m.activeDetailTab())
-		}
+		m = openBuildTab(t, m)
 		body := xansi.Strip(m.detailBody(70))
 		if !strings.Contains(body, problem) {
 			t.Errorf("the reason is missing from:\n%s", body)
@@ -443,13 +424,13 @@ func TestBuildKey(t *testing.T) {
 	t.Run("a live agent pane is hidden behind the overview, never closed", func(t *testing.T) {
 		m := withBuild(t, testModel(runningSess("alpha")), buildTabSnap())
 		pane := newFakePane("agent screen")
-		m.pane, m.paneName, m.view = pane, "alpha", viewAgent
-		if !m.shouldRenderPane() || m.focus != focusList {
-			t.Fatal("fixture broken: the pane must be drawn with the list focused")
+		m.pane, m.paneName, m.view, m.focus = pane, "alpha", viewAgent, focusRight
+		if !m.shouldRenderPane() || m.level() != levelAgent {
+			t.Fatal("fixture broken: the pane must be drawn in the Agent")
 		}
-		m, _ = pressAction(t, m, keyB)
+		m = pressKey(t, m, keyRune('d'))
 		if m.pane == nil || pane.closed != 0 {
-			t.Fatalf("b closed the pane (closed=%d)", pane.closed)
+			t.Fatalf("d closed the pane (closed=%d)", pane.closed)
 		}
 		if m.shouldRenderPane() || m.view != viewOverview || m.focus != focusRight {
 			t.Fatalf("view=%v focus=%v, want the overview focused over the hidden pane", m.view, m.focus)
@@ -458,15 +439,7 @@ func TestBuildKey(t *testing.T) {
 			t.Errorf("notice = %q, want it to say the session is still running", m.status)
 		}
 		if len(pane.keys)+len(pane.texts) != 0 {
-			t.Errorf("b reached the session from the list")
-		}
-	})
-
-	t.Run("from a focused overview jumps to Build", func(t *testing.T) {
-		m := focusOverview(t, withBuild(t, testModel(sess("alpha")), buildTabSnap()))
-		m, _ = pressAction(t, m, keyB)
-		if m.activeDetailTab() != tabBuild || m.focus != focusRight {
-			t.Fatalf("tab=%v focus=%v, want Build with the right side still focused", m.activeDetailTab(), m.focus)
+			t.Errorf("the leader then d reached the session")
 		}
 	})
 }
@@ -512,7 +485,7 @@ func TestBuildTabReachedAndLeftByTheTabKeys(t *testing.T) {
 		{"shift+tab from the Overview wraps to Build", false, []tea.Msg{backtab}, tabBuild},
 		{"tab from Build wraps to the Overview", false, []tea.Msg{keyRune('5'), tab}, tabOverview},
 		{"shift+tab from Build is Diff", false, []tea.Msg{keyRune('5'), backtab}, tabDiff},
-		{"a digit leaves Build", true, []tea.Msg{leaderKeyPress, keyB, keyRune('2')}, tabWaves},
+		{"a digit leaves Build", true, []tea.Msg{keyRune('6'), keyRune('2')}, tabWaves},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -532,7 +505,9 @@ func TestBuildTabDropsOnAProjectSwitch(t *testing.T) {
 	m := buildModel(t, nil)
 	m.sizeSessionList()
 	m = withBuild(t, m, buildTabSnap())
-	m, _ = pressAction(t, m, keyB)
+	// Set directly: with no session there is no `d` to reach the tab with
+	// until T16.4, and the tab being dropped is what this test is about.
+	m.detailTab = tabBuild
 	if m.activeDetailTab() != tabBuild {
 		t.Fatalf("fixture broken: active tab = %v", m.activeDetailTab())
 	}
@@ -664,28 +639,4 @@ func TestPausedForUsageNeverReadsAsStopped(t *testing.T) {
 			t.Errorf("narrow row = %q, want the five-cell label within 26 cells", row)
 		}
 	})
-}
-
-// TestBuildKeyIsInTheLeaderTable is the proof that the actions dialog lists
-// the build tasks under ctrl+] b and that the key runs it. The dialog's
-// rows come from the leader table, so this fails if the row or its help line
-// is ever removed. The short footer line must NOT grow: it is at its
-// measured-width cap.
-func TestBuildKeyIsInTheLeaderTable(t *testing.T) {
-	m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
-	short := xansi.Strip(m.renderHelp())
-	if strings.Contains(short, "build tasks") {
-		t.Errorf("the short footer line grew: %q", short)
-	}
-	rows := leaderRows(m.leaderConditions())
-	row, ok := leaderRowFor(rows, actionBuild)
-	if !ok {
-		t.Fatal("the dialog does not list the build tasks")
-	}
-	if row.keyLabel != "b" || row.name != "build tasks" || row.blocked != "" {
-		t.Errorf("row = %+v, want a runnable \"build tasks\" under b", row)
-	}
-	if got := leaderKeyDecision(leaderPress("b"), defaultLeaderKey, "", rows, 0, false); got.kind != leaderRun || got.row.action != actionBuild {
-		t.Errorf("ctrl+] b = %v %v, want the build action", got.kind, got.row.action)
-	}
 }

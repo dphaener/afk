@@ -1,5 +1,6 @@
-// buildpause.go is the dashboard's `P` and `U` keys: pause and resume the
-// active project's build, the way `afk pause` and `afk resume` do.
+// buildpause.go is the dashboard's `p` key (the leader's P and U until
+// T16.2): pause or resume the active project's build, the way `afk pause` and
+// `afk resume` do.
 //
 // Nothing here writes a file. The two keys call the Deps.PauseBuild and
 // Deps.ResumeBuild seams, which `afk dash` wires to the same functions the
@@ -37,9 +38,9 @@ type ResumeResult struct {
 	StopTask string
 }
 
-// The two notices for a project with nothing to pause or resume. They follow
-// noBuildNotice (buildtab.go) word for word apart from the verb, so `b`, `P`
-// and `U` say the same thing about the same state and name the same setting.
+// The two notices for a project with nothing to pause or resume. They differ
+// only in the verb, so `p` says the same thing about the same state whichever
+// way it went, and names the setting that gives the project a build.
 const (
 	noBuildToPauseNotice  = "This project has no master plan, so there is no build to pause. Set plan in afk.toml."
 	noBuildToResumeNotice = "This project has no master plan, so there is no build to resume. Set plan in afk.toml."
@@ -56,9 +57,9 @@ const buildPauseUnavailableNotice = "Pause and resume are not available in this 
 // nothing, so it is told as a fact and not as a success.
 func pauseNotice(leader string, already bool) (notificationKind, string) {
 	if already {
-		return notifyInfo, "The build was already paused. Press " + leaderChord(leader, actionResumeBuild) + " to resume."
+		return notifyInfo, "The build was already paused. Press " + keyName(leader, levelProject, actionPauseToggle) + " to resume."
 	}
-	return notifySuccess, "Build paused. A task that is running finishes; nothing new starts. Press " + leaderChord(leader, actionResumeBuild) + " to resume."
+	return notifySuccess, "Build paused. A task that is running finishes; nothing new starts. Press " + keyName(leader, levelProject, actionPauseToggle) + " to resume."
 }
 
 // resumeNotice words a resume that worked, one sentence per combination of
@@ -112,10 +113,23 @@ type buildResumedMsg struct {
 	gen int
 }
 
-// pauseBuild is `P`.
+// pauseToggle is `p` at Project: one key for the leader's old P and U. A
+// build that is paused, or that stopped itself, is resumed — a resume clears
+// both, as `afk resume` does — and any other build is paused. The state is the
+// Build snapshot's, the same two flags the overview's summary line shows, so
+// the key does what the line beside it says it would. A press before the
+// first snapshot lands finds neither flag and pauses, which pauseBuild turns
+// into its no-build sentence while there is no build to read.
+func (m Model) pauseToggle() (tea.Model, tea.Cmd) {
+	if m.build.Paused || m.build.Stopped {
+		return m.resumeBuild()
+	}
+	return m.pauseBuild()
+}
+
+// pauseBuild is `p` on a running build.
 //
-// The no-build check comes first and is the same one `b` makes (hasBuild and
-// hasActiveProject), so a project with no master plan, and a project whose
+// The no-build check comes first (hasBuild and hasActiveProject), so a project with no master plan, and a project whose
 // build data has not arrived yet, get a sentence and no write. That check is
 // also what guarantees m.build.Root below is a real folder: it is only read
 // once a snapshot for this project has landed.
@@ -154,7 +168,7 @@ func (m Model) pauseBuild() (tea.Model, tea.Cmd) {
 	}
 }
 
-// resumeBuild is `U`, on exactly pauseBuild's terms, the all-projects
+// resumeBuild is `p` on a paused or stopped build, on exactly pauseBuild's terms, the all-projects
 // screen's row included.
 func (m Model) resumeBuild() (tea.Model, tea.Cmd) {
 	if m.allProjectsOpen {

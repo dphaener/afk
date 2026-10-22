@@ -28,15 +28,16 @@
 //
 //   - No "→" arrows, and no parenthesised hints. "opened x · enter to focus",
 //     never "opened x (press enter to focus)".
-//   - "ctrl+] r to restart", not "press ctrl+] r to restart it": the hint names the key
+//   - "r to restart", not "press r to restart it": the hint names the key
 //     and the verb it performs, nothing more.
 //   - Key names are spelled the way bubbles/key spells a chord — "ctrl+]",
-//     not "ctrl-]". An action key is always named with the leader
-//     (leaderChord), since a bare letter does nothing on the dashboard. The help row an inch below the toast carries the same
+//     not "ctrl-]". An action key is named as it is pressed where the notice
+//     is read (keyName): alone at All projects and Project, after the leader
+//     in the Agent. The help row an inch below the toast carries the same
 //     spelling (defaultKeyMap's WithHelp in model.go, mouseCaptureHint in
 //     views.go), so the two surfaces never disagree about a chord.
 //   - At most ONE em-dash clause of qualification inside the outcome, never
-//     two: "x isn't running — its host record was stale · ctrl+] r to restart".
+//     two: "x isn't running — its host record was stale · r to restart".
 //   - The in-flight family ("creating x…", "opening x…") keeps its shape. A
 //     trailing ellipsis already reads as "in progress", and there is no
 //     outcome yet to lead with.
@@ -213,26 +214,6 @@ func flushSelectionsCmd(fn func(string, string) error, entries map[string]string
 			}
 		}
 		return selectionFlushedMsg{err: first}
-	}
-}
-
-// sidebarPctSavedMsg reports that a committed pane split was written. Unlike
-// selectionFlushedMsg its error IS surfaced: the write happens once, because
-// the user explicitly asked for it with ctrl+w, so a failure is something they
-// would otherwise only discover on the next launch.
-type sidebarPctSavedMsg struct{ err error }
-
-// saveSidebarPctCmd persists a committed sidebar split off the UI thread, on
-// flushSelectionsCmd's off-loop-I/O discipline. pct is captured by value at
-// construction, so a further resize before the Cmd runs cannot change what is
-// written. A nil seam returns no Cmd, as flushSelectionsCmd's guard does, so
-// nothing reports a save that never happened.
-func saveSidebarPctCmd(fn func(int) error, pct int) tea.Cmd {
-	if fn == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		return sidebarPctSavedMsg{err: fn(pct)}
 	}
 }
 
@@ -998,7 +979,7 @@ func paneAttachFailedStatus(leader string, msg paneAttachedMsg) string {
 				msg.name, hostLogPath(msg.worktree, msg.name))
 		}
 		return fmt.Sprintf("%s isn't running — its host record was stale · %s to restart",
-			msg.name, leaderChord(leader, actionRestart))
+			msg.name, keyName(leader, levelProject, actionRestart))
 	}
 	return fmt.Sprintf("opening %s failed: %v — see %s",
 		msg.name, msg.err, hostLogPath(msg.worktree, msg.name))
@@ -1360,8 +1341,8 @@ func specialKeyEvent(k tea.KeyPressMsg) (termpane.KeyEvent, bool) {
 // reaches here and goes to the agent as one NUL, like any other chord. The
 // case below must stay for that reason. The leader pressed twice in the pane
 // does not come through here: since T9.2 the leader is configurable, and the
-// dialog sends the Model's decoded leader straight to the pane's SendKey
-// (leaderComponentKey, model.go), so x/vt encodes ctrl+] as 0x1D there. The
+// key strip sends the Model's decoded leader straight to the pane's SendKey
+// (sendLeaderToPane, model.go), so x/vt encodes ctrl+] as 0x1D there. The
 // `]` case stays for a ctrl+] typed in the pane while another leader is set.
 //
 // Ctrl+[ is likewise absent because the decoder resolves it to KeyEscape before
@@ -1369,8 +1350,8 @@ func specialKeyEvent(k tea.KeyPressMsg) (termpane.KeyEvent, bool) {
 //
 // ctrl+\ and ctrl+g reach here from the dashboard's agent pane. Until T7.2 the
 // pane's own rules claimed both before forwarding (the keyboard-back chord and
-// mouseChordKey); since then the dashboard's ways to do those are ctrl+] \
-// and ctrl+] g, and the pane's only rule is the leader, so the agent gets
+// mouseChordKey); since T16.2 the dashboard's ways to do those are ctrl+] esc
+// and ctrl+] m, and the leader is the Agent's only key, so the agent gets
 // the chords like any other key, ctrl+t included. afk attach (attachpane.go)
 // still reserves ctrl+\ and ctrl+g, so from there their cases below stay
 // unreachable.

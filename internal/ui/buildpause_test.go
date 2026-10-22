@@ -7,20 +7,22 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/buildview"
 )
 
-// pressAction runs a dashboard action the way a person does since T7.2:
-// ctrl+], then the action's key. It returns what the action's key
-// returned, so a test can still read the command it produced, and it fails the
-// test if the dialog did not open, so a later assertion is about the action.
+// pressAction runs a dashboard key the way a person does since T16.2: alone
+// at All projects and Project, and in the Agent the leader first, then the
+// key. It returns what the key returned, so a test can still read the command
+// it produced, and in the Agent it fails the test if the leader did not open
+// the key strip, so a later assertion is about the key.
 func pressAction(t *testing.T, m Model, k tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
-	m, _ = update(t, m, leaderKeyPress)
-	if !m.leaderOpen {
-		t.Fatal("setup: ctrl+] did not open the actions dialog")
+	if m.level() == levelAgent && activeInputMode(m.modeSnapshot()) != inputLeader {
+		m, _ = update(t, m, leaderKeyPress)
+		if !m.keyStripOpen {
+			t.Fatal("setup: ctrl+] did not open the key strip")
+		}
 	}
 	return update(t, m, k)
 }
@@ -33,10 +35,10 @@ func runAction(m Model, a modeAction) (Model, tea.Cmd) {
 	return next.(Model), cmd
 }
 
-var (
-	keyPause  = keyRune('P')
-	keyResume = keyRune('U')
-)
+// keyPause is `p`, one toggle since T16.2 for the leader's old P and U:
+// it pauses a running build and resumes a paused one, so a test that wants
+// the resume gives the model a paused snapshot (buildPausedSnap).
+var keyPause = keyRune('p')
 
 // pauseSeams records every call to the two seams and holds the replies the
 // test wants them to give.
@@ -56,6 +58,13 @@ type pauseSeams struct {
 // can tell the snapshot's folder from the dashboard's.
 func buildPauseSnap() buildview.Snapshot {
 	return buildview.Snapshot{Root: "/main", HasBuild: true, Total: 3, Done: 1}
+}
+
+// buildPausedSnap is buildPauseSnap with the owner's pause on, so `p` resumes.
+func buildPausedSnap() buildview.Snapshot {
+	s := buildPauseSnap()
+	s.Paused = true
+	return s
 }
 
 // buildPauseModel is a Model started in /repo with both seams recording into
@@ -106,13 +115,13 @@ func TestBuildPauseNotices(t *testing.T) {
 			name:     "fresh pause",
 			got:      func() (notificationKind, string) { return pauseNotice(defaultLeaderKey, false) },
 			wantKind: notifySuccess,
-			wantText: "Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume.",
+			wantText: "Build paused. A task that is running finishes; nothing new starts. Press p to resume.",
 		},
 		{
 			name:     "already paused",
 			got:      func() (notificationKind, string) { return pauseNotice(defaultLeaderKey, true) },
 			wantKind: notifyInfo,
-			wantText: "The build was already paused. Press ctrl+] U to resume.",
+			wantText: "The build was already paused. Press p to resume.",
 		},
 		{
 			name:     "resumed",
@@ -202,8 +211,8 @@ func TestBuildPauseNotices(t *testing.T) {
 	}
 }
 
-// TestBuildPauseKeysCallTheSeam drives `P` and `U` through Update, from the
-// list and from a focused overview. Load-bearing:
+// TestBuildPauseKeysCallTheSeam drives `p` through Update on a running and on
+// a paused build, from the list and from a focused overview. Load-bearing:
 //
 //   - the seam gets the SNAPSHOT's root (/main), not the folder the dashboard
 //     was started in (/repo): started inside a session's worktree, the
@@ -211,8 +220,8 @@ func TestBuildPauseNotices(t *testing.T) {
 //     checkout;
 //   - nothing is written on the Update goroutine: the call count is zero
 //     until the returned command runs;
-//   - one press is one call, and `P` never reaches the resume seam nor `U`
-//     the pause seam;
+//   - one press is one call, and `p` on a running build never reaches the
+//     resume seam nor on a paused one the pause seam;
 //   - the outcome asks for a fresh read of the build, so the Build tab's
 //     summary does not wait for the two-second tick.
 func TestBuildPauseKeysCallTheSeam(t *testing.T) {
@@ -224,19 +233,23 @@ func TestBuildPauseKeysCallTheSeam(t *testing.T) {
 		wantResume int
 		wantNotice string
 	}{
-		{"P from the list", keyPause, false, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume."},
-		{"P from a focused overview", keyPause, true, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume."},
-		{"U from the list", keyResume, false, 0, 1, "Build resumed. The daemon may start new tasks again."},
-		{"U from a focused overview", keyResume, true, 0, 1, "Build resumed. The daemon may start new tasks again."},
+		{"p on a running build from the list", keyPause, false, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press p to resume."},
+		{"p on a running build from a focused overview", keyPause, true, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press p to resume."},
+		{"p on a paused build from the list", keyPause, false, 0, 1, "Build resumed. The daemon may start new tasks again."},
+		{"p on a paused build from a focused overview", keyPause, true, 0, 1, "Build resumed. The daemon may start new tasks again."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m, rec := buildPauseModel(t, sess("alpha"))
 			rec.resumed = ResumeResult{WasPaused: true}
-			m = withBuild(t, m, buildPauseSnap())
+			snap := buildPauseSnap()
+			if tc.wantResume > 0 {
+				snap = buildPausedSnap()
+			}
+			m = withBuild(t, m, snap)
 			wantMode := inputNormal
 			if tc.fromDetail {
-				m, _ = pressAction(t, m, keyB)
+				m = focusOverview(t, m)
 				wantMode = inputDetail
 			}
 			if got := activeInputMode(m.modeSnapshot()); got != wantMode {
@@ -298,9 +311,9 @@ func TestBuildPauseOutcomes(t *testing.T) {
 		wantText string
 	}{
 		{"pause, fresh", keyPause, func(*pauseSeams) {}, notifySuccess,
-			"Build paused. A task that is running finishes; nothing new starts. Press ctrl+] U to resume."},
+			"Build paused. A task that is running finishes; nothing new starts. Press p to resume."},
 		{"pause, already paused", keyPause, func(r *pauseSeams) { r.already = true }, notifyInfo,
-			"The build was already paused. Press ctrl+] U to resume."},
+			"The build was already paused. Press p to resume."},
 		{"pause, seam error", keyPause, func(r *pauseSeams) { r.pauseErr = errors.New("permission denied") }, notifyError,
 			"Pausing the build did not work: permission denied"},
 		{"pause, seam error after the flag was written", keyPause,
@@ -308,19 +321,19 @@ func TestBuildPauseOutcomes(t *testing.T) {
 				r.already, r.pauseErr = false, errors.New("paused, but the decision log was not written")
 			},
 			notifyError, "Pausing the build did not work: paused, but the decision log was not written"},
-		{"resume, was paused", keyResume, func(r *pauseSeams) { r.resumed = ResumeResult{WasPaused: true} }, notifySuccess,
+		{"resume, was paused", keyPause, func(r *pauseSeams) { r.resumed = ResumeResult{WasPaused: true} }, notifySuccess,
 			"Build resumed. The daemon may start new tasks again."},
-		{"resume, stop cleared", keyResume,
+		{"resume, stop cleared", keyPause,
 			func(r *pauseSeams) { r.resumed = ResumeResult{WasStopped: true, StopTask: "T1.2"} }, notifySuccess,
 			"Cleared the stop after T1.2. The daemon carries on at its next pass."},
-		{"resume, paused and stopped", keyResume,
+		{"resume, paused and stopped", keyPause,
 			func(r *pauseSeams) { r.resumed = ResumeResult{WasPaused: true, WasStopped: true, StopTask: "T1.2"} },
 			notifySuccess, "Build resumed, and the stop after T1.2 is cleared. The daemon carries on at its next pass."},
-		{"resume, nothing to resume", keyResume, func(*pauseSeams) {}, notifyInfo,
+		{"resume, nothing to resume", keyPause, func(*pauseSeams) {}, notifyInfo,
 			"The build was not paused; nothing changed."},
-		{"resume, seam error", keyResume, func(r *pauseSeams) { r.resumeErr = errors.New("permission denied") }, notifyError,
+		{"resume, seam error", keyPause, func(r *pauseSeams) { r.resumeErr = errors.New("permission denied") }, notifyError,
 			"Resuming the build did not work: permission denied"},
-		{"resume, seam error with a result", keyResume,
+		{"resume, seam error with a result", keyPause,
 			func(r *pauseSeams) {
 				r.resumed, r.resumeErr = ResumeResult{WasPaused: true}, errors.New("resumed, but the decision log was not written")
 			},
@@ -330,7 +343,12 @@ func TestBuildPauseOutcomes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, rec := buildPauseModel(t, sess("alpha"))
 			tc.set(rec)
-			m = withBuild(t, m, buildPauseSnap())
+			snap := buildPauseSnap()
+			if strings.HasPrefix(tc.name, "resume") {
+				// The build the snapshot shows is paused, so `p` resumes.
+				snap = buildPausedSnap()
+			}
+			m = withBuild(t, m, snap)
 			m, cmd := pressAction(t, m, tc.key)
 			msgs := collectMsgs(t, cmd)
 			if len(msgs) != 1 {
@@ -406,35 +424,44 @@ func TestBuildPauseStaleResultIsDropped(t *testing.T) {
 //
 // None of them returns a command, and none moves the screen.
 func TestBuildPauseRefusals(t *testing.T) {
+	// pause and resume are the two halves of `p`: on a paused build it
+	// resumes, so the resume rows give the model a paused snapshot.
 	keys := []struct {
 		name        string
-		key         tea.Msg
-		action      modeAction
+		paused      bool
 		noBuildText string
 	}{
-		{"P", keyPause, actionPauseBuild, noBuildToPauseNotice},
-		{"U", keyResume, actionResumeBuild, noBuildToResumeNotice},
+		{"pause", false, noBuildToPauseNotice},
+		{"resume", true, noBuildToResumeNotice},
 	}
 	for _, k := range keys {
 		noBuild := []struct {
 			name string
 			prep func(t *testing.T, m Model) Model
 		}{
-			{"no build data yet", func(_ *testing.T, m Model) Model { return m }},
 			{"no master plan", func(t *testing.T, m Model) Model {
-				return withBuild(t, m, buildview.Snapshot{Root: "/main"})
+				return withBuild(t, m, buildview.Snapshot{Root: "/main", Paused: k.paused})
 			}},
+		}
+		if !k.paused {
+			// With no build data the snapshot says nothing is paused, so `p`
+			// is a pause there.
+			noBuild = append(noBuild, struct {
+				name string
+				prep func(t *testing.T, m Model) Model
+			}{"no build data yet", func(_ *testing.T, m Model) Model { return m }})
 		}
 		for _, tc := range noBuild {
 			t.Run(k.name+" with "+tc.name+" says there is no build", func(t *testing.T) {
 				m, rec := buildPauseModel(t, sess("alpha"))
 				m = tc.prep(t, m)
 				focus, view := m.focus, m.view
-				// Through the action, not the dialog: with no build the
-				// dialog dims these rows and runs nothing, so the handler's
-				// own refusal is reachable only by calling it, and it is the
-				// guard that still has to answer in words.
-				m, cmd := runAction(m, k.action)
+				// Through the action, not the key: with no build the key's
+				// blocked reason answers first ("this project has no
+				// build"), so the handler's own refusal is reachable only by
+				// calling it, and it is the guard that still has to answer in
+				// words.
+				m, cmd := runAction(m, actionPauseToggle)
 				if cmd != nil {
 					t.Fatalf("the key returned a command (%T)", cmd())
 				}
@@ -451,11 +478,15 @@ func TestBuildPauseRefusals(t *testing.T) {
 		}
 
 		t.Run(k.name+" with a nil seam gives a notice and no panic", func(t *testing.T) {
-			m := withBuild(t, testModel(sess("alpha")), buildPauseSnap())
+			snap := buildPauseSnap()
+			if k.paused {
+				snap = buildPausedSnap()
+			}
+			m := withBuild(t, testModel(sess("alpha")), snap)
 			if m.deps.PauseBuild != nil || m.deps.ResumeBuild != nil {
 				t.Fatal("precondition: testDeps must leave the two seams nil")
 			}
-			m, cmd := pressAction(t, m, k.key)
+			m, cmd := pressAction(t, m, keyPause)
 			if cmd != nil {
 				t.Fatalf("the key returned a command (%T)", cmd())
 			}
@@ -466,9 +497,9 @@ func TestBuildPauseRefusals(t *testing.T) {
 	}
 }
 
-// TestBuildPauseKeysBelongToWhoeverHasTheKeyboard is the two places the keys
-// must do nothing of their own. Both rows are load-bearing, and for the same
-// reason: a capital P or U is ordinary text.
+// TestBuildPauseKeysBelongToWhoeverHasTheKeyboard is the two places `p` must
+// do nothing of its own. Both rows are load-bearing, and for the same reason:
+// there it is ordinary text.
 //
 //   - "agent pane": the owner is typing to an agent. The letter must reach
 //     the agent, as text, and the project's build must not be paused by a
@@ -485,7 +516,7 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 		if !m.paneOwnsKeyboard() {
 			t.Fatal("fixture broken: the pane does not have the keyboard")
 		}
-		for _, k := range []tea.Msg{keyPause, keyResume} {
+		for _, k := range []tea.Msg{keyPause, keyPause} {
 			var cmd tea.Cmd
 			m, cmd = update(t, m, k)
 			if cmd != nil {
@@ -495,8 +526,8 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 		if len(rec.pauseRoots)+len(rec.resumeRoots) != 0 {
 			t.Fatalf("a seam was called from agent focus: pause=%v resume=%v", rec.pauseRoots, rec.resumeRoots)
 		}
-		if got := strings.Join(fp.texts, ""); got != "PU" {
-			t.Errorf("the agent was sent %q, want PU", got)
+		if got := strings.Join(fp.texts, ""); got != "pp" {
+			t.Errorf("the agent was sent %q, want pp", got)
 		}
 		if strings.Contains(m.status, "paused") || strings.Contains(m.status, "resume") {
 			t.Errorf("a typed letter raised a build notice: %q", m.status)
@@ -510,7 +541,7 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 		if !m.inboxOpen || m.inbox.screen != inboxScreenList {
 			t.Fatal("fixture broken: the inbox list is not open")
 		}
-		for _, k := range []tea.Msg{keyPause, keyResume} {
+		for _, k := range []tea.Msg{keyPause, keyPause} {
 			var cmd tea.Cmd
 			m, cmd = update(t, m, k)
 			if msgs := collectMsgs(t, cmd); hasMsg[buildPausedMsg](msgs) || hasMsg[buildResumedMsg](msgs) {
@@ -529,7 +560,7 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 		m, rec := buildPauseModel(t, sess("alpha"))
 		m = withBuild(t, m, inboxSnap())
 		m = openInboxItem(t, m, 0)
-		for _, k := range []tea.Msg{keyPause, keyResume} {
+		for _, k := range []tea.Msg{keyPause, keyPause} {
 			var cmd tea.Cmd
 			m, cmd = update(t, m, k)
 			if msgs := collectMsgs(t, cmd); hasMsg[buildPausedMsg](msgs) || hasMsg[buildResumedMsg](msgs) {
@@ -539,73 +570,8 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 		if len(rec.pauseRoots)+len(rec.resumeRoots) != 0 {
 			t.Fatalf("a seam was called from the answer field: pause=%v resume=%v", rec.pauseRoots, rec.resumeRoots)
 		}
-		if got := m.inbox.input.Value(); got != "PU" {
-			t.Errorf("the answer field holds %q, want PU", got)
+		if got := m.inbox.input.Value(); got != "pp" {
+			t.Errorf("the answer field holds %q, want pp", got)
 		}
 	})
-}
-
-// TestBuildPauseKeysAreInTheLeaderTable is the proof that the actions dialog
-// lists both actions and that their key runs them. Since T7.2 the dialog's
-// rows come from the leader table, so nothing was added to it by hand; this
-// fails if a table row or its help line is removed. The short footer line
-// must NOT grow: it is at its measured-width cap. The last check is the one
-// that makes the key safe to press: P and U are capitals, and the dialog's
-// key decision must tell them from p (switch project) and u.
-func TestBuildPauseKeysAreInTheLeaderTable(t *testing.T) {
-	cases := []struct {
-		desc   string
-		label  string
-		action modeAction
-	}{
-		{"pause the build", "P", actionPauseBuild},
-		{"resume the build", "U", actionResumeBuild},
-	}
-	for _, tc := range cases {
-		t.Run(tc.label, func(t *testing.T) {
-			m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
-			short := xansi.Strip(m.renderHelp())
-			if strings.Contains(short, tc.desc) {
-				t.Errorf("the short footer line grew: %q", short)
-			}
-			rows := leaderRows(m.leaderConditions())
-			row, ok := leaderRowFor(rows, tc.action)
-			if !ok {
-				t.Fatalf("the dialog does not list %v", tc.action)
-			}
-			if row.name != tc.desc || row.keyLabel != tc.label {
-				t.Errorf("row = %q under %q, want %q under %q", row.name, row.keyLabel, tc.desc, tc.label)
-			}
-			if row.blocked != "" {
-				t.Errorf("the row is dimmed (%q) on a project with a build", row.blocked)
-			}
-			got := leaderKeyDecision(leaderPress(tc.label), defaultLeaderKey, "", rows, 0, false)
-			if got.kind != leaderRun || got.row.action != tc.action {
-				t.Errorf("ctrl+] %s = %v %v, want it to run %v", tc.label, got.kind, got.row.action, tc.action)
-			}
-		})
-	}
-}
-
-// TestBuildPauseKeysSitAfterTheInboxKey pins where the two actions are in the
-// leader table, which is the dialog's order. They go straight after the
-// inbox so the three build actions read together, as the decided key table
-// lists them.
-func TestBuildPauseKeysSitAfterTheInboxKey(t *testing.T) {
-	var order []string
-	for _, e := range leaderTable {
-		order = append(order, e.key)
-	}
-	at := -1
-	for i, k := range order {
-		if k == "i" {
-			at = i
-		}
-	}
-	if at < 0 || at+2 >= len(order) {
-		t.Fatalf("no room after the inbox key in %q", order)
-	}
-	if order[at+1] != "P" || order[at+2] != "U" {
-		t.Errorf("after i come %q and %q, want P and U (order %q)", order[at+1], order[at+2], order)
-	}
 }

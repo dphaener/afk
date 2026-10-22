@@ -37,7 +37,7 @@ func taskStatusModel(t *testing.T) (Model, *taskStatusSeam) {
 	seam := &taskStatusSeam{res: TaskStatusResult{Outcome: TaskStatusChanged, Text: "T3.2: failed → pending"}}
 	m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 	m.deps.SetTaskStatus = seam.set
-	m, _ = pressAction(t, m, keyB)
+	m = openBuildTab(t, m)
 	if !m.buildCursorShown() {
 		t.Fatalf("setup: the Build tab's cursor is not shown (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
 	}
@@ -67,13 +67,13 @@ func taskStatusCursorOn(t *testing.T, m Model, id string) Model {
 	return m
 }
 
-// taskStatusPicker opens the picker on task id with ctrl+] S.
+// taskStatusPicker opens the picker on task id with `s`.
 func taskStatusPicker(t *testing.T, m Model, id string) Model {
 	t.Helper()
 	m = taskStatusCursorOn(t, m, id)
-	m, _ = pressAction(t, m, keyRune('S'))
+	m, _ = pressAction(t, m, keyRune('s'))
 	if m.modal != inputPickTaskStatus || m.taskStatus.id != id {
-		t.Fatalf("setup: ctrl+] S gave modal %v for %q, want the picker for %s", m.modal, m.taskStatus.id, id)
+		t.Fatalf("setup: s gave modal %v for %q, want the picker for %s", m.modal, m.taskStatus.id, id)
 	}
 	return m
 }
@@ -101,8 +101,6 @@ func taskStatusChoose(t *testing.T, m Model, status string) (Model, tea.Cmd) {
 // reason must not send the owner to a tab where it still cannot run), "from
 // the list" (the cursor is drawn only with the right side focused, so the
 // action cannot know the task) and "no task" (an empty or unreadable plan).
-// "over the all-projects screen" pins that the screen's own rule still
-// decides there.
 func TestTaskStatusBlockedReason(t *testing.T) {
 	ok := leaderConds{leader: defaultLeaderKey, canSetTaskStatus: true, buildTabFocused: true, buildTaskSelected: true}
 	with := func(f func(*leaderConds)) leaderConds { c := ok; f(&c); return c }
@@ -114,9 +112,8 @@ func TestTaskStatusBlockedReason(t *testing.T) {
 		{"runs on a selected task", ok, ""},
 		{"no seam wins over everything", leaderConds{}, taskStatusNoSeam},
 		{"from the list", with(func(c *leaderConds) { c.buildTabFocused = false; c.buildTaskSelected = false }),
-			"open the Build tab first (ctrl+] b)"},
+			"open the Build tab first (d, then tab)"},
 		{"no task", with(func(c *leaderConds) { c.buildTaskSelected = false }), taskStatusNoTask},
-		{"over the all-projects screen", with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,9 +124,10 @@ func TestTaskStatusBlockedReason(t *testing.T) {
 	}
 }
 
-// TestTaskStatusRowDimmed drives the dialog from a real model. Every row is
-// load-bearing: each is a place the owner can press ctrl+] S where the
-// action must not open the picker, and the seam must never be called. "the
+// TestTaskStatusRowDimmed drives the `:` search and the key from a real
+// model. Every row is load-bearing: each is a place the owner can press `s`
+// where the action must not open the picker, and the seam must never be
+// called; the key says why instead. "the
 // seam is nil" is the zero-Deps guarantee: a dashboard not wired to the
 // ledger cannot write it.
 func TestTaskStatusRowDimmed(t *testing.T) {
@@ -148,29 +146,33 @@ func TestTaskStatusRowDimmed(t *testing.T) {
 			m := withBuild(t, testModel(sess("alpha")), buildTabSnap())
 			m.deps.SetTaskStatus = seam.set
 			return m, seam
-		}, "open the Build tab first (ctrl+] b)"},
+		}, "open the Build tab first (d, then tab)"},
 		{"the Build tab has no tasks", func(t *testing.T) (Model, *taskStatusSeam) {
 			seam := &taskStatusSeam{}
 			m := withBuild(t, testModel(sess("alpha")), buildview.Snapshot{Root: "/repo", HasBuild: true})
 			m.deps.SetTaskStatus = seam.set
-			m, _ = pressAction(t, m, keyB)
+			m = openBuildTab(t, m)
 			return m, seam
 		}, taskStatusNoTask},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m, seam := tt.setup(t)
-			m, _ = update(t, m, leaderKeyPress)
+			m, _ = pressAction(t, m, keyRune(':'))
 			r, ok := leaderRowFor(m.leader.rows, actionTaskStatus)
 			if !ok || r.blocked != tt.want {
 				t.Fatalf("row blocked %q, want %q", r.blocked, tt.want)
 			}
-			m, cmd := update(t, m, keyRune('S'))
+			m, _ = update(t, m, keyEscMsg())
+			m, cmd := update(t, m, keyRune('s'))
 			for _, msg := range collectMsgs(t, cmd) {
 				m, _ = update(t, m, msg)
 			}
 			if m.modal != inputNormal || len(seam.calls) != 0 {
 				t.Fatalf("a dimmed row opened %v or called the seam %d times", m.modal, len(seam.calls))
+			}
+			if m.status != reasonSentence(tt.want) {
+				t.Errorf("s said %q, want %q", m.status, reasonSentence(tt.want))
 			}
 		})
 	}
@@ -181,7 +183,7 @@ func TestTaskStatusRowDimmed(t *testing.T) {
 		if cmd != nil || m.modal != inputNormal {
 			t.Fatalf("modal %v, cmd %v; want nothing but a notice", m.modal, cmd != nil)
 		}
-		if m.status != "Open the Build tab first (ctrl+] b)." {
+		if m.status != "Open the Build tab first (d, then tab)." {
 			t.Errorf("status %q", m.status)
 		}
 	})
@@ -557,7 +559,7 @@ func TestTaskStatusRereadsAndGuards(t *testing.T) {
 		if cmd == nil || !m.taskStatusSetting || !m.hasInFlightWork() {
 			t.Fatalf("y gave cmd %v, in flight %v", cmd != nil, m.taskStatusSetting)
 		}
-		m, _ = pressAction(t, m, keyRune('S'))
+		m, _ = pressAction(t, m, keyRune('s'))
 		if m.modal != inputNormal || m.status != taskStatusBusy {
 			t.Fatalf("a second S gave modal %v, status %q", m.modal, m.status)
 		}

@@ -181,9 +181,10 @@ Subcommands:
   new <name>     Create a new afk session. On a TTY this hands off to the dashboard
                  with the session live in an embedded pane; pass --no-dash to skip the
                  dashboard and get a text pointer instead.
-  dash           Launch the afk dashboard; keys: ↑/↓ move/preview, enter focus,
-                 ctrl+] actions (new, clean, restart, quit and the rest; change the
-                 key with leader in config.toml's [dash]), ctrl+c quit
+  dash           Launch the afk dashboard: All projects, then a project, then its
+                 agent. Keys: j/k move, enter go in, esc go back, : actions,
+                 ? every key, q quit. In the agent press ctrl+] then a key
+                 (change it with leader in config.toml's [dash])
   clean [name]   Clean afk artifacts (remove worktree and archive session data)
   attach <name>  Reattach to a running session (detach with ctrl-\, session keeps running)
   notify         Post a desktop notification for a session. Delivery is always

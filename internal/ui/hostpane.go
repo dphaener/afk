@@ -127,17 +127,17 @@ const wedgeRecoveryKey = "r"
 
 // wedgeHintDashboard and wedgeHintAttach are the per-surface halves of the
 // wedge banner: the same "session unresponsive" fact, but recovery guidance
-// matched to what each surface actually does with keys. Since T7.2 the dashboard
-// restarts through the leader (ctrl+] r by default), which works from a focused pane
-// too because the leader is the one key the pane keeps, so its hint names that
-// chord and needs no "leave the pane first" step. `afk attach` forwards every
+// matched to what each surface actually does with keys. The banner is drawn
+// inside the agent's pane, where every key but the leader goes to the agent,
+// and since T16.2 restart is a Project key (`r`), so the hint names the way out
+// of the Agent first (ctrl+] esc by default) and then the key. `afk attach` forwards every
 // non-chord key to the child and handles no restart at all, so its hint must
 // not invite any in-place keypress; the restart lives in the dashboard.
 //
 // wedgeHintDashboard is a function of the leader, which config.toml sets
 // (T9.2), so the banner names the key that is actually bound.
 func wedgeHintDashboard(leader string) string {
-	return fmt.Sprintf("press %s to restart", leaderChord(leader, actionRestart))
+	return fmt.Sprintf("press %s then %s to restart", keyName(leader, levelAgent, actionGoBack), keyName(leader, levelProject, actionRestart))
 }
 
 const wedgeHintAttach = `detach (ctrl+\) and restart it from the dashboard`

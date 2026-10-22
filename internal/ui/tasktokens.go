@@ -1,7 +1,7 @@
 // tasktokens.go is how the Build tab learns how many tokens the task under its
 // cursor used (T7.12): the record type the root package fills in, the read
 // issued on the refresh tick and when the cursor lands on another task, and
-// the leader row (ctrl+] T) that opens the record in an overlay
+// the `t` key (the leader's T until T16.2) that opens the record in an overlay
 // (tasktokensoverlay.go). It also gives the cursor's row its short total.
 //
 // Nothing here reads a file. The reading is Deps.LoadTaskTokens, which
@@ -200,7 +200,7 @@ func (m Model) buildCursorTotal() string {
 	return m.taskTokens.Short
 }
 
-// openTaskTokens is ctrl+] T on the Build tab: the overlay for the task
+// openTaskTokens is `t` on the Build tab: the overlay for the task
 // under the cursor. With the record already held (the refresh tick read it)
 // it opens at once and reads nothing. Otherwise it reads now and opens when
 // that task's record lands (applyTaskTokensLoaded); the seam is still only

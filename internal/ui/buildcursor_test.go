@@ -101,7 +101,7 @@ func buildCursorModel(t *testing.T, w, h int, snap buildview.Snapshot) Model {
 	m.sizeSessionList()
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: w, Height: h})
 	m = withBuild(t, m, snap)
-	m, _ = pressAction(t, m, keyB)
+	m = openBuildTab(t, m)
 	if !m.buildCursorShown() {
 		t.Fatalf("setup: the Build tab's cursor is not shown (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
 	}

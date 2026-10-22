@@ -37,11 +37,11 @@ func approveModel(t *testing.T, s PlanStatus) (Model, *approveSeam) {
 	return m, seam
 }
 
-// runApproveRow opens the leader, types "approve" and presses enter, the way
-// the owner reaches the row.
+// runApproveRow opens the `:` search, types "approve" and presses enter, the
+// way the owner reaches the row.
 func runApproveRow(t *testing.T, m Model) (Model, tea.Cmd) {
 	t.Helper()
-	m, _ = update(t, m, leaderKeyPress)
+	m, _ = pressAction(t, m, keyRune(':'))
 	for _, r := range "approve" {
 		m, _ = update(t, m, keyRune(r))
 	}
@@ -143,7 +143,7 @@ func TestPlanApproveRowFromTheModel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, _ := update(t, tc.setup(t), leaderKeyPress)
+			m, _ := pressAction(t, tc.setup(t), keyRune(':'))
 			var row leaderRow
 			found := false
 			for _, r := range m.leader.rows {
@@ -184,29 +184,6 @@ func TestPlanApproveDimmedRowRunsNothing(t *testing.T) {
 	}
 	if want := "The plan cannot be approved: the plan is already approved."; gm.status != want {
 		t.Fatalf("notice = %q, want %q", gm.status, want)
-	}
-}
-
-// TestLeaderPlanApproveWordIsUnique pins the word the row is found by.
-// Load-bearing: "approve" is the query the owner types, so a second row
-// saying it would leave two rows and enter would run whichever is first; and
-// its first letter must be no row's key, or typing it would run that row
-// instead of filtering.
-func TestLeaderPlanApproveWordIsUnique(t *testing.T) {
-	if !strings.Contains(strings.ToLower(leaderNames[actionPlanApprove]+" "+leaderHelp[actionPlanApprove]), "approve") {
-		t.Fatal("the approve row does not say approve")
-	}
-	if a := leaderActionForKey("a"); a != actionNone {
-		t.Fatalf("a is %v's key; typing approve would run it", a)
-	}
-	for _, e := range leaderTable {
-		if e.action == actionPlanApprove {
-			continue
-		}
-		hay := strings.ToLower(leaderNames[e.action] + " " + leaderHelp[e.action] + " " + e.key)
-		if strings.Contains(hay, "approve") {
-			t.Errorf("%v also says approve: %q", e.action, hay)
-		}
 	}
 }
 

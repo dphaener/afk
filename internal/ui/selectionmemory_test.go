@@ -278,28 +278,6 @@ func TestSelectionMemoryRecordsTheSettledRow(t *testing.T) {
 	}
 }
 
-// TestSelectionMemoryIgnoresFilterDrivenMoves pins the one selection change
-// that must NOT be remembered: `/` jumps the cursor to the first match and every
-// key typed into the prompt moves it again, so recording there would overwrite
-// the user's real choice with whatever their query happened to match.
-func TestSelectionMemoryIgnoresFilterDrivenMoves(t *testing.T) {
-	m := testModel(runningSess("a"), runningSess("b"))
-	m.deps.OpenHostPane = refusingOpen(t, "filtering must not dial")
-
-	m, _ = pressAction(t, m, keyRune('/'))
-	if !m.list.SettingFilter() {
-		t.Fatal("setup: `/` did not open the filter prompt")
-	}
-	m, _ = update(t, m, keyRune('b'))
-
-	if len(m.rememberedSelection) != 0 {
-		t.Errorf("rememberedSelection = %#v, want nothing recorded while filtering", m.rememberedSelection)
-	}
-	if len(m.dirtySelections) != 0 {
-		t.Errorf("dirtySelections = %#v, want nothing pending while filtering", m.dirtySelections)
-	}
-}
-
 // --- flushing on the discovery tick -------------------------------------------
 
 // TestSelectionMemoryFlushesOnTick is the debounce: the 2s discovery tick is the

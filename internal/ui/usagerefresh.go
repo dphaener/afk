@@ -1,5 +1,5 @@
-// usagerefresh.go is the dashboard's "refresh usage" (T7.13): the leader row
-// (ctrl+] R) that takes a fresh usage reading with the same effect as
+// usagerefresh.go is the dashboard's "read usage" (T7.13): the `R` key (the
+// leader's R until T16.2) that takes a fresh usage reading with the same effect as
 // `afk usage --refresh`, the "Reading usage…" notice while it runs, and the
 // notice its result becomes.
 //
@@ -82,7 +82,7 @@ func usageRefreshBlockedReason(c leaderConds) string {
 	return ""
 }
 
-// refreshUsage is ctrl+] R. It calls nothing itself: the seam runs in the
+// refreshUsage is `R`. It calls nothing itself: the seam runs in the
 // command it returns, so Update never waits on the agent's CLI.
 //
 // The blocked reason comes first, so a dashboard without the seam says that

@@ -20,7 +20,9 @@ import (
 // --- helpers ---
 
 var (
-	keyP     = keyRune('p')
+	// keyP is the switcher's key since T16.2: `/`, jump (A3), which until
+	// T16.6 opens the project switcher.
+	keyP     = keyRune('/')
 	keyR     = keyRune('R')
 	keyCtrlT = tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl}
 	keyCtrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
@@ -79,8 +81,10 @@ func switcherWiringModel(t *testing.T) (Model, *fakePane, *perProjectSpy) {
 	fp := newFakePane(paneSentinel)
 	m.pane = fp
 	m.paneName = "one"
-	if !m.shouldRenderPane() {
-		t.Fatal("precondition: the pane must be on screen before the overlay opens")
+	// The pane is connected for the selected row and waits behind the
+	// Project, which draws the overview (W3.T1 of T16.2): enter shows it.
+	if !m.paneForSelection() || m.shouldRenderPane() {
+		t.Fatal("precondition: the pane must be connected behind the Project before the overlay opens")
 	}
 	return m, fp, spy
 }
@@ -97,14 +101,14 @@ func switcherWiringDiscoverFixture(repo string) []discover.SessionState {
 	return nil
 }
 
-// openSwitcherOverlay presses ctrl+] then `p` and asserts it opened, so every test below
+// openSwitcherOverlay presses `/` and asserts it opened, so every test below
 // starts from an overlay opened through the real key path rather than from a
 // hand-set flag.
 func openSwitcherOverlay(t *testing.T, m Model) Model {
 	t.Helper()
-	m = pressLeader(t, m, keyP)
+	m = pressKey(t, m, keyP)
 	if !m.switcherOpen {
-		t.Fatal("ctrl+] then `p` did not open the project switcher")
+		t.Fatal("`/` did not open the project switcher")
 	}
 	return m
 }
@@ -157,11 +161,6 @@ func scanSeams(d Deps, found ...string) Deps {
 // not on the pane being off-screen.
 func TestSwitcherOpensOverTheRunningPane(t *testing.T) {
 	m, fp, _ := switcherWiringModel(t)
-	before := render(m)
-	if !strings.Contains(before, paneSentinel) {
-		t.Fatalf("precondition: the pane should be rendered before `p`:\n%s", before)
-	}
-
 	m = openSwitcherOverlay(t, m)
 
 	view := render(m)
@@ -182,13 +181,15 @@ func TestSwitcherOpensOverTheRunningPane(t *testing.T) {
 		t.Errorf("`p` was forwarded to the session as %v/%v, want nothing", fp.keys, fp.texts)
 	}
 
-	// Esc puts the pane back on screen, proving it stayed alive underneath.
+	// Esc closes the overlay and enter puts the pane on screen, proving it
+	// stayed alive underneath.
 	m, _ = update(t, m, keyEscMsg())
 	if m.switcherOpen {
 		t.Error("esc did not close the overlay")
 	}
+	m, _ = update(t, m, keyEnter)
 	if after := render(m); !strings.Contains(after, paneSentinel) {
-		t.Errorf("the pane should be rendered again after esc:\n%s", after)
+		t.Errorf("the pane should be rendered in the Agent after esc and enter:\n%s", after)
 	}
 }
 
@@ -399,7 +400,7 @@ func TestSwitcherMouseIsDroppedWhileTheOverlayIsUp(t *testing.T) {
 
 // TestPWhileThePaneIsFocusedReachesTheSession pins the precondition that makes
 // "overlay open AND pane focused" all but unreachable: a focused pane owns every
-// key, `p` included, so the overlay cannot be opened from there at all. Without
+// key, `/` included, so the overlay cannot be opened from there at all. Without
 // this row, the precedence chosen for that combination would look arbitrary.
 func TestPWhileThePaneIsFocusedReachesTheSession(t *testing.T) {
 	m, fp, _ := switcherWiringModel(t)
@@ -408,10 +409,10 @@ func TestPWhileThePaneIsFocusedReachesTheSession(t *testing.T) {
 	m, _ = update(t, m, keyP)
 
 	if m.switcherOpen {
-		t.Error("`p` must not open the overlay while the pane owns the keyboard")
+		t.Error("`/` must not open the overlay while the pane owns the keyboard")
 	}
-	if len(fp.texts) != 1 || fp.texts[0] != "p" {
-		t.Fatalf("forwarded %v to the session, want [p]", fp.texts)
+	if len(fp.texts) != 1 || fp.texts[0] != "/" {
+		t.Fatalf("forwarded %v to the session, want [/]", fp.texts)
 	}
 }
 

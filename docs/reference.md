@@ -164,7 +164,7 @@ For a session without a worktree of its own (a status directory whose carrying w
 
 When a stranded entry and a broken worktree share a name, `afk clean {name}` cleans the stranded entry first (it runs no git, so it is the safer path) and reports that another entry with that name remains, so a second `afk clean {name}` reaches the fault.
 
-The dashboard's `ctrl+] c` routes to the matching path above by session kind, with kind-specific confirmation prompts.
+The dashboard's `c` routes to the matching path above by session kind, with kind-specific confirmation prompts.
 
 **Example:**
 
@@ -233,6 +233,28 @@ afk dash --open my-session
 
 ---
 
+## `afk dash` — Launch the dashboard
+
+```bash
+afk dash [options]
+```
+
+Opens the full-screen terminal dashboard, which has three levels: All projects, Project and Agent (`enter` goes in, `esc` comes out). The keys, panels and settings are on [the dashboard page](dashboard.md#afk-dash--launch-the-dashboard). A bare `afk` on a terminal does the same (see [Default action](#default-action--afk-with-no-arguments)). It needs a terminal on stdout.
+
+**Options:**
+
+- `--interval DURATION` — How often session discovery is read again (default `2s`; for example `500ms`, `1s`, `5s`). It reads files only and never blocks the screen. It does not change where the dashboard starts.
+- `--project PATH` — Use `PATH`'s repo as the project in view instead of the current directory's, and start on that project's view (Project, with All projects behind it). `~/` is expanded. A `PATH` that is not a git repo is not an error: the dashboard starts on All projects with no project in view.
+- `--open NAME` — Start in that session's Agent, with the keyboard in the agent (a stopped host is restarted first). With no project in view it starts on All projects and says the session was not found; inside a project with a name that does not exist, it starts on that project's view and says so. `afk new` hands its terminal over this way.
+
+**Where it starts.** Inside a project's repo: Project, with All projects behind it. Anywhere else: All projects. With `--project`: that project's view. With `--open`: the session's Agent.
+
+**Keys.** At All projects and Project a key works alone (`n`, `c`, `r`, `p`, `i`, `/` and so on). In the Agent every key goes to the agent; `ctrl+]` (the leader) then a key runs that key, `ctrl+]` twice sends one to the agent, and a key the strip does not list closes it and sends nothing. `:` searches every action by name and `?` lists the keys.
+
+**Exit codes:** `0` on a normal quit, `1` when it cannot start (no working directory or home, or a `--project` path it cannot resolve), `2` for an unknown flag.
+
+---
+
 ## `afk notify` — Send a desktop notification
 
 Send a desktop notification about a session event (used primarily by hooks). Desktop notifications are **macOS-only**.
@@ -259,7 +281,7 @@ Spawns a detached watcher that delivers the notification via `alerter` (full-fid
 - **App icon**: afk's app icon (the same picture the installed web page uses) if available, omitted silently if missing
 - **Sound**: Backend-specific (`default` for alerter, `Ping` for osascript)
 
-**Click-to-focus:** When `alerter` is present and a `afk dash` is running (which records pane metadata for every project it knows about, not just the one it launched in), the notification includes a Focus button. Clicking it switches the dashboard to the session's project first if that project isn't already active, then switches the tmux client to the dashboard's pane and focuses the right side on the named session. A running session is connected and its pane takes your keystrokes; a stopped one shows its overview with a hint to press `ctrl+] r` (a click never restarts a host). Without a running dashboard the toast still appears with correct formatting, sound, and grouping — it just has no Focus button. This is correct by design: a button that cannot act is worse than no button.
+**Click-to-focus:** When `alerter` is present and a `afk dash` is running (which records pane metadata for every project it knows about, not just the one it launched in), the notification includes a Focus button. Clicking it switches the dashboard to the session's project first if that project isn't already active, then switches the tmux client to the dashboard's pane and focuses the right side on the named session. A running session is connected and its pane takes your keystrokes; a stopped one shows its overview with a hint to press `r` (a click never restarts a host). Without a running dashboard the toast still appears with correct formatting, sound, and grouping — it just has no Focus button. This is correct by design: a button that cannot act is worse than no button.
 
 **Degradation:** If no notifier is found, exits 0 silently (hook contract: notification absence is not an error). Always exits 0, even on failure (broken pane metadata, stale PID, etc.) — failed notifications do not fail the caller.
 
@@ -360,7 +382,7 @@ afk plan advance [--project DIR]
 - `--provider NAME` — The agent to run: `claude`, `codex` or `opencode`. Planning sessions work with the default agent only for now; any other prints that and exits 1. An unknown name exits 2.
 - `--dry-run` — Print what would happen (the project, whether it would run `git init`, whether the session would start, resume or be reattached, and the command it runs) and change nothing.
 
-**Changing a plan that exists.** `extend`, `amend`, `reconcile` and `fix` start a planning session that changes the plan instead of writing one. They take `--project`, `--provider` and `--dry-run`, and need a terminal. Each refuses a project with no plan (run `afk plan` first) and refuses while another planning session is open (run `afk plan` to go back to it). The session changes the plan only through `afk plan patch`, `insert` and `depend` (see below), so every change is checked before it is written, and it lists each change in `.afk/plan/changes.md`. The same four can be started from `afk dash` by name, from its actions dialog; see [`afk dash`](dashboard.md#afk-dash--launch-the-dashboard), where the rows are described. The dashboard asks for the same sentence or path and refuses for the same reasons. The web page's project screen starts the same four: its **Change the plan** section has a row for each, and each opens a confirm before anything starts (see [the web page](web.md#the-web-page)).
+**Changing a plan that exists.** `extend`, `amend`, `reconcile` and `fix` start a planning session that changes the plan instead of writing one. They take `--project`, `--provider` and `--dry-run`, and need a terminal. Each refuses a project with no plan (run `afk plan` first) and refuses while another planning session is open (run `afk plan` to go back to it). The session changes the plan only through `afk plan patch`, `insert` and `depend` (see below), so every change is checked before it is written, and it lists each change in `.afk/plan/changes.md`. The same four can be started from `afk dash` by name, from its `:` actions search; see [`afk dash`](dashboard.md#afk-dash--launch-the-dashboard), where the rows are described. The dashboard asks for the same sentence or path and refuses for the same reasons. The web page's project screen starts the same four: its **Change the plan** section has a row for each, and each opens a confirm before anything starts (see [the web page](web.md#the-web-page)).
 
 - **`afk plan extend`** adds a milestone. For when the project has grown a new part. The session asks what the milestone is for, then follows the phases `brief`, `survey`, `rounds`, `slices`, `draft`, `check`, `review`. It is the only change with a critic: `critic.md` must exist before `check` passes.
 - **`afk plan amend "<what>"`** adds, splits or replaces one task. For a small change you can put in a sentence; the sentence is saved as the brief. The phases are `brief`, `survey`, `draft`, `check`, `review`, with no questions round. The session shows you the entry and asks you to confirm it before adding it; `--yes` skips that confirmation. `--yes` does not remove the need for a terminal.
@@ -390,7 +412,7 @@ The nine phases, in order:
 
 When a new plan reaches `review`, afk also notes it on a list of plans waiting for approval (so the web page can show it, see [the web page](web.md)). Nothing is sent to your phone for it. A failure to write the entry is a one-line note and never stops the phase.
 
-**`afk plan approve`** is your "go". Run it in the project, or give `--project DIR`. The dashboard's **approve the plan** action (type `approve` in `afk dash`, see [the actions dialog](dashboard.md#afk-dash--launch-the-dashboard)) runs the same steps behind a confirm. The web page can approve too: a new plan at review gets **Approve the plan…** on its plan page (see [the web page](web.md)), behind a confirm that names the project, the plan's path and the counts, and it runs the same steps in the same order.
+**`afk plan approve`** is your "go". Run it in the project, or give `--project DIR`. The dashboard's **approve the plan** action (type `approve` in the `:` actions search of `afk dash`, see [the dashboard](dashboard.md#afk-dash--launch-the-dashboard)) runs the same steps behind a confirm. The web page can approve too: a new plan at review gets **Approve the plan…** on its plan page (see [the web page](web.md)), behind a confirm that names the project, the plan's path and the counts, and it runs the same steps in the same order.
 
 ```bash
 afk plan approve [--project DIR]
@@ -593,7 +615,7 @@ afk ledger set T4.2 superseded --replaced-by T4.2a,T4.2b
 afk next        # names the first task still to do
 ```
 
-In the dashboard, `ctrl+] S` on the Build tab does the same for the task under the cursor, through the same code, after a yes. Running the same command twice changes nothing the second time. Several of these commands can run at once; they take turns using a lock file.
+In the dashboard, `s` on the Build tab does the same for the task under the cursor, through the same code, after a yes. Running the same command twice changes nothing the second time. Several of these commands can run at once; they take turns using a lock file.
 
 **Exit codes:** 0 when the task has the status (changed now or already), 1 when the plan or ledger could not be used or the task is not in the plan, 2 when the command was written wrongly (for example an unknown status).
 
@@ -640,7 +662,7 @@ Governor: run. Usage is within the limits, so afk is running.
 ```
 
 - `--provider NAME` — Which agent to read. Defaults to the default provider.
-- `--refresh` — Read the numbers again even if a recent reading is stored. The dashboard's refresh usage action (`ctrl+] R` in `afk dash`) does the same as `--refresh`, and so does the **Refresh usage** button on the web page (`/usage`, served by `afk daemon`; see the web page section).
+- `--refresh` — Read the numbers again even if a recent reading is stored. The dashboard's refresh usage action (`R` in `afk dash`, `ctrl+] R` from the Agent) does the same as `--refresh`, and so does the **Refresh usage** button on the web page (`/usage`, served by `afk daemon`; see the web page section).
 
 A reading less than 5 minutes old is reused, and the report then says how long ago it was read ("less than a minute ago", "3 min ago"). Anything older, or `--refresh`, asks the agent again; that costs no model usage. The probe runs from afk's state directory, not from the folder you ran `afk usage` in, so it leaves no records in your project. The last reading is saved per machine in `usage.json` under `$XDG_STATE_HOME/afk/` when that is set to an absolute path, otherwise `~/.local/state/afk/`. If a probe fails and an earlier reading exists, the report shows that one and exits 1.
 
@@ -713,7 +735,7 @@ afk tokens [--project PATH] [--record] [SESSION|TASK]
 ```
 
 - No argument — Totals per task, read from the ledger.
-- `TASK` — A task id such as `T1.4`: that task's lines from the ledger. Use this for a session that has been cleaned. `afk dash` shows the same table for the selected Build tab task (`ctrl+] T`).
+- `TASK` — A task id such as `T1.4`: that task's lines from the ledger. Use this for a session that has been cleaned. `afk dash` shows the same table for the selected Build tab task (`t`).
 - `SESSION` — A session name: reads the session's transcripts now, including its sub-agents, and prints a header (session, task or `no task`, number of calls) and the table. The task id is the first `T<n>.<n>` in `.afk/<session>/description.md`.
 - `--record` — Only with a session name. After printing, adds the session's lines to the ledger. A session that already has lines in the ledger is not added again; the command prints `already recorded` and changes nothing.
 - `--project PATH` — The project to work in. Defaults to the current directory.
@@ -765,7 +787,7 @@ afk sessions are **detached processes**: the session host runs independently in 
 
 - **N concurrent sessions**: Create and run multiple sessions independently in the same repo
 - **Non-exclusive attachment**: Only one client can be connected at a time (a new attach disconnects the previous one), but the session itself is not exclusive — you can detach, do other work, and reattach later
-- **Host restart**: If a session's host crashes or is killed, `afk dash` can restart it (press `ctrl+] r` on the selected session)
+- **Host restart**: If a session's host crashes or is killed, `afk dash` can restart it (press `r` on the selected session at Project)
 - **Persistence across tool availability**: Whether or not git-spice, worktrunk, or notifiers are installed, sessions are created and remain runnable
 
 The three attach outcomes are:
@@ -794,22 +816,22 @@ A one-off (`--scratch`) runs the bare CLI for its provider: `claude`, `codex`, o
 **Unverified against the real OpenCode TUI** (OpenCode 2.0.24 is beta):
 
 - The `--prompt "/afk-go …"` launch is not confirmed. The afk port's prompt hook expands a leading `/afk-go`, which should cover it either way. The prompt lives in one const, `opencodeConductorPrompt` in `internal/provider/provider.go`.
-- Liveness detects a wedged child by nudging it with SIGWINCH and expecting a repaint. Whether the OpenCode TUI repaints on SIGWINCH is not confirmed. A healthy opencode session can then show as wedged (⚠) until its output resumes. Restart is still a confirmed manual action (`ctrl+] r`), so a false wedge costs a stale cell, not a kill.
+- Liveness detects a wedged child by nudging it with SIGWINCH and expecting a repaint. Whether the OpenCode TUI repaints on SIGWINCH is not confirmed. A healthy opencode session can then show as wedged (⚠) until its output resumes. Restart is still a confirmed manual action (`r` at Project), so a false wedge costs a stale cell, not a kill.
 
 A host restart resumes the conversation by its id (the `session_id` in status.json) with the provider's resume argv in the table above. A dashboard relaunch of a stopped session reads the same sidecar, so a stopped Codex or OpenCode session relaunches under its own CLI, not `claude`. A sidecar naming an unknown provider is an error, never a fallback to `claude`.
 
-**From the dashboard.** The `ctrl+] n` form's Provider selector (see [the dashboard](dashboard.md)) creates a session under any provider. Picking `codex` ticks Autonomous, and the form won't submit `codex` with Autonomous unticked. The `ctrl+] o` action opens a provider picker that defaults to Claude (see `ctrl+] o` above), and `afk new --scratch --provider codex` (or `opencode`) creates a one-off for another provider from a shell. Non-default sessions show their provider on the row, in the detail head, and in the `ctrl+] /` filter. Claude sessions don't show anything extra.
+**From the dashboard.** The dashboard's `n` form's Provider selector (see [the dashboard](dashboard.md)) creates a session under any provider. Picking `codex` ticks Autonomous, and the form won't submit `codex` with Autonomous unticked. The `o` key opens a provider picker that defaults to Claude (see the `o` key above), and `afk new --scratch --provider codex` (or `opencode`) creates a one-off for another provider from a shell. Non-default sessions show their provider on the row, in the detail head, and in the project switcher's filter. Claude sessions don't show anything extra.
 
 ### One-off Sessions
 
-A one-off session (created via `afk new --scratch` or the dashboard's `ctrl+] o`) is a lightweight alternative to a planned session:
+A one-off session (created via `afk new --scratch` or the dashboard's `o`) is a lightweight alternative to a planned session:
 
 - **No branch, no worktree, no plan, no `status.json`** — only a `.afk/{name}/` directory containing `host.json` and `host.log` (the host's socket lives outside it, under `os.TempDir()/afk-{uid}/`)
 - **Discovered via `host.json`** — rather than through the status.json/branch/worktree reconciliation that planned sessions use, making them legitimate even without a conductor or a plan
-- **Bare CLI for the chosen provider in the repo root** — `claude` by default, or `codex` / `opencode --standalone` when created with `--provider` or the `ctrl+] o` picker. Runs with full repo context but no planning workflow, ideal for quick explorations or ad-hoc help
+- **Bare CLI for the chosen provider in the repo root** — `claude` by default, or `codex` / `opencode --standalone` when created with `--provider` or the `o` picker. Runs with full repo context but no planning workflow, ideal for quick explorations or ad-hoc help
 - **Cleaned without phase gate** — `afk clean <scratch-N>` removes it directly with no "is it done?" check, since there is no work to lose
 - **Auto-named `scratch-N`** — when created without an explicit name, the system allocates the lowest available slot (reusing gaps from cleaned sessions)
-- **Mutable display label** — press `ctrl+] l` in the dashboard to rename it in the UI without changing the on-disk identity at `.afk/{name}/`
+- **Mutable display label** — press `l` at Project in the dashboard to rename it in the UI without changing the on-disk identity at `.afk/{name}/`
 
 ---
 

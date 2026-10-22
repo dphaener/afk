@@ -20,5 +20,5 @@
 │                            ││                                                │
 │                            ││ Stack     main › feat-auth                     │
 │                            ││                                             0% │
-╰────────────────────────────╯╰─ enter: focus view · ctrl+] c: clean · ctrl+… ─╯
+╰────────────────────────────╯╰──────────── enter: open · c: clean · l: label ─╯
 enter start · esc cancel · ctrl+g release mouse · ctrl+c quit                   

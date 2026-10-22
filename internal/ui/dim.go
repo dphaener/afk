@@ -25,10 +25,10 @@ import (
 // the dialog is about.
 const overlayDim = 0.7
 
-// keyStripDim is the lighter dimming the ctrl+] key strip will use (§3.9: 50%),
+// keyStripDim is the lighter dimming the ctrl+] key strip uses (§3.9: 50%),
 // because the strip is open for a moment and the agent's output under it
-// should stay readable. Nothing draws the key strip yet; T16.2 does, and it
-// passes this to dimFrame instead of overlayDim.
+// should stay readable. composeKeyStrip (keystrip.go) passes this to
+// dimFrame instead of overlayDim.
 const keyStripDim = 0.5
 
 // dimFrame returns frame with every cell dimmed amount (0..1) of the way

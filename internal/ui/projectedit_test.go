@@ -42,13 +42,25 @@ func projectEditModel(t *testing.T) (Model, *projectEditSeam, *allProjectsSeam) 
 	return openAllProjects(t, m), seam, rows
 }
 
-// openAddForm is ctrl+] + with the folder field emptied, so a test types
+// closeAllProjects leaves the All projects level the way the owner does:
+// enter on the active project's row, back to its view.
+func closeAllProjects(t *testing.T, m Model) Model {
+	t.Helper()
+	m = cursorOn(t, m, "/repo")
+	m, _ = update(t, m, keyEnter)
+	if m.allProjectsOpen {
+		t.Fatal("setup: enter on the active project left the screen open")
+	}
+	return m
+}
+
+// openAddForm is `+` with the folder field emptied, so a test types
 // the whole folder itself.
 func openAddForm(t *testing.T, m Model) Model {
 	t.Helper()
 	m, _ = pressAction(t, m, keyRune('+'))
 	if m.modal != inputProjectAddFolder {
-		t.Fatalf("setup: ctrl+] + left modal %v, want the folder step", m.modal)
+		t.Fatalf("setup: + left modal %v, want the folder step", m.modal)
 	}
 	m.projectAddInput.SetValue("")
 	return m
@@ -58,9 +70,8 @@ func openAddForm(t *testing.T, m Model) Model {
 // bearing rows: "away from the screen" for both (the rows act on the screen's
 // rows, and must not run where those are not shown), "remove on an unlisted
 // row is dimmed" (the start-up project has no entry, and its reason names it
-// with its own case), "a seam beats the screen" (opening the screen would not
-// help), and "other rows over the screen are unchanged", which pins that
-// adding these two did not open the screen to anything else.
+// with its own case) and "a seam beats the screen" (opening the screen would
+// not help).
 func TestProjectEditBlockedReason(t *testing.T) {
 	both := leaderConds{leader: defaultLeaderKey, canAddProject: true, canRemoveProject: true, allProjectsOpen: true,
 		projectRowSelected: true, projectRowListed: true, projectRowName: "alpha"}
@@ -84,7 +95,6 @@ func TestProjectEditBlockedReason(t *testing.T) {
 		{"remove on an unlisted row is dimmed", actionProjectRemove,
 			with(func(c *leaderConds) { c.projectRowListed = false; c.projectRowName = "repo" }),
 			"repo is not in config.toml, so there is nothing to remove."},
-		{"other rows over the screen are unchanged", actionNewSession, both, allProjectsCloseFirst},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,26 +105,25 @@ func TestProjectEditBlockedReason(t *testing.T) {
 	}
 }
 
-// TestProjectEditRowsDimmedAwayFromTheScreen opens the dialog on the session
-// list with both seams wired: both rows are dimmed with the way to the
-// screen, and their keys run nothing.
+// TestProjectEditRowsDimmedAwayFromTheScreen opens the `:` search on the
+// session list with both seams wired: both rows are dimmed with where they
+// work (All projects), and their keys are no keys at Project, so they run
+// nothing.
 func TestProjectEditRowsDimmedAwayFromTheScreen(t *testing.T) {
 	m, seam, _ := projectEditModel(t)
-	m, _ = update(t, m, keyEsc)
-	if m.allProjectsOpen {
-		t.Fatal("setup: esc left the screen open")
-	}
-	m, _ = update(t, m, leaderKeyPress)
+	m = closeAllProjects(t, m)
+	search, _ := pressAction(t, m, keyRune(':'))
+	want := levelsReason(atAllProjects, defaultLeaderKey)
 	for _, a := range []modeAction{actionProjectAdd, actionProjectRemove} {
-		r, ok := leaderRowFor(m.leader.rows, a)
-		if !ok || r.blocked != projectEditOpenScreenFirst(defaultLeaderKey) {
-			t.Errorf("%v row blocked %q, want %q", a, r.blocked, projectEditOpenScreenFirst(defaultLeaderKey))
+		r, ok := leaderRowFor(search.leader.rows, a)
+		if !ok || r.blocked != want {
+			t.Errorf("%v row blocked %q, want %q", a, r.blocked, want)
 		}
 	}
 	for _, k := range []rune{'+', '-'} {
 		got, _ := update(t, m, keyRune(k))
-		if got.modal != inputNormal || !got.leaderOpen {
-			t.Errorf("%c away from the screen: modal %v, dialog open %v; want nothing run", k, got.modal, got.leaderOpen)
+		if got.modal != inputNormal || got.leaderOpen {
+			t.Errorf("%c away from the screen: modal %v, search open %v; want nothing run", k, got.modal, got.leaderOpen)
 		}
 	}
 	if len(seam.adds)+len(seam.removes) != 0 {
@@ -320,8 +329,8 @@ func TestProjectEditRemove(t *testing.T) {
 	t.Run("remove dimmed on the unlisted row", func(t *testing.T) {
 		m, seam, _ := projectEditModel(t)
 		m = cursorOn(t, m, "/repo")
-		m, _ = update(t, m, leaderKeyPress)
-		r, ok := leaderRowFor(m.leader.rows, actionProjectRemove)
+		search, _ := pressAction(t, m, keyRune(':'))
+		r, ok := leaderRowFor(search.leader.rows, actionProjectRemove)
 		if !ok || r.blocked != projectRemoveNotListed("repo") {
 			t.Fatalf("remove row blocked %q, want %q", r.blocked, projectRemoveNotListed("repo"))
 		}
@@ -456,7 +465,7 @@ func TestProjectEditRereads(t *testing.T) {
 	}
 	t.Run("a result after the screen closed is still told", func(t *testing.T) {
 		m, _, rows := projectEditModel(t)
-		m, _ = update(t, m, keyEsc)
+		m = closeAllProjects(t, m)
 		before := rows.calls
 		m, cmd := update(t, m, projectAddedMsg{dir: "/p/new", gen: m.projectGen, openGen: m.allProjectsGen,
 			result: ProjectEditResult{ProjectAdded, "Added new."}})

@@ -1,4 +1,4 @@
- afk Dashboard                                                                                        ctrl+] p: projects
+ afk Dashboard                                                                                               /: projects
 ╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
 │ api                                       ││ feat-auth                                                               │
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
@@ -36,5 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
+╰───────────────────────────────────────────╯╰───────────────────────────────────── enter: open · c: clean · l: label ─╯
 enter switch · ↑/↓ move · / filter · R rescan · esc close · ctrl+c quit                                                 

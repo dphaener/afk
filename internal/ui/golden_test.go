@@ -242,11 +242,9 @@ func TestGoldenDashboardFrames(t *testing.T) {
 
 // TestGoldenModals pins two floating overlays at 120×40 over the fixture
 // dashboard: the project switcher and the creation form. Each is opened
-// through its own key after the leader (ctrl+] p, ctrl+] n) so the
-// frame is the one a user sees.
+// through its own key (`/`, `n`) so the frame is the one a user sees.
 func TestGoldenModals(t *testing.T) {
 	open := func(t *testing.T, m Model, k tea.KeyPressMsg) Model {
-		m, _ = update(t, m, leaderKeyPress)
 		m, cmd := update(t, m, k)
 		return pumpForm(t, m, cmd, 0)
 	}
@@ -254,9 +252,9 @@ func TestGoldenModals(t *testing.T) {
 		m := goldenModel(t, 120, 40)
 		m.projects = []project.Project{{Path: "/repo", Name: "api"}, {Path: "/repos/afk", Name: "afk"}}
 		m.activeProject = 0
-		m = open(t, m, keyRune('p').(tea.KeyPressMsg))
+		m = open(t, m, keyRune('/').(tea.KeyPressMsg))
 		if !m.switcherOpen {
-			t.Fatal("p did not open the switcher")
+			t.Fatal("/ did not open the switcher")
 		}
 		assertGolden(t, "dash-120x40-switcher", render(m))
 	})
@@ -270,35 +268,82 @@ func TestGoldenModals(t *testing.T) {
 		}
 		assertGolden(t, "dash-120x40-form", render(m))
 	})
-	// The actions dialog the leader key opens, at both sizes: at 120 columns
-	// the help lines fit, at 80 they are cut at the box edge, never wrapped.
-	// The fixture has no build, so the build rows show their dimmed reason.
+	// The `:` actions search, at both sizes: at 120 columns the help lines
+	// fit, at 80 they are cut at the box edge, never wrapped. The fixture has
+	// no build, so the build rows show their dimmed reason, and the actions
+	// that work at another level show where they do.
 	for _, size := range []struct {
 		name string
 		w, h int
 	}{
-		{"dash-80x24-leader", 80, 24},
-		{"dash-120x40-leader", 120, 40},
+		{"dash-80x24-actions", 80, 24},
+		{"dash-120x40-actions", 120, 40},
 	} {
 		t.Run(size.name, func(t *testing.T) {
-			m, _ := update(t, goldenModel(t, size.w, size.h), leaderKeyPress)
+			m, _ := update(t, goldenModel(t, size.w, size.h), keyRune(':'))
 			if !m.leaderOpen {
-				t.Fatal("ctrl+] did not open the actions dialog")
+				t.Fatal(": did not open the actions search")
 			}
 			assertGolden(t, size.name, render(m))
 		})
 	}
+	// The key strip the leader shows in the Agent (§4.8), at both sizes: the
+	// pane in the bottom-right corner over the lightly dimmed frame, and the
+	// status bar waiting for an afk key.
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-80x24-keystrip", 80, 24},
+		{"dash-120x40-keystrip", 120, 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m := goldenModel(t, size.w, size.h)
+			s, _ := m.selected()
+			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("agent output"), name: s.Name})
+			m, _ = update(t, m, keyEnter)
+			m, _ = update(t, m, leaderKeyPress)
+			if !m.keyStripShown() {
+				t.Fatal("ctrl+] in the agent did not show the key strip")
+			}
+			m.clearStatus()
+			assertGolden(t, size.name, render(m))
+		})
+	}
+	// The Agent (§4.3, W3.T1 of T16.2): the agent's pane over the dimmed
+	// Project at §3.8's width (the screen less one column each side), its
+	// strip "Agent · feat-auth" with the agent context, and the status bar
+	// left at full strength.
+	t.Run("dash-120x40-agent", func(t *testing.T) {
+		m := goldenModel(t, 120, 40)
+		s, _ := m.selected()
+		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("agent output"), name: s.Name})
+		m, _ = update(t, m, keyEnter)
+		if m.level() != levelAgent || !m.shouldRenderPane() {
+			t.Fatal("enter did not open the agent")
+		}
+		m.clearStatus()
+		assertGolden(t, "dash-120x40-agent", render(m))
+	})
+	// The keys overlay (§4.9): the path, the agent rule in the alert band,
+	// then the keys in two columns by level.
+	t.Run("dash-120x40-keys", func(t *testing.T) {
+		m, _ := update(t, goldenModel(t, 120, 40), keyRune('?'))
+		if !m.keysOpen {
+			t.Fatal("? did not open the keys overlay")
+		}
+		assertGolden(t, "dash-120x40-keys", render(m))
+	})
 }
 
 // TestGoldenDialogs pins the five confirmation/prompt dialogs at 120×40 over
 // the fixture dashboard: the clean confirmation (on the selected feat-auth),
 // the restart confirmation (on a wedged fixture), the label editor, the
-// failed-create report, and the one-off provider picker (fresh from ctrl+] o, so
+// failed-create report, and the one-off provider picker (fresh from o, so
 // on its default row).
 func TestGoldenDialogs(t *testing.T) {
 	t.Run("dash-120x40-clean", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
-		m, _ = update(t, m, leaderKeyPress)
 		m, cmd := update(t, m, keyRune('c'))
 		m = pumpForm(t, m, cmd, 0)
 		if m.modal != inputConfirmClean {
@@ -311,7 +356,7 @@ func TestGoldenDialogs(t *testing.T) {
 		sessions := goldenSessions()
 		sessions[0].WedgedSince = goldenNow.Add(-12 * time.Minute).UTC().Format(time.RFC3339)
 		m.setSessions(sessions)
-		m = pressLeader(t, m, keyRune('r'))
+		m = pressKey(t, m, keyRune('r'))
 		if m.modal != inputConfirmRestart {
 			t.Fatal("r did not open the restart confirmation")
 		}
@@ -319,7 +364,7 @@ func TestGoldenDialogs(t *testing.T) {
 	})
 	t.Run("dash-120x40-label", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
-		m = pressLeader(t, m, keyRune('l'))
+		m = pressKey(t, m, keyRune('l'))
 		if m.modal != inputEditLabel {
 			t.Fatal("l did not open the label editor")
 		}
@@ -338,7 +383,7 @@ func TestGoldenDialogs(t *testing.T) {
 	})
 	t.Run("dash-120x40-provider-picker", func(t *testing.T) {
 		m := goldenModel(t, 120, 40)
-		m = pressLeader(t, m, keyRune('o'))
+		m = pressKey(t, m, keyRune('o'))
 		if m.modal != inputPickProvider {
 			t.Fatal("o did not open the provider picker")
 		}
@@ -514,7 +559,7 @@ func goldenInbox() buildview.Snapshot {
 func TestGoldenInbox(t *testing.T) {
 	m := goldenModel(t, 120, 40)
 	m, _ = update(t, m, buildLoadedMsg{snap: goldenInbox(), gen: m.projectGen})
-	m = pressLeader(t, m, keyRune('i'))
+	m = pressKey(t, m, keyRune('i'))
 	if !m.inboxOpen {
 		t.Fatal("i did not open the inbox")
 	}
@@ -532,23 +577,24 @@ func TestGoldenInbox(t *testing.T) {
 }
 
 // TestGoldenBuildTab pins the Build tab at 120×40 over the fixture dashboard,
-// reached the way a user reaches it: the build's data arrives, then `b`. The
+// reached the way a user reaches it: the build's data arrives, then `d` and
+// tab to Build (openBuildTab). The
 // notice that key raises is cleared before the frame is taken, because a toast
 // floats over the pane's top corner and would hide the tab strip, which is
 // the part of this frame a layout change is most likely to move.
 func TestGoldenBuildTab(t *testing.T) {
 	m := goldenModel(t, 120, 40)
 	m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
-	m = pressLeader(t, m, keyRune('b'))
+	m = openBuildTab(t, m)
 	if m.activeDetailTab() != tabBuild || m.focus != focusRight {
-		t.Fatalf("b did not open the Build tab (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
+		t.Fatalf("d and tab did not open the Build tab (tab=%v focus=%v)", m.activeDetailTab(), m.focus)
 	}
 	m.clearStatus()
 	assertGolden(t, "dash-build-120x40", render(m))
 }
 
 // TestGoldenBuildCursor pins the Build tab's task cursor (T7.11) at both
-// sizes, reached the way a user moves it: `b`, then the arrow keys. At 120×40
+// sizes, reached the way a user moves it: d and tab, then the arrow keys. At 120×40
 // it is moved two rows down from the current task, so the frame shows the
 // gutter on every row and the selection on a row that is not where the cursor
 // starts. At 80×24 it is sent to the last task with end, the case where the
@@ -567,7 +613,7 @@ func TestGoldenBuildCursor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := goldenModel(t, tc.w, tc.h)
 			m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
-			m = pressLeader(t, m, keyRune('b'))
+			m = openBuildTab(t, m)
 			for _, k := range tc.keys {
 				m, _ = update(t, m, k)
 			}
@@ -581,8 +627,8 @@ func TestGoldenBuildCursor(t *testing.T) {
 }
 
 // TestGoldenTaskStatusConfirm pins the "set this task's status" confirm
-// (T7.11) at both sizes, reached the way a person reaches it: `b`, the cursor
-// moved to the failed task, ctrl+] S, the highlight moved to pending, and
+// (T7.11) at both sizes, reached the way a person reaches it: d and tab, the
+// cursor moved to the failed task, s, the highlight moved to pending, and
 // enter. The frame shows the change, what follows from it and the y/n hint;
 // at 80×24 the dialog is narrowest and the consequence has to wrap. The seam
 // is a stand-in that is never called: nothing is pressed after the confirm.
@@ -601,7 +647,7 @@ func TestGoldenTaskStatusConfirm(t *testing.T) {
 				return TaskStatusResult{}
 			}
 			m, _ = update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
-			m = pressLeader(t, m, keyRune('b'))
+			m = openBuildTab(t, m)
 			for m.buildCursorID != "T2.3" {
 				before := m.buildCursorIndex
 				m, _ = update(t, m, keyDown)
@@ -609,7 +655,7 @@ func TestGoldenTaskStatusConfirm(t *testing.T) {
 					t.Fatal("the cursor did not reach T2.3")
 				}
 			}
-			m = pressLeader(t, m, keyRune('S'))
+			m = pressKey(t, m, keyRune('s'))
 			for m.taskStatusPick > 0 {
 				m, _ = update(t, m, keyUp)
 			}
@@ -625,7 +671,7 @@ func TestGoldenTaskStatusConfirm(t *testing.T) {
 
 // TestGoldenTaskTokens pins the tokens overlay (T7.12) at both sizes, reached
 // the way a person reaches it: the build read lands and the cursor's task's
-// tokens are read, then `b`, then ctrl+] T. At 120x40 the box shows the
+// tokens are read, then d and tab, then t. At 120x40 the box shows the
 // command's full table, cache columns included; at 80x24 the full table does
 // not fit and the compact one is shown. The cursor row behind the box has no
 // room for its short total at either size (the detail pane is narrower than
@@ -644,10 +690,10 @@ func TestGoldenTaskTokens(t *testing.T) {
 			m.deps.LoadTaskTokens = func(root, task string) TaskTokens { return tokensFixture(task) }
 			m, cmd := update(t, m, buildLoadedMsg{snap: goldenBuild(), gen: m.projectGen})
 			m, _ = update(t, m, runTokensCmd(t, cmd))
-			m = pressLeader(t, m, keyRune('b'))
-			m = pressLeader(t, m, keyRune('T'))
+			m = openBuildTab(t, m)
+			m = pressKey(t, m, keyRune('t'))
 			if !m.taskTokensOpen {
-				t.Fatal("ctrl+] T did not open the overlay")
+				t.Fatal("t did not open the overlay")
 			}
 			m.clearStatus()
 			assertGolden(t, size.name, render(m))
@@ -656,7 +702,7 @@ func TestGoldenTaskTokens(t *testing.T) {
 }
 
 // TestGoldenPlanStart pins the plan actions' screens (T7.3): the amend form
-// at both sizes, reached the way a person reaches it (ctrl+], "amend",
+// at both sizes, reached the way a person reaches it (`:`, "amend",
 // enter) with a sentence typed, and the fix form the same way (T13.6); the
 // reconcile form after a blank enter, so the line saying what is missing is
 // framed; and the open-it offer raised
@@ -723,7 +769,7 @@ func TestGoldenPlanStart(t *testing.T) {
 
 // TestGoldenPlanCheck pins the check-the-plan overlay (T7.7) at both sizes,
 // reached the way a person reaches it: the plan status read lands, then
-// ctrl+], "errors", enter. The fixture lists a warning before the errors
+// `:`, "errors", enter. The fixture lists a warning before the errors
 // in plan order, so the frame shows the errors-first order, and at 80x24 its
 // findings wrap inside the box.
 func TestGoldenPlanCheck(t *testing.T) {

@@ -403,8 +403,8 @@ func TestHeaderAdvertisesOneOffAndLabelKeys(t *testing.T) {
 	m.width = 200
 
 	got := m.renderHeader()
-	oneOff := m.keys.Scratch.Help().Key + " " + m.keys.Scratch.Help().Desc
-	label := m.keys.Label.Help().Key + " " + m.keys.Label.Help().Desc
+	oneOff := "o one-off"
+	label := "l label"
 	for _, banned := range []string{oneOff, label} {
 		if strings.Contains(got, banned) {
 			t.Errorf("renderHeader() = %q, must not hand-carry %q", got, banned)
@@ -924,9 +924,11 @@ func TestRenderFooterIsTheHelpRowAlone(t *testing.T) {
 	}{
 		{name: "quiet", setup: func(*Model) {}, wantRows: 1},
 		{
-			name:     "help expanded",
-			setup:    func(m *Model) { m.helpShowAll = true },
-			wantRows: -1, // any count above 1; FullHelp is one row per binding
+			// `?` opens the keys overlay rather than growing the footer into
+			// a full help (W3.T1 of T16.2), so the footer stays one row.
+			name:     "keys overlay open",
+			setup:    func(m *Model) { m.keysOpen = true },
+			wantRows: 1,
 		},
 		{
 			name:     "a status is set",
@@ -1159,7 +1161,8 @@ func TestDetailFocusReleasesSidebarAccent(t *testing.T) {
 // TestCombinedFocusPresentationUsesOneBinding is the presentation-side
 // complement to the routing matrix: every normal-mode surface that names the
 // focus action reads the single combined binding rather than retaining an
-// Enter-only edge hint or an f-only pane-title hint.
+// Enter-only edge hint. (The pane's title no longer names it: since W3.T1 of
+// T16.2 the pane is drawn only in the Agent, where enter is the agent's.)
 func TestCombinedFocusPresentationUsesOneBinding(t *testing.T) {
 	m := testModel(runningSess("alpha"))
 	focus := m.keys.Focus.Help()
@@ -1172,9 +1175,6 @@ func TestCombinedFocusPresentationUsesOneBinding(t *testing.T) {
 	full := xansi.Strip(renderModeHelp(m.renderNormalHelpKeyMap(), true, 100000))
 	if got := strings.Count(full, focus.Key); got != 1 || strings.Count(full, focus.Desc) != 1 {
 		t.Fatalf("full help has %d copies of %q, want one: %q", got, want, full)
-	}
-	if got := m.paneTitleHint(); got != "["+want+"]" {
-		t.Errorf("unfocused pane hint = %q, want %q", got, "["+want+"]")
 	}
 	_, edge := m.detailBoxLabels()
 	if !strings.Contains(edge, focus.Key+": "+focus.Desc) {
@@ -1216,7 +1216,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 
 	t.Run("open", func(t *testing.T) {
 		m, _ := update(t, newModel(), paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
-		if want := "opened alpha · enter/x to focus, ctrl+] \\ to return"; m.status != want {
+		if want := "opened alpha · enter/x to focus, ctrl+] esc to return"; m.status != want {
 			t.Fatalf("open status = %q, want %q", m.status, want)
 		}
 	})
@@ -1224,7 +1224,7 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 		m := newModel()
 		m.focus = focusRight // connect moves the focus at request time
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha", focusOnArrival: true})
-		m = pressLeader(t, m, keyRune('\\'))
+		m = pressKey(t, m, keyEscMsg())
 		if want := "input goes to the dashboard — alpha still running in the pane · enter/x to focus"; m.status != want {
 			t.Fatalf("release status = %q, want %q", m.status, want)
 		}
@@ -1236,9 +1236,9 @@ func TestPaneFocusNotificationsUseCombinedBinding(t *testing.T) {
 		m := newModel()
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
 		m, _ = update(t, m, keyEnter)
-		m = pressLeader(t, m, keyRune('t'))
-		m = pressLeader(t, m, keyRune('t'))
-		if want := "input goes to alpha · ctrl+] \\ to return"; m.status != want {
+		m = flipViewKey(t, m)
+		m = flipViewKey(t, m)
+		if want := "input goes to alpha · ctrl+] esc to return"; m.status != want {
 			t.Fatalf("round-trip status = %q, want %q", m.status, want)
 		}
 	})
@@ -1279,11 +1279,8 @@ func TestNormalHelpNeverOffersCtrlT(t *testing.T) {
 			if mode := derivedMode(m); mode != inputNormal {
 				t.Fatalf("precondition: mode = %v, want normal", mode)
 			}
-			for _, all := range []bool{false, true} {
-				m.helpShowAll = all
-				if help := xansi.Strip(m.renderHelp()); strings.Contains(help, m.keys.Toggle.Help().Key) {
-					t.Errorf("showAll=%v: list-focused help offers %q: %q", all, m.keys.Toggle.Help().Key, help)
-				}
+			if help := xansi.Strip(m.renderHelp()); strings.Contains(help, "ctrl+t") {
+				t.Errorf("list-focused help offers ctrl+t: %q", help)
 			}
 		})
 	}
@@ -1302,8 +1299,8 @@ func TestNormalHelpAt80KeepsCombinedFocus(t *testing.T) {
 	if want := m.keys.Focus.Help().Key + " " + m.keys.Focus.Help().Desc; !strings.Contains(help, want) {
 		t.Errorf("80-column help dropped %q: %q", want, help)
 	}
-	if strings.Contains(help, m.keys.Toggle.Help().Key) {
-		t.Errorf("80-column list help offers %q: %q", m.keys.Toggle.Help().Key, help)
+	if strings.Contains(help, "ctrl+t") {
+		t.Errorf("80-column list help offers ctrl+t: %q", help)
 	}
 }
 
@@ -1489,45 +1486,52 @@ func TestPlaceholderFooterOffersEnterOnlyWhenItConnects(t *testing.T) {
 	}
 }
 
-// TestLeaderChordNamesEveryTableKey holds leaderChord to the leader table: one
-// row per action, so a hint can never name a key the dialog does not answer
-// to. Load-bearing rows: back to list and close pane share `\`, and the chord
-// for both must still read "ctrl+] \" (the table lookup takes the first,
-// which has the same key); an action missing from the table falls back to the
-// leader alone rather than inventing a key.
-func TestLeaderChordNamesEveryTableKey(t *testing.T) {
-	for _, e := range leaderTable {
-		t.Run(leaderNames[e.action], func(t *testing.T) {
-			// A by-name row (the T7.3 plan actions) has no key to name, so
-			// its chord is the leader alone, never "ctrl+] " with a
-			// dangling space.
-			want := defaultLeaderKey + " " + e.key
-			if e.key == "" {
-				want = defaultLeaderKey
+// TestKeyNameNamesEveryTableKey holds keyName to the key table: for every
+// keyed row, at every level it is listed at, the hint is the key alone at All
+// projects and Project and the leader then the key in the Agent, so a hint can
+// never name a key the dashboard does not answer to there. Load-bearing: the
+// Agent rows (a bare key there is typed to the agent), and the by-name rows,
+// which have no key and must not be given one.
+func TestKeyNameNamesEveryTableKey(t *testing.T) {
+	for _, r := range keyTable {
+		for _, lv := range []level{levelAllProjects, levelProject, levelAgent} {
+			if !r.levels.has(lv) {
+				continue
 			}
-			if got := leaderChord(defaultLeaderKey, e.action); got != want {
-				t.Errorf("leaderChord = %q, want %q", got, want)
-			}
-		})
-	}
-	t.Run("an action the table lacks names the leader alone", func(t *testing.T) {
-		if got := leaderChord(defaultLeaderKey, actionNone); got != defaultLeaderKey {
-			t.Errorf("leaderChord(defaultLeaderKey, actionNone) = %q, want %q", got, defaultLeaderKey)
+			t.Run(r.name+" at "+lv.String(), func(t *testing.T) {
+				got := keyName(defaultLeaderKey, lv, r.action)
+				want := r.keyLabel()
+				if lv == levelAgent && r.key != "" {
+					want = defaultLeaderKey + " " + want
+				}
+				if r.key == "" {
+					// "start a new plan" is `n` at All projects and by name
+					// inside a project; the hint names the key it has.
+					if r.action == actionPlanNew {
+						want = "n"
+					} else {
+						want = ""
+					}
+				}
+				if got != want {
+					t.Errorf("keyName = %q, want %q", got, want)
+				}
+			})
 		}
-	})
+	}
 }
 
-// TestHintsNameTheLeaderKey pins every hint and notice W2.T1 rewrote to the
-// chord, and forbids the old key as a way to run an action. Load-bearing
+// TestHintsNameTheKeys pins every hint and notice T16.2 rewrote. Load-bearing
 // rows:
-//   - the footer rows: each input mode's line must show "ctrl+] actions";
-//     the pane row keeps its "input → session" prefix.
-//   - full help: one "ctrl+] X" entry per leader action that can run.
-//   - wedge banner hint: shown over a focused pane, where a bare r is the
-//     agent's, so only the chord is true there.
-//   - the notice rows: a bare letter or ctrl+t / ctrl+\ / ctrl+g in a notice
-//     names a key that does nothing.
-func TestHintsNameTheLeaderKey(t *testing.T) {
+//   - the footer rows: the list names enter, `:` and `?` alone, the agent
+//     pane the leader and its mouse key after it, keeping its "input →
+//     session" prefix, and the overview its way back.
+//   - full help: one entry per key-table row at Project that can run.
+//   - wedge banner hint: shown inside the agent pane, where a bare r is the
+//     agent's, so it names the way out of the Agent first.
+//   - the old-key rows: ctrl+t, ctrl+g, ctrl+\ and the retired leader chords
+//     in a hint name a key that does nothing.
+func TestHintsNameTheKeys(t *testing.T) {
 	strip := func(m Model) string { return xansi.Strip(m.renderHelp()) }
 
 	list := testModel(runningSess("alpha"))
@@ -1543,7 +1547,7 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 
 	detail := testModel(runningSess("alpha"))
 	detail.width = 120
-	detail, _ = update(t, detail, keyEnter)
+	detail, _ = update(t, detail, keyRune('d'))
 	if !detail.detailOwnsKeyboard() {
 		t.Fatal("fixture broken: the detail pane does not have the keyboard")
 	}
@@ -1553,9 +1557,9 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 		got  string
 		want []string
 	}{
-		{"session list", strip(list), []string{"enter focus view", "ctrl+] actions"}},
-		{"focused agent pane", strip(pane), []string{"input → session · ", "ctrl+] actions", "ctrl+] g mouse:"}},
-		{"focused detail pane", strip(detail), []string{"ctrl+] actions"}},
+		{"session list", strip(list), []string{"enter open", "esc all projects", ": actions", "? keys"}},
+		{"focused agent pane", strip(pane), []string{"input → session · ", "ctrl+] afk keys", "ctrl+] m mouse:"}},
+		{"focused detail pane", strip(detail), []string{"esc back to list"}},
 	}
 	for _, tc := range footers {
 		t.Run("footer: "+tc.name, func(t *testing.T) {
@@ -1567,24 +1571,37 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 		})
 	}
 
-	t.Run("full help lists the leader entries", func(t *testing.T) {
-		full := xansi.Strip(renderModeHelp(list.renderNormalHelpKeyMap(), true, 100000))
-		for _, e := range leaderTable {
-			blocked := leaderBlockedReason(e.action, list.leaderConditions())
-			if got := fullHelpHasItem(full, leaderChord(defaultLeaderKey, e.action), leaderNames[e.action]); got == (blocked != "") {
-				t.Errorf("%s: listed=%v with blocked reason %q; a row is listed exactly when it can run", leaderNames[e.action], got, blocked)
+	t.Run("the keys overlay lists the key-table entries", func(t *testing.T) {
+		// `?` replaced the full help (W3.T1 of T16.2): every Project key is
+		// in the overlay's Project section or, when it works everywhere, in
+		// its Everywhere section, with its help line.
+		listed := map[string]string{}
+		for _, sec := range keysSections(defaultLeaderKey) {
+			if sec.title == "Project" || strings.HasPrefix(sec.title, "Everywhere") {
+				for _, e := range sec.entries {
+					listed[e.key] = e.help
+				}
+			}
+		}
+		for _, r := range keyTable {
+			if !r.levels.has(levelProject) || r.key == "" {
+				continue
+			}
+			if help, ok := listed[r.keyLabel()]; !ok || help != r.help {
+				t.Errorf("%s: the keys overlay lists %q as %q, want %q", r.name, r.keyLabel(), help, r.help)
 			}
 		}
 	})
 
-	t.Run("texts name the chord", func(t *testing.T) {
+	t.Run("texts name the key", func(t *testing.T) {
 		for _, tc := range []struct{ name, got, want string }{
-			{"header switch hint", headerSwitchHint(defaultLeaderKey), "ctrl+] p"},
-			{"header inbox hint", headerInboxHint(defaultLeaderKey), "ctrl+] i"},
-			{"wedge banner hint", wedgeHintDashboard(defaultLeaderKey), "ctrl+] r"},
-			{"pane focus hint", paneFocusHint(defaultLeaderKey), "ctrl+] \\"},
-			{"pause notice", func() string { _, s := pauseNotice(defaultLeaderKey, false); return s }(), "ctrl+] U"},
-			{"mouse hint", list.mouseCaptureHint(), "ctrl+] g"},
+			{"header switch hint", headerSwitchHint(defaultLeaderKey, levelProject), "/: projects"},
+			{"header switch hint in the agent", headerSwitchHint(defaultLeaderKey, levelAgent), "ctrl+] /: projects"},
+			{"header inbox hint", headerInboxHint(defaultLeaderKey, levelProject), "i: inbox"},
+			{"wedge banner hint", wedgeHintDashboard(defaultLeaderKey), "ctrl+] esc then r"},
+			{"pane focus hint", paneFocusHint(defaultLeaderKey), "ctrl+] esc"},
+			{"pause notice", func() string { _, s := pauseNotice(defaultLeaderKey, false); return s }(), "Press p to resume"},
+			{"mouse hint", list.mouseCaptureHint(), "ctrl+] m"},
 		} {
 			if !strings.Contains(tc.got, tc.want) {
 				t.Errorf("%s = %q, want it to name %q", tc.name, tc.got, tc.want)
@@ -1594,12 +1611,12 @@ func TestHintsNameTheLeaderKey(t *testing.T) {
 
 	t.Run("no hint names an old key as an action key", func(t *testing.T) {
 		for name, text := range map[string]string{
-			"switch hint": headerSwitchHint(defaultLeaderKey), "inbox hint": headerInboxHint(defaultLeaderKey),
+			"switch hint": headerSwitchHint(defaultLeaderKey, levelProject), "inbox hint": headerInboxHint(defaultLeaderKey, levelProject),
 			"wedge hint": wedgeHintDashboard(defaultLeaderKey), "pane focus hint": paneFocusHint(defaultLeaderKey),
-			"list footer": strip(list), "pane footer": strip(pane),
+			"list footer": strip(list), "pane footer": strip(pane), "detail footer": strip(detail),
 			"empty state": xansi.Strip(testModel().renderRowsBody(60, 10)),
 		} {
-			for _, old := range []string{"ctrl+t", "ctrl+g", "ctrl+\\ ", "enter/f", "Press n "} {
+			for _, old := range []string{"ctrl+t", "ctrl+g", "ctrl+\\ ", "enter/f", "ctrl+] n", "ctrl+] \\", "ctrl+] g", "ctrl+] t", "ctrl+] p"} {
 				if strings.Contains(text, old) {
 					t.Errorf("%s = %q, names the old key %q", name, text, old)
 				}
@@ -1732,20 +1749,22 @@ func TestPaneTitleStripLayout(t *testing.T) {
 
 // TestFooterIsAStatusBar pins §3.2 on today's footer: the row is filled with
 // strip edge to edge, and its words are renderHelp's, unchanged. Both rows
-// are load-bearing: the normal list is the common case, and the full help (?)
-// is the one footer that is more than one row, each of which must be filled.
+// are load-bearing: the normal list is the common case, and the keys overlay
+// (?) is the footer of an overlay, which must be filled the same way.
 func TestFooterIsAStatusBar(t *testing.T) {
 	cases := []struct {
-		name    string
-		showAll bool
+		name string
+		keys bool
 	}{
 		{"normal short help", false},
-		{"full help, one row per binding", true},
+		{"keys overlay open", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := goldenModel(t, 120, 40)
-			m.helpShowAll = tc.showAll
+			if tc.keys {
+				m, _ = update(t, m, keyRune('?'))
+			}
 			footer := strings.Split(m.renderFooter(), "\n")
 			help := strings.Split(m.renderHelp(), "\n")
 			if len(footer) != len(help) {

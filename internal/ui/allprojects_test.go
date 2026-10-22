@@ -169,9 +169,9 @@ func openAllProjectsGolden(t *testing.T, w, h int, res AllProjects) Model {
 	m := goldenModel(t, w, h)
 	seam := &allProjectsSeam{res: res}
 	m.deps.LoadAllProjects = seam.load
-	m, cmd := pressAction(t, m, keyRune('A'))
+	m, cmd := pressAction(t, m, keyEscMsg())
 	if !m.allProjectsOpen {
-		t.Fatal("ctrl+] A did not open the all-projects screen")
+		t.Fatal("esc did not open the all-projects screen")
 	}
 	for _, msg := range collectMsgs(t, cmd) {
 		m, _ = update(t, m, msg)
@@ -257,7 +257,7 @@ func TestAllProjectsViewLines(t *testing.T) {
 			model: func(t *testing.T) Model {
 				m := goldenModel(t, 120, 40)
 				m.deps.LoadAllProjects = func() AllProjects { return AllProjects{} }
-				m, _ = pressAction(t, m, keyRune('A'))
+				m, _ = pressAction(t, m, keyEscMsg())
 				return m
 			},
 			want:    []string{allProjectsReading},

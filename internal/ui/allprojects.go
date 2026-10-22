@@ -1,10 +1,10 @@
 // allprojects.go is the all-projects screen (T7.9): one row for every project
 // the daemon builds, each with its current task, the state of its build and
-// what in its inbox needs the owner, opened from the actions dialog ("all
-// projects", ctrl+] A). It takes the place of the session list and the
-// detail side until esc, enter switches the dashboard to the selected
-// project, and pause and resume act on the selected row's project rather
-// than the active one.
+// what in its inbox needs the owner. Since T16.2 it is the All projects level:
+// esc on a project's session list opens it, and enter on a row switches the
+// dashboard to that project. It takes the place of the session list and the
+// detail side until then. Pause and resume on the selected row's project wait
+// for T16.3 to give the level its `p`.
 //
 // The rows are built by internal/projectrows, the pure package the web page
 // will share (T8.5), so the two surfaces cannot word a project's state
@@ -79,12 +79,6 @@ const (
 	// always wires one; a dashboard built without it answers in a sentence
 	// and points at the shell report that says the same things.
 	allProjectsUnwiredNotice = "This dashboard was started without the project reader, so it cannot show all projects. Run afk daemon status in a shell instead."
-	// allProjectsCloseFirst is the reason every dialog row but pause,
-	// resume, all projects, add and remove a project (T7.10), mouse and quit
-	// is dimmed over the screen. Those
-	// rows act on the session list, the detail side or the active project,
-	// none of which is on screen while it is open.
-	allProjectsCloseFirst = "Close the all-projects screen first (esc)."
 	// allProjectsReading is what the screen shows before its first read.
 	allProjectsReading = "Reading the projects…"
 )
@@ -195,9 +189,9 @@ func (m Model) selectedProjectRow() (projectrows.Row, bool) {
 	return m.allProjectsRows[m.allProjectsCursor], true
 }
 
-// toggleAllProjects is the "all projects" action: it opens the screen, or
-// closes it when it is open (the dialog over the screen keeps the row for
-// exactly that).
+// toggleAllProjects opens the screen, or closes it when it is open. esc at
+// Project opens it (levelGoBack), and enter in the empty state, which stands
+// in for it with no project open (levelGoIn).
 //
 // Opening starts from nothing — no rows, the cursor at the top — and reads at
 // once. Rows kept from an earlier opening could be minutes old, and a screen
@@ -207,9 +201,10 @@ func (m Model) selectedProjectRow() (projectrows.Row, bool) {
 // opening (whose result will be dropped by its generation) cannot keep this
 // opening's first read from starting.
 //
-// The keyboard is already on the list: the leader row is a list action
-// (leaderMovesToList). That matters for closing: esc leaves the dashboard
-// as it was, with the list focused.
+// The keyboard is already on the list: esc goes back to All projects only
+// from the session list. That matters for coming back: enter on the active
+// project's row closes the screen and leaves the dashboard as it was, with the
+// list focused.
 func (m Model) toggleAllProjects() (tea.Model, tea.Cmd) {
 	if m.allProjectsOpen {
 		m.allProjectsOpen = false
@@ -221,6 +216,15 @@ func (m Model) toggleAllProjects() (tea.Model, tea.Cmd) {
 		m.notify(notifyInfo, allProjectsUnwiredNotice)
 		return m, nil
 	}
+	nm, cmd := m.openAllProjects()
+	return nm, cmd
+}
+
+// openAllProjects opens the screen from nothing and starts its first read. It
+// is shared by toggleAllProjects (esc, enter in the empty state) and by the
+// start-up decision (settleActiveProject), which opens the screen with no
+// keypress. The caller has checked that a reader is wired.
+func (m Model) openAllProjects() (Model, tea.Cmd) {
 	m.allProjectsOpen = true
 	m.allProjectsGen++
 	m.allProjectsRows = nil
@@ -231,6 +235,25 @@ func (m Model) toggleAllProjects() (tea.Model, tea.Cmd) {
 	m.allProjectsRefreshing = new(atomic.Bool)
 	return m, m.allProjectsCmd()
 }
+
+// StartLevel is the level the dashboard opens on, decided by package main
+// (dashStartLevel) from where it was started and which flags were given. The
+// zero value is StartProject, so a Model built without it behaves as it
+// always did: the first known project becomes the active one.
+type StartLevel int
+
+const (
+	// StartProject opens on a project's view: the project the dashboard was
+	// started in or named by --project, or, when none was, the first project
+	// the scan finds.
+	StartProject StartLevel = iota
+	// StartAllProjects opens on All projects with no project active, once a
+	// project is known. With no project at all the empty state shows instead.
+	StartAllProjects
+	// StartAgent is StartProject, then the named session's Agent with the
+	// keyboard on it (--open).
+	StartAgent
+)
 
 // moveAllProjects moves the cursor by delta rows, clamped at both ends rather
 // than wrapping: the first rows are the ones that need the owner, and a list

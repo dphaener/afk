@@ -61,7 +61,8 @@ func (d sessionDelegate) Height() int  { return sessionRowLines }
 func (d sessionDelegate) Spacing() int { return sessionRowGap }
 
 // Update is a no-op: every gesture the session list answers is a rule in
-// mode.go's inputNormal or inputFilter spec, so no navigation hides in here.
+// mode.go's inputNormal spec or a key-table key, so no navigation hides in
+// here.
 func (d sessionDelegate) Update(tea.Msg, *list.Model) tea.Cmd { return nil }
 
 func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
@@ -88,7 +89,7 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 // line above the rows for the filter prompt. TitleBar's shipped padding is
 // cleared so that line is one row tall in both states; left alone it grows to
 // two the moment `/` is pressed, clipping the last row out from under the user.
-func newSessionList(keys keyMap, now func() time.Time) list.Model {
+func newSessionList(now func() time.Time) list.Model {
 	l := list.New(nil, sessionDelegate{now: now}, 0, 0)
 	// InfiniteScrolling is what CursorUp/CursorDown check at the boundary
 	// (bubbles v2.2.1 list/list.go:516-565): CursorUp calls GoToEnd when the
@@ -121,14 +122,12 @@ func newSessionList(keys keyMap, now func() time.Time) list.Model {
 	l.KeyMap.ShowFullHelp = key.NewBinding()
 	l.KeyMap.CloseFullHelp = key.NewBinding()
 
-	// Copied, not aliased: key.Binding is a plain struct (bubbles/v2 key.go),
-	// so this assignment copies keys.Filter's fields rather than sharing
-	// storage with it. The two sides still cannot name different keys, because
-	// both are populated from this same keys.Filter value at construction and
-	// neither is reassigned afterward: startSessionFilter forwards the key it
-	// matched to this component, which works only while both agree on what
-	// that key is.
-	l.KeyMap.Filter = keys.Filter
+	// The list's own filter is unreachable since T16.2 removed the session
+	// filter (`/` is the project switcher now, A3): a binding with no keys
+	// can never match, and no key is routed to this component anyway. The
+	// filter line above the rows is left in place so this task does not
+	// move the list's layout; T16.4 redraws the list.
+	l.KeyMap.Filter = key.NewBinding()
 
 	l.Styles.TitleBar = lipgloss.NewStyle()
 	l.FilterInput.Prompt = "/"

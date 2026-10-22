@@ -19,13 +19,8 @@ import (
 // It only shows. While the right side has the keyboard it draws a cursor on
 // one task row (buildcursor.go), which is where the dashboard points at a
 // task; it still writes nothing. Starting the build is not done from the
-// dashboard at all. Pausing and resuming are, by the `P` and `U` keys,
-// but not from this file: see buildpause.go.
-
-// noBuildNotice is what `b` says in a project that has no build to show. The
-// key stays listed in `?` and `:` in that state because it explains itself:
-// the notice names the one setting that makes the tab appear.
-const noBuildNotice = "This project has no master plan, so there is no build to show. Set plan in afk.toml."
+// dashboard at all. Pausing and resuming are, by the `p` key, but
+// not from this file: see buildpause.go.
 
 // buildColumnGap is the space between two columns of a task row.
 const buildColumnGap = 2
@@ -189,7 +184,7 @@ func buildSummaryLines(leader string, snap buildview.Snapshot, plan PlanStatus, 
 		lines = append(lines, theme.dim.Render(truncate("plan: "+planStatusLine(plan), width)))
 	}
 	if snap.Paused {
-		lines = append(lines, theme.awaitingFlag.Render(truncate("paused: U or afk resume starts it again", width)))
+		lines = append(lines, theme.awaitingFlag.Render(truncate("paused: p or afk resume starts it again", width)))
 	}
 	if snap.Stopped {
 		stop := "stopped"
@@ -204,15 +199,15 @@ func buildSummaryLines(leader string, snap buildview.Snapshot, plan PlanStatus, 
 		lines = append(lines, theme.errorText.Render(truncate(stop, width)))
 	}
 	if open, blocking := buildview.OpenCounts(snap.Items); blocking > 0 {
-		text := fmt.Sprintf("%d items need you · %s: inbox", blocking, leaderChord(leader, actionInbox))
+		text := fmt.Sprintf("%d items need you · %s: inbox", blocking, keyName(leader, levelProject, actionInbox))
 		if blocking == 1 {
-			text = "1 item needs you · " + leaderChord(leader, actionInbox) + ": inbox"
+			text = "1 item needs you · " + keyName(leader, levelProject, actionInbox) + ": inbox"
 		}
 		lines = append(lines, theme.awaitingFlag.Render(truncate(text, width)))
 	} else if open > 0 {
-		text := fmt.Sprintf("%d open items · %s: inbox", open, leaderChord(leader, actionInbox))
+		text := fmt.Sprintf("%d open items · %s: inbox", open, keyName(leader, levelProject, actionInbox))
 		if open == 1 {
-			text = "1 open item · " + leaderChord(leader, actionInbox) + ": inbox"
+			text = "1 open item · " + keyName(leader, levelProject, actionInbox) + ": inbox"
 		}
 		lines = append(lines, truncate(text, width))
 	}

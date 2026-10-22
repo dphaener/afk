@@ -134,41 +134,75 @@ func dashUsage(w io.Writer, fs *flag.FlagSet) {
 Usage:
   afk dash [options]
 
-Keys:
-  ↑/k, ↓/j   move selection, preview running session in agent pane
-  pgup/pgdn  page through the list; home/end jump to the first or last session
-  enter      focus the right side (connects a running session in agent view)
-  tab        next tab on the right side (shift+tab goes back)
-  esc        back to the list from the right side; clears the filter on the list
-  ctrl+c     quit from the list and the overview (in the agent pane it goes to the agent)
+Starts:
+  Inside a project   opens on that project's view; esc goes to All projects
+  Anywhere else      opens on All projects (enter opens a project)
+  --project PATH     opens that project's view
+  --open NAME        opens that session's Agent with the keyboard on it
 
-Actions: press ctrl+] (the default leader key), then the letter. The actions dialog
-lists them too. Set leader = "ctrl+o" (or another key) in config.toml's [dash]
-table to change the leader; it is read when the dashboard starts.
-  ctrl+] n    create a session (in-TUI form)
-  ctrl+] o    create a one-off session
-  ctrl+] p    open the project switcher (filterable list of discovered projects)
-  ctrl+] c    confirm clean in the dashboard (runs in-process)
-  ctrl+] r    restart a stopped session; confirm to restart a wedged one
-  ctrl+] l    edit the session's label
-  ctrl+] /    filter sessions by name
-  ctrl+] x    clear the filter
-  ctrl+] b    show the Build tab: the master plan's tasks and their status (needs a master plan)
-  ctrl+] i    open the inbox: read an item, answer it by typing or by number (enter sends)
-  ctrl+] P    pause the build
-  ctrl+] U    resume the build
-  ctrl+] f    focus the right side
-  ctrl+] t    switch the right side between agent and overview
-  ctrl+] \    close the pane from the list; back to the list from the right side
-  ctrl+] g    hand the mouse to the terminal (native selection), again to return it
-  ctrl+] w    resize the panes
-  ctrl+] ?    show the full key help
-  ctrl+] q    quit
+Levels: All projects, then a Project, then its Agent. enter goes in one level,
+esc goes back one. In the Agent every key goes to the agent; press the leader
+(ctrl+] by default), then a key, to use the dashboard from there. Set
+leader = "ctrl+o" (or another key) in config.toml's [dash] table to change the
+leader; it is read when the dashboard starts.
+
+Keys at All projects and Project (they work on their own):
+  j/k, ↑/↓   move; pgup/pgdn page; home/end jump to the first or last
+  enter      go in a level (open the project, open the session's agent)
+  esc        go back a level
+  /          jump to another project
+  :          search every action by name
+  i          inbox
+  R          take a fresh usage reading
+  ?          show every key, level by level
+  q          quit (ctrl+c also quits); every session keeps running
+  n          All projects: start a new plan; Project: new session
+  + / -      All projects: add or remove a project
+  p          Project: pause or resume the build
+  o c r l    Project: one-off session, clean, restart, edit label
+  d          Project: details of the selected session
+  s t        Project: set a Build task's status, show its tokens
+
+In the Agent, the leader then a key (a key the strip does not list closes it):
+  esc        back to Project
+  d          details; the same keys as above act on the session
+  m          hand the mouse to the terminal, again to take it back
+  leader     pressed twice, sends the leader itself to the agent
 
 Options:
 `)
 	fs.SetOutput(w)
 	fs.PrintDefaults()
+}
+
+// dashStartLevel is the whole start decision, pure so every row of the table
+// in dash_test.go is a case. inside is whether the project in view was named:
+// the working directory is inside a repo, or --project PATH resolves to one
+// (the two are one input on purpose: `--project` is "inside" for a path the
+// owner named, so it needs no row of its own in the decision). open is
+// whether --open was given. noProjects is whether no project is known at all.
+//
+//   - inside, no --open: Project (esc then goes to All projects).
+//   - inside, --open: the Agent; a missing session name still leaves the
+//     owner on that project's view with a toast.
+//   - not inside, projects known: All projects, no project active.
+//   - not inside, none known: All projects too. The dashboard shows its empty
+//     state there, since there is nothing to list (A8).
+//   - --open when not inside: All projects, because no project has been
+//     named to look the session up in; the toast says it was not found.
+func dashStartLevel(inside, open, noProjects bool) ui.StartLevel {
+	switch {
+	case inside && open:
+		return ui.StartAgent
+	case inside:
+		return ui.StartProject
+	case noProjects:
+		// Named apart from the row below only to say it: the level is the
+		// same, and the Model draws the empty state because it has no
+		// project to list.
+		return ui.StartAllProjects
+	}
+	return ui.StartAllProjects
 }
 
 // dashDebugEnv gates the startup diagnostic. It is PERMANENT, not scaffolding.
@@ -609,6 +643,9 @@ func rememberSidebarPct(pct int) error {
 func dashDeps(openSession string, loc dashLocation, projects []project.Project, activeProject int) ui.Deps {
 	return ui.Deps{
 		InitialSessionName: openSession,
+		// A project is "in view" when the caller found one (the cwd repo, or
+		// --project's); dashInitialProjects hands -1 otherwise.
+		StartLevel:         dashStartLevel(activeProject >= 0, openSession != "", len(projects) == 0),
 		GitCommonDir:       loc.gitCommonDir,
 		Tmux:               loc.tmux,
 		PaneID:             loc.paneID,

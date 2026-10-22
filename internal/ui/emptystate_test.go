@@ -89,7 +89,7 @@ func TestRenderHeaderCarriesNoProjectChromeForSingleOrZeroProjects(t *testing.T)
 			got := m.renderHeader()
 			for _, banned := range []string{
 				"session(s)", "projects)", "refreshed", "every 1s", "awaiting",
-				headerSwitchHint(defaultLeaderKey),
+				headerSwitchHint(defaultLeaderKey, levelProject),
 			} {
 				if strings.Contains(xansi.Strip(got), banned) {
 					t.Errorf("renderHeader() = %q, must not carry %q", got, banned)
@@ -135,14 +135,14 @@ func TestRenderHeaderDoesNotHandCarryOneOffAndLabel(t *testing.T) {
 
 			got := xansi.Strip(m.renderHeader())
 			for _, banned := range []string{
-				m.keys.Scratch.Help().Key + " " + m.keys.Scratch.Help().Desc,
-				m.keys.Label.Help().Key + " " + m.keys.Label.Help().Desc,
+				"o one-off",
+				"l label",
 			} {
 				if strings.Contains(got, banned) {
 					t.Errorf("renderHeader() at width 80 = %q, must not hand-carry %q", got, banned)
 				}
 			}
-			if has := strings.Contains(got, headerSwitchHint(defaultLeaderKey)); has != tc.wantHint {
+			if has := strings.Contains(got, headerSwitchHint(defaultLeaderKey, levelProject)); has != tc.wantHint {
 				t.Fatalf("renderHeader() at width 80 = %q, switch hint present = %v, want %v",
 					got, has, tc.wantHint)
 			}
@@ -169,7 +169,7 @@ func TestRenderHeaderShowsCrossProjectAttention(t *testing.T) {
 	if want := awaitingGlyph + " 2 awaiting in gamma · 1 in delta"; !strings.Contains(got, want) {
 		t.Fatalf("renderHeader() = %q, want it to contain %q", got, want)
 	}
-	if !strings.Contains(got, headerSwitchHint(defaultLeaderKey)) {
+	if !strings.Contains(got, headerSwitchHint(defaultLeaderKey, levelProject)) {
 		t.Errorf("renderHeader() = %q, want the switch hint with four known projects", got)
 	}
 	for _, banned := range []string{"alpha", "beta", "of 4 projects", "session(s)", "refreshed"} {
@@ -210,7 +210,7 @@ func TestRenderHeaderCarriesStalenessBesideTheAttentionLine(t *testing.T) {
 		headerBadgeText,
 		"stale · discovery failing 45s",
 		awaitingGlyph + " 2 awaiting in gamma · 1 in delta",
-		headerSwitchHint(defaultLeaderKey),
+		headerSwitchHint(defaultLeaderKey, levelProject),
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderHeader() = %q, want it to contain %q", got, want)
@@ -649,17 +649,17 @@ func TestHeaderInboxSegment(t *testing.T) {
 			return m
 		}, "", "", ""},
 		{"open only", func(*testing.T) Model { return inboxHeaderModel(open("a"), open("b"), answered) },
-			"inbox 2", "", headerInboxHint(defaultLeaderKey)},
+			"inbox 2", "", headerInboxHint(defaultLeaderKey, levelProject)},
 		{"open and blocking", func(*testing.T) Model {
 			return inboxHeaderModel(blocking("a"), open("b"), blocking("c"), answered)
-		}, "inbox 3 · 2 blocking", "2 blocking", headerInboxHint(defaultLeaderKey)},
+		}, "inbox 3 · 2 blocking", "2 blocking", headerInboxHint(defaultLeaderKey, levelProject)},
 		{"one item, the same words", func(*testing.T) Model { return inboxHeaderModel(blocking("a")) },
-			"inbox 1 · 1 blocking", "1 blocking", headerInboxHint(defaultLeaderKey)},
+			"inbox 1 · 1 blocking", "1 blocking", headerInboxHint(defaultLeaderKey, levelProject)},
 		{"with a master plan too", func(*testing.T) Model {
 			m := inboxHeaderModel(open("a"))
 			m.build.HasBuild = true
 			return m
-		}, "inbox 1", "", headerInboxHint(defaultLeaderKey)},
+		}, "inbox 1", "", headerInboxHint(defaultLeaderKey, levelProject)},
 		{"agent focus hides the hint", func(t *testing.T) Model {
 			m := testModel(runningSess("alpha"))
 			m.projects = nil
@@ -700,8 +700,8 @@ func TestHeaderInboxSegment(t *testing.T) {
 			if !strings.Contains(header, tc.inbox) {
 				t.Errorf("header = %q, want it to contain %q", header, tc.inbox)
 			}
-			if tc.hintWant == "" && strings.Contains(header, headerInboxHint(defaultLeaderKey)) {
-				t.Errorf("header = %q, want no %q while the agent has the keyboard", header, headerInboxHint(defaultLeaderKey))
+			if tc.hintWant == "" && strings.Contains(header, headerInboxHint(defaultLeaderKey, levelProject)) {
+				t.Errorf("header = %q, want no %q while the agent has the keyboard", header, headerInboxHint(defaultLeaderKey, levelProject))
 			}
 		})
 	}
@@ -715,7 +715,7 @@ func TestHeaderInboxSegment(t *testing.T) {
 		if p.inboxShort != theme.awaitingFlag.Render("1 blocking") {
 			t.Errorf("inboxShort = %q, want theme.awaitingFlag", p.inboxShort)
 		}
-		if p.inboxHint != theme.dim.Render(headerInboxHint(defaultLeaderKey)) {
+		if p.inboxHint != theme.dim.Render(headerInboxHint(defaultLeaderKey, levelProject)) {
 			t.Errorf("inboxHint = %q, want theme.dim", p.inboxHint)
 		}
 	})
@@ -728,7 +728,7 @@ func TestHeaderInboxSegment(t *testing.T) {
 		m.build = buildview.Snapshot{Items: []inbox.Item{blocking("a")}}
 		m.buildKnown = true
 		if got := xansi.Strip(m.renderHeader()); !strings.Contains(got, "inbox 1 · 1 blocking") ||
-			!strings.Contains(got, headerSwitchHint(defaultLeaderKey)) {
+			!strings.Contains(got, headerSwitchHint(defaultLeaderKey, levelProject)) {
 			t.Errorf("header = %q, want the inbox segment and the switch hint", got)
 		}
 	})
@@ -765,8 +765,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 		attentionShort: agg,
 		inbox:          ilong,
 		inboxShort:     iblk,
-		inboxHint:      headerInboxHint(defaultLeaderKey),
-		hint:           headerSwitchHint(defaultLeaderKey),
+		inboxHint:      headerInboxHint(defaultLeaderKey, levelProject),
+		hint:           headerSwitchHint(defaultLeaderKey, levelProject),
 	}
 	withUsage := base
 	withUsage.usage, withUsage.usageShort = ulong, ushrt
@@ -783,8 +783,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 		rungs []rung
 	}{
 		{"no usage", base, []rung{
-			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey), headerSwitchHint(defaultLeaderKey))},
-			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey))}, // switch hint gone
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey, levelProject), headerSwitchHint(defaultLeaderKey, levelProject))},
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey, levelProject))}, // switch hint gone
 			{badge + " " + named, ilong}, // inbox hint gone
 			{badge + " " + agg, ilong},   // names collapse
 			{badge + " " + agg, iblk},    // inbox long to short
@@ -792,8 +792,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 			{"", iblk},                   // attention gone, blocking stays
 		}},
 		{"with usage", withUsage, []rung{
-			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey), ulong, headerSwitchHint(defaultLeaderKey))},
-			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey), ulong)},
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey, levelProject), ulong, headerSwitchHint(defaultLeaderKey, levelProject))},
+			{badge + " " + named, j(ilong, headerInboxHint(defaultLeaderKey, levelProject), ulong)},
 			{badge + " " + named, j(ilong, ulong)},
 			{badge + " " + agg, j(ilong, ulong)},
 			{badge + " " + agg, j(ilong, ushrt)},
@@ -803,8 +803,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 			{"", iblk},            // attention gone, blocking stays
 		}},
 		{"stale", withStale, []rung{
-			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint(defaultLeaderKey), headerSwitchHint(defaultLeaderKey))},
-			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint(defaultLeaderKey))},
+			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint(defaultLeaderKey, levelProject), headerSwitchHint(defaultLeaderKey, levelProject))},
+			{badge + " " + stale + "  " + named, j(ilong, headerInboxHint(defaultLeaderKey, levelProject))},
 			{badge + " " + stale + "  " + named, ilong},
 			{badge + " " + stale + "  " + agg, ilong},
 			{badge + " " + stale + "  " + agg, iblk},
@@ -813,8 +813,8 @@ func TestHeaderLineDegradesWithInbox(t *testing.T) {
 			{stale, ""}, // blocking gone, stale stays
 		}},
 		{"open only", openOnly, []rung{
-			{badge + " " + named, j("inbox 2", headerInboxHint(defaultLeaderKey), headerSwitchHint(defaultLeaderKey))},
-			{badge + " " + named, j("inbox 2", headerInboxHint(defaultLeaderKey))},
+			{badge + " " + named, j("inbox 2", headerInboxHint(defaultLeaderKey, levelProject), headerSwitchHint(defaultLeaderKey, levelProject))},
+			{badge + " " + named, j("inbox 2", headerInboxHint(defaultLeaderKey, levelProject))},
 			{badge + " " + named, "inbox 2"},
 			{badge + " " + agg, "inbox 2"},
 			{badge + " " + agg, ""}, // open-only items vanish
@@ -913,8 +913,8 @@ func TestRenderHeaderSwitchHintVisibleAtEightyColumns(t *testing.T) {
 
 	got := m.renderHeader()
 	stripped := xansi.Strip(got)
-	if !strings.Contains(stripped, headerSwitchHint(defaultLeaderKey)) {
-		t.Fatalf("renderHeader() at width 80 = %q, want it to contain %q", stripped, headerSwitchHint(defaultLeaderKey))
+	if !strings.Contains(stripped, headerSwitchHint(defaultLeaderKey, levelProject)) {
+		t.Fatalf("renderHeader() at width 80 = %q, want it to contain %q", stripped, headerSwitchHint(defaultLeaderKey, levelProject))
 	}
 	if !strings.Contains(stripped, "awaiting in gamma") {
 		t.Errorf("renderHeader() at width 80 = %q, want the named attention line to survive", stripped)
@@ -967,7 +967,7 @@ func TestRenderHeaderIsExactlyOneRow(t *testing.T) {
 		{"attention empty, hint absent", quiet(), 120},
 		{"attention empty, hint present", hinted(), 120},
 		{"attention named, hint present", attentionModel(), 200},
-		{"attention aggregate, hint present", attentionModel(), 69},
+		{"attention aggregate, hint present", attentionModel(), 62},
 		{"too narrow for anything but a truncated attention line", attentionModel(), 20},
 		{"zero width, before the first WindowSizeMsg", attentionModel(), 0},
 		{"discovery failing, everything on screen at once", failing(), 200},
@@ -1014,12 +1014,12 @@ func TestRenderHeaderIsExactlyOneRow(t *testing.T) {
 	// otherwise this test would pass while measuring the same state six
 	// times.
 	wide, narrow := attentionModel(), attentionModel()
-	wide.width, narrow.width = 200, 69
+	wide.width, narrow.width = 200, 62
 	if got := xansi.Strip(wide.renderHeader()); !strings.Contains(got, "in gamma") {
 		t.Errorf("width 200 = %q, want the NAMED attention rung", got)
 	}
 	if got := xansi.Strip(narrow.renderHeader()); !strings.Contains(got, "2 other projects") {
-		t.Errorf("width 69 = %q, want the AGGREGATE attention rung", got)
+		t.Errorf("width 62 = %q, want the AGGREGATE attention rung", got)
 	}
 	pinched := failing()
 	pinched.width = 20
@@ -1618,7 +1618,7 @@ func TestQuitsFromEmptyState(t *testing.T) {
 	m.projects = nil
 	m.activeProject = -1
 
-	nm := pressLeader(t, m, keyRune('q'))
+	nm := pressKey(t, m, keyRune('q'))
 	if !nm.quitting {
 		t.Fatalf("q did not quit from the empty state")
 	}
@@ -1662,7 +1662,7 @@ func TestOverlayKeysAreInertInTheEmptyState(t *testing.T) {
 		name string
 		key  rune
 	}{
-		{"p must not open an invisible switcher", 'p'},
+		{"/ must not open an invisible switcher", '/'},
 		{"n must not open an invisible form", 'n'},
 	}
 	for _, tt := range tests {
@@ -1671,24 +1671,20 @@ func TestOverlayKeysAreInertInTheEmptyState(t *testing.T) {
 			m.projects = nil
 			m.activeProject = -1
 
-			m = pressLeader(t, m, keyRune(tt.key))
+			m = pressKey(t, m, keyRune(tt.key))
 			if m.switcherOpen || m.formOpen {
 				t.Fatalf("switcherOpen=%v formOpen=%v after %q — an overlay opened in the empty state", m.switcherOpen, m.formOpen, tt.key)
 			}
-			// The row is dimmed with no project, so the dialog refuses the key
-			// and stays up; closing it must leave the empty state on screen.
-			if !m.leaderOpen {
-				t.Fatalf("the actions dialog closed after the dimmed %q row", tt.key)
-			}
-			m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
-			if m.leaderOpen {
-				t.Fatalf("esc did not close the actions dialog")
+			// The key's row is blocked with no project (or no plan starter),
+			// so it only says why; the empty state stays on screen.
+			if m.leaderOpen || m.status == "" {
+				t.Fatalf("after %q: search open %v, status %q; want only the reason", tt.key, m.leaderOpen, m.status)
 			}
 			if out := render(m); !strings.Contains(out, "No projects found") {
 				t.Fatalf("the empty state left the screen after %q:\n%s", tt.key, out)
 			}
 
-			m = pressLeader(t, m, keyRune('q'))
+			m = pressKey(t, m, keyRune('q'))
 			if !m.quitting {
 				t.Fatalf("q did not quit after %q — the empty-state keyboard trap is back", tt.key)
 			}
@@ -1707,7 +1703,7 @@ func TestEmptyStateKeepsAnOpenOverlayVisibleAndQuittable(t *testing.T) {
 	m := testModel()
 	m.projects = scannedProjects("/p/a", "/p/b")
 	m.activeProject = 0
-	m = pressLeader(t, m, keyRune('p'))
+	m = pressKey(t, m, keyRune('/'))
 	if !m.switcherOpen {
 		t.Fatal("precondition: the switcher must open over a real project list")
 	}
@@ -1731,7 +1727,7 @@ func TestEmptyStateKeepsAnOpenOverlayVisibleAndQuittable(t *testing.T) {
 	if out := render(m); !strings.Contains(out, "No projects found") {
 		t.Fatalf("dismissing the overlay did not reveal the empty state:\n%s", out)
 	}
-	m = pressLeader(t, m, keyRune('q'))
+	m = pressKey(t, m, keyRune('q'))
 	if !m.quitting {
 		t.Fatal("q did not quit from the empty state after the overlay closed")
 	}

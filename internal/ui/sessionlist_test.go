@@ -49,21 +49,6 @@ func deliverFilterMatches(t *testing.T, m Model, cmd tea.Cmd) Model {
 	return m
 }
 
-// typeFilter presses `/` and then each rune of query, delivering the filter
-// results in between. Queries here are kept to one character because
-// collectMsgs waits out its whole deadline per keystroke: the textinput
-// cursor-blink Cmd shares the batch with the filter Cmd and is a 500ms Tick.
-func typeFilter(t *testing.T, m Model, query string) Model {
-	t.Helper()
-	m, cmd := leaderThen(t, m, '/')
-	m = deliverFilterMatches(t, m, cmd)
-	for _, r := range query {
-		m, cmd = update(t, m, keyRune(r))
-		m = deliverFilterMatches(t, m, cmd)
-	}
-	return m
-}
-
 // TestSessionListWrapsSelection is the old cursor-clamp table turned around:
 // the list used to clamp at either end, and now it must wrap instead. The
 // load-bearing rows are the four that assert the wrap itself — "down
@@ -121,37 +106,6 @@ func TestSessionListWrapsSelection(t *testing.T) {
 				t.Fatalf("selection = %d, want %d", m.listSelection(), tt.wantSel)
 			}
 		})
-	}
-}
-
-// TestSessionListWrapRespectsFilter pins wrap to the FILTERED subset, not
-// m.sessions. It doesn't fit the (count, start, keys, wantSel) table above
-// because listSelection() answers a GlobalIndex — an index into the
-// unfiltered list — so once a filter is applied it can no longer name the
-// row under test; identity has to come from the selected item's name
-// instead.
-//
-// manySessions names its first 26 sessions "a"+letter and the rest
-// "b"+letter, so filtering on "a" keeps every "a*" session plus "ba" (the
-// only later session with an 'a' anywhere) and drops "bb", "bc", "bd" — a
-// strict subset whose last VISIBLE row, "ba", is not the last row in the
-// full 30-session list, "bd". A wrap that recomputed the far end from
-// m.sessions instead of m.list.VisibleItems() would land on "bd", and only
-// this filtered case would catch it.
-func TestSessionListWrapRespectsFilter(t *testing.T) {
-	m := testModel(manySessions(30)...)
-	m = typeFilter(t, m, "a")
-	m, _ = update(t, m, keyEnter)
-
-	if got, total := len(m.list.VisibleItems()), len(m.sessions); got == 0 || got == total {
-		t.Fatalf("test setup: filter must narrow to a strict, non-empty subset; visible = %d of %d", got, total)
-	}
-
-	m.selectSessionIndex(0) // the first visible row, "aa"
-	m, _ = update(t, m, keyUp)
-
-	if s, ok := m.selected(); !ok || s.Name != "ba" {
-		t.Fatalf("selected() = %+v (ok=%v), want %q — the last VISIBLE session, not the last unfiltered one", s, ok, "ba")
 	}
 }
 
@@ -228,7 +182,8 @@ func TestSessionListRowMatchesRenderRow(t *testing.T) {
 // bubbles/list binds keys of its own — v2.2.1 gives Quit to "v" and the full
 // help toggle to "?" — and either one answering first would take a gesture the
 // dashboard owns. `q` must quit the dashboard (running its teardown), `?` must
-// be inert here so Wave 6 can bind it, and "v" must do nothing at all.
+// be the dashboard's (the full help, until W3.T1's keys overlay) and never the
+// list's, and "v" must do nothing at all.
 func TestSessionListDoesNotStealQuitOrHelp(t *testing.T) {
 	t.Run("q quits the dashboard", func(t *testing.T) {
 		m := testModel(runningSess("a"), runningSess("b"))
@@ -241,7 +196,7 @@ func TestSessionListDoesNotStealQuitOrHelp(t *testing.T) {
 		}
 	})
 
-	t.Run("? is inert and does not toggle the list's help", func(t *testing.T) {
+	t.Run("? is the dashboard's and does not toggle the list's help", func(t *testing.T) {
 		m := testModel(runningSess("a"), runningSess("b"))
 		before := m.listSelection()
 		got, cmd := update(t, m, keyRune('?'))
@@ -249,10 +204,13 @@ func TestSessionListDoesNotStealQuitOrHelp(t *testing.T) {
 			t.Error("? must not quit")
 		}
 		if cmd != nil {
-			t.Errorf("? must be inert in normal mode, got Cmd %T", cmd())
+			t.Errorf("? must run no command, got Cmd %T", cmd())
+		}
+		if !got.keysOpen {
+			t.Error("? did not open the dashboard's keys overlay")
 		}
 		if got.list.Help.ShowAll {
-			t.Error("? reached list.Model's help toggle; Wave 6 needs that key")
+			t.Error("? reached list.Model's help toggle")
 		}
 		if got.listSelection() != before {
 			t.Error("? moved the selection")
@@ -266,132 +224,17 @@ func TestSessionListDoesNotStealQuitOrHelp(t *testing.T) {
 			t.Error("list's own Quit binding (v under v2.2.1) must not reach tea.Quit")
 		}
 	})
-
-	t.Run("? types into the filter prompt", func(t *testing.T) {
-		m := testModel(runningSess("a"), runningSess("b"))
-		m = pressLeader(t, m, keySlash())
-		got, _ := update(t, m, keyRune('?'))
-		if got.list.FilterInput.Value() != "?" {
-			t.Errorf("filter value = %q, want %q — ? must be query text while filtering",
-				got.list.FilterInput.Value(), "?")
-		}
-		if got.list.Help.ShowAll {
-			t.Error("? toggled the list's help from inside the filter prompt")
-		}
-	})
-}
-
-// TestSessionListFiltering covers the second half of what the migration buys.
-// The load-bearing rows are the two that change what the REST of the dashboard
-// sees: selected() must answer from the filtered subset (every per-session key
-// reads it), and clearing the filter must restore the full list.
-func TestSessionListFiltering(t *testing.T) {
-	sessions := []Session{sess("alpha"), sess("beta"), sess("gamma")}
-
-	t.Run("typing narrows the list and owns the keyboard", func(t *testing.T) {
-		m := testModel(sessions...)
-		m = typeFilter(t, m, "b")
-
-		if mode := activeInputMode(m.modeSnapshot()); mode != inputFilter {
-			t.Fatalf("mode = %v, want %v while the prompt is open", mode, inputFilter)
-		}
-		if got := len(m.list.VisibleItems()); got != 1 {
-			t.Fatalf("visible items = %d, want 1", got)
-		}
-		s, ok := m.selected()
-		if !ok || s.Name != "beta" {
-			t.Fatalf("selected() = %+v (ok=%v), want beta", s, ok)
-		}
-	})
-
-	t.Run("enter applies the filter and hands the keyboard back", func(t *testing.T) {
-		m := testModel(sessions...)
-		m = typeFilter(t, m, "b")
-		m, _ = update(t, m, keyEnter)
-
-		if m.list.FilterState() != list.FilterApplied {
-			t.Fatalf("filter state = %v, want applied", m.list.FilterState())
-		}
-		if mode := activeInputMode(m.modeSnapshot()); mode != inputNormal {
-			t.Fatalf("mode = %v, want %v after enter", mode, inputNormal)
-		}
-		if s, _ := m.selected(); s.Name != "beta" {
-			t.Fatalf("selected() = %q, want beta", s.Name)
-		}
-	})
-
-	t.Run("esc clears an applied filter", func(t *testing.T) {
-		m := testModel(sessions...)
-		m = typeFilter(t, m, "b")
-		m, _ = update(t, m, keyEnter)
-		m, _ = update(t, m, keyEscMsg())
-
-		if m.list.FilterState() != list.Unfiltered {
-			t.Fatalf("filter state = %v, want unfiltered", m.list.FilterState())
-		}
-		if got := len(m.list.VisibleItems()); got != len(sessions) {
-			t.Fatalf("visible items = %d, want all %d back", got, len(sessions))
-		}
-	})
-
-	t.Run("a discovery tick keeps a filtered list narrowed", func(t *testing.T) {
-		m := testModel(sessions...)
-		m = typeFilter(t, m, "b")
-		m, _ = update(t, m, keyEnter)
-
-		m, _ = update(t, m, sessionsLoadedMsg{gen: m.projectGen, sessions: sessions, at: m.deps.Now()})
-		if got := len(m.list.VisibleItems()); got != 1 {
-			t.Fatalf("visible items after a tick = %d, want the filter still applied", got)
-		}
-		if s, _ := m.selected(); s.Name != "beta" {
-			t.Fatalf("selected() = %q after a tick, want beta", s.Name)
-		}
-	})
-
-	t.Run("a label is filterable by either name", func(t *testing.T) {
-		labelled := sess("gamma")
-		labelled.Label = "release prep"
-		for _, query := range []string{"r", "g"} {
-			m := testModel(sess("alpha"), labelled)
-			m = typeFilter(t, m, query)
-			if got := len(m.list.VisibleItems()); got != 1 {
-				t.Fatalf("query %q: visible items = %d, want 1", query, got)
-			}
-			if s, _ := m.selected(); s.Name != "gamma" {
-				t.Fatalf("query %q: selected %q, want gamma", query, s.Name)
-			}
-		}
-	})
-
-	t.Run("a project switch drops the filter", func(t *testing.T) {
-		m := testModel(sessions...)
-		m.projects = scannedProjects("/p/a", "/p/b")
-		m.activeProject = 0
-		m.repo = "/p/a"
-		m = typeFilter(t, m, "b")
-		m, _ = update(t, m, keyEnter)
-
-		m, _ = m.switchProject("/p/b")
-		if m.list.FilterState() != list.Unfiltered {
-			t.Fatalf("filter state = %v after a switch, want unfiltered", m.list.FilterState())
-		}
-	})
 }
 
 // TestEverySelectionMoveInvalidatesThePreviewGen is the audit this task most
 // risks failing. previewGen is what makes an already-dispatched preview timer
 // inert, so EVERY way the selected session can change has to advance it —
-// including the four the list component introduced (filter open, filter typing,
-// filter results landing, filter cleared) and the four navigation gestures.
+// the navigation gestures. (The session filter's four went with the filter
+// in T16.2.)
 // A gesture missing from this table opens a pane for the wrong session, and
 // only under a race.
 func TestEverySelectionMoveInvalidatesThePreviewGen(t *testing.T) {
 	sessions := []Session{sess("alpha"), sess("beta"), sess("gamma")}
-
-	// The filter Cmd the "matches delivered" row arranges, carried across the
-	// generation read so that row measures the ASYNC arrival alone rather than
-	// the keystroke that requested it.
-	var pendingFilterCmd tea.Cmd
 
 	tests := []struct {
 		name    string
@@ -408,45 +251,6 @@ func TestEverySelectionMoveInvalidatesThePreviewGen(t *testing.T) {
 		{name: "page up", move: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyPgUp); return m }},
 		{name: "home", move: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyHome); return m }},
 		{name: "end", move: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyEnd); return m }},
-		{
-			name: "filter opened",
-			move: func(t *testing.T, m Model) Model { m, _ = pressAction(t, m, keySlash()); return m },
-		},
-		{
-			name:    "filter query typed",
-			arrange: func(t *testing.T, m Model) Model { m, _ = pressAction(t, m, keySlash()); return m },
-			move:    func(t *testing.T, m Model) Model { m, _ = update(t, m, keyRune('b')); return m },
-		},
-		{
-			name: "filter matches delivered",
-			arrange: func(t *testing.T, m Model) Model {
-				m, _ = pressAction(t, m, keySlash())
-				m, pendingFilterCmd = update(t, m, keyRune('b'))
-				return m
-			},
-			move: func(t *testing.T, m Model) Model {
-				return deliverFilterMatches(t, m, pendingFilterCmd)
-			},
-		},
-		{
-			name: "filter cleared with esc",
-			arrange: func(t *testing.T, m Model) Model {
-				m = typeFilter(t, m, "b")
-				m, _ = update(t, m, keyEnter)
-				return m
-			},
-			move: func(t *testing.T, m Model) Model { m, _ = update(t, m, keyEscMsg()); return m },
-		},
-		{
-			name:    "filter cancelled from the prompt",
-			arrange: func(t *testing.T, m Model) Model { return typeFilter(t, m, "b") },
-			move:    func(t *testing.T, m Model) Model { m, _ = update(t, m, keyEscMsg()); return m },
-		},
-		{
-			name:    "enter on an empty query",
-			arrange: func(t *testing.T, m Model) Model { m, _ = pressAction(t, m, keySlash()); return m },
-			move:    func(t *testing.T, m Model) Model { m, _ = update(t, m, keyEnter); return m },
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -465,59 +269,6 @@ func TestEverySelectionMoveInvalidatesThePreviewGen(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestFilterPromptArmsNoPreview pins the one refusal this task adds to
-// schedulePreview. Arming while the prompt is open would dial whichever session
-// the query currently matches — and a dial STEALS the session from any other
-// client, including a afk attach in another terminal — so typing a search
-// would have side effects on running work. The refusal is arm-side, and it still
-// bumps: the row the selection left must not keep a live timer.
-func TestFilterPromptArmsNoPreview(t *testing.T) {
-	live := []Session{runningSess("alpha"), runningSess("beta")}
-
-	// schedulePreview is asked directly rather than through Update's Cmd batch:
-	// the timer it returns is a 300ms tea.Tick and cmdDeadline is also 300ms, so
-	// draining the batch to look for one is a coin flip.
-	t.Run("no timer while the prompt is open", func(t *testing.T) {
-		m := testModel(live...)
-		before := m.previewGen
-		m, _ = pressAction(t, m, keySlash())
-		if m.previewGen <= before {
-			t.Fatalf("previewGen = %d, want it advanced past %d even on this refusal", m.previewGen, before)
-		}
-		if !m.list.SettingFilter() {
-			t.Fatal("precondition: / must open the prompt")
-		}
-		if cmd := m.schedulePreview(); cmd != nil {
-			t.Fatal("the prompt armed a preview; typing a search must not dial a session")
-		}
-	})
-
-	t.Run("accepting the filter arms again", func(t *testing.T) {
-		m := testModel(live...)
-		m, _ = pressAction(t, m, keySlash())
-		m, _ = update(t, m, keyRune('b'))
-		m, _ = update(t, m, keyEnter)
-		if m.list.SettingFilter() {
-			t.Fatal("precondition: enter must close the prompt")
-		}
-		if cmd := m.schedulePreview(); cmd == nil {
-			t.Fatal("accepting the filter must arm a preview for the row it settled on")
-		}
-	})
-
-	t.Run("cancelling the filter arms again", func(t *testing.T) {
-		m := testModel(live...)
-		m, _ = pressAction(t, m, keySlash())
-		m, _ = update(t, m, keyEscMsg())
-		if m.list.SettingFilter() {
-			t.Fatal("precondition: esc must close the prompt")
-		}
-		if cmd := m.schedulePreview(); cmd == nil {
-			t.Fatal("cancelling the filter must arm a preview for the row it settled on")
-		}
-	})
 }
 
 // TestDiscoveryTickStillDoesNotBumpThePreviewGen is the other half of the
