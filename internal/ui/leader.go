@@ -116,9 +116,12 @@ type leaderConds struct {
 	// here, with the facts, because a few reasons name a key and the leader
 	// is configurable (T9.2).
 	leader string
-	// hasActiveProject is Model.hasActiveProject: the new-session form, the
-	// one-off picker and the switcher are inert without one.
+	// hasActiveProject is Model.hasActiveProject: the new-session form and
+	// the one-off picker are inert without one.
 	hasActiveProject bool
+	// canJump is Model.canJump: the jump search has something to list (a
+	// project open, a project in the list, or a cached home-screen row).
+	canJump bool
 	// selected is "a session row is selected" (Model.selected).
 	selected bool
 	// selectedPending is the selected row's create still running.
@@ -186,7 +189,7 @@ type leaderConds struct {
 // leaderBlockedReason says why action a cannot run under c, in a few plain
 // words, or "" when it can. The checks copy the handlers' own guards
 // (cleanSelected, restartKeyLive, openLabelForm, pauseBuild, resumeBuild,
-// openInbox, openSwitcher, openNewForm). A reason here that a handler does not
+// openInbox, openJump, openNewForm). A reason here that a handler does not
 // enforce would dim a row that works, so nothing is added that the handlers
 // do not check. Where a key works is not decided here: the key table's levels
 // say that (actionRows dims a row away from its levels with levelsReason).
@@ -230,8 +233,11 @@ func leaderBlockedReason(a modeAction, c leaderConds) string {
 	case actionRefreshUsage:
 		return usageRefreshBlockedReason(c)
 	case actionProjects:
-		if !c.hasActiveProject {
-			return "no projects to switch between"
+		// Not "no project is open": the jump search works at All projects
+		// before any project is open (A7). Only an empty dashboard, the
+		// empty state, has nothing to list.
+		if !c.canJump {
+			return "there is nothing to jump to yet"
 		}
 	case actionClean:
 		// An open pane does not dim clean since T16.2: the pane is detached

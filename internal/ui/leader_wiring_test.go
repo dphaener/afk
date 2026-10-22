@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/vt"
 
+	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/termpane"
 )
@@ -278,13 +279,13 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 		text func(m Model) string
 	}{
 		{
-			name: "switcher",
+			name: "jump",
 			open: func(t *testing.T, m Model) Model {
 				m.projects = []project.Project{{Path: "/repo", Name: "api"}, {Path: "/repos/afk", Name: "afk"}}
 				m.activeProject = 0
 				return pressKey(t, m, keyRune('/'))
 			},
-			mode: inputSwitcher,
+			mode: inputJump,
 		},
 		{
 			name: "inbox",
@@ -347,10 +348,10 @@ func TestLeaderIgnoredUnderEveryOverlay(t *testing.T) {
 				t.Fatalf("ctrl+] opened the key strip over the %s", tc.name)
 			}
 			wantMode := tc.mode
-			if tc.mode == inputLeader {
-				// The leader closes the search: it is how the search was
-				// reached from the Agent, and pressing it again is "never
-				// mind".
+			if tc.mode == inputLeader || tc.mode == inputJump {
+				// The leader closes the `:` search and the jump search: it is
+				// how each was reached from the Agent, and pressing it again
+				// is "never mind".
 				wantMode = inputNormal
 			}
 			if mode := activeInputMode(got.modeSnapshot()); mode != wantMode {
@@ -721,6 +722,15 @@ func levelActionCases() map[modeAction]levelActionCase {
 		return m
 	}
 	pane := func(t *testing.T) Model { return leaderFocusedPane(t, newFakePane("X")) }
+	// needsElsewhere has one thing needing the owner, a waiting session in
+	// another project, so `]` and `[` both switch to it.
+	needsElsewhere := func(t *testing.T) Model {
+		m := testModel(sess("a"))
+		m.projects = []project.Project{{Path: "/repo", Name: "repo"}, {Path: "/p/b", Name: "b"}}
+		m.activeProject = 0
+		m.projectSessions = map[string][]discover.SessionState{"/p/b": {waitingState("sb")}}
+		return m
+	}
 	return map[modeAction]levelActionCase{
 		actionMove: {setup: func(t *testing.T) Model { return testModel(sess("a"), sess("b")) },
 			ran: func(b, a Model, _ tea.Cmd) bool { return a.list.Index() != b.list.Index() }},
@@ -739,7 +749,7 @@ func levelActionCases() map[modeAction]levelActionCase {
 			m.projects = []project.Project{{Path: "/repo", Name: "api"}, {Path: "/repos/afk", Name: "afk"}}
 			m.activeProject = 0
 			return m
-		}, ran: func(_, a Model, _ tea.Cmd) bool { return a.switcherOpen }},
+		}, ran: func(_, a Model, _ tea.Cmd) bool { return a.jumpOpen }},
 		actionActionsSearch: {setup: list1,
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.leaderOpen }},
 		actionInbox: {setup: func(t *testing.T) Model { m := testModel(sess("a")); m.buildKnown = true; return m },
@@ -768,6 +778,10 @@ func levelActionCases() map[modeAction]levelActionCase {
 			m.projects = []project.Project{{Path: "/repo", Name: "repo", Pinned: true}, {Path: "/p/beta", Name: "beta"}}
 			return m
 		}, ran: func(_, a Model, _ tea.Cmd) bool { return !a.allProjectsOpen && a.inboxFollow == "bbbbb3" }},
+		actionNeedNext: {setup: needsElsewhere,
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.repo == "/p/b" }},
+		actionNeedPrev: {setup: needsElsewhere,
+			ran: func(_, a Model, _ tea.Cmd) bool { return a.repo == "/p/b" }},
 		actionPauseToggle: {setup: func(t *testing.T) Model {
 			m, _ := buildPauseModel(t, sess("alpha"))
 			return withBuild(t, m, buildPauseSnap())
@@ -907,7 +921,7 @@ func TestRetiredKeysDoNothing(t *testing.T) {
 			if cmd != nil {
 				t.Errorf("%q returned a command", k)
 			}
-			if got.formOpen || got.switcherOpen || got.inboxOpen || got.leaderOpen || got.modal != inputNormal ||
+			if got.formOpen || got.jumpOpen || got.inboxOpen || got.leaderOpen || got.modal != inputNormal ||
 				got.quitting || got.keysOpen || got.focus != focusList || got.allProjectsOpen {
 				t.Fatalf("%q acted on the dashboard", k)
 			}

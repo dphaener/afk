@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -127,9 +128,10 @@ func applyMsgsOfScanAndListed(t *testing.T, m Model, msgs []tea.Msg) (Model, []t
 //     fixed order the started source takes.
 //
 // Every row is merged twice and the two results compared, and "mixed sources"
-// exists for that check alone: sameProjectPaths compares by position, so an
-// order that moved between calls would rebuild an open switcher on every read
-// and reset the owner's cursor.
+// exists for that check alone: sameProjectPaths compares by position, and
+// `]` and the jump search list projects with no home-screen row yet in this
+// order, so an order that moved between calls would reorder them on every
+// read.
 func TestMergeProjects(t *testing.T) {
 	type read struct {
 		entries []ListedProject
@@ -265,7 +267,7 @@ func TestMergeProjects(t *testing.T) {
 			}},
 			wantPaths:  []string{"/code/afk", "/code/shop"},
 			wantNames:  []string{"afk", "shop"},
-			wantNotice: []string{"Could not read the project list: " + listedConfigPath + ": permission denied.", "The switcher keeps the projects it had."},
+			wantNotice: []string{"Could not read the project list: " + listedConfigPath + ": permission denied.", "The dashboard keeps the projects it had."},
 		},
 		{
 			name:       "an unreadable file whose error already names it is not named twice",
@@ -276,7 +278,7 @@ func TestMergeProjects(t *testing.T) {
 			}},
 			wantPaths:  []string{"/code/afk"},
 			wantNames:  []string{"afk"},
-			wantNotice: []string{"Could not read the project list: " + listedConfigPath + ": line 3: expected '=' · near \"path\". The switcher"},
+			wantNotice: []string{"Could not read the project list: " + listedConfigPath + ": line 3: expected '=' · near \"path\". The dashboard"},
 		},
 		{
 			name: "a good read after an unreadable one drops a removed project",
@@ -478,11 +480,11 @@ func TestScanExtraPaths(t *testing.T) {
 
 // --- the model ---
 
-// TestListedProjectsFillTheSwitcherWithNoSearchFolders is the task's headline
+// TestListedProjectsFillTheJumpWithNoSearchFolders is the task's headline
 // through the real paths: two listed projects, no search folders and no
-// start-up project. Running the Init commands and pressing `p` must show both
+// start-up project. Running the Init commands and pressing `/` must show both
 // rows under their listed names.
-func TestListedProjectsFillTheSwitcherWithNoSearchFolders(t *testing.T) {
+func TestListedProjectsFillTheJumpWithNoSearchFolders(t *testing.T) {
 	d, calls := listedSeam(noSearchFolders(testDeps()),
 		ListedProject{Path: "/code/afk", Name: "robot"},
 		ListedProject{Path: "/code/some-long-folder", Name: "Shop"},
@@ -501,10 +503,10 @@ func TestListedProjectsFillTheSwitcherWithNoSearchFolders(t *testing.T) {
 	}
 	m, _ = applyMsgsOfScanAndListed(t, m, msgs)
 
-	m = openSwitcherOverlay(t, m)
-	rows := switcherRowPaths(m)
+	m = openJumpOverlay(t, m)
+	rows := jumpProjectPaths(m)
 	if len(rows) != 2 {
-		t.Fatalf("switcher rows = %v, want both listed projects", rows)
+		t.Fatalf("jump project rows = %v, want both listed projects", rows)
 	}
 	for _, want := range []string{"/code/afk", "/code/some-long-folder"} {
 		found := false
@@ -512,7 +514,7 @@ func TestListedProjectsFillTheSwitcherWithNoSearchFolders(t *testing.T) {
 			found = found || got == want
 		}
 		if !found {
-			t.Errorf("switcher rows = %v, missing %s", rows, want)
+			t.Errorf("jump project rows = %v, missing %s", rows, want)
 		}
 	}
 	view := render(m)
@@ -534,7 +536,8 @@ func TestListedProjectsFillTheSwitcherWithNoSearchFolders(t *testing.T) {
 // TestListedReadShowsRowsBeforeTheScanAnswers pins that the listed rows do not
 // wait for the folder walk: only the listed message is applied, the scan's is
 // never delivered, and the rows are there. The second half pins the open
-// switcher: it holds a snapshot, so a read that adds a row has to rebuild it.
+// jump search: it holds a snapshot taken when it opened, so a read that adds
+// a row shows on its next opening, not under the owner's hands.
 func TestListedReadShowsRowsBeforeTheScanAnswers(t *testing.T) {
 	d := scanSeams(testDeps(), "/roots/alpha")
 	d.Projects = []project.Project{pinnedProject("/pin")}
@@ -543,9 +546,9 @@ func TestListedReadShowsRowsBeforeTheScanAnswers(t *testing.T) {
 	m.ready = true
 	m.width, m.height = 120, 40
 
-	m = openSwitcherOverlay(t, m)
-	if rows := switcherRowPaths(m); len(rows) != 1 {
-		t.Fatalf("precondition: switcher rows = %v, want the start-up row alone", rows)
+	m = openJumpOverlay(t, m)
+	if rows := jumpProjectPaths(m); len(rows) != 1 {
+		t.Fatalf("precondition: jump project rows = %v, want the start-up row alone", rows)
 	}
 
 	m, _ = update(t, m, listedProjectsMsg{
@@ -556,8 +559,13 @@ func TestListedReadShowsRowsBeforeTheScanAnswers(t *testing.T) {
 	if want := []string{"/code/afk", "/code/shop", "/pin"}; !pathsEqual(projectPaths(m.projects), want) {
 		t.Errorf("projects = %v, want %v", projectPaths(m.projects), want)
 	}
-	if rows := switcherRowPaths(m); len(rows) != 3 {
-		t.Errorf("open switcher rows = %v, want it rebuilt with the listed projects", rows)
+	if rows := jumpProjectPaths(m); len(rows) != 1 {
+		t.Errorf("open jump rows = %v, want the snapshot kept while it is open", rows)
+	}
+	m, _ = update(t, m, keyEscMsg())
+	m = openJumpOverlay(t, m)
+	if rows := jumpProjectPaths(m); len(rows) != 3 {
+		t.Errorf("reopened jump rows = %v, want the listed projects", rows)
 	}
 	if got := m.activeProjectPath(); got != "/pin" {
 		t.Errorf("active project = %q, want the start-up project kept", got)
@@ -595,7 +603,7 @@ func TestListedReadErrorKeepsRowsAndToastsOnce(t *testing.T) {
 	if cmd != nil {
 		t.Error("a failed read dispatches nothing")
 	}
-	wantToast := "Could not read the project list: " + listedConfigPath + ": line 2: bad key. The switcher keeps the projects it had."
+	wantToast := "Could not read the project list: " + listedConfigPath + ": line 2: bad key. The dashboard keeps the projects it had."
 	if m.status != wantToast || m.statusKind != notifyError {
 		t.Fatalf("status = %q kind = %v, want %q as an error", m.status, m.statusKind, wantToast)
 	}
@@ -898,32 +906,8 @@ func TestScanCoversListedProjects(t *testing.T) {
 	}
 }
 
-// TestSwitcherRescanReadsTheProjectListToo pins `R`: it re-reads the project
-// list beside the scan, so a project added with `afk project add` while the
-// switcher is open appears on `R` rather than a minute later.
-func TestSwitcherRescanReadsTheProjectListToo(t *testing.T) {
-	d, calls := listedSeam(scanSeams(testDeps(), "/roots/alpha"),
-		ListedProject{Path: "/code/afk", Name: "afk"})
-	d.Projects = scannedProjects("/roots/alpha")
-	d.ActiveProjectIndex = 0
-	m := New("/roots/alpha", time.Second, d)
-	m.ready = true
-	m.width, m.height = 120, 40
-
-	m = openSwitcherOverlay(t, m)
-	m, cmd := update(t, m, keyR)
-	msgs := collectMsgs(t, cmd)
-	if !hasMsg[listedProjectsMsg](msgs) || !hasMsg[projectScanMsg](msgs) {
-		t.Fatalf("`R` collected %v, want a listed read and a scan", msgs)
-	}
-	if calls.count() != 1 {
-		t.Errorf("LoadListed called %d times by `R`, want 1", calls.count())
-	}
-	m, _ = applyMsgsOfScanAndListed(t, m, msgs)
-	if !m.switcherOpen {
-		t.Error("`R` must leave the switcher open")
-	}
-	if rows := switcherRowPaths(m); len(rows) != 2 {
-		t.Errorf("switcher rows after `R` = %v, want the found and the listed project", rows)
-	}
+// sameProjectPaths reports whether two project lists name the same paths in
+// the same order, the order-stability question TestMergeProjects asks.
+func sameProjectPaths(a, b []project.Project) bool {
+	return slices.EqualFunc(a, b, func(x, y project.Project) bool { return x.Path == y.Path })
 }

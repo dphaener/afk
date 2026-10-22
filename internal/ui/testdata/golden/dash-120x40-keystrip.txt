@@ -29,12 +29,12 @@
  │                                                                                                                    │ 
  │                                                                                                                    │ 
  │                                                                                                                    │ 
- │                                                                                                                    │ 
  │                                                                ╭─ afk keys ─────────────────────────────────────────╮
- │                                                                │ esc    go back           /      jump               │
+ │                                                                │ esc    go back           ]      next needing you   │
+ │                                                                │ [      prev needing you  /      jump               │
  │                                                                │ :      actions           i      inbox              │
  │                                                                │ d      details           R      read usage         │
  │                                                                │ ?      keys              q      quit               │
- │  ctrl+] esc  back   ctrl+] d  details   ctrl+] m  mouse   ctrl+│ m      mouse             ctrl+] send ctrl+]        │
+ │  ctrl+] esc  back   ctrl+] ]  next needing you   ctrl+] d  deta│ m      mouse             ctrl+] send ctrl+]        │
  ╰────────────────────────────────────────────────────────────────╰────────────────────── esc back · other keys close ─╯
 waiting for an afk key · esc back · ctrl+] sends ctrl+] to the agent                                                    

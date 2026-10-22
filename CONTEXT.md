@@ -257,3 +257,6 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Linked row**: the row in another section that belongs to the selection, filled with the strip colour and ending `◂ name`.
 - **Details overlay**: the 54-column pane on the right (full width below 100 columns) that `d` opens over any level for the selected session, with the tabs Overview, Waves, Stack, Notes and Diff; `esc` goes back to where it was opened.
 - **Agent band**: the line under the Agent's title strip that sums up the session (phase, task, diff, loop, host) and names the next session in the project that needs the owner.
+- **Needs you**: something only the owner can move on: a session waiting on them, an inbox item that blocks a task, a plan to approve, a broken session or a gone project; the dashboard keeps them in one order across every project.
+- **Next needing you**: the item after the one in view in that order; `]` goes to it and `[` to the one before, and the Agent's band names it.
+- **Jump search**: the `/` box that finds any project, session or task across every project and goes there; things that need the owner come first.

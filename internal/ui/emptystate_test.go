@@ -19,6 +19,7 @@ import (
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/palette"
 	"github.com/dphaener/afk/internal/project"
+	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
 )
@@ -37,10 +38,11 @@ func wantBadgeOnlyHeader(m Model) string {
 
 // attentionModel is the shape every cross-project test below needs: four
 // known projects with alpha active, gamma and delta holding sessions that
-// are awaiting input, and beta quiet. The open counts are what put gamma
+// are awaiting input, and beta quiet. The list order is what puts gamma
 // ahead of delta — alphabetically delta sorts FIRST — so any test asserting
 // "gamma … delta" is also asserting that the header takes its order from
-// sortSwitcherProjects rather than from map iteration or from the names.
+// the needs-you order (the list's, with no home-screen row read) rather
+// than from map iteration or from the names.
 func attentionModel(sessions ...Session) Model {
 	m := testModel(sessions...)
 	m.projects = []project.Project{
@@ -88,7 +90,7 @@ func TestRenderHeaderCarriesNoProjectChromeForSingleOrZeroProjects(t *testing.T)
 
 			got := m.renderHeader()
 			for _, banned := range []string{
-				"session(s)", "projects)", "refreshed", "every 1s", "awaiting",
+				"session(s)", "projects)", "refreshed", "every 1s", "awaiting", "need you",
 				headerSwitchHint(defaultLeaderKey, levelProject),
 			} {
 				if strings.Contains(xansi.Strip(got), banned) {
@@ -158,15 +160,15 @@ func TestRenderHeaderDoesNotHandCarryOneOffAndLabel(t *testing.T) {
 // is the projects the user cannot see from here.
 //
 // The order assertion is load-bearing twice over: it proves the clauses come
-// from sortSwitcherProjects (delta sorts before gamma by name, and only the
-// open counts put gamma first) and it proves only the FIRST clause spells
-// out the word "awaiting".
+// in the needs-you order (delta sorts before gamma by name, and only the
+// project list puts gamma first) and it proves only the FIRST clause spells
+// out the words "need you".
 func TestRenderHeaderShowsCrossProjectAttention(t *testing.T) {
 	m := attentionModel()
 	m.width = 200
 
 	got := xansi.Strip(m.renderHeader())
-	if want := awaitingGlyph + " 2 awaiting in gamma · 1 in delta"; !strings.Contains(got, want) {
+	if want := awaitingGlyph + " 2 need you in gamma · 1 in delta"; !strings.Contains(got, want) {
 		t.Fatalf("renderHeader() = %q, want it to contain %q", got, want)
 	}
 	if !strings.Contains(got, headerSwitchHint(defaultLeaderKey, levelProject)) {
@@ -209,14 +211,14 @@ func TestRenderHeaderCarriesStalenessBesideTheAttentionLine(t *testing.T) {
 	for _, want := range []string{
 		headerBadgeText,
 		"stale · discovery failing 45s",
-		awaitingGlyph + " 2 awaiting in gamma · 1 in delta",
+		awaitingGlyph + " 2 need you in gamma · 1 in delta",
 		headerSwitchHint(defaultLeaderKey, levelProject),
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderHeader() = %q, want it to contain %q", got, want)
 		}
 	}
-	if strings.Index(got, "stale ·") > strings.Index(got, "awaiting in gamma") {
+	if strings.Index(got, "stale ·") > strings.Index(got, "need you in gamma") {
 		t.Errorf("renderHeader() = %q, want the staleness signal before the counts it invalidates", got)
 	}
 	if rows := lipgloss.Height(m.renderHeader()); rows != 1 {
@@ -242,7 +244,7 @@ func TestRenderHeaderIgnoresAnOutOfRangeActiveIndex(t *testing.T) {
 	m.width = 200
 
 	got := xansi.Strip(m.renderHeader())
-	for _, want := range []string{"2 awaiting in gamma", "1 in delta", "1 in alpha"} {
+	for _, want := range []string{"1 needs you in alpha", "2 in gamma", "1 in delta"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderHeader() = %q, want it to contain %q for an out-of-range index", got, want)
 		}
@@ -268,17 +270,17 @@ func TestRenderHeaderIgnoresAnOutOfRangeActiveIndex(t *testing.T) {
 func TestHeaderLineDegradesInOrder(t *testing.T) {
 	p := headerPieces{
 		badge:          "afk Dashboard",
-		attention:      "● 2 awaiting in gamma · 1 in delta",
-		attentionShort: "● 3 awaiting in 2 other projects",
+		attention:      "● 2 need you in gamma · 1 in delta",
+		attentionShort: "● 3 more need you elsewhere",
 		hint:           "p: switch projects",
 	}
 	withHint := func(l string) int {
 		return lipgloss.Width(l) + headerMinGap + lipgloss.Width(p.hint)
 	}
-	named := withHint("afk Dashboard ● 2 awaiting in gamma · 1 in delta")
-	aggregate := withHint("afk Dashboard ● 3 awaiting in 2 other projects")
-	noHint := lipgloss.Width("afk Dashboard ● 3 awaiting in 2 other projects")
-	noBadge := lipgloss.Width("● 3 awaiting in 2 other projects")
+	named := withHint("afk Dashboard ● 2 need you in gamma · 1 in delta")
+	aggregate := withHint("afk Dashboard ● 3 more need you elsewhere")
+	noHint := lipgloss.Width("afk Dashboard ● 3 more need you elsewhere")
+	noBadge := lipgloss.Width("● 3 more need you elsewhere")
 
 	cases := []struct {
 		name         string
@@ -289,13 +291,13 @@ func TestHeaderLineDegradesInOrder(t *testing.T) {
 		{"everything fits", named,
 			[]string{"afk Dashboard", "gamma", "delta", "p: switch projects"}, nil, true},
 		{"one short: the names collapse to the aggregate", named - 1,
-			[]string{"afk Dashboard", "2 other projects", "p: switch projects"}, []string{"gamma"}, true},
+			[]string{"afk Dashboard", "more need you elsewhere", "p: switch projects"}, []string{"gamma"}, true},
 		{"then the hint", aggregate - 1,
-			[]string{"afk Dashboard", "2 other projects"}, []string{"p: switch projects"}, true},
+			[]string{"afk Dashboard", "more need you elsewhere"}, []string{"p: switch projects"}, true},
 		{"then the badge, and the attention survives it", noHint - 1,
-			[]string{"2 other projects"}, []string{"afk Dashboard"}, true},
+			[]string{"more need you elsewhere"}, []string{"afk Dashboard"}, true},
 		{"below the attention line alone it truncates", noBadge - 1,
-			[]string{"3 awaiting"}, []string{"afk Dashboard"}, false},
+			[]string{"3 more need you"}, []string{"afk Dashboard"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -347,19 +349,19 @@ func TestHeaderLineDegradesInOrder(t *testing.T) {
 func TestHeaderLineDegradesWithUsage(t *testing.T) {
 	p := headerPieces{
 		badge:          "afk Dashboard",
-		attention:      "● 2 awaiting in gamma · 1 in delta",
-		attentionShort: "● 3 awaiting in 2 other projects",
+		attention:      "● 2 need you in gamma · 1 in delta",
+		attentionShort: "● 3 more need you elsewhere",
 		usage:          "usage: paused until Mon 2 Jan 15:04 · Week (all models) 91%",
 		usageShort:     "paused · 91%",
 		hint:           "p: switch projects",
 	}
 	w := lipgloss.Width
-	full := w("afk Dashboard ● 2 awaiting in gamma · 1 in delta") + headerMinGap + w(p.usage) + 2 + w(p.hint)
-	noHint := w("afk Dashboard ● 2 awaiting in gamma · 1 in delta") + headerMinGap + w(p.usage)
-	aggregate := w("afk Dashboard ● 3 awaiting in 2 other projects") + headerMinGap + w(p.usage)
-	short := w("afk Dashboard ● 3 awaiting in 2 other projects") + headerMinGap + w(p.usageShort)
-	noBadge := w("● 3 awaiting in 2 other projects") + headerMinGap + w(p.usageShort)
-	attOnly := w("● 3 awaiting in 2 other projects")
+	full := w("afk Dashboard ● 2 need you in gamma · 1 in delta") + headerMinGap + w(p.usage) + 2 + w(p.hint)
+	noHint := w("afk Dashboard ● 2 need you in gamma · 1 in delta") + headerMinGap + w(p.usage)
+	aggregate := w("afk Dashboard ● 3 more need you elsewhere") + headerMinGap + w(p.usage)
+	short := w("afk Dashboard ● 3 more need you elsewhere") + headerMinGap + w(p.usageShort)
+	noBadge := w("● 3 more need you elsewhere") + headerMinGap + w(p.usageShort)
+	attOnly := w("● 3 more need you elsewhere")
 
 	cases := []struct {
 		name       string
@@ -371,15 +373,15 @@ func TestHeaderLineDegradesWithUsage(t *testing.T) {
 		{"one short: the hint goes first", full - 1,
 			[]string{"afk Dashboard", "gamma", "usage: paused"}, []string{"p: switch"}},
 		{"then the names collapse", noHint - 1,
-			[]string{"afk Dashboard", "2 other projects", "usage: paused"}, []string{"gamma"}},
+			[]string{"afk Dashboard", "more need you elsewhere", "usage: paused"}, []string{"gamma"}},
 		{"then the long usage becomes the short", aggregate - 1,
-			[]string{"afk Dashboard", "2 other projects", "paused · 91%"}, []string{"usage:"}},
+			[]string{"afk Dashboard", "more need you elsewhere", "paused · 91%"}, []string{"usage:"}},
 		{"then the badge, and the short usage survives it", short - 1,
-			[]string{"2 other projects", "paused · 91%"}, []string{"afk Dashboard"}},
+			[]string{"more need you elsewhere", "paused · 91%"}, []string{"afk Dashboard"}},
 		{"then the short usage, and the attention survives it", noBadge - 1,
-			[]string{"2 other projects"}, []string{"paused · 91%", "afk Dashboard"}},
+			[]string{"more need you elsewhere"}, []string{"paused · 91%", "afk Dashboard"}},
 		{"below the attention line it truncates", attOnly - 1,
-			[]string{"3 awaiting"}, []string{"paused", "afk Dashboard"}},
+			[]string{"3 more need you"}, []string{"paused", "afk Dashboard"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -407,7 +409,7 @@ func TestHeaderLineDegradesWithUsage(t *testing.T) {
 		q := p
 		q.stale = "stale · discovery failing 12s"
 		got := headerLine(q, w(q.stale)+2)
-		if !strings.Contains(got, "stale") || strings.Contains(got, "paused") || strings.Contains(got, "awaiting") {
+		if !strings.Contains(got, "stale") || strings.Contains(got, "paused") || strings.Contains(got, "need you") {
 			t.Errorf("got %q, want the staleness signal alone", got)
 		}
 	})
@@ -524,17 +526,17 @@ func TestHeaderLineKeepsStalenessLast(t *testing.T) {
 	p := headerPieces{
 		badge:          "afk Dashboard",
 		stale:          "stale · discovery failing 30s",
-		attention:      "● 2 awaiting in gamma · 1 in delta",
-		attentionShort: "● 3 awaiting in 2 other projects",
+		attention:      "● 2 need you in gamma · 1 in delta",
+		attentionShort: "● 3 more need you elsewhere",
 		hint:           "p: switch projects",
 	}
 	withHint := func(l string) int {
 		return lipgloss.Width(l) + headerMinGap + lipgloss.Width(p.hint)
 	}
-	named := withHint("afk Dashboard stale · discovery failing 30s  ● 2 awaiting in gamma · 1 in delta")
-	aggregate := withHint("afk Dashboard stale · discovery failing 30s  ● 3 awaiting in 2 other projects")
-	noHint := lipgloss.Width("afk Dashboard stale · discovery failing 30s  ● 3 awaiting in 2 other projects")
-	noBadge := lipgloss.Width("stale · discovery failing 30s  ● 3 awaiting in 2 other projects")
+	named := withHint("afk Dashboard stale · discovery failing 30s  ● 2 need you in gamma · 1 in delta")
+	aggregate := withHint("afk Dashboard stale · discovery failing 30s  ● 3 more need you elsewhere")
+	noHint := lipgloss.Width("afk Dashboard stale · discovery failing 30s  ● 3 more need you elsewhere")
+	noBadge := lipgloss.Width("stale · discovery failing 30s  ● 3 more need you elsewhere")
 	staleOnly := lipgloss.Width("stale · discovery failing 30s")
 
 	cases := []struct {
@@ -547,20 +549,20 @@ func TestHeaderLineKeepsStalenessLast(t *testing.T) {
 			[]string{"afk Dashboard", "discovery failing 30s", "gamma", "delta", "p: switch projects"},
 			nil, true},
 		{"one short: the names collapse to the aggregate", named - 1,
-			[]string{"afk Dashboard", "discovery failing 30s", "2 other projects", "p: switch projects"},
+			[]string{"afk Dashboard", "discovery failing 30s", "more need you elsewhere", "p: switch projects"},
 			[]string{"gamma"}, true},
 		{"then the hint", aggregate - 1,
-			[]string{"afk Dashboard", "discovery failing 30s", "2 other projects"},
+			[]string{"afk Dashboard", "discovery failing 30s", "more need you elsewhere"},
 			[]string{"p: switch projects"}, true},
 		{"then the badge, and both alerts survive it", noHint - 1,
-			[]string{"discovery failing 30s", "2 other projects"},
+			[]string{"discovery failing 30s", "more need you elsewhere"},
 			[]string{"afk Dashboard"}, true},
 		{"then the attention line, and the staleness survives it", noBadge - 1,
 			[]string{"discovery failing 30s"},
-			[]string{"2 other projects", "3 awaiting", "afk Dashboard"}, true},
+			[]string{"more need you elsewhere", "3 more need you", "afk Dashboard"}, true},
 		{"below the staleness signal alone it truncates that, not the attention line", staleOnly - 1,
 			[]string{"stale · discovery"},
-			[]string{"awaiting", "afk Dashboard"}, false},
+			[]string{"need you", "afk Dashboard"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -750,8 +752,8 @@ func TestHeaderInboxSegment(t *testing.T) {
 // no rung of their own, so no rung repeats the one above or empties the row.
 func TestHeaderLineDegradesWithInbox(t *testing.T) {
 	const (
-		named = "● 2 awaiting in gamma · 1 in delta"
-		agg   = "● 3 awaiting in 2 other projects"
+		named = "● 2 need you in gamma · 1 in delta"
+		agg   = "● 3 more need you elsewhere"
 		badge = "afk Dashboard"
 		stale = "stale · discovery failing 30s"
 		ilong = "inbox 3 · 2 blocking"
@@ -884,7 +886,7 @@ func TestRenderHeaderReportsOnlyOtherProjectsAwaiting(t *testing.T) {
 		m.projectSessions = map[string][]discover.SessionState{
 			"/repos/alpha": {{AwaitingInput: true}},
 		}
-		if got := xansi.Strip(m.renderHeader()); strings.Contains(got, "awaiting") {
+		if got := xansi.Strip(m.renderHeader()); strings.Contains(got, "need you") {
 			t.Fatalf("renderHeader() = %q, must not report the active project's own awaiting rows", got)
 		}
 	})
@@ -893,7 +895,7 @@ func TestRenderHeaderReportsOnlyOtherProjectsAwaiting(t *testing.T) {
 		m := attentionModel(sess("a"))
 		m.projectSessions = nil
 		got := xansi.Strip(m.renderHeader())
-		for _, banned := range []string{"awaiting", "0 "} {
+		for _, banned := range []string{"awaiting", "need you", "0 "} {
 			if strings.Contains(got, banned) {
 				t.Fatalf("renderHeader() = %q, must render no attention line at all, not %q", got, banned)
 			}
@@ -916,7 +918,7 @@ func TestRenderHeaderSwitchHintVisibleAtEightyColumns(t *testing.T) {
 	if !strings.Contains(stripped, headerSwitchHint(defaultLeaderKey, levelProject)) {
 		t.Fatalf("renderHeader() at width 80 = %q, want it to contain %q", stripped, headerSwitchHint(defaultLeaderKey, levelProject))
 	}
-	if !strings.Contains(stripped, "awaiting in gamma") {
+	if !strings.Contains(stripped, "need you in gamma") {
 		t.Errorf("renderHeader() at width 80 = %q, want the named attention line to survive", stripped)
 	}
 	if lipgloss.Width(got) > 80 {
@@ -1014,16 +1016,18 @@ func TestRenderHeaderIsExactlyOneRow(t *testing.T) {
 	// otherwise this test would pass while measuring the same state six
 	// times.
 	wide, narrow := attentionModel(), attentionModel()
-	wide.width, narrow.width = 200, 62
+	// 58, not the 62 it was: the hint went from "/: projects" to "/: jump"
+	// (T16.6), four cells shorter, so at 62 the named line fits again.
+	wide.width, narrow.width = 200, 58
 	if got := xansi.Strip(wide.renderHeader()); !strings.Contains(got, "in gamma") {
 		t.Errorf("width 200 = %q, want the NAMED attention rung", got)
 	}
-	if got := xansi.Strip(narrow.renderHeader()); !strings.Contains(got, "2 other projects") {
-		t.Errorf("width 62 = %q, want the AGGREGATE attention rung", got)
+	if got := xansi.Strip(narrow.renderHeader()); !strings.Contains(got, "more need you elsewhere") {
+		t.Errorf("width 58 = %q, want the AGGREGATE attention rung", got)
 	}
 	pinched := failing()
 	pinched.width = 20
-	if got := xansi.Strip(pinched.renderHeader()); !strings.Contains(got, "stale") || strings.Contains(got, "awaiting") {
+	if got := xansi.Strip(pinched.renderHeader()); !strings.Contains(got, "stale") || strings.Contains(got, "need you") {
 		t.Errorf("width 20 while discovery fails = %q, want the TRUNCATED STALENESS rung", got)
 	}
 }
@@ -1037,11 +1041,11 @@ func TestRenderHeaderIsExactlyOneRow(t *testing.T) {
 // plural bug in either would ship.
 //
 // Load-bearing rows: "one other project" is the only case with no joiner at
-// all, and is the wording a single awaiting session elsewhere produces —
-// the commonest real case and the one the header tests never build.
-// "counts other than one" guards the word "awaiting" belonging to the FIRST
-// clause only; a loop that appended it every time reads as a stutter and
-// blows the ladder's width budget.
+// all, and is the wording a single thing needing you elsewhere produces —
+// the commonest real case and the one the header tests never build, and
+// the one that says "needs". "counts other than one" guards the words
+// "need you" belonging to the FIRST clause only; a loop that appended them
+// every time reads as a stutter and blows the ladder's width budget.
 func TestAttentionNamed(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1053,19 +1057,19 @@ func TestAttentionNamed(t *testing.T) {
 		{
 			"one other project",
 			[]otherProjectAwaiting{{name: "gamma", count: 1}},
-			awaitingGlyph + " 1 awaiting in gamma",
+			awaitingGlyph + " 1 needs you in gamma",
 		},
 		{
 			"counts other than one",
 			[]otherProjectAwaiting{{name: "gamma", count: 2}, {name: "delta", count: 1}},
-			awaitingGlyph + " 2 awaiting in gamma · 1 in delta",
+			awaitingGlyph + " 2 need you in gamma · 1 in delta",
 		},
 		{
 			"three keep joining with the same separator",
 			[]otherProjectAwaiting{
 				{name: "gamma", count: 3}, {name: "delta", count: 2}, {name: "eps", count: 1},
 			},
-			awaitingGlyph + " 3 awaiting in gamma · 2 in delta · 1 in eps",
+			awaitingGlyph + " 3 need you in gamma · 2 in delta · 1 in eps",
 		},
 	}
 	for _, tc := range cases {
@@ -1077,20 +1081,12 @@ func TestAttentionNamed(t *testing.T) {
 	}
 }
 
-// TestAttentionAggregate pins the collapsed wording, and specifically its
-// plurals. The singular — "3 awaiting in 1 other project" — is the row the
-// plan called out by name and the one nothing else in the package reaches:
-// every header test wires exactly two other projects, and headerPieces
-// discards the aggregate whenever it is not narrower than the named form,
-// which for one short project name it usually is not. The builder is still
-// the thing that has to be right, because a long project name does reach
-// this wording, so it is asserted here where the width ladder cannot hide
-// it.
-//
-// The other load-bearing row is the total: the aggregate sums the counts
-// across projects and reports the PROJECT count separately, so "6 awaiting
-// in 4 other projects" is two different numbers and a builder that reused
-// one for the other would still look plausible.
+// TestAttentionAggregate pins the collapsed wording of §3.1, "● 3 more need
+// you elsewhere". Load-bearing rows: "one thing is singular" (the one
+// wording that says "needs", which no header test reaches, since every one
+// wires more than one thing elsewhere) and "the total is summed" (the
+// phrase counts things across every other project, not projects, so a
+// builder counting projects would still look plausible).
 func TestAttentionAggregate(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1100,22 +1096,22 @@ func TestAttentionAggregate(t *testing.T) {
 		{"nothing awaiting elsewhere", nil, ""},
 		{"empty slice is the same signal", []otherProjectAwaiting{}, ""},
 		{
-			"one other project is singular",
+			"one other project with three things",
 			[]otherProjectAwaiting{{name: "gamma", count: 3}},
-			awaitingGlyph + " 3 awaiting in 1 other project",
+			awaitingGlyph + " 3 more need you elsewhere",
 		},
 		{
-			"one other project with one session is still singular",
+			"one thing is singular",
 			[]otherProjectAwaiting{{name: "gamma", count: 1}},
-			awaitingGlyph + " 1 awaiting in 1 other project",
+			awaitingGlyph + " 1 more needs you elsewhere",
 		},
 		{
-			"several projects are plural and the total is summed",
+			"the total is summed across projects",
 			[]otherProjectAwaiting{
 				{name: "gamma", count: 3}, {name: "delta", count: 1},
 				{name: "eps", count: 1}, {name: "zeta", count: 1},
 			},
-			awaitingGlyph + " 6 awaiting in 4 other projects",
+			awaitingGlyph + " 6 more need you elsewhere",
 		},
 	}
 	for _, tc := range cases {
@@ -1128,11 +1124,11 @@ func TestAttentionAggregate(t *testing.T) {
 }
 
 // TestHeaderPiecesKeepsASingularAggregateWhenItIsNarrower is the end of the
-// singular wording's path: headerPieces collapses attentionShort back onto
-// the named form whenever the aggregate is not actually shorter, so with one
-// other project the singular phrase survives only when that project's name
-// is longer than "1 other project". That is the case this pins, because it
-// is the only way a user ever sees the singular on screen.
+// aggregate wording's path with one other project: headerPieces collapses
+// attentionShort back onto the named form whenever the aggregate is not
+// actually shorter, so the aggregate survives only when that project's name
+// is longer than "more … elsewhere". That is the case this pins, because it
+// is the only way a user with one other project ever sees the aggregate.
 func TestHeaderPiecesKeepsASingularAggregateWhenItIsNarrower(t *testing.T) {
 	long := "a-very-long-project-name-that-outruns-the-phrase"
 	m := testModel(sess("a"))
@@ -1146,26 +1142,27 @@ func TestHeaderPiecesKeepsASingularAggregateWhenItIsNarrower(t *testing.T) {
 	}
 
 	p := m.headerPieces()
-	if got, want := xansi.Strip(p.attention), awaitingGlyph+" 2 awaiting in "+long; got != want {
+	if got, want := xansi.Strip(p.attention), awaitingGlyph+" 2 need you in "+long; got != want {
 		t.Fatalf("named attention = %q, want %q", got, want)
 	}
-	if got, want := xansi.Strip(p.attentionShort), awaitingGlyph+" 2 awaiting in 1 other project"; got != want {
-		t.Fatalf("aggregate attention = %q, want the singular %q", got, want)
+	if got, want := xansi.Strip(p.attentionShort), awaitingGlyph+" 2 more need you elsewhere"; got != want {
+		t.Fatalf("aggregate attention = %q, want %q", got, want)
 	}
 }
 
 // --- awaitingElsewhere: cross-project attention data (W1.T1) ---
 
-// TestAwaitingElsewhere covers the cross-project attention helper W2.T1 will
-// consume to build the header's attention line. Two rows are load-bearing:
-// "several other projects" proves the result follows sortSwitcherProjects's
-// order rather than Go's randomized map iteration — the projects are given
-// open counts that put them in the REVERSE of alphabetical order, so a
-// helper that iterated m.projectSessions directly, or sorted by name instead
-// of reusing sortSwitcherProjects, would produce the alphabetical order and
-// fail this case. "the active project itself awaiting" proves the exclusion
-// is a real path match, not an accidental side effect of the zero-count
-// filter that would happen to hide it anyway.
+// TestAwaitingElsewhere covers the top bar's attention count, now fed from
+// the needs-you order (T16.6). Load-bearing rows: "several other projects"
+// proves the result follows the order `]` walks (the projects' list order
+// when no home-screen row is read) rather than Go's randomized map
+// iteration or the old switcher's open counts, which are given in the
+// REVERSE order so a helper still sorting by them fails; "a home-screen row
+// puts its project first" proves the cached rows lead the order as the home
+// screen draws them; "every kind counts" proves a plan to approve, a
+// blocking inbox item and a gone project count beside waiting sessions; and
+// "the active project itself awaiting" proves the exclusion is a real path
+// match, not a side effect of the zero-count filter.
 func TestAwaitingElsewhere(t *testing.T) {
 	alpha := project.Project{Path: "/repos/alpha", Name: "alpha"}
 	beta := project.Project{Path: "/repos/beta", Name: "beta"}
@@ -1178,6 +1175,7 @@ func TestAwaitingElsewhere(t *testing.T) {
 		activeProject   int
 		projectSessions map[string][]discover.SessionState
 		projectOpens    map[string]int
+		rows            []projectrows.Row
 		want            []otherProjectAwaiting
 	}{
 		{
@@ -1199,7 +1197,7 @@ func TestAwaitingElsewhere(t *testing.T) {
 			want: []otherProjectAwaiting{{name: "beta", count: 2}},
 		},
 		{
-			name:          "several other projects awaiting, ordered by sortSwitcherProjects not map iteration",
+			name:          "several other projects awaiting, in the list's order not map iteration or opens",
 			projects:      []project.Project{alpha, beta, gamma, delta},
 			activeProject: 0,
 			projectSessions: map[string][]discover.SessionState{
@@ -1207,11 +1205,38 @@ func TestAwaitingElsewhere(t *testing.T) {
 				"/repos/gamma": {{AwaitingInput: true}, {AwaitingInput: true}, {AwaitingInput: true}},
 				"/repos/delta": {{AwaitingInput: true}, {AwaitingInput: true}},
 			},
-			projectOpens: map[string]int{"/repos/gamma": 5, "/repos/delta": 3, "/repos/beta": 1},
+			projectOpens: map[string]int{"/repos/delta": 5, "/repos/gamma": 3, "/repos/beta": 1},
 			want: []otherProjectAwaiting{
+				{name: "beta", count: 1},
 				{name: "gamma", count: 3},
 				{name: "delta", count: 2},
+			},
+		},
+		{
+			name:          "a home-screen row puts its project first",
+			projects:      []project.Project{alpha, beta, gamma},
+			activeProject: 0,
+			projectSessions: map[string][]discover.SessionState{
+				"/repos/beta":  {{AwaitingInput: true}},
+				"/repos/gamma": {{AwaitingInput: true}},
+			},
+			rows: []projectrows.Row{{Root: "/repos/gamma", Name: "gamma", PlanWaiting: true}},
+			want: []otherProjectAwaiting{
+				{name: "gamma", count: 2},
 				{name: "beta", count: 1},
+			},
+		},
+		{
+			name:          "every kind counts: a plan, a blocking item and a gone project",
+			projects:      []project.Project{alpha, beta, gamma},
+			activeProject: 0,
+			rows: []projectrows.Row{
+				{Root: "/repos/beta", Name: "beta", PlanWaiting: true, Wait: projectrows.Wait{ItemID: "q1"}},
+				{Root: "/repos/gamma", Name: "gamma", State: projectrows.StateGone},
+			},
+			want: []otherProjectAwaiting{
+				{name: "beta", count: 2},
+				{name: "gamma", count: 1},
 			},
 		},
 		{
@@ -1248,6 +1273,7 @@ func TestAwaitingElsewhere(t *testing.T) {
 			m.activeProject = tc.activeProject
 			m.projectSessions = tc.projectSessions
 			m.projectOpens = tc.projectOpens
+			m.everyProject = AllProjects{Rows: tc.rows}
 
 			got := m.awaitingElsewhere()
 			if !reflect.DeepEqual(got, tc.want) {
@@ -1651,10 +1677,13 @@ func TestEmptyStateViewDoesNotPanic(t *testing.T) {
 }
 
 // TestOverlayKeysAreInertInTheEmptyState pins the fix for the empty-state
-// keyboard trap: `p` used to open the switcher (and `n` the form) into a state
-// View never renders — an invisible component capturing every key, with `q`
-// silently no longer quitting. Both keys must now be inert with the empty state
-// on screen, and `q` pressed right after must still quit.
+// keyboard trap: `p` used to open the project switcher (and `n` the form)
+// into a state View never renders — an invisible component capturing every
+// key, with `q` silently no longer quitting. Both keys must now be inert with
+// the empty state on screen, and `q` pressed right after must still quit. The
+// jump search that replaced the switcher (T16.6) opens at All projects with no
+// project open, but not here: with no project and no row in memory it has
+// nothing to list, so `/` only says why.
 //
 // Load-bearing rows: both, one per key that used to open an invisible
 // component — removing either guard turns exactly its row red.
@@ -1663,7 +1692,7 @@ func TestOverlayKeysAreInertInTheEmptyState(t *testing.T) {
 		name string
 		key  rune
 	}{
-		{"/ must not open an invisible switcher", '/'},
+		{"/ must not open an invisible overlay", '/'},
 		{"n must not open an invisible form", 'n'},
 	}
 	for _, tt := range tests {
@@ -1673,8 +1702,8 @@ func TestOverlayKeysAreInertInTheEmptyState(t *testing.T) {
 			m.activeProject = -1
 
 			m = pressKey(t, m, keyRune(tt.key))
-			if m.switcherOpen || m.formOpen {
-				t.Fatalf("switcherOpen=%v formOpen=%v after %q — an overlay opened in the empty state", m.switcherOpen, m.formOpen, tt.key)
+			if m.jumpOpen || m.formOpen {
+				t.Fatalf("jumpOpen=%v formOpen=%v after %q — an overlay opened in the empty state", m.jumpOpen, m.formOpen, tt.key)
 			}
 			// The key's row is blocked with no project (or no plan starter),
 			// so it only says why; the empty state stays on screen.
@@ -1705,24 +1734,24 @@ func TestEmptyStateKeepsAnOpenOverlayVisibleAndQuittable(t *testing.T) {
 	m.projects = scannedProjects("/p/a", "/p/b")
 	m.activeProject = 0
 	m = pressKey(t, m, keyRune('/'))
-	if !m.switcherOpen {
-		t.Fatal("precondition: the switcher must open over a real project list")
+	if !m.jumpOpen {
+		t.Fatal("precondition: the jump search must open over a real project list")
 	}
 
 	m, _ = update(t, m, projectScanMsg{})
 	if m.hasActiveProject() {
 		t.Fatal("precondition: the scan must have emptied the project list")
 	}
-	if !m.switcherOpen {
+	if !m.jumpOpen {
 		t.Fatal("precondition: the overlay is still open under the emptied list")
 	}
 	out := render(m)
-	if !strings.Contains(out, "Projects") {
-		t.Fatalf("the open switcher is not on screen:\n%s", out)
+	if !strings.Contains(out, jumpPlaceholder) {
+		t.Fatalf("the open jump search is not on screen:\n%s", out)
 	}
 
 	m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
-	if m.switcherOpen {
+	if m.jumpOpen {
 		t.Fatal("esc did not dismiss the overlay")
 	}
 	if out := render(m); !strings.Contains(out, "No projects found") {

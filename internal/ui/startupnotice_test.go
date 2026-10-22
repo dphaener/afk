@@ -121,7 +121,7 @@ func TestStartupNoticeDoesNotSwallowAnotherNotice(t *testing.T) {
 
 	now = now.Add(toastTTL + time.Second)
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	want := "Could not read the project list: " + listedConfigPath + ": line 2: bad key. The switcher keeps the projects it had."
+	want := "Could not read the project list: " + listedConfigPath + ": line 2: bad key. The dashboard keeps the projects it had."
 	if m.status != want || m.statusKind != notifyError {
 		t.Fatalf("status = %q kind = %v, want the waiting error in its own words: %q", m.status, m.statusKind, want)
 	}

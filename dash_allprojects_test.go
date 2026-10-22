@@ -393,3 +393,75 @@ func TestLoadDashAllProjectsWait(t *testing.T) {
 		})
 	}
 }
+
+// TestDashLoadAllProjectsTasks pins the task lists the jump search is built
+// from. Load-bearing rows: "ledger statuses" (a task with no ledger entry is
+// pending, and the status is the ledger's word, not a guess), "unreadable
+// ledger" (a project whose files cannot be read lists no tasks rather than
+// stale ones), "no plan" and "gone folder" (no entry at all), and "active
+// project unlisted" (its tasks come back too, keyed by its root).
+func TestDashLoadAllProjectsTasks(t *testing.T) {
+	cfg := t.TempDir()
+	good := t.TempDir()
+	writeBuildFile(t, good, "docs/PLAN.md", dashBuildPlan)
+	writeBuildFile(t, good, ".afk/build/ledger.json", dashBuildLedger)
+	bad := t.TempDir()
+	writeBuildFile(t, bad, "docs/PLAN.md", dashBuildPlan)
+	writeBuildFile(t, bad, ".afk/build/ledger.json", "{ not json")
+	bare := t.TempDir()
+	gone := filepath.Join(t.TempDir(), "missing")
+	act := t.TempDir()
+	writeBuildFile(t, act, "docs/PLAN.md", dashBuildPlan)
+	writeDashAllProjectsConfig(t, cfg,
+		map[string]string{"good": good, "bad": bad, "bare": bare, "gone": gone},
+		[]string{"good", "bad", "bare", "gone"})
+
+	var calls []string
+	got := loadDashAllProjects(dashAllProjectsTestParts(t, cfg, nil, &calls), act)
+	if got.Err != nil {
+		t.Fatal(got.Err)
+	}
+
+	t.Run("ledger statuses", func(t *testing.T) {
+		var lines []string
+		for _, jt := range got.Tasks[good] {
+			lines = append(lines, jt.ID+"="+jt.Status)
+		}
+		want := "T1.1=done|T1.2=running|T1.3=parked|T1.4=pending"
+		if strings.Join(lines, "|") != want {
+			t.Errorf("tasks = %v, want %s", lines, want)
+		}
+		if first := got.Tasks[good][0]; first.Title != "First" {
+			t.Errorf("title = %q, want First", first.Title)
+		}
+	})
+	for name, root := range map[string]string{"unreadable ledger": bad, "no plan": bare, "gone folder": gone} {
+		t.Run(name, func(t *testing.T) {
+			if jt, ok := got.Tasks[root]; ok {
+				t.Errorf("tasks = %v, want no entry", jt)
+			}
+		})
+	}
+	t.Run("active project unlisted", func(t *testing.T) {
+		if len(got.Tasks[act]) != 4 {
+			t.Errorf("tasks = %v, want the four of the plan", got.Tasks[act])
+		}
+	})
+}
+
+// TestReadDashProjectRowTasks pins the return value of readDashProjectRow:
+// the tasks only when the row could be filled in whole.
+func TestReadDashProjectRowTasks(t *testing.T) {
+	var calls []string
+	p := dashAllProjectsTestParts(t, t.TempDir(), nil, &calls)
+	root := t.TempDir()
+	writeBuildFile(t, root, "docs/PLAN.md", dashBuildPlan)
+	in := projectrows.Input{Name: "p", Root: root}
+	if jt := readDashProjectRow(p, &in, nil); len(jt) != 4 {
+		t.Errorf("tasks = %v, want 4", jt)
+	}
+	bare := projectrows.Input{Name: "b", Root: t.TempDir()}
+	if jt := readDashProjectRow(p, &bare, nil); jt != nil {
+		t.Errorf("tasks = %v, want nil for a project with no plan", jt)
+	}
+}

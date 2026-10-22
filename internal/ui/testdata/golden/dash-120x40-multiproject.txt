@@ -1,4 +1,4 @@
- afk Dashboard  ● 2 awaiting in beta · 1 in gamma                                                            /: projects
+ afk Dashboard  ● 2 need you in beta · 1 in gamma                                                                /: jump
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ alpha  /repo                                                                                  esc · all projects │  
   │                                                                                                                  │  

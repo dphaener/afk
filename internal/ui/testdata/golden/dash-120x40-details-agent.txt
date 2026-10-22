@@ -35,6 +35,6 @@
  │                                                                │                                                    │
  │                                                                │                                                    │
  │                                                                │                                                    │
- │  ctrl+] esc  back   ctrl+] d  details   ctrl+] m  mouse   ctrl+│                                                    │
+ │  ctrl+] esc  back   ctrl+] ]  next needing you   ctrl+] d  deta│                                                    │
  ╰────────────────────────────────────────────────────────────────╰────────────────────────────────────────────────────╯
 esc back · tab next tab · shift+tab previous tab · 1-5 jump to tab · ↑/k scroll up · ↓/j scroll down …                  

@@ -100,7 +100,7 @@ func loadDashAllProjects(p dashAllProjectsParts, active string) ui.AllProjects {
 	for _, lp := range cfg.Projects {
 		listed = append(listed, rowProject{Name: lp.Name, Path: lp.Path})
 	}
-	rows, seen := buildListedRows(p, listed, reviews)
+	rows, seen, tasks := buildListedRowsTasks(p, listed, reviews)
 
 	if active != "" {
 		root := mainCheckout(active, p.gitCommonDir(active))
@@ -110,11 +110,13 @@ func loadDashAllProjects(p dashAllProjectsParts, active string) ui.AllProjects {
 		if !seen[root] {
 			// The largest order, so it sorts last in its group.
 			in := projectrows.Input{Name: filepath.Base(root), Root: root, Order: len(cfg.Projects)}
-			readDashProjectRow(p, &in, reviews)
+			if jt := readDashProjectRow(p, &in, reviews); len(jt) > 0 {
+				tasks[root] = jt
+			}
 			rows = append(rows, projectrows.Build(in))
 		}
 	}
-	return ui.AllProjects{Rows: rows, ConfigPath: path}
+	return ui.AllProjects{Rows: rows, ConfigPath: path, Tasks: tasks}
 }
 
 // rowProject is one listed project as buildListedRows takes it: a name and the
@@ -139,6 +141,16 @@ func reviewRoots(reviews []daemonstate.Review) map[string]bool {
 // own files. A project whose files cannot be read is a row saying so and never
 // stops the others.
 func buildListedRows(p dashAllProjectsParts, projects []rowProject, reviews map[string]bool) ([]projectrows.Row, map[string]bool) {
+	rows, seen, _ := buildListedRowsTasks(p, projects, reviews)
+	return rows, seen
+}
+
+// buildListedRowsTasks is buildListedRows plus each project's master-plan
+// tasks keyed by the row's Root, which only the dashboard's jump search uses
+// (the web page keeps calling buildListedRows). The tasks come from the plan
+// and ledger readDashProjectRow already loaded for the row.
+func buildListedRowsTasks(p dashAllProjectsParts, projects []rowProject, reviews map[string]bool) ([]projectrows.Row, map[string]bool, map[string][]ui.JumpTask) {
+	tasks := map[string][]ui.JumpTask{}
 	var rows []projectrows.Row
 	seen := map[string]bool{}
 	for i, lp := range projects {
@@ -160,17 +172,21 @@ func buildListedRows(p dashAllProjectsParts, projects []rowProject, reviews map[
 		}
 		seen[in.Root] = true
 		if !in.Gone {
-			readDashProjectRow(p, &in, reviews)
+			if jt := readDashProjectRow(p, &in, reviews); len(jt) > 0 {
+				tasks[in.Root] = jt
+			}
 		}
 		rows = append(rows, projectrows.Build(in))
 	}
-	return rows, seen
+	return rows, seen, tasks
 }
 
 // readDashProjectRow fills in from the project's own files. It reads the same
 // files loadDashBuild does, and summarizes with web.Summarize so the current
-// task and the count are the ones the Build tab and the web page show.
-func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews map[string]bool) {
+// task and the count are the ones the Build tab and the web page show. It
+// returns the project's tasks for the jump search, nil whenever the plan or
+// the inbox could not be read (the row then says why and lists no tasks).
+func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews map[string]bool) []ui.JumpTask {
 	root := in.Root
 	in.PlanWaiting = reviews[filepath.Clean(root)]
 
@@ -180,7 +196,7 @@ func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews m
 
 	in.HasPlan = dashHasBuild(root)
 	if !in.HasPlan {
-		return
+		return nil
 	}
 
 	bs, loadErr := loadBuildState(root)
@@ -192,11 +208,11 @@ func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews m
 
 	if loadErr != nil {
 		in.ReadErr = rowFirstLine(dashSentence(loadErr.Error()))
-		return
+		return nil
 	}
 	if listErr != nil {
 		in.ReadErr = "The inbox folder could not be read: " + rowFirstLine(listErr.Error())
-		return
+		return nil
 	}
 
 	if in.Wait.Task != "" {
@@ -234,6 +250,12 @@ func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews m
 		in.Task, in.Title = sum.Current.Task, sum.Current.Title
 		in.Phase = strings.ReplaceAll(sum.Current.Phase, "_", " ")
 	}
+
+	jump := make([]ui.JumpTask, 0, len(bs.Tasks))
+	for _, t := range bs.Tasks {
+		jump = append(jump, ui.JumpTask{ID: t.ID, Title: t.Title, Status: string(bs.Ledger.Status(t.ID))})
+	}
+	return jump
 }
 
 // oldestBlockingWait picks the open item that holds a task up and has waited

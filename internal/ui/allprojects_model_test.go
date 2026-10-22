@@ -522,3 +522,102 @@ func TestAllProjectsAnswerKey(t *testing.T) {
 		}
 	})
 }
+
+// TestAllProjectsEveryProjectCache pins the cache that holds every project's
+// row and task list at every level (T16.6). Load-bearing rows: "a scan tick
+// at Project level fills it" (the whole point: the screen is closed), "a read
+// landing after the screen closed" (fills the cache but the screen's rows stay
+// as they were, so T16.3's gen rule is unchanged), "a read in flight blocks a
+// second" (reads never pile up behind a slow disk), "an older read landing
+// late" (must not roll the cache back), "an error keeps the cache", and "nil
+// seam" (no reader means no cache and no panic).
+func TestAllProjectsEveryProjectCache(t *testing.T) {
+	scan := scanTickMsg(time.Unix(2_000_000, 0))
+	tasks := map[string][]JumpTask{"/p/alpha": {{ID: "T1.1", Title: "First", Status: "pending"}}}
+
+	t.Run("a scan tick at Project level fills it", func(t *testing.T) {
+		m, seam, _ := allProjectsModel(t)
+		seam.res.Tasks = tasks
+		if m.allProjectsOpen {
+			t.Fatal("setup: the screen is open")
+		}
+		m, cmd := update(t, m, scan)
+		var loaded []allProjectsLoadedMsg
+		for _, msg := range collectMsgs(t, cmd) {
+			if lm, ok := msg.(allProjectsLoadedMsg); ok {
+				loaded = append(loaded, lm)
+				m, _ = update(t, m, msg)
+			}
+		}
+		if len(loaded) != 1 || seam.calls != 1 {
+			t.Fatalf("reads = %d, calls = %d, want 1 each", len(loaded), seam.calls)
+		}
+		if len(m.everyProject.Rows) != len(allProjectsFixture()) || len(m.everyProject.Tasks["/p/alpha"]) != 1 {
+			t.Fatalf("cache = %+v, want the fixture rows and alpha's task", m.everyProject)
+		}
+		if m.everyProjectAt.IsZero() {
+			t.Error("the cache has no read time")
+		}
+		if len(m.allProjectsRows) != 0 || m.allProjectsKnown {
+			t.Error("a read with the screen closed filled the screen's rows")
+		}
+	})
+	t.Run("a read landing after the screen closed fills only the cache", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		m = openAllProjects(t, m)
+		rows := len(m.allProjectsRows)
+		gen := m.allProjectsGen
+		m = closeAllProjects(t, m)
+		m, _ = update(t, m, allProjectsLoadedMsg{gen: gen, seq: 9, res: AllProjects{Rows: allProjectsFixture()[:1]}})
+		if len(m.everyProject.Rows) != 1 {
+			t.Fatalf("cache rows = %d, want 1", len(m.everyProject.Rows))
+		}
+		if len(m.allProjectsRows) != rows {
+			t.Fatalf("screen rows = %d, want %d unchanged", len(m.allProjectsRows), rows)
+		}
+	})
+	t.Run("a read in flight blocks a second", func(t *testing.T) {
+		m, seam, _ := allProjectsModel(t)
+		m.allProjectsRefreshing.Store(true)
+		_, cmd := update(t, m, scan)
+		if hasMsg[allProjectsLoadedMsg](collectMsgs(t, cmd)) || seam.calls != 0 {
+			t.Fatalf("a second read started while one was in flight (%d calls)", seam.calls)
+		}
+	})
+	t.Run("an older read landing late is ignored", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		m, _ = update(t, m, allProjectsLoadedMsg{seq: 5, res: AllProjects{Rows: allProjectsFixture()}})
+		m, _ = update(t, m, allProjectsLoadedMsg{seq: 4, res: AllProjects{Rows: allProjectsFixture()[:1]}})
+		if len(m.everyProject.Rows) != len(allProjectsFixture()) {
+			t.Fatalf("cache rows = %d, an older read replaced the newer", len(m.everyProject.Rows))
+		}
+	})
+	t.Run("an error keeps the cache", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		m, _ = update(t, m, allProjectsLoadedMsg{seq: 1, res: AllProjects{Rows: allProjectsFixture()}})
+		m, _ = update(t, m, allProjectsLoadedMsg{seq: 2, res: AllProjects{Err: errors.New("bad toml")}})
+		if len(m.everyProject.Rows) != len(allProjectsFixture()) {
+			t.Fatal("a failed read emptied the cache")
+		}
+	})
+	t.Run("nil seam is harmless", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		m.deps.LoadAllProjects = nil
+		m, cmd := update(t, m, scan)
+		if hasMsg[allProjectsLoadedMsg](collectMsgs(t, cmd)) || len(m.everyProject.Rows) != 0 {
+			t.Fatal("a Model with no reader read the projects")
+		}
+		if m.Init() == nil {
+			t.Fatal("Init returned no Cmd")
+		}
+	})
+	t.Run("start-up reads once", func(t *testing.T) {
+		m, seam, _ := allProjectsModel(t)
+		for _, msg := range collectMsgs(t, m.Init()) {
+			m, _ = update(t, m, msg)
+		}
+		if seam.calls != 1 || len(m.everyProject.Rows) == 0 {
+			t.Fatalf("calls = %d, cache rows = %d, want one read and a filled cache", seam.calls, len(m.everyProject.Rows))
+		}
+	})
+}

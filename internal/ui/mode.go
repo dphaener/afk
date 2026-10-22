@@ -75,8 +75,10 @@ const (
 	// type — only a highlight to move, a choice to confirm, and esc. Nothing is
 	// created until enter, which is what lets esc be a clean no-op.
 	inputPickProvider
-	// inputSwitcher is the project-switcher overlay (Model.switcherOpen).
-	inputSwitcher
+	// inputJump is the jump search (Model.jumpOpen, jump.go, §4.6), which
+	// replaced the project switcher in its place (T16.6). Every key but
+	// ctrl+c is the box's: letters always type into the query.
+	inputJump
 	// inputForm is the session-creation form (Model.formOpen).
 	inputForm
 	// inputPane is a focused pane, the Agent level: every key but the leader
@@ -92,7 +94,7 @@ const (
 	inputDetail
 	// inputInbox is the inbox overlay (Model.inboxOpen): a list of the
 	// project's inbox items and, one level in, an item with a field to answer
-	// it. Every key is the component's, as in the switcher, and it has no
+	// it. Every key is the component's, as in the jump search, and it has no
 	// parent rule at all — see its spec in newModeRegistry for
 	// why not even the quit chord.
 	inputInbox
@@ -217,8 +219,8 @@ func (m inputMode) String() string {
 		return "edit-label"
 	case inputPickProvider:
 		return "pick-provider"
-	case inputSwitcher:
-		return "switcher"
+	case inputJump:
+		return "jump"
 	case inputForm:
 		return "form"
 	case inputPane:
@@ -290,16 +292,16 @@ func (m inputMode) isModal() bool {
 //
 // The fields deliberately mirror where the facts LIVE today rather than
 // pretending they are one value: modals are mutually exclusive (one enum
-// field), but the switcher, the form, and a focused pane genuinely coexist
+// field), but the jump search, the form, and a focused pane genuinely coexist
 // with a modal and with each other, and that coexistence is behavior — a spawn
-// error dismissed over an open switcher must return the keyboard to the
-// switcher, and a cancelled form must resume a still-focused pane.
+// error dismissed over an open jump search must return the keyboard to the
+// jump search, and a cancelled form must resume a still-focused pane.
 type modeState struct {
 	// modal is the active footer modal, or inputNormal when none is up. Only
 	// the isModal values (or inputNormal) are meaningful here.
 	modal inputMode
-	// switcherOpen mirrors Model.switcherOpen.
-	switcherOpen bool
+	// jumpOpen mirrors Model.jumpOpen.
+	jumpOpen bool
 	// formOpen mirrors Model.formOpen.
 	formOpen bool
 	// focus and view mirror Model.focus and Model.view verbatim: the two axes
@@ -348,7 +350,7 @@ type modeState struct {
 func (m Model) modeSnapshot() modeState {
 	return modeState{
 		modal:           m.modal,
-		switcherOpen:    m.switcherOpen,
+		jumpOpen:        m.jumpOpen,
 		formOpen:        m.formOpen,
 		focus:           m.focus,
 		view:            m.view,
@@ -424,12 +426,12 @@ type modeLayer struct {
 // Every row reproduces today's behavior except one, and each deviation-free
 // row's reachability is documented in decisions.md:
 //
-//   - Rows 1-7 (the modals) outrank everything, including the switcher —
+//   - Rows 1-7 (the modals) outrank everything, including the jump search —
 //     model.go:872-895 documents that in words, and it is reachable because
 //     spawnFinishedMsg raises the modal asynchronously under an open overlay
 //     or form. Their relative order is immaterial (one enum field holds them).
 //   - The `:` actions search sits directly below the modals and above every
-//     other overlay. Below the modals for the switcher's reason: a create can
+//     other overlay. Below the modals for the jump search's reason: a create can
 //     fail underneath and its report must get the keyboard. Above everything
 //     else because it is opened at every level, the Agent included, and its
 //     mode has to outrank the pane's or the letters typed into the query
@@ -448,16 +450,16 @@ type modeLayer struct {
 //     after a non-key path moved the focus (an agent that exited) must not
 //     take the keyboard from the list. It outranks the pane, whose every key
 //     goes to the agent, because the strip is what the next key is for.
-//   - The switcher outranks the form (unreachable in practice, but views.go
+//   - The jump search outranks the form (unreachable in practice, but views.go
 //     orders the frame this way so frame and keys agree) and outranks a
 //     focused pane (reachable: a focusOnArrival attach landing under the
 //     overlay — "keys go to the overlay, because the overlay is what is on
 //     screen").
-//   - The inbox overlay sits beside the switcher, directly below it. It is
+//   - The inbox overlay sits beside the jump search, directly below it. It is
 //     opened by `i`, which closes nothing, so no other overlay is up when it
 //     appears and its place among them is declared for the frame's sake:
 //     views.go composes the overlays in this order. Below the modals for the
-//     switcher's reason (a create can fail underneath and its report must get
+//     jump search's reason (a create can fail underneath and its report must get
 //     the keyboard), and above the form and both right-side
 //     focuses, so a pane that arrives focused under it cannot take keys meant
 //     for the answer field.
@@ -480,7 +482,7 @@ type modeLayer struct {
 //     today's if-order lets an invisible focused pane swallow every key while
 //     the form is on screen (the known uncovered corner at model.go:1613-1620,
 //     "deliberately left to whatever fixes the form/pane precedence
-//     generally"). The defined answer follows the switcher's precedent and
+//     generally"). The defined answer follows the jump search's precedent and
 //     views.go's stated invariant — whatever owns the keyboard must be ON
 //     SCREEN — so no keystroke can land in a running session the user cannot
 //     see, and Esc always cancels the form, after which the still-focused pane
@@ -492,7 +494,7 @@ type modeLayer struct {
 //     key: `:` closes it before running an action that opens one
 //     (detailsActionStays), and `?` and `:` themselves sit higher still, so
 //     they take the keyboard over it and give it back on close. The modals
-//     outrank it for the switcher's reason (a restart's confirm or a create's
+//     outrank it for the jump search's reason (a restart's confirm or a create's
 //     failure report must get the keyboard).
 //   - The pane and placeholder layers are the two-axis focus model as
 //     predicates. Right focus in agent view WITH a pane for the selected row
@@ -530,7 +532,7 @@ var modePrecedence = []modeLayer{
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
 	{inputKeys, func(s modeState) bool { return s.keysOpen }},
 	{inputKeyStrip, func(s modeState) bool { return s.keyStrip && s.focus == focusRight && s.view == viewAgent }},
-	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
+	{inputJump, func(s modeState) bool { return s.jumpOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
 	{inputPlanCheck, func(s modeState) bool { return s.planCheckOpen }},
 	{inputTaskTokens, func(s modeState) bool { return s.taskTokensOpen }},
@@ -592,6 +594,11 @@ const (
 	// actionAnswerOldest is `a` at All projects: open the inbox of the
 	// project holding the oldest blocking item (answerOldest, allprojects.go).
 	actionAnswerOldest
+	// actionNeedNext and actionNeedPrev are `]` and `[`: go to the next or
+	// previous thing that needs the owner, across every project
+	// (stepNeedsYouKey, needsyoulanding.go, T16.6).
+	actionNeedNext
+	actionNeedPrev
 	// actionDetails is `d`, the selected session's details: the details
 	// overlay (showDetails, detailsoverlay.go, T16.5).
 	actionDetails
@@ -696,9 +703,9 @@ const (
 	// the form; actionFormSubmit is submitFormKey, which applies a live
 	// filter, inserts a newline in the description, or submits, depending on
 	// component state. The rule row says who owns the key; the handler says
-	// what the gesture means right now. Same division of labor the switcher
-	// already has (its two-stage Esc and R-except-while-Filtering live in
-	// switcher.Update, so they are component fall-through here, not rules).
+	// what the gesture means right now. Same division of labor the jump
+	// search has (its two-stage esc lives in jumpKeyDecision, so it is
+	// component fall-through here, not a rule).
 	actionFormCancel
 	actionFormSubmit
 	actionFormNextField
@@ -718,6 +725,8 @@ var actionNames = map[modeAction]string{
 	actionKeys:                "keys",
 	actionPauseToggle:         "pause-toggle",
 	actionAnswerOldest:        "answer-oldest",
+	actionNeedNext:            "need-next",
+	actionNeedPrev:            "need-prev",
 	actionDetails:             "details",
 	actionCursorUp:            "cursor-up",
 	actionCursorDown:          "cursor-down",
@@ -801,7 +810,7 @@ const (
 	// routeAction: a rule claimed the key; keyDecision.action names it.
 	routeAction
 	// routeComponent: the mode's bubbles component gets the key (the form's
-	// focused field, the switcher's list, the label prompt's textinput).
+	// focused field, the jump search, the label prompt's textinput).
 	routeComponent
 	// routeChild: the key forwards to the focused pane's session.
 	routeChild
@@ -852,7 +861,7 @@ type modeRule struct {
 // modeKeyMap is one mode's action surface for Wave 6's help.Model: the
 // bindings available in that mode, in a stable order, with the
 // help text the current UI already renders (confirmCleanHint, labelFormHint,
-// switcherHelp, formHelp) so reading actions off mode state never duplicates
+// formHelp) so reading actions off mode state never duplicates
 // — or contradicts — what the footer says. It implements bubbles' help.KeyMap.
 //
 // ShortHelp returns the full ordered set and FullHelp one group: which subset
@@ -882,7 +891,7 @@ type modeSpec struct {
 	fall routeKind
 	// keys is the mode's help surface. It is a superset of the rule
 	// bindings for modes whose component owns part of the interaction (the
-	// switcher's enter/esc/R live in switcher.Update but must still be
+	// jump search's enter and esc live in jumpKeyDecision but must still be
 	// advertisable).
 	keys modeKeyMap
 }
@@ -970,7 +979,7 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 // newModeRegistry builds the full dispatch table from the dashboard's global
 // keymap. Global bindings are shared by reference from keys (so the registry
 // and defaultKeyMap cannot name two different keys for one action); the
-// mode-local bindings — modal answers, form gestures, the switcher's
+// mode-local bindings — modal answers, form gestures, the jump search's
 // component-owned keys — are declared here, once, with help text mirroring
 // the strings views.go renders today.
 //
@@ -985,21 +994,21 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 // every handler (see decisions.md for the audit):
 //
 //   - ctrl+g (keys.Mouse) is a rule in every overlay, form, prompt and
-//     confirm, except the switcher and the inbox overlay. The
-//     switcher's omission is documented intent (model.go:2161-2165): the
-//     overlay replaces the pane in the main region, so there is no session
-//     output behind it worth selecting. In the inbox overlay the chord closes
+//     confirm, except the jump search and the inbox overlay. The
+//     jump search's omission is documented intent (its spec below): the
+//     box covers what there was to select, and one esc away the chord works
+//     again. In the inbox overlay the chord closes
 //     the overlay (see its spec below). In the Agent it is ctrl+] m; in the
 //     pane ctrl+g itself is the agent's.
-//   - ctrl+c quits from the modals, the switcher, the actions search and,
+//   - ctrl+c quits from the modals, the jump search, the actions search and,
 //     through decideKey, All projects and Project; it is deliberately
 //     component fall-through in the form (the name buffer is worth
 //     protecting from a stray chord — TestFormSwallowsQuitKeysEscIsOnlyExit),
 //     and goes to the agent in the Agent (the session owns SIGINT semantics).
 func newModeRegistry(keys keyMap) modeRegistry {
-	// quitChord is ctrl+c ALONE, not q as well: the modals, the switcher and
+	// quitChord is ctrl+c ALONE, not q as well: the modals, the jump search and
 	// the actions search must let `q` through as an ordinary character (it
-	// answers nothing in a y/n modal, filters in the switcher and the search,
+	// answers nothing in a y/n modal, types into the jump search and the actions search,
 	// and types into the label prompt).
 	quitChord := key.NewBinding(
 		key.WithKeys("ctrl+c"),
@@ -1020,7 +1029,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 	// state — `d` on a branch not known to be merged swaps the footer to the
 	// unmerged confirmation, and only a second d deletes. The staging lives in
 	// the handler (deleteBranchClean, model.go) behind one routing rule, on the
-	// same division of labor as the switcher's two-stage Esc: the rule says who
+	// same division of labor as the jump search's two-stage esc: the rule says who
 	// owns the key, the handler says what the gesture means right now. The
 	// second binding is help-only, so the unmerged footer's "delete anyway"
 	// hint is keymap-derived like every other modal hint.
@@ -1157,31 +1166,31 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("tab"),
 		key.WithHelp("tab", "cycle"),
 	)
-	// Switcher component-owned keys: HELP-ONLY, deliberately not rules. The
-	// two-stage Esc (clears an active filter first; dismisses only when
-	// FilterState() is Unfiltered) and the R-is-rescan-except-while-Filtering
-	// rule are staged inside switcher.Update (switcher.go:130-143), and
-	// declaring them as parent rules would implement them twice — the exact
-	// drift this mechanism exists to eliminate. Help text mirrors
-	// switcherHelp (views.go).
-	switcherChoose := key.NewBinding(
+	// The jump search's own gestures: HELP-ONLY, deliberately not rules.
+	// jumpKeyDecision (jump.go) stages enter, esc (clear, then close), the
+	// moves and typing, and declaring them as parent rules would implement
+	// them twice. They exist so the footer says what the keys do while the
+	// box is up.
+	jumpGo := key.NewBinding(
 		key.WithKeys("enter"),
-		key.WithHelp("enter", "switch"),
+		key.WithHelp("enter", "go there"),
 	)
-	switcherMove := key.NewBinding(
+	jumpMove := key.NewBinding(
 		key.WithKeys("up", "down"),
 		key.WithHelp("↑/↓", "move"),
 	)
-	switcherFilter := key.NewBinding(
+	jumpType := key.NewBinding(
+		key.WithKeys("backspace"),
+		key.WithHelp("type", "search"),
+	)
+	jumpClose := key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "clear, close"),
+	)
+	// The creation form's base picker filters on `/`, its list's own key.
+	baseFilter := key.NewBinding(
 		key.WithKeys("/"),
 		key.WithHelp("/", "filter"),
-	)
-	// switcherRescanKey (switcher.go) is shared by reference, not redeclared
-	// here: it is the same value Update matches "R" against, so the help
-	// surface and the live chord cannot drift apart.
-	switcherClose := key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "close"),
 	)
 	// Session-list paging and jumps. Declared here rather than in keyMap because
 	// nothing outside this table names them (renderHelp's global line is at its
@@ -1393,7 +1402,7 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		},
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: []key.Binding{
-			formNext, formPrev, formSubmit, switcherFilter, formCancel, keys.Mouse,
+			formNext, formPrev, formSubmit, baseFilter, formCancel, keys.Mouse,
 		}},
 	}
 
@@ -1414,28 +1423,29 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		}},
 	}
 
-	// Switcher mode transcribes the old handleSwitcherKey: ctrl+c is the only parent
-	// intercept; everything else — enter/esc/R/filter included — is the
-	// component's. ctrl+g is deliberately absent (see newModeRegistry's doc).
-	r[inputSwitcher] = modeSpec{
-		mode: inputSwitcher,
+	// Jump mode is the `:` search's shape: ctrl+c is the only parent
+	// intercept, so the dashboard can always be left; everything else —
+	// enter, esc, the moves and every letter — is the box's, decided by
+	// jumpKeyDecision. ctrl+g is deliberately absent (see newModeRegistry's
+	// doc): the box covers what there was to select.
+	r[inputJump] = modeSpec{
+		mode: inputJump,
 		rules: []modeRule{
 			{binding: quitChord, action: actionQuit},
 		},
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: []key.Binding{
-			switcherChoose, switcherMove, switcherFilter, switcherRescanKey,
-			switcherClose, quitChord,
+			jumpGo, jumpMove, jumpType, jumpClose, quitChord,
 		}},
 	}
 
 	// Inbox mode has NO parent rule: every key is the component's, staged in
-	// inboxOverlay.Update (inboxoverlay.go). The switcher keeps one, the ctrl+c
+	// inboxOverlay.Update (inboxoverlay.go). The jump search keeps one, the ctrl+c
 	// quit, because what they hold is a throwaway query. This
 	// overlay holds an answer being written, on a screen where every letter is
 	// text, so nothing quits the dashboard from inside it; esc and ctrl+g are
 	// the ways out. ctrl+g closes the overlay here and is not the mouse chord,
-	// for the switcher's documented reason: the box covers what there was to
+	// for the jump search's documented reason: the box covers what there was to
 	// select, and one press away the chord works again. The keymap lists both
 	// screens' keys; the footer shows the ones for the screen that is up
 	// (renderHelp).
@@ -1445,11 +1455,11 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		keys: modeKeyMap{bindings: inboxModeKeys()},
 	}
 
-	// Plan-check mode is the switcher's shape: ctrl+c quits, as it does over
-	// the switcher, because the overlay holds nothing typed that quitting
+	// Plan-check mode is the jump search's shape: ctrl+c quits, as it does over
+	// the jump search, because the overlay holds nothing typed that quitting
 	// could lose; every other key is the overlay's, staged in
 	// planCheckOverlay.Update, so the scroll keys and esc are implemented
-	// once. ctrl+g is absent for the switcher's documented reason.
+	// once. ctrl+g is absent for the jump search's documented reason.
 	r[inputPlanCheck] = modeSpec{
 		mode: inputPlanCheck,
 		rules: []modeRule{

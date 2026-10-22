@@ -84,9 +84,9 @@ type mergeInput struct {
 // Order is fixed for a given input: found projects in search order, then
 // listed ones not already present in list order, then started ones not
 // already present in the order they were started, then pinned rows not
-// already present. sameProjectPaths compares by position to decide whether an open
-// switcher must be rebuilt, so an order that moved between two calls with the
-// same input would reset the owner's cursor on every read.
+// already present. `]` and the jump search list projects with no home-screen
+// row yet in this order, so an order that moved between two calls with the
+// same input would reorder them on every read.
 //
 // Identity is plain string equality on the path, which is safe only because
 // every producer resolves the same way: internal/scan resolves each root
@@ -218,7 +218,7 @@ func listedNoticeText(path string, err error) string {
 	if path != "" && !strings.Contains(text, path) {
 		text = path + ": " + text
 	}
-	return "Could not read the project list: " + text + ". The switcher keeps the projects it had."
+	return "Could not read the project list: " + text + ". The dashboard keeps the projects it had."
 }
 
 // unpinnedProjects is the part of the start-up list that plays the role of
@@ -300,16 +300,10 @@ func (m Model) mergedProjects() []project.Project {
 	})
 }
 
-// applyListedProjects folds one read of the project list into the Model and
-// rebuilds an open switcher only when its rows changed, for the reason
-// applyProjectScan gives: rebuilding resets the cursor and any filter under
-// the hands of whoever has it open.
+// applyListedProjects folds one read of the project list into the Model. An
+// open jump search keeps its snapshot, for the reason applyProjectScan gives.
 func (m Model) applyListedProjects(msg listedProjectsMsg) (tea.Model, tea.Cmd) {
-	before := m.projects
 	nm, cmds := m.applyListedResult(msg)
-	if !sameProjectPaths(before, nm.projects) {
-		nm.refreshSwitcher()
-	}
 	return nm, tea.Batch(cmds...)
 }
 

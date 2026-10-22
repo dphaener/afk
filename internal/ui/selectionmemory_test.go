@@ -17,7 +17,7 @@ import (
 // Model.rememberedSelection from Deps.LoadSelections and decide, from that map
 // alone, whether the very first sessionsLoadedMsg previews at all. Which row
 // that load ends up previewing — the remembered session, or row 0 when it is
-// gone — is the restore's business and is pinned in switcher_wiring_test.go;
+// gone — is the restore's business and is pinned in jump_test.go;
 // this function only proves the arm decision itself.
 //
 // Row 5 is load-bearing: it is the only row where the launch repo and the
@@ -365,7 +365,7 @@ func TestSelectionMemoryTickWithNilSeamClearsTheSet(t *testing.T) {
 // alongside the call: two Cmds writing one entry each would both re-read the
 // state file and rename over each other.
 func TestSelectionMemoryFlushSurvivesAProjectSwitch(t *testing.T) {
-	m, _, _ := switcherWiringModel(t)
+	m, _, _ := jumpWiringModel(t)
 	spy := &selectionSpy{}
 	m.deps.RememberSelection = spy.remember
 
@@ -379,10 +379,10 @@ func TestSelectionMemoryFlushSurvivesAProjectSwitch(t *testing.T) {
 		t.Fatalf("setup: dirtySelections = %#v, want alpha's moved-to row pending", m.dirtySelections)
 	}
 
-	m = openSwitcherOverlay(t, m)
+	m = openJumpOverlay(t, m)
 	// By identity: the overlay's row order is not scan order, so no fixed
-	// keyDown count means beta. See switcherSelectByPath.
-	m = switcherSelectByPath(t, m, "/roots/beta")
+	// keyDown count means beta. See jumpSelectProject.
+	m = jumpSelectProject(t, m, "/roots/beta")
 	m, _ = update(t, m, keyEnter)
 	if m.repo != "/roots/beta" {
 		t.Fatalf("setup: the switch must land on beta, got %q", m.repo)
