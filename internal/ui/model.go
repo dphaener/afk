@@ -1302,6 +1302,10 @@ type Model struct {
 	// sees the row they made. It is cleared when that happens and when the
 	// screen opens again (projectedit.go).
 	allProjectsFollow string
+	// inboxFollow is the inbox item `a` at All projects is taking the owner
+	// to. The inbox opens on it when the snapshot of the project switched to
+	// lands (applyBuildLoaded); a project switch clears it.
+	inboxFollow string
 
 	// The add form and the remove confirm of the all-projects screen
 	// (T7.10, projectedit.go). projectAddInput is the form's one field, used
@@ -3791,6 +3795,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.showDetails()
 	case actionPauseToggle:
 		return m.pauseToggle()
+	case actionAnswerOldest:
+		return m.answerOldest()
 
 	// schedulePreview runs AFTER the list has moved, in every direction: arming
 	// first would target the row the selection just left. Every one of these
@@ -7950,6 +7956,7 @@ func (m Model) switchProjectCmds(path string) (Model, []tea.Cmd) {
 	// dropped. It closes with the switch; an answer already on its way to
 	// disk still lands, and its outcome is dropped by the generation stamp.
 	m.inboxOpen = false
+	m.inboxFollow = ""
 	// The plan-check overlay shows the outgoing project's plan. It holds
 	// nothing typed, so closing it loses nothing.
 	m.planCheckOpen = false

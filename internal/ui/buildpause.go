@@ -19,7 +19,11 @@
 // now".
 package ui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/dphaener/afk/internal/projectrows"
+)
 
 // ResumeResult is what a resume found and undid. It mirrors what `afk resume`
 // reports, declared here because the function that produces it lives in a
@@ -121,6 +125,16 @@ type buildResumedMsg struct {
 // first snapshot lands finds neither flag and pauses, which pauseBuild turns
 // into its no-build sentence while there is no build to read.
 func (m Model) pauseToggle() (tea.Model, tea.Cmd) {
+	if m.allProjectsOpen {
+		// The row's state decides, not the active project's snapshot: the
+		// row is what the owner pointed at, and the snapshot may be another
+		// project's. The state order in projectrows.Build puts stopped and
+		// paused ahead of the rest, so those two words are the two flags.
+		if r, ok := m.selectedProjectRow(); ok && (r.State == projectrows.StatePaused || r.State == projectrows.StateStopped) {
+			return m.resumeSelectedProject()
+		}
+		return m.pauseSelectedProject()
+	}
 	if m.build.Paused || m.build.Stopped {
 		return m.resumeBuild()
 	}

@@ -761,6 +761,13 @@ func levelActionCases() map[modeAction]levelActionCase {
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputProjectAddFolder }},
 		actionProjectRemove: {setup: screen,
 			ran: func(_, a Model, _ tea.Cmd) bool { return a.modal == inputConfirmProjectRemove }},
+		// beta holds the fixture's oldest (only) blocking item, so `a` switches
+		// to it and waits for its snapshot to open the inbox on bbbbb3.
+		actionAnswerOldest: {setup: func(t *testing.T) Model {
+			m := screen(t)
+			m.projects = []project.Project{{Path: "/repo", Name: "repo", Pinned: true}, {Path: "/p/beta", Name: "beta"}}
+			return m
+		}, ran: func(_, a Model, _ tea.Cmd) bool { return !a.allProjectsOpen && a.inboxFollow == "bbbbb3" }},
 		actionPauseToggle: {setup: func(t *testing.T) Model {
 			m, _ := buildPauseModel(t, sess("alpha"))
 			return withBuild(t, m, buildPauseSnap())

@@ -4142,6 +4142,8 @@ Amended 2026-10-21 (T16.2 done): the level is worked out by `currentLevel(m.leve
   build with a scratch `config.toml` listing three throwaway projects, the groups and the panel match
   their files; `make check` is green.
 
+Amended 2026-10-21 (T16.3 done): `projectrows.GroupOf`/`Grouped` give the four groups and `Row.Wait` carries the oldest open blocking inbox item and its task's title, filled by `readDashProjectRow` from the reads it already made (the web ignores it); `m.allProjectsRows` is stored in screen order (`allProjectsOrder`), the pane's rows are shared out by `allProjectsLayoutFor`, the panel is the pure `homePanelLines`, and the chips are `allProjectsChipList`; `p` is one key-table row at All projects and Project (`reasonPauseToggle`, `pauseToggle` reads the selected row there), and `a` (`actionAnswerOldest`, All projects only) switches to the project with the oldest blocking item and opens today's inbox overlay on it through `inboxFollow`, which T16.7 replaces with the answer screen and extends to Project and the Agent. No LAST 24H column or week chart yet (T16.8). See `## T16.3` in `docs/decisions.md`.
+
 #### T16.4 — The project view
 - **Depends on:** T16.3
 - **Goal:** Project is the screen of `docs/dash-design.md` §4.2: three numbered sections, the selected

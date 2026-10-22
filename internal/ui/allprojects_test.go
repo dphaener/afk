@@ -2,8 +2,12 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/projectrows"
 )
@@ -19,7 +23,12 @@ func allProjectsFixture() []projectrows.Row {
 		{Name: "alpha", Root: "/p/alpha", Listed: true, Order: 0, HasPlan: true, Done: 3, Total: 8,
 			Task: "W1.T2", Title: "Add the parser", Phase: "executing", StateKnown: true, Kind: "wait"},
 		{Name: "beta", Root: "/p/beta", Listed: true, Order: 1, HasPlan: true, Done: 2, Total: 6,
-			Paused: true, Open: 2, Blocking: 1},
+			Paused: true, Open: 2, Blocking: 1, Wait: projectrows.Wait{
+				ItemID: "bbbbb3", Kind: "question", CreatedAt: "2026-10-20T09:00:00Z",
+				Title: "Which database should the cache use?",
+				Body:  "The plan says a cache but not where it lives. SQLite keeps it in one file; Redis needs a server on the VM.",
+				Task:  "W1.T3", TaskTitle: "Add the cache",
+			}},
 		{Name: "gamma", Root: "/p/gamma", Listed: true, Order: 2, Gone: true},
 		{Name: "delta", Root: "/p/delta", Listed: true, Order: 3,
 			ReadErr: "reading /p/delta/.afk/build/ledger.json: invalid character 'x' looking for beginning of value"},
@@ -49,82 +58,334 @@ func (s *allProjectsSeam) load() AllProjects {
 	return s.res
 }
 
-// TestAllProjectsExtras pins the words beside a row's state. Load-bearing:
-// the singular "holds" (the README and the end-to-end check quote "1 in
-// inbox, 1 holds a task up"), and a row with nothing in its inbox saying
-// nothing, so a quiet project's line stays short.
-func TestAllProjectsExtras(t *testing.T) {
+// TestAllProjectsInboxAndBar pins a row's INBOX and TASKS cells.
+// Load-bearing: a row with nothing in its inbox says nothing (a quiet
+// project's cell stays blank), the blocking part uses the band's word, a plan
+// waiting says "plan to approve", and a project with no tasks shows "-"
+// rather than an empty 0/0 bar.
+func TestAllProjectsInboxAndBar(t *testing.T) {
 	cases := []struct {
 		name string
 		row  projectrows.Row
 		want string
 	}{
 		{"nothing", projectrows.Row{}, ""},
-		{"open only", projectrows.Row{Open: 3}, "3 in inbox"},
-		{"one holds a task up", projectrows.Row{Open: 1, Blocking: 1}, "1 in inbox, 1 holds a task up"},
-		{"several hold a task up", projectrows.Row{Open: 3, Blocking: 2}, "3 in inbox, 2 hold a task up"},
-		{"plan only", projectrows.Row{PlanWaiting: true}, "plan waiting for approval"},
-		{"both", projectrows.Row{Open: 1, PlanWaiting: true}, "1 in inbox · plan waiting for approval"},
+		{"open only", projectrows.Row{Open: 3}, "3"},
+		{"one blocks", projectrows.Row{Open: 1, Blocking: 1}, "1 · 1 blocking"},
+		{"several block", projectrows.Row{Open: 3, Blocking: 2}, "3 · 2 blocking"},
+		{"plan only", projectrows.Row{PlanWaiting: true}, "plan to approve"},
+		{"both", projectrows.Row{Open: 1, PlanWaiting: true}, "1 · plan to approve"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := allProjectsExtras(tc.row); got != tc.want {
-				t.Fatalf("allProjectsExtras = %q, want %q", got, tc.want)
+			if got := xansi.Strip(allProjectsInbox(tc.row)); got != tc.want {
+				t.Fatalf("allProjectsInbox = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	t.Run("bar with tasks", func(t *testing.T) {
+		got := xansi.Strip(allProjectsBar(projectrows.Row{Done: 2, Total: 5}, allProjectsProgW))
+		if !strings.HasSuffix(got, " 2/5") || lipgloss.Width(got) != allProjectsProgW {
+			t.Fatalf("bar = %q, want %d cells ending in 2/5", got, allProjectsProgW)
+		}
+	})
+	t.Run("bar with no tasks", func(t *testing.T) {
+		if got := allProjectsBar(projectrows.Row{}, allProjectsProgW); strings.TrimSpace(got) != "-" || lipgloss.Width(got) != allProjectsProgW {
+			t.Fatalf("bar = %q, want - padded to %d cells", got, allProjectsProgW)
+		}
+	})
+}
+
+// TestAllProjectsBandText pins the band (§4.1 item 1). Load-bearing rows:
+// "a mix of groups" (each group counted under its glyph, in group order, and
+// the inbox summed over every project), "empty groups are left out" (no "0
+// running"), and "no usage reading" (usage left out, never a 0% that was
+// not measured).
+func TestAllProjectsBandText(t *testing.T) {
+	mix := []projectrows.Row{
+		{State: projectrows.StateFinished},
+		{State: projectrows.StateRunning, Open: 1},
+		{State: projectrows.StatePaused, NeedsOwner: true, Open: 2, Blocking: 1},
+		{State: projectrows.StateGone, NeedsOwner: true},
+		{State: projectrows.StatePaused},
+	}
+	cases := []struct {
+		name     string
+		rows     []projectrows.Row
+		pct      int
+		hasUsage bool
+		want     string
+	}{
+		{"a mix of groups", mix, 0, false,
+			"● 2 need you  ◐ 1 running  ○ 1 quiet  ✓ 1 finished   inbox 3 · 1 blocking"},
+		{"empty groups are left out", []projectrows.Row{{State: projectrows.StateRunning}}, 0, false,
+			"◐ 1 running   inbox 0"},
+		{"usage reading", []projectrows.Row{{State: projectrows.StateFinished}}, 62, true,
+			"✓ 1 finished   inbox 0   usage "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := xansi.Strip(allProjectsBandText(tc.rows, tc.pct, tc.hasUsage))
+			if !strings.HasPrefix(got, tc.want) {
+				t.Fatalf("band = %q, want it to start %q", got, tc.want)
+			}
+			if tc.hasUsage != strings.Contains(got, "usage") {
+				t.Fatalf("band = %q; usage shown should be %v", got, tc.hasUsage)
+			}
+			if tc.hasUsage && !strings.HasSuffix(got, fmt.Sprintf(" %d%%", tc.pct)) {
+				t.Fatalf("band = %q, want it to end with the usage percent", got)
 			}
 		})
 	}
 }
 
-// TestAllProjectsSummaryAndProgress pins the screen's top line and the
-// done/total column. The "nothing" row is load-bearing: a screen with no
-// project needing the owner says so rather than "0 need you".
-func TestAllProjectsSummaryAndProgress(t *testing.T) {
-	t.Run("summary", func(t *testing.T) {
-		cases := []struct {
-			name string
-			rows []projectrows.Row
-			want string
-		}{
-			{"none", nil, "Nothing needs you"},
-			{"quiet rows", []projectrows.Row{{}, {}}, "Nothing needs you"},
-			{"two", []projectrows.Row{{NeedsOwner: true}, {}, {NeedsOwner: true}}, "2 need you"},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				if got := allProjectsSummary(tc.rows); got != tc.want {
-					t.Fatalf("summary = %q, want %q", got, tc.want)
-				}
-			})
-		}
-	})
-	t.Run("progress", func(t *testing.T) {
-		if got := allProjectsProgress(projectrows.Row{Done: 2, Total: 5}); got != "2/5" {
-			t.Fatalf("progress = %q, want 2/5", got)
-		}
-		if got := allProjectsProgress(projectrows.Row{}); got != "-" {
-			t.Fatalf("progress with no tasks = %q, want -", got)
-		}
-	})
-}
-
-// TestAllProjectsWindow pins the scroll: the list moves only when the cursor
-// would leave it, and never past the end. The "cursor past the page" row is
-// load-bearing: without it the cursor walks off the bottom of the screen.
-func TestAllProjectsWindow(t *testing.T) {
+// TestHomePanelLines pins the selected project's panel (§4.1 item 4).
+// Load-bearing rows: "parked task with a blocking item" (what it waits on,
+// the question in full and the task it unblocks, with the title), "plan to
+// approve", "gone" (the row's sentence is what it waits on), "nothing
+// waiting" (it says so) and "long body is cut at the cap", where only the
+// question is cut, its last line ends in "…", and what it waits on and what
+// it unblocks both survive.
+func TestHomePanelLines(t *testing.T) {
+	item := projectrows.Wait{
+		ItemID: "aaaaa2", Kind: "question", Title: "Which database?",
+		Body: "SQLite or Postgres.\nSay which.", Task: "W2.T1", TaskTitle: "Add the store",
+	}
+	gone := projectrows.Build(projectrows.Input{Name: "g", Gone: true})
+	long := item
+	long.Body = strings.Repeat("word ", 80)
 	cases := []struct {
-		name               string
-		cursor, page, n    int
-		wantStart, wantEnd int
+		name    string
+		row     projectrows.Row
+		width   int
+		rows    int
+		want    []string
+		notWant []string
+		cut     bool
 	}{
-		{"all fit", 2, 10, 5, 0, 5},
-		{"cursor on the first page", 3, 4, 10, 0, 4},
-		{"cursor past the page", 6, 4, 10, 3, 7},
-		{"cursor on the last row", 9, 4, 10, 6, 10},
-		{"no rows", 0, 4, 0, 0, 0},
+		{
+			name:  "parked task with a blocking item",
+			row:   projectrows.Row{State: projectrows.StateWaiting, NeedsOwner: true, Wait: item},
+			width: 60, rows: 8,
+			want: []string{"Waits on question aaaaa2", "Which database?", "SQLite or Postgres.", "Say which.", "Unblocks W2.T1 Add the store"},
+		},
+		{
+			name:  "task id alone when the plan gave no title",
+			row:   projectrows.Row{NeedsOwner: true, Wait: projectrows.Wait{ItemID: "aaaaa2", Kind: "question", Title: "Q", Task: "W2.T1"}},
+			width: 60, rows: 8,
+			want: []string{"Unblocks W2.T1"},
+		},
+		{
+			name:  "no unblocks line when the item names no task",
+			row:   projectrows.Row{NeedsOwner: true, Wait: projectrows.Wait{ItemID: "aaaaa2", Kind: "decision", Title: "Q"}},
+			width: 60, rows: 8,
+			want:    []string{"Waits on decision aaaaa2"},
+			notWant: []string{"Unblocks"},
+		},
+		{
+			name:  "an item outranks a plan waiting",
+			row:   projectrows.Row{NeedsOwner: true, PlanWaiting: true, Wait: item},
+			width: 60, rows: 8,
+			want:    []string{"Waits on question aaaaa2"},
+			notWant: []string{homePanelPlanWaits},
+		},
+		{
+			name:  "plan to approve",
+			row:   projectrows.Row{State: projectrows.StateNoPlan, NeedsOwner: true, PlanWaiting: true},
+			width: 60, rows: 8,
+			want: []string{homePanelPlanWaits, homePanelPlanStarts},
+		},
+		{
+			name:  "gone",
+			row:   gone,
+			width: 60, rows: 8,
+			want:    []string{homePanelWaitsOnYou + " The project folder does not exist."},
+			notWant: []string{homePanelNothingHere},
+		},
+		{
+			name:  "nothing waiting",
+			row:   projectrows.Build(projectrows.Input{Name: "z", HasPlan: true, Done: 2, Total: 2}),
+			width: 60, rows: 8,
+			want: []string{homePanelNothingHere, "Every task is done."},
+		},
+		{
+			name:  "long body is cut at the cap",
+			row:   projectrows.Row{NeedsOwner: true, Wait: long},
+			width: 40, rows: 5,
+			want: []string{"Waits on question aaaaa2", "Which database?", "Unblocks W2.T1 Add the store"},
+			cut:  true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, e := allProjectsWindow(tc.cursor, tc.page, tc.n)
+			lines := homePanelLines(tc.row, tc.width, tc.rows)
+			if len(lines) > tc.rows {
+				t.Fatalf("%d lines, want at most %d:\n%s", len(lines), tc.rows, strings.Join(lines, "\n"))
+			}
+			plain := make([]string, len(lines))
+			for i, ln := range lines {
+				if w := lipgloss.Width(ln); w > tc.width {
+					t.Fatalf("line %d is %d cells, wider than %d: %q", i, w, tc.width, ln)
+				}
+				plain[i] = xansi.Strip(ln)
+			}
+			text := strings.Join(plain, "\n")
+			// Logged so a -v run shows the panel as drawn, which is the
+			// evidence the task's QA reads.
+			t.Logf("panel (%d of %d rows):\n%s", len(lines), tc.rows, text)
+			for _, w := range tc.want {
+				if !strings.Contains(text, w) {
+					t.Errorf("the panel does not say %q:\n%s", w, text)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(text, w) {
+					t.Errorf("the panel says %q and must not:\n%s", w, text)
+				}
+			}
+			if tc.cut {
+				if len(lines) != tc.rows {
+					t.Fatalf("a cut panel has %d lines, want the cap %d", len(lines), tc.rows)
+				}
+				if !strings.HasSuffix(plain[len(plain)-2], "…") {
+					t.Errorf("the question's last kept line %q does not end in …", plain[len(plain)-2])
+				}
+			} else if strings.Contains(text, "…") {
+				t.Errorf("a panel that fits is cut:\n%s", text)
+			}
+		})
+	}
+}
+
+// TestAllProjectsOrder pins the rows' order on the screen (§4.1 item 3):
+// NEEDS YOU, RUNNING, QUIET, FINISHED, config order inside each group,
+// whatever order the reader returned them in. Load-bearing: the finished
+// project listed first in config.toml still comes last, and two quiet
+// projects keep their config order.
+func TestAllProjectsOrder(t *testing.T) {
+	in := []projectrows.Row{
+		{Name: "fin", State: projectrows.StateFinished, Order: 0},
+		{Name: "quiet2", State: projectrows.StatePaused, Order: 5},
+		{Name: "run", State: projectrows.StateRunning, Order: 2},
+		{Name: "quiet1", State: projectrows.StateNothingReady, Order: 3},
+		{Name: "need", State: projectrows.StateGone, NeedsOwner: true, Order: 4},
+	}
+	var got []string
+	for _, r := range allProjectsOrder(in) {
+		got = append(got, r.Name)
+	}
+	want := []string{"need", "run", "quiet1", "quiet2", "fin"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// TestAllProjectsListLines pins the grouped list. Load-bearing rows: "wide"
+// (one heading per group, in group order with its count, one line per
+// project) and "narrow" (two lines per project below 100 columns), plus the
+// first row's span taking its heading in, so scrolling to it shows the
+// heading.
+func TestAllProjectsListLines(t *testing.T) {
+	rows := allProjectsOrder(allProjectsFixture())
+	cases := []struct {
+		name    string
+		wide    bool
+		perRow  int
+		heading []string
+	}{
+		{"wide", true, 1, []string{"▾ NEEDS YOU", "▾ RUNNING", "▾ QUIET", "▾ FINISHED"}},
+		{"narrow", false, 2, []string{"▾ NEEDS YOU", "▾ RUNNING", "▾ QUIET", "▾ FINISHED"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines, spans := allProjectsListLines(rows, 0, 76, tc.wide)
+			if len(lines) != len(rows)*tc.perRow+len(tc.heading) {
+				t.Fatalf("%d lines, want %d", len(lines), len(rows)*tc.perRow+len(tc.heading))
+			}
+			var heads []string
+			for _, ln := range lines {
+				if p := strings.TrimSpace(xansi.Strip(ln)); strings.HasPrefix(p, "▾") {
+					heads = append(heads, strings.Join(strings.Fields(p)[:len(strings.Fields(p))-1], " "))
+				}
+			}
+			if strings.Join(heads, "|") != strings.Join(tc.heading, "|") {
+				t.Fatalf("headings = %v, want %v", heads, tc.heading)
+			}
+			if !strings.HasSuffix(strings.TrimSpace(xansi.Strip(lines[0])), "5") {
+				t.Errorf("NEEDS YOU heading %q does not count its 5 projects", xansi.Strip(lines[0]))
+			}
+			if spans[0].from != 0 || spans[0].to != 1+tc.perRow {
+				t.Errorf("first span = %+v, want its heading and its %d lines", spans[0], tc.perRow)
+			}
+			for i, sp := range spans[1:] {
+				if sp.to-sp.from < tc.perRow {
+					t.Errorf("row %d spans %d lines, want at least %d", i+1, sp.to-sp.from, tc.perRow)
+				}
+			}
+		})
+	}
+}
+
+// TestAllProjectsLayoutFor pins how the pane's rows are shared out.
+// Load-bearing: the panel takes a third of the pane and at least 3 rows, and
+// a pane too short for that still keeps one project's lines in the list.
+func TestAllProjectsLayoutFor(t *testing.T) {
+	cases := []struct {
+		name               string
+		h, perRow, head    int
+		wantList, wantPane int
+	}{
+		{"120x40", 35, 1, 0, 20, 11},
+		{"80x24", 19, 2, 0, 9, 6},
+		{"short pane keeps the panel at three", 9, 1, 0, 2, 3},
+		{"tiny pane keeps a project", 7, 2, 0, 2, 1},
+		{"head lines come out of the list", 35, 1, 2, 18, 11},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lay := allProjectsLayoutFor(tc.h, tc.perRow, make([]string, tc.head), true)
+			if lay.listRows != tc.wantList || lay.panelRows != tc.wantPane {
+				t.Fatalf("list %d panel %d, want list %d panel %d", lay.listRows, lay.panelRows, tc.wantList, tc.wantPane)
+			}
+		})
+	}
+}
+
+// TestAllProjectsChips pins the chips (§4.1 item 6). Load-bearing: every
+// chip at 120 columns in the design's order, and a narrow pane dropping a
+// whole chip rather than cutting one into a key with no word.
+func TestAllProjectsChips(t *testing.T) {
+	all := "enter open project  a answer  p pause / resume  n new plan  + add  - remove"
+	if got := strings.Join(strings.Fields(xansi.Strip(allProjectsChips("ctrl+]", 116))), " "); got != strings.Join(strings.Fields(all), " ") {
+		t.Fatalf("chips = %q, want %q", got, all)
+	}
+	got := xansi.Strip(allProjectsChips("ctrl+]", 76))
+	if lipgloss.Width(got) > 76 || strings.Contains(got, "remove") || !strings.HasSuffix(got, "add") {
+		t.Fatalf("narrow chips = %q, want every chip but the last, whole", got)
+	}
+}
+
+// TestAllProjectsWindow pins the scroll: the list moves only when the
+// cursor's lines would leave it, and never past the end. The "cursor past the
+// page" row is load-bearing: without it the cursor walks off the bottom of
+// the screen; "taller than the window" keeps the cursor's first line.
+func TestAllProjectsWindow(t *testing.T) {
+	cases := []struct {
+		name                  string
+		from, to, area, total int
+		wantStart, wantEnd    int
+	}{
+		{"all fit", 2, 3, 10, 5, 0, 5},
+		{"cursor on the first page", 3, 4, 4, 10, 0, 4},
+		{"cursor past the page", 6, 7, 4, 10, 3, 7},
+		{"cursor on the last line", 9, 10, 4, 10, 6, 10},
+		{"two-line row past the page", 5, 7, 4, 10, 3, 7},
+		{"taller than the window", 5, 9, 2, 10, 5, 7},
+		{"no lines", 0, 0, 4, 0, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, e := allProjectsWindow(tc.from, tc.to, tc.area, tc.total)
 			if s != tc.wantStart || e != tc.wantEnd {
 				t.Fatalf("window = [%d,%d), want [%d,%d)", s, e, tc.wantStart, tc.wantEnd)
 			}
@@ -182,11 +443,13 @@ func openAllProjectsGolden(t *testing.T, w, h int, res AllProjects) Model {
 	return m
 }
 
-// TestGoldenAllProjects pins the screen at both widths with a row in every
-// state: at 120 columns one line per project with columns, at 80 two lines
-// per project and the list scrolled to its first rows. The frames show the
-// rows needing the owner first, the gone and can't-read rows, the inbox
-// counts and the plan waiting for approval.
+// TestGoldenAllProjects pins the home screen (§4.1) at both widths with a row
+// in every state: the band, the column heads, the four group headings in
+// order, the rows (one line each with columns at 120, two lines each at 80
+// with the list scrolled to its first rows), and under the rule the selected
+// project's panel: beta's blocking question in full and the task it
+// unblocks. The chips sit on the pane's last row; at 80 columns the last one
+// gives way.
 func TestGoldenAllProjects(t *testing.T) {
 	for _, size := range []struct {
 		name string

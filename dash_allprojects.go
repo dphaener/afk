@@ -176,6 +176,7 @@ func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews m
 
 	items, _, listErr := inbox.Store{Dir: inbox.Dir(root)}.List()
 	in.Open, in.Blocking = buildview.OpenCounts(items)
+	in.Wait = oldestBlockingWait(items)
 
 	in.HasPlan = dashHasBuild(root)
 	if !in.HasPlan {
@@ -196,6 +197,15 @@ func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews m
 	if listErr != nil {
 		in.ReadErr = "The inbox folder could not be read: " + rowFirstLine(listErr.Error())
 		return
+	}
+
+	if in.Wait.Task != "" {
+		for _, t := range bs.Tasks {
+			if t.ID == in.Wait.Task {
+				in.Wait.TaskTitle = t.Title
+				break
+			}
+		}
 	}
 
 	var sessions []web.SessionView
@@ -223,6 +233,32 @@ func readDashProjectRow(p dashAllProjectsParts, in *projectrows.Input, reviews m
 	if sum.Current != nil {
 		in.Task, in.Title = sum.Current.Task, sum.Current.Title
 		in.Phase = strings.ReplaceAll(sum.Current.Phase, "_", " ")
+	}
+}
+
+// oldestBlockingWait picks the open item that holds a task up and has waited
+// longest, for the home screen's panel. It works on the items readDashProjectRow
+// already listed, so it reads no file; the web page maps rows through
+// web.rowView and never shows it. Ties on the creation time go to the smaller
+// id, so the choice does not depend on the order the store listed them in.
+// TaskTitle is filled later, once the plan has loaded.
+func oldestBlockingWait(items []inbox.Item) projectrows.Wait {
+	var best *inbox.Item
+	for i := range items {
+		it := &items[i]
+		if !it.Open() || !it.Blocking {
+			continue
+		}
+		if best == nil || it.CreatedAt < best.CreatedAt || (it.CreatedAt == best.CreatedAt && it.ID < best.ID) {
+			best = it
+		}
+	}
+	if best == nil {
+		return projectrows.Wait{}
+	}
+	return projectrows.Wait{
+		ItemID: best.ID, Kind: best.Kind, Title: best.Title, Body: best.Body,
+		CreatedAt: best.CreatedAt, Task: best.Task,
 	}
 }
 

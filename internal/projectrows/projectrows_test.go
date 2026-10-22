@@ -231,3 +231,100 @@ func TestStoppedText(t *testing.T) {
 		})
 	}
 }
+
+// TestGroupOf: needs_you_beats_state is load-bearing, since a paused project
+// with a blocking item or a plan waiting must sit under NEEDS YOU and not
+// QUIET. Every State has a row so a new state cannot silently fall through.
+func TestGroupOf(t *testing.T) {
+	tests := []struct {
+		name string
+		row  Row
+		want Group
+	}{
+		{"gone", Row{State: StateGone, NeedsOwner: true}, GroupNeedsYou},
+		{"unreadable", Row{State: StateUnreadable, NeedsOwner: true}, GroupNeedsYou},
+		{"stopped", Row{State: StateStopped, NeedsOwner: true}, GroupNeedsYou},
+		{"waiting", Row{State: StateWaiting, NeedsOwner: true}, GroupNeedsYou},
+		{"no_plan", Row{State: StateNoPlan}, GroupQuiet},
+		{"paused", Row{State: StatePaused}, GroupQuiet},
+		{"held", Row{State: StateHeld}, GroupQuiet},
+		{"nothing_ready", Row{State: StateNothingReady}, GroupQuiet},
+		{"running", Row{State: StateRunning}, GroupRunning},
+		{"finished", Row{State: StateFinished}, GroupFinished},
+		{"paused_with_blocking_item_needs_you", Row{State: StatePaused, Blocking: 1, NeedsOwner: true}, GroupNeedsYou},
+		{"nothing_ready_with_plan_waiting_needs_you", Row{State: StateNothingReady, PlanWaiting: true, NeedsOwner: true}, GroupNeedsYou},
+		{"running_with_blocking_item_needs_you", Row{State: StateRunning, Blocking: 1, NeedsOwner: true}, GroupNeedsYou},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := GroupOf(tt.row); got != tt.want {
+				t.Errorf("GroupOf = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGroupString pins the four headings' words and their screen order.
+func TestGroupString(t *testing.T) {
+	want := []string{"NEEDS YOU", "RUNNING", "QUIET", "FINISHED"}
+	for i, w := range want {
+		if got := Group(i).String(); got != w {
+			t.Errorf("Group(%d) = %q, want %q", i, got, w)
+		}
+	}
+}
+
+// TestGrouped: config_order_inside_groups is load-bearing, since the screen
+// relies on Sort's order surviving the split; empty_groups_stay_empty lets the
+// caller skip a heading by length.
+func TestGrouped(t *testing.T) {
+	r := func(name string, s State, needs bool) Row { return Row{Name: name, State: s, NeedsOwner: needs} }
+	tests := []struct {
+		name string
+		in   []Row
+		want [][]string
+	}{
+		{"config_order_inside_groups",
+			[]Row{r("a", StateStopped, true), r("b", StateGone, true), r("c", StateRunning, false),
+				r("d", StateRunning, false), r("e", StateFinished, false), r("f", StatePaused, false), r("g", StateNoPlan, false)},
+			[][]string{{"a", "b"}, {"c", "d"}, {"f", "g"}, {"e"}}},
+		{"empty_groups_stay_empty",
+			[]Row{r("a", StateFinished, false)},
+			[][]string{nil, nil, nil, {"a"}}},
+		{"no_rows", nil, [][]string{nil, nil, nil, nil}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Grouped(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("groups = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				var names []string
+				for _, x := range got[i] {
+					names = append(names, x.Name)
+				}
+				if len(names) != len(tt.want[i]) || (len(names) > 0 && !reflect.DeepEqual(names, tt.want[i])) {
+					t.Errorf("group %v = %v, want %v", Group(i), names, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestBuildCopiesWait: Build must carry Wait through unchanged in any state,
+// since the panel reads it from the row alone.
+func TestBuildCopiesWait(t *testing.T) {
+	w := Wait{ItemID: "aaaaa2", Kind: "question", Title: "Which?", Body: "b", CreatedAt: "2026-10-12T10:00:00Z", Task: "T1.3", TaskTitle: "Third"}
+	for _, in := range []Input{
+		{Name: "n", Root: "/r", HasPlan: true, Wait: w},
+		{Name: "n", Root: "/r", Gone: true, Wait: w},
+	} {
+		if got := Build(in).Wait; got != w {
+			t.Errorf("Wait = %+v, want %+v", got, w)
+		}
+	}
+	if got := Build(Input{Name: "n", HasPlan: true}).Wait; got != (Wait{}) {
+		t.Errorf("Wait = %+v, want empty", got)
+	}
+}

@@ -1,27 +1,25 @@
  afk Dashboard                                                                                                          
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ All projects                                                                                                         │
-│ 5 need you                                                                                                           │
-│                                                                                                                      │
-│ ▌ beta        2/6 ○ paused          Paused: no new task will start until you resume …  2 in inbox, 1 holds a task up │
-│   gamma         - ✕ gone            The project folder does not exist. Check its pat…                                │
-│   delta         - ✕ can't read      reading /p/delta/.afk/build/ledger.json: invalid…                                │
-│   epsilon       - ○ no plan         This project has no master plan to build.          plan waiting for approval     │
-│   eta         1/4 ● waiting on you  a task is parked until you answer its inbox item…  1 in inbox, 1 holds a task up │
-│   alpha       3/8 ◐ running         W1.T2 Add the parser: executing                                                  │
-│   zeta        5/5 ✓ finished        Every task is done.                                                              │
-│   repo        0/3 ○ held for usage  nothing new is started, because of the usage lim…                                │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
+│  ● 5 need you  ◐ 1 running  ○ 1 quiet  ✓ 1 finished   inbox 3 · 2 blocking                                           │
+│     PROJECT  STATE           TASKS           NOW                                                     INBOX           │
+│  ▾ NEEDS YOU                                                                                                      5  │
+│ ▌ ○ beta     paused          ███░░░░░░░ 2/6  Paused: no new task will start until you resume it. A…  2 · 1 blocking  │
+│   ✕ gamma    gone            -               The project folder does not exist. Check its path in …                  │
+│   ✕ delta    can't read      -               reading /p/delta/.afk/build/ledger.json: invalid char…                  │
+│   ○ epsilon  no plan         -               This project has no master plan to build.               plan to approve │
+│   ● eta      waiting on you  ███░░░░░░░ 1/4  a task is parked until you answer its inbox items: W2…  1 · 1 blocking  │
+│  ▾ RUNNING                                                                                                        1  │
+│   ◐ alpha    running         ████░░░░░░ 3/8  W1.T2 Add the parser: executing                                         │
+│  ▾ QUIET                                                                                                          1  │
+│   ○ repo     held for usage  ░░░░░░░░░░ 0/3  nothing new is started, because of the usage limits                     │
+│  ▾ FINISHED                                                                                                       1  │
+│   ✓ zeta     finished        ██████████ 5/5  Every task is done.                                                     │
+│ ─ beta ───────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ Waits on question bbbbb3                                                                                             │
+│ Which database should the cache use?                                                                                 │
+│ The plan says a cache but not where it lives. SQLite keeps it in one file; Redis needs a server on the VM.           │
+│ Unblocks W1.T3 Add the cache                                                                                         │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -36,5 +34,7 @@
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
+│                                                                                                                      │
+│  enter  open project   a  answer   p  pause / resume   n  new plan   +  add   -  remove                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-enter open · ↑/k up · ↓/j down · : actions · ? keys · q quit                                                            
+enter open · ↑/k up · ↓/j down · a answer · p pause · : actions · ? keys · q quit                                       

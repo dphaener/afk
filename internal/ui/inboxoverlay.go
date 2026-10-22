@@ -952,6 +952,23 @@ func (m Model) openInbox() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openInboxOn opens the overlay on the item with id, as if the owner had moved
+// to it and pressed enter. An id the snapshot no longer holds (answered from
+// elsewhere between the key and the read) leaves the overlay on its list.
+func (m Model) openInboxOn(id string) Model {
+	nm, _ := m.openInbox()
+	m = nm.(Model)
+	if !m.inboxOpen {
+		return m
+	}
+	if i := m.inbox.indexOf(id); i >= 0 {
+		m.inbox.cursor = i
+		_ = m.inbox.openItem()
+		m.sizeInbox()
+	}
+	return m
+}
+
 // inboxSize is the overlay's content size for the current terminal and the
 // screen it is on.
 //

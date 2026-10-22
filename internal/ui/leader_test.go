@@ -306,8 +306,8 @@ func TestKeyTableIsTheDecidedTable(t *testing.T) {
 		{"n", actionPlanNew, atAllProjects},
 		{"+", actionProjectAdd, atAllProjects},
 		{"-", actionProjectRemove, atAllProjects},
-		// p at All projects waits for T16.3 (A4).
-		{"p", actionPauseToggle, atProject},
+		{"a", actionAnswerOldest, atAllProjects},
+		{"p", actionPauseToggle, atAllProjects | atProject},
 		{"n", actionNewSession, atProject},
 		{"o", actionScratch, atProject},
 		{"c", actionClean, atProject},
