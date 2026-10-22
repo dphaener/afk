@@ -46,6 +46,8 @@ type dashAllProjectsParts struct {
 	// be listed (the phase then reads as unknown).
 	sessions func(root string) []web.SessionView
 	now      func() time.Time
+	// usage is the machine's last usage reading, false when there is none.
+	usage func() (usagestate.File, bool)
 }
 
 func realDashAllProjectsParts() dashAllProjectsParts {
@@ -69,7 +71,8 @@ func realDashAllProjectsParts() dashAllProjectsParts {
 			}
 			return webSessionViewsWithStart(found)
 		},
-		now: time.Now,
+		now:   time.Now,
+		usage: func() (usagestate.File, bool) { return usagestate.Read(usagestate.DefaultDeps()) },
 	}
 }
 
@@ -116,7 +119,11 @@ func loadDashAllProjects(p dashAllProjectsParts, active string) ui.AllProjects {
 			rows = append(rows, projectrows.Build(in))
 		}
 	}
-	return ui.AllProjects{Rows: rows, ConfigPath: path, Tasks: tasks}
+	res := ui.AllProjects{Rows: rows, ConfigPath: path, Tasks: tasks}
+	if p.usage != nil {
+		res.Usage, res.UsageKnown = p.usage()
+	}
+	return res
 }
 
 // rowProject is one listed project as buildListedRows takes it: a name and the

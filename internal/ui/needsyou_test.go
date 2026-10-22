@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/dphaener/afk/internal/project"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -471,6 +473,46 @@ func TestNeedCountsElsewhere(t *testing.T) {
 			got := needCountsElsewhere(tc.items, tc.active)
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("needCountsElsewhere = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAwaitingElsewhereByLevel pins F10: "elsewhere" leaves the active project
+// out only where the owner is in one. At All projects the owner is in none, so
+// the project that merely is the active one still counts.
+//
+// Load-bearing rows: "All projects counts the active project" (the fault) and
+// the Project and Agent rows (the exclusion the landing code and the Agent
+// band rely on must stay).
+func TestAwaitingElsewhereByLevel(t *testing.T) {
+	alpha := project.Project{Path: "/repos/alpha", Name: "alpha"}
+	beta := project.Project{Path: "/repos/beta", Name: "beta"}
+	cases := []struct {
+		name string
+		mut  func(m *Model)
+		want []otherProjectAwaiting
+	}{
+		{"All projects counts the active project", func(m *Model) { m.allProjectsOpen = true },
+			[]otherProjectAwaiting{{name: "alpha", count: 1}}},
+		{"Project leaves the active project out", func(m *Model) {}, nil},
+		{"Agent leaves the active project out", func(m *Model) {
+			m.pane, m.paneName, m.view, m.focus = newFakePane("agent"), "s1", viewAgent, focusRight
+		}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			waiting := sess("s1")
+			waiting.AwaitingInput = true
+			m := testModel(waiting)
+			m.projects = []project.Project{alpha, beta}
+			m.activeProject = 0
+			tc.mut(&m)
+			if tc.name[:5] == "Agent" && m.level() != levelAgent {
+				t.Fatalf("fixture broken: level = %v", m.level())
+			}
+			if got := m.awaitingElsewhere(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("awaitingElsewhere() = %#v, want %#v", got, tc.want)
 			}
 		})
 	}

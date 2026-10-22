@@ -4257,3 +4257,54 @@ Decided while building (2026-10-22):
 - **The chart and its reset time use the same time zone,** the one the reader built the days in, so the screen reads no clock of its own.
 - **Below 100 columns the cells are on or off for every row at once,** so cells and inbox line up down the list; when they do not fit, the cells give way and the inbox stays.
 - **The saved home screen now carries a usage reading,** so the week's usage line shows; at 80 columns that also narrows the header and cuts the band, as it already did with a reading.
+
+## T16.9
+
+T16.9 is the proof of the redesigned dashboard. The owner used it for a day on their own terminals, and the agent ran a hands-on sweep first, on 2026-10-22.
+
+### What was tested
+
+- **The owner's half.** Ghostty and one other terminal (not named), inside tmux with the default prefix and outside it, at 120×40 and 80×24, in tide, fjord, paper and phosphor, at 256 colours and at 16 colours. That is what inbox item 9xhen5 asked them to cover. Their answer was one line: "No faults, everything looks great" (9xhen5). It does not say which second terminal, and it lists nothing beyond that one line. So this section does not claim the owner tried anything more than what the item asked of them.
+- **The agent's half.** tmux 3.6 on the VM acted as the terminal. The same matrix (both sizes, four themes) at true colour, 256 colours and 16 colours, outside tmux and inside it, 48 home screens in all, plus seven full walks of the dashboard. Colour was judged from the colour codes in `tmux capture-pane -e` output and legibility from a contrast ratio, not by eye. The report is `.afk/t16-9/evidence/agent-sweep.md`.
+- **How each colour count was made.** Outside tmux the `TERM` and `COLORTERM` values decide it: `xterm-256color` with `COLORTERM=truecolor` gives true colour, `xterm-256color` alone gives 256, and plain `xterm` gives 16. Inside tmux, true colour needed a `Tc` override on the inner server. **16 colours inside tmux could not be produced:** the colour library never reports less than 256 when `TMUX` is set, so those six captures are 256-colour captures and are counted that way.
+- **What could not be tested here.** Ghostty or any real emulator, a real light-background query, and the keys `n o c r l s t p R + -`, the mouse and `ctrl+] m`.
+
+### What worked
+
+- Navigation at every level: home, Project, Agent and the details overlay, with `esc` leaving nothing behind.
+- `C-]` reached the dashboard under tmux, and `C-b` still worked for tmux (a new window and back).
+- Answering an item from the dashboard wrote the same file as `afk inbox answer` (`answered_via` "tui"), and the inbox count fell.
+- The ground was painted at 256 colours and above and left alone at 16 colours, as designed.
+- No flicker and no leftover cells: a screen before and after closing an overlay was identical apart from data that loaded meanwhile.
+
+### Faults
+
+The owner met none of these in their own terminals. The agent's sweep found eleven (F1–F11). Inbox ids are in brackets.
+
+- **F1, fjord at 256 colours paints the whole screen dark teal.** The conversion to 256 colours picks cube cell 23 for the blue-grey values, so the ground and the panel become the same colour. Filed (2jx4v2).
+- **F2, at 16 colours some text and fill pairs have almost the same brightness.** Each colour is converted alone, with no 16-colour pairing per theme. Filed (6g3yec).
+- **F3, at 80×24 the home list showed half a project row.** The window scrolled by lines and the list had an odd number of lines at two lines per row. Fixed in this task: the list gets a whole number of rows (the spare line goes to the panel) and the window moves onto project boundaries.
+- **F4, overlays were filled with the ground colour, not the panel colour.** The keys, actions, jump and answer overlays and the `ctrl+]` strip had no fill of their own. Fixed in this task: every overlay goes through one box function, which now fills the box with the panel colour (not at 16 colours).
+- **F5, the status bar is still the old help line.** No urgent message on the left and no `? keys`. Filed (eg34b3).
+- **F6, the top bar is not the design's top bar.** The path builder has no caller. Filed (kdn6xd).
+- **F7, no usage on home when the dashboard starts outside a project.** Home read usage only from a project's snapshot. Fixed in this task: the every-project read now carries a usage reading, kept on the model, and a project's reading wins when there is one.
+- **F8, toasts cover the strip hints, and one said "to focus".** The wording was fixed in this task: the release toast now says `<key> to open it again` and the entering toast says `to type in it`. The placement is filed (7wa252).
+- **F9, home says "unknown" for a running task with no session phase.** It comes from `internal/projectrows`, which the web page shares and which is outside M16. Filed (swm44r).
+- **F10, the header counted "needs you elsewhere" from the last project opened, even at All projects.** Fixed in this task: at All projects you are in no project, so every project counts.
+- **F11, two small slips.** The read-only pane's `need` line ran the title and body together, and the details help said `1-5` when only four tabs show without a stack. Fixed in this task: the line separates title and body, and the help names only the tabs that exist.
+
+### What this task decided, and why
+
+- **The agent sweep ran first (A1).** The owner's inbox item could then list what was already known. Ghostty and a second emulator are not on the VM.
+- **The plan parked for the owner in planning (A2).** The owner tests the binary built from main, so fixing on this branch first would not change what they ran.
+- **Table tests with each fix, docs only for the write-up (A3).**
+- **Nothing had to be in place first (A4).** T16.8 is merged on main.
+- **The second terminal is recorded as not named (A5).** A guess would put words in the owner's mouth, so a question asks (erwqed), as T15.9 did (h5hxfs).
+- **Small faults were fixed, the rest filed (A6).** F3, F4, F7, F8's wording, F10 and F11 are small and match `docs/dash-design.md`. The filed ones need colour tables or a layout change the owner did not ask for (they saw no fault), would change header words T16.1 chose to keep, or lie outside M16.
+- **Three code tasks ran one after another (A7),** because each compiles `internal/ui`.
+- **This section belongs to the change.** It is the task's deliverable.
+
+### What is still open
+
+- Filed notices: 2jx4v2 (F1), 6g3yec (F2), eg34b3 (F5), kdn6xd (F6), 7wa252 (F8 placement), swm44r (F9).
+- The question erwqed: which second terminal the owner used.

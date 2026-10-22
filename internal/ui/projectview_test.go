@@ -198,8 +198,19 @@ func TestSessionSummaryLines(t *testing.T) {
 			{ID: "c", Session: "s1", CreatedAt: "2026-10-21T08:00:00Z", Title: "Answered", Answer: "x"},
 		}
 		l, ok := get(sessionSummaryLines(full, task, items), "need")
-		if !ok || l.Value != "Which db? SQLite or Redis" || l.Tone != toneNeed {
+		if !ok || l.Value != "Which db? — SQLite or Redis" || l.Tone != toneNeed {
 			t.Errorf("need = %+v ok=%v", l, ok)
+		}
+	})
+	t.Run("a title or a body alone gets no dash", func(t *testing.T) {
+		for name, it := range map[string]inbox.Item{
+			"title only": {ID: "a", Session: "s1", Title: "Which db?"},
+			"body only":  {ID: "b", Session: "s1", Body: "SQLite or Redis"},
+		} {
+			l, _ := get(sessionSummaryLines(full, task, []inbox.Item{it}), "need")
+			if want := strings.TrimSpace(it.Title + it.Body); l.Value != want {
+				t.Errorf("%s: need = %q, want %q", name, l.Value, want)
+			}
 		}
 	})
 	t.Run("question found by task when none matches the session", func(t *testing.T) {

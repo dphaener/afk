@@ -4241,6 +4241,11 @@ Amended 2026-10-22 (T16.8 done): the counting is the new package `internal/activ
   fault met with its cause, fixes what it can within M16's code and files the rest in the inbox.
 - **Acceptance:** the write-up covers both terminals, both sizes, all four themes and both reduced
   colour counts; every fault is fixed or filed.
+- Amended 2026-10-22 (T16.9 done): the owner met no faults; an agent sweep found eleven (F1–F11 in
+  `docs/decisions.md` `## T16.9`). F3, F4, F7, F8's wording, F10 and F11 are fixed. F1 and F2 (colour
+  at 256 and 16), F5 (status bar), F6 (top bar), F8's toast placement and F9 (`internal/projectrows`
+  "unknown") are filed in the inbox for a later task to pick up. 16 colours cannot be produced inside
+  tmux, because the colour library floors at 256 when `TMUX` is set.
 
 ## 9. Deferred / later
 

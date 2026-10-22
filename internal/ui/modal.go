@@ -39,11 +39,23 @@ func modalContentDims(termW, termH, wantW, wantH int) (w, h int) {
 // here follows — the argument is content plus padding), with title on the top
 // edge and hint on the bottom one (labelBorders). MaxHeight is the bound
 // against a body taller than it was sized for; labelBorders runs after it.
+//
+// The box is then filled with panel, the colour of "inside panes and
+// overlays" (docs/dash-design.md §1, §3.8), the way pane's paintRows does. It
+// is done on the finished box, cell by cell (fillBackground), because
+// modalBox itself has no background: left alone, View's paintGround would
+// fill every unpainted cell inside the box with bg. Cells whose text already
+// wears a colour keep it. A flat theme (16 colours) paints nothing, as
+// paintsGround intends.
 func renderModalBox(title, hint, body string, contentW, contentH int) string {
 	box := sizedBox(theme.modalBox, contentW+2, contentH).
 		MaxHeight(contentH + boxBorderCells).
 		Render(body)
-	return labelBorders(box, theme.modalBox, title, hint)
+	box = labelBorders(box, theme.modalBox, title, hint)
+	if theme.flat {
+		return box
+	}
+	return fillBackground(box, tok(theme.tokens.Panel))
 }
 
 // composeModal centres box over frame and returns the composited screen. The

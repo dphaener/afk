@@ -10,7 +10,10 @@ import (
 	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/dphaener/afk/internal/buildview"
 	"github.com/dphaener/afk/internal/projectrows"
+	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/usagestate"
 )
 
 // allProjectsFixture is one row in every state the screen draws differently,
@@ -334,6 +337,10 @@ func TestAllProjectsListLines(t *testing.T) {
 // its two rows from the list and leaves the panel alone, and "chart left
 // out" is the pane where taking them would leave the list without one
 // project's two lines, so the chart, not the list, gives way.
+// The "odd area at 2 lines per row" rows are load-bearing for T16.9 F3: an odd
+// list area at two lines per row would show the last project's first line
+// alone, so the spare line goes to the panel; "even area" and the 1-line rows
+// must not change.
 func TestAllProjectsLayoutFor(t *testing.T) {
 	cases := []struct {
 		name                          string
@@ -342,13 +349,16 @@ func TestAllProjectsLayoutFor(t *testing.T) {
 		wantList, wantPane, wantChart int
 	}{
 		{"120x40", 35, 1, 0, false, 20, 11, 0},
-		{"80x24", 19, 2, 0, false, 9, 6, 0},
+		{"80x24", 19, 2, 0, false, 8, 7, 0},
+		{"odd area at 2 lines per row", 21, 2, 0, false, 10, 7, 0},
+		{"even area at 2 lines per row", 20, 2, 0, false, 10, 6, 0},
+		{"odd area at 1 line per row unchanged", 36, 1, 0, false, 20, 12, 0},
 		{"short pane keeps the panel at three", 9, 1, 0, false, 2, 3, 0},
 		{"tiny pane keeps a project", 7, 2, 0, false, 2, 1, 0},
 		{"head lines come out of the list", 35, 1, 2, false, 18, 11, 0},
 		{"chart fits at 120x40", 35, 1, 0, true, 18, 11, 2},
-		{"chart fits at 80x24", 19, 2, 0, true, 7, 6, 2},
-		{"chart left out when the list would lose its last project at 80 columns", 10, 2, 0, true, 3, 3, 0},
+		{"chart fits at 80x24", 19, 2, 0, true, 6, 7, 2},
+		{"chart left out when the list would lose its last project at 80 columns", 10, 2, 0, true, 2, 4, 0},
 		{"chart left out on a tiny pane", 7, 2, 0, true, 2, 1, 0},
 	}
 	for _, tc := range cases {
@@ -359,6 +369,81 @@ func TestAllProjectsLayoutFor(t *testing.T) {
 					lay.listRows, lay.panelRows, lay.chartRows, tc.wantList, tc.wantPane, tc.wantChart)
 			}
 		})
+	}
+}
+
+// TestAllProjectsWholeRows pins that a window never begins or ends inside a
+// project. Load-bearing: "end inside the next project" is the half row of
+// T16.9 F3 (a group heading shifts the lines so an even area still cuts a
+// project); "start inside a project" is its mirror at the top.
+func TestAllProjectsWholeRows(t *testing.T) {
+	// A heading line, then three two-line projects, then a heading, one more.
+	spans := []lineSpan{{1, 3}, {3, 5}, {5, 7}, {8, 10}}
+	cases := []struct {
+		name                  string
+		start, end, area, tot int
+		wantStart, wantEnd    int
+	}{
+		{"already whole", 1, 5, 4, 10, 1, 5},
+		{"end inside the next project", 0, 4, 4, 10, 0, 3},
+		{"start inside a project", 2, 6, 4, 10, 3, 7},
+		{"everything fits", 0, 10, 12, 10, 0, 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, e := allProjectsWholeRows(spans, tc.start, tc.end, tc.area, tc.tot)
+			if s != tc.wantStart || e != tc.wantEnd {
+				t.Fatalf("window = [%d,%d), want [%d,%d)", s, e, tc.wantStart, tc.wantEnd)
+			}
+		})
+	}
+}
+
+// TestAllProjectsHomeUsage pins where the home band's usage comes from
+// (T16.9 F7). Load-bearing: a home reading shows usage with no build, neither
+// reading leaves usage out (no invented 0%), and the build's reading wins.
+func TestAllProjectsHomeUsage(t *testing.T) {
+	reading := func(pct float64) usagestate.File {
+		return usagestate.File{Windows: []usagestate.Window{{Kind: provider.WindowWeekly, UsedPct: pct}}}
+	}
+	cases := []struct {
+		name      string
+		build     bool
+		home      bool
+		want      int
+		wantKnown bool
+	}{
+		{"home reading with no build", false, true, 30, true},
+		{"neither reading", false, false, 0, false},
+		{"build reading wins", true, true, 70, true},
+		{"build reading alone", true, false, 70, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m Model
+			if tc.build {
+				m.buildKnown = true
+				m.build = buildview.Snapshot{UsageKnown: true, Usage: reading(70)}
+			}
+			if tc.home {
+				m.homeUsage, m.homeUsageKnown = reading(30), true
+			}
+			got, ok := m.allProjectsUsage()
+			if got != tc.want || ok != tc.wantKnown {
+				t.Fatalf("usage = %d, %v; want %d, %v", got, ok, tc.want, tc.wantKnown)
+			}
+		})
+	}
+}
+
+// TestApplyEveryProjectKeepsUsage pins that the every-project read's usage
+// lands on the Model, which is how a dashboard outside a project gets it.
+func TestApplyEveryProjectKeepsUsage(t *testing.T) {
+	var m Model
+	f := usagestate.File{Windows: []usagestate.Window{{Kind: provider.WindowWeekly, UsedPct: 12}}}
+	m = m.applyEveryProject(allProjectsLoadedMsg{res: AllProjects{Usage: f, UsageKnown: true}, seq: 1})
+	if got, ok := m.allProjectsUsage(); !ok || got != 12 {
+		t.Fatalf("usage = %d, %v; want 12, true", got, ok)
 	}
 }
 

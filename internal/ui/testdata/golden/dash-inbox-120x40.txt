@@ -24,7 +24,7 @@
   │ │────────────────────────────────────────────────│ │                                                           │ │  
   │ │ branch  feat-auth                              │ │                                                           │ │  
   │ │ phase   executing · loop 3                     │ │                                                           │ │  
-  │ │ need    Drop the legacy_sessions table? The    │ │                                                           │ │  
+  │ │ need    Drop the legacy_sessions table? — The  │ │                                                           │ │  
   │ │         migration in T2.2 removes              │ │                                                           │ │  
   │ │         legacy_sessions. Two reports in admin/ │ │                                                           │ │  
   │ │         still read it.                         │ │                                                           │ │  
