@@ -178,18 +178,18 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Search folders**: the folders the dashboard looks under for more projects (`search_roots`); until T6.2 they are set in `config.json`.
 - **Dash table**: the `[dash]` table of the machine config, holding the dashboard's search folders, how often it searches and how deep; the daemon ignores it, and a bad value in it stops nothing but the folder search.
 - **Old-settings notice**: what `afk dash` says once per start when a `config.json` is still in afk's config folder: the file is no longer read, and here are the `[dash]` lines to add to `config.toml`.
-- **Leader key**: the one key (ctrl+]) that, pressed anywhere in the dashboard, says the next key is a dashboard action and not typing.
-- **Actions dialog**: the list the leader key opens, showing every dashboard action with its key; a key runs one, and typing filters by name.
+- **Leader key**: the one key (ctrl+]) that, pressed in the Agent level of the dashboard, says the next key is a dashboard key and not typing.
+- **Actions dialog**: the list the leader key used to open; replaced by the Key strip and the Actions search.
 - **All-projects screen**: one dashboard screen with a row per project the daemon builds, showing its current task, build state and inbox count.
 - **Chat view**: the web page's screen that shows a planning session as messages, with a reply box and a button per offered option; it is never the session's terminal, and a reply from it takes the session from the dashboard for a moment.
-- **Pause key**: `P` in the dashboard, which pauses the active project's build as `afk pause` does: a running task finishes and nothing new starts.
-- **Resume key**: `U` in the dashboard, which resumes the active project's build as `afk resume` does, and clears a stopped line.
+- **Pause key**: `p` at the Project level of the dashboard, which pauses the active project's build as `afk pause` does: a running task finishes and nothing new starts.
+- **Resume key**: `p` again in the dashboard when the build is paused or stopped, which resumes the project's build as `afk resume` does, and clears a stopped line.
 - **Inbox segment**: the part of the `afk dash` header that counts the active project's open inbox items and how many of them are blocking a task.
 - **Project location**: the owner profile entry naming the folder under which the dashboard creates a new project typed by name.
 - **Plan line**: the one line in `afk dash` (on the `master-plan` session's overview and the Build tab) that says the planning session's mode, phase and what it waits for.
-- **All-projects screen**: the `afk dash` screen (leader, then `A`) that lists every project the daemon builds, one row each, the ones needing the owner first.
+- **All-projects screen**: the `afk dash` screen (the first level, reached with `esc` from a project) that lists every project the daemon builds, one row each, the ones needing the owner first.
 - **Project row**: one line of the all-projects screen for one project: its name, tasks done of the total, its state, its inbox counts and whether its plan waits for approval; built by `internal/projectrows`.
-- **Tokens overlay**: the `afk dash` overlay (leader, then `T`, on the Build tab) that shows the selected task's token use as `afk tokens <task>` prints it, with a narrower table when the window is narrow.
+- **Tokens overlay**: the `afk dash` overlay (`t`, on the Build tab) that shows the selected task's token use as `afk tokens <task>` prints it, with a narrower table when the window is narrow.
 - **Short total**: the selected Build tab row's weighted token total, shortened (`2.9M weighted`), shown only when the row has room.
 - **Live part**: one of the things an open web page updates by itself when its files change: `inbox`, `ledger`, `pause`, `sessions`, `planning` or `usage`. Named in the events of the page's `/events` stream.
 - **Planning chat**: a project's open planning session read as messages (the agent's and the owner's) plus its state (`none`, `working`, `waiting_for_text`, `waiting_for_choice`, `unknown`), served at `GET /api/p/<project>/plan/chat` and built by `internal/planchat`. The web page draws it at `GET /p/<project>/plan/chat` (the **Planning chat** page), with links from the project's nav, the plan line and the planning session's row.
@@ -243,3 +243,7 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Token**: one named colour role in a theme (`bg`, `panel`, `accent`, `need`, and so on); every colour the dashboard draws is a token.
 - **Title strip**: the filled first row of a dashboard pane, holding its name on the left and context on the right; it is `accent` on the pane that has the keyboard.
 - **Dimming**: what the dashboard does to the screen under a dialog or overlay: every colour moves most of the way to the theme's background and bold goes, so the overlay stands out.
+- **Level**: one of the dashboard's three screens, All projects, Project and Agent; `enter` goes in one and `esc` comes back out.
+- **Key strip**: the small list of keys that appears in the Agent level after the leader key, naming the keys the next press can use; a key it does not list closes it and sends nothing.
+- **Actions search**: the `:` box that finds every dashboard action by name, the ones with no key too; letters always type into it.
+- **Keys overlay**: the `?` list of every key, level by level, built from the same table the key handling uses.

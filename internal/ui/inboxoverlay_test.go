@@ -102,7 +102,7 @@ func inboxModel(t *testing.T, w, h int, reply func(answerCall) (inbox.Item, erro
 // openInboxItem opens the overlay and the item at index i of the list.
 func openInboxItem(t *testing.T, m Model, i int) Model {
 	t.Helper()
-	m = pressLeader(t, m, keyI)
+	m = pressKey(t, m, keyI)
 	if !m.inboxOpen {
 		t.Fatal("ctrl+] i did not open the inbox")
 	}
@@ -153,7 +153,7 @@ func TestInboxOverlayFitsTheFrame(t *testing.T) {
 				m, _ := inboxModel(t, sz.w, sz.h, nil)
 				switch screen {
 				case "list":
-					m = pressLeader(t, m, keyI)
+					m = pressKey(t, m, keyI)
 				case "question":
 					m = openInboxItem(t, m, 0)
 				case "failure":
@@ -205,7 +205,7 @@ func TestInboxListRows(t *testing.T) {
 	for _, sz := range []struct{ w, h int }{{120, 40}, {80, 24}, {50, 20}} {
 		t.Run(fmt.Sprintf("%dx%d", sz.w, sz.h), func(t *testing.T) {
 			m, _ := inboxModel(t, sz.w, sz.h, nil)
-			m = pressLeader(t, m, keyI)
+			m = pressKey(t, m, keyI)
 			lines := plain(strings.Split(m.inbox.View(), "\n"))
 			if len(lines) != len(inboxItems()) {
 				t.Fatalf("the list drew %d lines for %d items:\n%s", len(lines), len(inboxItems()), strings.Join(lines, "\n"))
@@ -448,7 +448,7 @@ func TestInboxKeys(t *testing.T) {
 		}
 		for _, k := range []tea.Msg{keyRune('q'), chord('c'), keyRune('b'), keyRune('i'), keyRune('n'), keyRune(':'), keyRune('?')} {
 			m, _ = update(t, m, k)
-			if m.quitting || !m.inboxOpen || m.formOpen || m.leaderOpen || m.helpShowAll || m.inbox.screen != inboxScreenList {
+			if m.quitting || !m.inboxOpen || m.formOpen || m.leaderOpen || m.keysOpen || m.inbox.screen != inboxScreenList {
 				t.Fatalf("%v leaked out of the list screen", k)
 			}
 		}
@@ -464,7 +464,7 @@ func TestInboxKeys(t *testing.T) {
 	}{{"esc closes the list", keyEsc}, {"ctrl+g closes the list", keyCtrlG}} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := inboxModel(t, 120, 40, nil)
-			m = pressLeader(t, m, keyI)
+			m = pressKey(t, m, keyI)
 			capture := m.mouseCapture
 			m, _ = update(t, m, tc.key)
 			if m.inboxOpen || m.quitting {
@@ -852,7 +852,7 @@ func TestInboxFollowsTheFiles(t *testing.T) {
 
 	t.Run("the list keeps the cursor on the same item", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
-		m = pressLeader(t, m, keyI)
+		m = pressKey(t, m, keyI)
 		m, _ = update(t, m, keyRune('j'))
 		snap := inboxSnap()
 		snap.Items = append([]inbox.Item{fresh}, snap.Items...)
@@ -870,7 +870,7 @@ func TestInboxFollowsTheFiles(t *testing.T) {
 
 	t.Run("the selected item leaving the inbox clamps the cursor", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
-		m = pressLeader(t, m, keyI)
+		m = pressKey(t, m, keyI)
 		for range 3 {
 			m, _ = update(t, m, keyRune('j'))
 		}
@@ -940,7 +940,7 @@ func TestInboxFollowsTheFiles(t *testing.T) {
 
 	t.Run("the count of files that could not be read follows too", func(t *testing.T) {
 		m, _ := inboxModel(t, 120, 40, nil)
-		m = pressLeader(t, m, keyI)
+		m = pressKey(t, m, keyI)
 		snap := inboxSnap()
 		snap.Unreadable = 2
 		m = withBuild(t, m, snap)
@@ -970,7 +970,7 @@ func TestInboxOpening(t *testing.T) {
 
 	t.Run("an empty inbox opens and says so", func(t *testing.T) {
 		m := withBuild(t, testModel(sess("alpha")), buildview.Snapshot{Root: "/repo"})
-		m = pressLeader(t, m, keyI)
+		m = pressKey(t, m, keyI)
 		if !m.inboxOpen {
 			t.Fatal("i did not open the overlay on an empty inbox")
 		}
@@ -989,7 +989,7 @@ func TestInboxOpening(t *testing.T) {
 
 	t.Run("from a focused overview, and closing returns there", func(t *testing.T) {
 		m := focusOverview(t, withBuild(t, testModel(sess("alpha")), inboxSnap()))
-		m = pressLeader(t, m, keyI)
+		m = pressKey(t, m, keyI)
 		if !m.inboxOpen || activeInputMode(m.modeSnapshot()) != inputInbox {
 			t.Fatal("i did not open the overlay from the overview")
 		}
@@ -1003,7 +1003,7 @@ func TestInboxOpening(t *testing.T) {
 		m := withBuild(t, testModel(runningSess("alpha")), inboxSnap())
 		pane := newFakePane("agent screen")
 		m.pane, m.paneName, m.view = pane, "alpha", viewAgent
-		m = pressLeader(t, m, keyI)
+		m = pressKey(t, m, keyI)
 		m = typeInbox(t, m, "jq")
 		m, _ = update(t, m, keyEsc)
 		if pane.closed != 0 || len(pane.keys)+len(pane.texts) != 0 || m.view != viewAgent || m.pane == nil {
@@ -1073,33 +1073,33 @@ func TestInboxClosesOnAProjectSwitch(t *testing.T) {
 	}
 }
 
-// TestInboxKeyIsInTheLeaderTable is the proof that the actions dialog lists
-// the inbox under ctrl+] i and that the key runs it: the rows come from
-// the leader table, so this fails if the row or its help line is removed. The
+// TestInboxKeyIsInTheKeyTable is the proof that the `:` search lists the
+// inbox under i and that the key runs it alone at Project: the rows come from
+// the key table, so this fails if the row or its help line is removed. The
 // short footer line must not grow (it is at its measured-width cap), and
 // while the overlay is open the footer shows the keys of the screen that is
 // up.
-func TestInboxKeyIsInTheLeaderTable(t *testing.T) {
+func TestInboxKeyIsInTheKeyTable(t *testing.T) {
 	m := testModel(sess("alpha"))
 	short := xansi.Strip(m.renderHelp())
 	if strings.Contains(short, "inbox") {
 		t.Errorf("the short footer line grew: %q", short)
 	}
 	m.buildKnown = true
-	rows := leaderRows(m.leaderConditions())
+	rows := actionRows(levelProject, defaultLeaderKey, m.leaderConditions())
 	row, ok := leaderRowFor(rows, actionInbox)
 	if !ok {
-		t.Fatal("the dialog does not list the inbox")
+		t.Fatal("the `:` search does not list the inbox")
 	}
 	if row.keyLabel != "i" || row.name != "inbox" || row.blocked != "" {
 		t.Errorf("row = %+v, want a runnable \"inbox\" under i", row)
 	}
-	if got := leaderKeyDecision(leaderPress("i"), defaultLeaderKey, "", rows, 0, false); got.kind != leaderRun || got.row.action != actionInbox {
-		t.Errorf("ctrl+] i = %v %v, want the inbox action", got.kind, got.row.action)
+	if got := decideKey(levelProject, overlayNone, false, defaultLeaderKey, "i"); got.kind != outcomeRun || got.action != actionInbox {
+		t.Errorf("i at Project = %v, want the inbox action", got)
 	}
 
 	om, _ := inboxModel(t, 120, 40, nil)
-	om = pressLeader(t, om, keyI)
+	om = pressKey(t, om, keyI)
 	if line := xansi.Strip(om.renderHelp()); !strings.Contains(line, "read") || !strings.Contains(line, "close") || strings.Contains(line, "send answer") {
 		t.Errorf("the list screen's footer = %q", line)
 	}

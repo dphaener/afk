@@ -62,36 +62,12 @@ func planCheckSized(t *testing.T, w, h int) Model {
 	return m
 }
 
-// TestLeaderPlanCheckWordsAreUnique pins the words the row is found by.
-// Load-bearing: "errors" is the query the dialog is reached with (its name
-// starts with c, clean's key), so a second row saying it would leave two rows
-// and enter would run whichever is first; "warnings" is held unique too, for
-// a reader who types it after a space.
-func TestLeaderPlanCheckWordsAreUnique(t *testing.T) {
-	for _, word := range []string{"errors", "warnings"} {
-		t.Run(word, func(t *testing.T) {
-			if !strings.Contains(strings.ToLower(leaderHelp[actionPlanCheck]), word) {
-				t.Fatalf("the check-the-plan help %q does not say %q", leaderHelp[actionPlanCheck], word)
-			}
-			for _, e := range leaderTable {
-				if e.action == actionPlanCheck {
-					continue
-				}
-				hay := strings.ToLower(leaderNames[e.action] + " " + leaderHelp[e.action] + " " + e.key)
-				if strings.Contains(hay, word) {
-					t.Errorf("%v also says %q: %q", e.action, word, hay)
-				}
-			}
-		})
-	}
-}
-
-// TestPlanCheckDialogOpensTheOverlay walks the gesture: ctrl+], "errors",
+// TestPlanCheckDialogOpensTheOverlay walks the gesture: `:`, "errors",
 // enter. Typing the word must leave exactly the one row, and enter must open
 // the overlay with the keyboard on it.
 func TestPlanCheckDialogOpensTheOverlay(t *testing.T) {
 	m := withPlanStatus(t, testModel(sess("a")), planCheckStatusErrors())
-	m, _ = update(t, m, leaderKeyPress)
+	m, _ = pressAction(t, m, keyRune(':'))
 	m = typeText(t, m, "errors")
 	if v := m.leader.visible(); len(v) != 1 || v[0].action != actionPlanCheck {
 		t.Fatalf("\"errors\" leaves %d rows, want only check the plan", len(v))
@@ -289,7 +265,7 @@ func TestPlanCheckUnreadable(t *testing.T) {
 // itself, reached some other way, says the dashboard cannot read the plan.
 func TestPlanCheckUnwired(t *testing.T) {
 	m := testModel(sess("a"))
-	m, _ = update(t, m, leaderKeyPress)
+	m, _ = pressAction(t, m, keyRune(':'))
 	m = typeText(t, m, "errors")
 	v := m.leader.visible()
 	if len(v) != 1 || v[0].action != actionPlanCheck {

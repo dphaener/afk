@@ -85,7 +85,7 @@ func tokensBuildTab(t *testing.T, s *tokensSeam) Model {
 		m.deps.LoadTaskTokens = s.load
 	}
 	m = withBuild(t, m, buildTabSnap())
-	m, _ = pressAction(t, m, keyB)
+	m = openBuildTab(t, m)
 	if !m.buildCursorShown() || m.buildCursorID != "T1.2" {
 		t.Fatalf("setup: cursor shown=%v on %q, want T1.2", m.buildCursorShown(), m.buildCursorID)
 	}
@@ -215,7 +215,7 @@ func TestTaskTokensRowTotalFromModel(t *testing.T) {
 		}, ""},
 		{"list has the keyboard", func(t *testing.T, m Model) Model {
 			m = holdTokens(t, m, tokensFixture("T1.2"))
-			m, _ = pressAction(t, m, keyRune('\\'))
+			m, _ = pressAction(t, m, keyEscMsg())
 			if m.focus != focusList {
 				t.Fatal("setup: the list does not have the keyboard")
 			}
@@ -320,7 +320,7 @@ func TestTaskTokensOverlay(t *testing.T) {
 			m, _ = update(t, m, tea.WindowSizeMsg{Width: tc.w, Height: tc.h})
 			m = holdTokens(t, m, tc.rec)
 			before := len(s.calls)
-			m, cmd := pressAction(t, m, keyRune('T'))
+			m, cmd := pressAction(t, m, keyRune('t'))
 			if !m.taskTokensOpen {
 				t.Fatal("the overlay did not open")
 			}
@@ -491,7 +491,7 @@ func TestTaskTokensActionWithoutRecord(t *testing.T) {
 		{"opens on arrival", func(t *testing.T, m Model) Model { return m }, true},
 		{"cursor moved meanwhile", func(t *testing.T, m Model) Model { m, _ = update(t, m, keyDown); return m }, false},
 		{"keyboard back on the list", func(t *testing.T, m Model) Model {
-			m, _ = pressAction(t, m, keyRune('\\'))
+			m, _ = pressAction(t, m, keyEscMsg())
 			return m
 		}, false},
 	}
@@ -499,7 +499,7 @@ func TestTaskTokensActionWithoutRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &tokensSeam{rec: tokensFixture}
 			m := tokensBuildTab(t, s)
-			m, cmd := pressAction(t, m, keyRune('T'))
+			m, cmd := pressAction(t, m, keyRune('t'))
 			if m.taskTokensOpen {
 				t.Fatal("opened before the record was read")
 			}

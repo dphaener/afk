@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/dphaener/afk/internal/session"
@@ -35,21 +34,17 @@ func detailFocusFixture(t *testing.T, paned, cursor string) Model {
 }
 
 // focusOverview puts the keyboard on the overview the way a user gets there
-// from the list: the right side showing the overview, then enter. Under the
-// two-axis model enter/f in AGENT view connects the selected session instead,
-// so a test that wants detail focus has to choose the overview first — which
-// a user does with ctrl+t from the right side, and which this helper sets
-// directly because only the resulting (view, focus) pair matters to the
-// callers.
+// from the list since T16.2: `d`, the selected session's details, which until
+// T16.5 is the overview with the keyboard (A2). enter on the list opens the
+// agent instead.
 func focusOverview(t *testing.T, m Model) Model {
 	t.Helper()
-	m.view = viewOverview
-	m, cmd := update(t, m, keyEnter)
+	m, cmd := update(t, m, keyRune('d'))
 	if cmd != nil {
-		t.Fatalf("setup: enter in overview view dispatched %T, want no lifecycle work", cmd())
+		t.Fatalf("setup: d dispatched %T, want no lifecycle work", cmd())
 	}
 	if !m.detailOwnsKeyboard() {
-		t.Fatalf("setup: enter in overview view should have focused the overview")
+		t.Fatalf("setup: d should have focused the overview")
 	}
 	return m
 }
@@ -253,10 +248,8 @@ func TestDetailFocusModeDerivation(t *testing.T) {
 	}
 }
 
-// TestDetailFocusReleaseKeys pins both release chords. esc is the interesting
-// one: filterClear also binds esc, but it lives in inputNormal and this rule
-// lives in the new mode, so MODE PRECEDENCE — not rule ordering — is what
-// decides, and an applied session filter must survive the release untouched.
+// TestDetailFocusReleaseKeys pins the overview's way back: esc gives the
+// keyboard to the session list (levelGoBack, A2).
 func TestDetailFocusReleaseKeys(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -265,9 +258,6 @@ func TestDetailFocusReleaseKeys(t *testing.T) {
 		{"esc releases", func(t *testing.T, m Model) Model {
 			m, _ = update(t, m, keyEscMsg())
 			return m
-		}},
-		{"ctrl+] then backslash releases", func(t *testing.T, m Model) Model {
-			return pressLeader(t, m, keyRune('\\'))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -281,57 +271,32 @@ func TestDetailFocusReleaseKeys(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("esc releases focus without clearing an applied filter", func(t *testing.T) {
-		m := testModel(runningSess("alpha"), runningSess("beta"))
-		m = typeFilter(t, m, "b")
-		m, _ = update(t, m, keyEnter)
-		if m.list.FilterState() != list.FilterApplied {
-			t.Fatalf("setup: filter state = %v, want applied", m.list.FilterState())
-		}
-		m = focusOverview(t, m)
-
-		m, _ = update(t, m, keyEscMsg())
-		if m.detailOwnsKeyboard() {
-			t.Fatalf("detailOwnsKeyboard = true, want esc to have released focus")
-		}
-		if m.list.FilterState() != list.FilterApplied {
-			t.Fatalf("filter state = %v, want the applied filter kept — a second esc clears it",
-				m.list.FilterState())
-		}
-
-		m, _ = update(t, m, keyEscMsg())
-		if m.list.FilterState() != list.Unfiltered {
-			t.Fatalf("filter state = %v, want the second esc to clear it", m.list.FilterState())
-		}
-	})
 }
 
-// TestDetailFocusRetainedKeySet enumerates the focused mode's whole key
-// surface at the routing layer. Every row is load-bearing in the same way: the
-// mode falls through to routeIgnored, so a key omitted from the rule table
-// silently stops working and a key left in silently acts — and the acting half
-// is the dangerous one. `enter`, `c`, `n`, `l`, `p`, `/`, `o` and `:` must be
-// ignored so a scroll gesture can never open, clean or steal a session. `r` is
-// the one deliberate exception: the restart key works from the overview
-// (plan W3.T1 d2), and restartSelected itself gates what it acts on.
+// TestDetailFocusRetainedKeySet enumerates the focused overview's own rules at
+// the routing layer: the tab and scroll keys. Since T16.2 every other key is
+// the key table's, which levelKey asks first (at Project a letter runs its
+// action whether the list or the overview has the keyboard: the same letter
+// does the same thing), so at this layer every one of them must be ignored —
+// a rule here would shadow the key table for one surface only. Every row is
+// load-bearing in that way.
 //
 // The ten W2.T1 scroll keys are included below alongside the rest of the
 // surface; TestDetailFocusedScrollKeyMatrix carries the "does it actually
 // scroll" behavioral half this routing-only table cannot make.
 func TestDetailFocusRetainedKeySet(t *testing.T) {
 	reg := newModeRegistry(defaultKeyMap())
-	conds := routeConds{paneOpen: true, listFiltered: true}
+	conds := routeConds{paneOpen: true}
 
 	cases := []struct {
 		name string
 		key  tea.KeyPressMsg
 		want keyDecision
 	}{
-		{"esc releases", tea.KeyPressMsg{Code: tea.KeyEsc}, keyDecision{routeAction, actionDetailUnfocus}},
+		{"esc is the key table's (go back)", tea.KeyPressMsg{Code: tea.KeyEsc}, keyDecision{kind: routeIgnored}},
 		{"ctrl+backslash is ignored", chord('\\'), keyDecision{kind: routeIgnored}},
 		{"q is ignored", press('q', "q"), keyDecision{kind: routeIgnored}},
-		{"ctrl+c quits", chord('c'), keyDecision{routeAction, actionQuit}},
+		{"ctrl+c is the key table's (quit)", chord('c'), keyDecision{kind: routeIgnored}},
 		{"ctrl+g is ignored", chord('g'), keyDecision{kind: routeIgnored}},
 		{"ctrl+t is ignored", chord('t'), keyDecision{kind: routeIgnored}},
 		{"tab moves to the next tab", tea.KeyPressMsg{Code: tea.KeyTab}, keyDecision{routeAction, actionDetailTabNext}},
@@ -373,31 +338,27 @@ func TestDetailFocusRetainedKeySet(t *testing.T) {
 	}
 }
 
-// TestDetailFocusSwallowsTheDestructiveKeys is the behavioural half of the
-// table above: routeIgnored is only worth anything if Update really does
-// nothing with it. These three are the keys whose accidental firing would cost
-// the user something — a stolen session, a modal, a clean confirmation.
-func TestDetailFocusSwallowsTheDestructiveKeys(t *testing.T) {
+// TestOverviewAnswersTheProjectKeys is the behavioural half of the table
+// above: with the overview focused the dashboard is at Project, so a Project
+// key does there what it does on the list (§5: the same letter does the same
+// thing). Every row is load-bearing, and each reverses a pre-T16.2 rule that
+// the overview swallowed every letter: enter opens the agent, n the
+// new-session form, c the clean confirmation.
+func TestOverviewAnswersTheProjectKeys(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		key  tea.KeyMsg
+		did  func(m Model) bool
 	}{
-		{"enter", keyEnter},
-		{"n", keyRune('n')},
-		{"c", keyRune('c')},
+		{"enter opens the agent", keyEnter, func(m Model) bool { return m.view == viewAgent && m.attachInFlight.name == "alpha" }},
+		{"n opens the form", keyRune('n'), func(m Model) bool { return m.formOpen }},
+		{"c asks to clean", keyRune('c'), func(m Model) bool { return m.modal == inputConfirmClean }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := focusOverview(t, testModel(runningSess("alpha")))
-			m, cmd := update(t, m, tc.key)
-
-			if cmd != nil {
-				t.Errorf("%s dispatched a Cmd while the detail pane is focused", tc.name)
-			}
-			if m.formOpen || m.modal != inputNormal || m.pane != nil {
-				t.Errorf("%s acted: formOpen=%v modal=%v pane=%v", tc.name, m.formOpen, m.modal, m.pane != nil)
-			}
-			if !m.detailOwnsKeyboard() {
-				t.Errorf("%s dropped detail focus", tc.name)
+			m, _ = update(t, m, tc.key)
+			if !tc.did(m) {
+				t.Errorf("%s from the overview did not act: view=%v form=%v modal=%v", tc.name, m.view, m.formOpen, m.modal)
 			}
 		})
 	}
@@ -411,30 +372,30 @@ func TestDetailFocusSwallowsTheDestructiveKeys(t *testing.T) {
 // typed keys would hit list bindings (`q` quits, `c` cleans).
 //
 // Both rows reach the change through a different channel on purpose. The
-// ctrl+t row is key-driven; the tick row is not, and a pre-dispatch check
+// ctrl+] d row is key-driven; the tick row is not, and a pre-dispatch check
 // would pass the first and fail the second.
 func TestRightFocusSurvivesViewFlipsAndPaneLoss(t *testing.T) {
-	t.Run("ctrl+t round trip from the focused agent", func(t *testing.T) {
+	t.Run("ctrl+] d and enter round trip from the focused agent", func(t *testing.T) {
 		m := detailFocusFixture(t, "alpha", "alpha")
 		m, _ = update(t, m, keyEnter)
 		if got := derivedMode(m); got != inputPane {
 			t.Fatalf("setup: mode = %v, want enter to focus the installed pane", got)
 		}
 
-		m, cmd := leaderThen(t, m, 't')
+		m, cmd := leaderThen(t, m, 'd')
 		if cmd != nil {
-			t.Fatalf("ctrl+t to the overview dispatched %T, want a pure view flip", cmd())
+			t.Fatalf("ctrl+] d to the overview dispatched %T, want a pure view flip", cmd())
 		}
 		if m.focus != focusRight || m.view != viewOverview || derivedMode(m) != inputDetail {
-			t.Fatalf("after ctrl+t: focus=%v view=%v mode=%v, want right/overview/detail",
+			t.Fatalf("after ctrl+] d: focus=%v view=%v mode=%v, want right/overview/detail",
 				m.focus, m.view, derivedMode(m))
 		}
-		m, cmd = leaderThen(t, m, 't')
+		m, cmd = update(t, m, keyEnter)
 		if cmd != nil {
-			t.Fatalf("ctrl+t back to the installed agent dispatched %T, want a pure view flip", cmd())
+			t.Fatalf("enter back to the installed agent dispatched %T, want a pure view flip", cmd())
 		}
 		if m.focus != focusRight || m.view != viewAgent || derivedMode(m) != inputPane {
-			t.Fatalf("after the second ctrl+t: focus=%v view=%v mode=%v, want right/agent/pane",
+			t.Fatalf("after enter: focus=%v view=%v mode=%v, want right/agent/pane",
 				m.focus, m.view, derivedMode(m))
 		}
 	})
@@ -461,16 +422,16 @@ func TestRightFocusSurvivesViewFlipsAndPaneLoss(t *testing.T) {
 	})
 }
 
-// TestEnterFocusesTheDrawnDetailWithAHiddenPane is the direct regression for
-// the formerly contradictory Enter path, driven entirely through Update: focus
-// the agent, ctrl+t to the overview, ctrl+\ back to the list, then enter. The
-// view is the overview, so enter must focus the overview — not reveal and
-// focus the session pane installed behind it.
-func TestEnterFocusesTheDrawnDetailWithAHiddenPane(t *testing.T) {
+// TestEnterOpensTheAgentBehindTheOverview is the regression for the Enter
+// path through Update since T16.2: focus the agent, ctrl+] d to the overview,
+// esc back to the list, then enter. Enter goes in a level, so it opens the
+// agent installed behind the overview, with no lifecycle work — the pane was
+// connected all along (A5).
+func TestEnterOpensTheAgentBehindTheOverview(t *testing.T) {
 	m := detailFocusFixture(t, "alpha", "alpha")
 	m, _ = update(t, m, keyEnter)
-	m = pressLeader(t, m, keyRune('t'))
-	m = pressLeader(t, m, keyRune('\\'))
+	m = pressKey(t, m, keyRune('d'))
+	m = pressKey(t, m, keyEscMsg())
 	if m.view != viewOverview || m.focus != focusList || m.pane == nil {
 		t.Fatalf("setup: view=%v focus=%v pane=%v, want overview, list, pane kept",
 			m.view, m.focus, m.pane != nil)
@@ -478,16 +439,10 @@ func TestEnterFocusesTheDrawnDetailWithAHiddenPane(t *testing.T) {
 
 	m, cmd := update(t, m, keyEnter)
 	if cmd != nil {
-		t.Fatalf("enter dispatched %T, want no lifecycle work while focusing the drawn detail", cmd())
+		t.Fatalf("enter dispatched %T, want no lifecycle work for a connected pane", cmd())
 	}
-	if m.view != viewOverview {
-		t.Fatalf("view = %v, want Enter to leave the overview showing", m.view)
-	}
-	if m.paneOwnsKeyboard() {
-		t.Fatalf("paneOwnsKeyboard = true, want Enter to leave input with the detail surface")
-	}
-	if got := derivedMode(m); got != inputDetail {
-		t.Fatalf("mode = %v, want %v", got, inputDetail)
+	if m.view != viewAgent || !m.paneOwnsKeyboard() {
+		t.Fatalf("view = %v, pane focused %v; want enter to open the agent", m.view, m.paneOwnsKeyboard())
 	}
 }
 
@@ -499,13 +454,13 @@ const (
 	focusSurfaceNone   focusSurface = "none"
 )
 
-// TestEnterAndFocusKeyCurrentViewMatrix is the list-focus enter/f contract
-// (plan W2.T1 key table, row a). Enter and f are one gesture: focus the right
-// side. The VIEW decides what that means — the overview is focused as it is;
-// the agent view focuses the selected row's pane, or connects a running
-// selected session and focuses the right side at the keypress so the pane
-// lands focused. A row with no live agent draws its overview in either view,
-// and enter focuses that overview — it never restarts (plan W3.T1 d).
+// TestEnterAndFocusKeyCurrentViewMatrix is the list-focus enter contract.
+// Since T16.2 enter on a session at Project opens its Agent (openAgent),
+// whichever view the right side showed: the selected row's pane is focused,
+// or a running selected session is connected with the right side focused at
+// the keypress so the pane lands focused. A row with no live agent draws its
+// overview in the agent view, and enter focuses that overview — it never
+// restarts (plan W3.T1 d).
 //
 // Every row is driven through Update, and every connect is SETTLED — its
 // restart and dial results delivered back through Update — because the old
@@ -523,9 +478,9 @@ const (
 //     because right focus with no pane yet reads as detail ownership.
 //   - "pending preview timer" is the other half of that race: the timer armed
 //     before the keypress must not dial a second client after it.
-//   - "overview view with a hidden pane" is the "enter never focuses the
-//     overview by accident" half run backwards: enter focuses the overview
-//     only because the overview is the view.
+//   - "overview view with a hidden pane opens the agent" is T16.2's change:
+//     enter goes in a level, to the agent, even from the overview view —
+//     `d` is the way to the overview now.
 //   - The pending, worktree-fault and cleaning rows have no live agent either,
 //     so they focus their overview with no Cmd, exactly like the stopped row.
 func TestEnterAndFocusKeyCurrentViewMatrix(t *testing.T) {
@@ -564,7 +519,7 @@ func TestEnterAndFocusKeyCurrentViewMatrix(t *testing.T) {
 		{
 			name:       "agent view, the selected row's pane installed",
 			setup:      paneOn("alpha"),
-			wantStatus: "input goes to alpha · ctrl+] \\ to return",
+			wantStatus: "input goes to alpha · ctrl+] esc to return",
 			wantFocus:  focusRight, wantView: viewAgent, wantMode: inputPane, wantTab: tabOverview,
 			wantSettledMode: inputPane, wantSettledSurface: focusSurfacePane, wantSettledPane: "alpha",
 		},
@@ -608,26 +563,27 @@ func TestEnterAndFocusKeyCurrentViewMatrix(t *testing.T) {
 			wantSettledMode: inputDetail, wantSettledSurface: focusSurfaceDetail,
 		},
 		{
-			name: "overview view with a hidden pane",
+			name: "overview view with a hidden pane opens the agent",
 			setup: func(t *testing.T) (Model, *previewTimerMsg, *paneAttachedMsg) {
 				m := detailFocusFixture(t, "alpha", "alpha")
 				m.view = viewOverview
 				return m, nil, nil
 			},
-			wantStatus: detailFocusStatus,
-			wantFocus:  focusRight, wantView: viewOverview, wantMode: inputDetail, wantTab: tabOverview,
-			wantSettledMode: inputDetail, wantSettledSurface: focusSurfaceDetail, wantSettledPane: "alpha",
+			wantStatus: "input goes to alpha · ctrl+] esc to return",
+			wantFocus:  focusRight, wantView: viewAgent, wantMode: inputPane, wantTab: tabOverview,
+			wantSettledMode: inputPane, wantSettledSurface: focusSurfacePane, wantSettledPane: "alpha",
 		},
 		{
-			name: "overview view, no pane",
+			name: "overview view, no pane, connects the agent",
 			setup: func(t *testing.T) (Model, *previewTimerMsg, *paneAttachedMsg) {
 				m := testModel(runningSess("alpha"))
 				m.view = viewOverview
 				return m, nil, nil
 			},
-			wantStatus: detailFocusStatus,
-			wantFocus:  focusRight, wantView: viewOverview, wantMode: inputDetail, wantTab: tabOverview,
-			wantSettledMode: inputDetail, wantSettledSurface: focusSurfaceDetail,
+			wantCommand: true, wantStatus: "opening alpha…",
+			wantFocus: focusRight, wantView: viewAgent, wantMode: inputDetail, wantTab: tabOverview,
+			wantSettledMode: inputPane, wantSettledSurface: focusSurfacePane, wantSettledPane: "alpha",
+			wantOpens: 1,
 		},
 		{
 			name: "pending row focuses its overview",
@@ -801,26 +757,25 @@ func TestEnterAndFocusKeyCurrentViewMatrix(t *testing.T) {
 	}
 }
 
-// TestEnterFocusesOverviewWithExactlyOneAccentOwner drives the Overview
-// through Enter (not f) and reuses the established style contract: detail
-// focus owns the accent and the sidebar does not. This keeps the visual
-// input-owner signal tied to the same alias contract as the routing matrix.
-func TestEnterFocusesOverviewWithExactlyOneAccentOwner(t *testing.T) {
+// TestDetailsFocusOverviewWithExactlyOneAccentOwner drives the Overview
+// through `d` and reuses the established style contract: detail focus owns
+// the accent and the sidebar does not. This keeps the visual input-owner
+// signal tied to the same alias contract as the routing matrix.
+func TestDetailsFocusOverviewWithExactlyOneAccentOwner(t *testing.T) {
 	accent := theme.paneBoxFocused.GetBorderTopForeground()
 	m := testModel(runningSess("alpha"))
-	m.view = viewOverview
-	m, cmd := update(t, m, keyEnter)
+	m, cmd := update(t, m, keyRune('d'))
 	if cmd != nil {
-		t.Fatalf("Enter dispatched %T, want no lifecycle work while focusing Overview", cmd())
+		t.Fatalf("d dispatched %T, want no lifecycle work while focusing Overview", cmd())
 	}
 	if !m.detailOwnsKeyboard() || m.activeDetailTab() != tabOverview {
-		t.Fatalf("Enter did not focus Overview: detailOwnsKeyboard=%v tab=%v", m.detailOwnsKeyboard(), m.activeDetailTab())
+		t.Fatalf("d did not focus Overview: detailOwnsKeyboard=%v tab=%v", m.detailOwnsKeyboard(), m.activeDetailTab())
 	}
 	if m.detailBoxStyle().GetBorderTopForeground() != accent {
-		t.Error("Enter-focused Overview must carry the accent border")
+		t.Error("the focused Overview must carry the accent border")
 	}
 	if m.listBoxStyle().GetBorderTopForeground() == accent {
-		t.Error("Enter-focused Overview must release the sidebar accent")
+		t.Error("the focused Overview must release the sidebar accent")
 	}
 }
 
@@ -922,15 +877,17 @@ func TestFocusedConnectArrivalYieldsToALaterReleaseToTheList(t *testing.T) {
 				t.Fatalf("setup: enter must dispatch a connect and focus right (cmd=%v focus=%v)", cmd != nil, m.focus)
 			}
 			if tc.release {
-				m = pressLeader(t, m, keyRune('\\'))
+				m = pressKey(t, m, keyEscMsg())
 				if m.focus != focusList {
 					t.Fatalf("setup: ctrl+\\ must return focus to the list, got %v", m.focus)
 				}
 			}
 
 			m, _ = update(t, m, drainForPaneAttached(t, cmd))
-			if m.pane != pane || !m.shouldRenderPane() {
-				t.Fatalf("the arrival must install a's pane and draw it (installed=%v drawn=%v)",
+			// Installed either way; drawn only in the Agent. Released to the
+			// list, the pane stays connected behind the Project (A5).
+			if m.pane != pane || m.shouldRenderPane() != tc.wantFocused {
+				t.Fatalf("the arrival must install a's pane, drawn only in the Agent (installed=%v drawn=%v)",
 					m.pane == pane, m.shouldRenderPane())
 			}
 			if got := m.paneOwnsKeyboard(); got != tc.wantFocused {
@@ -1197,8 +1154,9 @@ func TestDetailFocusClosesThePendingPreviewRace(t *testing.T) {
 // claims that dial rather than opening a second client. A claim is the user's
 // own connect from then on, so nothing that merely bumps previewGen may revoke
 // it — and focusDetail bumps it, which is how the old model lost the pane
-// enter had asked for. The user wanders off before the arrival (ctrl+t to the
-// overview, ctrl+\ to the list, enter on the overview, esc back to the list):
+// enter had asked for. The user wanders off before the arrival (ctrl+] d to
+// the overview, esc to the list, d on the overview again, esc back to the
+// list):
 // the claimed connection must still install, and must install BEHIND those
 // later choices rather than yanking focus or view back to the agent.
 func TestEnterClaimedPreviewSurvivesALaterGenerationBump(t *testing.T) {
@@ -1232,9 +1190,9 @@ func TestEnterClaimedPreviewSurvivesALaterGenerationBump(t *testing.T) {
 				t.Fatalf("focus = %v, want the claim to move focus right at the keypress", m.focus)
 			}
 
-			m = pressLeader(t, m, keyRune('t'))
-			m = pressLeader(t, m, keyRune('\\'))
-			m, _ = update(t, m, tc.key)
+			m = pressKey(t, m, keyRune('d'))
+			m = pressKey(t, m, keyEscMsg())
+			m, _ = update(t, m, keyRune('d'))
 			if !m.detailOwnsKeyboard() || !m.attachInFlight.claimedPreview {
 				t.Fatalf("setup: focusing the overview: detail=%v inFlight=%+v", m.detailOwnsKeyboard(), m.attachInFlight)
 			}
@@ -1252,41 +1210,19 @@ func TestEnterClaimedPreviewSurvivesALaterGenerationBump(t *testing.T) {
 	}
 }
 
-// fullHelpFocusRows counts how many rows of `?`'s full help name the Focus
-// binding by BOTH its key and its live description — the same two-field
-// match, because help.Model's full view is a padded column layout (key and description
-// separated by run-length padding, not one space).
+// fullHelpFocusRows counts how many times the footer names the Focus binding
+// by BOTH its key and its live description ("enter open"). Since W3.T1 of
+// T16.2 `?` opens the keys overlay rather than a full help, so the footer's
+// one line is the surface that has to offer the key.
 func fullHelpFocusRows(m Model) int {
-	m.helpShowAll = true
-	full := xansi.Strip(m.renderHelp())
-	var n int
-	for _, line := range strings.Split(full, "\n") {
-		f := strings.Fields(line)
-		if len(f) > 1 && f[0] == m.keys.Focus.Help().Key && strings.Contains(line, m.keys.Focus.Help().Desc) {
-			n++
-		}
-	}
-	return n
-}
-
-// leaderFocusRows counts how many runnable rows of the actions dialog focus
-// the right side, through the same derivation the live dialog opens with
-// (leaderRows over leaderConditions) rather than re-deriving the gate here.
-func leaderFocusRows(m Model) int {
-	var n int
-	for _, r := range leaderRows(m.leaderConditions()) {
-		if r.action == actionFocusPane && r.blocked == "" {
-			n++
-		}
-	}
-	return n
+	h := m.keys.Focus.Help()
+	return strings.Count(xansi.Strip(m.renderHelp()), h.Key+" "+h.Desc)
 }
 
 // TestFocusKeyDiscoverableWheneverFocusingIsPossible is W3.T2 step 1's
-// discoverability half: `?`'s full help carries the focus entry and the
-// actions dialog a runnable focus row — exactly one apiece — in every state
-// normalBindingEnabled says focusing would do something, and neither carries
-// it in the empty state.
+// discoverability half: the footer carries the enter entry — exactly once —
+// in every state normalBindingEnabled says it would do something, and not in
+// the empty state.
 //
 // "no pane, detail drawn" is the load-bearing row, per the plan's own
 // framing: it is what proves normalBindingEnabled (and therefore this
@@ -1297,10 +1233,7 @@ func TestFocusKeyDiscoverableWheneverFocusingIsPossible(t *testing.T) {
 	t.Run("no pane, detail drawn (m.pane == nil)", func(t *testing.T) {
 		m := testModel(runningSess("alpha"))
 		if got := fullHelpFocusRows(m); got != 1 {
-			t.Errorf("full help has %d `f` rows, want exactly 1", got)
-		}
-		if got := leaderFocusRows(m); got != 1 {
-			t.Errorf("the dialog has %d runnable focus rows, want exactly 1", got)
+			t.Errorf("footer has %d enter entries, want exactly 1", got)
 		}
 	})
 
@@ -1308,10 +1241,7 @@ func TestFocusKeyDiscoverableWheneverFocusingIsPossible(t *testing.T) {
 		m := testModel(runningSess("alpha"))
 		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "alpha"})
 		if got := fullHelpFocusRows(m); got != 1 {
-			t.Errorf("full help has %d `f` rows, want exactly 1", got)
-		}
-		if got := leaderFocusRows(m); got != 1 {
-			t.Errorf("the dialog has %d runnable focus rows, want exactly 1", got)
+			t.Errorf("footer has %d enter entries, want exactly 1", got)
 		}
 	})
 
@@ -1321,21 +1251,15 @@ func TestFocusKeyDiscoverableWheneverFocusingIsPossible(t *testing.T) {
 			t.Fatalf("setup: the detail pane should be the drawn surface")
 		}
 		if got := fullHelpFocusRows(m); got != 1 {
-			t.Errorf("full help has %d `f` rows, want exactly 1", got)
-		}
-		if got := leaderFocusRows(m); got != 1 {
-			t.Errorf("the dialog has %d runnable focus rows, want exactly 1", got)
+			t.Errorf("footer has %d enter entries, want exactly 1", got)
 		}
 	})
 
-	t.Run("empty state: absent from both", func(t *testing.T) {
+	t.Run("empty state: absent", func(t *testing.T) {
 		m := testModel()
 		m.activeProject = -1
 		if got := fullHelpFocusRows(m); got != 0 {
-			t.Errorf("full help has %d `f` rows in the empty state, want 0 — nothing is focusable", got)
-		}
-		if got := leaderFocusRows(m); got != 0 {
-			t.Errorf("the dialog has %d runnable focus rows in the empty state, want 0 — nothing is focusable", got)
+			t.Errorf("footer has %d enter entries in the empty state, want 0 — nothing is focusable", got)
 		}
 	})
 }
@@ -1370,20 +1294,19 @@ func TestDetailFocusFooterAdvertisesTheReleaseKeys(t *testing.T) {
 
 // TestFocusDetailToastNamesTheSameReleaseKeysAsTheHint pins the drift the
 // review caught: focusDetail carried its own "esc or ctrl+\" literal while
-// detailReleaseHint read mode.go's binding, so renaming the chord would have
-// left the toast naming a key that no longer released. Both now resolve the
-// same inputDetail binding through findBinding.
+// detailReleaseHint read another source, so renaming the key would have left
+// the toast naming a key that no longer released. Both now read the key
+// table's go-back key through keyName.
 //
-// The empty-expectation guard is the load-bearing half. A findBinding lookup
-// that stops matching returns the zero Binding, whose Help().Key is "" — the
-// toast then degrades to a stray " to return" and the equality assertion below
-// would still pass against it, since "" is contained in every string.
+// The empty-expectation guard is the load-bearing half. A lookup that stops
+// matching returns "" — the toast then degrades to a stray " to return" and
+// the equality assertion below would still pass against it, since "" is
+// contained in every string.
 func TestFocusDetailToastNamesTheSameReleaseKeysAsTheHint(t *testing.T) {
 	m := testModel(runningSess("alpha"))
-	reg := m.modes()
-	want := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc"}).Help().Key
+	want := keyName(m.leaderKey.name, levelProject, actionGoBack)
 	if want == "" {
-		t.Fatalf("inputDetail declares no esc release binding, but the toast and the hint both read one")
+		t.Fatalf("the key table has no go-back key at Project, but the toast and the hint both read one")
 	}
 
 	m = focusOverview(t, m)

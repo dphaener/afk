@@ -74,9 +74,9 @@ func typeText(t *testing.T, m Model, s string) Model {
 // are reached, since they have no key after the leader.
 func runPlanAction(t *testing.T, m Model, query string) (Model, tea.Cmd) {
 	t.Helper()
-	m, _ = update(t, m, leaderKeyPress)
+	m, _ = pressAction(t, m, keyRune(':'))
 	if !m.leaderOpen {
-		t.Fatal("setup: ctrl+] did not open the actions dialog")
+		t.Fatal("setup: : did not open the actions search")
 	}
 	m = typeText(t, m, query)
 	return update(t, m, keyEnter)
@@ -793,10 +793,9 @@ func TestPlanStartNewEndToEnd(t *testing.T) {
 		t.Fatalf("pane = %q, want master-plan installed", m.paneName)
 	}
 	m.focus = focusList
-	m, _ = update(t, m, leaderKeyPress)
-	m, _ = update(t, m, keyRune('p'))
+	m, _ = update(t, m, keyRune('/'))
 	if !m.switcherOpen {
-		t.Fatal("ctrl+] p did not open the switcher")
+		t.Fatal("/ did not open the switcher")
 	}
 	if frame := render(m); !strings.Contains(frame, "fresh") || !strings.Contains(frame, "api") {
 		t.Errorf("the switcher does not list both projects:\n%s", frame)

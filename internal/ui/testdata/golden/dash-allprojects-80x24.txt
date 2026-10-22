@@ -21,4 +21,4 @@
 │   ○ held for usage · nothing new is started, because of the usage limits     │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-enter switch · esc close · ↑/k up · ↓/j down · ctrl+] P pause · ctrl+] U resume…
+enter open · ↑/k up · ↓/j down · : actions · ? keys · q quit                    

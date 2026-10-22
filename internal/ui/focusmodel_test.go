@@ -111,12 +111,12 @@ func (h *scenarioHarness) run(step scenarioStep) scenarioState {
 		step.act(h)
 	default:
 		if step.leader {
-			h.m, _ = update(h.t, h.m, leaderKeyPress)
-			if !h.m.leaderOpen {
-				h.t.Fatalf("step %q: ctrl+] did not open the actions dialog", step.name)
-			}
+			// A dashboard key: in the Agent the leader first, alone
+			// elsewhere (pressAction).
+			h.m, cmd = pressAction(h.t, h.m, step.msg)
+		} else {
+			h.m, cmd = update(h.t, h.m, step.msg)
 		}
-		h.m, cmd = update(h.t, h.m, step.msg)
 		if step.settle {
 			h.m = settleConnect(h.t, h.m, cmd)
 		}
@@ -136,16 +136,12 @@ func (h *scenarioHarness) run(step scenarioStep) scenarioState {
 	}
 }
 
-// pressDimmedToggle presses ctrl+] t where the toggle is dimmed (a stopped
-// row has no agent to flip to). The dialog refuses the key and stays up, so
-// the step closes it with esc, leaving the model as it found it.
+// pressDimmedToggle presses ctrl+t, the old agent-or-overview chord, on the
+// focused overview of a stopped row: it is no key since T7.2, and must leave
+// the model as it found it.
 func pressDimmedToggle(h *scenarioHarness) {
 	h.t.Helper()
-	h.m = pressLeader(h.t, h.m, keyRune('t'))
-	if !h.m.leaderOpen {
-		h.t.Fatalf("the dimmed toggle row closed the actions dialog")
-	}
-	h.m, _ = update(h.t, h.m, keyEscMsg())
+	h.m, _ = update(h.t, h.m, chord('t'))
 }
 
 // stealPane delivers the host's Stolen exit for the installed pane.
@@ -307,8 +303,8 @@ func TestFocusScenario(t *testing.T) {
 				{name: "the tab did not move", act: assertNotOnBuildTab, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
 				})},
-				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
-				{name: "b from the list hides the agent behind the build tasks", leader: true, msg: scenarioB, want: scenarioState{
+				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "d from the list hides the agent behind the overview", leader: true, msg: keyRune('d'), want: scenarioState{
 					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
 				}},
 			},
@@ -329,22 +325,22 @@ func TestFocusScenario(t *testing.T) {
 				{name: "the overlay did not open", act: assertInboxClosed, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
 				})},
-				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "i from the list opens the overlay over the agent", leader: true, msg: scenarioI, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "the overlay opened, and esc closes it", act: assertInboxOpen, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
 		{
-			name: "ctrl+t round trip keeps focus right",
+			name: "ctrl+] d and enter round trip keeps focus right",
 			rows: []Session{runningSess("alpha")},
 			steps: []scenarioStep{
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+t to overview", msg: keyRune('t'), leader: true, want: scenarioState{
+				{name: "ctrl+] d to overview", msg: keyRune('d'), leader: true, want: scenarioState{
 					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+t back to agent", msg: keyRune('t'), leader: true, want: scenarioState{
+				{name: "enter back to agent", msg: keyEnter, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "agent", selected: "alpha",
 				}},
 				{name: "the agent is live again", msg: scenarioX, want: scenarioState{
@@ -353,14 +349,14 @@ func TestFocusScenario(t *testing.T) {
 			},
 		},
 		{
-			name: "ctrl+backslash then ctrl+t is a no-op",
+			name: "ctrl+] esc then t is a no-op",
 			rows: []Session{runningSess("alpha")},
 			steps: []scenarioStep{
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
-				{name: "ctrl+t from the list", msg: keyRune('t'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "t from the list only says why", msg: keyRune('t'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "typing hits the list only", msg: scenarioJ, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
@@ -371,10 +367,10 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+] t is inert", act: pressDimmedToggle, want: scenarioState{
+				{name: "ctrl+t is inert", act: pressDimmedToggle, want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+backslash releases", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "esc releases", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
 		{
@@ -446,10 +442,10 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+t to overview", msg: keyRune('t'), leader: true, want: scenarioState{
+				{name: "ctrl+] d to overview", msg: keyRune('d'), leader: true, want: scenarioState{
 					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
 				}},
-				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: scenarioState{
+				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: scenarioState{
 					focus: focusList, view: viewOverview, owner: "list", selected: "alpha",
 				}},
 				{name: "j arms no preview", msg: scenarioJ, want: scenarioState{
@@ -467,7 +463,7 @@ func TestFocusScenario(t *testing.T) {
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+backslash", msg: keyRune('\\'), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 				{name: "j arms a preview", msg: scenarioJ, want: with(list, func(s *scenarioState) { s.selected = "beta"; s.cmd = true })},
 				{name: "the preview settles", act: settlePreview, want: with(list, func(s *scenarioState) { s.selected = "beta"; s.dials = 1 })},
 			},
@@ -517,9 +513,9 @@ func TestPassivePreviewNeverChangesTheView(t *testing.T) {
 			h.m, cmd = update(t, h.m, keyEnter)
 			h.m = settleConnect(t, h.m, cmd)
 			if tc.overview {
-				h.m = pressLeader(t, h.m, keyRune('t'))
+				h.m = pressKey(t, h.m, keyRune('d'))
 			}
-			h.m = pressLeader(t, h.m, keyRune('\\'))
+			h.m = pressKey(t, h.m, keyEscMsg())
 			before := h.opens
 
 			h.m, cmd = update(t, h.m, scenarioJ)
@@ -638,8 +634,11 @@ func TestStartupPaneBelongsToTheSelectedRow(t *testing.T) {
 			if got := h.selectedName(); got != tc.wantSelected {
 				t.Errorf("selected = %q, want %q", got, tc.wantSelected)
 			}
-			if got := h.m.shouldRenderPane(); got != tc.wantDrawn {
-				t.Errorf("pane drawn = %v, want %v (pane installed for %q)", got, tc.wantDrawn, h.m.paneName)
+			// "Drawn" is connected for the selected row: with the keyboard on
+			// the list the Project draws the overview and the pane waits
+			// behind it, one enter away (W3.T1 of T16.2).
+			if got := h.m.pane != nil && h.m.paneForSelection(); got != tc.wantDrawn {
+				t.Errorf("pane connected = %v, want %v (pane installed for %q)", got, tc.wantDrawn, h.m.paneName)
 			}
 			if h.opens != tc.wantDials || h.spawns != tc.wantSpawns {
 				t.Errorf("dials = %d, spawns = %d, want %d and %d", h.opens, h.spawns, tc.wantDials, tc.wantSpawns)
@@ -660,23 +659,21 @@ func TestStartupPaneBelongsToTheSelectedRow(t *testing.T) {
 	}
 }
 
-// TestAgentKeyHintNamesAKeyThatWorks pins the key a toast names for getting
-// back to the agent. With the overview focused, enter is not bound, so "enter/f
-// to reopen the agent" named a key that did nothing; ctrl+t is the key that
-// works there. The walk-through against a built binary found it after a
-// restart confirmed from the focused overview (docs/decisions.md, T0.6).
+// TestAgentKeyHintNamesAKeyThatWorks pins the key a toast names for "get
+// back to the agent". Since T16.2 enter opens the selected session's agent
+// from the list and from the focused overview alike (openAgent), so every
+// toast names enter, and none names ctrl+] t, which T16.2 retired. Before it,
+// the overview had no enter and the hint was ctrl+] t there (docs/decisions.md,
+// T0.6).
 //
 // Load-bearing rows, and why:
 //
 //   - the four "overview focused" rows: one per toast that can be raised while
-//     the overview has the keyboard. Each said enter/f before the fix.
-//   - the "list focused" and "agent pane focused" rows: the controls. enter/f
-//     is right there and must stay, or the fix has become a blanket rename.
+//     the overview has the keyboard, which named ctrl+] t until T16.2.
+//   - the "list focused" and "agent pane focused" rows: the controls.
 //
-// The last two checks press the keys: enter from the focused overview must
-// leave the overview owning the keyboard, and ctrl+t must reach the agent.
-// They are what makes the hint true, so a later change that binds enter in
-// the overview fails here and the hint can be reconsidered.
+// The last check presses the key: enter from the focused overview must reach
+// the agent, which is what makes the hint true.
 func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 	wedgedScratch := func() Session {
 		s := scratchSess("alpha")
@@ -689,7 +686,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		var cmd tea.Cmd
 		h.m, cmd = update(h.t, h.m, keyEnter)
 		h.m = settleConnect(h.t, h.m, cmd)
-		h.m, _ = pressAction(h.t, h.m, keyRune('t'))
+		h.m, _ = pressAction(h.t, h.m, keyRune('d'))
 		if h.owner() != "overview" {
 			h.t.Fatalf("precondition: owner = %q, want the focused overview", h.owner())
 		}
@@ -731,7 +728,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha", restarted: true}
 			},
-			want: "ctrl+] t to reopen the agent", wrong: "enter",
+			want: "enter to reopen the agent", wrong: "ctrl+] t",
 		},
 		{
 			name:  "restart with no outcome, overview focused",
@@ -740,7 +737,7 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			msg: func(*scenarioHarness) tea.Msg {
 				return restartChildRequestedMsg{name: "alpha"}
 			},
-			want: "ctrl+] t to reconnect the agent", wrong: "enter",
+			want: "enter to reconnect the agent", wrong: "ctrl+] t",
 		},
 		{
 			name: "one-off restart refused, list focused",
@@ -753,14 +750,14 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			row:   wedgedScratch(),
 			setup: focusOverview,
 			msg:   func(*scenarioHarness) tea.Msg { return scenarioR },
-			want:  "ctrl+] t to show the agent", wrong: "enter", viaLeader: true,
+			want:  "enter to show the agent", wrong: "ctrl+] t", viaLeader: true,
 		},
 		{
 			name:  "connection dropped behind the focused overview",
 			row:   runningSess("alpha"),
 			setup: focusOverview,
 			msg:   dropPane,
-			want:  "ctrl+] t to reopen the agent", wrong: "enter",
+			want:  "enter to reopen the agent", wrong: "ctrl+] t",
 		},
 		{
 			name:  "connection dropped under the focused agent pane",
@@ -790,16 +787,12 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		})
 	}
 
-	t.Run("from the focused overview enter does nothing and ctrl+t reaches the agent", func(t *testing.T) {
+	t.Run("from the focused overview enter reaches the agent", func(t *testing.T) {
 		h := newScenarioHarness(t, runningSess("alpha"))
 		focusOverview(h)
 		h.m, _ = update(t, h.m, keyEnter)
-		if got := h.owner(); got != "overview" {
-			t.Fatalf("after enter: owner = %q, want the overview still (enter is not bound there)", got)
-		}
-		h.m, _ = pressAction(t, h.m, keyRune('t'))
 		if got := h.owner(); got != "agent" {
-			t.Fatalf("after ctrl+t: owner = %q, want the agent", got)
+			t.Fatalf("after enter: owner = %q, want the agent", got)
 		}
 	})
 }

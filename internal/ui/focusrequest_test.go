@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	"github.com/fsnotify/fsnotify"
 
@@ -387,9 +386,9 @@ func TestFocusRequestSwitchingPanesClosesTheOutgoingOne(t *testing.T) {
 		t.Fatalf("precondition: enter must install pane A focused (pane==A: %v, name=%q, focused=%v)",
 			m.pane == paneA, m.paneName, m.paneOwnsKeyboard())
 	}
-	m = pressLeader(t, m, keyRune('\\'))
-	if m.paneOwnsKeyboard() || !m.shouldRenderPane() {
-		t.Fatal("precondition: ctrl+] \\ must leave pane A drawn with keyboard ownership on the list")
+	m = pressKey(t, m, keyEscMsg())
+	if m.paneOwnsKeyboard() || m.pane != paneA {
+		t.Fatal("precondition: ctrl+] esc must leave pane A connected with keyboard ownership on the list")
 	}
 
 	m.deps.OpenHostPane = func(hostPaneConfig) (paneHandle, error) { return paneB, nil }
@@ -789,7 +788,7 @@ func TestFocusRequestOnAStoppedHostDetachesAnotherRowsPane(t *testing.T) {
 				t.Fatalf("precondition: enter must install pane A (name=%q)", m.paneName)
 			}
 			if tc.releaseFn {
-				m = pressLeader(t, m, keyRune('\\'))
+				m = pressKey(t, m, keyEscMsg())
 			}
 
 			m, _ = update(t, m, freshRequestMsg("target"))
@@ -813,7 +812,7 @@ func TestFocusRequestOnAStoppedHostDetachesAnotherRowsPane(t *testing.T) {
 			}
 
 			m, _ = update(t, m, keyEsc)
-			m = pressLeader(t, m, keyRune('c'))
+			m = pressKey(t, m, keyRune('c'))
 			if strings.Contains(m.status, "close the pane first") {
 				t.Fatalf("c on target refused for an invisible pane: %q", m.status)
 			}
@@ -1169,7 +1168,7 @@ func TestQuitClosesTheFocusWatcher(t *testing.T) {
 	w := newFakeFocusWatcher()
 	m, _ := focusRequestModel(t, w, runningSess("target"))
 
-	m = pressLeader(t, m, keyRune('q'))
+	m = pressKey(t, m, keyRune('q'))
 	if w.closed != 1 {
 		t.Errorf("watcher Close called %d times on quit, want 1", w.closed)
 	}
@@ -2081,7 +2080,7 @@ func TestQuitClearsEveryProjectsRendezvous(t *testing.T) {
 		}
 	}
 
-	m = pressLeader(t, m, keyRune('q'))
+	m = pressKey(t, m, keyRune('q'))
 
 	for dir, w := range f.watchers {
 		if w.closed != 1 {
@@ -2510,33 +2509,6 @@ func TestFocusRequestSelectsAndRemembersTheNamedSession(t *testing.T) {
 		}
 		if got := m.dirtySelections["/repo"]; got != "ccc" {
 			t.Errorf("dirtySelections[/repo] = %q, want ccc", got)
-		}
-	})
-
-	t.Run("(e) active filter hiding the target", func(t *testing.T) {
-		w := newFakeFocusWatcher()
-		m, _ := focusRequestModel(t, w, runningSess("aaa"), runningSess("bbb"), runningSess("ccc"))
-		m = typeFilter(t, m, "aaa")
-		m, _ = update(t, m, keyEnter)
-		if m.list.FilterState() != list.FilterApplied {
-			t.Fatalf("precondition: filter state = %v, want FilterApplied", m.list.FilterState())
-		}
-		if got := len(m.list.VisibleItems()); got != 1 {
-			t.Fatalf("precondition: visible items = %d, want exactly aaa's row", got)
-		}
-		var opened []hostPaneConfig
-		m.deps.OpenHostPane = recordingOpen(&opened, newFakePane("CCC"))
-
-		m, cmd := update(t, m, freshRequestMsg("ccc"))
-		if cmd != nil {
-			drainForPaneAttached(t, cmd)
-		}
-
-		if m.list.FilterState() != list.Unfiltered {
-			t.Errorf("filter state = %v, want the filter hiding the target cleared", m.list.FilterState())
-		}
-		if s, ok := m.selected(); !ok || s.Name != "ccc" {
-			t.Errorf("selected = %q (ok=%v), want ccc even though the filter hid it", s.Name, ok)
 		}
 	})
 

@@ -36,5 +36,5 @@
 │                                           ││                                                                         │
 │                                           ││                                                                         │
 │                                           ││                                                                         │
-╰───────────────────────────────────────────╯╰───────────────── enter: focus view · ctrl+] c: clean · ctrl+] l: label ─╯
-↑/k preview↑ · ↓/j preview↓ · enter focus view · ctrl+] actions                                                         
+╰───────────────────────────────────────────╯╰───────────────────────────────────── enter: open · c: clean · l: label ─╯
+↑/k preview↑ · ↓/j preview↓ · enter open · esc all projects · n new · d details · : actions · ? keys                    

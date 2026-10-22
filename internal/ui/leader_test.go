@@ -10,28 +10,75 @@ import (
 )
 
 // leaderTestRows is a small hand-built row set for the key-decision table, so
-// each row of that table names exactly the row it runs. The `\` pair is
-// load-bearing: two rows answer the same key (back to list on the right side
-// and close pane on the list), which is the one key the real table shares.
-// The quit row carries ctrl+c as a second, unshown key. The last row is a
-// by-name row (the T7.3 plan actions): no key label and no keys, so it is
-// reached only through the filter and enter.
+// each row of that table names exactly the row it runs. The clean row is
+// dimmed, so enter on it is the "a dimmed row does not run" row. The last row
+// is a by-name row (the T7.3 plan actions): no key label, reached only
+// through the query and enter.
 func leaderTestRows() []leaderRow {
 	return []leaderRow{
-		{action: actionNewSession, mode: inputNormal, name: "new session", keyLabel: "n", keys: []string{"n"}, help: "Start a new session"},
-		{action: actionClean, mode: inputNormal, name: "clean session", keyLabel: "c", keys: []string{"c"}, help: "Clean", blocked: "no session selected"},
-		{action: actionFocusPane, mode: inputNormal, name: "focus the right side", keyLabel: "f", keys: []string{"f"}, help: "Focus"},
-		{action: actionDetailUnfocus, mode: inputDetail, name: "back to list", keyLabel: "\\", keys: []string{"\\"}, help: "Back", blocked: "the session list already has the keyboard"},
-		{action: actionPaneClose, mode: inputNormal, name: "close pane", keyLabel: "\\", keys: []string{"\\"}, help: "Close"},
-		{action: actionPaneToggle, mode: inputDetail, name: "agent or overview", keyLabel: "t", keys: []string{"t"}, help: "Switch", blocked: "focus the right side first"},
-		{action: actionQuit, mode: inputNormal, name: "quit", keyLabel: "q", keys: []string{"q", "ctrl+c"}, help: "Leave"},
-		{action: actionPlanExtend, mode: inputNormal, name: "extend the plan", help: "Add work"},
+		{action: actionNewSession, name: "new session", keyLabel: "n", help: "Start a new session"},
+		{action: actionClean, name: "clean session", keyLabel: "c", help: "Clean", blocked: "no session selected"},
+		{action: actionQuit, name: "quit", keyLabel: "q", help: "Leave"},
+		{action: actionPlanExtend, name: "extend the plan", help: "Add work"},
 	}
 }
 
+// testNamedKeys maps the bubbles/key name of every non-printable key a test
+// presses to its tea key code, for leaderPress.
+var testNamedKeys = map[string]rune{
+	"enter":     tea.KeyEnter,
+	"esc":       tea.KeyEsc,
+	"tab":       tea.KeyTab,
+	"space":     tea.KeySpace,
+	"backspace": tea.KeyBackspace,
+	"up":        tea.KeyUp,
+	"down":      tea.KeyDown,
+	"left":      tea.KeyLeft,
+	"right":     tea.KeyRight,
+	"pgup":      tea.KeyPgUp,
+	"pgdown":    tea.KeyPgDown,
+	"home":      tea.KeyHome,
+	"end":       tea.KeyEnd,
+}
+
+// leaderPress builds the tea.KeyPressMsg that a key.Binding key string names,
+// as the terminal's decoding delivers it: Text set for an unmodified
+// printable rune (ultraviolet's Key.String returns Text when it is set), the
+// modifier-qualified form otherwise. It panics when the built press does not
+// print back as the string it was built from, so a test can never press some
+// other key than the one it names.
 func leaderPress(s string) tea.KeyPressMsg {
-	k, ok := leaderPressFor(s)
-	if !ok {
+	rest := s
+	var mod tea.KeyMod
+	for parsing := true; parsing; {
+		switch {
+		case strings.HasPrefix(rest, "ctrl+"):
+			mod |= tea.ModCtrl
+			rest = strings.TrimPrefix(rest, "ctrl+")
+		case strings.HasPrefix(rest, "alt+"):
+			mod |= tea.ModAlt
+			rest = strings.TrimPrefix(rest, "alt+")
+		case strings.HasPrefix(rest, "shift+"):
+			mod |= tea.ModShift
+			rest = strings.TrimPrefix(rest, "shift+")
+		default:
+			parsing = false
+		}
+	}
+	var k tea.KeyPressMsg
+	if code, ok := testNamedKeys[rest]; ok {
+		k = tea.KeyPressMsg{Code: code, Mod: mod}
+	} else {
+		runes := []rune(rest)
+		if len(runes) != 1 {
+			panic("test key does not round-trip: " + s)
+		}
+		k = tea.KeyPressMsg{Code: runes[0], Mod: mod}
+		if mod == 0 {
+			k.Text = rest
+		}
+	}
+	if k.String() != s {
 		panic("test key does not round-trip: " + s)
 	}
 	return k
@@ -53,76 +100,51 @@ var (
 	leaderTestCtrlSpace   = tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
 )
 
-// TestLeaderKeyDecision is every branch of leaderKeyDecision, one row each.
+// TestLeaderKeyDecision is every branch of the `:` search's key decision, one
+// row each.
 //
 // Load-bearing rows:
-//   - the two ctrl+] rows: from the pane the second press must reach the
-//     agent (passThrough); from anywhere else it only closes, so nothing is
-//     typed into a session the user was not talking to.
-//   - the two ctrl+space rows: the old leader neither closes the dialog nor
-//     passes anything on now; it is a key the dialog does not answer to.
-//   - "action key with a query filters": once the user has typed, `n` is a
-//     letter of the query, not New, or filtering for "clean" would open the
-//     creation form at its first letter.
-//   - "dimmed action key is ignored": the dialog stays open and nothing runs,
-//     which is the whole meaning of a dimmed row.
-//   - "shared key runs the runnable row": `\` belongs to two rows, and the
-//     dimmed one listed first must not swallow it from the one that can run.
+//   - "a row's key types with an empty query", "q types" and "a dimmed row's
+//     key types": letters ALWAYS type into the query (§4.7). Until T16.2 a
+//     row's key ran it from an empty query, so typing "new" ran new session
+//     at its n and q quit the dashboard; this is the rule that ended it.
+//   - "the leader closes": it is how the search was reached from the Agent,
+//     and it must never type a byte into the query or the agent.
 //   - "enter on a dimmed highlight is ignored": enter must not be a back door
 //     around the dimming.
-//   - "ctrl+c runs quit": quit's unshown second key, so a stuck dashboard can
-//     be left from inside the dialog too.
-//   - "old chord is not a row key": a row shows the key after the leader, so
-//     the chord it replaced (ctrl+t) is nobody's key in the dialog.
-//   - the three "configured ctrl+o" rows: with config.toml's leader in use
-//     (T9.2), the configured key is the one that closes or passes through,
-//     and ctrl+] is then just an unbound chord, ignored like any other.
+//   - the two configured-leader rows: with config.toml's leader in use (T9.2)
+//     the configured key closes, and ctrl+] is then an unbound chord, ignored.
 func TestLeaderKeyDecision(t *testing.T) {
 	rows := leaderTestRows()
 	cases := []struct {
 		name      string
 		k         tea.KeyPressMsg
 		leader    string // "" means defaultLeaderKey
-		query     string
 		rows      []leaderRow
 		highlight int
-		fromPane  bool
 		want      leaderOutcomeKind
 		wantRun   modeAction
 		wantText  string
 		wantDelta int
 	}{
 		{name: "esc closes", k: leaderPress("esc"), rows: rows, want: leaderClose},
-		{name: "esc closes with a query", k: leaderPress("esc"), query: "cl", rows: rows, want: leaderClose},
-		{name: "ctrl+] from the pane passes through", k: leaderTestCtrlBracket, rows: rows, fromPane: true, want: leaderPassThrough},
-		{name: "ctrl+] not from the pane closes", k: leaderTestCtrlBracket, rows: rows, want: leaderClose},
-		{name: "ctrl+space from the pane is ignored", k: leaderTestCtrlSpace, rows: rows, fromPane: true, want: leaderIgnore},
-		{name: "ctrl+space not from the pane is ignored", k: leaderTestCtrlSpace, rows: rows, want: leaderIgnore},
+		{name: "the leader closes", k: leaderTestCtrlBracket, rows: rows, want: leaderClose},
+		{name: "ctrl+space is ignored", k: leaderTestCtrlSpace, rows: rows, want: leaderIgnore},
 		{name: "up moves", k: leaderPress("up"), rows: rows, want: leaderMove, wantDelta: -1},
 		{name: "down moves", k: leaderPress("down"), rows: rows, want: leaderMove, wantDelta: 1},
 		{name: "enter runs the highlighted row", k: leaderPress("enter"), rows: rows, highlight: 0, want: leaderRun, wantRun: actionNewSession},
-		{name: "enter runs the focus row when it is highlighted", k: leaderPress("enter"), rows: rows, highlight: 2, want: leaderRun, wantRun: actionFocusPane},
 		{name: "enter with no rows is ignored", k: leaderPress("enter"), rows: nil, want: leaderIgnore},
 		{name: "enter on a dimmed highlight is ignored", k: leaderPress("enter"), rows: rows, highlight: 1, want: leaderIgnore},
-		{name: "backspace edits the query", k: leaderPress("backspace"), query: "cl", rows: rows, want: leaderFilter},
-		{name: "action key with empty query runs it", k: leaderPress("n"), rows: rows, want: leaderRun, wantRun: actionNewSession},
-		{name: "focus key runs it", k: leaderPress("f"), rows: rows, want: leaderRun, wantRun: actionFocusPane},
-		{name: "ctrl+c runs quit", k: leaderPress("ctrl+c"), rows: rows, want: leaderRun, wantRun: actionQuit},
-		{name: "action key with a query filters", k: leaderPress("n"), query: "clea", rows: rows, want: leaderFilter, wantText: "n"},
-		{name: "letter matching no key filters", k: leaderPress("x"), rows: rows, want: leaderFilter, wantText: "x"},
-		{name: "dimmed action key is ignored", k: leaderPress("c"), rows: rows, want: leaderIgnore},
-		{name: "dimmed right-side key is ignored", k: leaderPress("t"), rows: rows, want: leaderIgnore},
-		{name: "old chord is not a row key", k: leaderPress("ctrl+t"), rows: rows, want: leaderIgnore},
-		{name: "shared key runs the runnable row", k: leaderPress("\\"), rows: rows, want: leaderRun, wantRun: actionPaneClose},
-		{name: "non-printable unknown key is ignored", k: leaderPress("ctrl+y"), rows: rows, want: leaderIgnore},
-		{name: "chord with a query is ignored", k: leaderPress("ctrl+c"), query: "b", rows: rows, want: leaderIgnore},
-		// The by-name row: its name's first letter is nobody's key, so it
-		// starts the query, and enter on the highlighted row runs it.
-		{name: "a by-name row's letter filters", k: leaderPress("e"), rows: rows, want: leaderFilter, wantText: "e"},
-		{name: "enter runs a highlighted by-name row", k: leaderPress("enter"), rows: rows, highlight: 7, want: leaderRun, wantRun: actionPlanExtend},
-		{name: "configured ctrl+o from the pane passes through", k: leaderPress("ctrl+o"), leader: "ctrl+o", rows: rows, fromPane: true, want: leaderPassThrough},
-		{name: "configured ctrl+o not from the pane closes", k: leaderPress("ctrl+o"), leader: "ctrl+o", rows: rows, want: leaderClose},
-		{name: "configured ctrl+o leaves ctrl+] unbound", k: leaderTestCtrlBracket, leader: "ctrl+o", rows: rows, fromPane: true, want: leaderIgnore},
+		{name: "enter runs a highlighted by-name row", k: leaderPress("enter"), rows: rows, highlight: 3, want: leaderRun, wantRun: actionPlanExtend},
+		{name: "backspace edits the query", k: leaderPress("backspace"), rows: rows, want: leaderFilter},
+		{name: "a row's key types with an empty query", k: leaderPress("n"), rows: rows, want: leaderFilter, wantText: "n"},
+		{name: "q types", k: leaderPress("q"), rows: rows, want: leaderFilter, wantText: "q"},
+		{name: "a dimmed row's key types", k: leaderPress("c"), rows: rows, want: leaderFilter, wantText: "c"},
+		{name: "a letter matching no key types", k: leaderPress("x"), rows: rows, want: leaderFilter, wantText: "x"},
+		{name: "punctuation types", k: leaderPress("/"), rows: rows, want: leaderFilter, wantText: "/"},
+		{name: "a chord is ignored", k: leaderPress("ctrl+y"), rows: rows, want: leaderIgnore},
+		{name: "configured ctrl+o closes", k: leaderPress("ctrl+o"), leader: "ctrl+o", rows: rows, want: leaderClose},
+		{name: "configured ctrl+o leaves ctrl+] unbound", k: leaderTestCtrlBracket, leader: "ctrl+o", rows: rows, want: leaderIgnore},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,7 +152,7 @@ func TestLeaderKeyDecision(t *testing.T) {
 			if leader == "" {
 				leader = defaultLeaderKey
 			}
-			got := leaderKeyDecision(tc.k, leader, tc.query, tc.rows, tc.highlight, tc.fromPane)
+			got := leaderKeyDecision(tc.k, leader, tc.rows, tc.highlight)
 			if got.kind != tc.want {
 				t.Fatalf("kind = %v, want %v", got.kind, tc.want)
 			}
@@ -148,28 +170,22 @@ func TestLeaderKeyDecision(t *testing.T) {
 }
 
 // TestLeaderBlockedReason has one row per guard and one clear row per action
-// that has a guard. Load-bearing: the clean rows (a pane open blocks it, the
-// same rule cleanRequested enforces, and the reason names ctrl+] \ as the
-// way out), the agent/overview rows (from the list the right side is not
-// under control, so it must not run there even through the dialog), and the
-// close-pane and clear-filter rows, which carry the two guards the old rules
-// had (needsPane, needsFilter) now that the rules are gone. The new-plan rows
-// are load-bearing too: "new plan runs with no project" is the case the
-// action exists for (a dashboard outside any project), and dimming it there
-// as the change actions are dimmed would hide it exactly when it is needed.
+// that has a guard. Load-bearing: "clean runs with a pane open" (since T16.2
+// no key closes a pane on its own, so the pane is detached when the clean is
+// confirmed instead, and a reason here would make clean unreachable while a
+// pane is open), and the new-plan rows: "new plan runs with no project" is the
+// case the action exists for (a dashboard outside any project), and dimming
+// it there as the change actions are dimmed would hide it exactly when it is
+// needed.
 func TestLeaderBlockedReason(t *testing.T) {
 	ready := leaderConds{
 		leader:           defaultLeaderKey,
 		hasActiveProject: true,
 		selected:         true,
 		paneOpen:         true,
-		rightFocused:     true,
-		listFiltered:     true,
 		hasBuild:         true,
 		buildKnown:       true,
 		restartLive:      true,
-		canFocus:         true,
-		canToggleView:    true,
 		canStartPlan:     true,
 		canCheckPlan:     true,
 		canAllProjects:   true,
@@ -187,17 +203,8 @@ func TestLeaderBlockedReason(t *testing.T) {
 	}{
 		{"quit always runs", actionQuit, leaderConds{}, ""},
 		{"mouse always runs", actionMouseToggle, leaderConds{}, ""},
-		{"help always runs", actionHelp, leaderConds{}, ""},
-		{"filter start always runs", actionFilterStart, leaderConds{}, ""},
-		{"resize always runs", actionEnterResize, leaderConds{}, ""},
-
-		{"close pane needs a pane", actionPaneClose, with(func(c *leaderConds) { c.paneOpen = false }), "no agent pane"},
-		{"close pane with a pane", actionPaneClose, ready, ""},
-
-		{"focus needs a project", actionFocusPane, with(func(c *leaderConds) { c.hasActiveProject = false; c.rightFocused = false }), "no project"},
-		{"focus needs something to focus", actionFocusPane, with(func(c *leaderConds) { c.canFocus = false; c.rightFocused = false }), "nothing to focus"},
-		{"focus when the right side has it", actionFocusPane, ready, "already has the keyboard"},
-		{"focus from the list", actionFocusPane, with(func(c *leaderConds) { c.rightFocused = false }), ""},
+		{"keys always runs", actionKeys, leaderConds{}, ""},
+		{"go back always runs", actionGoBack, leaderConds{}, ""},
 
 		{"new session needs a project", actionNewSession, with(func(c *leaderConds) { c.hasActiveProject = false }), "no project"},
 		{"new session with a project", actionNewSession, ready, ""},
@@ -222,15 +229,13 @@ func TestLeaderBlockedReason(t *testing.T) {
 		// and a status not read yet are said by the action in a sentence.
 		{"check the plan runs with only the seam", actionPlanCheck, leaderConds{canCheckPlan: true}, ""},
 		{"check the plan needs the seam", actionPlanCheck, with(func(c *leaderConds) { c.canCheckPlan = false }), "not available"},
-		{"check the plan with everything", actionPlanCheck, ready, ""},
 		{"projects needs a project", actionProjects, with(func(c *leaderConds) { c.hasActiveProject = false }), "no projects"},
 		{"projects with a project", actionProjects, ready, ""},
 
-		{"clean needs a selection", actionClean, with(func(c *leaderConds) { c.selected = false; c.paneOpen = false }), "no session selected"},
-		{"clean blocked by an open pane", actionClean, ready, "close the pane first (ctrl+] \\)"},
-		{"clean blocked while creating", actionClean, with(func(c *leaderConds) { c.paneOpen = false; c.selectedPending = true }), "still being created"},
-		{"clean blocked while cleaning", actionClean, with(func(c *leaderConds) { c.paneOpen = false; c.selectedCleaning = true }), "already being cleaned"},
-		{"clean runs", actionClean, with(func(c *leaderConds) { c.paneOpen = false }), ""},
+		{"clean needs a selection", actionClean, with(func(c *leaderConds) { c.selected = false }), "no session selected"},
+		{"clean runs with a pane open (load-bearing)", actionClean, ready, ""},
+		{"clean blocked while creating", actionClean, with(func(c *leaderConds) { c.selectedPending = true }), "still being created"},
+		{"clean blocked while cleaning", actionClean, with(func(c *leaderConds) { c.selectedCleaning = true }), "already being cleaned"},
 
 		{"restart needs a selection", actionRestart, with(func(c *leaderConds) { c.selected = false }), "no session selected"},
 		{"restart needs a stopped or stuck agent", actionRestart, with(func(c *leaderConds) { c.restartLive = false }), "stopped or stuck"},
@@ -241,55 +246,22 @@ func TestLeaderBlockedReason(t *testing.T) {
 		{"label blocked on a broken row", actionEditLabel, with(func(c *leaderConds) { c.selectedFault = true }), "no worktree"},
 		{"label runs", actionEditLabel, ready, ""},
 
-		{"clear filter needs a filter", actionFilterClear, with(func(c *leaderConds) { c.listFiltered = false }), "no filter"},
-		{"clear filter runs", actionFilterClear, ready, ""},
+		{"pause needs a build", actionPauseToggle, with(func(c *leaderConds) { c.hasBuild = false }), "no build"},
+		{"pause needs a project", actionPauseToggle, with(func(c *leaderConds) { c.hasActiveProject = false }), "no build"},
+		{"pause runs", actionPauseToggle, ready, ""},
 
-		{"build needs a build", actionBuild, with(func(c *leaderConds) { c.hasBuild = false }), "no build"},
-		{"build needs a project", actionBuild, with(func(c *leaderConds) { c.hasActiveProject = false }), "no build"},
-		{"build runs", actionBuild, ready, ""},
-		{"pause needs a build", actionPauseBuild, with(func(c *leaderConds) { c.hasBuild = false }), "no build"},
-		{"pause runs", actionPauseBuild, ready, ""},
-		{"resume needs a build", actionResumeBuild, with(func(c *leaderConds) { c.hasBuild = false }), "no build"},
-		{"resume runs", actionResumeBuild, ready, ""},
-
-		// "refresh usage" (T7.13) is dimmed only without its seam: the
+		// "read usage" (T7.13) is dimmed only without its seam: the
 		// reading is the machine's, so no project or build is needed.
-		{"refresh usage needs the seam", actionRefreshUsage, ready, "cannot read usage"},
-		{"refresh usage runs with only the seam", actionRefreshUsage, leaderConds{canRefreshUsage: true}, ""},
+		{"read usage needs the seam", actionRefreshUsage, ready, "cannot read usage"},
+		{"read usage runs with only the seam", actionRefreshUsage, leaderConds{canRefreshUsage: true}, ""},
 
 		{"inbox needs the build read", actionInbox, with(func(c *leaderConds) { c.buildKnown = false }), "not been read"},
 		{"inbox runs", actionInbox, ready, ""},
 
-		{"back to list needs the right side focused", actionDetailUnfocus, with(func(c *leaderConds) { c.rightFocused = false }), "already has the keyboard"},
-		{"back to list runs", actionDetailUnfocus, ready, ""},
-
-		{"agent/overview needs the right side focused", actionPaneToggle, with(func(c *leaderConds) { c.rightFocused = false }), "focus the right side first"},
-		{"agent/overview needs a live agent", actionPaneToggle, with(func(c *leaderConds) { c.canToggleView = false }), "no live agent"},
-		{"agent/overview runs", actionPaneToggle, ready, ""},
-
-		// "all projects" (T7.9) is dimmed only without its reader: it lists
-		// config.toml's projects, so a dashboard with no project open can
-		// still show them.
-		{"all projects runs with only the seam", actionAllProjects, leaderConds{canAllProjects: true}, ""},
-		{"all projects needs the seam", actionAllProjects, with(func(c *leaderConds) { c.canAllProjects = false }), "without the project reader"},
-
-		// Over the all-projects screen five rows run and the rest are
-		// dimmed with one reason. Pause and resume run even for an active
-		// project with no build, because over the screen they act on the
-		// selected row, not on the active project; that row is the
-		// load-bearing one.
-		{"over the screen pause runs without an active build", actionPauseBuild, leaderConds{allProjectsOpen: true}, ""},
-		{"over the screen resume runs without an active build", actionResumeBuild, leaderConds{allProjectsOpen: true}, ""},
-		{"over the screen all projects runs (closes it)", actionAllProjects, leaderConds{allProjectsOpen: true, canAllProjects: true}, ""},
-		{"over the screen mouse runs", actionMouseToggle, leaderConds{allProjectsOpen: true}, ""},
-		{"over the screen quit runs", actionQuit, leaderConds{allProjectsOpen: true}, ""},
-		{"over the screen new session is dimmed", actionNewSession, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
-		{"over the screen switch project is dimmed", actionProjects, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
-		{"over the screen build tasks is dimmed", actionBuild, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
-		{"over the screen help is dimmed", actionHelp, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
-		{"over the screen check the plan is dimmed", actionPlanCheck, with(func(c *leaderConds) { c.allProjectsOpen = true }), allProjectsCloseFirst},
-		{"over the screen refresh usage is dimmed", actionRefreshUsage,
-			leaderConds{allProjectsOpen: true, canRefreshUsage: true}, allProjectsCloseFirst},
+		// Add and remove a project ask projectEditBlockedReason: away from
+		// All projects they say how to get there.
+		{"add away from all projects", actionProjectAdd, leaderConds{canAddProject: true}, "Go back to All projects first (esc)"},
+		{"add at all projects", actionProjectAdd, leaderConds{canAddProject: true, allProjectsOpen: true}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -307,337 +279,199 @@ func TestLeaderBlockedReason(t *testing.T) {
 	}
 }
 
-// TestLeaderTableIsTheDecidedTable holds leaderTable to the key table in
-// docs/decisions.md "## T7.2", restated here row for row, so a key moved in
-// one place and not the other fails. Every row is load-bearing: the table is
-// the owner's decision, and the dialog, the notices and (next) every hint are
-// read off it.
-func TestLeaderTableIsTheDecidedTable(t *testing.T) {
+// TestKeyTableIsTheDecidedTable holds keyTable to docs/dash-design.md §5,
+// restated here row for row with the levels each key works at, so a key moved
+// in one place and not the other fails. It replaces T7.2's
+// TestLeaderTableIsTheDecidedTable. Every row is load-bearing: the table is
+// the design, and the keys, the `:` search, the key strip, the footers and
+// every hint are read off it.
+func TestKeyTableIsTheDecidedTable(t *testing.T) {
 	want := []struct {
 		key    string
 		action modeAction
+		levels levelSet
 	}{
-		{"n", actionNewSession},
-		{"o", actionScratch},
-		{"p", actionProjects},
-		// T7.9: upper-case A, so typing "approve" still filters.
-		{"A", actionAllProjects},
-		// T7.10: keyed, and run only over the all-projects screen.
-		{"+", actionProjectAdd},
-		{"-", actionProjectRemove},
-		{"c", actionClean},
-		{"r", actionRestart},
-		{"l", actionEditLabel},
-		{"/", actionFilterStart},
-		{"x", actionFilterClear},
-		{"b", actionBuild},
-		{"i", actionInbox},
-		{"P", actionPauseBuild},
-		{"U", actionResumeBuild},
-		// T7.13: upper-case R, because lower-case r is restart.
-		{"R", actionRefreshUsage},
-		// T7.11: upper-case S, a right-side action on the Build tab.
-		{"S", actionTaskStatus},
-		// T7.12: upper-case T, beside S on the same cursor row.
-		{"T", actionTaskTokens},
-		{"f", actionFocusPane},
-		{"t", actionPaneToggle},
-		{"\\", actionDetailUnfocus},
-		{"\\", actionPaneClose},
-		{"g", actionMouseToggle},
-		{"w", actionEnterResize},
-		{"?", actionHelp},
-		{"q", actionQuit},
-		// T7.3: by name only, no key after the leader.
-		{"", actionPlanExtend},
-		{"", actionPlanAmend},
-		{"", actionPlanReconcile},
-		// T13.6: by name only, no key after the leader (f is focus's).
-		{"", actionPlanFix},
-		// T7.4: by name only, no key after the leader.
-		{"", actionPlanNew},
-		// T7.7: by name only, no key after the leader.
-		{"", actionPlanCheck},
-		// T7.8: by name only, no key after the leader.
-		{"", actionPlanApprove},
+		{"j", actionMove, atAllProjects | atProject},
+		{"enter", actionGoIn, atAllProjects | atProject},
+		{"esc", actionGoBack, atEveryLevel},
+		// `/` opens today's project switcher until T16.6 (A3).
+		{"/", actionProjects, atEveryLevel},
+		{":", actionActionsSearch, atEveryLevel},
+		{"i", actionInbox, atEveryLevel},
+		// d needs a selected session, which All projects has not (A2).
+		{"d", actionDetails, atProject | atAgent},
+		{"R", actionRefreshUsage, atEveryLevel},
+		{"?", actionKeys, atEveryLevel},
+		{"q", actionQuit, atEveryLevel},
+		{"n", actionPlanNew, atAllProjects},
+		{"+", actionProjectAdd, atAllProjects},
+		{"-", actionProjectRemove, atAllProjects},
+		// p at All projects waits for T16.3 (A4).
+		{"p", actionPauseToggle, atProject},
+		{"n", actionNewSession, atProject},
+		{"o", actionScratch, atProject},
+		{"c", actionClean, atProject},
+		{"r", actionRestart, atProject},
+		{"l", actionEditLabel, atProject},
+		{"s", actionTaskStatus, atProject},
+		{"t", actionTaskTokens, atProject},
+		{"m", actionMouseToggle, atAgent},
+		// The plan actions: by name only, from inside a project.
+		{"", actionPlanExtend, atProject | atAgent},
+		{"", actionPlanAmend, atProject | atAgent},
+		{"", actionPlanFix, atProject | atAgent},
+		{"", actionPlanReconcile, atProject | atAgent},
+		{"", actionPlanCheck, atProject | atAgent},
+		{"", actionPlanApprove, atProject | atAgent},
+		{"", actionPlanNew, atProject | atAgent},
 	}
-	if len(leaderTable) != len(want) {
-		t.Fatalf("leaderTable has %d rows, the decided table %d", len(leaderTable), len(want))
+	if len(keyTable) != len(want) {
+		t.Fatalf("keyTable has %d rows, the decided table %d", len(keyTable), len(want))
 	}
 	for i, w := range want {
-		t.Run(w.action.String(), func(t *testing.T) {
-			got := leaderTable[i]
-			if got.key != w.key || got.action != w.action {
-				t.Errorf("row %d = %q %v, want %q %v", i, got.key, got.action, w.key, w.action)
+		t.Run(w.action.String()+" "+w.key, func(t *testing.T) {
+			got := keyTable[i]
+			if got.key != w.key || got.action != w.action || got.levels != w.levels {
+				t.Errorf("row %d = %q %v %b, want %q %v %b", i, got.key, got.action, got.levels, w.key, w.action, w.levels)
 			}
 		})
 	}
 }
 
-// TestLeaderRowsFromTheTable builds the rows the dialog opens with. Every
-// check is load-bearing:
-//   - "every row has a name and a help line" is the guard for actions added
-//     later: a new table row fails here until both are written.
-//   - "no duplicates" and "no movement rows": the table lists each action
-//     once and never a key you hold down, nor the leader itself.
-//   - "rows show the key after the leader": no row shows esc, enter or a
-//     chord any more (T7.1's open question, settled by T7.2).
-//   - "every key round-trips": a row's key is turned into a press for the
-//     handlers that read it (the filter's `/`), so it must parse.
-//   - "right-side rows run as the overview": the mode is what applyKeyAction
-//     is called with.
-func TestLeaderRowsFromTheTable(t *testing.T) {
-	rows := leaderRows(leaderConds{})
-
-	t.Run("one row per table entry", func(t *testing.T) {
-		if len(rows) != len(leaderTable) {
-			t.Fatalf("%d rows for %d table entries", len(rows), len(leaderTable))
-		}
-	})
-
-	t.Run("every row has a name and a help line", func(t *testing.T) {
-		for _, r := range rows {
-			if strings.TrimSpace(r.name) == "" {
-				t.Errorf("action %v has no name in leaderNames", r.action)
+// TestActionRows builds the `:` search's rows at every level. Every check is
+// load-bearing:
+//   - "every action is listed once": §4.7 searches every action, the ones
+//     with no key included, so a key-table action missing here is one the
+//     search has lost; "start a new plan" has two rows in the table and must
+//     still be one row here.
+//   - "every row has a name and a help line": a row with neither cannot be
+//     found or read.
+//   - "an action away from its level is dimmed with where it works": the
+//     search lists it so a person learns where to go, and must not run it.
+//   - "keys are named as they are pressed": the leader then the key in the
+//     Agent, the key alone elsewhere.
+//   - "blocked reasons are the row's": the search dims a row exactly when its
+//     key would only say why it did nothing.
+func TestActionRows(t *testing.T) {
+	for _, lv := range []level{levelAllProjects, levelProject, levelAgent} {
+		rows := actionRows(lv, defaultLeaderKey, leaderConds{})
+		t.Run(lv.String()+" every action is listed once", func(t *testing.T) {
+			seen := map[modeAction]int{}
+			for _, r := range rows {
+				seen[r.action]++
 			}
-			if strings.TrimSpace(r.help) == "" {
-				t.Errorf("action %v (%q) has no help line in leaderHelp", r.action, r.name)
-			}
-		}
-	})
-
-	t.Run("no duplicates", func(t *testing.T) {
-		seen := map[modeAction]bool{}
-		for _, r := range rows {
-			if seen[r.action] {
-				t.Errorf("action %v listed twice", r.action)
-			}
-			seen[r.action] = true
-		}
-	})
-
-	t.Run("no movement rows", func(t *testing.T) {
-		movement := []modeAction{
-			actionCursorUp, actionCursorDown, actionPageUp, actionPageDown,
-			actionListTop, actionListBottom,
-			actionDetailScrollUp, actionDetailScrollDown,
-			actionDetailHalfPageUp, actionDetailHalfPageDown,
-			actionDetailPageUp, actionDetailPageDown,
-			actionDetailGotoTop, actionDetailGotoBottom,
-			actionDetailTabNext, actionDetailTabPrev, actionDetailTabJump,
-		}
-		for _, r := range rows {
-			if slices.Contains(movement, r.action) {
-				t.Errorf("movement action %v is listed", r.action)
-			}
-			if r.action == actionOpenLeader {
-				t.Errorf("the leader lists itself")
-			}
-		}
-	})
-
-	t.Run("rows show the key after the leader", func(t *testing.T) {
-		for _, r := range rows {
-			if r.keyLabel == "" {
-				// A by-name row answers to no key at all.
-				if len(r.keys) != 0 {
-					t.Errorf("by-name row %v answers to keys %q", r.action, r.keys)
+			for _, kr := range keyTable {
+				if searchSkips(kr.action) {
+					if seen[kr.action] != 0 {
+						t.Errorf("%v is listed but cannot be run from a list", kr.action)
+					}
+					continue
 				}
-				continue
-			}
-			// A "+" inside a label is a chord (ctrl+x); "+" alone is the add
-			// row's own key (T7.10), a single key like any other.
-			chord := strings.Contains(r.keyLabel, "+") && r.keyLabel != "+"
-			if r.keyLabel == "esc" || r.keyLabel == "enter" || chord || strings.Contains(r.keyLabel, "/f") {
-				t.Errorf("row %v shows %q, want a single key after the leader", r.action, r.keyLabel)
-			}
-			if len(r.keys) == 0 || r.keys[0] != r.keyLabel {
-				t.Errorf("row %v keys %q do not start with its label %q", r.action, r.keys, r.keyLabel)
-			}
-		}
-	})
-
-	t.Run("every key round-trips", func(t *testing.T) {
-		for _, r := range rows {
-			for _, k := range r.keys {
-				if _, ok := leaderPressFor(k); !ok {
-					t.Errorf("row %v key %q does not round-trip", r.action, k)
+				if seen[kr.action] != 1 {
+					t.Errorf("%v (%q) listed %d times, want once", kr.action, kr.name, seen[kr.action])
 				}
 			}
-		}
-	})
-
-	t.Run("right-side rows run as the overview", func(t *testing.T) {
-		for _, r := range rows {
-			want := inputNormal
-			if r.action == actionPaneToggle || r.action == actionDetailUnfocus || r.action == actionTaskStatus ||
-				r.action == actionTaskTokens {
-				want = inputDetail
+		})
+		t.Run(lv.String()+" every row has a name and a help line", func(t *testing.T) {
+			for _, r := range rows {
+				if strings.TrimSpace(r.name) == "" || strings.TrimSpace(r.help) == "" {
+					t.Errorf("row %v has name %q, help %q", r.action, r.name, r.help)
+				}
 			}
-			if r.mode != want {
-				t.Errorf("row %v mode = %v, want %v", r.action, r.mode, want)
+		})
+		t.Run(lv.String()+" an action away from its level is dimmed with where it works", func(t *testing.T) {
+			for _, r := range rows {
+				if _, ok := keyRowForAction(lv, r.action); ok {
+					continue
+				}
+				if !strings.HasPrefix(r.blocked, "works ") {
+					t.Errorf("row %v away from %v blocked = %q, want where it works", r.action, lv, r.blocked)
+				}
 			}
-		}
-	})
-
-	t.Run("back to list comes before close pane", func(t *testing.T) {
-		back := slices.IndexFunc(rows, func(r leaderRow) bool { return r.action == actionDetailUnfocus })
-		closeAt := slices.IndexFunc(rows, func(r leaderRow) bool { return r.action == actionPaneClose })
-		if back < 0 || closeAt < 0 || back > closeAt {
-			t.Errorf("back to list at %d, close pane at %d; `\\` would close the pane from the right side", back, closeAt)
-		}
-	})
-
-	t.Run("blocked reasons are filled from the conditions", func(t *testing.T) {
-		for _, r := range rows {
-			if r.blocked != leaderBlockedReason(r.action, leaderConds{}) {
-				t.Errorf("row %v blocked = %q, want leaderBlockedReason's answer", r.action, r.blocked)
+		})
+		t.Run(lv.String()+" keys are named as they are pressed", func(t *testing.T) {
+			for _, r := range rows {
+				kr, ok := keyRowForAction(lv, r.action)
+				if !ok || kr.key == "" {
+					continue
+				}
+				want := kr.keyLabel()
+				if lv == levelAgent {
+					want = defaultLeaderKey + " " + want
+				}
+				if r.keyLabel != want {
+					t.Errorf("row %v key = %q, want %q", r.action, r.keyLabel, want)
+				}
 			}
-		}
-	})
-}
-
-// TestLeaderMovesToList is every reach against every place the leader opens
-// from. Load-bearing rows: a list action from the right side moves the
-// keyboard (its old key could only be pressed on the list), an overview
-// action from the overview does not (its old key ran there in place), and the
-// same overview action from the agent pane does (its old letter was the
-// agent's, and an overlay it opens must not close back onto the agent).
-func TestLeaderMovesToList(t *testing.T) {
-	cases := []struct {
-		name  string
-		reach leaderReach
-		from  inputMode
-		want  bool
-	}{
-		{"list action from the list", reachList, inputNormal, false},
-		{"list action from the overview", reachList, inputDetail, true},
-		{"list action from the agent pane", reachList, inputPane, true},
-		{"overview action from the list", reachOverview, inputNormal, false},
-		{"overview action from the overview", reachOverview, inputDetail, false},
-		{"overview action from the agent pane", reachOverview, inputPane, true},
-		{"anywhere action from the list", reachAnywhere, inputNormal, false},
-		{"anywhere action from the overview", reachAnywhere, inputDetail, false},
-		{"anywhere action from the agent pane", reachAnywhere, inputPane, false},
-		{"right-side action from the overview", reachRight, inputDetail, false},
-		{"right-side action from the agent pane", reachRight, inputPane, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := leaderMovesToList(tc.reach, tc.from); got != tc.want {
-				t.Fatalf("leaderMovesToList = %v, want %v", got, tc.want)
+		})
+		t.Run(lv.String()+" blocked reasons are the row's", func(t *testing.T) {
+			for _, r := range rows {
+				kr, ok := keyRowForAction(lv, r.action)
+				if !ok {
+					continue
+				}
+				if r.blocked != kr.blockedReason(leaderConds{}) {
+					t.Errorf("row %v blocked = %q, want %q", r.action, r.blocked, kr.blockedReason(leaderConds{}))
+				}
 			}
 		})
 	}
-}
-
-// TestRemovedKeyNotice is the lookup behind the notice a removed list key
-// raises: every removed key is a row and must name its key after the leader,
-// and `:` names the dialog's filter. The no-notice rows are load-bearing:
-// k and j still move the cursor (a notice would fire on every move if they
-// were listed), x was never a list key, and ctrl+t is a chord, which gets no
-// notice because in the agent pane it now belongs to the agent.
-func TestRemovedKeyNotice(t *testing.T) {
-	cases := []struct {
-		key  string
-		want string // "" is no notice
-	}{
-		{"n", "n moved: press ctrl+] then n"},
-		{"o", "o moved: press ctrl+] then o"},
-		{"p", "p moved: press ctrl+] then p"},
-		{"c", "c moved: press ctrl+] then c"},
-		{"r", "r moved: press ctrl+] then r"},
-		{"l", "l moved: press ctrl+] then l"},
-		{"/", "/ moved: press ctrl+] then /"},
-		{"b", "b moved: press ctrl+] then b"},
-		{"i", "i moved: press ctrl+] then i"},
-		{"q", "q moved: press ctrl+] then q"},
-		{"f", "f moved: press ctrl+] then f"},
-		{"?", "? moved: press ctrl+] then ?"},
-		{"P", "P moved: press ctrl+] then P"},
-		{"U", "U moved: press ctrl+] then U"},
-		{":", ": moved: press ctrl+], then type to filter the actions"},
-		{"k", ""},
-		{"j", ""},
-		{"x", ""},
-		{"ctrl+t", ""},
-		{"ctrl+\\", ""},
-		{"ctrl+g", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.key, func(t *testing.T) {
-			got, ok := removedKeyNotice(defaultLeaderKey, tc.key)
-			if ok != (tc.want != "") {
-				t.Fatalf("removedKeyNotice(defaultLeaderKey, %q) ok = %v, want %v", tc.key, ok, tc.want != "")
-			}
-			if got != tc.want {
-				t.Fatalf("notice = %q, want %q", got, tc.want)
-			}
-		})
-	}
-	t.Run("every removed key is a row above", func(t *testing.T) {
-		for _, k := range removedListKeys {
-			if !slices.ContainsFunc(cases, func(c struct {
-				key  string
-				want string
-			}) bool {
-				return c.key == k && c.want != ""
-			}) {
-				t.Errorf("removed key %q has no notice row", k)
-			}
+	t.Run("start a new plan is n at all projects and by name in a project", func(t *testing.T) {
+		at, _ := leaderRowFor(actionRows(levelAllProjects, defaultLeaderKey, leaderConds{}), actionPlanNew)
+		in, _ := leaderRowFor(actionRows(levelProject, defaultLeaderKey, leaderConds{}), actionPlanNew)
+		if at.keyLabel != "n" || in.keyLabel != "" {
+			t.Errorf("start a new plan keys = %q at all projects, %q in a project; want n and none", at.keyLabel, in.keyLabel)
 		}
 	})
 }
 
-// TestLeaderPressFor round-trips key strings into presses. The rejecting rows
-// are the load-bearing ones: a string the constructor cannot reproduce must
-// report false rather than return some other key, because the consequence of
-// a wrong answer is a handler acting on a key the user did not press.
-func TestLeaderPressFor(t *testing.T) {
+// TestKeyName pins how a hint names a key from each level. Load-bearing: the
+// Agent rows (the leader comes first there, or the hint names a key the agent
+// would get), and "restart from the agent", which has no Agent key and must
+// still name the key it does have rather than nothing.
+func TestKeyName(t *testing.T) {
 	cases := []struct {
 		name string
-		in   string
-		ok   bool
+		lv   level
+		a    modeAction
+		want string
 	}{
-		{"printable rune", "q", true},
-		{"punctuation", "/", true},
-		{"backslash", "\\", true},
-		{"question mark", "?", true},
-		{"uppercase rune", "P", true},
-		{"ctrl chord", "ctrl+c", true},
-		{"ctrl chord on punctuation", "ctrl+\\", true},
-		{"named key", "enter", true},
-		{"escape", "esc", true},
-		{"paging key", "pgdown", true},
-		{"shift chord on a named key", "shift+tab", true},
-		{"empty", "", false},
-		// These two parse cleanly and are rejected only by the round-trip: a
-		// bare space is printed as "space", and Keystroke always emits
-		// modifiers in canonical ctrl/alt/shift order.
-		{"a bare space", " ", false},
-		{"modifiers out of canonical order", "alt+ctrl+a", false},
-		{"unknown name", "f13", false},
-		{"unhandled modifier", "hyper+a", false},
-		{"dangling modifier", "ctrl+", false},
+		{"new session at project", levelProject, actionNewSession, "n"},
+		{"inbox at all projects", levelAllProjects, actionInbox, "i"},
+		{"inbox from the agent (load-bearing)", levelAgent, actionInbox, "ctrl+] i"},
+		{"back from the agent (load-bearing)", levelAgent, actionGoBack, "ctrl+] esc"},
+		{"mouse at project names the agent's chord", levelProject, actionMouseToggle, "ctrl+] m"},
+		{"restart from the agent (load-bearing)", levelAgent, actionRestart, "r"},
+		{"a by-name action has no key", levelProject, actionPlanExtend, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := leaderPressFor(tc.in)
-			if ok != tc.ok {
-				t.Fatalf("leaderPressFor(%q) ok = %v, want %v", tc.in, ok, tc.ok)
-			}
-			if ok && got.String() != tc.in {
-				t.Fatalf("leaderPressFor(%q).String() = %q", tc.in, got.String())
+			if got := keyName(defaultLeaderKey, tc.lv, tc.a); got != tc.want {
+				t.Fatalf("keyName(%v, %v) = %q, want %q", tc.lv, tc.a, got, tc.want)
 			}
 		})
 	}
+	t.Run("configured leader", func(t *testing.T) {
+		if got := keyName("ctrl+o", levelAgent, actionDetails); got != "ctrl+o d" {
+			t.Fatalf("keyName = %q, want ctrl+o d", got)
+		}
+	})
 }
 
-// TestLeaderDialogFilterAndMove covers the component's two state changes.
+// TestLeaderDialogFilterAndMove covers the search's two state changes.
 // Load-bearing: the highlight is clamped when a filter shrinks the list, or
 // enter would run a row that is no longer on screen.
 func TestLeaderDialogFilterAndMove(t *testing.T) {
-	rows := leaderRows(leaderConds{})
+	rows := actionRows(levelProject, defaultLeaderKey, leaderConds{})
+	// typed is the outcomes of typing s one key at a time, as letters always
+	// type into the query: s starts with s, the task-status key at Project.
+	typed := func(s string) []leaderOutcome {
+		var out []leaderOutcome
+		for _, r := range s {
+			out = append(out, leaderOutcome{kind: leaderFilter, text: string(r)})
+		}
+		return out
+	}
 	cases := []struct {
 		name      string
 		steps     []leaderOutcome
@@ -650,13 +484,16 @@ func TestLeaderDialogFilterAndMove(t *testing.T) {
 		{"typing filters by name", []leaderOutcome{{kind: leaderFilter, text: "c"}, {kind: leaderFilter, text: "l"}, {kind: leaderFilter, text: "e"}, {kind: leaderFilter, text: "a"}, {kind: leaderFilter, text: "n"}}, "clean", actionClean, -1},
 		{"filter is case-insensitive", []leaderOutcome{{kind: leaderFilter, text: "CLEAN"}}, "CLEAN", actionClean, -1},
 		{"filter matches the help line", []leaderOutcome{{kind: leaderFilter, text: "worktree"}}, "worktree", actionClean, -1},
-		{"backspace edits the query", []leaderOutcome{{kind: leaderFilter, text: "clx"}, {kind: leaderFilter, backspace: true}}, "cl", actionClean, -1},
+		{"backspace edits the query", []leaderOutcome{{kind: leaderFilter, text: "cleax"}, {kind: leaderFilter, backspace: true}}, "clea", actionClean, -1},
 		{"a query matching nothing empties the list", []leaderOutcome{{kind: leaderFilter, text: "zzzz"}}, "zzzz", actionNone, 0},
 		{"the highlight is clamped by a filter", []leaderOutcome{{kind: leaderMove, delta: -1}, {kind: leaderFilter, text: "clean"}}, "clean", actionClean, -1},
+		// Letters always type, so a name is found from its first letter even
+		// when that letter is another action's key (n is new session's).
+		{"a word starting with a key's letter filters", typed("start a new p"), "start a new p", actionPlanNew, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := newLeaderDialog(rows, defaultLeaderKey, false)
+			d := newLeaderDialog(rows, defaultLeaderKey)
 			for _, o := range tc.steps {
 				d.apply(o)
 			}
@@ -685,13 +522,13 @@ func TestLeaderDialogFilterAndMove(t *testing.T) {
 // past the box), the box fits the terminal's height, and a dimmed row shows
 // its reason.
 func TestLeaderDialogView(t *testing.T) {
-	rows := leaderRows(leaderConds{hasActiveProject: true})
+	rows := actionRows(levelProject, defaultLeaderKey, leaderConds{hasActiveProject: true})
 	for _, sz := range []struct {
 		name string
 		w, h int
 	}{{"80x24", 80, 24}, {"120x40", 120, 40}} {
 		t.Run(sz.name, func(t *testing.T) {
-			d := newLeaderDialog(rows, defaultLeaderKey, false)
+			d := newLeaderDialog(rows, defaultLeaderKey)
 			out := d.view(sz.w, sz.h)
 			lines := strings.Split(out, "\n")
 			if len(lines) > sz.h-2*modalMargin {
@@ -705,20 +542,20 @@ func TestLeaderDialogView(t *testing.T) {
 			if !strings.Contains(out, "no session selected") {
 				t.Errorf("a dimmed row's reason is not shown:\n%s", out)
 			}
-			if !strings.Contains(out, "new session") {
+			if !strings.Contains(out, "go in") {
 				t.Errorf("the first row is not shown:\n%s", out)
 			}
 		})
 	}
 	t.Run("empty filter says so", func(t *testing.T) {
-		d := newLeaderDialog(rows, defaultLeaderKey, false)
+		d := newLeaderDialog(rows, defaultLeaderKey)
 		d.apply(leaderOutcome{kind: leaderFilter, text: "zzzz"})
 		if out := d.view(80, 24); !strings.Contains(out, "no action matches") {
 			t.Errorf("empty list does not say so:\n%s", out)
 		}
 	})
 	t.Run("highlight scrolls into view", func(t *testing.T) {
-		d := newLeaderDialog(rows, defaultLeaderKey, false)
+		d := newLeaderDialog(rows, defaultLeaderKey)
 		d.apply(leaderOutcome{kind: leaderMove, delta: -1}) // wraps to the last row
 		last := rows[len(rows)-1]
 		if out := d.view(80, 24); !strings.Contains(out, last.name) {

@@ -173,9 +173,9 @@ func TestWedgedSessionIsDetectedSurfacedAndRecoveredEndToEnd(t *testing.T) {
 
 	// Stage 5: the pane explains the wedge without erasing the evidence.
 	screen := awaitScreen(t, pane, "session unresponsive", e2eBudget)
-	// The banner names the leader chord (ctrl+] r), since a bare r is the
-	// agent's key now.
-	if want := leaderChord(defaultLeaderKey, actionRestart); !strings.Contains(screen, want) {
+	// The banner names the way out of the Agent and then the restart key
+	// (ctrl+] esc then r), since a bare r is the agent's key there.
+	if want := wedgeHintDashboard(defaultLeaderKey); !strings.Contains(screen, want) {
 		t.Errorf("the wedge banner never named the recovery chord %q:\n%s", want, screen)
 	}
 	if !strings.Contains(screen, e2eOldBanner) {

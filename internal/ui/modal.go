@@ -100,6 +100,46 @@ func layModal(frame, box string, width, height int) string {
 	).Render()
 }
 
+// composeAgent lays the Agent's pane (box) over the Project frame at (x, y),
+// the place agentBoxRect gives it, rather than centred: the agent box is
+// §3.8's "screen less 1 column each side" between the top bar and the status
+// bar, and the PTY, the cursor and the mouse are all measured from that same
+// rectangle (paneScreenGeometry), so it cannot be placed by a centring that
+// rounds differently when the top bar grows a row.
+//
+// The frame under it is dimmed as composeModal dims (dimFrame, overlayDim):
+// the Agent is an overlay over the Project (§4.3). keepStatus leaves the
+// status bar, the frame's last row, at full strength: it is the dashboard's
+// own voice while the agent has the keyboard (the leader's "waiting for an
+// afk key", a notice after an action), and the agent box never covers it.
+// When an overlay or a dialog goes over the Agent the caller passes false,
+// so the status bar is dimmed with everything else under that box, exactly
+// once.
+//
+// boxDim dims the agent box itself, for what is laid over it next: 0 for
+// nothing, keyStripDim under the key strip, overlayDim under an overlay or a
+// dialog. Dimming the box here, rather than dimming the composited frame
+// again, is what keeps the Project under the agent from being dimmed twice
+// (composeModalOver's rule, §3.9).
+func composeAgent(frame, box string, x, y int, boxDim float64, keepStatus bool, profile colorprofile.Profile) string {
+	rows := strings.Split(frame, "\n")
+	keep := 0
+	if keepStatus && len(rows) > 1 {
+		keep = 1
+	}
+	under := dimFrame(strings.Join(rows[:len(rows)-keep], "\n"), theme.tokens, overlayDim, profile)
+	if keep > 0 {
+		under += "\n" + rows[len(rows)-1]
+	}
+	if boxDim > 0 {
+		box = dimFrame(box, theme.tokens, boxDim, profile)
+	}
+	return lipgloss.NewCompositor(
+		lipgloss.NewLayer(under),
+		lipgloss.NewLayer(box).X(max(x, 0)).Y(max(y, 0)).Z(1),
+	).Render()
+}
+
 // dialog is a small modal with a title, a few body lines and a key hint: the
 // shape every confirmation and prompt on this dashboard takes (clean, restart,
 // the failed-create report, the label editor, the one-off provider picker). Before this type they were

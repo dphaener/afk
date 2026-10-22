@@ -1,4 +1,4 @@
- afk Dashboard                             inbox 1 · 1 blocking  ctrl+] i: inbox
+ afk Dashboard                                    inbox 1 · 1 blocking  i: inbox
 ╭────────────────────────────╮╭────────────────────────────────────────────────╮
 │ Sessions                   ││ Build                                          │
 │     NAME           PHASE   ││   Overview   Waves   Stack   Notes   Diff   B… │

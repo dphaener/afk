@@ -358,10 +358,11 @@ func TestWedgeBannerHintsMatchEachSurfacesKeyHandling(t *testing.T) {
 		t.Fatalf("dashboard banner missing the wedge age: %q", dash)
 	}
 	// The banner is shown over a focused pane, where a bare r goes to the
-	// child; the leader is the one key the dashboard keeps there, so naming
-	// the leader chord is what makes the hint true in the place it is read.
-	if !strings.Contains(dash, "ctrl+] "+wedgeRecoveryKey) {
-		t.Fatalf("dashboard banner does not name the leader chord for the recovery key %q: %q", wedgeRecoveryKey, dash)
+	// child; the leader is the one key the dashboard keeps there, and restart
+	// is a Project key since T16.2, so the hint names the way out of the
+	// Agent and then the key — what makes it true in the place it is read.
+	if !strings.Contains(dash, "ctrl+] esc then "+wedgeRecoveryKey) {
+		t.Fatalf("dashboard banner does not name the way out and the recovery key %q: %q", wedgeRecoveryKey, dash)
 	}
 	if strings.Contains(dash, `ctrl+\`) {
 		t.Fatalf("dashboard banner names ctrl+\\, which the agent pane forwards to the child: %q", dash)

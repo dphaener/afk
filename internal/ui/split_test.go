@@ -103,54 +103,6 @@ func TestLayoutDimsAndMouseFrameLayoutAgreeAtNonDefaultPct(t *testing.T) {
 	}
 }
 
-func TestSetSidebarPctResizesThePane(t *testing.T) {
-	m, fp := frameModel("live", 120, 40, true)
-	defaultCols, defaultRows := m.paneRegionSize()
-	fp.resizes = nil
-
-	m.setSidebarPct(60)
-
-	if m.sidebarPct != 60 {
-		t.Fatalf("sidebarPct = %d, want 60", m.sidebarPct)
-	}
-	if len(fp.resizes) != 1 {
-		t.Fatalf("pane resized %d times, want exactly 1: %v", len(fp.resizes), fp.resizes)
-	}
-	wantCols, wantRows := m.paneRegionSize()
-	if got := fp.resizes[0]; got != [2]int{wantCols, wantRows} {
-		t.Errorf("pane resized to %v, want the new region %dx%d", got, wantCols, wantRows)
-	}
-	if wantCols >= defaultCols {
-		t.Errorf("a wider sidebar should narrow the pane: %d cols, was %d", wantCols, defaultCols)
-	}
-	if wantRows != defaultRows {
-		t.Errorf("rows changed from %d to %d on a horizontal-only move", defaultRows, wantRows)
-	}
-	if listOuter, _, _ := m.layoutDims(); listOuter != 72 {
-		t.Errorf("listOuter = %d, want 72 (60%% of 120)", listOuter)
-	}
-}
-
-func TestSetSidebarPctClamps(t *testing.T) {
-	for _, tt := range []struct{ in, want int }{
-		{-5, minSidebarPct},
-		{0, minSidebarPct},
-		{1, minSidebarPct},
-		{15, 15},
-		{38, 38},
-		{85, 85},
-		{99, maxSidebarPct},
-	} {
-		t.Run(fmt.Sprintf("in%d", tt.in), func(t *testing.T) {
-			m, _ := frameModel("live", 200, 40, true)
-			m.setSidebarPct(tt.in)
-			if m.sidebarPct != tt.want {
-				t.Errorf("setSidebarPct(%d) stored %d, want %d", tt.in, m.sidebarPct, tt.want)
-			}
-		})
-	}
-}
-
 func TestNewAppliesLoadSidebarPct(t *testing.T) {
 	tests := []struct {
 		name string

@@ -61,7 +61,7 @@ func TestSidebarRenderedWidthMatchesRenderedList(t *testing.T) {
 // The rawWidth field pins the measurement each variant's truncation behaviour
 // follows from, with a 33-character session name. Note that the three variants
 // have three different lengths, so they start truncating at three different
-// widths — the widest (focused, 70 cells) is cut at all five widths below,
+// widths — the widest (focused, 72 cells) is cut at all five widths below,
 // attach's 52-cell title only at the narrowest three. That is why the
 // truncation-actually-happened check is conditional on rawWidth rather than
 // asserted for every pair: a case where the title already fits still has to
@@ -74,8 +74,8 @@ func TestPaneTitleBlockIsAlwaysOneLine(t *testing.T) {
 		hint     string
 		rawWidth int
 	}{
-		{"dashboard focused", paneFocusHint(defaultLeaderKey), 70},
-		{"dashboard unfocused", "[enter focus view]", 55},
+		{"dashboard focused", paneFocusHint(defaultLeaderKey), 75},
+		{"dashboard unfocused", "[enter open]", 49},
 		{"attach", attachDetachHint, 52},
 	}
 
@@ -123,8 +123,7 @@ func TestPaneTitleBlockReproducesLegacyTitles(t *testing.T) {
 		hint   string
 		legacy string
 	}{
-		{paneFocusHint(defaultLeaderKey), theme.paneTitle.Render("▶ mysession" + "  [focused · ctrl+] \\ back to list]")},
-		{"[enter focus view]", theme.paneTitle.Render("▶ mysession" + "  [enter focus view]")},
+		{"[enter open]", theme.paneTitle.Render("▶ mysession" + "  [enter open]")},
 		{attachDetachHint, theme.paneTitle.Render("▶ mysession" + "  [ctrl+\\ detach]")},
 	}
 	for _, c := range cases {
@@ -134,60 +133,51 @@ func TestPaneTitleBlockReproducesLegacyTitles(t *testing.T) {
 	}
 }
 
-// TestRenderPaneKeepsGeometryWithTitleStrip pins what the T16.1 redraw must
-// not move: the pane box is the size, row for row and cell for cell, of the
-// box renderPane drew before its title became a strip, the title's words are
-// on its first inner row, and the emulator's first row starts at the same
-// column (border plus one cell of padding), which is where paneContentOrigin
-// puts every mouse event and the cursor. The strip's fill is checked too: the
-// title row wears strip out of focus and accent in focus (§3.3), and carries
-// it out to the border.
+// TestRenderPaneKeepsGeometryWithTitleStrip pins the agent pane's box: it is
+// the size, row for row and cell for cell, of a sized box of the content
+// paneContentDims gives for the agent box, the title strip ("Agent · a" and
+// the agent context, §4.3) is on its first inner row, and the emulator's
+// first row starts at the border plus one cell of padding, which is where
+// paneContentOrigin puts every mouse event and the cursor. The strip's fill
+// is the accent, carried out to the border: the pane is drawn only at the
+// Agent level, where it has the keyboard (§3.3).
 func TestRenderPaneKeepsGeometryWithTitleStrip(t *testing.T) {
 	fp := newFakePane("SCREEN-BODY")
 	m := testModel(sess("a"))
 	m.pane = fp
 	m.paneName = "a"
+	m.focus = focusRight
 
-	_, mainOuter, bodyHeight := m.layoutDims()
+	_, _, bodyHeight := m.layoutDims()
+	_, _, outerW, outerH := agentBoxRect(m.width, 0, bodyHeight)
+	contentW, _ := agentContentDims(outerW, outerH)
+	hint := paneFocusHint(defaultLeaderKey)
+	fill := "48;2;99;179;242" // tide's accent
+	legacy := sizedBox(m.paneBoxStyle(), contentW+2, outerH-boxBorderCells).
+		MaxHeight(outerH).
+		Render(lipgloss.JoinVertical(lipgloss.Left,
+			theme.paneTitle.Render("Agent · a  "+hint), fp.render))
 
-	for _, focused := range []bool{false, true} {
-		if focused {
-			m.focus = focusRight
+	got := m.renderPane(outerW, outerH)
+	gotLines, legacyLines := strings.Split(got, "\n"), strings.Split(legacy, "\n")
+	if len(gotLines) != len(legacyLines) {
+		t.Fatalf("pane box is %d rows, want %d", len(gotLines), len(legacyLines))
+	}
+	for i := range gotLines {
+		if gw, lw := lipgloss.Width(gotLines[i]), lipgloss.Width(legacyLines[i]); gw != lw || gw != outerW {
+			t.Errorf("row %d is %d cells, want %d (the agent box)", i, gw, outerW)
 		}
-
-		contentW, _ := paneContentDims(mainOuter, bodyHeight)
-		hint := "[enter focus view]"
-		fill := "48;2;22;39;74" // tide's strip
-		if focused {
-			hint = "[focused · ctrl+] \\ back to list]"
-			fill = "48;2;99;179;242" // tide's accent
-		}
-		legacy := sizedBox(m.paneBoxStyle(), contentW+2, bodyHeight-boxBorderCells).
-			MaxHeight(bodyHeight).
-			Render(lipgloss.JoinVertical(lipgloss.Left,
-				theme.paneTitle.Render("▶ a  "+hint), fp.render))
-
-		got := m.renderPane(mainOuter, bodyHeight)
-		gotLines, legacyLines := strings.Split(got, "\n"), strings.Split(legacy, "\n")
-		if len(gotLines) != len(legacyLines) {
-			t.Fatalf("focused=%v: pane box is %d rows, want the legacy %d", focused, len(gotLines), len(legacyLines))
-		}
-		for i := range gotLines {
-			if gw, lw := lipgloss.Width(gotLines[i]), lipgloss.Width(legacyLines[i]); gw != lw {
-				t.Errorf("focused=%v: row %d is %d cells, want the legacy %d", focused, i, gw, lw)
-			}
-		}
-		title := xansi.Strip(gotLines[1])
-		if !strings.HasPrefix(title, "│ ▶ a ") || !strings.Contains(title, hint) {
-			t.Errorf("focused=%v: title row = %q, want \"▶ a\" and %q", focused, title, hint)
-		}
-		if body := xansi.Strip(gotLines[2]); !strings.HasPrefix(body, "│ SCREEN-BODY") {
-			t.Errorf("focused=%v: emulator row = %q, want it at the legacy column", focused, body)
-		}
-		inner := gotLines[1][strings.Index(gotLines[1], "│")+len("│") : strings.LastIndex(gotLines[1], "│")]
-		if at, ok := bgActiveAtEveryCell(inner, fill); !ok {
-			t.Errorf("focused=%v: the title strip's fill %s stops at byte %d: %q", focused, fill, at, inner)
-		}
+	}
+	title := xansi.Strip(gotLines[1])
+	if !strings.HasPrefix(title, "│ Agent · a ") || !strings.Contains(title, hint) {
+		t.Errorf("title row = %q, want \"Agent · a\" and %q", title, hint)
+	}
+	if body := xansi.Strip(gotLines[2]); !strings.HasPrefix(body, "│ SCREEN-BODY") {
+		t.Errorf("emulator row = %q, want it at the border plus one cell", body)
+	}
+	inner := gotLines[1][strings.Index(gotLines[1], "│")+len("│") : strings.LastIndex(gotLines[1], "│")]
+	if at, ok := bgActiveAtEveryCell(inner, fill); !ok {
+		t.Errorf("the title strip's fill %s stops at byte %d: %q", fill, at, inner)
 	}
 }
 
@@ -686,22 +676,17 @@ func mouseModel(t *testing.T) (Model, *fakePane, int, int, int, int) {
 	m.pane = fp
 	m.paneName = "live"
 
-	listOuter, mainOuter, bodyHeight := m.layoutDims()
-	cols, rows := paneContentDims(mainOuter, bodyHeight)
+	cols, rows := m.paneRegionSize()
 	paneCols, paneRows := fp.Size()
 	cols, rows = mouseBounds(cols, rows, paneCols, paneRows)
-	contentW, _ := paneContentDims(mainOuter, bodyHeight)
-	originX, originY := paneContentOrigin(sidebarRenderedWidth(listOuter),
-		lipgloss.Height(m.renderHeader()),
-		paneTitleBlock(m.paneName, m.paneTitleHint(), contentW))
+	originX, originY := dashboardOrigin(m)
 	return m, fp, originX, originY, cols, rows
 }
 
 // TestMouseInPaneFollowsFocus is the mouse-follows-keyboard contract: a wheel
-// notch over the pane reaches the session only when the right side has focus.
-// With the list focused the pane is out of reach — "when on the left pane, you
-// can't control anything in the right pane" — and the wheel is dropped, not
-// deferred. The focus=right row is the old scroll-follows-mouse behaviour and
+// notch over the pane reaches the session only in the Agent. With the list
+// focused the pane is not even drawn (the Project shows the overview) — and
+// the wheel is dropped, not deferred. The focus=right row is the old scroll-follows-mouse behaviour and
 // must keep forwarding to the same cell.
 func TestMouseInPaneFollowsFocus(t *testing.T) {
 	for _, focused := range []bool{false, true} {
@@ -738,9 +723,9 @@ func TestMouseInPaneFollowsFocus(t *testing.T) {
 }
 
 // TestMouseOutsideThePaneIsDropped covers the four cells just outside the content
-// area plus the sidebar. None of them may reach the session: the sidebar has no
-// mouse behaviour, so there is nothing else for these events to mean, and clamping
-// one would deliver a real click at a cell the user never touched.
+// area plus the agent box's border. None of them may reach the session: there
+// is nothing else for these events to mean, and clamping one would deliver a
+// real click at a cell the user never touched.
 func TestMouseOutsideThePaneIsDropped(t *testing.T) {
 	m, fp, originX, originY, cols, rows := mouseModel(t)
 
@@ -752,7 +737,7 @@ func TestMouseOutsideThePaneIsDropped(t *testing.T) {
 		{"one right of the content area", originX + cols, originY},
 		{"one above the content area (the title row)", originX, originY - 1},
 		{"one below the content area", originX, originY + rows},
-		{"the sidebar", 2, originY},
+		{"the agent box's border", originX - 2, originY},
 		{"the header", originX, 0},
 	}
 	for _, c := range cases {
@@ -796,6 +781,20 @@ func TestMouseIsDroppedWhenTheDashboardOwnsInput(t *testing.T) {
 	}
 }
 
+// pressMouseKey toggles the mouse the way a person can from where m is: the
+// leader then m in the Agent. At Project there is no mouse key since T16.2 (m
+// is an Agent key, §5), so there the action is run directly: what these tests
+// claim is about the toggle — the declared mouse mode, the geometry — not
+// about which key reaches it.
+func pressMouseKey(t *testing.T, m Model) Model {
+	t.Helper()
+	if m.level() == levelAgent {
+		return pressKey(t, m, keyRune('m'))
+	}
+	m, _ = runAction(m, actionMouseToggle)
+	return m
+}
+
 // TestMouseChordTogglesRealCaptureFromBothBranches is the toggle's core contract.
 // The DECLARED mouse mode is not optional: it is what emits the real DEC
 // sequences, and without it the host terminal stays in mouse-reporting mode, so
@@ -822,7 +821,7 @@ func TestMouseChordTogglesRealCaptureFromBothBranches(t *testing.T) {
 			t.Fatalf("focused=%v: precondition — capture starts on", focused)
 		}
 
-		m = pressLeader(t, m, keyRune('g'))
+		m = pressMouseKey(t, m)
 		if m.mouseCapture {
 			t.Errorf("focused=%v: the first chord should release capture", focused)
 		}
@@ -839,7 +838,7 @@ func TestMouseChordTogglesRealCaptureFromBothBranches(t *testing.T) {
 				focused, fp.keys, fp.texts)
 		}
 
-		m = pressLeader(t, m, keyRune('g'))
+		m = pressMouseKey(t, m)
 		if !m.mouseCapture {
 			t.Errorf("focused=%v: the second chord should take capture back", focused)
 		}
@@ -1035,11 +1034,20 @@ func TestFitFrameKeepsTheHeadRowsLikeTheRenderer(t *testing.T) {
 // returns nothing a test can read, and the alternative (asserting a hand-typed
 // constant per terminal size) would pin the measurements without proving the
 // shipped code agrees with them.
+//
+// Since W3.T1 of T16.2 the pane is the agent box over the Project (§3.8): one
+// column in from each side at 100 columns and wider, the full width below,
+// from the row under the top bar. The origin is that box's border and padding
+// cell across and its border and one-row title strip down, written out here
+// rather than through agentBoxRect so a wrong box in production fails these
+// tests instead of moving both sides together.
 func dashboardOrigin(m Model) (x, y int) {
-	listOuter, mainOuter, bodyHeight, headerRows, _ := m.mouseFrameLayout()
-	contentW, _ := paneContentDims(mainOuter, bodyHeight)
-	return paneContentOrigin(sidebarRenderedWidth(listOuter), headerRows,
-		paneTitleBlock(m.paneName, m.paneTitleHint(), contentW))
+	_, _, _, headerRows, _ := m.mouseFrameLayout()
+	boxX := 1
+	if m.width < 100 {
+		boxX = 0
+	}
+	return boxX + 2, headerRows + 1 + 1
 }
 
 // attachOrigin is the same duplication on attach's side, for the same reason.
@@ -1081,7 +1089,7 @@ func TestMouseFrameLayoutAgreesWithLayoutDims(t *testing.T) {
 
 // TestPaneRegionSizeMatchesTheMousePathsInlinedDims pins the equivalence W3.T1
 // item 3 prescribed and the code inlines: routeMouse calls
-// paneContentDims(mainOuter, bodyHeight) directly instead of m.paneRegionSize(),
+// agentContentDims over the agent box directly instead of m.paneRegionSize(),
 // to avoid re-entering layoutDims and re-rendering the header and footer on every
 // event. That is only sound while the two produce the same numbers — and
 // paneRegionSize is what openPaneCmd sizes the real emulator with, so a divergence
@@ -1093,8 +1101,9 @@ func TestPaneRegionSizeMatchesTheMousePathsInlinedDims(t *testing.T) {
 				m, _ := frameModel("live", width, height, true)
 
 				wantCols, wantRows := m.paneRegionSize()
-				_, mainOuter, bodyHeight, _, _ := m.mouseFrameLayout()
-				gotCols, gotRows := paneContentDims(mainOuter, bodyHeight)
+				_, _, bodyHeight, headerRows, _ := m.mouseFrameLayout()
+				_, _, w, h := agentBoxRect(m.width, headerRows, bodyHeight)
+				gotCols, gotRows := agentContentDims(w, h)
 				if gotCols != wantCols || gotRows != wantRows {
 					t.Errorf("the mouse path's inlined region is %dx%d but paneRegionSize is %dx%d",
 						gotCols, gotRows, wantCols, wantRows)
@@ -1116,8 +1125,7 @@ func frameModel(name string, width, height int, focused bool) (Model, *fakePane)
 		m.focus = focusRight
 	}
 	m.width, m.height = width, height
-	_, mainOuter, bodyHeight := m.layoutDims()
-	fp.sizeCols, fp.sizeRows = paneContentDims(mainOuter, bodyHeight)
+	fp.sizeCols, fp.sizeRows = m.paneRegionSize()
 	return m, fp
 }
 
@@ -1139,16 +1147,15 @@ func TestDashboardContentOriginMatchesTheRenderedFrame(t *testing.T) {
 		width, height int
 		wantX, wantY  int
 	}{
-		// wantX is listOuter (the sidebar fills its full outer width — the
-		// W5.T1 fix cycle's renderList change) plus the pane box's border and
-		// padding cell. listOuter is sidebarOuterWidth: 38% of the terminal,
-		// floored at 30, so 60, 70 and 80 columns all land on the floor.
-		{"live", 80, 24, 32, 3},
-		{"live", 120, 40, 47, 3},
-		{longName, 60, 20, 32, 3},
-		{longName, 70, 20, 32, 3},
-		{longName, 90, 24, 36, 3},
-		{longName, 100, 30, 40, 3},
+		// wantX is the agent box's left edge (§3.8: column 1 from 100
+		// columns, column 0 below) plus the box's border and padding cell.
+		// The 90/100 pair is load-bearing: it straddles agentFullWidthBelow.
+		{"live", 80, 24, 2, 3},
+		{"live", 120, 40, 3, 3},
+		{longName, 60, 20, 2, 3},
+		{longName, 70, 20, 2, 3},
+		{longName, 90, 24, 2, 3},
+		{longName, 100, 30, 3, 3},
 	}
 	for _, c := range cases {
 		label := fmt.Sprintf("%dx%d name=%d", c.width, c.height, len(c.name))
@@ -1196,8 +1203,7 @@ func TestDashboardContentRegionMatchesTheRenderedFrame(t *testing.T) {
 	for _, c := range []struct{ width, height int }{{80, 24}, {120, 40}, {60, 20}} {
 		t.Run(fmt.Sprintf("%dx%d", c.width, c.height), func(t *testing.T) {
 			m, fp := frameModel("live", c.width, c.height, true)
-			_, mainOuter, bodyHeight := m.layoutDims()
-			cols, rows := paneContentDims(mainOuter, bodyHeight)
+			cols, rows := m.paneRegionSize()
 
 			// A screen with one identifiable marker per row, so the frame can be
 			// asked where the emulator's first and last rows actually landed.
@@ -1238,40 +1244,35 @@ func TestDashboardContentRegionMatchesTheRenderedFrame(t *testing.T) {
 	}
 }
 
-// TestDashboardPaneBoxGeometryUnchanged pins the rendered box's outer width and
-// its inner content width, so a future "fix" to the origin cannot pay for itself
-// by resizing the box and leaving the geometry wrong in a new way.
-//
-// The outer width is contentW + 4, NOT mainOuter: mainOuter is 50 at 80x24 while
-// the box renders 48 cells wide, and 75 against 73 at 120x40. renderPane styles
-// the box at Width(contentW+2) and lipgloss v1's Width includes the padding but
-// not the border, so the border's 2 cells are all that gets added.
+// TestDashboardPaneBoxGeometryUnchanged pins the rendered agent box's outer
+// width and its inner content width, so a future "fix" to the origin cannot
+// pay for itself by resizing the box and leaving the geometry wrong in a new
+// way. The box is §3.8's agent: the screen less one column each side (118 at
+// 120 columns), and below 100 columns the full width (80 at 80); its content
+// is that less the border and one cell of padding each side.
 func TestDashboardPaneBoxGeometryUnchanged(t *testing.T) {
 	for _, c := range []struct {
 		width, height        int
 		wantBoxW, wantInnerW int
 	}{
-		{80, 24, 48, 44},
-		{120, 40, 73, 69},
+		{80, 24, 80, 76},
+		{120, 40, 118, 114},
 	} {
 		t.Run(fmt.Sprintf("%dx%d", c.width, c.height), func(t *testing.T) {
 			m, _ := frameModel("live", c.width, c.height, true)
-			_, mainOuter, bodyHeight := m.layoutDims()
-			contentW, _ := paneContentDims(mainOuter, bodyHeight)
+			_, _, bodyHeight := m.layoutDims()
+			_, _, w, h := agentBoxRect(m.width, 0, bodyHeight)
+			contentW, _ := m.paneRegionSize()
 
 			if contentW != c.wantInnerW {
-				t.Errorf("paneContentDims cols = %d, want %d", contentW, c.wantInnerW)
+				t.Errorf("paneRegionSize cols = %d, want %d", contentW, c.wantInnerW)
 			}
-			box := m.renderPane(mainOuter, bodyHeight)
+			box := m.renderPane(w, h)
 			if got := lipgloss.Width(box); got != c.wantBoxW {
 				t.Errorf("the rendered box is %d cells wide, want %d", got, c.wantBoxW)
 			}
 			if got := lipgloss.Width(box); got != contentW+4 {
 				t.Errorf("the rendered box is %d cells wide, want contentW+4 = %d", got, contentW+4)
-			}
-			if mainOuter == contentW+4 {
-				t.Errorf("mainOuter (%d) now equals the box width — the assertion has stopped distinguishing them",
-					mainOuter)
 			}
 		})
 	}
@@ -1279,7 +1280,7 @@ func TestDashboardPaneBoxGeometryUnchanged(t *testing.T) {
 
 // TestDashboardMouseOutsideThePaneIsDropped is the out-of-bounds sweep against
 // MEASURED coordinates: the four neighbour cells around the content area, the
-// sidebar, the header, and the footer's help line. The two off-by-one neighbours
+// agent box's border, the header, and the footer's help line. The two off-by-one neighbours
 // (one cell left, one cell above) are the cases a wrong-by-one origin passes
 // every other test with.
 //
@@ -1292,8 +1293,7 @@ func TestDashboardMouseOutsideThePaneIsDropped(t *testing.T) {
 	if originX < 0 {
 		t.Fatalf("precondition: the pane's content is not in the frame")
 	}
-	_, mainOuter, bodyHeight := m.layoutDims()
-	cols, rows := paneContentDims(mainOuter, bodyHeight)
+	cols, rows := m.paneRegionSize()
 
 	cases := []struct {
 		name       string
@@ -1303,7 +1303,7 @@ func TestDashboardMouseOutsideThePaneIsDropped(t *testing.T) {
 		{"one cell above the content (the title row)", originX, originY - 1},
 		{"one cell right of the content", originX + cols, originY},
 		{"one row below the content", originX, originY + rows},
-		{"the sidebar", 2, originY},
+		{"the agent box's border", originX - 2, originY},
 		{"the header", originX, 0},
 		{"the footer's help line", originX, 23},
 	}
@@ -1317,22 +1317,16 @@ func TestDashboardMouseOutsideThePaneIsDropped(t *testing.T) {
 	}
 }
 
-// TestDashboardMouseOnANarrowTerminalFollowsTheFrame covers the widths at which
-// the main region collapses: minSidebarWidth gives the sidebar a 24-cell floor,
-// so mainOuter is 16 at a 40-column terminal and 0 at 24 or below.
+// TestDashboardMouseOnANarrowTerminalFollowsTheFrame covers narrow terminals.
+// Since W3.T1 of T16.2 the agent box takes the full width below 100 columns,
+// so the box no longer collapses with the main region beside the list; it
+// still has to agree with the mouse at every width, down to the 10 columns
+// where the content is a handful of cells.
 //
-// The plan predicted the pane box "does not render at all" at these widths and
-// that nothing would be forwarded. That is not what the frame does — see
-// issues.md. paneContentDims floors cols at 1 instead of reporting the collapse,
-// so the box always renders SOMETHING: a 5-cell box (2 border + 2 padding + 1
-// content) whose single content column the frame really does draw, and which a
-// user really can click. At 24 columns and below the box even overflows the
-// terminal's right edge.
-//
-// So the assertion is the frame-truthful one rather than the predicted one: the
-// set of cells that reach the session must be exactly the content rectangle the
-// frame draws, clipped to the cells the terminal can actually report. Every cell
-// in the terminal is swept, which is also the no-panic check.
+// The assertion is the frame-truthful one: the set of cells that reach the
+// session must be exactly the content rectangle the frame draws, clipped to
+// the cells the terminal can actually report. Every cell in the terminal is
+// swept, which is also the no-panic check.
 func TestDashboardMouseOnANarrowTerminalFollowsTheFrame(t *testing.T) {
 	// One rune, because contentW collapses to 1 and a longer sentinel would be
 	// wrapped by the box and unfindable.
@@ -1354,8 +1348,7 @@ func TestDashboardMouseOnANarrowTerminalFollowsTheFrame(t *testing.T) {
 				t.Fatalf("the frame draws the content at (%d, %d) but the mouse path computes (%d, %d)",
 					frameX, frameY, originX, originY)
 			}
-			_, mainOuter, bodyHeight := m.layoutDims()
-			cols, rows := paneContentDims(mainOuter, bodyHeight)
+			cols, rows := m.paneRegionSize()
 
 			// Sweep every cell the terminal can report and record which ones the
 			// session saw, keyed by the emulator coordinate they arrived at.
@@ -1444,8 +1437,7 @@ func TestDashboardMouseOnAShortTerminalFollowsTheVisibleFrame(t *testing.T) {
 					seenX, seenY, originX, originY, frameRows, height)
 			}
 
-			_, mainOuter, bodyHeight, _, _ := m.mouseFrameLayout()
-			cols, rows := paneContentDims(mainOuter, bodyHeight)
+			cols, rows := m.paneRegionSize()
 
 			got := map[[2]int]bool{}
 			for y := 0; y < height; y++ {
@@ -1652,8 +1644,8 @@ func TestDashboardMouseIsDroppedWhenTheDashboardOwnsInput(t *testing.T) {
 
 			col, line := findSentinel(render(m), paneSentinel)
 			if c.paneVisible {
-				if col != 32 || line != 3 {
-					t.Errorf("the pane should still be on screen at (32, 3) — the guard is about input "+
+				if col != 2 || line != 3 {
+					t.Errorf("the pane should still be on screen at (2, 3) — the guard is about input "+
 						"ownership, not visibility — but the frame has it at (%d, %d)", col, line)
 				}
 			} else if col >= 0 {
@@ -1689,49 +1681,48 @@ func TestDashboardMouseWithNoPaneIsANoOp(t *testing.T) {
 }
 
 // TestDashboardMouseForwardsByFocus is the focus routing stated as frame-truth
-// assertions: the same MEASURED cell forwards only when the keyboard is focused
-// on the right side. With the list focused, a wheel or motion event over the
-// pane forwards nothing, and a left click there is the click-to-focus gesture —
-// consumed (nothing forwarded) and focus moves right. Load-bearing: the
-// focus=list click row, which fails if the click were forwarded as well as
-// focusing.
-//
-// The origin is measured per focus state rather than once, because the two states
-// render different title hints — a difference in their widths that changed the
-// title's wrap would move the origin, and this test would then be comparing two
-// different cells.
+// assertions. In the Agent the MEASURED content cell forwards. At Project the
+// pane is not drawn at all (the overview is), so a wheel or motion event over
+// the right side forwards nothing, and a left click there is the pointer form
+// of `d`: consumed (nothing forwarded) and the overview takes the keyboard.
+// Load-bearing: the Project click row, which fails if the click were
+// forwarded to the hidden pane as well as focusing.
 func TestDashboardMouseForwardsByFocus(t *testing.T) {
 	for _, focused := range []bool{false, true} {
 		t.Run(fmt.Sprintf("focused=%v", focused), func(t *testing.T) {
 			m, fp := frameModel("live", 80, 24, focused)
 			originX, originY := findSentinel(render(m), paneSentinel)
-			if originX != 32 || originY != 3 {
-				t.Fatalf("the frame puts the content at (%d, %d), want (32, 3)", originX, originY)
-			}
-			wheel := tea.MouseWheelMsg{
-				X: originX + 5, Y: originY + 2,
-				Button: tea.MouseWheelDown,
-			}
-			motion := tea.MouseMotionMsg{X: originX + 5, Y: originY + 2, Button: tea.MouseLeft}
-			click := tea.MouseClickMsg{X: originX + 5, Y: originY + 2, Button: tea.MouseLeft}
-
 			if !focused {
-				for _, msg := range []tea.MouseMsg{wheel, motion} {
+				if originX >= 0 {
+					t.Fatalf("the pane is drawn at Project, at (%d, %d)", originX, originY)
+				}
+				x, y := rightRegionCell(m)
+				for _, msg := range []tea.MouseMsg{
+					tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown},
+					tea.MouseMotionMsg{X: x, Y: y, Button: tea.MouseLeft},
+				} {
 					if nm, cmd := update(t, m, msg); cmd != nil || nm.focus != focusList {
 						t.Errorf("%T with focus=list: cmd=%v focus=%v, want no Cmd and focus unchanged",
 							msg, cmd != nil, nm.focus)
 					}
 				}
-				nm, _ := update(t, m, click)
-				if nm.focus != focusRight {
-					t.Errorf("click over the pane with focus=list left focus=%v, want focusRight", nm.focus)
+				nm, _ := update(t, m, mouseAt(x, y))
+				if nm.focus != focusRight || nm.view != viewOverview {
+					t.Errorf("click over the overview left focus=%v view=%v, want the overview focused", nm.focus, nm.view)
 				}
 				if len(fp.mice) != 0 {
 					t.Fatalf("focus=list forwarded %v, want nothing (click is consumed)", fp.mice)
 				}
 				return
 			}
-
+			if originX != 2 || originY != 3 {
+				t.Fatalf("the frame puts the content at (%d, %d), want (2, 3)", originX, originY)
+			}
+			wheel := tea.MouseWheelMsg{
+				X: originX + 5, Y: originY + 2,
+				Button: tea.MouseWheelDown,
+			}
+			click := tea.MouseClickMsg{X: originX + 5, Y: originY + 2, Button: tea.MouseLeft}
 			update(t, m, wheel)
 			update(t, m, click)
 			if len(fp.mice) != 2 {
@@ -1749,89 +1740,95 @@ func TestDashboardMouseForwardsByFocus(t *testing.T) {
 	}
 }
 
-// TestMouseClickFocusesRightSide pins the click entrance: with the list focused
-// a left click inside the right region is enter/f — the pane installed lands
-// focus=right in the agent view, and with no pane for the selected row it
-// connects (one Cmd, focus moved at the click). The overview view focuses the
-// overview and starts no connect. Neither click is forwarded to a pane.
+// rightRegionCell is a cell on the Project's right side, the overview: five
+// columns into it, two rows under the top of the body.
+func rightRegionCell(m Model) (x, y int) {
+	listOuter, _, _, headerRows, _ := m.mouseFrameLayout()
+	return sidebarRenderedWidth(listOuter) + 5, headerRows + 2
+}
+
+// TestMouseClickFocusesRightSide pins the click entrance at Project: with the
+// list focused a left click on the right side is `d` (showDetails) — the
+// overview takes the keyboard, whatever the view was and whether or not a
+// pane is connected for the row. It never connects or dials: the click was on
+// the overview, not on an agent (W3.T1 of T16.2). Nothing is forwarded.
 func TestMouseClickFocusesRightSide(t *testing.T) {
-	t.Run("agent view, pane installed", func(t *testing.T) {
-		m, fp, originX, originY, _, _ := mouseModel(t)
-		nm, cmd := update(t, m, mouseAt(originX+1, originY+1))
-		if nm.focus != focusRight || nm.view != viewAgent {
-			t.Errorf("focus=%v view=%v, want focusRight/viewAgent", nm.focus, nm.view)
-		}
-		if cmd != nil {
-			t.Errorf("focusing an installed pane must not dial, got a Cmd")
-		}
-		if len(fp.mice) != 0 {
-			t.Errorf("click forwarded %v, want consumed", fp.mice)
-		}
-	})
-	t.Run("agent view, no pane connects", func(t *testing.T) {
-		m, _, originX, originY, _, _ := mouseModel(t)
-		m.pane, m.paneName = nil, ""
-		nm, cmd := update(t, m, mouseAt(originX+1, originY+1))
-		if nm.focus != focusRight || nm.view != viewAgent {
-			t.Errorf("focus=%v view=%v, want focusRight/viewAgent", nm.focus, nm.view)
-		}
-		if cmd == nil {
-			t.Errorf("a click with no pane must start the connect, like enter")
-		}
-	})
-	t.Run("overview view", func(t *testing.T) {
-		m, fp, originX, originY, _, _ := mouseModel(t)
-		m.view = viewOverview
-		nm, cmd := update(t, m, mouseAt(originX+1, originY+1))
-		if nm.focus != focusRight || nm.view != viewOverview {
-			t.Errorf("focus=%v view=%v, want focusRight/viewOverview", nm.focus, nm.view)
-		}
-		if cmd != nil || len(fp.mice) != 0 {
-			t.Errorf("overview click: cmd=%v forwarded=%v, want neither", cmd != nil, fp.mice)
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		prep func(m *Model)
+	}{
+		{"agent view, pane installed", func(*Model) {}},
+		{"agent view, no pane", func(m *Model) { m.pane, m.paneName = nil, "" }},
+		{"overview view", func(m *Model) { m.view = viewOverview }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, fp, _, _, _, _ := mouseModel(t)
+			tc.prep(&m)
+			x, y := rightRegionCell(m)
+			nm, cmd := update(t, m, mouseAt(x, y))
+			if nm.focus != focusRight || nm.view != viewOverview || nm.level() != levelProject {
+				t.Errorf("focus=%v view=%v level=%v, want the overview focused at Project", nm.focus, nm.view, nm.level())
+			}
+			if cmd != nil {
+				t.Errorf("a click on the overview must not dial, got a Cmd")
+			}
+			if len(fp.mice) != 0 || fp.closed != 0 {
+				t.Errorf("click forwarded %v closed %d, want consumed and the pane kept", fp.mice, fp.closed)
+			}
+		})
+	}
 	t.Run("right click does not focus", func(t *testing.T) {
-		m, _, originX, originY, _, _ := mouseModel(t)
-		nm, cmd := update(t, m, tea.MouseClickMsg{X: originX + 1, Y: originY + 1, Button: tea.MouseRight})
+		m, _, _, _, _, _ := mouseModel(t)
+		x, y := rightRegionCell(m)
+		nm, cmd := update(t, m, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseRight})
 		if nm.focus != focusList || cmd != nil {
 			t.Errorf("right click: focus=%v cmd=%v, want unchanged", nm.focus, cmd != nil)
 		}
 	})
 	t.Run("release does not focus", func(t *testing.T) {
-		m, _, originX, originY, _, _ := mouseModel(t)
-		nm, _ := update(t, m, tea.MouseReleaseMsg{X: originX + 1, Y: originY + 1, Button: tea.MouseLeft})
+		m, _, _, _, _, _ := mouseModel(t)
+		x, y := rightRegionCell(m)
+		nm, _ := update(t, m, tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
 		if nm.focus != focusList {
 			t.Errorf("release moved focus to %v", nm.focus)
 		}
 	})
 	t.Run("mouse released to the terminal", func(t *testing.T) {
-		m, _, originX, originY, _, _ := mouseModel(t)
+		m, _, _, _, _, _ := mouseModel(t)
 		m.mouseCapture = false
-		nm, _ := update(t, m, mouseAt(originX+1, originY+1))
+		x, y := rightRegionCell(m)
+		nm, _ := update(t, m, mouseAt(x, y))
 		if nm.focus != focusList {
 			t.Errorf("click with capture off moved focus to %v", nm.focus)
 		}
 	})
 }
 
-// TestMouseClickInListReturnsFocus: with the right side focused, a click in the
+// TestMouseClickInListReturnsFocus: with the overview focused, a click in the
 // list region moves focus to the list and forwards nothing; the list has no
 // other mouse behaviour, so selection is untouched. A wheel over the list is
-// dropped without moving focus.
+// dropped without moving focus. In the Agent the list is under the agent box,
+// so the same click does NOT leave the Agent (the leader then esc does): that
+// row is load-bearing, since a stray click beside the agent's screen must not
+// take the keyboard away from the agent.
 func TestMouseClickInListReturnsFocus(t *testing.T) {
 	for _, view := range []rightView{viewAgent, viewOverview} {
 		m, fp, _, originY, _, _ := mouseModel(t)
 		m.view = view
 		m.focus = focusRight
 		before := m.list.Index()
+		wantFocus := focusList
+		if view == viewAgent {
+			wantFocus = focusRight
+		}
 
-		nm, cmd := update(t, m, tea.MouseWheelMsg{X: 2, Y: originY, Button: tea.MouseWheelDown})
+		nm, cmd := update(t, m, tea.MouseWheelMsg{X: 1, Y: originY, Button: tea.MouseWheelDown})
 		if nm.focus != focusRight || cmd != nil {
 			t.Errorf("view=%v: wheel over the list: focus=%v cmd=%v, want unchanged", view, nm.focus, cmd != nil)
 		}
-		nm, cmd = update(t, m, mouseAt(2, originY))
-		if nm.focus != focusList || cmd != nil {
-			t.Errorf("view=%v: click in the list: focus=%v cmd=%v, want focusList and no Cmd", view, nm.focus, cmd != nil)
+		nm, cmd = update(t, m, mouseAt(1, originY))
+		if nm.focus != wantFocus || cmd != nil {
+			t.Errorf("view=%v: click in the list: focus=%v cmd=%v, want %v and no Cmd", view, nm.focus, cmd != nil, wantFocus)
 		}
 		if nm.list.Index() != before {
 			t.Errorf("view=%v: selection moved %d -> %d", view, before, nm.list.Index())
@@ -2263,7 +2260,7 @@ func TestMouseIsDroppedWhileTheTerminalOwnsIt(t *testing.T) {
 		}
 		// Released through the real chord, not by setting the field: that is what
 		// makes this the state a user can actually be in.
-		m = pressLeader(t, m, keyRune('g'))
+		m = pressMouseKey(t, m)
 		if m.mouseCapture {
 			t.Fatalf("precondition: ctrl+] g must release capture")
 		}
@@ -2280,7 +2277,7 @@ func TestMouseIsDroppedWhileTheTerminalOwnsIt(t *testing.T) {
 
 		// And taking it back restores forwarding, so the guard is a gate and not a
 		// one-way door.
-		m = pressLeader(t, m, keyRune('g'))
+		m = pressMouseKey(t, m)
 		if !m.mouseCapture {
 			t.Fatalf("the second chord must retake capture")
 		}
@@ -2594,13 +2591,15 @@ func TestMouseCaptureStateIsVisibleInTheRenderedFrame(t *testing.T) {
 // (TestMouseIsDroppedWhileTheTerminalOwnsIt). Both of this test's original claims
 // are made; only the state each is made in is now right.
 func TestDashboardMouseChordDoesNotDisturbTheGeometry(t *testing.T) {
-	for _, focused := range []bool{false, true} {
+	// Only in the Agent: since W3.T1 of T16.2 the pane is drawn nowhere
+	// else, and the mouse key is an Agent key.
+	for _, focused := range []bool{true} {
 		t.Run(fmt.Sprintf("focused=%v", focused), func(t *testing.T) {
 			m, fp := frameModel("live", 80, 24, focused)
 			beforeX, beforeY := findSentinel(render(m), paneSentinel)
 
 			for press := 1; press <= 2; press++ {
-				m = pressLeader(t, m, keyRune('g'))
+				m = pressMouseKey(t, m)
 				// The chord writes a status whose toast floats over the pane's
 				// first rows (toast.go); age it out so the sentinel search reads
 				// the pane. The claim here is geometry, not the toast.
@@ -2706,8 +2705,8 @@ func TestHelpLineAt80KeepsTheDiscoverableKeysAndTheCaptureState(t *testing.T) {
 				}
 			}
 			// ctrl+t is not a list key: the unfocused line must not offer it.
-			if strings.Contains(shown, m.keys.Toggle.Help().Key) {
-				t.Errorf("the unfocused 80-column help line is %q, want no %q", shown, m.keys.Toggle.Help().Key)
+			if strings.Contains(shown, "ctrl+t") {
+				t.Errorf("the unfocused 80-column help line is %q, want no ctrl+t", shown)
 			}
 
 			focused, _ := frameModel("live", 80, 24, true)
@@ -2767,7 +2766,7 @@ func TestMouseChordIsReachableFromEveryStateThatOwnsInput(t *testing.T) {
 				s := sess("active-session")
 				s.Phase = state.PhaseExecuting
 				m := testModel(s)
-				m = pressLeader(t, m, keyRune('c'))
+				m = pressKey(t, m, keyRune('c'))
 				if m.modal != inputConfirmClean {
 					t.Fatalf("setup: expected the confirm modal, got %v", m.modal)
 				}
@@ -2813,7 +2812,7 @@ func TestMouseChordIsReachableFromEveryStateThatOwnsInput(t *testing.T) {
 			name: "creation form",
 			setUp: func(t *testing.T) Model {
 				m := testModel(sess("a"))
-				m = pressLeader(t, m, keyRune('n'))
+				m = pressKey(t, m, keyRune('n'))
 				m = typeRunes(t, m, "my-session")
 				if !m.formOpen || m.form.nameInput.Value() != "my-session" {
 					t.Fatalf("setup: form active=%v name=%q", m.formOpen, m.form.nameInput.Value())
@@ -2876,7 +2875,7 @@ func TestMouseChordDoesNotDisturbTheModalHandlersOwnKeys(t *testing.T) {
 		s := sess("active-session")
 		s.Phase = state.PhaseExecuting
 		m := testModel(s)
-		m = pressLeader(t, m, keyRune('c'))
+		m = pressKey(t, m, keyRune('c'))
 		return m
 	}
 	spawnErr := func(t *testing.T) Model {
@@ -2923,7 +2922,7 @@ func TestMouseChordDoesNotDisturbTheModalHandlersOwnKeys(t *testing.T) {
 	})
 	t.Run("form esc is still the only exit", func(t *testing.T) {
 		m := testModel(sess("a"))
-		m = pressLeader(t, m, keyRune('n'))
+		m = pressKey(t, m, keyRune('n'))
 		got, _ := update(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 		if got.formOpen {
 			t.Errorf("esc should close the form")
@@ -2931,7 +2930,7 @@ func TestMouseChordDoesNotDisturbTheModalHandlersOwnKeys(t *testing.T) {
 	})
 	t.Run("form still types an ordinary rune", func(t *testing.T) {
 		m := testModel(sess("a"))
-		m = pressLeader(t, m, keyRune('n'))
+		m = pressKey(t, m, keyRune('n'))
 		m = typeRunes(t, m, "abc")
 		if got := m.form.nameInput.Value(); got != "abc" {
 			t.Errorf("the name buffer is %q, want %q", got, "abc")
@@ -2976,8 +2975,8 @@ func TestMouseChordIsDroppedFromTheModalsRenderedFrame(t *testing.T) {
 // The setup is the real disagreement, not a contrived one: the emulator is
 // resized only on tea.WindowSizeMsg, so any layout change that is not a terminal
 // resize leaves the emulator LARGER than the region it is drawn into. At an 80x24
-// terminal the dashboard's region is 46x18 against an 80x24 emulator, so a click
-// 46 columns right of the origin, or 18 rows below it, is inside the emulator and
+// terminal the dashboard's region is 76x19 against an 80x24 emulator, so a click
+// 76 columns right of the origin, or 19 rows below it, is inside the emulator and
 // outside the box — and delivering it would put a click on the dashboard's help
 // line onto the session's row 18.
 //
@@ -2993,8 +2992,7 @@ func TestMouseBoundsMinimumIsAppliedByBothCallers(t *testing.T) {
 		m.focus = focusRight
 		m.width, m.height = 80, 24
 		// Left at newFakePane's 80x24 default on purpose: that IS the disagreement.
-		_, mainOuter, bodyHeight := m.layoutDims()
-		regionCols, regionRows := paneContentDims(mainOuter, bodyHeight)
+		regionCols, regionRows := m.paneRegionSize()
 		paneCols, paneRows := fp.Size()
 		if paneCols <= regionCols || paneRows <= regionRows {
 			t.Fatalf("precondition: the emulator (%dx%d) must be larger than the region (%dx%d) "+
@@ -3145,10 +3143,10 @@ func TestAttachProgramOptionsAskTheTerminalForMouseReports(t *testing.T) {
 // this asserts the constant itself rather than a transformation of it — a
 // transformation would have absorbed the very drift being tested for.
 func TestMouseCaptureTextNamesTheRealChord(t *testing.T) {
-	// The dashboard's hint names the leader chord (ctrl+] g); the bare
+	// The dashboard's hint names the Agent's chord (ctrl+] m); the bare
 	// ctrl+g survives only inside overlays and in afk attach, so the hint is
-	// pinned to the leader table and the key binding to mouseChordKey.
-	hintChord := leaderChord(defaultLeaderKey, actionMouseToggle)
+	// pinned to the key table and the key binding to mouseChordKey.
+	hintChord := keyName(defaultLeaderKey, levelAgent, actionMouseToggle)
 	chord := mouseChordKey
 
 	// The leader New would set with no [dash] leader configured.

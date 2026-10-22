@@ -37,4 +37,4 @@
 │                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-enter switch · esc close · ↑/k up · ↓/j down · ctrl+] P pause · ctrl+] U resume · ctrl+] actions · pgup page up …       
+enter open · ↑/k up · ↓/j down · : actions · ? keys · q quit                                                            

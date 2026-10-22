@@ -1,0 +1,40 @@
+ afk Dashboard                                                                                                          
+╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
+│ ╭─ keys ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ All projects ─enter▸ Project ─enter▸ Agent ◂esc                                                                  │ │
+│ │                                                                                                                  │ │
+│ │  In the agent every key goes to the agent: press ctrl+] first                                                    │ │
+│ │                                                                                                                  │ │
+│ │ Everywhere (in the agent, press ctrl+] first)            Agent, after ctrl+]                                     │ │
+│ │ esc  Go back a level, or close what is open              ctrl+] d       Show the selected session's details      │ │
+│ │ /    Jump to another project                             ctrl+] m       Let the terminal select text, or take    │ │
+│ │ :    Search every action by name, the ones with no key                  the mouse back                           │ │
+│ │      too                                                 ctrl+] ctrl+]  Send ctrl+] itself to the agent          │ │
+│ │ i    Read and answer the inbox                                                                                   │ │
+│ │ R    Take a fresh usage reading for the header, as afk   By name, from :                                         │ │
+│ │      usage --refresh does                                extend the plan                                         │ │
+│ │ ?    Show every key, level by level                                      Start a planning session that adds      │ │
+│ │ q    Leave the dashboard; every session keeps running                    work to the plan                        │ │
+│ │                                                          amend the plan  Change the plan; asks what to change    │ │
+│ │ All projects                                                             in a sentence                           │ │
+│ │ j k ↑ ↓ pgup pgdn home end                               fix a bug       Find and fix a bug; asks what is        │ │
+│ │                 Move the selection                                       broken                                  │ │
+│ │ enter           Go in a level, or open what is           reconcile the plan with a document                      │ │
+│ │                 selected                                                 Fit the plan to a document; asks for    │ │
+│ │ n               Plan a project that has no plan; asks                    its path                                │ │
+│ │                 for its folder or a new name             check the plan  Show the plan's errors and warnings,    │ │
+│ │ +               Put a folder on the daemon's list, as                    as afk plan lint does                   │ │
+│ │                 afk project add does                     approve the plan                                        │ │
+│ │ -               Take the selected project off the                        Approve a new plan and start its        │ │
+│ │                 daemon's list; its files stay                            build, as afk plan approve does         │ │
+│ │                                                          start a new plan                                        │ │
+│ │ Project                                                                  Plan a project that has no plan; asks   │ │
+│ │ j k ↑ ↓ pgup pgdn home end                                               for its folder or a new name            │ │
+│ │                 Move the selection                                                                               │ │
+│ │ enter           Go in a level, or open what is                                                                   │ │
+│ │                 selected                                                                                         │ │
+│ │ d               Show the selected session's details                                                              │ │
+│ │ p               Hold the build so no new task starts,                                                            │ │
+│ ╰───────────────────────────────────────────────────────────────── / search · j/k scroll · esc close · 1–30 of 44 ─╯ │
+╰───────────────────────────────────────────╯╰───────────────────────────────────── enter: open · c: clean · l: label ─╯
+/ search · j/k scroll · esc close · ctrl+c quit                                                                         

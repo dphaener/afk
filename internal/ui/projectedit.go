@@ -1,5 +1,5 @@
-// projectedit.go is the all-projects screen's add and remove (T7.10): the two
-// leader rows (ctrl+] + and ctrl+] -), the two-step form add opens,
+// projectedit.go is the all-projects screen's add and remove (T7.10): the
+// `+` and `-` keys at All projects, the two-step form add opens,
 // the y/n confirm remove raises, and the notices their results become.
 //
 // Nothing here reads or writes config.toml. The work is Deps.AddProject and
@@ -60,13 +60,13 @@ const (
 	ProjectFailed = "failed"
 )
 
-// projectEditOpenScreenFirst is both rows' reason away from the all-projects
-// screen: they act on its rows, which are not on screen. A function and not
-// one of the constants below because it names the all-projects chord, whose
-// leader config.toml sets (T9.2); the chord is read from the leader table, so
-// it cannot name a key that does not open the screen.
+// projectEditOpenScreenFirst is both rows' reason away from All projects:
+// they act on its rows, which are not on screen. A function and not one of
+// the constants below because it names the key that goes there, read from the
+// key table (esc from a project's view), so it cannot name a key that does
+// not.
 func projectEditOpenScreenFirst(leader string) string {
-	return "Open the all-projects screen first (" + leaderChord(leader, actionAllProjects) + ")."
+	return "Go back to All projects first (" + keyName(leader, levelProject, actionGoBack) + ")."
 }
 
 // The add form's and the remove confirm's own words. Constants because the
@@ -140,7 +140,7 @@ func reasonSentence(reason string) string {
 	return strings.ToUpper(reason[:1]) + reason[1:] + "."
 }
 
-// openProjectAdd is ctrl+] + on the all-projects screen: the add form's
+// openProjectAdd is `+` at All projects: the add form's
 // first step, asking for the folder. No file is read and no seam is called.
 func (m Model) openProjectAdd() (tea.Model, tea.Cmd) {
 	if reason := projectEditBlockedReason(actionProjectAdd, m.leaderConditions()); reason != "" {
@@ -290,7 +290,7 @@ func (m *Model) clearProjectAdd() {
 	m.projectAddInput = textinput.Model{}
 }
 
-// openProjectRemove is ctrl+] - on the all-projects screen: the confirm
+// openProjectRemove is `-` at All projects: the confirm
 // for the selected row. It copies the row, so y removes the project the
 // dialog names even if a refresh re-sorts the rows under it.
 func (m Model) openProjectRemove() (tea.Model, tea.Cmd) {

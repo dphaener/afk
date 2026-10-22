@@ -167,7 +167,7 @@ The daemon builds the projects listed as `[[project]]` in `config.toml` (see [co
 - `afk project add` — Lists a project. `DIR` is the current folder unless you give one, and from inside a session's worktree it lists the main checkout. The folder must be a git repository. `--name` sets the name it is known by; the default is the folder name. It creates `config.toml` (and its folder) if there is none. A folder that is already listed is not an error: it says so and changes nothing.
 - `afk project remove` — Takes a project out of the list by name or folder. The project's own files and any session that is running are left alone.
 
-The dashboard's all-projects screen does the same two jobs: `ctrl+] +` adds a folder and `ctrl+] -` removes the selected project, with the same refusals as `afk project add` and `afk project remove` (see [`afk dash`](dashboard.md#afk-dash--launch-the-dashboard)). The web page does the same two jobs with the same words: its **Add an existing project** and **Remove a project** buttons on the overview add a folder and remove a project, and a change shows on the page once the daemon next reads the list (see [the web page](web.md#the-web-page)).
+The dashboard's all-projects screen does the same two jobs: `+` adds a folder and `-` removes the selected project, with the same refusals as `afk project add` and `afk project remove` (see [`afk dash`](dashboard.md#afk-dash--launch-the-dashboard)). The web page does the same two jobs with the same words: its **Add an existing project** and **Remove a project** buttons on the overview add a folder and remove a project, and a change shows on the page once the daemon next reads the list (see [the web page](web.md#the-web-page)).
 
 A running `afk daemon` reads the project list again on every look (every tick), so it picks changes up within a few seconds and does not need a restart. The daemon does not read `[dash]`. The project list is the only setting it re-reads: the tick and everything under `[daemon]`, `[governor]`, `[web]` and `provider` are read once at the start, so restart `afk daemon` after changing any of them. If `config.toml` becomes unreadable while the daemon runs, it keeps the projects it had and logs the problem once. The web page shows a new project one look later than the daemon does.
 
@@ -182,6 +182,6 @@ afk resume [project]
 
 `afk pause` writes `.afk/build/paused` in the project's main checkout, so the daemon starts no new task there. A task that is running finishes, and a parked task is not started again until you resume. `afk resume` removes the file, and it also clears a stopped line (see "The stopped line" in the daemon section), printing which of the two it cleared. `project` is a project name from `config.toml` or a folder; with nothing given it is the current folder's main checkout, even from inside a session's worktree.
 
-The Pause and Resume buttons on the daemon's web page (see [the web page](web.md)), and `ctrl+] P` and `ctrl+] U` in `afk dash`, do the same thing.
+The Pause and Resume buttons on the daemon's web page (see [the web page](web.md)), and `p` at Project in `afk dash`, do the same thing.
 
 **Exit codes:** 0 when done (resuming a project that was not paused or stopped is still 0), 1 when the project or the config could not be used or the file could not be written or removed, 2 when the command was written wrongly.

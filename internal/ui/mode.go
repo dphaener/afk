@@ -75,17 +75,12 @@ const (
 	// type — only a highlight to move, a choice to confirm, and esc. Nothing is
 	// created until enter, which is what lets esc be a clean no-op.
 	inputPickProvider
-	// inputFilter is the session list's filter prompt (`/`): while it is open
-	// the list component owns every unclaimed key, because there is a query to
-	// type rather than an answer to give. It is derived from the component's
-	// own state (list.Model.SettingFilter), not from a flag beside it.
-	inputFilter
 	// inputSwitcher is the project-switcher overlay (Model.switcherOpen).
 	inputSwitcher
 	// inputForm is the session-creation form (Model.formOpen).
 	inputForm
-	// inputPane is a focused pane: every key but the leader forwards to the
-	// child.
+	// inputPane is a focused pane, the Agent level: every key but the leader
+	// forwards to the child.
 	inputPane
 	// inputDetail is a FOCUSED detail pane: the summary/diff view in the main
 	// region owns the keyboard so its viewport can be scrolled with the keys a
@@ -94,24 +89,17 @@ const (
 	// this process owns — and the two are mutually exclusive by construction
 	// (see modeSnapshot's two conjunctions).
 	inputDetail
-	// inputResize is the pane-resize mode (Model.resizing), entered with
-	// ctrl+] w: h/l and the arrows move the sidebar/main divider live,
-	// ctrl+w commits and persists the split, esc restores the width at entry.
-	// It swallows every key it does not bind, so a stray letter cannot open,
-	// clean or steal a session mid-resize.
-	inputResize
 	// inputInbox is the inbox overlay (Model.inboxOpen): a list of the
 	// project's inbox items and, one level in, an item with a field to answer
 	// it. Every key is the component's, as in the switcher, and it has no
 	// parent rule at all — see its spec in newModeRegistry for
 	// why not even the quit chord.
 	inputInbox
-	// inputLeader is the actions dialog the leader key (ctrl+]) opens
-	// (Model.leaderOpen, leader.go). Every key is the dialog's: an action's key
-	// runs it, other letters filter, enter runs the highlighted row, esc
-	// closes. It is opened from the list, the overview (and the agent
-	// placeholder) and the agent pane, which is why its place in
-	// modePrecedence is above all three.
+	// inputLeader is the `:` actions search (Model.leaderOpen, leader.go,
+	// §4.7). Every key but ctrl+c is the search's: letters always type into
+	// the query, enter runs the highlighted row, esc closes. It is opened at
+	// every level (the leader then `:` in the Agent), which is why its place
+	// in modePrecedence is above the list, the overview and the agent pane.
 	inputLeader
 	// inputPlanText is the plan actions' one-line form (planstart.go): amend
 	// asks for a sentence, reconcile for a document's path, "fix a bug" for
@@ -187,6 +175,15 @@ const (
 	// overlay, not a footer modal: it asks nothing, and a create's failure
 	// report must still outrank it.
 	inputTaskTokens
+	// inputKeyStrip is the key strip the leader shows in the Agent
+	// (Model.keyStripOpen, keystrip.go, §4.8): the next key runs an Agent
+	// key, the leader again sends one leader to the agent, esc goes back to
+	// Project, and any other key closes the strip and sends nothing.
+	inputKeyStrip
+	// inputKeys is the keys overlay `?` opens (Model.keysOpen,
+	// keysoverlay.go, §4.9): every key, level by level, with `/` narrowing
+	// the rows. Every key but ctrl+c is the overlay's, as in the plan check.
+	inputKeys
 
 	// inputModeCount bounds the enum for exhaustive iteration (the registry
 	// completeness tests).
@@ -208,8 +205,6 @@ func (m inputMode) String() string {
 		return "edit-label"
 	case inputPickProvider:
 		return "pick-provider"
-	case inputFilter:
-		return "filter"
 	case inputSwitcher:
 		return "switcher"
 	case inputForm:
@@ -218,8 +213,6 @@ func (m inputMode) String() string {
 		return "pane"
 	case inputDetail:
 		return "detail"
-	case inputResize:
-		return "resize"
 	case inputInbox:
 		return "inbox"
 	case inputLeader:
@@ -252,6 +245,10 @@ func (m inputMode) String() string {
 		return "confirm-task-status"
 	case inputTaskTokens:
 		return "task-tokens"
+	case inputKeyStrip:
+		return "key-strip"
+	case inputKeys:
+		return "keys"
 	}
 	return "unknown"
 }
@@ -291,10 +288,6 @@ type modeState struct {
 	switcherOpen bool
 	// formOpen mirrors Model.formOpen.
 	formOpen bool
-	// listFiltering is Model.list.SettingFilter() — the session list's own
-	// filter-editing state, read from the component rather than mirrored into a
-	// flag beside it, so the two cannot drift.
-	listFiltering bool
 	// focus and view mirror Model.focus and Model.view verbatim: the two axes
 	// of the focus model (see paneFocus and rightView in model.go). They are
 	// copied raw, not masked, so the derivation below is the ONE place that
@@ -320,10 +313,10 @@ type modeState struct {
 	allProjectsOpen bool
 	// leaderOpen mirrors Model.leaderOpen.
 	leaderOpen bool
-	// resizing mirrors Model.resizing. It needs no conjunction: resize mode
-	// moves the divider between surfaces that are always drawn, whichever of
-	// them happens to be in the main region.
-	resizing bool
+	// keyStrip mirrors Model.keyStripOpen.
+	keyStrip bool
+	// keysOpen mirrors Model.keysOpen.
+	keysOpen bool
 }
 
 // modeSnapshot builds the modeState the dispatch derives from. This is the
@@ -335,7 +328,6 @@ func (m Model) modeSnapshot() modeState {
 		modal:           m.modal,
 		switcherOpen:    m.switcherOpen,
 		formOpen:        m.formOpen,
-		listFiltering:   m.list.SettingFilter(),
 		focus:           m.focus,
 		view:            m.view,
 		pane:            m.paneForSelection(),
@@ -344,7 +336,8 @@ func (m Model) modeSnapshot() modeState {
 		taskTokensOpen:  m.taskTokensOpen,
 		allProjectsOpen: m.allProjectsOpen,
 		leaderOpen:      m.leaderOpen,
-		resizing:        m.resizing,
+		keyStrip:        m.keyStripOpen,
+		keysOpen:        m.keysOpen,
 	}
 }
 
@@ -412,46 +405,54 @@ type modeLayer struct {
 //     model.go:872-895 documents that in words, and it is reachable because
 //     spawnFinishedMsg raises the modal asynchronously under an open overlay
 //     or form. Their relative order is immaterial (one enum field holds them).
-//   - The actions dialog (the leader key's) sits directly below the modals
-//     and above every other overlay. Below the modals for the switcher's
-//     reason: a create can fail underneath and its report must get the
-//     keyboard. Above everything else because it is opened from the list, the
-//     overview and a FOCUSED AGENT PANE, and its mode has to outrank the
-//     pane's or the keys typed into the dialog would reach the agent behind
-//     it. Nothing else is open when it appears (the leader is a rule only in
-//     normal, detail and pane mode), so its rank against the other overlays
-//     only matters for an attach that lands focused underneath — and the
-//     dialog is what is on screen then.
+//   - The `:` actions search sits directly below the modals and above every
+//     other overlay. Below the modals for the switcher's reason: a create can
+//     fail underneath and its report must get the keyboard. Above everything
+//     else because it is opened at every level, the Agent included, and its
+//     mode has to outrank the pane's or the letters typed into the query
+//     would reach the agent behind it. Nothing else is open when it appears,
+//     so its rank against the other overlays only matters for an attach that
+//     lands focused underneath — and the search is what is on screen then.
+//   - The keys overlay (`?`, T16.2) sits directly below the search, for the
+//     search's reason: it is opened at every level, the Agent included (the
+//     leader then `?`), and the keyboard stays in the Agent behind it, so it
+//     must outrank the pane or the letters typed into its filter would reach
+//     the agent. It outranks the key strip because the strip closes on the
+//     key that opens it.
+//   - The key strip (T16.2) sits directly below the keys overlay. It is shown only
+//     in the Agent, so its predicate carries the Agent's facts (the right
+//     side focused in the agent view) as well as its flag: a flag left set
+//     after a non-key path moved the focus (an agent that exited) must not
+//     take the keyboard from the list. It outranks the pane, whose every key
+//     goes to the agent, because the strip is what the next key is for.
 //   - The switcher outranks the form (unreachable in practice, but views.go
 //     orders the frame this way so frame and keys agree) and outranks a
 //     focused pane (reachable: a focusOnArrival attach landing under the
 //     overlay — "keys go to the overlay, because the overlay is what is on
 //     screen").
 //   - The inbox overlay sits beside the switcher, directly below it. It is
-//     opened only through the actions dialog, so no other overlay is up
-//     when it appears and its place among them is declared for the frame's
-//     sake: views.go composes the overlays in this order. Below the modals for the switcher's reason (a
-//     create can fail underneath and its report must get the keyboard), and
-//     above the form, the filter prompt, resize mode and both right-side
-//     focuses, so a pane that arrives focused under it cannot take keys
-//     meant for the answer field.
+//     opened by `i`, which closes nothing, so no other overlay is up when it
+//     appears and its place among them is declared for the frame's sake:
+//     views.go composes the overlays in this order. Below the modals for the
+//     switcher's reason (a create can fail underneath and its report must get
+//     the keyboard), and above the form and both right-side
+//     focuses, so a pane that arrives focused under it cannot take keys meant
+//     for the answer field.
 //   - The check-the-plan overlay sits directly below the inbox, for the
-//     inbox's reasons: it is opened only through the actions dialog, so no
-//     other overlay is up when it appears, and it outranks the form, the
-//     filter prompt, resize mode and both right-side focuses so a pane that
-//     arrives focused under it cannot take the scroll keys.
+//     inbox's reasons: it is opened only from the `:` search, so no other
+//     overlay is up when it appears, and it outranks the form
+//     and both right-side focuses so a pane that arrives focused under it
+//     cannot take the scroll keys.
 //   - The tokens overlay (T7.12) sits directly below the check-the-plan
-//     overlay, for the same reasons: it is opened only through the actions
-//     dialog (or when a read it waited on lands, and then only while the
-//     Build tab has the keyboard), so no other overlay is up when it appears.
+//     overlay, for the same reasons: it is opened only by `t` on the Build
+//     tab (or when a read it waited on lands, and then only while the Build
+//     tab has the keyboard), so no other overlay is up when it appears.
 //   - The all-projects screen sits directly below the tokens overlay. It is
-//     opened only through the actions dialog, so no overlay is up when it
-//     appears, and over it the dialog runs nothing that opens one;
-//     the dialog itself outranks it, which is how pause and resume reach its
-//     rows. It outranks the form, the filter prompt, resize mode and both
-//     right-side focuses because it takes their place on screen: a pane that
-//     arrives focused while it is open (a click on a notification for this
-//     project) must not take keys meant for the rows.
+//     the All projects level, opened by esc from the session list, so no
+//     overlay is up when it appears. It outranks the form and
+//     both right-side focuses because it takes their place on screen: a pane
+//     that arrives focused while it is open (a click on a notification for
+//     this project) must not take keys meant for the rows.
 //   - The form outranks a focused pane. THIS IS THE ONE DELIBERATE CHANGE:
 //     today's if-order lets an invisible focused pane swallow every key while
 //     the form is on screen (the known uncovered corner at model.go:1613-1620,
@@ -463,8 +464,8 @@ type modeLayer struct {
 //     resumes. It becomes live behavior only when W4.T2 wires the dispatch.
 //   - A focused DETAIL pane sits directly above normal mode and below
 //     everything else: it is the weakest claim on the keyboard there is, so
-//     every modal, the dialog, the switcher, the form, the filter prompt and
-//     a focused pane all outrank it. Its position relative to inputPane is
+//     every modal, the search, the switcher, the form and a focused pane all
+//     outrank it. Its position relative to inputPane is
 //     declared rather than relied on — the two predicates are exclusive by
 //     construction (one focus value; the pane either is or is not the drawn
 //     surface) — but a hand-ordered table shadows a misplaced row silently,
@@ -475,7 +476,7 @@ type modeLayer struct {
 //     right focus in anything else is the detail — the overview, or, in agent
 //     view with no pane for a row that has an agent, the agent placeholder
 //     (connecting, restarting, lost). The placeholder is not a separate layer:
-//     Model.dispatchKey intercepts inputDetail when agentPlaceholderDrawn and
+//     Model.levelKey intercepts inputDetail when agentPlaceholderDrawn and
 //     hands the key to placeholderKey, so it shares detail's place in this
 //     table (weakest right-side claim) while answering only its own keys.
 //     Either way the keyboard follows the drawn surface and never falls
@@ -483,15 +484,9 @@ type modeLayer struct {
 //     focus is normal mode whatever the right side shows: with the list
 //     focused nothing on the right owns the keyboard, however live the pane
 //     is.
-//   - Resize mode sits below every modal and overlay and the filter prompt,
-//     so a spawn error raised mid-resize still gets the keyboard and the
-//     resize resumes once it is dismissed. It sits ABOVE a focused pane: it
-//     cannot be entered from one, so the only way the two coexist is a
-//     focus-on-arrival attach landing mid-resize, and the explicit gesture the
-//     user is in the middle of keeps the keyboard — h/l must move the divider,
-//     not type into a session that just appeared. It sits above a focused
-//     detail pane because it is entered FROM one and leaves the focus on the
-//     right, so the detail focus resumes on exit.
+//   - There is no resize mode since W3.T1 of T16.2: the Agent is drawn over
+//     the Project rather than beside the list, so nothing on screen is split
+//     and there is no divider to move.
 var modePrecedence = []modeLayer{
 	{inputConfirmClean, func(s modeState) bool { return s.modal == inputConfirmClean }},
 	{inputSpawnError, func(s modeState) bool { return s.modal == inputSpawnError }},
@@ -510,14 +505,14 @@ var modePrecedence = []modeLayer{
 	{inputTaskStatusReplacedBy, func(s modeState) bool { return s.modal == inputTaskStatusReplacedBy }},
 	{inputConfirmTaskStatus, func(s modeState) bool { return s.modal == inputConfirmTaskStatus }},
 	{inputLeader, func(s modeState) bool { return s.leaderOpen }},
+	{inputKeys, func(s modeState) bool { return s.keysOpen }},
+	{inputKeyStrip, func(s modeState) bool { return s.keyStrip && s.focus == focusRight && s.view == viewAgent }},
 	{inputSwitcher, func(s modeState) bool { return s.switcherOpen }},
 	{inputInbox, func(s modeState) bool { return s.inboxOpen }},
 	{inputPlanCheck, func(s modeState) bool { return s.planCheckOpen }},
 	{inputTaskTokens, func(s modeState) bool { return s.taskTokensOpen }},
 	{inputAllProjects, func(s modeState) bool { return s.allProjectsOpen }},
 	{inputForm, func(s modeState) bool { return s.formOpen }},
-	{inputFilter, func(s modeState) bool { return s.listFiltering }},
-	{inputResize, func(s modeState) bool { return s.resizing }},
 	{inputPane, func(s modeState) bool { return s.focus == focusRight && s.view == viewAgent && s.pane }},
 	{inputDetail, func(s modeState) bool { return s.focus == focusRight }},
 	{inputNormal, func(modeState) bool { return true }},
@@ -538,9 +533,9 @@ func activeInputMode(s modeState) inputMode {
 
 // modeAction names, symbolically, what a mode does with a key it claims.
 // applyKeyAction (model.go) binds each one to its handler — actionConfirm in
-// confirm-clean is confirmClean, actionPaneToggle is toggleView, and so
-// on. Keeping the names symbolic here is what makes the routing testable
-// without invoking any handler.
+// confirm-clean is confirmClean, actionDetails is showDetails, and so on.
+// Keeping the names symbolic here is what makes the routing testable without
+// invoking any handler.
 type modeAction int
 
 const (
@@ -549,25 +544,34 @@ const (
 
 	// Cross-cutting actions.
 	actionQuit        // requestQuit
-	actionMouseToggle // toggleMouseCapture (ctrl+g in overlays; ctrl+] g)
+	actionMouseToggle // toggleMouseCapture (ctrl+g in overlays; ctrl+] m in the Agent)
 
-	// Pane actions.
-	actionPaneToggle // toggleView (ctrl+] t, right focus only)
-	actionPaneClose  // an open pane from the list: ctrl+] \ closes (detaches)
+	// The key table's level actions (keytable.go, T16.2). Moving, going in
+	// and going back are outcomes of decideKey rather than actions to run,
+	// because what they do depends on the level; they are actions too so
+	// the key table's rows can name them.
+	//
+	// actionMove is the move keys (j k ↑ ↓ pgup pgdn home end). Which way is
+	// read from the key itself, so one action stands for all of them.
+	actionMove
+	// actionGoIn is enter: in one level, or open what is selected.
+	actionGoIn
+	// actionGoBack is esc: out one level.
+	actionGoBack
+	// actionActionsSearch is `:`, the actions-by-name search (§4.7).
+	actionActionsSearch
+	// actionKeys is `?`: the keys overlay (openKeys, keysoverlay.go).
+	actionKeys
+	// actionPauseToggle is `p`, one toggle replacing the leader's P and U:
+	// pause a running build, resume a paused or stopped one.
+	actionPauseToggle
+	// actionDetails is `d`, the selected session's details. Until T16.5
+	// builds the details overlay it gives the overview the keyboard (A2).
+	actionDetails
 
-	// actionDetailUnfocus is "back to list": esc on the focused overview, and
-	// ctrl+] \ from anywhere on the right side. From the overview it is
-	// releaseDetailFocus; from the agent pane and its placeholder the
-	// dialog runs those surfaces' own releases instead (runLeaderRow),
-	// because each clears different state and says different things.
-	actionDetailUnfocus
-
-	// Session-list and overview actions. Since T7.2 the list and the
-	// overview keep rules only for moving about, enter and esc; every other
-	// action here runs from the leader table (leader.go).
+	// Session-list and overview actions.
 	actionCursorUp
 	actionCursorDown
-	actionFocusPane
 	actionNewSession
 	actionScratch
 	actionProjects
@@ -595,24 +599,9 @@ const (
 	actionDetailTabNext
 	actionDetailTabPrev
 	actionDetailTabJump
-	actionFilterStart
-	actionFilterClear
-	actionBuild       // ctrl+] b: showBuildTab
-	actionInbox       // ctrl+] i: openInbox
-	actionPauseBuild  // ctrl+] P: pauseBuild
-	actionResumeBuild // ctrl+] U: resumeBuild
-	actionEnterResize // ctrl+] w: enterResize
-	// actionOpenLeader is ctrl+], the leader key: it opens the actions
-	// dialog (leader.go, openLeader in model.go). It is a rule in normal,
-	// detail and pane mode and nowhere else, and it is not in the leader
-	// table — the dialog must never list the key that opened it.
-	actionOpenLeader
-	// actionHelp shows or hides the full help on the session list
-	// (toggleFullHelp): ctrl+] ? from anywhere, and esc on the list while
-	// the full help is shown (guarded on routeConds.helpShown).
-	actionHelp
-	// The five plan actions (planstart.go). They have no key after the
-	// leader: the dialog reaches them by name only (leaderTable).
+	actionInbox // i: openInbox
+	// The five plan actions (planstart.go). They have no key: the `:`
+	// search reaches them by name only (keyTable).
 	actionPlanExtend    // startPlanExtend
 	actionPlanAmend     // openPlanTextForm(amend)
 	actionPlanReconcile // openPlanTextForm(reconcile)
@@ -625,49 +614,30 @@ const (
 	// actionPlanApprove is "approve the plan" (T7.8): openPlanApprove raises
 	// the confirm (planapprove.go). By name only, like the plan actions.
 	actionPlanApprove
-	// actionAllProjects is "all projects" (T7.9, ctrl+] A): it opens the
-	// all-projects screen, or closes it when it is open (allprojects.go).
-	actionAllProjects
-	// The all-projects screen's own keys: move (clamped), switch to the
-	// selected project, close.
+	// The all-projects screen's move keys, clamped (moveAllProjects).
 	actionAllProjectsUp
 	actionAllProjectsDown
 	actionAllProjectsPageUp
 	actionAllProjectsPageDown
 	actionAllProjectsTop
 	actionAllProjectsBottom
-	actionAllProjectsSwitch
-	actionAllProjectsClose
-	// actionProjectAdd and actionProjectRemove are the all-projects screen's
-	// add and remove (T7.10, ctrl+] + and ctrl+] -): add opens the
-	// two-step form, remove raises the y/n confirm for the selected row
-	// (projectedit.go). They run only while the screen is open.
+	// actionProjectAdd and actionProjectRemove are All projects' `+` and `-`
+	// (T7.10): add opens the two-step form, remove raises the y/n confirm for
+	// the selected row (projectedit.go).
 	actionProjectAdd
 	actionProjectRemove
-	// actionTaskStatus is "set this task's status" (T7.11, ctrl+] S): it
-	// opens the status picker for the Build tab's cursor row
-	// (taskstatus.go). It runs only on the Build tab with the right side
-	// focused.
+	// actionTaskStatus is "set this task's status" (T7.11, `s`): it opens
+	// the status picker for the Build tab's cursor row (taskstatus.go). It
+	// runs only on the Build tab with the right side focused.
 	actionTaskStatus
-	// actionTaskTokens is "show this task's tokens" (T7.12, ctrl+] T):
-	// it opens the tokens overlay for the Build tab's cursor row
-	// (tasktokens.go). It runs only on the Build tab with the right side
-	// focused.
+	// actionTaskTokens is "show this task's tokens" (T7.12, `t`): it opens
+	// the tokens overlay for the Build tab's cursor row (tasktokens.go). It
+	// runs only on the Build tab with the right side focused.
 	actionTaskTokens
-	// actionRefreshUsage is "refresh usage" (T7.13, ctrl+] R): it takes
-	// a fresh usage reading through Deps.RefreshUsage, off the screen-drawing
-	// path, and the header shows it when it lands (usagerefresh.go).
+	// actionRefreshUsage is "read usage" (T7.13, `R`): it takes a fresh
+	// usage reading through Deps.RefreshUsage, off the screen-drawing path,
+	// and the header shows it when it lands (usagerefresh.go).
 	actionRefreshUsage
-
-	// Resize-mode actions. Exit commits (and persists) the split; cancel
-	// restores the width resize mode was entered at. The four nudges move the
-	// divider by resizeStep or resizeBigStep percentage points.
-	actionExitResize
-	actionCancelResize
-	actionResizeLeft
-	actionResizeRight
-	actionResizeLeftBig
-	actionResizeRightBig
 
 	// Modal answers.
 	actionConfirm      // y/Y in the two y/n confirmations; enter in the provider picker
@@ -693,159 +663,79 @@ const (
 	actionFormPrevField
 )
 
+// actionNames is each action's name for test-failure output; nothing
+// renders it.
+var actionNames = map[modeAction]string{
+	actionNone:                "none",
+	actionQuit:                "quit",
+	actionMouseToggle:         "mouse-toggle",
+	actionMove:                "move",
+	actionGoIn:                "go-in",
+	actionGoBack:              "go-back",
+	actionActionsSearch:       "actions-search",
+	actionKeys:                "keys",
+	actionPauseToggle:         "pause-toggle",
+	actionDetails:             "details",
+	actionCursorUp:            "cursor-up",
+	actionCursorDown:          "cursor-down",
+	actionNewSession:          "new-session",
+	actionScratch:             "scratch",
+	actionProjects:            "projects",
+	actionClean:               "clean",
+	actionRestart:             "restart",
+	actionEditLabel:           "edit-label",
+	actionPageUp:              "page-up",
+	actionPageDown:            "page-down",
+	actionListTop:             "list-top",
+	actionListBottom:          "list-bottom",
+	actionDetailScrollUp:      "detail-scroll-up",
+	actionDetailScrollDown:    "detail-scroll-down",
+	actionDetailHalfPageUp:    "detail-half-page-up",
+	actionDetailHalfPageDown:  "detail-half-page-down",
+	actionDetailPageUp:        "detail-page-up",
+	actionDetailPageDown:      "detail-page-down",
+	actionDetailGotoTop:       "detail-goto-top",
+	actionDetailGotoBottom:    "detail-goto-bottom",
+	actionDetailTabNext:       "detail-tab-next",
+	actionDetailTabPrev:       "detail-tab-prev",
+	actionDetailTabJump:       "detail-tab-jump",
+	actionInbox:               "inbox",
+	actionPlanExtend:          "plan-extend",
+	actionPlanAmend:           "plan-amend",
+	actionPlanReconcile:       "plan-reconcile",
+	actionPlanFix:             "plan-fix",
+	actionPlanNew:             "plan-new",
+	actionPlanCheck:           "plan-check",
+	actionPlanApprove:         "plan-approve",
+	actionAllProjectsUp:       "all-projects-up",
+	actionAllProjectsDown:     "all-projects-down",
+	actionAllProjectsPageUp:   "all-projects-page-up",
+	actionAllProjectsPageDown: "all-projects-page-down",
+	actionAllProjectsTop:      "all-projects-top",
+	actionAllProjectsBottom:   "all-projects-bottom",
+	actionProjectAdd:          "project-add",
+	actionProjectRemove:       "project-remove",
+	actionTaskStatus:          "task-status",
+	actionTaskTokens:          "task-tokens",
+	actionRefreshUsage:        "refresh-usage",
+	actionConfirm:             "confirm",
+	actionDeny:                "deny",
+	actionCancel:              "cancel",
+	actionDismiss:             "dismiss",
+	actionSubmit:              "submit",
+	actionDeleteBranch:        "delete-branch",
+	actionPickerUp:            "picker-up",
+	actionPickerDown:          "picker-down",
+	actionFormCancel:          "form-cancel",
+	actionFormSubmit:          "form-submit",
+	actionFormNextField:       "form-next-field",
+	actionFormPrevField:       "form-prev-field",
+}
+
 // String exists for test-failure output; nothing renders it.
 func (a modeAction) String() string {
-	switch a {
-	case actionNone:
-		return "none"
-	case actionQuit:
-		return "quit"
-	case actionMouseToggle:
-		return "mouse-toggle"
-	case actionPaneToggle:
-		return "pane-toggle"
-	case actionPaneClose:
-		return "pane-close"
-	case actionDetailUnfocus:
-		return "detail-unfocus"
-	case actionCursorUp:
-		return "cursor-up"
-	case actionCursorDown:
-		return "cursor-down"
-	case actionFocusPane:
-		return "focus-pane"
-	case actionNewSession:
-		return "new-session"
-	case actionScratch:
-		return "scratch"
-	case actionProjects:
-		return "projects"
-	case actionClean:
-		return "clean"
-	case actionRestart:
-		return "restart"
-	case actionEditLabel:
-		return "edit-label"
-	case actionPageUp:
-		return "page-up"
-	case actionPageDown:
-		return "page-down"
-	case actionListTop:
-		return "list-top"
-	case actionListBottom:
-		return "list-bottom"
-	case actionDetailScrollUp:
-		return "detail-scroll-up"
-	case actionDetailScrollDown:
-		return "detail-scroll-down"
-	case actionDetailHalfPageUp:
-		return "detail-half-page-up"
-	case actionDetailHalfPageDown:
-		return "detail-half-page-down"
-	case actionDetailPageUp:
-		return "detail-page-up"
-	case actionDetailPageDown:
-		return "detail-page-down"
-	case actionDetailGotoTop:
-		return "detail-goto-top"
-	case actionDetailGotoBottom:
-		return "detail-goto-bottom"
-	case actionFilterStart:
-		return "filter-start"
-	case actionFilterClear:
-		return "filter-clear"
-	case actionBuild:
-		return "build"
-	case actionInbox:
-		return "inbox"
-	case actionPauseBuild:
-		return "pause-build"
-	case actionResumeBuild:
-		return "resume-build"
-	case actionEnterResize:
-		return "enter-resize"
-	case actionOpenLeader:
-		return "open-leader"
-	case actionHelp:
-		return "help"
-	case actionPlanExtend:
-		return "plan-extend"
-	case actionPlanAmend:
-		return "plan-amend"
-	case actionPlanReconcile:
-		return "plan-reconcile"
-	case actionPlanFix:
-		return "plan-fix"
-	case actionPlanNew:
-		return "plan-new"
-	case actionPlanCheck:
-		return "plan-check"
-	case actionPlanApprove:
-		return "plan-approve"
-	case actionAllProjects:
-		return "all-projects"
-	case actionAllProjectsUp:
-		return "all-projects-up"
-	case actionAllProjectsDown:
-		return "all-projects-down"
-	case actionAllProjectsPageUp:
-		return "all-projects-page-up"
-	case actionAllProjectsPageDown:
-		return "all-projects-page-down"
-	case actionAllProjectsTop:
-		return "all-projects-top"
-	case actionAllProjectsBottom:
-		return "all-projects-bottom"
-	case actionAllProjectsSwitch:
-		return "all-projects-switch"
-	case actionAllProjectsClose:
-		return "all-projects-close"
-	case actionProjectAdd:
-		return "project-add"
-	case actionProjectRemove:
-		return "project-remove"
-	case actionTaskStatus:
-		return "task-status"
-	case actionTaskTokens:
-		return "task-tokens"
-	case actionRefreshUsage:
-		return "refresh-usage"
-	case actionExitResize:
-		return "exit-resize"
-	case actionCancelResize:
-		return "cancel-resize"
-	case actionResizeLeft:
-		return "resize-left"
-	case actionResizeRight:
-		return "resize-right"
-	case actionResizeLeftBig:
-		return "resize-left-big"
-	case actionResizeRightBig:
-		return "resize-right-big"
-	case actionConfirm:
-		return "confirm"
-	case actionDeny:
-		return "deny"
-	case actionCancel:
-		return "cancel"
-	case actionDismiss:
-		return "dismiss"
-	case actionSubmit:
-		return "submit"
-	case actionDeleteBranch:
-		return "delete-branch"
-	case actionPickerUp:
-		return "picker-up"
-	case actionPickerDown:
-		return "picker-down"
-	case actionFormCancel:
-		return "form-cancel"
-	case actionFormSubmit:
-		return "form-submit"
-	case actionFormNextField:
-		return "form-next-field"
-	case actionFormPrevField:
-		return "form-prev-field"
+	if n, ok := actionNames[a]; ok {
+		return n
 	}
 	return "unknown"
 }
@@ -892,22 +782,12 @@ type keyDecision struct {
 
 // routeConds are the ambient facts a routing rule may be guarded on, evaluated
 // by the caller and passed as plain data so routing stays a pure function.
-// Both guards are on normal mode's esc, which does one of two things or
-// nothing.
+// Since T16.2 the level keys (keytable.go) decide enter and esc, which were
+// the guarded rules, so no rule reads a guard; paneOpen stays for the
+// blocked reasons (leaderConds.paneOpen) and for a later guarded rule.
 type routeConds struct {
-	// paneOpen is "an agent pane is installed". No rule is guarded on it
-	// since T7.2 moved close-pane under the leader; the dialog's blocked
-	// reason reads it (leaderConds.paneOpen).
+	// paneOpen is "an agent pane is installed".
 	paneOpen bool
-	// listFiltered is "the session list has a filter applied". Esc clears one,
-	// and must fall through to ignored when there is nothing to clear: bound
-	// unconditionally it would cancel a pending preview on every stray Esc.
-	listFiltered bool
-	// helpShown is "the full help is on screen" (Model.helpShowAll). Esc
-	// closes it before it clears a filter: the help covers the footer, and
-	// the gesture that put it there was ctrl+] ?, so esc is the one key
-	// out that needs no lookup.
-	helpShown bool
 }
 
 // modeRule is one row of a mode's routing table: a binding, the action it
@@ -918,10 +798,6 @@ type modeRule struct {
 	// needsPane gates the rule on routeConds.paneOpen. The zero value
 	// (ungated) is the common case.
 	needsPane bool
-	// needsFilter gates the rule on routeConds.listFiltered.
-	needsFilter bool
-	// needsHelp gates the rule on routeConds.helpShown.
-	needsHelp bool
 }
 
 // modeKeyMap is one mode's action surface for Wave 6's help.Model: the
@@ -983,27 +859,6 @@ var (
 	)
 )
 
-// resizeToggleKey is ctrl+w, resize mode's commit chord, named by the keys
-// resizeHints looks the commit binding up by. Since T7.2 it is no longer a
-// rule outside resize mode: the way in is ctrl+] w (leader.go), and in a
-// focused agent pane ctrl+w is the agent's (delete-word in a shell or an
-// editor). Inside resize mode the commit is a separate binding with its own
-// help text (see newModeRegistry), because the footer must say "save" there.
-var resizeToggleKey = key.NewBinding(
-	key.WithKeys("ctrl+w"),
-	key.WithHelp("ctrl+w", "resize panes"),
-)
-
-// unfocusPaneKey is the agent view's "back to the list" as the placeholder's
-// footer line names it (renderHelp, views.go). It is help-only: since T7.2
-// no surface answers ctrl+\ — the agent pane types it to the agent, and back
-// to the list is ctrl+] \ (leader.go) — so nothing matches it; it is
-// declared once so the footer lines that name it read the same binding.
-var unfocusPaneKey = key.NewBinding(
-	key.WithKeys("ctrl+\\"),
-	key.WithHelp("ctrl+\\", "return to dashboard"),
-)
-
 // The all-projects screen's keys (inputAllProjects). They are declared fresh
 // rather than sharing the list's bindings for the reason detailFocusUp gives:
 // the list's carry the session list's help text.
@@ -1032,14 +887,6 @@ var (
 		key.WithKeys("end"),
 		key.WithHelp("end", "last project"),
 	)
-	allProjectsSwitchKey = key.NewBinding(
-		key.WithKeys("enter"),
-		key.WithHelp("enter", "switch"),
-	)
-	allProjectsCloseKey = key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "close"),
-	)
 )
 
 // modeRegistry holds every mode's spec, indexed by inputMode.
@@ -1062,12 +909,6 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 		if rule.needsPane && !conds.paneOpen {
 			continue
 		}
-		if rule.needsFilter && !conds.listFiltered {
-			continue
-		}
-		if rule.needsHelp && !conds.helpShown {
-			continue
-		}
 		if key.Matches(k, rule.binding) {
 			return keyDecision{kind: routeAction, action: rule.action}
 		}
@@ -1083,46 +924,35 @@ func (r *modeRegistry) route(mode inputMode, conds routeConds, k tea.KeyPressMsg
 // the strings views.go renders today.
 //
 // The rule tables transcribe the old handlers; each mode's comment names its
-// source. Since T7.2 the list, the overview and the agent pane carry no
-// action rules: every action runs from the leader table (leader.go), the
-// owner's choice recorded in docs/decisions.md "## T7.2". Two cross-cutting
-// facts the tables encode, both verified against every handler (see
-// decisions.md for the audit):
+// source. Since T16.2 the level modes — the list, the overview, All projects,
+// the agent pane and the key strip — carry no action rules: the key table
+// (keytable.go) and decideKey (levels.go) say what a key does there, and
+// Model.levelKey runs it. Their specs keep only the keys that are the
+// surface's own (the list's cursor, the overview's scroll and tabs, the
+// screen's rows), which levelKey routes a move key and an unlisted key
+// through. Two cross-cutting facts the tables encode, both verified against
+// every handler (see decisions.md for the audit):
 //
-//   - ctrl+g (keys.Mouse) is a rule in every overlay, form, prompt, confirm
-//     and in resize mode, except the switcher and the inbox overlay. The
+//   - ctrl+g (keys.Mouse) is a rule in every overlay, form, prompt and
+//     confirm, except the switcher and the inbox overlay. The
 //     switcher's omission is documented intent (model.go:2161-2165): the
 //     overlay replaces the pane in the main region, so there is no session
-//     output behind it worth selecting, and one Esc away the leader's `g`
-//     works. In the inbox overlay the chord closes the overlay (see its spec
-//     below). On the list, the overview and the agent pane it is ctrl+] g;
-//     in the pane ctrl+g itself is the agent's.
-//   - ctrl+c quits from the modals, the switcher, the list and the overview,
-//     is deliberately component fall-through in the form (the name buffer is
-//     worth protecting from a stray chord —
-//     TestFormSwallowsQuitKeysEscIsOnlyExit), and forwards to the child in a
-//     focused pane (the session owns SIGINT semantics).
+//     output behind it worth selecting. In the inbox overlay the chord closes
+//     the overlay (see its spec below). In the Agent it is ctrl+] m; in the
+//     pane ctrl+g itself is the agent's.
+//   - ctrl+c quits from the modals, the switcher, the actions search and,
+//     through decideKey, All projects and Project; it is deliberately
+//     component fall-through in the form (the name buffer is worth
+//     protecting from a stray chord — TestFormSwallowsQuitKeysEscIsOnlyExit),
+//     and goes to the agent in the Agent (the session owns SIGINT semantics).
 func newModeRegistry(keys keyMap) modeRegistry {
-	// leader is the leader key's name, read from keys.Leader (which New sets
-	// from config.toml's [dash] leader) so the help-only entries below name
-	// the same key the rules match.
-	leader := keys.Leader.Keys()[0]
-	// quitChord is ctrl+c ALONE, not keys.Quit: the modals and the switcher
-	// must let `q` through as an ordinary character (it answers nothing in a
-	// y/n modal, filters in the switcher, and types into the label prompt),
-	// so only normal mode routes through the two-key Quit binding.
+	// quitChord is ctrl+c ALONE, not q as well: the modals, the switcher and
+	// the actions search must let `q` through as an ordinary character (it
+	// answers nothing in a y/n modal, filters in the switcher and the search,
+	// and types into the label prompt).
 	quitChord := key.NewBinding(
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("ctrl+c", "quit"),
-	)
-	// releaseDetail is the focused detail pane's way out. esc is safe to
-	// bind unguarded in this mode for the reason it is NOT in normal mode:
-	// inputNormal's filterClear owns esc there, and mode precedence — not rule
-	// order — keeps an applied filter intact while the detail pane is focused.
-	// It was esc/ctrl+\ before T7.2; ctrl+\ is ctrl+] \ now.
-	releaseDetail := key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "back to list"),
 	)
 	// Modal answers. y/n carry per-modal help ("clean" vs "restart") so Wave 6
 	// renders the same words the confirm bars use today.
@@ -1364,178 +1194,81 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		key.WithKeys("end"),
 		key.WithHelp("end", "bottom"),
 	)
-	// Esc clears an applied session filter, and is GATED on there being one
-	// (needsFilter): unbound Esc means nothing in normal mode today, and an
-	// ungated rule here would bump previewGen — cancelling a pending preview —
-	// on every stray press.
-	filterClear := key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "clear filter"),
-	)
-	// The filter prompt's own keys are the COMPONENT's, declared help-only for
-	// the same reason the switcher's are: bubbles stages them inside
-	// list.Model.Update (esc cancels, enter/tab accept), and re-declaring them as
-	// rules here would implement them twice. The key set mirrors
-	// list.DefaultKeyMap().AcceptWhileFiltering verbatim (decisions.md's
-	// list-owned-key table) rather than "enter" alone: tab, shift+tab, the two
-	// ctrl move keys, and up/down all accept the filter too, and the help label
-	// stays "enter" on the same shorthand bubbles' own default uses for this
-	// binding.
-	filterAccept := key.NewBinding(
-		key.WithKeys("enter", "tab", "shift+tab", "ctrl+k", "up", "ctrl+j", "down"),
-		key.WithHelp("enter", "apply filter"),
-	)
-	filterCancel := key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "cancel filter"),
-	)
-	// Resize-mode keys (inputResize only). h/l and the arrows are free here
-	// for the reason the focused detail pane's scroll keys are: resize mode
-	// binds nothing else, so there is no list cursor or label key to collide
-	// with. Shift moves five points; H and L are the vim-style spelling of the
-	// same thing, since many terminals send shift+h as plain "H".
-	resizeCommit := key.NewBinding(
-		key.WithKeys("ctrl+w"),
-		key.WithHelp("ctrl+w", "save split"),
-	)
-	resizeCancel := key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "cancel"),
-	)
-	resizeLeft := key.NewBinding(
-		key.WithKeys("h", "left"),
-		key.WithHelp("h/←", "narrow list"),
-	)
-	resizeRight := key.NewBinding(
-		key.WithKeys("l", "right"),
-		key.WithHelp("l/→", "widen list"),
-	)
-	resizeLeftBig := key.NewBinding(
-		key.WithKeys("H", "shift+left"),
-		key.WithHelp("H/shift+←", "narrow list ×5"),
-	)
-	resizeRightBig := key.NewBinding(
-		key.WithKeys("L", "shift+right"),
-		key.WithHelp("L/shift+→", "widen list ×5"),
-	)
-
-	// helpClose is esc closing the full help on the list (docs/decisions.md
-	// T7.2, A5). It is a rule but not in the keymap below: the full help's
-	// own line says how it closes (renderNormalHelpKeyMap appends that), and
-	// a second esc row beside clear-filter would read as a duplicate.
-	helpClose := key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "close help"),
-	)
-
 	var r modeRegistry
 
-	// Normal mode is list focus. Since T7.2 it keeps only the keys that move
-	// around (the owner's choice, PLAN T7.2): the cursor, paging, enter to
-	// focus the right side, esc to close the full help or clear a filter,
-	// ctrl+c to quit, and the leader, through which every other action runs
-	// (leader.go). Every other key falls through to routeIgnored, and
-	// dispatchKey turns a removed letter into a notice naming its new key
-	// (removedKeyNotice) — after routing, so no rule here could be shadowed
-	// by it.
+	// Normal mode is list focus at Project, and the empty state at All
+	// projects (no project open). Since T16.2 its rules are only the list's
+	// cursor and paging keys: levelKey (model.go) asks decideKey first, and a
+	// move key comes here to say which way the list moves. Every other key is
+	// the key table's (keytable.go) — enter, esc, ctrl+c and the action
+	// letters — or nothing, so a key the table does not list falls through
+	// to routeIgnored.
 	//
 	// The overview's scroll and tab keys are deliberately absent: with the
 	// list focused the user's model is that nothing on the right is under
 	// control — "When on the left pane, you can't control anything in the
 	// right pane" (plan Context).
-	//
-	// Esc closes the full help before it clears a filter: the help is the
-	// thing on top, and both are guarded, so with neither shown esc is
-	// ignored and cancels no pending preview.
 	r[inputNormal] = modeSpec{
 		mode: inputNormal,
 		rules: []modeRule{
-			{binding: quitChord, action: actionQuit},
 			{binding: keys.Up, action: actionCursorUp},
 			{binding: keys.Down, action: actionCursorDown},
-			{binding: keys.Focus, action: actionFocusPane},
-			{binding: helpClose, action: actionHelp, needsHelp: true},
-			{binding: filterClear, action: actionFilterClear, needsFilter: true},
 			{binding: pageUp, action: actionPageUp},
 			{binding: pageDown, action: actionPageDown},
 			{binding: listTop, action: actionListTop},
 			{binding: listBottom, action: actionListBottom},
-			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeIgnored,
-		// Help order is independent of rule order: Focus, the one way to the
-		// right side, follows movement immediately.
 		keys: modeKeyMap{bindings: []key.Binding{
-			keys.Up, keys.Down, keys.Focus,
-			pageUp, pageDown, listTop, listBottom,
-			filterClear, keys.Leader, quitChord,
+			keys.Up, keys.Down, pageUp, pageDown, listTop, listBottom,
 		}},
 	}
 
-	// Filter mode is the session list's `/` prompt. Only the two chords the
-	// dashboard owns everywhere are rules; the query text and the accept/cancel
-	// gestures are the component's (see filterAccept's comment). ctrl+c quits,
-	// following the switcher's filter rather than the creation form's — a
-	// throwaway query is not the name buffer the form protects.
-	r[inputFilter] = modeSpec{
-		mode: inputFilter,
-		rules: []modeRule{
-			{binding: keys.Mouse, action: actionMouseToggle},
-			{binding: quitChord, action: actionQuit},
-		},
-		fall: routeComponent,
-		keys: modeKeyMap{bindings: []key.Binding{
-			filterAccept, filterCancel, keys.Mouse, quitChord,
-		}},
-	}
-
-	// Pane mode is right focus in agent view with the selected row's pane
-	// installed. Since T7.2 exactly one key is the dashboard's: the leader
-	// (ctrl+]). Everything else forwards to the child — esc, q, tab,
-	// ctrl+c (the session owns SIGINT), Ctrl+Space (the leader before T9.1,
-	// now sent on as NUL), and the chords the dashboard used to keep here,
-	// ctrl+t, ctrl+\ and ctrl+g, which are ctrl+] t, \ and g now. Adding a rule here takes a key away from every agent the
-	// dashboard hosts, which is why the plan pins this set.
-	//
-	// The agent does not lose the leader either: pressed twice, the dialog
-	// closes and sends the leader on (leaderComponentKey, model.go).
+	// Pane mode is the Agent: right focus in agent view with the selected
+	// row's pane installed. Exactly one key is the dashboard's: the leader
+	// (ctrl+] by default), which shows the key strip (inputKeyStrip).
+	// Everything else forwards to the child — esc, q, tab, ctrl+c (the
+	// session owns SIGINT), Ctrl+Space (sent on as NUL), and every letter.
+	// decideKey (levels.go) is what says so; this spec has no rule, and its
+	// fall-through is the child for a caller that routes through it. Adding
+	// a rule here takes a key away from every agent the dashboard hosts,
+	// which is why the plan pins this set.
 	r[inputPane] = modeSpec{
 		mode: inputPane,
-		rules: []modeRule{
-			{binding: keys.Leader, action: actionOpenLeader},
-		},
 		fall: routeChild,
 		keys: modeKeyMap{bindings: []key.Binding{keys.Leader}},
 	}
 
-	// Detail mode is a focused detail pane. Its key set is ENUMERATED rather
-	// than inherited: the fall-through is routeIgnored, so everything this
-	// table omits — enter and every letter — is swallowed, which is the
+	// The key strip (keystrip.go) is the leader's in the Agent. Every key is
+	// decideKey's: an Agent key runs, the leader passes one leader on, any
+	// other key closes the strip. The bindings are help-only, for the status
+	// bar while it is up.
+	r[inputKeyStrip] = modeSpec{
+		mode: inputKeyStrip,
+		fall: routeIgnored,
+		keys: modeKeyMap{bindings: []key.Binding{keys.Leader}},
+	}
+
+	// Detail mode is a focused overview, at Project. Its rule set is
+	// ENUMERATED rather than inherited: the fall-through is routeIgnored, so
+	// everything this table and the key table omit is swallowed, which is the
 	// point. A scroll gesture must never open, clean or steal a session, and
 	// "ignored" is the only disposition that guarantees it for keys nobody
 	// has thought of yet.
 	//
-	// What survives, and why: esc, the release (or the state is a trap);
-	// ctrl+c, so the dashboard can always be left (A3); the three tab keys,
-	// because switching tabs is reading — the same gesture as scrolling; the
-	// ten scroll keys: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end;
-	// and the leader, through which the overview's actions run since T7.2
-	// (agent or overview, back to list, restart, build tasks, inbox, pause,
-	// resume, resize, the mouse and quit — leader.go). These scroll and tab
-	// keys are bound in this mode only: from the list they would drive the
-	// right pane.
+	// The rules are the overview's own keys: the three tab keys, because
+	// switching tabs is reading — the same gesture as scrolling — and the ten
+	// scroll keys: up/k, down/j, ctrl+u, ctrl+d, pgup, pgdown, home, end.
+	// esc, ctrl+c and the action letters are the key table's, which levelKey
+	// asks first. These scroll and tab keys are bound in this mode only: from
+	// the list they would drive the right pane.
 	//
 	// The bindings are ordered for TRUNCATION SURVIVAL, not for rule fidelity:
-	// renderHelp's default branch renders this whole keymap through one hard
-	// truncate (views.go), so position here is the only thing deciding what a
-	// narrow terminal still shows. Release first, always; the scroll keys —
-	// the least likely to need rescuing from a stray keystroke, and the most
-	// numerous — sort last.
+	// position here decides what a narrow terminal still shows, so the tab
+	// keys lead and the scroll keys — the most numerous — sort last.
 	r[inputDetail] = modeSpec{
 		mode: inputDetail,
 		rules: []modeRule{
-			{binding: releaseDetail, action: actionDetailUnfocus},
-			{binding: quitChord, action: actionQuit},
 			{binding: detailTabNextKey, action: actionDetailTabNext},
 			{binding: detailTabPrevKey, action: actionDetailTabPrev},
 			{binding: detailTabJumpKey, action: actionDetailTabJump},
@@ -1547,45 +1280,12 @@ func newModeRegistry(keys keyMap) modeRegistry {
 			{binding: detailPageDown, action: actionDetailPageDown},
 			{binding: detailGotoTop, action: actionDetailGotoTop},
 			{binding: detailGotoBottom, action: actionDetailGotoBottom},
-			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
-			releaseDetail, keys.Leader, quitChord,
 			detailTabNextKey, detailTabPrevKey, detailTabJumpKey,
 			detailFocusUp, detailFocusDown, detailHalfPageUp, detailHalfPageDown,
 			detailPageUp, detailPageDown, detailGotoTop, detailGotoBottom,
-		}},
-	}
-
-	// Resize mode moves the sidebar/main divider. Like detail mode its key set
-	// is ENUMERATED with an ignored fall-through: everything else is swallowed,
-	// so no letter can open, clean or steal a session while the user is
-	// tapping h/l. q/ctrl+c quit and ctrl+g toggles the mouse; T7.2 left
-	// every key here as it was (A4). The leader is deliberately absent:
-	// switching the right side or opening anything mid-resize changes what
-	// the user is sizing, and one ctrl+w away it works.
-	//
-	// The bindings are ordered for truncation survival, as detail mode's are:
-	// renderHelp's default branch hard-truncates this keymap at the terminal
-	// width, so the commit and cancel keys lead and stay legible at 80
-	// columns.
-	r[inputResize] = modeSpec{
-		mode: inputResize,
-		rules: []modeRule{
-			{binding: resizeCommit, action: actionExitResize},
-			{binding: resizeCancel, action: actionCancelResize},
-			{binding: resizeLeft, action: actionResizeLeft},
-			{binding: resizeRight, action: actionResizeRight},
-			{binding: resizeLeftBig, action: actionResizeLeftBig},
-			{binding: resizeRightBig, action: actionResizeRightBig},
-			{binding: keys.Quit, action: actionQuit},
-			{binding: keys.Mouse, action: actionMouseToggle},
-		},
-		fall: routeIgnored,
-		keys: modeKeyMap{bindings: []key.Binding{
-			resizeCommit, resizeCancel, resizeLeft, resizeRight,
-			resizeLeftBig, resizeRightBig, keys.Quit, keys.Mouse,
 		}},
 	}
 
@@ -1609,16 +1309,20 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		}},
 	}
 
-	// Leader mode is the actions dialog (leader.go). It has NO parent rule:
-	// every key is the dialog's, decided by leaderKeyDecision, because every
-	// key worth asking about is either one of the dialog's own gestures or
-	// the key of an action it lists — q and ctrl+c run the quit row, g the
-	// mouse row. A parent rule would answer a key before the dialog could. The bindings are help-only, for the footer while it is up.
+	// Leader mode is the `:` actions search (leader.go). Its one parent
+	// rule is ctrl+c, so the dashboard can always be left: since T16.2
+	// letters always type into the query (§4.7), so q is a letter here and
+	// the quit row is run by name. Every other key is the search's, decided
+	// by leaderKeyDecision. The other bindings are help-only, for the footer
+	// while it is up.
 	r[inputLeader] = modeSpec{
 		mode: inputLeader,
+		rules: []modeRule{
+			{binding: quitChord, action: actionQuit},
+		},
 		fall: routeComponent,
 		keys: modeKeyMap{bindings: []key.Binding{
-			leaderRunKey, leaderMoveKey, leaderFilterKey, leaderCloseKey, leaderAgainBinding(leader),
+			leaderRunKey, leaderMoveKey, leaderFilterKey, leaderCloseKey, quitChord,
 		}},
 	}
 
@@ -1679,40 +1383,42 @@ func newModeRegistry(keys keyMap) modeRegistry {
 		keys: modeKeyMap{bindings: append(taskTokensKeys(), quitChord)},
 	}
 
-	// All-projects mode is the screen's (allprojects.go). Its key set is
-	// ENUMERATED with an ignored fall-through, as detail mode's is: the screen
-	// has nothing to type, so a stray letter must do nothing rather than
-	// reach the list hidden under it. The movement keys are its own bindings,
-	// not the list's, so the footer says what they move. ctrl+c quits, as it
-	// does over the switcher, because nothing typed can be lost here. The
-	// leader is a rule, unlike in the overlays: pause and resume act on the
-	// selected row and are reached through it, and the dialog over the screen
-	// dims everything else (leaderBlockedReason). Pause and resume are in the
-	// keymap as help only, named with their leader chords, so the footer says
-	// how to reach them; the bindings are ordered for truncation survival,
-	// enter and esc first.
+	// Keys mode (`?`, keysoverlay.go) is the plan check's shape for the plan
+	// check's reasons: ctrl+c quits, since the overlay holds nothing worth
+	// keeping, and every other key is the overlay's, staged in
+	// keysKeyDecision, so esc's two steps and the filter are implemented
+	// once. q is not a rule: the filter types it.
+	r[inputKeys] = modeSpec{
+		mode: inputKeys,
+		rules: []modeRule{
+			{binding: quitChord, action: actionQuit},
+		},
+		fall: routeComponent,
+		keys: modeKeyMap{bindings: append(keysOverlayKeys(), quitChord)},
+	}
+
+	// All-projects mode is the screen's (allprojects.go), at the All
+	// projects level. Its rules are only the screen's move keys, which
+	// levelKey routes a move key through: enter, esc, ctrl+c and the action
+	// keys are the key table's, asked first. The fall-through is ignored, as
+	// detail mode's is: the screen has nothing to type, so a stray letter
+	// must do nothing rather than reach the list hidden under it. The
+	// movement keys are its own bindings, not the list's, so the footer says
+	// what they move.
 	r[inputAllProjects] = modeSpec{
 		mode: inputAllProjects,
 		rules: []modeRule{
-			{binding: quitChord, action: actionQuit},
 			{binding: allProjectsUpKey, action: actionAllProjectsUp},
 			{binding: allProjectsDownKey, action: actionAllProjectsDown},
 			{binding: allProjectsPageUpKey, action: actionAllProjectsPageUp},
 			{binding: allProjectsPageDownKey, action: actionAllProjectsPageDown},
 			{binding: allProjectsTopKey, action: actionAllProjectsTop},
 			{binding: allProjectsBottomKey, action: actionAllProjectsBottom},
-			{binding: allProjectsSwitchKey, action: actionAllProjectsSwitch},
-			{binding: allProjectsCloseKey, action: actionAllProjectsClose},
-			{binding: keys.Leader, action: actionOpenLeader},
 		},
 		fall: routeIgnored,
 		keys: modeKeyMap{bindings: []key.Binding{
-			allProjectsSwitchKey, allProjectsCloseKey, allProjectsUpKey, allProjectsDownKey,
-			leaderHelpBinding(leader, actionPauseBuild, "pause", true),
-			leaderHelpBinding(leader, actionResumeBuild, "resume", true),
-			keys.Leader,
+			allProjectsUpKey, allProjectsDownKey,
 			allProjectsPageUpKey, allProjectsPageDownKey, allProjectsTopKey, allProjectsBottomKey,
-			quitChord,
 		}},
 	}
 

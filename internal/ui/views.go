@@ -68,17 +68,18 @@ func (m Model) View() tea.View {
 	footer := m.renderFooter()
 	listOuter, mainOuter, bodyHeight := m.layoutDims()
 
-	// hasActiveProject is false only for a launch outside any repo with no scan
-	// result yet — zero known projects, nothing to list or show detail for — so
-	// the whole two-region split is replaced by one explanatory block instead of
-	// an empty sidebar next to an empty detail pane. Both regions' combined width
-	// goes to it, matching layoutDims' own body split (listOuter + mainOuter ==
-	// m.width) so the block isn't narrower than the space it's replacing.
+	// The body is the level under any Agent: All projects, the empty state
+	// (which stands in for All projects with no project at all), or the
+	// Project, which is the session list beside the overview. At Project the
+	// right side ALWAYS draws the overview (W3.T1 of T16.2): the agent is a
+	// level of its own, drawn over this frame below, so a pane connected for
+	// the selected row stays connected behind the overview and is simply not
+	// drawn until enter goes into it (A5).
 	var body string
-	// paneShown records whether the switch below actually PAINTED the pane, so
-	// the cursor block after SetContent cannot be reached from any other branch.
-	// "m.pane != nil" is not the same question — a hidden pane leaves the handle
-	// live while the detail view is drawn.
+	// paneShown records whether the Agent below actually PAINTED the pane, so
+	// the cursor block after SetContent cannot be reached from any other
+	// branch. "m.pane != nil" is not the same question — a pane behind the
+	// Project leaves the handle live while the overview is drawn.
 	var paneShown bool
 	if m.allProjectsOpen {
 		// The all-projects screen takes the whole body, the list's and the
@@ -94,47 +95,53 @@ func (m Model) View() tea.View {
 		// block. Full body width, matching layoutDims' own split.
 		body = m.renderEmptyState(listOuter+mainOuter, bodyHeight)
 	} else {
-		list := m.renderList(listOuter, bodyHeight)
-		// A visible pane takes over the main region; otherwise the detail pane
-		// renders. A pane that is alive behind the overview (view ==
-		// viewOverview) deliberately renders as the detail view: the pane
-		// stays alive and resizing, the detail shows the summary, and ctrl+t
-		// switches back.
-		var main string
-		switch {
-		case m.shouldRenderPane():
-			main = m.renderPane(mainOuter, bodyHeight)
-			paneShown = true
-		case m.agentPlaceholderDrawn():
-			main = m.renderAgentPlaceholder(mainOuter, bodyHeight)
-		default:
-			main = m.renderDetail(mainOuter, bodyHeight)
-		}
-		body = lipgloss.JoinHorizontal(lipgloss.Top, list, main)
+		body = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.renderList(listOuter, bodyHeight), m.renderDetail(mainOuter, bodyHeight))
 	}
 
 	frame := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 
+	// The Agent (§4.3) is a pane over the dimmed Project at §3.8's width
+	// (agentBoxRect): the live pane, or the agent placeholder for a row whose
+	// pane is not installed yet or was lost (A6). It is drawn only at the
+	// Agent level, which is what the keyboard is on, so the frame and the
+	// keys cannot disagree about whether the agent is in front.
+	var agent string
+	var agentX, agentY int
+	if m.level() == levelAgent {
+		x, y, w, h := agentBoxRect(m.width, lipgloss.Height(header), bodyHeight)
+		agentX, agentY = x, y
+		if m.shouldRenderPane() {
+			agent = m.renderPane(w, h)
+			paneShown = true
+		} else {
+			agent = m.renderAgentPlaceholder(w, h)
+		}
+	}
+
 	// The overlays float over the finished frame (modal.go) rather than
 	// replacing a region of it, so the list and the pane a person was reading
 	// stay on screen behind the box. The order matches modePrecedence — the
-	// actions dialog outranks the switcher, which outranks the inbox, which
-	// outranks the plan check, which outranks the tokens overlay, which
-	// outranks the form — so the frame and the key routing agree on which
-	// surface is on top. The six are mutually exclusive in practice (each
-	// owns every key while it is up), so this is fidelity to the precedence
-	// table, not a state a user can reach. Whatever
-	// owns the keyboard must be ON SCREEN, and that holds in the empty state
-	// too: a scan can empty the project list under an open overlay, and a
-	// component that still routes `q` while invisible would be a keyboard trap.
+	// `:` actions search outranks the keys overlay, which outranks the
+	// switcher, which outranks the inbox, which outranks the plan check,
+	// which outranks the tokens overlay, which outranks the form — so the
+	// frame and the key routing agree on which surface is on top. They are
+	// mutually exclusive in practice (each owns every key while it is up), so
+	// this is fidelity to the precedence table, not a state a user can reach.
+	// Whatever owns the keyboard must be ON SCREEN, and that holds in the
+	// empty state too: a scan can empty the project list under an open
+	// overlay, and a component that still routes `q` while invisible would be
+	// a keyboard trap.
 	var overlay string
 	switch {
 	case m.leaderOpen:
-		// The actions dialog outranks every overlay in modePrecedence. Its
+		// The `:` actions search outranks every overlay in modePrecedence. Its
 		// view takes the terminal size and sizes its own box (leader.go), from a
 		// snapshot of rows taken at open, so drawing it reads no file and
 		// runs nothing.
 		overlay = m.leader.view(m.width, m.height)
+	case m.keysOpen:
+		overlay = m.renderKeysModal()
 	case m.switcherOpen:
 		overlay = m.renderSwitcherModal()
 	case m.inboxOpen:
@@ -146,18 +153,49 @@ func (m Model) View() tea.View {
 	case m.formOpen:
 		overlay = m.renderNewFormModal()
 	}
-	if overlay != "" {
+	d, dialogUp := m.activeDialog()
+	// The key strip is not one of the centred overlays: it sits in the
+	// bottom-right corner (keystrip.go), and it is shown only in the Agent,
+	// where none of them is open.
+	strip := overlay == "" && !dialogUp && m.keyStripShown()
+
+	// Every layer under the top one is dimmed exactly once (§3.9). Over the
+	// Agent that means the Project is dimmed when the agent goes on, and the
+	// agent box itself is dimmed only by what is laid over it: the key strip
+	// dims it the strip's lighter amount, an overlay or a dialog the full
+	// one. The overlay then goes on without dimming the frame again.
+	if agent != "" {
+		boxDim := 0.0
+		keepStatus := true
+		switch {
+		case overlay != "" || dialogUp:
+			boxDim, keepStatus = overlayDim, false
+		case strip:
+			boxDim = keyStripDim
+		}
+		frame = composeAgent(frame, agent, agentX, agentY, boxDim, keepStatus, m.deps.ColorProfile)
+		if overlay != "" {
+			frame = layModal(frame, overlay, m.width, m.height)
+		}
+	} else if overlay != "" {
 		frame = composeModal(frame, overlay, m.width, m.height, m.deps.ColorProfile)
+	}
+	if strip {
+		frame = composeKeyStrip(frame, renderKeyStrip(m.leaderKey.name, m.width), m.width, m.height)
 	}
 	// A confirmation or prompt (m.modal) outranks every overlay in
 	// modePrecedence, so it is composed last and lands on top — a create that
 	// fails while the switcher is open reports over the switcher. Over an
 	// overlay it dims only that overlay's box (composeModalOver): the screen
-	// under both is already dimmed once.
-	if d, ok := m.activeDialog(); ok {
-		if overlay != "" {
+	// under both is already dimmed once. Over the Agent alone the agent box
+	// was dimmed above, so the dialog goes on as it is.
+	if dialogUp {
+		switch {
+		case overlay != "":
 			frame = composeModalOver(frame, overlay, m.renderDialog(d), m.width, m.height, m.deps.ColorProfile)
-		} else {
+		case agent != "":
+			frame = layModal(frame, m.renderDialog(d), m.width, m.height)
+		default:
 			frame = composeModal(frame, m.renderDialog(d), m.width, m.height, m.deps.ColorProfile)
 		}
 	}
@@ -248,19 +286,21 @@ func (m Model) paneForSelection() bool {
 	return s.Name == m.paneName
 }
 
-// shouldRenderPane decides whether View should render the pane or fall
-// through to renderDetail: the view is the agent's AND a pane belongs to
-// the selected row. The view is checked first and unconditionally: it is an
-// explicit ctrl+t from the user, so it outranks the cursor-derived half.
+// shouldRenderPane decides whether View draws the live pane: the right side
+// has the keyboard in the agent view AND a pane belongs to the selected row.
+// That is the Agent level with a pane (levelFacts). Since W3.T1 of T16.2 the
+// focus is part of it: at Project the right side always draws the overview,
+// and a pane connected for the row (a preview, or one left by going back)
+// stays connected behind it without being drawn (A5).
 //
-// There is no longer a "keyboard routed to the pane" clause keeping a pane
-// drawn after a discovery tick moves the cursor off its row. The two-axis
-// model cannot tell that case apart from `f` pressed on a row whose pane is
-// elsewhere, and the latter must draw the overview; keeping the paned row
+// There is no "keyboard routed to the pane" clause keeping a pane drawn after
+// a discovery tick moves the cursor off its row. The two-axis model cannot
+// tell that case apart from enter pressed on a row whose pane is elsewhere,
+// and the latter must not draw that other session; keeping the paned row
 // selected across ticks is the pane-lifecycle work this derivation leaves to
 // selection pinning rather than to a render-time exception.
 func (m Model) shouldRenderPane() bool {
-	return m.view == viewAgent && m.paneForSelection()
+	return m.focus == focusRight && m.view == viewAgent && m.paneForSelection()
 }
 
 // detailDrawn is "the detail box is the surface in the main region": the
@@ -279,7 +319,8 @@ func (m Model) detailDrawn() bool {
 }
 
 // detailInMain is "neither the pane nor the agent placeholder is drawn": with
-// either agent surface up there is no tab strip or overview to act on.
+// either agent surface up (the Agent level) the overview is under the agent
+// box, so there is no tab strip or overview to act on.
 func (m Model) detailInMain() bool {
 	return !m.shouldRenderPane() && !m.agentPlaceholderDrawn()
 }
@@ -296,27 +337,17 @@ func (m Model) detailInMain() bool {
 // agent. `r` is how such a row gets an agent again (restartSelected), never
 // enter.
 //
-// For a row that has an agent: with the right side focused the placeholder is
-// always drawn — the keyboard is on the agent surface, connecting or lost.
-// With the list focused it is drawn only for a lost pane (the row keeps
-// saying why its agent is gone) or a restart in flight; a running row with no
-// pane yet is one preview away from its agent, and shows the overview
-// meanwhile so browsing does not flash a placeholder on every move.
+// For a row that has an agent it is drawn only with the right side focused:
+// the keyboard is on the agent surface, connecting or lost, which is the
+// Agent level. With the list focused the Project draws the overview, whose
+// summary says what the row's agent is doing (W3.T1 of T16.2: the Agent is a
+// level of its own, so nothing on the Project stands in for it).
 func (m Model) agentPlaceholderDrawn() bool {
-	if m.view != viewAgent || m.paneForSelection() || !m.hasActiveProject() {
+	if m.focus != focusRight || m.view != viewAgent || m.paneForSelection() || !m.hasActiveProject() {
 		return false
 	}
 	s, ok := m.selected()
-	if !ok {
-		return m.focus == focusRight
-	}
-	if !m.rowHasAgent(s) {
-		return false
-	}
-	if s.Name == m.paneLost.name || m.restartingRow(s.Name) {
-		return true
-	}
-	return m.focus == focusRight
+	return !ok || m.rowHasAgent(s)
 }
 
 // agentCanRun is "this row has a live host an attach could reach".
@@ -386,24 +417,43 @@ func (m Model) placeholderConnectLive() bool {
 // title line, so the view reads as the agent surface it replaces, with the
 // state and the action in place of the emulator screen.
 //
-// It is the same pane part renderPane draws, the same size, with the same
-// title strip ("▶ name" on the left), so switching between the agent and its
-// placeholder moves nothing on screen.
+// It is the same pane part renderPane draws, in the same agent box, with the
+// same title strip ("Agent · name" on the left), so switching between the
+// agent and its placeholder moves nothing on screen. Its context names the
+// Agent's way back and `d`, not "keys go to the agent": there is no agent
+// here to take them, and enter and r act alone (placeholderKey, A6).
 func (m Model) renderAgentPlaceholder(outerW, outerH int) string {
-	contentW, _ := paneContentDims(outerW, outerH)
+	contentW, _ := agentContentDims(outerW, outerH)
 	title, line, action := m.agentPlaceholderText()
-	hint := focusBindingHint(m.keys.Focus)
-	focused := m.focus == focusRight
-	if focused {
-		hint = "[" + leaderChord(m.leaderKey.name, actionPaneToggle) + " agent/overview" +
-			" · " + leaderChord(m.leaderKey.name, actionDetailUnfocus) + " return to dashboard]"
-	}
+	hint := keyName(m.leaderKey.name, levelAgent, actionDetails) + " details" +
+		" · " + keyName(m.leaderKey.name, levelAgent, actionGoBack) + " back"
 	lines := []string{"", truncate(line, contentW)}
 	if action != "" {
 		lines = append(lines, theme.dim.Render(truncate(action, contentW)))
 	}
 	return theme.pane(paneStripName(title), hint, strings.Join(lines, "\n"),
-		paneOuterWidth(contentW), outerH, focused)
+		paneOuterWidth(contentW), outerH, true)
+}
+
+// agentFullWidthBelow is the terminal width below which the agent box takes
+// the full width instead of leaving a column each side (§3.8): on a narrow
+// terminal the two columns are worth more to the agent than the glimpse of
+// the Project they would show.
+const agentFullWidthBelow = 100
+
+// agentBoxRect is the Agent's box on screen (§3.8: the screen less 1 column
+// each side, the full width below agentFullWidthBelow columns), from the top
+// bar's last row to the status bar: x and y are its top-left cell, w and h
+// its outer size. headerRows and bodyHeight are layoutDims' rows, so the box
+// covers exactly the body, and the top bar and the status bar stay readable
+// around it. It is the ONE place the box's geometry is decided: View draws
+// the box there, paneRegionSize sizes the PTY to its inside, and
+// paneScreenGeometry places the mouse and the cursor in it.
+func agentBoxRect(width, headerRows, bodyHeight int) (x, y, w, h int) {
+	if width < agentFullWidthBelow {
+		return 0, headerRows, max(width, 1), bodyHeight
+	}
+	return 1, headerRows, width - 2, bodyHeight
 }
 
 // layoutDims computes the dashboard body layout from the current terminal
@@ -422,11 +472,15 @@ func (m Model) layoutDims() (listOuter, mainOuter, bodyHeight int) {
 }
 
 // paneRegionSize returns the emulator's target size (cols x rows) for the
-// current layout, so openPaneCmd starts the child at exactly the geometry
-// renderPane will draw it into.
+// current layout: the inside of the agent box (agentBoxRect), so openPaneCmd
+// starts the child at exactly the geometry renderPane will draw it into, and
+// relayout resizes the PTY to it on every terminal resize. A pane connected
+// behind the Project is sized the same, so going into the Agent never
+// resizes the agent's terminal.
 func (m Model) paneRegionSize() (cols, rows int) {
-	_, mainOuter, bodyHeight := m.layoutDims()
-	return paneContentDims(mainOuter, bodyHeight)
+	_, _, bodyHeight := m.layoutDims()
+	_, _, w, h := agentBoxRect(m.width, 0, bodyHeight)
+	return agentContentDims(w, h)
 }
 
 // mouseFrameLayout is layoutDims plus the two row counts layoutDims measures and
@@ -478,6 +532,20 @@ func paneContentDims(outerW, outerH int) (cols, rows int) {
 	if rows < 1 {
 		rows = 1
 	}
+	return cols, rows
+}
+
+// agentContentDims is the emulator's size inside the agent box (agentBoxRect)
+// of outer size outerW×outerH: the box less its border and one cell of padding
+// each side across, less the border rows and the title strip down. Unlike
+// paneContentDims it gives back a box that is exactly outerW wide once
+// paneOuterWidth adds the padding and border again, because the agent box's
+// edges are §3.8's (the screen less one column each side) and must land on
+// those columns. paneContentDims keeps afk attach's geometry, which its own
+// tests pin; both are floored at 1 (termpane requires a positive size).
+func agentContentDims(outerW, outerH int) (cols, rows int) {
+	cols = max(outerW-2-boxBorderCells, 1)
+	rows = max(outerH-boxBorderCells-paneStripRows, 1)
 	return cols, rows
 }
 
@@ -538,40 +606,33 @@ func paneTitleBlock(name, hint string, contentW int) string {
 	return theme.paneTitle.Render(truncate("▶ "+name+"  "+hint, contentW))
 }
 
-// The three pane-title hints paneTitleBlock is ever handed, gathered here
-// because the block is the one place a pane title is produced and these are the
-// only thing that varies between the call sites. paneFocusHint and the
-// dashboard's Focus binding are its two focus states; attachDetachHint is afk attach's hint
-// while it holds the mouse (attachpane.go's titleBlock swaps in
-// attachMouseReleasedHint when it does not), and
-// TestPaneTitleBlockReproducesLegacyTitles pins all three strings
-// byte-for-byte against the pre-refactor inline titles.
+// paneFocusHint is the context on the Agent's title strip (§4.3): "keys go
+// to the agent · ctrl+] esc back". It says the one thing a person in the
+// Agent must know (every key is the agent's) and the way out, read from the
+// key table (keyName), so it names the configured leader (T9.2). esc and
+// ctrl+\ belong to the agent.
 //
-// paneFocusHint is a function of the leader because it reads its key from
-// the leader table (leaderChord) and the leader is set in config.toml
-// (T9.2): since T7.2 a focused pane is left with ctrl+] \ (by default), and
-// ctrl+\ belongs to the agent. attachDetachHint stays a const and stays
-// ctrl+\, because afk attach has no leader.
+// attachDetachHint is afk attach's title hint while it holds the mouse
+// (attachpane.go's titleBlock swaps in attachMouseReleasedHint when it does
+// not); it stays a const and stays ctrl+\, because afk attach has no leader.
+// TestPaneTitleBlockReproducesLegacyTitles pins it byte for byte.
 func paneFocusHint(leader string) string {
-	return "[focused · " + leaderChord(leader, actionDetailUnfocus) + " back to list]"
+	return "keys go to the agent · " + keyName(leader, levelAgent, actionGoBack) + " back"
 }
 
 const attachDetachHint = "[ctrl+\\ detach]"
 
-// paneTitleHint picks the pane title's hint for the current focus state. The
-// title doubles as the focus indicator and reserved-chord hint: focused panes
-// show how to detach (ctrl+\), while unfocused panes use the same combined
-// binding the footer, full help, and detail edge expose.
+// paneTitleHint is the agent pane's strip context. The pane is drawn only at
+// the Agent level (shouldRenderPane), where it has the keyboard, so there is
+// one hint; before T16.2's W3.T1 a pane drawn beside the list also had an
+// unfocused one.
 func (m Model) paneTitleHint() string {
-	if m.paneOwnsKeyboard() {
-		return paneFocusHint(m.leaderKey.name)
-	}
-	return focusBindingHint(m.keys.Focus)
+	return paneFocusHint(m.leaderKey.name)
 }
 
 // focusBindingHint is the one display form for the normal-mode focus binding
-// outside help.Model. The footer and full help render Binding.Help
-// directly; the pane title and detail edge need their own punctuation, so they
+// outside help.Model. The footer renders Binding.Help directly; the detail
+// edge needs its own punctuation, so it
 // call this helper or the same Help value instead of spelling a second key
 // contract by hand.
 func focusBindingHint(b key.Binding) string {
@@ -594,13 +655,10 @@ func focusBindingHint(b key.Binding) string {
 // (mouseBounds), which is a mouse-specific judgement about two untrustworthy
 // sources and stays at its call site.
 func (m Model) paneScreenGeometry() (originX, originY, cols, rows int) {
-	listOuter, mainOuter, bodyHeight, headerRows, _ := m.mouseFrameLayout()
-	// The pane box starts where the sidebar STOPS — View composes the body as
-	// JoinHorizontal(Top, list, main). That is listOuter itself at normal
-	// widths, but not on a terminal narrow enough to trip sidebarContentWidth's
-	// floor, where the rendered sidebar is WIDER than listOuter; the helper is
-	// the one place that arithmetic lives.
-	boxX := sidebarRenderedWidth(listOuter)
+	_, _, bodyHeight, headerRows, _ := m.mouseFrameLayout()
+	// The pane box is the agent box (agentBoxRect), the one View lays over
+	// the Project: its X is the column §3.8 leaves free on each side.
+	boxX, boxY, boxW, boxH := agentBoxRect(m.width, headerRows, bodyHeight)
 	// The box's Y on SCREEN is its Y in the frame, with no correction for a frame
 	// taller than the terminal — at heights 4-6 layoutDims' bodyHeight floor makes
 	// the frame 7 rows, and the rows that do not fit come off the BOTTOM. Under
@@ -612,15 +670,14 @@ func (m Model) paneScreenGeometry() (originX, originY, cols, rows int) {
 	// IS the terminal height, so it never fires. Subtracting a crop here would
 	// move the origin ABOVE the visible pane content, which is the bug this
 	// replaced: it accepted clicks on the visible help line and dropped them on
-	// the visible pane.
-	boxY := headerRows
-
-	// paneContentDims over the dims just computed is what paneRegionSize returns,
-	// by construction (that is its whole body) — called directly here so this
-	// path measures the layout ONCE. paneRegionSize would re-enter layoutDims and
-	// render the header and footer a second time per event, and a drag delivers
-	// one event per cell the pointer crosses.
-	cols, rows = paneContentDims(mainOuter, bodyHeight)
+	// the visible pane. agentBoxRect's y is headerRows, uncorrected.
+	//
+	// agentContentDims over the box just computed is what paneRegionSize
+	// returns, by construction — called directly here so this path measures
+	// the layout ONCE. paneRegionSize would re-enter layoutDims and render the
+	// header and footer a second time per event, and a drag delivers one event
+	// per cell the pointer crosses.
+	cols, rows = agentContentDims(boxW, boxH)
 
 	// The origin must be measured from the SAME title strip renderPane's pane
 	// draws (paneStrip), exactly one row — a raw title reports Height 1 while
@@ -628,15 +685,15 @@ func (m Model) paneScreenGeometry() (originX, originY, cols, rows int) {
 	// a row or more high. m.paneTitleHint() is the shared accessor renderPane
 	// uses, so the two cannot pick different hints and disagree about the
 	// strip's width. cols IS renderPane's contentW: both come from
-	// paneContentDims(mainOuter, bodyHeight).
+	// agentContentDims over the agent box.
 	originX, originY = paneContentOrigin(boxX, boxY,
 		paneStrip(m.paneName, m.paneTitleHint(), cols, m.paneOwnsKeyboard()))
 	return originX, originY, cols, rows
 }
 
 // paneStrip is the agent pane's title strip (§3.3) as the pane part draws it
-// on the pane's first inner row: "▶ name" on the left, the focus hint on the
-// right, accent while the agent has the keyboard. It spans the pane's whole
+// on the pane's first inner row: "Agent · name" on the left, the context on
+// the right, accent while the agent has the keyboard. It spans the pane's whole
 // inner width (contentW plus the two padding cells) with its own cell of
 // padding, so "▶" stays in the column the emulator's rows start in.
 //
@@ -649,17 +706,19 @@ func paneStrip(name, hint string, contentW int, focused bool) string {
 	return theme.titleStrip(paneStripName(name), hint, paneOuterWidth(contentW)-boxBorderCells, focused)
 }
 
-// paneStripName is the agent pane's name as its strip shows it.
+// paneStripName is the agent pane's name as its strip shows it (§4.3):
+// "Agent · <session>".
 func paneStripName(name string) string {
-	return "▶ " + name
+	return "Agent · " + name
 }
 
-// renderPane draws the embedded terminal pane inside a bordered box in the
-// main region: a title line naming the hosted session above the emulator's
-// current screen. The screen is already sized (via paneRegionSize) to the
-// content area, so it is placed verbatim; the box pads to fill any slack.
+// renderPane draws the embedded terminal pane as the Agent's box
+// (agentBoxRect, outerW×outerH): the title strip naming the hosted session
+// above the emulator's current screen. The screen is already sized (via
+// paneRegionSize) to the content area, so it is placed verbatim; the box pads
+// to fill any slack.
 func (m Model) renderPane(outerW, outerH int) string {
-	contentW, _ := paneContentDims(outerW, outerH)
+	contentW, _ := agentContentDims(outerW, outerH)
 
 	screen := ""
 	if m.pane != nil {
@@ -879,7 +938,7 @@ func (m Model) renderEmptyState(outerW, outerH int) string {
 		"",
 		theme.dim.Render(truncate("Running afk from inside a repo also works.", contentW)),
 		"",
-		theme.helpLine.Render(leaderChord(m.leaderKey.name, actionQuit) + ": quit"),
+		theme.helpLine.Render(keyName(m.leaderKey.name, levelAllProjects, actionQuit) + ": quit"),
 	}
 	block := lipgloss.JoinVertical(lipgloss.Center, lines...)
 
@@ -932,17 +991,17 @@ const headerBadgeText = "afk Dashboard"
 // register the box-edge hints already use, because this is something the
 // user can press, not something that happened.
 //
-// It names the leader chord because since T7.2 a bare p does nothing on the
-// session list; a function of the leader because the chord is read from the
-// leader table and the leader is set in config.toml (T9.2).
-func headerSwitchHint(leader string) string {
-	return leaderChord(leader, actionProjects) + ": projects"
+// It names the key as it is pressed at level lv (keyName): alone at All
+// projects and Project, after the leader in the Agent. A function of the
+// leader because config.toml sets it (T9.2).
+func headerSwitchHint(leader string, lv level) string {
+	return keyName(leader, lv, actionProjects) + ": projects"
 }
 
 // headerInboxHint is the inbox segment's affordance, styled and named the way
 // headerSwitchHint is, for the same reason: it is a key the reader can press.
-func headerInboxHint(leader string) string {
-	return leaderChord(leader, actionInbox) + ": inbox"
+func headerInboxHint(leader string, lv level) string {
+	return keyName(leader, lv, actionInbox) + ": inbox"
 }
 
 // headerPieces are the header's parts before headerLine's width ladder
@@ -987,7 +1046,7 @@ type headerPieces struct {
 	// inboxShort is the blocking part alone, "2 blocking", or "" when nothing
 	// blocks. The ladder trades the first for the second, so items that only
 	// wait to be read leave the row before items that stop the build do.
-	// inboxHint is "ctrl+] i: inbox". All three are "" when no item is open or no
+	// inboxHint is "i: inbox". All three are "" when no item is open or no
 	// build snapshot has arrived, which keeps a quiet project's header exactly
 	// as it was before the inbox existed.
 	inbox      string
@@ -1014,7 +1073,7 @@ func (m Model) headerPieces() headerPieces {
 		p.leaderForms = append(p.leaderForms, theme.awaitingFlag.Render(f))
 	}
 	if len(m.projects) > 1 {
-		p.hint = theme.dim.Render(headerSwitchHint(m.leaderKey.name))
+		p.hint = theme.dim.Render(headerSwitchHint(m.leaderKey.name, m.level()))
 	}
 	// Measured from loadFailingSince (the FIRST failing pass of the current
 	// run), not from lastLoad, so the number says how long the screen has
@@ -1096,7 +1155,7 @@ func (m Model) inboxPieces() (long, short, hint string) {
 		long += theme.dim.Render(" · ") + short
 	}
 	if !m.paneOwnsKeyboard() {
-		hint = theme.dim.Render(headerInboxHint(m.leaderKey.name))
+		hint = theme.dim.Render(headerInboxHint(m.leaderKey.name, m.level()))
 	}
 	return long, short, hint
 }
@@ -1507,10 +1566,9 @@ func (m Model) awaitingElsewhere() []otherProjectAwaiting {
 // (activeDialog, modal.go) and the help line follows the active input mode, so
 // mid-modal it lists the modal's own keys.
 //
-// The height is NOT thereby one row, and must not be pinned to one: renderHelp
-// returns bubbles' FullHelp while `?` is toggled (m.helpShowAll), which is
-// legitimately one row per binding. The invariant is that this function's
-// height is exactly renderHelp's — nothing is added to it.
+// The invariant is that this function's height is exactly renderHelp's —
+// nothing is added to it. Since `?` opens the keys overlay rather than the
+// full help that was one row per binding, that is one row.
 //
 // It is drawn as the status bar (§3.2): each row of the help is a status bar,
 // strip edge to edge, so the bar reads as one band across the bottom of the
@@ -1850,19 +1908,18 @@ func (m Model) renderLabelFormBar() string { return m.renderDialog(m.labelDialog
 // measurement covers both states only because the two strings measure equal.
 func (m Model) mouseCaptureHint() string {
 	if m.mouseCapture {
-		return leaderChord(m.leaderKey.name, actionMouseToggle) + " mouse: pane"
+		return keyName(m.leaderKey.name, levelAgent, actionMouseToggle) + " mouse: pane"
 	}
-	return leaderChord(m.leaderKey.name, actionMouseToggle) + " mouse: term"
+	return keyName(m.leaderKey.name, levelAgent, actionMouseToggle) + " mouse: term"
 }
 
 // normalBindingEnabled reports whether an inputNormal binding is currently
 // worth offering: three of them are no-ops in some states, and this is the
 // SINGLE definition of which three and when. Both surfaces that present the
 // mode's action set read it — help.Model omits any !Enabled() binding from
-// both Short and Full help, and the actions dialog's focus row is dimmed on
-// the same answer (leaderConds.canFocus) — so the two cannot advertise
-// different sets, which is exactly the drift a second copy of this policy
-// would eventually produce.
+// both Short and Full help — so no surface can advertise a different set,
+// which is exactly the drift a second copy of this policy would eventually
+// produce.
 //
 // Every other binding keeps whatever enabled bit it arrived with, so callers
 // can apply this uniformly across a whole keymap.
@@ -1885,7 +1942,7 @@ func (m Model) normalBindingEnabled(b key.Binding) bool {
 }
 
 // restartKeyLive is whether `r` acts on the selected row right now — the
-// same gates restartSelected (model.go) applies, so help and the dialog name
+// same gates restartSelected (model.go) applies, so help and the `:` search name
 // the key exactly where it does something: a stopped row it would restart
 // straight away, or a running row the dashboard already shows as WEDGED, where
 // it asks for confirmation first.
@@ -1984,81 +2041,151 @@ func renderModeHelpStyled(km help.KeyMap, showAll bool, width int, styles help.S
 	return rendered
 }
 
-// renderNormalHelpKeyMap builds inputNormal's help.KeyMap. Since T7.2 every
-// dashboard action is a leader entry, so Short is the movement keys, enter to
-// focus the right side, and "ctrl+] actions"; restart joins it as
-// "ctrl+] r restart" only while it acts on the selected row (help never
-// offers a key that would do nothing, and a stopped or stuck agent is the
-// state a person comes to the footer to find a key for). Full is the mode's
-// registered keys (paging, esc to clear a filter) followed by one
-// "ctrl+] X" entry per leader action, from the leader table, and how the
-// help closes.
-//
-// Short stays this short on purpose: the actions dialog lists everything with
-// its help, so the footer's job is to say it exists. The item order still
-// matters, since help.Model truncates from the right.
-func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
-	reg := m.modes()
-	full := append([]key.Binding(nil), reg.spec(inputNormal).keys.bindings...)
-
-	for i := range full {
-		full[i].SetEnabled(m.normalBindingEnabled(full[i]))
+// tableHelp is a help entry for action a from the key table at level lv:
+// its key as it is pressed there, desc as its word, and dropped from the line
+// while its blocked reason holds, on the rule that help never offers a key
+// that would do nothing.
+func (m Model) tableHelp(lv level, a modeAction, desc string, c leaderConds) key.Binding {
+	enabled := true
+	if row, ok := keyRowForAction(lv, a); ok {
+		enabled = row.blockedReason(c) == ""
 	}
-
-	up := findBinding(full, m.keys.Up.Keys())
-	down := findBinding(full, m.keys.Down.Keys())
-	focus := findBinding(full, m.keys.Focus.Keys())
-	leader := findBinding(full, m.keys.Leader.Keys())
-
-	// Every action is a leader entry now, so the line keeps the movement keys
-	// and points at the dialog. Restart is the one action worth a place of its
-	// own, and only where it acts: a stopped or stuck agent is the state a
-	// person comes to the footer to find a key for.
-	short := []key.Binding{up, down, focus, leader}
-	if m.restartKeyLive() {
-		short = append(short, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
-	}
-
-	// The full help lists each leader action as "ctrl+] X", dimmed out of
-	// the list when it cannot run, and ends with how it closes: esc, since a
-	// bare ? is no longer a list key.
-	for _, row := range leaderRows(m.leaderConditions()) {
-		full = append(full, leaderHelpBinding(m.leaderKey.name, row.action, row.name, row.blocked == ""))
-	}
-	full = append(full, key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close help")))
-
-	return curatedKeyMap{short: short, full: full}
+	return keyHelpBinding(m.leaderKey.name, lv, a, desc, enabled)
 }
 
-// renderPaneHelpKeyMap builds inputPane's (a focused pane's) help.KeyMap, plus
-// the literal "input → session · " prefix the retired ladder prepended (not a
-// keybinding, so it is not modeled as one). Since T7.2 the leader is the one
-// key the dashboard owns in a focused pane, so the line is "ctrl+]
-// actions" and the mouse state. The line is budgeted to the column for that
-// state (see mouseCaptureHint's doc), so it does not grow a third item.
+// renderNormalHelpKeyMap builds the help.KeyMap for the session list at
+// Project (inputNormal with a project open). Short is the movement keys, the
+// two level keys (enter opens the selected session's agent, esc goes to All
+// projects), the two actions a person most often comes to the list for (a new
+// session, a session's details), restart only while it acts on the selected
+// row (help never offers a key that would do nothing, and a stopped or stuck
+// agent is the state a person comes to the footer to find a key for), and
+// the two keys that find everything else: `:` and `?`. There is no full
+// help: `?` opens the keys overlay (keysoverlay.go) instead.
+//
+// The item order matters, since help.Model truncates from the right.
+func (m Model) renderNormalHelpKeyMap() curatedKeyMap {
+	reg := m.modes()
+	moves := append([]key.Binding(nil), reg.spec(inputNormal).keys.bindings...)
+	c := m.leaderConditions()
+	up := findBinding(moves, m.keys.Up.Keys())
+	down := findBinding(moves, m.keys.Down.Keys())
+	focus := m.keys.Focus
+	focus.SetEnabled(m.normalBindingEnabled(focus))
+
+	short := []key.Binding{up, down, focus, m.tableHelp(levelProject, actionGoBack, "all projects", c)}
+	short = append(short, m.tableHelp(levelProject, actionNewSession, "new", c))
+	if m.restartKeyLive() {
+		short = append(short, m.tableHelp(levelProject, actionRestart, "restart", c))
+	}
+	short = append(short,
+		m.tableHelp(levelProject, actionDetails, "details", c),
+		m.tableHelp(levelProject, actionActionsSearch, "actions", c),
+		m.tableHelp(levelProject, actionKeys, "keys", c),
+	)
+	return curatedKeyMap{short: short, full: short}
+}
+
+// renderAllProjectsHelpKeyMap is All projects' help: the all-projects
+// screen's (inputAllProjects) and, with no project open, the empty state's,
+// which stands in for the screen. enter opens the selected project (or, in
+// the empty state, the screen), then the moves where there are rows, then the
+// level's own actions, `:`, `?` and quit.
+func (m Model) renderAllProjectsHelpKeyMap(mode inputMode) curatedKeyMap {
+	reg := m.modes()
+	c := m.leaderConditions()
+	var moves []key.Binding
+	if mode == inputAllProjects {
+		moves = append(moves, reg.spec(inputAllProjects).keys.bindings...)
+	}
+	enter := key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open"))
+	if mode != inputAllProjects {
+		enter.SetHelp("enter", "all projects")
+		enter.SetEnabled(m.deps.LoadAllProjects != nil)
+	}
+	short := []key.Binding{enter}
+	if len(moves) >= 2 {
+		short = append(short, moves[0], moves[1])
+	}
+	short = append(short,
+		m.tableHelp(levelAllProjects, actionPlanNew, "new plan", c),
+		m.tableHelp(levelAllProjects, actionProjectAdd, "add", c),
+		m.tableHelp(levelAllProjects, actionProjectRemove, "remove", c),
+		m.tableHelp(levelAllProjects, actionActionsSearch, "actions", c),
+		m.tableHelp(levelAllProjects, actionKeys, "keys", c),
+		m.tableHelp(levelAllProjects, actionQuit, "quit", c),
+	)
+	return curatedKeyMap{short: short, full: short}
+}
+
+// renderDetailHelpKeyMap is the focused overview's help, at Project: esc
+// back to the list first (or the state is a trap), enter to open the agent,
+// restart while it acts, then the overview's own tab and scroll keys, and
+// `:` and `?` last, where truncation drops them before the way out.
+func (m Model) renderDetailHelpKeyMap() curatedKeyMap {
+	reg := m.modes()
+	c := m.leaderConditions()
+	own := reg.spec(inputDetail).keys.bindings
+	back := key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back to list"))
+	short := []key.Binding{back}
+	if s, ok := m.selected(); ok && (m.paneForSelection() || m.rowHasAgent(s)) {
+		short = append(short, key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open agent")))
+	}
+	if m.restartKeyLive() {
+		short = append(short, m.tableHelp(levelProject, actionRestart, "restart", c))
+	}
+	short = append(short, own...)
+	short = append(short,
+		m.tableHelp(levelProject, actionActionsSearch, "actions", c),
+		m.tableHelp(levelProject, actionKeys, "keys", c),
+	)
+	return curatedKeyMap{short: short, full: short}
+}
+
+// renderPaneHelpKeyMap builds inputPane's (the Agent's) help.KeyMap, plus
+// the literal "input → session · " prefix (not a keybinding, so it is not
+// modeled as one). The leader is the one key the dashboard owns in the
+// Agent, so the line is the leader (which shows the key strip) and the mouse
+// state. The line is budgeted to the column for that state (see
+// mouseCaptureHint's doc), so it does not grow a third item.
 //
 // The mouse entry reads the LIVE capture state (mouseCaptureHint, minus its
-// own chord prefix) rather than a static "release mouse" — this is the one
+// own key prefix) rather than a static "release mouse" — this is the one
 // line where that state is worth reading, because it is what the user is
-// looking at while typing into the session. It is a leader entry
-// (ctrl+] g), not ctrl+g, which the agent owns in a pane.
+// looking at while typing into the session. It names ctrl+] m, not ctrl+g,
+// which the agent owns in a pane.
 func (m Model) renderPaneHelpKeyMap() (curatedKeyMap, string) {
-	desc := strings.TrimPrefix(m.mouseCaptureHint(), leaderChord(m.leaderKey.name, actionMouseToggle)+" ")
-	mouse := leaderHelpBinding(m.leaderKey.name, actionMouseToggle, desc, true)
+	mouseKey := keyName(m.leaderKey.name, levelAgent, actionMouseToggle)
+	desc := strings.TrimPrefix(m.mouseCaptureHint(), mouseKey+" ")
+	mouse := keyHelpBinding(m.leaderKey.name, levelAgent, actionMouseToggle, desc, true)
 	full := []key.Binding{m.keys.Leader, mouse}
 	short := []key.Binding{m.keys.Leader, mouse}
 
 	return curatedKeyMap{short: short, full: full}, "input → session · "
 }
 
+// keyStripWaiting is the status bar's words while the key strip is open
+// (§4.8).
+const keyStripWaiting = "waiting for an afk key"
+
+// renderKeyStripHelpKeyMap is the status bar while the key strip is up: what
+// it is waiting for, then the two keys that are not an action — esc back to
+// Project, and the leader again to send it to the agent.
+func (m Model) renderKeyStripHelpKeyMap() (curatedKeyMap, string) {
+	leader := m.leaderKey.name
+	back := key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
+	again := key.NewBinding(key.WithKeys(leader), key.WithHelp(leader, "sends "+leader+" to the agent"))
+	short := []key.Binding{back, again}
+	return curatedKeyMap{short: short, full: short}, keyStripWaiting + " · "
+}
+
 // renderHelp renders the footer's help line for whichever mode
-// activeInputMode derives: the mode's own help.KeyMap (mode.go's modeKeyMap
-// for every mode except inputNormal and inputPane, which need a short/full
-// split — see curatedKeyMap) through help.Model, which does the width-aware
-// truncation the retired ladder hand-implemented rung by rung. ShowAll (bound
-// to `?`, toggleFullHelp in model.go) only applies in inputNormal: every other
-// mode's short help already IS its whole set, and inputPane's is deliberately
-// curated (see renderPaneHelpKeyMap) rather than toggleable.
+// activeInputMode derives: the level modes' keymaps above (built from the key
+// table, so the footer names exactly the keys levelKey answers to), the
+// overlays' own (mode.go's modeKeyMap), through help.Model, which does the
+// width-aware truncation the retired ladder hand-implemented rung by rung.
+// The line is always the short help: `?` opens the keys overlay
+// (keysoverlay.go), which lists every key, rather than growing the footer.
 func (m Model) renderHelp() string {
 	mode := activeInputMode(m.modeSnapshot())
 	// Every branch subtracts its prefixes from the budget BEFORE rendering,
@@ -2069,40 +2196,33 @@ func (m Model) renderHelp() string {
 	width := m.width - lipgloss.Width(spin)
 
 	switch {
+	case mode == inputKeyStrip:
+		km, prefix := m.renderKeyStripHelpKeyMap()
+		return theme.helpLine.Render(spin + prefix + renderStatusHelp(km, false, width-lipgloss.Width(prefix)))
 	case mode == inputDetail && m.agentPlaceholderDrawn():
 		// The agent placeholder: inputDetail by derivation, but only
-		// placeholderKey's keys act there (model.go dispatchKey). enter and
-		// `r` are advertised only where they would act, on normal mode's
+		// placeholderKey's keys act there (model.go levelKey). enter and
+		// `r` are advertised only where they would act, on the
 		// never-advertise-a-no-op rule: while a connect or restart for the
 		// row is already out, enter only joins it.
 		var short []key.Binding
 		if m.placeholderConnectLive() {
 			short = append(short, m.keys.Focus)
 		}
-		short = append(short, m.keys.Leader)
 		if m.restartKeyLive() {
-			short = append(short, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
+			short = append(short, m.keys.Restart)
 		}
+		short = append(short, m.keys.Leader)
 		return theme.helpLine.Render(spin + renderStatusHelp(curatedKeyMap{short: short}, false, width))
 	case mode == inputPane:
 		km, prefix := m.renderPaneHelpKeyMap()
 		return theme.helpLine.Render(spin + prefix + renderStatusHelp(km, false, width-lipgloss.Width(prefix)))
+	case mode == inputAllProjects, mode == inputNormal && !m.hasActiveProject():
+		return theme.helpLine.Render(spin + renderStatusHelp(m.renderAllProjectsHelpKeyMap(mode), false, width))
 	case mode == inputNormal:
-		return theme.helpLine.Render(spin + renderStatusHelp(m.renderNormalHelpKeyMap(), m.helpShowAll, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(m.renderNormalHelpKeyMap(), false, width))
 	case mode == inputDetail:
-		// Restart is a leader entry that acts only on a stopped or wedged
-		// row, so it joins the line only there, on normal mode's
-		// never-advertise-a-no-op rule. It follows the leader, which is the
-		// binding it belongs to.
-		reg := m.modes()
-		bindings := append([]key.Binding(nil), reg.spec(inputDetail).keys.bindings...)
-		if m.restartKeyLive() {
-			at := slices.IndexFunc(bindings, func(b key.Binding) bool {
-				return slices.Equal(b.Keys(), m.keys.Leader.Keys())
-			})
-			bindings = slices.Insert(bindings, at+1, leaderHelpBinding(m.leaderKey.name, actionRestart, "restart", true))
-		}
-		return theme.helpLine.Render(spin + renderStatusHelp(modeKeyMap{bindings: bindings}, false, width))
+		return theme.helpLine.Render(spin + renderStatusHelp(m.renderDetailHelpKeyMap(), false, width))
 	case mode == inputInbox:
 		// The overlay has two screens with different keys, and the registry's
 		// keymap lists both. The line shows the ones for the screen that is
@@ -2152,8 +2272,8 @@ func (m Model) helpSpinnerPrefix() string {
 const minSidebarWidth = 30
 
 // sidebarWidthPct is the sidebar's DEFAULT proportional share of the terminal
-// width, used whenever Model.sidebarPct is unset (resize mode and the
-// persisted split override it). The width is re-derived from termWidth on
+// width, used whenever Model.sidebarPct is unset (a split persisted before
+// resize mode was removed still overrides it). The width is re-derived from termWidth on
 // every View() call, so it tracks tea.WindowSizeMsg. 38% puts a
 // 120-column terminal at outer 45 / content 41, just over rowColumns' 40-cell
 // rung where the PHASE column shows the full word.
@@ -2312,7 +2432,7 @@ func (m Model) renderRowsBody(contentW, contentH int) string {
 		var b strings.Builder
 		b.WriteString(theme.dim.Render("No afk sessions found."))
 		b.WriteString("\n")
-		b.WriteString(theme.dim.Render("Press " + leaderChord(m.leaderKey.name, actionNewSession) + " to start one."))
+		b.WriteString(theme.dim.Render("Press " + keyName(m.leaderKey.name, levelProject, actionNewSession) + " to start one."))
 		return b.String()
 	}
 	l := m.list
@@ -2822,11 +2942,6 @@ func (m Model) renderDetail(outerW, outerH int) string {
 // below would advertise keys that do nothing. The title still names whatever
 // is selected — focus does not change what the box is looking at, only
 // which keys act on it.
-//
-// Resizing outranks focus for the same reason: resize mode can be entered
-// from a focused detail pane and leaves the focus on the right, but while it
-// owns the keyboard esc cancels the resize rather than releasing the focus,
-// so the edge names resize mode's commit and cancel keys instead.
 func (m Model) detailBoxLabels() (title, hint string) {
 	s, ok := m.selected()
 	title = "Details"
@@ -2837,10 +2952,6 @@ func (m Model) detailBoxLabels() (title, hint string) {
 		// The Build tab is about the project, so the box does not name a
 		// session over it.
 		title = "Build"
-	}
-	if m.resizing {
-		commit, cancel := m.resizeHints()
-		return title, fmt.Sprintf("%s: save split · %s: cancel", commit, cancel)
 	}
 	if m.detailOwnsKeyboard() {
 		return title, m.detailReleaseHint()
@@ -2855,21 +2966,19 @@ func (m Model) detailBoxLabels() (title, hint string) {
 	case isWorktreeFault(s.Kind):
 		focus := m.keys.Focus.Help()
 		return title, fmt.Sprintf("%s: %s · %s: clean",
-			focus.Key, focus.Desc, leaderChord(m.leaderKey.name, actionClean))
+			focus.Key, focus.Desc, keyName(m.leaderKey.name, levelProject, actionClean))
 	}
 	focus := m.keys.Focus.Help()
 	return title, fmt.Sprintf("%s: %s · %s: clean · %s: label",
-		focus.Key, focus.Desc, leaderChord(m.leaderKey.name, actionClean), leaderChord(m.leaderKey.name, actionEditLabel))
+		focus.Key, focus.Desc, keyName(m.leaderKey.name, levelProject, actionClean), keyName(m.leaderKey.name, levelProject, actionEditLabel))
 }
 
 // detailReleaseHint is detailBoxLabels' focused-mode hint: the one live way
-// out, read from mode.go's own inputDetail release binding via findBinding
-// rather than a duplicated literal, so the footer (mode.go's declaration) and
-// this edge cannot say two different things about the same key.
+// out, read from the key table (keyName) rather than a duplicated literal, so
+// the footer and this edge cannot say two different things about the same
+// key.
 func (m Model) detailReleaseHint() string {
-	reg := m.modes()
-	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc"})
-	return fmt.Sprintf("%s: %s", release.Help().Key, release.Help().Desc)
+	return keyName(m.leaderKey.name, levelProject, actionGoBack) + ": back to list"
 }
 
 // detailContentWidth is the detail box's usable text width for a box outerW
@@ -3061,7 +3170,7 @@ func rowNotice(leader string, s Session, ok bool) string {
 		b.WriteString("\n")
 		b.WriteString(theme.dim.Render("branch: " + s.Branch))
 		b.WriteString("\n\n")
-		b.WriteString(theme.dim.Render("No session state to show. Press " + leaderChord(leader, actionClean) + " to clean it up."))
+		b.WriteString(theme.dim.Render("No session state to show. Press " + keyName(leader, levelProject, actionClean) + " to clean it up."))
 		return b.String()
 	}
 	return ""

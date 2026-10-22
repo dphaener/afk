@@ -1,5 +1,5 @@
 // plancheckoverlay.go implements the check-the-plan overlay (the "check the
-// plan" row of the actions dialog, T7.7): the plan checker's counts and one
+// plan" row of the `:` actions search, T7.7): the plan checker's counts and one
 // finding per line, errors first, worded as `afk plan lint` words them.
 //
 // It follows the inbox overlay's shape (inboxoverlay.go) with less to do: it

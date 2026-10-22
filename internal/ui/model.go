@@ -362,7 +362,7 @@ type Deps struct {
 	//
 	// It has NO default, like LoadBuild: it reads the real filesystem, and
 	// only the root package (`afk dash`) wires it. A nil LoadAllProjects means
-	// the screen cannot open, and the dialog row says so.
+	// the screen cannot open, and esc at Project says so.
 	LoadAllProjects func() AllProjects
 	// ApprovePlan turns the new plan at review in the project at root into a
 	// build, the way `afk plan approve --project root` does (T7.8): it writes
@@ -396,7 +396,7 @@ type Deps struct {
 	//
 	// They have NO default, for ApprovePlan's reason: they write the real
 	// config.toml, so a zero Deps must not be able to. A nil one dims its row
-	// in the actions dialog, and nothing is called.
+	// in the `:` search, its key says why, and nothing is called.
 	AddProject    func(dir, name string) ProjectEditResult
 	RemoveProject func(root string) ProjectEditResult
 	// SetTaskStatus sets the status of the task id in the build ledger of
@@ -646,6 +646,10 @@ type Deps struct {
 	// package's existing three-argument New(repo, interval, deps) signature
 	// never changes.
 	InitialSessionName string
+	// StartLevel is the level the dashboard opens on (StartLevel's doc). The
+	// zero value keeps the older behaviour, so only the root package's
+	// decision (dashStartLevel) changes what a Model does at start.
+	StartLevel StartLevel
 	// GitCommonDir is where the click-to-focus rendezvous lives: a clicked
 	// notification writes afk-dash/request.json under it and the dashboard
 	// watches for that file (focusrequest.go). Empty disables the whole
@@ -816,10 +820,10 @@ type Deps struct {
 	// nil leaves the split at its built-in default, which keeps every zero-Deps
 	// Model in this package's tests off the developer's real state file.
 	LoadSidebarPct func() int
-	// RememberSidebarPct persists the committed sidebar split. Like
-	// RememberSelection it is machine-owned convenience state and has no
-	// default; the cost of a lost write is the next launch opening at the
-	// previous split.
+	// RememberSidebarPct persisted the split resize mode committed. Nothing
+	// calls it since W3.T1 of T16.2 removed resize mode (the Agent is drawn
+	// over the Project, so nothing is split); the field stays only until the
+	// start-up task takes dash.go's wiring of it out (.afk/t16-2/issues.md).
 	RememberSidebarPct func(pct int) error
 	// LoadProjectOpens returns how many times each project has been
 	// deliberately opened — keyed by Project.Path, the same key the switcher's
@@ -994,55 +998,38 @@ func (d Deps) withDefaults() Deps {
 // session nothing a user would miss.
 const mouseChordKey = "ctrl+g"
 
-// keyMap holds the dashboard's keybindings. Using bubbles/key keeps the
-// bindings declarative (matched via key.Matches in Update) and lets the help
-// line render straight from them, so the displayed help can never drift from
-// the handled keys.
+// keyMap holds the dashboard's few shared keybindings. Using bubbles/key
+// keeps them declarative (matched via key.Matches) and lets the help line
+// render straight from them.
 //
-// Since T7.2 most of these are no longer a rule on the list, the overview or
-// the agent pane: their action runs from the leader table (leader.go), and
-// the binding stays for the help and the hints that name it. The ones still
-// matched as rules are Up, Down, Focus (enter), Leader, Filter (handed on to
-// the list component), Mouse and Quit in the overlays and resize mode.
+// Since T16.2 the dashboard's actions are named in the key table
+// (keytable.go), which says each action's key and the levels it works at;
+// the bindings that only named a key for the help or a hint went with the
+// leader table, so a key cannot be declared in two places that drift. What
+// stays is what is matched as a binding: the list's cursor keys, enter (the
+// placeholder's connect, and the footer's "open"), r (the placeholder's
+// restart, and the wedge banner's key), the mouse chord in the overlays, and
+// the leader.
 type keyMap struct {
 	Up      key.Binding
 	Down    key.Binding
-	New     key.Binding
-	Scratch key.Binding
-	Clean   key.Binding
 	Restart key.Binding
-	Label   key.Binding
 	Focus   key.Binding
 	Mouse   key.Binding
-	Toggle  key.Binding
-	Project key.Binding
-	Filter  key.Binding
-	Build   key.Binding
-	Inbox   key.Binding
-	// PauseBuild and ResumeBuild are the only capital-letter keys in this
-	// map. See their comments in defaultKeyMap for why.
-	PauseBuild  key.Binding
-	ResumeBuild key.Binding
-	Quit        key.Binding
-	// Leader is the leader key that opens the actions dialog (leader.go):
-	// ctrl+] by default, or the key config.toml's [dash] leader sets, which
-	// New puts here. See its comment in defaultKeyMap for how ctrl+] arrives.
+	// Leader is the leader key, which in the Agent shows the key strip
+	// (keystrip.go): ctrl+] by default, or the key config.toml's [dash]
+	// leader sets, which New puts here. See its comment in defaultKeyMap
+	// for how ctrl+] arrives.
 	Leader key.Binding
 }
 
 func defaultKeyMap() keyMap {
 	return keyMap{
 		// Both directions preview the settled row's pane on their own — that
-		// part is genuinely shared, not copy-paste — but the full help
-		// renders each binding as its own row, where two identical "preview"
-		// labels read as a glitch rather than a deliberate description. The
-		// arrow glyph appended to each label is the distinguisher, not
-		// restyling: TestHelpLineAt80KeepsTheDiscoverableKeysAndTheCaptureState
-		// pins this line at a width that was already oversubscribed with a
-		// pane open, so a real word ("prev"/"next") pushes the later hints
-		// off the end. A single glyph (already this footer's
-		// vocabulary — it's what the key column itself uses) fits the ~2-column
-		// margin that's actually available.
+		// part is genuinely shared, not copy-paste — but the footer shows
+		// both bindings side by side, where two identical "preview" labels
+		// read as a glitch rather than a deliberate description. The arrow
+		// glyph appended to each label is the distinguisher.
 		Up: key.NewBinding(
 			key.WithKeys("up", "k"),
 			key.WithHelp("↑/k", "preview↑"),
@@ -1051,151 +1038,45 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("down", "j"),
 			key.WithHelp("↓/j", "preview↓"),
 		),
-		New: key.NewBinding(
-			key.WithKeys("n"),
-			key.WithHelp("n", "new session"),
-		),
-		// Scratch's help is carried by keyMap alone, on the SAME precedent as
-		// Project's comment above: renderHelp's global line is already
-		// oversubscribed and capped at its measured width by
-		// TestHelpLineAdvertisesPreviewWithoutGrowing, so a zero-friction key
-		// that most users reach for only occasionally does not buy its way
-		// onto that line by displacing `n new session` or `c clean`. Unlike
-		// Project, there is no overlay to carry its own help line either —
-		// discoverability here is the README and this binding's help text,
-		// not the footer.
-		Scratch: key.NewBinding(
-			key.WithKeys("o"),
-			key.WithHelp("o", "one-off"),
-		),
-		Clean: key.NewBinding(
-			key.WithKeys("c"),
-			key.WithHelp("c", "clean (confirm)"),
-		),
 		// wedgeRecoveryKey (hostpane.go) names this same key in the wedge
 		// banner drawn inside a wedged pane — bound here, not re-declared,
 		// so the banner's guidance and this binding cannot name two
 		// different keys (see hostpane.go's decision comment on the const).
 		// It is the one restart key (restartSelected): a stopped row restarts
-		// at once, a wedged running row after a confirmation.
+		// at once, a wedged running row after a confirmation. The key table's
+		// restart row is the same key.
 		Restart: key.NewBinding(
 			key.WithKeys(wedgeRecoveryKey),
 			key.WithHelp(wedgeRecoveryKey, "restart"),
 		),
-		// Label's help text is never rendered by renderHelp, on the same
-		// precedent as Project and Scratch above (their own comments explain
-		// why): the global help line is already at its measured-width cap
-		// (TestHelpLineAdvertisesPreviewWithoutGrowing), so a key that is
-		// useful but not essential does not buy its way onto it by
-		// displacing `n new session` or `c clean`.
-		Label: key.NewBinding(
-			key.WithKeys("l"),
-			key.WithHelp("l", "label"),
-		),
-		// "focus pane" would be wrong half the time: enter focuses the right
-		// side in whichever view the user chose (focusRightSide, reached from
-		// applyKeyAction's actionFocusPane case). The overview view focuses
-		// the overview; the agent view focuses the selected row's pane,
-		// connecting it first when it has none, and a row with no live agent
-		// focuses its overview. The compact description is width-sensitive
-		// because it shares the oversubscribed 80-column list footer; the
-		// focused presentation tests pin that budget. Its second key, f,
-		// moved under the leader in T7.2 (ctrl+] f).
+		// enter goes in a level (§5): on the session list it opens the
+		// selected session's agent (openAgent), and in the agent placeholder
+		// it connects. The key table's "go in" row is the same key.
 		Focus: key.NewBinding(
 			key.WithKeys("enter"),
-			key.WithHelp("enter", "focus view"),
+			key.WithHelp("enter", "open"),
 		),
 		Mouse: key.NewBinding(
 			key.WithKeys(mouseChordKey),
 			key.WithHelp("ctrl+g", "release mouse"),
 		),
-		Toggle: key.NewBinding(
-			key.WithKeys("ctrl+t"),
-			key.WithHelp("ctrl+t", "agent/overview"),
-		),
-		// The switcher's rescan key is deliberately absent from this map: the
-		// overlay component handles `R` itself and reports it back as a result
-		// (switcher.go), so binding it here would implement it twice.
+		// ctrl+] is the leader (T7.1; ctrl+] since T9.1). A terminal sends it
+		// as the byte 0x1D, and ultraviolet's decoder turns 0x1D into
+		// {Code: ']', Mod: ModCtrl} (decoder.go parseControl, which maps
+		// 0x1C–0x1F to code+0x40); a kitty-protocol CSI 93;5u decodes to the
+		// same key (parseKittyKeyboard). Either way String() is "ctrl+]", the
+		// string this binding matches (docs/decisions.md "## T9.1"). Unlike
+		// the old Ctrl+Space, which shares the NUL byte with ctrl+@ and
+		// ctrl+2, no other chord sends 0x1D.
 		//
-		// The help text is carried by the overlay's own help line and by
-		// renderHelp's switcher branch, NOT by the global help line — that line
-		// is already oversubscribed at 80 columns and capped at its measured
-		// width by TestHelpLineAdvertisesPreviewWithoutGrowing, so an item
-		// appended there would displace `n new session` or `c clean` to
-		// advertise a key that is only useful to a multi-project user. W5.T1
-		// names the active project in the header, which is where the feature
-		// becomes discoverable.
-		Project: key.NewBinding(
-			key.WithKeys("p"),
-			key.WithHelp("p", "projects"),
-		),
-		// Shared by reference with the session list component
-		// (newSessionList assigns it to list.KeyMap.Filter) because
-		// actionFilterStart answers by forwarding the matched key to that
-		// component, which only reacts to the key its own binding names. Its
-		// help text is carried by this binding and by Wave 6's help surface, not
-		// by renderHelp's global line, on the same precedent Project, Scratch
-		// and Label document above.
-		Filter: key.NewBinding(
-			key.WithKeys("/"),
-			key.WithHelp("/", "filter"),
-		),
-		// `b` goes straight to the Build tab (showBuildTab). Since T7.2 it is
-		// ctrl+] b (leader.go), not a rule in any mode: with the agent pane
-		// focused every key but the leader belongs to the agent, `b` included.
-		Build: key.NewBinding(
-			key.WithKeys("b"),
-			key.WithHelp("b", "build tasks"),
-		),
-		// `i` opens the inbox overlay (openInbox, inboxoverlay.go), as
-		// ctrl+] i since T7.2. With the agent pane focused `i` is a letter
-		// the agent is being sent.
-		Inbox: key.NewBinding(
-			key.WithKeys("i"),
-			key.WithHelp("i", "inbox"),
-		),
-		// `P` pauses the build and `U` resumes it (un-pause), from the list and
-		// from a focused overview, as `b` and `i` work (buildpause.go). They are
-		// capitals on purpose. Every lower-case letter that would read well is
-		// taken (`p` opens the project switcher, `r` restarts an agent, `u`
-		// scrolls the overview), and a pause should be hard to press by
-		// accident: it holds the whole project's build until someone notices.
-		//
-		// Like `b` and `i` they run from the leader since T7.2 (ctrl+] P,
-		// ctrl+] U), so with the agent pane focused each is a letter the
-		// agent is being sent, and in the inbox overlay a letter of the answer.
-		PauseBuild: key.NewBinding(
-			key.WithKeys("P"),
-			key.WithHelp("P", "pause the build"),
-		),
-		ResumeBuild: key.NewBinding(
-			key.WithKeys("U"),
-			key.WithHelp("U", "resume the build"),
-		),
-		// Quit with q and ctrl+c is a rule in resize mode only, whose keys
-		// T7.2 left alone. The list and the overview quit with ctrl+c alone
-		// (mode.go's quitChord) and with ctrl+] q.
-		Quit: key.NewBinding(
-			key.WithKeys("q", "ctrl+c"),
-			key.WithHelp("q", "quit"),
-		),
-		// ctrl+] opens the actions dialog (T7.1; ctrl+] since T9.1). A
-		// terminal sends it as the byte 0x1D, and ultraviolet's decoder turns
-		// 0x1D into {Code: ']', Mod: ModCtrl} (decoder.go parseControl, which
-		// maps 0x1C–0x1F to code+0x40); a kitty-protocol CSI 93;5u decodes to
-		// the same key (parseKittyKeyboard). Either way String() is "ctrl+]",
-		// the string this binding matches (docs/decisions.md "## T9.1").
-		// Unlike the old Ctrl+Space, which shares the NUL byte with ctrl+@
-		// and ctrl+2, no other chord sends 0x1D.
-		//
-		// It is a rule in normal, detail and pane mode only (mode.go). In
-		// the agent pane that takes a key from the agent, which is why the
-		// dialog gives it back: ctrl+] pressed twice sends ctrl+] on, and
-		// the pane encodes it to 0x1D again (leaderComponentKey).
+		// It is a key only in the Agent (decideKey). There it takes a key
+		// from the agent, which is why the strip gives it back: ctrl+]
+		// pressed twice sends ctrl+] on, and the pane encodes it to 0x1D
+		// again (sendLeaderToPane).
 		//
 		// This is the default. New replaces it with the leader config.toml
-		// sets (Deps.Leader, checked by checkLeader), so the registry, the
-		// list's help and every hint name the key that is actually bound.
+		// sets (Deps.Leader, checked by checkLeader), so the footers and
+		// every hint name the key that is actually bound.
 		Leader: leaderBinding(defaultLeaderKey),
 	}
 }
@@ -2122,21 +2003,30 @@ type Model struct {
 	taskTokensView taskTokensOverlay
 	taskTokensOpen bool
 
-	// leader is the actions dialog the leader key opens (leader.go);
-	// leaderOpen is its "is it open" flag, beside the other overlays' for
-	// their reason. leaderFrom is the mode the leader was pressed in
-	// (inputNormal, inputDetail or inputPane) and leaderFromPlaceholder says
-	// the detail side was showing the agent placeholder. Both are recorded at
-	// open because the dialog's own mode outranks all three, so they cannot
-	// be derived again when a row is run (runLeaderRow).
+	// leader is the `:` actions search (leader.go); leaderOpen is its "is
+	// it open" flag, beside the other overlays' for their reason. leaderFrom
+	// is the mode it was opened in and leaderLevel the level, and
+	// leaderFromPlaceholder says the right side was showing the agent
+	// placeholder. All three are recorded at open because the search's own
+	// mode outranks the surfaces it was opened from, so they cannot be
+	// derived again when a row is run (runLeaderRow).
 	leader                leaderDialog
 	leaderOpen            bool
 	leaderFrom            inputMode
+	leaderLevel           level
 	leaderFromPlaceholder bool
 
+	// keyStripOpen is the key strip's flag (keystrip.go, §4.8): the leader
+	// pressed in the Agent, waiting for the afk key that follows. It is an
+	// overlay's flag like leaderOpen, not a stored level: the level stays
+	// derived (currentLevel), and inputKeyStrip's predicate reads the Agent's
+	// facts beside the flag, so a flag left set by a path that moved the
+	// focus cannot take the keyboard anywhere else.
+	keyStripOpen bool
+
 	// leaderKey is the leader key this dashboard uses, decided once in New
-	// by checkLeader from Deps.Leader: its name is what every hint, help line
-	// and the dialog name and match, its key is what the pass-through sends,
+	// by checkLeader from Deps.Leader: its name is what every hint and help
+	// line name and decideKey matches, its key is what the pass-through sends,
 	// and a non-empty refused puts the leader line in the header. It never
 	// changes while the dashboard runs.
 	leaderKey leaderSetting
@@ -2147,27 +2037,17 @@ type Model struct {
 	// only when it is not pinned (onBackground).
 	themeSetting themeSetting
 
-	// helpShowAll is renderHelp's ShowAll flag (views.go), toggled by
-	// ctrl+] ? (actionHelp) and closed by esc on the list. It is
-	// presentational — no mode is derived from it, only normal mode's esc
-	// guard reads it (routeConds.helpShown) — which is why it lives beside the
-	// other footer-only state rather than in modeState/modePrecedence.
-	helpShowAll bool
+	// keysView is the keys overlay (keysoverlay.go) and keysOpen its "is it
+	// open" flag, beside planCheckOpen's kind: `?` opens it at every level.
+	keysView keysOverlay
+	keysOpen bool
 
 	// sidebarPct is the sidebar's share of the terminal width, as an integer
 	// percentage. Zero means the default (sidebarWidthPct); layoutDims and
 	// mouseFrameLayout both read it through sidebarOuterWidthFor, which clamps
 	// it, so no other code does split arithmetic. New seeds it from
-	// Deps.LoadSidebarPct and setSidebarPct is the only writer afterwards.
+	// Deps.LoadSidebarPct and nothing writes it afterwards.
 	sidebarPct int
-
-	// resizing is resize mode (mode.go's inputResize): set by ctrl+w from
-	// normal or detail mode, cleared by its commit (ctrl+w) or cancel (esc).
-	// resizeStartPct is the effective split at entry — clampSidebarPct's
-	// answer, so 38 when nothing was ever set — which is what esc restores.
-	// Neither field persists anything itself; only the commit's Cmd writes.
-	resizing       bool
-	resizeStartPct int
 
 	quitting bool
 }
@@ -2239,7 +2119,7 @@ func New(repo string, interval time.Duration, deps Deps) Model {
 		planStatusRefreshing:  new(atomic.Bool),
 		taskTokensLoading:     new(atomic.Bool),
 		allProjectsRefreshing: new(atomic.Bool),
-		list:                  newSessionList(keys, d.Now),
+		list:                  newSessionList(d.Now),
 		detailViewport:        viewport.New(),
 		initialSession:        deps.InitialSessionName,
 		gitCommonDir:          deps.GitCommonDir,
@@ -2511,15 +2391,6 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// for a feature the user never asked about. The in-memory
 		// rememberedSelection still serves the restore for the rest of the run,
 		// so nothing observable is lost until the process exits.
-		return m, nil
-
-	case sidebarPctSavedMsg:
-		// Surfaced, unlike the two flushes around it: see the message's doc.
-		// The in-memory split stays as committed either way, so the layout the
-		// user chose holds for the rest of the run.
-		if msg.err != nil {
-			m.notify(notifyError, "pane split not saved: "+msg.err.Error())
-		}
 		return m, nil
 
 	case projectOpensFlushedMsg:
@@ -2983,7 +2854,8 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// once did) split mode ownership in half: a form outranked by a modal
 		// would keep feeding its cursor while the modal held the keyboard.
 		//
-		// Only three modes have a component that takes an arbitrary tea.Msg. The
+		// Only two modes have a component that takes an arbitrary tea.Msg
+		// since T16.2 removed the session list's filter prompt. The
 		// switcher's is deliberately not one of them: switcher.Update takes a
 		// tea.KeyPressMsg specifically (see its doc on why it does not match the
 		// tea.KeyMsg interface), so there is nothing to route here.
@@ -3011,10 +2883,6 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		switch mode {
-		case inputFilter:
-			var cmd tea.Cmd
-			m.list, cmd = m.list.Update(msg)
-			return m, cmd
 		case inputForm:
 			var cmd tea.Cmd
 			// The checkbox and the provider selector have no component, so
@@ -3325,7 +3193,7 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		case honourFocus:
 			text = focusRequestHonoredStatus(m.leaderKey.name, msg.name)
 		default:
-			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to focus, " + leaderChord(m.leaderKey.name, actionDetailUnfocus) + " to return"
+			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to focus, " + keyName(m.leaderKey.name, levelAgent, actionGoBack) + " to return"
 		}
 		m.notify(notifyInfo, m.withPaneLead(msg.name, text))
 	}
@@ -3335,19 +3203,23 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 
 // handleMouse applies the focus rules to a terminal mouse event, then either
 // forwards it (routeMouse) or turns it into a focus change. The mouse follows
-// the keyboard's focus, as in any two-pane application:
+// the keyboard, level by level:
 //
-//   - focus=list: nothing reaches the right side. Wheel, motion and release
-//     events over it are dropped (they neither scroll the pane nor the
-//     overview). A left click inside the right region is the one exception: it
-//     is the pointer form of enter/f, so it goes through focusRightSide — the
-//     same entrance, including the connect in agent view — and is consumed
-//     rather than also forwarded, so the click that moved focus is not
-//     delivered to the session as well.
-//   - focus=right: events over the right side are forwarded as before. A click
-//     in the list region moves focus back to the list and is otherwise a list
-//     click; the list has no mouse behaviour of its own, so that is the whole
-//     effect. Non-click events over the list are dropped.
+//   - The Agent: the agent box covers the Project, so every event goes to
+//     routeMouse, which forwards the ones inside the agent's screen and drops
+//     the rest. A click outside the box does NOT leave the Agent: the way out
+//     is the leader then esc, and a stray click beside the box taking the
+//     keyboard away from the agent would be worse than one that does nothing.
+//   - Project with the list focused: nothing reaches the right side. Wheel,
+//     motion and release events over it are dropped. A left click on the
+//     overview is the pointer form of `d` (showDetails): the overview is what
+//     is drawn there since the Agent became a level of its own (W3.T1 of
+//     T16.2), so a click on it gives it the keyboard rather than opening an
+//     agent the click never pointed at.
+//   - Project with the overview focused: a click in the list region moves
+//     focus back to the list; the list has no mouse behaviour of its own, so
+//     that is the whole effect. Other events are dropped by routeMouse, which
+//     forwards only to a drawn pane.
 //
 // The drop-early shape is deliberate: only a click needs the frame layout
 // (mouseFrameLayout renders the header and footer), so wheel and motion — one
@@ -3367,6 +3239,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.level() == levelAgent {
+		m.routeMouse(msg)
+		return m, nil
+	}
+
 	click, isClick := msg.(tea.MouseClickMsg)
 	leftClick := isClick && click.Mouse().Button == tea.MouseLeft
 
@@ -3376,7 +3253,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		x, y := click.Mouse().X, click.Mouse().Y
 		if _, inRight := m.mouseRegion(x, y); inRight {
-			return m.focusRightSide()
+			return m.showDetails()
 		}
 		return m, nil
 	}
@@ -3557,19 +3434,10 @@ func (m Model) routeMouse(msg tea.MouseMsg) {
 func (m Model) toggleMouseCapture() (tea.Model, tea.Cmd) {
 	m.mouseCapture = !m.mouseCapture
 	if m.mouseCapture {
-		m.notify(notifyInfo, "mouse goes to the session · "+leaderChord(m.leaderKey.name, actionMouseToggle)+" releases it")
+		m.notify(notifyInfo, "mouse goes to the session · "+m.keyHintFor(actionMouseToggle)+" releases it")
 		return m, nil
 	}
-	m.notify(notifyInfo, "mouse released to the terminal · "+leaderChord(m.leaderKey.name, actionMouseToggle)+" takes it back")
-	return m, nil
-}
-
-// toggleFullHelp flips m.helpShowAll — the help action's whole effect
-// (ctrl+] ?, and esc while it is shown). It is presentational
-// only (renderHelp reads the flag; no mode or dispatch decision does), so
-// unlike every other action in this file it has no status write and no Cmd.
-func (m Model) toggleFullHelp() (tea.Model, tea.Cmd) {
-	m.helpShowAll = !m.helpShowAll
+	m.notify(notifyInfo, "mouse released to the terminal · "+m.keyHintFor(actionMouseToggle)+" takes it back")
 	return m, nil
 }
 
@@ -3589,13 +3457,11 @@ func isCtrlChord(k tea.KeyPressMsg, code rune) bool {
 
 // routeConditions evaluates the ambient facts mode.go's rule guards read. It is
 // the ONE place they are computed: dispatchKey routes with it and
-// leaderConditions builds on it, so the dialog dims a row on the same facts
+// leaderConditions builds on it, so the search dims a row on the same facts
 // the dispatch would act on.
 func (m Model) routeConditions() routeConds {
 	return routeConds{
-		paneOpen:     m.pane != nil,
-		listFiltered: m.list.FilterState() != list.Unfiltered,
-		helpShown:    m.helpShowAll,
+		paneOpen: m.pane != nil,
 	}
 }
 
@@ -3649,36 +3515,26 @@ func (m Model) switchDetailTab(a modeAction, k tea.KeyPressMsg) (tea.Model, tea.
 
 // dispatchKey routes one keypress through the single mode mechanism (mode.go):
 // derive who owns the keyboard from a snapshot of the overlay-activity fields,
-// ask that mode's declared rules what the key means there, and apply the answer.
-// It is pure — navigation mutates the cursor; actions return a Cmd (the actual
-// spawn/connect I/O happens in the Cmd).
+// and hand the key to it. It is pure — navigation mutates the cursor; actions
+// return a Cmd (the actual spawn/connect I/O happens in the Cmd).
 //
 // There is deliberately no if-ladder here, and none in the handlers below.
-// Every ordering the old handleKey maintained by hand — the overlay ahead of the
-// ctrl+t intercept, the intercept ahead of the pane forward, the pane ahead of
-// the form — is now either a row of modePrecedence or a rule present in one
-// mode's spec and absent from another's. The leader, for instance, is a rule
-// in the normal, detail and pane specs and in no overlay's, so it opens the
-// actions dialog exactly where nothing else is on top.
+// Every ordering the old handleKey maintained by hand is either a row of
+// modePrecedence or a rule present in one mode's spec and absent from
+// another's.
 //
-// When a pane owns the keyboard, routing flips entirely: every key but the
-// leader belongs to the session (including ctrl+c — the session owns SIGINT
-// semantics while focused, so the dashboard's quit binding does NOT apply
-// there), forwarded through termpane's mode-aware input API. Since T7.2 that
-// includes ctrl+t, ctrl+g and ctrl+\: the dashboard's way back to the list is
-// ctrl+] \, so the chords the agent pane used to keep are the agent's.
+// Since T16.2 the modes that ARE a level — the list, the overview, All
+// projects, the agent pane and the key strip — go to levelKey, which asks the
+// key table (decideKey, levels.go) what the key does at that level. The
+// overlays, forms and modals keep their own rules: an open overlay gets every
+// key first (§5), which is what activeInputMode ranking them above the level
+// modes already means.
 func (m Model) dispatchKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	mode := activeInputMode(m.modeSnapshot())
-	// The right side focused on the agent placeholder (connecting, restarting,
-	// lost). mode.go derives it as inputDetail, but the overview is not what is
-	// drawn there, so its scroll, tab and quit rules must not apply: the
-	// placeholder stands in for the agent, and only its own keys act
-	// (placeholderKey). A row with no live agent is NOT the placeholder — it
-	// draws the overview, so detail mode's own rules answer there.
-	if mode == inputDetail && m.agentPlaceholderDrawn() {
-		return m.placeholderKey(k)
+	switch mode {
+	case inputNormal, inputDetail, inputAllProjects, inputPane, inputKeyStrip:
+		return m.levelKey(mode, k)
 	}
-
 	reg := m.modes()
 	switch dec := reg.route(mode, m.routeConditions(), k); dec.kind {
 	case routeAction:
@@ -3690,17 +3546,226 @@ func (m Model) dispatchKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// routeIgnored: the confirmations swallow unclaimed keys so a stray
-	// keystroke cannot answer one, and normal mode ignores unbound keys —
-	// except a key that used to run an action on the list, which says where
-	// it went (removedKeyNotice, leader.go). Only after routing, so no rule
-	// can be shadowed by a notice, and only in normal mode: on the overview a
-	// stray letter was always ignored.
-	if mode == inputNormal {
-		if text, ok := removedKeyNotice(m.leaderKey.name, k.String()); ok {
-			m.notify(notifyInfo, text)
-		}
+	// keystroke cannot answer one.
+	return m, nil
+}
+
+// levelFacts snapshots the facts currentLevel derives the level from.
+//
+// The view is the DRAWN one, not the stored preference: a row with no live
+// agent draws its overview in the agent view (agentPlaceholderDrawn is false
+// and no pane is shown), and with the right side focused there the keyboard
+// is on the overview, which is the Project level — the overview's scroll and
+// tab keys must answer, not the agent's every-key-goes-through rule. The
+// agent pane and its placeholder are what the Agent level is.
+func (m Model) levelFacts() levelFacts {
+	view := m.view
+	if view == viewAgent && m.focus == focusRight && !m.shouldRenderPane() && !m.agentPlaceholderDrawn() {
+		view = viewOverview
+	}
+	return levelFacts{
+		allProjectsOpen:  m.allProjectsOpen,
+		hasActiveProject: m.hasActiveProject(),
+		focus:            m.focus,
+		view:             view,
+	}
+}
+
+// level is the level the dashboard is at now (currentLevel over levelFacts).
+func (m Model) level() level { return currentLevel(m.levelFacts()) }
+
+// keyHintFor is keyName seen from the level the dashboard is at now: the key
+// alone at All projects and Project, the leader then the key in the Agent.
+func (m Model) keyHintFor(a modeAction) string {
+	return keyName(m.leaderKey.name, m.level(), a)
+}
+
+// levelKey is one key at a level (§5): decideKey says what it does, and this
+// carries it out.
+//
+//   - A table key runs its action alone at All projects and Project
+//     (runLevelAction); enter and esc go in and out a level; ctrl+c and q
+//     quit.
+//   - In the Agent, with the key strip closed, every key but the leader goes
+//     to the agent. The leader opens the strip; with it open the next key
+//     runs an Agent key, the leader again sends one leader on, esc goes back
+//     to Project, and any other key closes the strip and sends nothing. The
+//     strip closes on every key, whatever it did.
+//   - A move key and a key the table does not list go to the mode's own
+//     rules: the list's cursor, the overview's scroll and tabs, the
+//     all-projects screen's rows. A key none of them claims does nothing.
+//
+// The agent placeholder (no live pane yet, or a lost one) is the Agent level
+// too (A6), but it has no agent to send keys to, so with the strip closed its
+// own keys act alone (placeholderKey): enter connects, r restarts.
+//
+// A flag left set after the Agent was left by a path that is not a key (the
+// agent's pane went away) is cleared here: inputKeyStrip's predicate already
+// ignores it, and clearing it keeps a later return to the Agent from finding
+// the strip open.
+func (m Model) levelKey(mode inputMode, k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	lv := m.level()
+	armed := mode == inputKeyStrip
+	m.keyStripOpen = false
+	placeholder := m.focus == focusRight && m.agentPlaceholderDrawn()
+	if lv == levelAgent && !armed && placeholder {
+		return m.placeholderKey(k)
+	}
+	o := decideKey(lv, overlayNone, armed, m.leaderKey.name, k.String())
+	switch o.kind {
+	case outcomeOpenStrip:
+		m.keyStripOpen = true
+		m.clearStatus()
+		return m, nil
+	case outcomeCloseStrip:
+		return m, nil
+	case outcomePassLeader:
+		m.sendLeaderToPane()
+		return m, nil
+	case outcomeSendToAgent:
+		forwardKeyToPane(m.pane, k)
+		return m, nil
+	case outcomeQuit:
+		return m.requestQuit()
+	case outcomeGoIn:
+		return m.levelGoIn(lv)
+	case outcomeGoBack:
+		return m.levelGoBack(lv, mode, placeholder)
+	case outcomeRun:
+		return m.runLevelAction(lv, mode, o.action, placeholder)
+	}
+	reg := m.modes()
+	if dec := reg.route(mode, m.routeConditions(), k); dec.kind == routeAction {
+		return m.applyKeyAction(mode, dec.action, k)
 	}
 	return m, nil
+}
+
+// sendLeaderToPane is the leader pressed twice in the Agent: the agent gets
+// the key the dashboard took. m.leaderKey.key is the decoded form checkLeader
+// built for the leader's name, so tea.KeyPressMsg(key).String() is the name
+// the binding matched. It goes straight to SendKey rather than through
+// forwardKeyToPane, whose specialKeyEvent table lists only the keys a person
+// types into an agent and would drop a configured leader such as
+// ctrl+shift+a or an F-key before the emulator saw it. x/vt's
+// Emulator.SendKey (key.go) owns the encoding: ctrl+] is 0x1D, ctrl+o 0x0F,
+// an alt chord gets its ESC prefix. A modified key it has no encoding for
+// writes nothing, which is the same "drop rather than send garbage"
+// forwardKeyToPane keeps; it cannot write a stray rune either, because x/vt's
+// fallback writes the bare code only for an unmodified key and checkLeader
+// refuses every leader without ctrl or alt.
+func (m Model) sendLeaderToPane() {
+	if m.pane != nil {
+		k := m.leaderKey.key
+		m.pane.SendKey(termpane.KeyEvent{Code: k.Code, Mod: k.Mod})
+	}
+}
+
+// levelGoIn is enter at lv: in one level, or open what is selected (§5).
+//
+// At All projects it opens the selected project, as enter on the screen
+// always has (switchFromAllProjects); with no project open and the screen not
+// drawn (the empty state stands in for All projects there) it opens the
+// screen. At Project it opens the selected session's agent (openAgent). The
+// Agent has no level below it, so enter is not a key there.
+func (m Model) levelGoIn(lv level) (tea.Model, tea.Cmd) {
+	switch lv {
+	case levelAllProjects:
+		if m.allProjectsOpen {
+			return m.switchFromAllProjects()
+		}
+		if m.deps.LoadAllProjects == nil {
+			// The empty state says what to do in its own words; a notice
+			// about a missing project reader would only add noise there.
+			return m, nil
+		}
+		return m.toggleAllProjects()
+	case levelProject:
+		return m.openAgent()
+	}
+	return m, nil
+}
+
+// levelGoBack is esc at lv: out one level, or close what is open (§5).
+//
+// At Project the overview gives the keyboard back to the list
+// (releaseDetailFocus, A2), and the list goes to All projects. In the Agent
+// (the leader then esc) the keyboard comes back to Project and the pane stays
+// connected while the session is selected (A5): the pane's own release, or
+// the placeholder's, which each say the right thing. All projects is the top
+// level, so esc there does nothing. The keys overlay `?` opens is an overlay
+// with its own esc (keysoverlay.go), so it never reaches here.
+func (m Model) levelGoBack(lv level, mode inputMode, placeholder bool) (tea.Model, tea.Cmd) {
+	switch lv {
+	case levelProject:
+		if mode == inputDetail {
+			return m.releaseDetailFocus()
+		}
+		return m.toggleAllProjects()
+	case levelAgent:
+		if placeholder {
+			return m.releasePlaceholderFocus()
+		}
+		return m.releasePaneFocus()
+	}
+	return m, nil
+}
+
+// agentActionStays reports whether action a, run from the Agent, runs with
+// the keyboard where it is. The ones that do not care where the keyboard is
+// (the mouse, quit, a usage read) stay; `:` and `d` choose their own place
+// (openActions records it, showDetails moves to the overview). Everything
+// else moves the keyboard to the list first, as its key is a Project key: an
+// overlay it opens (the switcher, the inbox, a plan form) is then over the
+// Project, and closing it leaves the list with the keyboard rather than
+// typing the next key into the agent.
+func agentActionStays(a modeAction) bool {
+	switch a {
+	case actionMouseToggle, actionQuit, actionRefreshUsage, actionActionsSearch, actionDetails, actionGoBack, actionKeys:
+		return true
+	}
+	return false
+}
+
+// keyRowForAction is the key table's row for action a at level lv, the one
+// whose blocked reason applies there.
+func keyRowForAction(lv level, a modeAction) (keyRow, bool) {
+	for _, r := range keyTable {
+		if r.action == a && r.levels.has(lv) {
+			return r, true
+		}
+	}
+	return keyRow{}, false
+}
+
+// runLevelAction runs action a at level lv, from mode (the mode the key or
+// the search was opened in) and with placeholder saying the Agent level was
+// the agent placeholder. It is the one place a level key and a `:` row run,
+// so the two cannot do different things.
+//
+// A row whose blocked reason holds says why in a notice and runs nothing:
+// with keys working alone there is no dialog to dim the row in, and a key
+// that silently did nothing would read as broken.
+func (m Model) runLevelAction(lv level, mode inputMode, a modeAction, placeholder bool) (tea.Model, tea.Cmd) {
+	if row, ok := keyRowForAction(lv, a); ok {
+		if reason := row.blockedReason(m.leaderConditions()); reason != "" {
+			m.notify(notifyInfo, reasonSentence(reason))
+			return m, nil
+		}
+	}
+	switch a {
+	case actionGoIn:
+		return m.levelGoIn(lv)
+	case actionGoBack:
+		return m.levelGoBack(lv, mode, placeholder)
+	case actionActionsSearch:
+		return m.openActions(mode, lv, placeholder)
+	}
+	if lv == levelAgent && !agentActionStays(a) {
+		m.focus = focusList
+		mode = inputNormal
+	}
+	return m.applyKeyAction(mode, a, tea.KeyPressMsg{})
 }
 
 // applyKeyAction performs the action a mode's rules claimed the key for.
@@ -3720,12 +3785,12 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.requestQuit()
 	case actionMouseToggle:
 		return m.toggleMouseCapture()
-	case actionPaneToggle:
-		return m.toggleView()
-	case actionDetailUnfocus:
-		return m.releaseDetailFocus()
-	case actionPaneClose:
-		return m.closePane()
+	case actionKeys:
+		return m.openKeys()
+	case actionDetails:
+		return m.showDetails()
+	case actionPauseToggle:
+		return m.pauseToggle()
 
 	// schedulePreview runs AFTER the list has moved, in every direction: arming
 	// first would target the row the selection just left. Every one of these
@@ -3759,22 +3824,8 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionDetailTabNext, actionDetailTabPrev, actionDetailTabJump:
 		return m.switchDetailTab(a, k)
 
-	case actionFilterStart:
-		return m.startSessionFilter(k)
-	case actionFilterClear:
-		return m.clearSessionFilter()
-	case actionOpenLeader:
-		return m.openLeader(mode)
-	case actionHelp:
-		return m.toggleFullHelp()
-	case actionBuild:
-		return m.showBuildTab()
 	case actionInbox:
 		return m.openInbox()
-	case actionPauseBuild:
-		return m.pauseBuild()
-	case actionResumeBuild:
-		return m.resumeBuild()
 	case actionPlanExtend:
 		return m.startPlanExtend()
 	case actionPlanAmend:
@@ -3790,8 +3841,6 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionPlanApprove:
 		return m.openPlanApprove()
 
-	case actionAllProjects:
-		return m.toggleAllProjects()
 	case actionAllProjectsUp:
 		return m.moveAllProjects(-1)
 	case actionAllProjectsDown:
@@ -3804,11 +3853,6 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.moveAllProjects(-len(m.allProjectsRows))
 	case actionAllProjectsBottom:
 		return m.moveAllProjects(len(m.allProjectsRows))
-	case actionAllProjectsSwitch:
-		return m.switchFromAllProjects()
-	case actionAllProjectsClose:
-		m.allProjectsOpen = false
-		return m, nil
 	case actionProjectAdd:
 		return m.openProjectAdd()
 	case actionProjectRemove:
@@ -3820,27 +3864,6 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 	case actionRefreshUsage:
 		return m.refreshUsage()
 
-	case actionEnterResize:
-		return m.enterResize()
-	case actionExitResize:
-		return m.commitResize()
-	case actionCancelResize:
-		return m.cancelResize()
-	case actionResizeLeft:
-		return m.nudgeSidebar(-resizeStep)
-	case actionResizeRight:
-		return m.nudgeSidebar(resizeStep)
-	case actionResizeLeftBig:
-		return m.nudgeSidebar(-resizeBigStep)
-	case actionResizeRightBig:
-		return m.nudgeSidebar(resizeBigStep)
-
-	// enter on the list and ctrl+] f are ONE action: focus the right
-	// side. What "the right side" means — the overview, the installed agent,
-	// or a connect — is focusRightSide's to decide from the view, never the
-	// rule table's or the leader table's.
-	case actionFocusPane:
-		return m.focusRightSide()
 	case actionNewSession:
 		return m.openNewForm()
 	case actionScratch:
@@ -4001,8 +4024,8 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 		return m.planCheckComponentKey(k)
 	case inputTaskTokens:
 		return m.taskTokensComponentKey(k)
-	case inputFilter:
-		return m.sessionFilterKey(k)
+	case inputKeys:
+		return m.keysComponentKey(k)
 	case inputEditLabel:
 		var cmd tea.Cmd
 		m.labelInput, cmd = m.labelInput.Update(k)
@@ -4023,49 +4046,9 @@ func (m Model) routeKeyToComponent(mode inputMode, k tea.KeyPressMsg) (tea.Model
 	return m, nil
 }
 
-// startSessionFilter opens the session list's filter prompt.
-//
-// It forwards the matched key to the component rather than calling
-// SetFilterState, because list.Model's own Filter branch also seeds the visible
-// set from the full item list; SetFilterState alone leaves it empty and blanks
-// the sidebar the instant `/` is pressed. Entering the filter jumps the
-// selection to the first row (upstream calls GoToStart), so it is a selection
-// move and needs schedulePreview like any other.
-func (m Model) startSessionFilter(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(k)
-	return m, tea.Batch(cmd, m.schedulePreview())
-}
-
-// clearSessionFilter drops an applied filter. Every hidden row comes back, so
-// which session is selected changes under a cursor that did not move.
-func (m Model) clearSessionFilter() (tea.Model, tea.Cmd) {
-	m.list.ResetFilter()
-	return m, m.schedulePreview()
-}
-
-// sessionFilterKey drives the filter prompt. Every key here can change the
-// match set and therefore the selected session, so all of them invalidate a
-// pending preview.
-//
-// Enter on an empty query resets instead of being swallowed: bubbles disables
-// AcceptWhileFiltering while the input is empty, which would otherwise strand
-// the user in the prompt with only Esc as a way out. Same fix, same reason, as
-// switcher.Update's.
-func (m Model) sessionFilterKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if k.Code == tea.KeyEnter && m.list.FilterInput.Value() == "" {
-		m.list.ResetFilter()
-		return m, m.schedulePreview()
-	}
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(k)
-	return m, tea.Batch(cmd, m.schedulePreview())
-}
-
 // relayout brings every size-dependent component into agreement with the
-// current width, height and sidebar split. It is the one re-layout sequence:
-// the tea.WindowSizeMsg handler and setSidebarPct both call it so the two
-// paths cannot drift.
+// current width, height and sidebar split. It is the one re-layout sequence,
+// run on every tea.WindowSizeMsg.
 //
 // A live pane must track the geometry: its region is recomputed from the
 // current size and the emulator + the session's PTY are resized together
@@ -4074,15 +4057,16 @@ func (m Model) sessionFilterKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // inline rather than in a Cmd — same treatment as the synchronous pane.Close
 // on quit.
 //
-// This runs while the overview is showing over a live pane: the emulator must
-// keep tracking geometry or switching back exposes a grid with stale wrap
-// points.
+// This runs while the Project is showing with a live pane behind it: the
+// emulator must keep tracking geometry or going back into the Agent exposes a
+// grid with stale wrap points.
 func (m *Model) relayout() {
 	m.sizeFormComponents()
 	m.sizeSwitcher()
 	m.sizeInbox()
 	m.sizePlanCheck()
 	m.sizeTaskTokens()
+	m.sizeKeysOverlay()
 	m.sizeSessionList()
 	m.syncDetailViewport()
 	if m.pane != nil {
@@ -4091,87 +4075,6 @@ func (m *Model) relayout() {
 			m.notify(notifyError, "pane resize failed: "+err.Error())
 		}
 	}
-}
-
-// setSidebarPct stores the sidebar split, clamped to [minSidebarPct,
-// maxSidebarPct], and re-lays out so the list, detail view and pane follow it.
-func (m *Model) setSidebarPct(pct int) {
-	m.sidebarPct = min(max(pct, minSidebarPct), maxSidebarPct)
-	m.relayout()
-}
-
-// resizeStep and resizeBigStep are resize mode's nudge sizes, in percentage
-// points of the terminal width: h/l/←/→ move the divider by the first,
-// H/L/shift+←/shift+→ by the second.
-const (
-	resizeStep    = 1
-	resizeBigStep = 5
-)
-
-// resizeHints names resize mode's commit and cancel keys, read from the
-// mode's own bindings via findBinding (the same lookup focusDetail uses for
-// its release key) so the toasts, the detail box edge and the footer cannot
-// name two different keys.
-func (m Model) resizeHints() (commit, cancel string) {
-	reg := m.modes()
-	bindings := reg.spec(inputResize).keys.bindings
-	return findBinding(bindings, resizeToggleKey.Keys()).Help().Key,
-		findBinding(bindings, []string{"esc"}).Help().Key
-}
-
-// enterResize is ctrl+] w (leader.go), from the list or the overview,
-// and from the agent pane by way of the list. It records the effective
-// split (clampSidebarPct, so 38 when nothing was ever set) for esc to restore
-// and leaves the focus alone, so a resize begun from a focused detail pane
-// hands the keyboard back to it on exit. relayout runs because the
-// footer is now resize mode's, and the frame must agree with whatever height
-// that footer takes.
-func (m Model) enterResize() (tea.Model, tea.Cmd) {
-	m.resizeStartPct = clampSidebarPct(m.sidebarPct)
-	m.resizing = true
-	m.relayout()
-	commit, cancel := m.resizeHints()
-	m.notify(notifyInfo, fmt.Sprintf("resizing panes · h/l moves the divider · %s saves · %s cancels", commit, cancel))
-	return m, nil
-}
-
-// nudgeSidebar moves the divider delta points from the current effective
-// split. setSidebarPct clamps and re-lays out, so the list, the detail view
-// and a live pane (its PTY included) all follow on this very keypress. The
-// toast names the resulting percentage because on a narrow terminal the
-// column floors can hold the drawn width still while the stored split moves,
-// and a press that visibly does nothing must still say where it landed.
-func (m Model) nudgeSidebar(delta int) (tea.Model, tea.Cmd) {
-	m.setSidebarPct(clampSidebarPct(m.sidebarPct) + delta)
-	commit, cancel := m.resizeHints()
-	m.notify(notifyInfo, fmt.Sprintf("list at %d%% · %s saves · %s cancels", m.sidebarPct, commit, cancel))
-	return m, nil
-}
-
-// commitResize is resize mode's ctrl+w: the split as it stands is kept and,
-// when the seam is wired, written in the background (saveSidebarPctCmd). The
-// write is always issued, even for an unmoved divider: the user asked to
-// save, and an idempotent write of one small file is cheaper than reasoning
-// about whether the file already agrees.
-func (m Model) commitResize() (tea.Model, tea.Cmd) {
-	pct := clampSidebarPct(m.sidebarPct)
-	m.resizing = false
-	m.resizeStartPct = 0
-	m.relayout()
-	m.notify(notifyInfo, fmt.Sprintf("pane split saved · list at %d%%", pct))
-	return m, saveSidebarPctCmd(m.deps.RememberSidebarPct, pct)
-}
-
-// cancelResize is resize mode's esc: the divider goes back to where it was at
-// entry and nothing is written. resizing is cleared BEFORE setSidebarPct so
-// its one relayout already sees the normal-mode footer.
-func (m Model) cancelResize() (tea.Model, tea.Cmd) {
-	start := m.resizeStartPct
-	m.resizing = false
-	m.resizeStartPct = 0
-	m.setSidebarPct(start)
-	m.notify(notifyInfo, fmt.Sprintf("resize cancelled · list back to %d%%", m.sidebarPct))
-	return m, nil
 }
 
 // sizeSessionList keeps the stored list's page size in step with the frame, so
@@ -4293,10 +4196,10 @@ func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// releasePaneFocus is the focused pane's back to list (ctrl+] \ there,
-// runLeaderRow; ctrl+\ before T7.2): the keyboard comes back to the
+// releasePaneFocus is the Agent's way back to Project (ctrl+] esc, T16.2;
+// ctrl+] \ before it, ctrl+\ before T7.2): the keyboard comes back to the
 // dashboard and the session is left completely alone — still attached, still
-// rendering in the pane.
+// rendering in the pane (A5).
 func (m Model) releasePaneFocus() (tea.Model, tea.Cmd) {
 	m.focus = focusList
 	m.notify(notifyInfo, "input goes to the dashboard — "+m.paneName+" still running in the pane · "+m.keys.Focus.Help().Key+" to focus")
@@ -4328,56 +4231,71 @@ func (m Model) focusDetail() (tea.Model, tea.Cmd) {
 	// applyPaneAttached's stalePreview). Revoking it here would make enter,
 	// ctrl+t, ctrl+\, enter lose the connect the first enter asked for.
 	m.previewGen++
-	// The way out is read from mode.go's inputDetail release binding, the same
-	// findBinding lookup detailReleaseHint (views.go) uses, so this toast and
-	// the pane's own edge hint cannot name two different keys.
-	reg := m.modes()
-	release := findBinding(reg.spec(inputDetail).keys.bindings, []string{"esc"})
-	m.notify(notifyInfo, "scrolling the detail view — the session list is frozen · "+release.Help().Key+" to return")
+	// The way out is read from the key table, as detailReleaseHint
+	// (views.go) reads it, so this toast and the pane's own edge hint cannot
+	// name two different keys.
+	m.notify(notifyInfo, "scrolling the detail view — the session list is frozen · "+keyName(m.leaderKey.name, levelProject, actionGoBack)+" to return")
 	return m, nil
 }
 
-// showBuildTab is `b`: go straight to the Build tab, with the keyboard on the
-// right side so the task list scrolls at once. It works from the list and
-// from a focused overview, on any row and with no row at all, because the tab
-// is about the project.
+// showDetails is `d` (the leader then `d` in the Agent): the selected
+// session's details. Until T16.5 builds the details overlay that is the
+// overview with the keyboard (A2): the right side switches to the overview
+// view and takes the keyboard, so its scroll and tab keys answer and esc
+// gives the keyboard back to the list. A live agent pane on screen goes
+// behind the overview: still connected, still running, one enter away. It is
+// never closed.
 //
-// The right side is switched to the overview, since that is where the tabs
-// are. A live agent pane on screen goes behind the overview exactly as ctrl+t
-// puts it there: still connected, still running, one ctrl+t away. It is never
-// closed.
-//
-// With no build to show the key changes nothing and says why. The check comes
-// first so that a project with no master plan cannot have its view or its
-// focus moved by a key that has nothing to show for it.
-func (m Model) showBuildTab() (tea.Model, tea.Cmd) {
-	if !m.hasBuild() || !m.hasActiveProject() {
-		m.notify(notifyInfo, noBuildNotice)
+// The focus is set here rather than through focusDetail's list-only path
+// because `d` also comes from the Agent, where the right side already has the
+// keyboard; focusDetail's checks and its notice still apply.
+func (m Model) showDetails() (tea.Model, tea.Cmd) {
+	if _, ok := m.selected(); !ok || !m.hasActiveProject() {
+		m.notify(notifyInfo, "No session selected.")
 		return m, nil
 	}
 	hidPane := m.shouldRenderPane()
 	m.view = viewOverview
-	if m.detailTab != tabBuild {
-		m.detailTab = tabBuild
-		// The offset belonged to the tab that was showing (switchDetailTab).
-		m.detailViewport.GotoTop()
-	}
 	m.syncDetailViewport()
-	if m.focus != focusRight {
-		// focusDetail owns moving the keyboard right, so esc and ctrl+\
-		// release it the way they release any focused overview.
-		next, cmd := m.focusDetail()
-		m = next.(Model)
-		if hidPane {
-			m.notify(notifyInfo, m.paneName+" still running behind the build tasks · "+leaderChord(m.leaderKey.name, actionPaneToggle)+" for the agent")
-		}
-		return m, cmd
+	next, cmd := m.focusDetail()
+	m = next.(Model)
+	if hidPane && m.pane != nil {
+		m.notify(notifyInfo, m.paneName+" still running behind the overview · "+m.keyHintFor(actionGoIn)+" for the agent")
 	}
-	return m, nil
+	return m, cmd
 }
 
-// releaseDetailFocus is the focused detail pane's esc or ctrl+] \: the
-// keyboard goes back to the session list and the viewport keeps its offset,
+// openAgent is enter on a session at Project: its Agent, with the keyboard on
+// the agent pane (§5). The right side switches to the agent view; an
+// installed pane for the row is focused, and a running row with none is
+// connected with the focus already on the right, so the pane lands focused
+// (connectSelected). A row with no live agent (stopped, pending, a fault,
+// cleaning, finished) has no agent to open: its overview is what the agent
+// view draws for it, so enter gives that the keyboard (focusDetail), as §4.3
+// says the Agent shows such a session's details. Enter NEVER restarts a host
+// — `r` is the restart key (restartSelected) — because "look at this
+// session" must not spawn a process as a side effect. The view stays the
+// agent's either way, so a row that comes back to life shows its agent.
+func (m Model) openAgent() (tea.Model, tea.Cmd) {
+	if !m.hasActiveProject() {
+		return m, nil
+	}
+	m.view = viewAgent
+	s, ok := m.selected()
+	if ok && !m.paneForSelection() && !m.rowHasAgent(s) {
+		return m.focusDetail()
+	}
+	if m.paneForSelection() {
+		return m.focusPane()
+	}
+	if !ok {
+		return m, nil
+	}
+	return m.connectSelected()
+}
+
+// releaseDetailFocus is the focused overview's esc: the keyboard goes back
+// to the session list and the viewport keeps its offset,
 // so a release and a re-focus resume where the reading left off.
 func (m Model) releaseDetailFocus() (tea.Model, tea.Cmd) {
 	m.focus = focusList
@@ -4385,23 +4303,11 @@ func (m Model) releaseDetailFocus() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cleanRequested is the clean action (ctrl+] c). Clean can remove the
-// worktree out from under a running session, so it is blocked while a pane is
-// open on one (visible or behind the overview) and the status names the way
-// out. Clean is a list action, and from the list ctrl+] \ closes an
-// installed pane whichever view is showing (actionPaneClose), so the way out
-// is the one key in both cases. The dialog dims the row on the same rule
-// (leaderBlockedReason), so this guard is reached only by a caller that
-// bypasses it.
+// cleanRequested is the clean action (`c` at Project). It goes straight to
+// the confirmation, a pane open on the session included: since T16.2 no key
+// closes a pane on its own, so the pane is detached when the clean is
+// confirmed (dispatchConfirmedClean) rather than demanded closed first.
 func (m Model) cleanRequested() (tea.Model, tea.Cmd) {
-	if m.pane != nil {
-		if m.view == viewOverview {
-			m.notify(notifyWarn, "close the pane first — it's behind the overview · "+leaderChord(m.leaderKey.name, actionPaneClose))
-		} else {
-			m.notify(notifyWarn, "close the pane first · "+leaderChord(m.leaderKey.name, actionPaneClose))
-		}
-		return m, nil
-	}
 	return m.cleanSelected()
 }
 
@@ -4940,10 +4846,9 @@ func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
 // mid-filter too, unlike the creation form, which lets it through to the
 // component. The form has a name buffer worth protecting from a stray chord; a
 // filter query is throwaway, and an overlay that could trap the keyboard would
-// be worse than a lost search term. m.keys.Quit is deliberately NOT the binding
-// used: it binds `q` as well as ctrl+c, and `q` has to reach the list as an
-// ordinary key (it filters, and it is a perfectly good character in a project
-// name).
+// be worse than a lost search term. It is ctrl+c alone, not q as well: `q` has
+// to reach the list as an ordinary key (it filters, and it is a perfectly good
+// character in a project name).
 //
 // The mouse chord is likewise absent from the spec, unlike in the form and the
 // spawn-error modal. Those two leave something on screen worth selecting; the
@@ -5090,16 +4995,18 @@ func (m Model) switcherSessions() map[string][]discover.SessionState {
 	return merged
 }
 
-// openLeader is the leader key (ctrl+]) from mode `from`: inputNormal,
-// inputDetail (the overview or the agent placeholder) or inputPane. It opens
-// the actions dialog with a snapshot of every action and whether it can run
-// right now, and records where it was opened, which runLeaderRow and the
-// pass-through need later and cannot work out again once the dialog's own
-// mode outranks the pane's. Opening is pure state: no Cmd, nothing blocking.
-func (m Model) openLeader(from inputMode) (tea.Model, tea.Cmd) {
+// openActions is `:` (the leader then `:` in the Agent): the actions search
+// over every action, with a snapshot of the rows for level lv and whether
+// each can run right now. It records where it was opened — the mode, the
+// level and whether that was the agent placeholder — which runLeaderRow
+// needs and cannot work out again once the search's own mode outranks the
+// surface it was opened from. Opening is pure state: no Cmd, nothing
+// blocking.
+func (m Model) openActions(from inputMode, lv level, placeholder bool) (tea.Model, tea.Cmd) {
 	m.leaderFrom = from
-	m.leaderFromPlaceholder = from == inputDetail && m.agentPlaceholderDrawn()
-	m.leader = newLeaderDialog(leaderRows(m.leaderConditions()), m.leaderKey.name, from == inputPane)
+	m.leaderLevel = lv
+	m.leaderFromPlaceholder = placeholder
+	m.leader = newLeaderDialog(actionRows(lv, m.leaderKey.name, m.leaderConditions()), m.leaderKey.name)
 	m.leaderOpen = true
 	m.clearStatus()
 	return m, nil
@@ -5114,15 +5021,13 @@ func (m Model) leaderConditions() leaderConds {
 		leader:            m.leaderKey.name,
 		hasActiveProject:  m.hasActiveProject(),
 		paneOpen:          conds.paneOpen,
-		rightFocused:      m.focus == focusRight,
-		listFiltered:      conds.listFiltered,
 		hasBuild:          m.hasBuild(),
 		buildKnown:        m.buildKnown,
 		canStartPlan:      m.deps.StartPlan != nil,
 		canCheckPlan:      m.deps.LoadPlanStatus != nil,
 		canApprovePlan:    m.deps.ApprovePlan != nil,
 		canAllProjects:    m.deps.LoadAllProjects != nil,
-		allProjectsOpen:   m.allProjectsOpen,
+		allProjectsOpen:   m.level() == levelAllProjects,
 		canAddProject:     m.deps.AddProject != nil,
 		canRemoveProject:  m.deps.RemoveProject != nil,
 		canSetTaskStatus:  m.deps.SetTaskStatus != nil,
@@ -5136,17 +5041,12 @@ func (m Model) leaderConditions() leaderConds {
 		planMode:          m.planStatus.Mode,
 		planPhase:         m.planStatus.Phase,
 		restartLive:       m.restartKeyLive(),
-		canFocus:          m.normalBindingEnabled(m.keys.Focus),
-		// toggleView is inert only on a selected row that has neither a
-		// pane nor a live agent; with no selection it goes ahead.
-		canToggleView: true,
 	}
 	if s, ok := m.selected(); ok {
 		c.selected = true
 		c.selectedPending = s.Pending
 		c.selectedFault = isWorktreeFault(s.Kind)
 		c.selectedCleaning = m.cleaningSessions[cleanIDFor(s)]
-		c.canToggleView = m.paneForSelection() || m.rowHasAgent(s)
 	}
 	// The cursor's index is checked against its id as well as the rows'
 	// length: the picker reads the row at the index, and a cursor whose two
@@ -5163,36 +5063,16 @@ func (m Model) leaderConditions() leaderConds {
 	return c
 }
 
-// leaderComponentKey is inputLeader's fall-through: every key reaches the
-// dialog, and this carries out what leaderKeyDecision decided. Filter and
-// move change only the dialog. Close, pass-through and run close it first,
-// so the action a row runs sees the dashboard as it is with the dialog gone
-// — a run that opens an overlay or a modal gets the keyboard, not the dialog.
+// leaderComponentKey is inputLeader's fall-through: every key but ctrl+c
+// reaches the search, and this carries out what leaderKeyDecision decided.
+// Filter and move change only the search. Close and run close it first, so
+// the action a row runs sees the dashboard as it is with the search gone — a
+// run that opens an overlay or a modal gets the keyboard, not the search.
 func (m Model) leaderComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	o := m.leader.decide(k)
 	switch o.kind {
 	case leaderClose:
 		m.leaderOpen = false
-	case leaderPassThrough:
-		m.leaderOpen = false
-		// The leader pressed twice from the agent: the agent gets the key the
-		// dashboard took. m.leaderKey.key is the decoded form checkLeader
-		// built for the leader's name, so tea.KeyPressMsg(key).String() is the
-		// name the binding matched. It goes straight to SendKey rather than
-		// through forwardKeyToPane, whose specialKeyEvent table lists only
-		// the keys a person types into an agent and would drop a configured
-		// leader such as ctrl+shift+a or an F-key before the emulator saw it.
-		// x/vt's Emulator.SendKey (key.go) owns the encoding: ctrl+] is
-		// 0x1D, ctrl+o 0x0F, an alt chord gets its ESC prefix. A modified
-		// key it has no encoding for writes nothing, which is the same "drop
-		// rather than send garbage" forwardKeyToPane keeps; it cannot write a
-		// stray rune either, because x/vt's fallback writes the bare code
-		// only for an unmodified key and checkLeader refuses every leader
-		// without ctrl or alt.
-		if m.pane != nil {
-			k := m.leaderKey.key
-			m.pane.SendKey(termpane.KeyEvent{Code: k.Code, Mod: k.Mod})
-		}
 	case leaderRun:
 		m.leaderOpen = false
 		return m.runLeaderRow(o.row)
@@ -5202,44 +5082,12 @@ func (m Model) leaderComponentKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// runLeaderRow runs a dialog row's action through applyKeyAction, the
-// function every key reaches, so the dialog never has a second
-// implementation of anything and nothing is ever typed to the agent. Since
-// T7.2 it needs no rule in the opening mode: the leader table is the only
-// way most actions are reached at all.
-//
-// Two decisions are made here, both from where the leader was pressed:
-//
-//  1. Back to list from the agent pane or its placeholder runs as those
-//     surfaces' own release, which says the right thing about the agent;
-//     the overview's release would talk about scrolling it.
-//  2. Whether the keyboard goes to the list first (leaderMovesToList, from
-//     the row's reach): a list action from the right side, or an overview
-//     action from the agent pane, runs as from the list, as its old key
-//     could only be pressed there. Running a list action with the agent
-//     still focused would be worse than odd — an overlay it opens would
-//     close back onto the agent.
-//
-// The pane is never closed here unless the action is the one that closes it.
+// runLeaderRow runs a `:` row's action through runLevelAction, the function
+// every level key reaches, at the level and from the surface the search was
+// opened at, so the search never has a second implementation of anything
+// and nothing is ever typed to the agent.
 func (m Model) runLeaderRow(r leaderRow) (tea.Model, tea.Cmd) {
-	// The handlers that read the key (startSessionFilter hands `/` on to the
-	// list) get the row's own key, as a press of it would have delivered.
-	var press tea.KeyPressMsg
-	if len(r.keys) > 0 {
-		press, _ = leaderPressFor(r.keys[0])
-	}
-	if r.action == actionDetailUnfocus {
-		switch {
-		case m.leaderFrom == inputPane:
-			return m.releasePaneFocus()
-		case m.leaderFromPlaceholder:
-			return m.releasePlaceholderFocus()
-		}
-	}
-	if leaderMovesToList(r.reach, m.leaderFrom) {
-		m.focus = focusList
-	}
-	return m.applyKeyAction(r.mode, r.action, press)
+	return m.runLevelAction(m.leaderLevel, m.leaderFrom, r.action, m.leaderFromPlaceholder)
 }
 
 // dismissSpawnError closes the spawn-error modal. Both esc and enter map to it
@@ -5366,7 +5214,7 @@ func (m Model) connectSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.rowHasAgent(s) {
-		m.notify(notifyInfo, s.Name+" "+stoppedText(s)+" · "+leaderChord(m.leaderKey.name, actionRestart)+" to restart")
+		m.notify(notifyInfo, s.Name+" "+stoppedText(s)+" · "+m.keyHintFor(actionRestart)+" to restart")
 		return m, nil
 	}
 	return m, m.connect(paneOpenRequest{
@@ -5435,33 +5283,33 @@ func (m *Model) startRestart(req paneOpenRequest) tea.Cmd {
 	return m.restartHostCmd(req)
 }
 
-// placeholderKey answers a key while the agent placeholder owns the keyboard:
-// enter connects (or reconnects) the selected row through connectSelected,
-// and the leader (ctrl+]) opens the actions dialog as it does over a live
-// agent. Every other key is swallowed, so nothing typed at a lost or
-// still-connecting agent reaches a list binding. Since T7.2 the
-// placeholder's other keys — agent or overview, back to the list, restart
-// and the mouse — are ctrl+] t, \, r and g, as they are over the agent
-// it stands in for (runLeaderRow runs them).
+// placeholderKey answers a key while the agent placeholder owns the
+// keyboard with the key strip closed: enter connects (or reconnects) the
+// selected row through connectSelected, r restarts it (A6: the placeholder
+// keeps its enter and its restart), and the leader shows the key strip as it
+// does over a live agent, whose esc goes back to Project. Every other key is
+// swallowed: there is no agent to send it to, and nothing typed at a lost or
+// still-connecting agent may reach a Project key.
 //
-// It matches the keyMap's own bindings rather than declaring placeholder
-// copies: the placeholder stands in for the agent's surface, and a second
-// declaration of a key would let it or its help text drift from the one
-// renderHelp shows.
+// enter and r act alone here, unlike the Agent's other keys, because the
+// rule that the leader comes first exists so the agent gets every key, and
+// the placeholder is the one Agent with no agent to get them.
 func (m Model) placeholderKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(k, m.keys.Focus):
 		return m.connectSelected()
+	case key.Matches(k, m.keys.Restart):
+		return m.restartSelected()
 	case key.Matches(k, m.keys.Leader):
-		// The placeholder stands in for the agent pane, and the leader
-		// opens the actions dialog from the pane, so it does here too.
-		return m.openLeader(inputDetail)
+		m.keyStripOpen = true
+		m.clearStatus()
+		return m, nil
 	}
 	return m, nil
 }
 
-// releasePlaceholderFocus is "back to list" from the agent placeholder
-// (ctrl+] \ there): the keyboard goes to the list, and the placeholder
+// releasePlaceholderFocus is "back to Project" from the agent placeholder
+// (ctrl+] esc there): the keyboard goes to the list, and the placeholder
 // stays drawn for the connect or restart still under way.
 func (m Model) releasePlaceholderFocus() (tea.Model, tea.Cmd) {
 	m.focus = focusList
@@ -5506,24 +5354,6 @@ func (m *Model) handBackUnansweredFocus() {
 	}
 }
 
-// closePane detaches from the session in the pane and takes it off screen. It is
-// ctrl+] \ from the list (actionPaneClose), dimmed in the dialog with no
-// pane open (leaderBlockedReason).
-//
-// DETACHING is the whole point: the session's host is a separate process, so this
-// closes this dashboard's view of it and nothing else — the same guarantee quitting
-// has (requestQuit) and the same call hostpane.go's hostChild.Close makes. No
-// reload is dispatched, because nothing about the session changed.
-func (m Model) closePane() (tea.Model, tea.Cmd) {
-	if m.pane == nil {
-		return m, nil
-	}
-	closed := m.paneName
-	m.forgetPane()
-	m.notify(notifyInfo, "closed the pane — "+closed+" still running in the background · "+m.keys.Focus.Help().Key+" to reopen the agent")
-	return m, nil
-}
-
 // forgetPane is the one teardown for an installed pane: close (detach) it,
 // drop the handle, and hand the keyboard back to the list if the pane was
 // what held it. The focus rule is the reason this is a helper rather than
@@ -5547,60 +5377,11 @@ func (m *Model) forgetPane() {
 	m.paneName = ""
 }
 
-// toggleView is ctrl+] t (ctrl+t before T7.2). It is reachable only with
-// the right side focused (the dialog dims it from the list), and it does one
-// thing: flip the right side between the agent and the overview. The focus
-// never moves — the user stays on the right, now looking at the other view.
-//
-// Switching TO the agent view connects the selected session when it has no
-// pane, under the same rules enter uses from the list (connectSelected). On a
-// row with no live agent (stopped, pending, faulted, cleaning) ctrl+t is a
-// no-op in both directions: that row draws its overview whatever the view.
-//
-// The old ctrl+t carried four meanings — attach/restart from the list, hide,
-// reveal-with-focus-restore, and replace a pane belonging to another row —
-// and every one of them is either gone or folded into this flip.
-func (m Model) toggleView() (tea.Model, tea.Cmd) {
-	// A row with no live agent draws its overview in either view, so a flip
-	// would change nothing on screen and only rewrite the sticky preference
-	// the next running row is shown with. It is inert instead.
-	if s, ok := m.selected(); ok && !m.paneForSelection() && !m.rowHasAgent(s) {
-		return m, nil
-	}
-	if m.view == viewAgent {
-		m.view = viewOverview
-		if m.pane != nil {
-			m.notify(notifyInfo, m.paneName+" still running behind the overview · "+leaderChord(m.leaderKey.name, actionPaneToggle)+" for the agent")
-		} else {
-			m.notify(notifyInfo, "overview · "+leaderChord(m.leaderKey.name, actionPaneToggle)+" for the agent")
-		}
-		return m, nil
-	}
-	m.view = viewAgent
-	if m.paneForSelection() {
-		m.notify(notifyInfo, "input goes to "+m.paneName+" · "+leaderChord(m.leaderKey.name, actionDetailUnfocus)+" to return")
-		return m, nil
-	}
-	return m.connectSelected()
-}
-
 // agentKeyHint is the key a toast names for "get to this row's agent" from
-// wherever the keyboard is now. From the list, the agent pane or the agent
-// placeholder that key is enter/f. With the OVERVIEW focused it is ctrl+t:
-// enter is not bound there (inputDetail), so a toast saying "enter/f to
-// reopen the agent" named a key that did nothing, which is what a restart
-// confirmed from the focused overview showed when the dashboard was walked
-// through against a built binary (docs/decisions.md, T0.6). ctrl+t from the
-// focused overview switches to the agent view and connects (toggleView).
-//
-// Only toasts that can be raised while the overview has the keyboard use it:
-// the outcome of a restart, the one-off restart refusal, and a connection
-// dropped behind the overview. The others are raised in a state that already
-// fixes the focus (a ctrl+\ back to the list, for instance).
+// wherever the keyboard is now: enter, which opens the selected session's
+// agent from the list and from the focused overview alike (openAgent), and
+// from the agent placeholder reconnects it (placeholderKey).
 func (m Model) agentKeyHint() string {
-	if m.focus == focusRight && m.view == viewOverview {
-		return leaderChord(m.leaderKey.name, actionPaneToggle)
-	}
 	return m.keys.Focus.Help().Key
 }
 
@@ -5613,7 +5394,7 @@ func (m Model) focusPane() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showAndFocusPane()
-	m.notify(notifyInfo, "input goes to "+m.paneName+" · "+leaderChord(m.leaderKey.name, actionDetailUnfocus)+" to return")
+	m.notify(notifyInfo, "input goes to "+m.paneName+" · "+keyName(m.leaderKey.name, levelAgent, actionGoBack)+" to return")
 	return m, nil
 }
 
@@ -5759,7 +5540,7 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		m.notify(notifyInfo, target.name+" "+word+" · "+leaderChord(m.leaderKey.name, actionRestart)+" to restart")
+		m.notify(notifyInfo, target.name+" "+word+" · "+m.keyHintFor(actionRestart)+" to restart")
 		return m, tea.Batch(cmds...)
 	}
 	// The same entrance enter uses (connect): the focus moves right and the
@@ -5780,7 +5561,7 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 // the keyboard live however they got there, and the one thing they need is the
 // chord that gives it back.
 func focusRequestHonoredStatus(leader, name string) string {
-	return "input goes to " + name + " · " + leaderChord(leader, actionDetailUnfocus) + " to return"
+	return "input goes to " + name + " · " + keyName(leader, levelAgent, actionGoBack) + " to return"
 }
 
 // maybeOpenInitialPane opens the startup pane requested via
@@ -5846,13 +5627,31 @@ func (m Model) maybeOpenInitialPane() (tea.Model, tea.Cmd) {
 		m.resetDetailScroll()
 		m.rememberSelectedRow()
 	}
+	// --open lands in the Agent with the keyboard on it (docs/dash-design.md
+	// §5): the request is the owner's, so it is a focus gesture and the
+	// arrival carries focusOnArrival. A start that is not --open never gets
+	// here with StartAgent, and a Model built without a StartLevel keeps the
+	// older unfocused open.
+	toAgent := m.deps.StartLevel == StartAgent
 	if !s.HostRunning {
 		m.notify(notifyInfo, "restarting "+s.Name+"…")
-		// Unfocused: this is a surface-open request, not a focus gesture.
+		if toAgent {
+			// Focus moves at request time, as connect does: a failed restart
+			// hands it back through handBackUnansweredFocus.
+			m.view = viewAgent
+			m.focus = focusRight
+		}
 		return m, m.startRestart(paneOpenRequest{
+			name:           s.Name,
+			worktree:       s.WorktreePath,
+			scratch:        s.Scratch,
+			focusOnArrival: toAgent,
+		})
+	}
+	if toAgent {
+		return m, m.connect(paneOpenRequest{
 			name:     s.Name,
 			worktree: s.WorktreePath,
-			scratch:  s.Scratch,
 		})
 	}
 	return m, m.openPaneFor(paneOpenRequest{
@@ -6083,14 +5882,11 @@ func (m *Model) rememberSelectedRow() {
 // and without this gate it would fire mid-read, open a pane and replace the
 // diff the user just brought the keyboard to. schedulePreview only bumps
 // previewGen on a cursor move, and focusing the detail pane is not one.
-// resizing is gated on the same reasoning: ctrl+w is not a cursor move
-// either, and a preview landing mid-resize would swap what the main region
-// shows while the user is sizing it.
 func (m Model) applyPreviewTimer(msg previewTimerMsg) (tea.Model, tea.Cmd) {
 	if msg.gen != m.previewGen {
 		return m, nil
 	}
-	if m.modal != inputNormal || m.formOpen || m.focus == focusRight || m.resizing {
+	if m.modal != inputNormal || m.formOpen || m.focus == focusRight {
 		return m, nil
 	}
 	// The overview is drawn: a preview has nothing to fill in. Re-checked
@@ -6827,6 +6623,13 @@ func (m Model) dispatchConfirmedClean(opts session.CleanOptions) (tea.Model, tea
 	scratch, kind := m.confirmScratch, m.confirmKind
 	m.modal = inputNormal
 	m.clearCleanConfirm()
+	// The pane on the session being cleaned is detached first: its worktree
+	// is about to go, and a pane left attached would show a session the
+	// clean is taking apart. Detaching ends nothing (the host is its own
+	// process), and a pane on another session is left alone.
+	if m.pane != nil && m.paneName == name {
+		m.forgetPane()
+	}
 	m.markCleaning(cleanID{name: name, kind: kind})
 	m.notify(notifyInfo, "cleaning "+name+"…")
 	return m, m.cleanSessionCmd(name, string(phase), scratch, kind, opts)
@@ -6925,7 +6728,7 @@ func (m Model) restartWedgedSelected() (tea.Model, tea.Cmd) {
 	// above, this one explains itself: the WEDGED badge advertises `r` on this
 	// very row, so silence would read as a broken key.
 	if s.Scratch {
-		m.notify(notifyWarn, s.Name+" is a one-off session — restart can't resume it · "+m.agentKeyHint()+" to show the agent, "+leaderChord(m.leaderKey.name, actionClean)+" to clean")
+		m.notify(notifyWarn, s.Name+" is a one-off session — restart can't resume it · "+m.agentKeyHint()+" to show the agent, "+keyName(m.leaderKey.name, levelProject, actionClean)+" to clean")
 		return m, nil
 	}
 	m.modal = inputConfirmRestart
@@ -8029,6 +7832,21 @@ func (m Model) settleActiveProject(was string) (Model, []tea.Cmd) {
 		// the search roots and the project list, not necessarily gone from disk.
 		m.activeProject = -1
 		return m, nil
+	}
+	// Started anywhere but inside a project (was is empty: no project was ever
+	// active), the dashboard opens on All projects and stays there until the
+	// owner picks one, instead of making the first project active (docs/
+	// dash-design.md §5). Needs the reader: without it the screen cannot be
+	// drawn, and the older promotion below is the only way to show a project.
+	// Checked on every settle, not once, because the project list is rebuilt
+	// every minute and the screen is already open on the later ones.
+	if was == "" && m.deps.StartLevel != StartProject && m.deps.LoadAllProjects != nil {
+		m.activeProject = -1
+		if m.allProjectsOpen {
+			return m, nil
+		}
+		nm, cmd := m.openAllProjects()
+		return nm, []tea.Cmd{cmd}
 	}
 	// The old index is meaningless against the new list, and it has to be dropped
 	// BEFORE the switch rather than after: switchProject no-ops on the

@@ -32,9 +32,9 @@ func allProjectsModel(t *testing.T) (Model, *allProjectsSeam, *pauseSeams) {
 // read.
 func openAllProjects(t *testing.T, m Model) Model {
 	t.Helper()
-	m, cmd := pressAction(t, m, keyRune('A'))
+	m, cmd := pressAction(t, m, keyEscMsg())
 	if !m.allProjectsOpen {
-		t.Fatal("setup: ctrl+] A did not open the all-projects screen")
+		t.Fatal("setup: esc did not open the all-projects screen")
 	}
 	for _, msg := range collectMsgs(t, cmd) {
 		m, _ = update(t, m, msg)
@@ -59,12 +59,15 @@ func cursorOn(t *testing.T, m Model, root string) Model {
 	return m
 }
 
-// TestAllProjectsOpenAndClose drives the screen's ways in and out. Load-
-// bearing rows: "opening reads once and sorts" (the screen is read when it
-// opens, and the rows needing the owner come first), "esc closes", "the
-// leader row closes it" (the dialog over the screen keeps the row for exactly
-// that), and "unwired says so", which must open nothing: an empty screen
-// would look like a machine with no projects.
+// TestAllProjectsOpenAndClose drives the screen's ways in and out since
+// T16.2, where it is the All projects level: esc from a project's session
+// list opens it, and enter on a row leaves it. Load-bearing rows: "opening
+// reads once and sorts" (the screen is read when it opens, and the rows
+// needing the owner come first), "esc stays" (All projects is the top level,
+// so esc there must not drop the owner into a project they did not pick),
+// "enter on the active project goes back to it", and "unwired says so", which
+// must open nothing: an empty screen would look like a machine with no
+// projects.
 func TestAllProjectsOpenAndClose(t *testing.T) {
 	t.Run("opening reads once and sorts", func(t *testing.T) {
 		m, seam, _ := allProjectsModel(t)
@@ -87,28 +90,28 @@ func TestAllProjectsOpenAndClose(t *testing.T) {
 			t.Fatalf("first row %s, want beta (needs the owner, first in config order)", m.allProjectsRows[0].Name)
 		}
 	})
-	t.Run("esc closes", func(t *testing.T) {
+	t.Run("esc stays", func(t *testing.T) {
 		m, _, _ := allProjectsModel(t)
 		m = openAllProjects(t, m)
 		m, _ = update(t, m, keyEsc)
-		if m.allProjectsOpen {
-			t.Fatal("esc left the screen open")
-		}
-		if mode := activeInputMode(m.modeSnapshot()); mode != inputNormal {
-			t.Fatalf("after esc the keyboard is with %v, want the list", mode)
+		if !m.allProjectsOpen {
+			t.Fatal("esc at All projects closed the screen")
 		}
 	})
-	t.Run("the leader row closes it", func(t *testing.T) {
+	t.Run("enter on the active project goes back to it", func(t *testing.T) {
 		m, _, _ := allProjectsModel(t)
-		m = openAllProjects(t, m)
-		m, _ = pressAction(t, m, keyRune('A'))
+		m = cursorOn(t, openAllProjects(t, m), "/repo")
+		m, _ = update(t, m, keyEnter)
 		if m.allProjectsOpen {
-			t.Fatal("ctrl+] A over the screen did not close it")
+			t.Fatal("enter on the active project left the screen open")
+		}
+		if mode := activeInputMode(m.modeSnapshot()); mode != inputNormal {
+			t.Fatalf("after enter the keyboard is with %v, want the list", mode)
 		}
 	})
 	t.Run("unwired says so", func(t *testing.T) {
 		m := testModel(sess("a"))
-		m, cmd := runAction(m, actionAllProjects)
+		m, cmd := update(t, m, keyEsc)
 		if m.allProjectsOpen || cmd != nil {
 			t.Fatalf("open %v, cmd %v; want nothing opened and nothing run", m.allProjectsOpen, cmd != nil)
 		}
@@ -227,20 +230,25 @@ func TestAllProjectsEnter(t *testing.T) {
 // so a pause that went to the active project's build would record /main.
 // The refusal rows keep the seam uncalled.
 func TestAllProjectsPauseResume(t *testing.T) {
+	// Driven through the handlers: `p` at All projects is T16.3's (A4), so
+	// until then the row's pause and resume have no key of their own, and
+	// what is pinned here is what that key will run.
+	pause := func(m Model) (tea.Model, tea.Cmd) { return m.pauseSelectedProject() }
+	resume := func(m Model) (tea.Model, tea.Cmd) { return m.resumeSelectedProject() }
 	cases := []struct {
 		name       string
 		root       string
-		key        tea.Msg
+		run        func(Model) (tea.Model, tea.Cmd)
 		wantRoots  []string
 		wantStatus string
 	}{
-		{name: "pause acts on the selected row", root: "/p/alpha", key: keyPause,
+		{name: "pause acts on the selected row", root: "/p/alpha", run: pause,
 			wantRoots: []string{"/p/alpha"}, wantStatus: "alpha: Build paused."},
-		{name: "resume acts on the selected row", root: "/p/beta", key: keyResume,
+		{name: "resume acts on the selected row", root: "/p/beta", run: resume,
 			wantRoots: []string{"/p/beta"}, wantStatus: "beta: Build resumed."},
-		{name: "pause refuses a gone row", root: "/p/gamma", key: keyPause,
+		{name: "pause refuses a gone row", root: "/p/gamma", run: pause,
 			wantStatus: allProjectsGoneNotice("gamma")},
-		{name: "resume refuses a row with no plan", root: "/p/epsilon", key: keyResume,
+		{name: "resume refuses a row with no plan", root: "/p/epsilon", run: resume,
 			wantStatus: "epsilon: " + noBuildToResumeNotice},
 	}
 	for _, tc := range cases {
@@ -251,7 +259,8 @@ func TestAllProjectsPauseResume(t *testing.T) {
 			m = cursorOn(t, openAllProjects(t, m), tc.root)
 			readsBefore, loadsBefore := seam.calls, rec.loads
 
-			m, cmd := pressAction(t, m, tc.key)
+			next, cmd := tc.run(m)
+			m = next.(Model)
 			for _, msg := range collectMsgs(t, cmd) {
 				var next tea.Cmd
 				m, next = update(t, m, msg)
@@ -320,7 +329,7 @@ func TestAllProjectsReads(t *testing.T) {
 		m, _, _ := allProjectsModel(t)
 		m = openAllProjects(t, m)
 		gen := m.allProjectsGen
-		m, _ = update(t, m, keyEsc)
+		m = closeAllProjects(t, m)
 		m, _ = update(t, m, allProjectsLoadedMsg{gen: gen, res: AllProjects{Rows: allProjectsFixture()[:1]}})
 		if len(m.allProjectsRows) == 1 {
 			t.Fatal("a read that landed after the screen closed replaced the rows")
@@ -330,7 +339,7 @@ func TestAllProjectsReads(t *testing.T) {
 		m, _, _ := allProjectsModel(t)
 		m = openAllProjects(t, m)
 		old := m.allProjectsGen
-		m, _ = update(t, m, keyEsc)
+		m = closeAllProjects(t, m)
 		m = openAllProjects(t, m)
 		m, _ = update(t, m, allProjectsLoadedMsg{gen: old, res: AllProjects{Rows: allProjectsFixture()[:1]}})
 		if len(m.allProjectsRows) == 1 {
@@ -365,38 +374,4 @@ func TestAllProjectsReads(t *testing.T) {
 			t.Fatal("a switch from elsewhere left the screen open")
 		}
 	})
-}
-
-// TestAllProjectsLeaderOverTheScreen pins the dialog opened over the screen:
-// the leader is a rule there, and only pause, resume, all projects, add and
-// remove a project (T7.10), mouse and quit can run. A dimmed row's key does nothing, so a list action cannot
-// open under a screen that hides the list.
-func TestAllProjectsLeaderOverTheScreen(t *testing.T) {
-	m, _, _ := allProjectsModel(t)
-	// With the add and remove seams wired, so those two rows (T7.10) are
-	// judged by the screen and the selected row (a listed one) alone.
-	m.deps.AddProject = func(string, string) ProjectEditResult { return ProjectEditResult{} }
-	m.deps.RemoveProject = func(string) ProjectEditResult { return ProjectEditResult{} }
-	m = openAllProjects(t, m)
-	m, _ = update(t, m, leaderKeyPress)
-	if !m.leaderOpen || m.leaderFrom != inputAllProjects {
-		t.Fatalf("leader open %v from %v; want it open from the screen", m.leaderOpen, m.leaderFrom)
-	}
-	runnable := map[modeAction]bool{
-		actionPauseBuild: true, actionResumeBuild: true, actionAllProjects: true,
-		actionProjectAdd: true, actionProjectRemove: true,
-		actionMouseToggle: true, actionQuit: true,
-	}
-	for _, r := range m.leader.rows {
-		if runnable[r.action] != (r.blocked == "") {
-			t.Errorf("%s: blocked %q, want runnable %v", r.name, r.blocked, runnable[r.action])
-		}
-		if r.blocked != "" && r.blocked != allProjectsCloseFirst {
-			t.Errorf("%s: blocked %q, want %q", r.name, r.blocked, allProjectsCloseFirst)
-		}
-	}
-	got, _ := update(t, m, keyRune('n'))
-	if got.formOpen || !got.leaderOpen {
-		t.Fatal("n over the screen opened the form")
-	}
 }

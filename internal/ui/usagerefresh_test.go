@@ -67,8 +67,7 @@ func runUsageRefresh(t *testing.T, m Model, cmd tea.Cmd) Model {
 // again when it runs. Load-bearing rows: "no seam" (a dashboard not wired to
 // the reading cannot run the agent's CLI) and "runs with no project" (the
 // reading is the machine's, so the row must not be dimmed for want of a
-// project or a build). "over the all-projects screen" pins that the
-// screen's own rule still decides there.
+// project or a build).
 func TestUsageRefreshBlockedReason(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -78,7 +77,6 @@ func TestUsageRefreshBlockedReason(t *testing.T) {
 		{"runs with the seam", leaderConds{canRefreshUsage: true, hasActiveProject: true, hasBuild: true}, ""},
 		{"runs with no project", leaderConds{canRefreshUsage: true}, ""},
 		{"no seam", leaderConds{hasActiveProject: true, hasBuild: true}, usageRefreshNoSeam},
-		{"over the all-projects screen", leaderConds{canRefreshUsage: true, allProjectsOpen: true}, allProjectsCloseFirst},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,15 +88,15 @@ func TestUsageRefreshBlockedReason(t *testing.T) {
 }
 
 // TestUsageRefreshNilSeam is the zero-Deps guarantee: a dashboard not wired
-// to the reading dims the row, and neither ctrl+] R nor the action run
-// directly calls anything or reads usage. Both rows are load-bearing: the
+// to the reading dims the row, and neither R nor the action run directly
+// calls anything or reads usage. Both rows are load-bearing: the
 // first is what the owner can press, the second the action's own refusal.
 func TestUsageRefreshNilSeam(t *testing.T) {
 	t.Run("the row is dimmed and R calls nothing", func(t *testing.T) {
 		m, seam := usageRefreshModel(t)
 		m.deps.RefreshUsage = nil
-		m, _ = update(t, m, leaderKeyPress)
-		r, ok := leaderRowFor(m.leader.rows, actionRefreshUsage)
+		search, _ := pressAction(t, m, keyRune(':'))
+		r, ok := leaderRowFor(search.leader.rows, actionRefreshUsage)
 		if !ok || r.blocked != usageRefreshNoSeam {
 			t.Fatalf("row blocked %q, want %q", r.blocked, usageRefreshNoSeam)
 		}

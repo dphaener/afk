@@ -4124,6 +4124,8 @@ Amended 2026-10-21 (T16.1 done): the dashboard's colours come from `palette.Them
     `q` quits.
   - `make check` is green.
 
+Amended 2026-10-21 (T16.2 done): the level is worked out by `currentLevel(m.levelFacts())` (`internal/ui/levels.go`) and keys by the pure `decideKey`; `leaderTable` is gone and every action is a `keyTable` row (`internal/ui/keytable.go`, filled in `init()`), with `:` (actions search) and `?` (`keysoverlay.go`) built from it; Project is still the session list plus overview (`d` focuses the overview), `/` opens the project switcher, `]`, `[`, `a` and `p` at All projects are unbound, and `s`/`t` work on the overview's Build tab until T16.4; the Agent box is `agentBoxRect`/`agentContentDims` (one column in each side from 100 columns), drawn by `composeAgent`; resize mode, the full help, the session filter and the agent/overview toggle are removed (`Deps.RememberSidebarPct` is unused but still wired); the start level is `Deps.StartLevel` from `dashStartLevel` in `dash.go`.
+
 #### T16.3 — The home screen
 - **Depends on:** T16.2
 - **Goal:** All projects is the screen of `docs/dash-design.md` §4.1, except the activity column and

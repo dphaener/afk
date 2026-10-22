@@ -189,21 +189,19 @@ func TestRepeatedIdenticalBackgroundEventReachesTheScreen(t *testing.T) {
 }
 
 // TestRepeatedRefusalToastsAgain is the user-initiated half of the same rule:
-// `c` with a pane open is refused with a fixed message, and a user who
-// presses it again ten seconds later is owed the refusal again. Under a bare
-// text comparison the second press would leave the expired toast expired and
-// the key would appear to do nothing.
+// `r` on a healthy running row is refused with a fixed message (its blocked
+// reason, runLevelAction), and a user who presses it again ten seconds later
+// is owed the refusal again. Under a bare text comparison the second press
+// would leave the expired toast expired and the key would appear to do
+// nothing.
 func TestRepeatedRefusalToastsAgain(t *testing.T) {
-	m := testModel(sess("a"))
+	m := testModel(runningSess("a"))
 	now, adv := advancingClock(time.Unix(1_000_000, 0))
 	m.deps.Now = now
-	m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("X"), name: "a"})
 
-	// The dialog dims clean while a pane is open, so the handler's own refusal
-	// is reached by calling it (see runAction).
-	m, _ = runAction(m, actionClean)
-	if !strings.Contains(m.status, "close the pane first") {
-		t.Fatalf("status = %q, want the clean-blocked refusal", m.status)
+	m, _ = update(t, m, keyRune('r'))
+	if !strings.Contains(m.status, "Only a stopped or stuck agent can be restarted") {
+		t.Fatalf("status = %q, want the restart refusal", m.status)
 	}
 	first := m.statusChangedAt
 
@@ -211,9 +209,9 @@ func TestRepeatedRefusalToastsAgain(t *testing.T) {
 	if m.toastVisible() {
 		t.Fatalf("setup: the first refusal's toast should have expired")
 	}
-	m, _ = runAction(m, actionClean)
+	m, _ = update(t, m, keyRune('r'))
 	if m.statusChangedAt == first || !m.toastVisible() {
-		t.Fatalf("second `c` left the stamp at %v with toastVisible=%v, want a fresh toast at %v", m.statusChangedAt, m.toastVisible(), now())
+		t.Fatalf("second `r` left the stamp at %v with toastVisible=%v, want a fresh toast at %v", m.statusChangedAt, m.toastVisible(), now())
 	}
 }
 
@@ -225,14 +223,13 @@ func TestRepeatedRefusalToastsAgain(t *testing.T) {
 // Update has done anything with it.
 func TestNotifyStampsBeforeHandleReturns(t *testing.T) {
 	m := testModel(sess("a"))
-	m, _ = update(t, m, leaderKeyPress)
-	next, _ := m.handle(keyRune('g')) // ctrl+] g toggles mouse capture
+	next, _ := m.handle(keyRune('d')) // d gives the overview the keyboard, and says so
 	got, ok := next.(Model)
 	if !ok {
 		t.Fatalf("handle returned %T, want ui.Model", next)
 	}
 	if got.status == "" {
-		t.Fatalf("the mouse-capture toggle should have notified")
+		t.Fatalf("d should have notified")
 	}
 	if got.statusChangedAt != got.deps.Now() {
 		t.Fatalf("statusChangedAt = %v, want the clock's %v before Update returns", got.statusChangedAt, got.deps.Now())
