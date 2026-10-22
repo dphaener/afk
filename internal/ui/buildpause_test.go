@@ -554,7 +554,8 @@ func TestBuildPauseKeysBelongToWhoeverHasTheKeyboard(t *testing.T) {
 	t.Run("inbox item screen takes the letters as the answer", func(t *testing.T) {
 		m, rec := buildPauseModel(t, sess("alpha"))
 		m = withBuild(t, m, inboxSnap())
-		m = openInboxItem(t, m, 0)
+		// Item 2 has no options, so the answer screen opens in its field.
+		m = openInboxItem(t, m, 2)
 		for _, k := range []tea.Msg{keyPause, keyPause} {
 			var cmd tea.Cmd
 			m, cmd = update(t, m, k)

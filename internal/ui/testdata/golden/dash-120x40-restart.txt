@@ -35,6 +35,6 @@
   │ │ diff    +412/-88 · 9 file(s) vs main           │ │ 3 Inbox                                                   │ │  
   │ │ host    running                                │ │ Reading the inbox…                                        │ │  
   │ ╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────╯ │  
-  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause                 │  
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause   a  answer     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 y restart · n cancel · esc cancel · ctrl+g release mouse · ctrl+c quit                                                  

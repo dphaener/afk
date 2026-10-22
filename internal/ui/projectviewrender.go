@@ -737,8 +737,9 @@ type projectChip struct {
 	word   string
 }
 
-// projectChipList is §4.2's chips, less `a` (answer), which T16.7 brings to
-// the project view. A chip with an action names its key through the key
+// projectChipList is §4.2's chips. `a answer` goes last so that on a narrow
+// terminal it is the first to be left out and the older chips keep their
+// places. A chip with an action names its key through the key
 // table (keyName), so it cannot name a key the dashboard does not answer to;
 // the two that stand for several keys (the sections, the moves) are named
 // by their labels.
@@ -751,6 +752,7 @@ func projectChipList() []projectChip {
 		{actionNewSession, "", "new session"},
 		{actionClean, "", "clean…"},
 		{actionPauseToggle, "", "pause"},
+		{actionAnswerOldest, "", "answer"},
 	}
 }
 

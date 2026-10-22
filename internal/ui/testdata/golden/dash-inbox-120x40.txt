@@ -35,6 +35,6 @@
   │ │ diff    +412/-88 · 9 file(s) vs main           │ │ ! r4x9wd  failure   T2.3  Login redirect failed its chec… │ │  
   │ │ host    running                                │ │   b3n8ht  notice    T3.1  Used the staging key for the s… │ │  
   │ ╰────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────────────╯ │  
-  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause                 │  
+  │  tab/1-3  section   j/k  move   enter  open   d  details   n  new session   c  clean…   p  pause   a  answer     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
 enter read · ↑/k up · ↓/j down · esc close                                                                              

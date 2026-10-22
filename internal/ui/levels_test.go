@@ -148,11 +148,12 @@ func TestDecideKey(t *testing.T) {
 		{"enter", doGoIn, doGoIn, doClose},
 		{"esc", doGoBack, doGoBack, doGoBack},
 		// ] [ go to the next and previous thing that needs you at every
-		// level, after the leader in the Agent (T16.6). a is bound at All
-		// projects only (T16.3); Project's a is T16.7's.
+		// level, after the leader in the Agent (T16.6). a is bound at every
+		// level too (T16.7): it opens the answer screen, and in the Agent it
+		// runs after the leader like i.
 		{"]", doRun(actionNeedNext), doRun(actionNeedNext), doRun(actionNeedNext)},
 		{"[", doRun(actionNeedPrev), doRun(actionNeedPrev), doRun(actionNeedPrev)},
-		{"a", doRun(actionAnswerOldest), doNothing, doClose},
+		{"a", doRun(actionAnswerOldest), doRun(actionAnswerOldest), doRun(actionAnswerOldest)},
 		{"/", doRun(actionProjects), doRun(actionProjects), doRun(actionProjects)},
 		{":", doRun(actionActionsSearch), doRun(actionActionsSearch), doRun(actionActionsSearch)},
 		{"i", doRun(actionInbox), doRun(actionInbox), doRun(actionInbox)},

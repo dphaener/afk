@@ -627,9 +627,11 @@ func goldenInbox() buildview.Snapshot {
 // TestGoldenInbox pins the inbox overlay's two screens at 120×40 over the
 // fixture dashboard, reached the way a user reaches them: the build read
 // arrives, `i` opens the list, enter opens the first item. The item frame is
-// the one a layout change is most likely to move: the body, the numbered
-// options with the recommended one marked, and the answer field are all on
-// it, with a number typed so the field's contents are part of the frame.
+// the answer screen (docs/dash-design.md §4.5), the one a layout change is
+// most likely to move: the strip with the item's place, the facts, the body,
+// CHOOSE ONE with the options numbered and the recommended one labelled,
+// "Write my own answer", and the line on what happens next, with `2` pressed
+// so the frame is reached through a digit.
 func TestGoldenInbox(t *testing.T) {
 	m := goldenModel(t, 120, 40)
 	m, _ = update(t, m, buildLoadedMsg{snap: goldenInbox(), gen: m.projectGen})
@@ -643,8 +645,8 @@ func TestGoldenInbox(t *testing.T) {
 	t.Run("dash-inbox-item-120x40", func(t *testing.T) {
 		im, _ := update(t, m, keyEnter)
 		im, _ = update(t, im, keyRune('2'))
-		if im.inbox.screen != inboxScreenItem || im.inbox.input.Value() != "2" {
-			t.Fatalf("the item screen is not up with 2 typed (screen=%v text=%q)", im.inbox.screen, im.inbox.input.Value())
+		if im.inbox.screen != inboxScreenItem || im.inbox.choice != 1 || im.inbox.typing {
+			t.Fatalf("the answer screen is not up choosing option 2 (screen=%v choice=%d typing=%v)", im.inbox.screen, im.inbox.choice, im.inbox.typing)
 		}
 		assertGolden(t, "dash-inbox-item-120x40", render(im))
 	})
