@@ -141,10 +141,11 @@ func TestDecideKey(t *testing.T) {
 		{"end", doMove, doMove, doClose},
 		{"enter", doGoIn, doGoIn, doClose},
 		{"esc", doGoBack, doGoBack, doGoBack},
-		// ] [ and a are not bound yet (A4): T16.6 and T16.7 build them.
+		// ] [ are not bound yet (A4): T16.6 builds them. a is bound at All
+		// projects only (T16.3); Project's a is T16.7's.
 		{"]", doNothing, doNothing, doClose},
 		{"[", doNothing, doNothing, doClose},
-		{"a", doNothing, doNothing, doClose},
+		{"a", doRun(actionAnswerOldest), doNothing, doClose},
 		{"/", doRun(actionProjects), doRun(actionProjects), doRun(actionProjects)},
 		{":", doRun(actionActionsSearch), doRun(actionActionsSearch), doRun(actionActionsSearch)},
 		{"i", doRun(actionInbox), doRun(actionInbox), doRun(actionInbox)},
@@ -152,8 +153,7 @@ func TestDecideKey(t *testing.T) {
 		{"R", doRun(actionRefreshUsage), doRun(actionRefreshUsage), doRun(actionRefreshUsage)},
 		{"?", doRun(actionKeys), doRun(actionKeys), doRun(actionKeys)},
 		{"q", doQuit, doQuit, doQuit},
-		// p at All projects waits for T16.3 (A4).
-		{"p", doNothing, doRun(actionPauseToggle), doClose},
+		{"p", doRun(actionPauseToggle), doRun(actionPauseToggle), doClose},
 		{"n", doRun(actionPlanNew), doRun(actionNewSession), doClose},
 		{"+", doRun(actionProjectAdd), doNothing, doClose},
 		{"-", doRun(actionProjectRemove), doNothing, doClose},

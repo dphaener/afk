@@ -60,6 +60,23 @@ type Input struct {
 	Open, Blocking int
 	// PlanWaiting is true when the project is on plan-reviews.json.
 	PlanWaiting bool
+	// Wait is the oldest open blocking inbox item, zero when there is none.
+	Wait Wait
+}
+
+// Wait is the one inbox item a project's panel on the home screen shows: the
+// oldest open item that holds a task up. The caller picks it from the items it
+// already read, so this package stays free of internal/inbox. TaskTitle is the
+// title of Task in the plan, empty when the item names no task or the plan
+// did not load. An empty ItemID means nothing is waiting.
+type Wait struct {
+	ItemID    string
+	Kind      string
+	Title     string
+	Body      string
+	CreatedAt string
+	Task      string
+	TaskTitle string
 }
 
 // Row is one line of the all-projects screen.
@@ -84,6 +101,62 @@ type Row struct {
 	PlanWaiting bool
 	NeedsOwner  bool
 	Order       int
+	// Wait is Input.Wait. Only the dashboard's panel reads it; the web page
+	// maps rows through web.rowView, which ignores it.
+	Wait Wait
+}
+
+// Group is one of the four headings of the home screen, in screen order.
+type Group int
+
+const (
+	GroupNeedsYou Group = iota
+	GroupRunning
+	GroupQuiet
+	GroupFinished
+)
+
+// String is the heading's word.
+func (g Group) String() string {
+	switch g {
+	case GroupNeedsYou:
+		return "NEEDS YOU"
+	case GroupRunning:
+		return "RUNNING"
+	case GroupQuiet:
+		return "QUIET"
+	case GroupFinished:
+		return "FINISHED"
+	}
+	return "QUIET"
+}
+
+// GroupOf says which heading a row sits under. Needing the owner outranks
+// every state, so a paused project with a blocking item, or a finished one
+// with a plan waiting, is under NEEDS YOU; paused, held, no plan and nothing
+// ready are all QUIET because nothing is moving and nothing asks for you.
+func GroupOf(r Row) Group {
+	switch {
+	case r.NeedsOwner:
+		return GroupNeedsYou
+	case r.State == StateRunning:
+		return GroupRunning
+	case r.State == StateFinished:
+		return GroupFinished
+	}
+	return GroupQuiet
+}
+
+// Grouped splits rows into the four groups, indexed by Group, keeping the
+// order the rows came in (Sort leaves config order inside a group). A group
+// with no rows is an empty slice, so callers leave its heading out.
+func Grouped(rows []Row) [][]Row {
+	out := make([][]Row, GroupFinished+1)
+	for _, r := range rows {
+		g := GroupOf(r)
+		out[g] = append(out[g], r)
+	}
+	return out
 }
 
 // Build decides a project's row. Exactly one state applies, and the order of
@@ -95,7 +168,7 @@ func Build(in Input) Row {
 		Task: in.Task, Title: in.Title, Phase: in.Phase,
 		Done: in.Done, Total: in.Total,
 		Open: in.Open, Blocking: in.Blocking,
-		PlanWaiting: in.PlanWaiting, Order: in.Order,
+		PlanWaiting: in.PlanWaiting, Order: in.Order, Wait: in.Wait,
 	}
 	set := func(s State, detail string) {
 		r.State, r.Label, r.Detail = s, string(s), detail

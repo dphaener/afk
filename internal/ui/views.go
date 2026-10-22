@@ -2108,6 +2108,8 @@ func (m Model) renderAllProjectsHelpKeyMap(mode inputMode) curatedKeyMap {
 		short = append(short, moves[0], moves[1])
 	}
 	short = append(short,
+		m.tableHelp(levelAllProjects, actionAnswerOldest, "answer", c),
+		m.tableHelp(levelAllProjects, actionPauseToggle, "pause", c),
 		m.tableHelp(levelAllProjects, actionPlanNew, "new plan", c),
 		m.tableHelp(levelAllProjects, actionProjectAdd, "add", c),
 		m.tableHelp(levelAllProjects, actionProjectRemove, "remove", c),

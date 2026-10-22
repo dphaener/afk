@@ -565,6 +565,9 @@ const (
 	// actionPauseToggle is `p`, one toggle replacing the leader's P and U:
 	// pause a running build, resume a paused or stopped one.
 	actionPauseToggle
+	// actionAnswerOldest is `a` at All projects: open the inbox of the
+	// project holding the oldest blocking item (answerOldest, allprojects.go).
+	actionAnswerOldest
 	// actionDetails is `d`, the selected session's details. Until T16.5
 	// builds the details overlay it gives the overview the keyboard (A2).
 	actionDetails
@@ -675,6 +678,7 @@ var actionNames = map[modeAction]string{
 	actionActionsSearch:       "actions-search",
 	actionKeys:                "keys",
 	actionPauseToggle:         "pause-toggle",
+	actionAnswerOldest:        "answer-oldest",
 	actionDetails:             "details",
 	actionCursorUp:            "cursor-up",
 	actionCursorDown:          "cursor-down",

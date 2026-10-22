@@ -2,14 +2,13 @@
 ╭───────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────╮
 │ Sessions                                  ││ feat-auth                                                               │
 │     NAME                PHASE     TASKS   ││   Overview   Waves   Stack   Notes   Diff               tab/1-5: switch │
-│                                           ││ ─────────────────────────────────────────────────────────────────────── │
-│ ▌ ◐ feat╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮         │
-│   ◐ Bill│ type an action's name                                                                            │ng       │
-│   ◐ fix-│                                                                                                  │         │
-│   ✓ feat│ go in                               enter  — Go in a level, or open what is selected             │         │
-│   ◐ scra│ go back                             esc    — Go back a level, or close what is open              │         │
-│   ✕ old-│ jump                                /      — Jump to another project                             │         │
-│         │ inbox                               i      — the inbox has not been read yet                     │         │
+│         ╭─ actions ────────────────────────────────────────────────────────────────────────────────────────╮──────── │
+│ ▌ ◐ feat│ type an action's name                                                                            │         │
+│   ◐ Bill│                                                                                                  │ng       │
+│   ◐ fix-│ go in                               enter  — Go in a level, or open what is selected             │         │
+│   ✓ feat│ go back                             esc    — Go back a level, or close what is open              │         │
+│   ◐ scra│ jump                                /      — Jump to another project                             │         │
+│   ✕ old-│ inbox                               i      — the inbox has not been read yet                     │         │
 │         │ details                             d      — Show the selected session's details                 │         │
 │         │ read usage                          R      — this dashboard cannot read usage                    │         │
 │         │ keys                                ?      — Show every key, level by level                      │         │
@@ -17,6 +16,7 @@
 │         │ start a new plan                           — starting a plan is not available here               │         │
 │         │ add a project                       +      — works on All projects                               │         │
 │         │ remove the project                  -      — works on All projects                               │         │
+│         │ answer the oldest                   a      — works on All projects                               │         │
 │         │ pause or resume the build           p      — this project has no build                           │         │
 │         │ new session                         n      — Start a new session from a plan or a branch         │         │
 │         │ one-off session                     o      — Start a one-off session with no plan                │         │

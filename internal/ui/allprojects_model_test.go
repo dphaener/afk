@@ -8,7 +8,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dphaener/afk/internal/buildview"
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/project"
+	"github.com/dphaener/afk/internal/projectrows"
 )
 
 // allProjectsModel is a dashboard on /repo whose switcher knows /repo and
@@ -230,9 +233,8 @@ func TestAllProjectsEnter(t *testing.T) {
 // so a pause that went to the active project's build would record /main.
 // The refusal rows keep the seam uncalled.
 func TestAllProjectsPauseResume(t *testing.T) {
-	// Driven through the handlers: `p` at All projects is T16.3's (A4), so
-	// until then the row's pause and resume have no key of their own, and
-	// what is pinned here is what that key will run.
+	// Driven through the handlers `p` runs (TestAllProjectsPauseKey pins the
+	// key itself).
 	pause := func(m Model) (tea.Model, tea.Cmd) { return m.pauseSelectedProject() }
 	resume := func(m Model) (tea.Model, tea.Cmd) { return m.resumeSelectedProject() }
 	cases := []struct {
@@ -372,6 +374,151 @@ func TestAllProjectsReads(t *testing.T) {
 		m, _ = m.switchProject("/p/beta")
 		if m.allProjectsOpen {
 			t.Fatal("a switch from elsewhere left the screen open")
+		}
+	})
+}
+
+// TestOldestBlockingRow pins which project `a` goes to. Load-bearing rows:
+// "the older wins" (not the first row, not the one with more items) and "a tie
+// goes to config order" (rows arrive in screen order, so the first of two equal
+// stamps is the one listed first).
+func TestOldestBlockingRow(t *testing.T) {
+	w := func(id, at string) projectrows.Wait { return projectrows.Wait{ItemID: id, CreatedAt: at} }
+	cases := []struct {
+		name string
+		rows []projectrows.Row
+		want string
+		ok   bool
+	}{
+		{name: "no rows"},
+		{name: "rows with no wait", rows: []projectrows.Row{{Name: "a"}, {Name: "b"}}},
+		{name: "one wait", rows: []projectrows.Row{{Name: "a"}, {Name: "b", Wait: w("x", "2026-10-20T09:00:00Z")}}, want: "b", ok: true},
+		{name: "the older wins", rows: []projectrows.Row{
+			{Name: "a", Wait: w("x", "2026-10-20T09:00:00Z")},
+			{Name: "b", Wait: w("y", "2026-10-19T09:00:00Z")},
+		}, want: "b", ok: true},
+		{name: "a tie goes to config order", rows: []projectrows.Row{
+			{Name: "a", Wait: w("x", "2026-10-20T09:00:00Z")},
+			{Name: "b", Wait: w("y", "2026-10-20T09:00:00Z")},
+		}, want: "a", ok: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, ok := oldestBlockingRow(tc.rows)
+			if ok != tc.ok || r.Name != tc.want {
+				t.Fatalf("oldestBlockingRow = %q, %v; want %q, %v", r.Name, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestAllProjectsPauseKey pins `p` at All projects, pressed as a key. The
+// state of the selected row decides, never the active project's snapshot
+// (which here is not paused): a paused row and a stopped row resume, a running
+// row pauses, and a gone row is refused in the words enter and the pause
+// handlers use, with the seams untouched. The first two rows are the
+// load-bearing ones, since the active project's flags would pause them.
+func TestAllProjectsPauseKey(t *testing.T) {
+	cases := []struct {
+		name       string
+		root       string
+		state      projectrows.State
+		wantPause  []string
+		wantResume []string
+		wantStatus string
+	}{
+		{name: "paused resumes", root: "/p/beta", wantResume: []string{"/p/beta"}, wantStatus: "beta: Build resumed."},
+		{name: "stopped resumes", root: "/p/alpha", state: projectrows.StateStopped, wantResume: []string{"/p/alpha"}, wantStatus: "alpha: Build resumed."},
+		{name: "running pauses", root: "/p/alpha", wantPause: []string{"/p/alpha"}, wantStatus: "alpha: Build paused."},
+		{name: "gone is refused", root: "/p/gamma", wantStatus: allProjectsGoneNotice("gamma")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, rec := allProjectsModel(t)
+			rec.resumed = ResumeResult{WasPaused: true}
+			m = withBuild(t, m, buildPauseSnap())
+			m = cursorOn(t, openAllProjects(t, m), tc.root)
+			if tc.state != "" {
+				m.allProjectsRows[m.allProjectsCursor].State = tc.state
+			}
+			m, cmd := pressAction(t, m, keyPause)
+			for _, msg := range collectMsgs(t, cmd) {
+				var next tea.Cmd
+				m, next = update(t, m, msg)
+				for _, again := range collectMsgs(t, next) {
+					m, _ = update(t, m, again)
+				}
+			}
+			if strings.Join(rec.pauseRoots, ",") != strings.Join(tc.wantPause, ",") {
+				t.Errorf("paused %v, want %v", rec.pauseRoots, tc.wantPause)
+			}
+			if strings.Join(rec.resumeRoots, ",") != strings.Join(tc.wantResume, ",") {
+				t.Errorf("resumed %v, want %v", rec.resumeRoots, tc.wantResume)
+			}
+			if !strings.HasPrefix(m.status, tc.wantStatus) {
+				t.Errorf("status = %q, want it to start %q", m.status, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestAllProjectsAnswerKey pins `a`. Load-bearing rows: "switches and opens
+// the inbox on the item" (beta holds the fixture's wait; the overlay is on
+// its item screen only once that project's snapshot lands, and not before),
+// "the active project closes the screen and opens at once", and "nothing
+// blocking says so and switches nothing" (the screen stays up, the project
+// does not change).
+func TestAllProjectsAnswerKey(t *testing.T) {
+	snap := buildview.Snapshot{Root: "/p/beta", HasBuild: true, Items: []inbox.Item{
+		{ID: "aaaaa2", CreatedAt: "2026-10-18T09:00:00Z", Kind: "notice", Title: "fyi"},
+		{ID: "bbbbb3", CreatedAt: "2026-10-20T09:00:00Z", Kind: "question", Blocking: true, Title: "Which database should the cache use?"},
+	}}
+	t.Run("switches and opens the inbox on the item", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		m = openAllProjects(t, m)
+		m, _ = pressAction(t, m, keyRune('a'))
+		if m.repo != "/p/beta" || m.allProjectsOpen {
+			t.Fatalf("repo = %q, screen open = %v; want /p/beta with the screen closed", m.repo, m.allProjectsOpen)
+		}
+		if m.inboxOpen {
+			t.Fatal("the inbox opened before the project's snapshot landed")
+		}
+		m = withBuild(t, m, snap)
+		if !m.inboxOpen || m.inbox.screen != inboxScreenItem || m.inbox.item.ID != "bbbbb3" {
+			t.Fatalf("inbox open = %v, screen = %v, item = %q; want it open on bbbbb3", m.inboxOpen, m.inbox.screen, m.inbox.item.ID)
+		}
+		if m.inboxFollow != "" {
+			t.Error("the follow was not cleared once used")
+		}
+	})
+	t.Run("the active project closes the screen and opens at once", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		snap := snap
+		snap.Root = "/main"
+		m = withBuild(t, m, snap)
+		m = openAllProjects(t, m)
+		for i := range m.allProjectsRows {
+			m.allProjectsRows[i].Wait = projectrows.Wait{}
+		}
+		m.allProjectsRows[0].Root = "/repo"
+		m.allProjectsRows[0].Wait = projectrows.Wait{ItemID: "bbbbb3", CreatedAt: "2026-10-20T09:00:00Z"}
+		m, _ = pressAction(t, m, keyRune('a'))
+		if m.repo != "/repo" || m.allProjectsOpen || !m.inboxOpen || m.inbox.item.ID != "bbbbb3" {
+			t.Fatalf("repo = %q, screen open = %v, inbox open = %v, item = %q", m.repo, m.allProjectsOpen, m.inboxOpen, m.inbox.item.ID)
+		}
+	})
+	t.Run("nothing blocking says so and switches nothing", func(t *testing.T) {
+		m, _, _ := allProjectsModel(t)
+		m = openAllProjects(t, m)
+		for i := range m.allProjectsRows {
+			m.allProjectsRows[i].Wait = projectrows.Wait{}
+		}
+		m, _ = pressAction(t, m, keyRune('a'))
+		if m.status != nothingBlockingNotice {
+			t.Fatalf("status = %q, want %q", m.status, nothingBlockingNotice)
+		}
+		if m.repo != "/repo" || !m.allProjectsOpen || m.inboxOpen {
+			t.Fatalf("repo = %q, screen open = %v, inbox open = %v; want nothing changed", m.repo, m.allProjectsOpen, m.inboxOpen)
 		}
 	})
 }

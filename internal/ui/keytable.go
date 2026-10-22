@@ -136,6 +136,18 @@ func reasonAsLeader(a modeAction) func(leaderConds) string {
 	}
 }
 
+// reasonPauseToggle is `p`'s reason. At Project it is the leader's guard (an
+// open project with a build). At All projects the key acts on the selected
+// row, not on the active project, so the guard would wrongly dim it whenever
+// the row is not the project that happens to be open; the handler words the
+// row's own refusal (rowPauseRefusal) instead.
+func reasonPauseToggle(c leaderConds) string {
+	if c.allProjectsOpen {
+		return ""
+	}
+	return leaderBlockedReason(actionPauseToggle, c)
+}
+
 // reasonAsProjectEdit is add and remove a project's reason. They are keys of
 // the All projects level only, so the screen counts as open: the level is
 // what says so now, and a dashboard started outside any project is at All
@@ -257,9 +269,13 @@ func keyTableRows() []keyRow {
 			blocked: reasonAsProjectEdit(actionProjectRemove),
 		},
 		{
-			action: actionPauseToggle, key: "p", levels: atProject,
+			action: actionAnswerOldest, key: "a", levels: atAllProjects,
+			name: "answer the oldest", help: "Answer the oldest inbox item that blocks a task, across every project",
+		},
+		{
+			action: actionPauseToggle, key: "p", levels: atAllProjects | atProject,
 			name: "pause or resume the build", help: "Hold the build so no new task starts, or let a paused one carry on",
-			blocked: reasonAsLeader(actionPauseToggle),
+			blocked: reasonPauseToggle,
 		},
 		{
 			action: actionNewSession, key: "n", levels: atProject,

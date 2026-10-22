@@ -4122,3 +4122,25 @@ Decided while building (2026-10-21):
 - **Resize mode, the full help, the session filter and the Agent/overview toggle are removed** with their keys; `Deps.RememberSidebarPct` stays only because `dash.go` wires it and removing it reaches `uistate`.
 - **Start level is a `Deps.StartLevel`** worked out by a pure `dashStartLevel(inside, open, noProjects)`. `--open` with no project in view starts on All projects and says the session was not found.
 - **The docs** (`docs/dashboard.md`, `docs/reference.md`) describe the keys as built: `]`, `[` and `a` arrive later, `/` opens the project switcher for now, and `tab`/`1`–`3` for sections wait for T16.4.
+
+## T16.3
+
+T16.3 makes All projects the home screen of `docs/dash-design.md` §4.1. These are the decisions the master plan left open, made while planning the task (2026-10-21), numbered as in the work plan's assumptions.
+
+- **The four groups are worked out in one pure place (A1).** `internal/projectrows` says which group a row is in: Needs you for every row that needs the owner, then Running, Finished, and Quiet for the rest (paused, held for usage, no plan, nothing ready).
+- **The selected project's panel uses what is already read (A2).** Each row carries the oldest open inbox item that blocks a task, with that task's title from the plan. The reader already lists the inbox and loads the plan, so no new file is read. The web page does not show it.
+- **What the panel says (A3).** For a blocking item: what it waits on, the question in full and the task the answer unblocks. For a plan to approve: that it waits on approval and the build starts after. For a gone, unreadable or stopped project with no item: the row's own sentence. Otherwise it says nothing here waits on you.
+- **The band's usage bar (A4)** is the tightest usage window from the reading the dashboard already holds, left out when there is none.
+- **Groups (A5):** an empty group is not shown, and headings are never folded, since no key folds them.
+- **`a` before T16.7 (A6):** on All projects it opens the project with the oldest blocking item and its inbox on that item; with none it says so. T16.7 redraws the answer screen and adds `a` inside a project and the agent.
+- **`p` on All projects (A7)** resumes a paused or stopped project and pauses any other.
+- **Panel size (A8):** at most a third of the screen's rows, at least three; a long question is cut with `…` only when it does not fit.
+- **Tests (A9)** are table tests written with the code; the saved screens are regenerated. **Nothing had to be in place first (A10):** T16.2 is merged.
+- **This section and the new `CONTEXT.md` terms belong to the change.**
+
+Decided while building (2026-10-21):
+
+- **Rows are kept in the order they are drawn.** The dashboard stores the rows group by group, so the cursor, paging and scrolling follow the screen. Two projects whose oldest blocking items are the same age are therefore picked by `a` in screen order.
+- **`a` waits for the project to load.** It switches to the project first and opens the inbox on the item once that project's inbox has been read, so it never shows another project's items.
+- **`p` reads the selected row's state at All projects,** where the active project's build guard would be the wrong project's.
+- **At 80×24 the chips row is cut before `- remove`;** the status bar still names every key. Left for T16.9's terminal check.

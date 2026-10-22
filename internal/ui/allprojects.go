@@ -4,7 +4,8 @@
 // esc on a project's session list opens it, and enter on a row switches the
 // dashboard to that project. It takes the place of the session list and the
 // detail side until then. Pause and resume on the selected row's project wait
-// for T16.3 to give the level its `p`.
+// for T16.3 to give the level its `p`. Since T16.3 it is drawn as the home
+// screen (allprojectsview.go): grouped rows and the selected project's panel.
 //
 // The rows are built by internal/projectrows, the pure package the web page
 // will share (T8.5), so the two surfaces cannot word a project's state
@@ -160,8 +161,7 @@ func (m Model) applyAllProjectsLoaded(msg allProjectsLoadedMsg) Model {
 	if r, ok := m.selectedProjectRow(); ok {
 		keep = r.Root
 	}
-	rows := slices.Clone(msg.res.Rows)
-	projectrows.Sort(rows)
+	rows := allProjectsOrder(slices.Clone(msg.res.Rows))
 	m.allProjectsRows = rows
 	m.allProjectsKnown = true
 	if i := slices.IndexFunc(rows, func(r projectrows.Row) bool { return r.Root == keep }); keep != "" && i >= 0 {
@@ -179,6 +179,22 @@ func (m Model) applyAllProjectsLoaded(msg allProjectsLoadedMsg) Model {
 	}
 	m.allProjectsCursor = clampInt(m.allProjectsCursor, 0, max(len(rows)-1, 0))
 	return m
+}
+
+// allProjectsOrder puts rows in the order the home screen draws them (§4.1):
+// the groups NEEDS YOU, RUNNING, QUIET, FINISHED, config order inside each.
+// The rows are stored in this order, not just drawn in it, so the cursor's
+// index, the movement keys and the scroll all walk the list the owner sees;
+// stored in projectrows.Sort's order alone, the cursor would jump between
+// groups as it moved. Sort first gives config order inside a group, and
+// Grouped keeps it.
+func allProjectsOrder(rows []projectrows.Row) []projectrows.Row {
+	projectrows.Sort(rows)
+	out := make([]projectrows.Row, 0, len(rows))
+	for _, g := range projectrows.Grouped(rows) {
+		out = append(out, g...)
+	}
+	return out
 }
 
 // selectedProjectRow is the row under the screen's cursor.
@@ -312,6 +328,62 @@ func (m Model) switchFromAllProjects() (tea.Model, tea.Cmd) {
 	}
 	return nm, cmd
 }
+
+// oldestBlockingRow is the row whose project holds the oldest open blocking
+// inbox item, for `a`. CreatedAt is the store's RFC3339 stamp, so comparing
+// the strings orders them in time (the same choice readDashProjectRow made
+// when it picked each row's Wait). A tie goes to the earlier row, which is
+// config order within a group; rows with no wait are skipped.
+func oldestBlockingRow(rows []projectrows.Row) (projectrows.Row, bool) {
+	var best projectrows.Row
+	found := false
+	for _, r := range rows {
+		if r.Wait.ItemID == "" {
+			continue
+		}
+		if !found || r.Wait.CreatedAt < best.Wait.CreatedAt {
+			best, found = r, true
+		}
+	}
+	return best, found
+}
+
+// answerOldest is `a` at All projects: take the owner to the oldest item
+// anywhere that holds a task up. It switches to that project as enter does
+// (the active project just closes the screen) and has the inbox open on the
+// item once that project's snapshot is in memory; nothing is read here.
+func (m Model) answerOldest() (tea.Model, tea.Cmd) {
+	r, ok := oldestBlockingRow(m.allProjectsRows)
+	if !ok {
+		m.notify(notifyInfo, nothingBlockingNotice)
+		return m, nil
+	}
+	if m.isActiveProjectRoot(r.Root) {
+		m.allProjectsOpen = false
+		if m.buildKnown {
+			return m.openInboxOn(r.Wait.ItemID), nil
+		}
+		m.inboxFollow = r.Wait.ItemID
+		return m, nil
+	}
+	path, ok := m.projectPathForRoot(r.Root)
+	if !ok {
+		m.notify(notifyInfo, allProjectsNotListedNotice(r.Name))
+		return m, nil
+	}
+	m.allProjectsOpen = false
+	nm, cmd := m.switchProject(path)
+	if nm.repo != m.repo {
+		nm.previewOnNextLoad = true
+		nm.recordProjectOpen(path)
+	}
+	// After the switch, which clears any earlier follow.
+	nm.inboxFollow = r.Wait.ItemID
+	return nm, cmd
+}
+
+// nothingBlockingNotice is `a` with no blocking item in any project.
+const nothingBlockingNotice = "Nothing in any inbox holds a task up."
 
 // projectPathForRoot is the switcher entry's path for a project whose main
 // checkout is root: the entry with that path, or the pinned start-up row when

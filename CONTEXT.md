@@ -247,3 +247,8 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Key strip**: the small list of keys that appears in the Agent level after the leader key, naming the keys the next press can use; a key it does not list closes it and sends nothing.
 - **Actions search**: the `:` box that finds every dashboard action by name, the ones with no key too; letters always type into it.
 - **Keys overlay**: the `?` list of every key, level by level, built from the same table the key handling uses.
+- **Running group**: the home screen's group of projects with a task running and nothing that needs the owner; it sits under the RUNNING heading, after NEEDS YOU.
+- **Quiet group**: the home screen's group of projects that need nothing from the owner and are not running or finished (paused, held for usage, nothing ready, no plan); under the QUIET heading.
+- **Finished group**: the home screen's group of projects that are finished and need nothing from the owner; under the FINISHED heading, last.
+- **Band**: the one line of counts across the top of the home screen: each group's count, the open inbox items with the blocking ones, and usage when there is a reading.
+- **Selected panel**: the part of the home screen under the rule that says what the selected project waits on, the question in full and what answering it unblocks.

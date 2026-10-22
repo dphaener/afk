@@ -1,24 +1,24 @@
  afk Dashboard                                                                  
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ All projects                                                                 │
-│ 5 need you                                                                   │
-│                                                                              │
-│ ▌ beta  2/6  2 in inbox, 1 holds a task up                                   │
+│ All projects                                                        1–4 of 8 │
+│  ● 5 need you  ◐ 1 running  ○ 1 quiet  ✓ 1 finished   inbox 3 · 2 blocking   │
+│   PROJECT  TASKS           INBOX                                             │
+│  ▾ NEEDS YOU                                                              5  │
+│ ▌ beta     ███░░░░░░░ 2/6  2 · 1 blocking                                    │
 │ ▌ ○ paused · Paused: no new task will start until you resume it. A task tha… │
-│   gamma  -                                                                   │
+│   gamma    -                                                                 │
 │   ✕ gone · The project folder does not exist. Check its path in config.toml. │
-│   delta  -                                                                   │
+│   delta    -                                                                 │
 │   ✕ can't read · reading /p/delta/.afk/build/ledger.json: invalid character… │
-│   epsilon  -  plan waiting for approval                                      │
+│   epsilon  -               plan to approve                                   │
 │   ○ no plan · This project has no master plan to build.                      │
-│   eta  1/4  1 in inbox, 1 holds a task up                                    │
-│   ● waiting on you · a task is parked until you answer its inbox items: W2.… │
-│   alpha  3/8                                                                 │
-│   ◐ running · W1.T2 Add the parser: executing                                │
-│   zeta  5/5                                                                  │
-│   ✓ finished · Every task is done.                                           │
-│   repo  0/3                                                                  │
-│   ○ held for usage · nothing new is started, because of the usage limits     │
+│ ─ beta ───────────────────────────────────────────────────────────────────── │
+│ Waits on question bbbbb3                                                     │
+│ Which database should the cache use?                                         │
+│ The plan says a cache but not where it lives. SQLite keeps it in one file;   │
+│ Redis needs a server on the VM.                                              │
+│ Unblocks W1.T3 Add the cache                                                 │
 │                                                                              │
+│  enter  open project   a  answer   p  pause / resume   n  new plan   +  add  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-enter open · ↑/k up · ↓/j down · : actions · ? keys · q quit                    
+enter open · ↑/k up · ↓/j down · a answer · p pause · : actions · ? keys …      

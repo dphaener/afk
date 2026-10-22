@@ -14,11 +14,11 @@
 │ │ start a new plan                           — starting a plan is not ava… │ │
 │ │ add a project                       +      — works on All projects       │ │
 │ │ remove the project                  -      — works on All projects       │ │
+│ │ answer the oldest                   a      — works on All projects       │ │
 │ │ pause or resume the build           p      — this project has no build   │ │
 │ │ new session                         n      — Start a new session from a… │ │
 │ │ one-off session                     o      — Start a one-off session wi… │ │
 │ │ clean session                       c      — Clean the selected session… │ │
-│ │ restart agent                       r      — only a stopped or stuck ag… │ │
 │ ╰─────────────────────────────── type to search · enter runs · esc closes ─╯ │
 ╰────────────────────────────╯╰──────────── enter: open · c: clean · l: label ─╯
 enter run · ↑/↓ move · type filter · esc close · ctrl+c quit                    

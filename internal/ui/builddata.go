@@ -129,6 +129,11 @@ func (m Model) applyBuildLoaded(msg buildLoadedMsg) Model {
 	// An open inbox overlay follows the files: it takes the new items here,
 	// keeping its cursor and anything typed (refreshInbox).
 	m.refreshInbox()
+	if m.inboxFollow != "" {
+		id := m.inboxFollow
+		m.inboxFollow = ""
+		m = m.openInboxOn(id)
+	}
 	// The snapshot says which sessions the daemon paused for usage, and the
 	// session rows carry that fact themselves (stampUsagePauses). The list is
 	// rebuilt only when a row changed, which is rare: a rebuild re-runs the

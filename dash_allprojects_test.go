@@ -11,6 +11,7 @@ import (
 
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/daemonstate"
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/web"
 )
@@ -313,5 +314,82 @@ func TestLoadDashAllProjectsWritesNothing(t *testing.T) {
 	loadDashAllProjects(dashAllProjectsTestParts(t, cfg, nil, &calls), "")
 	if after := snapshot(); after != before {
 		t.Error("loading the rows changed files in the project folder")
+	}
+}
+
+// TestLoadDashAllProjectsWait: the older of two open blocking items wins and
+// carries its task's title (load-bearing: the panel shows what the oldest
+// question unblocks); non-blocking and answered items give no wait; a task id
+// missing from the plan leaves TaskTitle empty without an error row.
+func TestLoadDashAllProjectsWait(t *testing.T) {
+	tests := []struct {
+		name string
+		adds []inbox.NewItem
+		// answer is the ids (1-based position) to answer after adding.
+		answer []int
+		want   projectrows.Wait
+	}{
+		{"two_open_blocking_oldest_wins_with_task_title",
+			[]inbox.NewItem{
+				{Kind: "question", Blocking: true, Task: "T1.3", Title: "Old", Body: "older body"},
+				{Kind: "question", Blocking: true, Task: "T1.1", Title: "Newer"},
+				{Kind: "question", Blocking: true, Task: "T1.2", Title: "Answered"},
+			}, []int{3},
+			projectrows.Wait{ItemID: "aaaaa2", Kind: "question", Title: "Old", Body: "older body", Task: "T1.3", TaskTitle: "Third"}},
+		{"only_non_blocking_gives_no_wait",
+			[]inbox.NewItem{{Kind: "notice", Title: "FYI"}}, nil, projectrows.Wait{}},
+		{"only_answered_gives_no_wait",
+			[]inbox.NewItem{{Kind: "question", Blocking: true, Task: "T1.1", Title: "Done"}}, []int{1}, projectrows.Wait{}},
+		{"task_missing_from_plan_leaves_title_empty",
+			[]inbox.NewItem{{Kind: "question", Blocking: true, Task: "T9.9", Title: "Lost"}}, nil,
+			projectrows.Wait{ItemID: "aaaaa2", Kind: "question", Title: "Lost", Task: "T9.9"}},
+		{"no_task_named",
+			[]inbox.NewItem{{Kind: "question", Blocking: true, Title: "General"}}, nil,
+			projectrows.Wait{ItemID: "aaaaa2", Kind: "question", Title: "General"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeBuildFile(t, root, "docs/PLAN.md", dashBuildPlan)
+			ids3 := []string{"aaaaa2", "bbbbb3", "ccccc4"}
+			tick := 0
+			store := inbox.Store{
+				Dir:   inbox.Dir(root),
+				Now:   func() time.Time { tick++; return dashBuildNow.Add(time.Duration(tick) * time.Minute) },
+				NewID: func() string { id := ids3[0]; ids3 = ids3[1:]; return id },
+			}
+			var ids []string
+			for _, a := range tt.adds {
+				it, err := store.Add(a)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, it.ID)
+			}
+			for _, i := range tt.answer {
+				if _, err := store.Answer(ids[i-1], "ok", "cli"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := t.TempDir()
+			writeDashAllProjectsConfig(t, cfg, map[string]string{"p": root}, []string{"p"})
+			var calls []string
+			got := loadDashAllProjects(dashAllProjectsTestParts(t, cfg, nil, &calls), "")
+			if got.Err != nil || len(got.Rows) != 1 {
+				t.Fatalf("Err=%v rows=%d", got.Err, len(got.Rows))
+			}
+			r := got.Rows[0]
+			if r.State == projectrows.StateUnreadable {
+				t.Fatalf("row is unreadable: %q", r.Detail)
+			}
+			w := r.Wait
+			w.CreatedAt = "" // the clock is fake and only the order matters
+			if w != tt.want {
+				t.Errorf("Wait = %+v, want %+v", w, tt.want)
+			}
+			if tt.want.ItemID != "" && r.Wait.CreatedAt == "" {
+				t.Error("Wait.CreatedAt is empty, want the item's creation time")
+			}
+		})
 	}
 }
