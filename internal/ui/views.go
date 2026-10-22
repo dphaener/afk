@@ -13,7 +13,6 @@ import (
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/progress"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -71,13 +70,12 @@ func (m Model) View() tea.View {
 	// The body is the level under any Agent: All projects, the empty state
 	// (which stands in for All projects with no project at all), or the
 	// Project. The Project is the project view of §4.2
-	// (projectviewrender.go), drawn under the Agent too: from 100 columns an
-	// overlay over the dimmed home screen (projectBody), below that one
-	// section filling the body. While the overview `d` opened has the
-	// keyboard it is the session list beside the overview, as before T16.4.
-	// The agent is a level of its own, drawn over this frame below, so a pane
-	// connected for the selected row stays connected behind it and is simply
-	// not drawn until enter goes into it (A5).
+	// (projectviewrender.go), drawn under the Agent and under the details
+	// overlay too: from 100 columns an overlay over the dimmed home screen
+	// (projectBody), below that one section filling the body. The agent is a
+	// level of its own, drawn over this frame below, so a pane connected for
+	// the selected row stays connected behind it and is simply not drawn
+	// until enter goes into it (A5).
 	var body string
 	// paneShown records whether the Agent below actually PAINTED the pane, so
 	// the cursor block after SetContent cannot be reached from any other
@@ -97,11 +95,8 @@ func (m Model) View() tea.View {
 		// for — so the whole two-region split is replaced by one explanatory
 		// block. Full body width, matching layoutDims' own split.
 		body = m.renderEmptyState(listOuter+mainOuter, bodyHeight)
-	} else if m.projectViewDrawn() {
-		body = m.projectBody(bodyHeight)
 	} else {
-		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			m.renderList(listOuter, bodyHeight), m.renderDetail(mainOuter, bodyHeight))
+		body = m.projectBody(bodyHeight)
 	}
 
 	frame := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
@@ -122,6 +117,19 @@ func (m Model) View() tea.View {
 		} else {
 			agent = m.renderAgentPlaceholder(w, h)
 		}
+	}
+
+	// The details overlay (§4.4) is laid over the level it was opened on, at
+	// detailsBoxRect's place: the Project, or the Agent with the agent still
+	// running under it. It is drawn only with a project open, the one place
+	// its session can be; a project closed under it leaves the flag to
+	// closeDetailsIfGone and draws nothing meanwhile.
+	var details string
+	var detailsX, detailsY int
+	if m.detailsOpen && m.hasActiveProject() && !m.allProjectsOpen {
+		x, y, w, h := detailsBoxRect(m.width, lipgloss.Height(header), bodyHeight)
+		detailsX, detailsY = x, y
+		details = m.renderDetailsOverlay(w, h)
 	}
 
 	// The overlays float over the finished frame (modal.go) rather than
@@ -162,28 +170,42 @@ func (m Model) View() tea.View {
 	// The key strip is not one of the centred overlays: it sits in the
 	// bottom-right corner (keystrip.go), and it is shown only in the Agent,
 	// where none of them is open.
-	strip := overlay == "" && !dialogUp && m.keyStripShown()
+	strip := overlay == "" && details == "" && !dialogUp && m.keyStripShown()
 
 	// Every layer under the top one is dimmed exactly once (§3.9). Over the
 	// Agent that means the Project is dimmed when the agent goes on, and the
 	// agent box itself is dimmed only by what is laid over it: the key strip
-	// dims it the strip's lighter amount, an overlay or a dialog the full
-	// one. The overlay then goes on without dimming the frame again.
-	if agent != "" {
+	// dims it the strip's lighter amount, the details overlay, an overlay or
+	// a dialog the full one. The details overlay goes on next, over a frame
+	// already dimmed once, and is itself dimmed only when an overlay or a
+	// dialog goes over it (`?` and `:` open there). The overlay then goes on
+	// without dimming the frame again.
+	switch {
+	case agent != "":
 		boxDim := 0.0
 		keepStatus := true
 		switch {
-		case overlay != "" || dialogUp:
+		case overlay != "" || dialogUp || details != "":
 			boxDim, keepStatus = overlayDim, false
 		case strip:
 			boxDim = keyStripDim
 		}
 		frame = composeAgent(frame, agent, agentX, agentY, boxDim, keepStatus, m.deps.ColorProfile)
-		if overlay != "" {
-			frame = layModal(frame, overlay, m.width, m.height)
+	case details != "":
+		frame = dimFrame(frame, theme.tokens, overlayDim, m.deps.ColorProfile)
+	}
+	if details != "" {
+		if overlay != "" || dialogUp {
+			details = dimFrame(details, theme.tokens, overlayDim, m.deps.ColorProfile)
 		}
-	} else if overlay != "" {
-		frame = composeModal(frame, overlay, m.width, m.height, m.deps.ColorProfile)
+		frame = composeDetails(frame, details, detailsX, detailsY)
+	}
+	if overlay != "" {
+		if agent != "" || details != "" {
+			frame = layModal(frame, overlay, m.width, m.height)
+		} else {
+			frame = composeModal(frame, overlay, m.width, m.height, m.deps.ColorProfile)
+		}
 	}
 	if strip {
 		frame = composeKeyStrip(frame, renderKeyStrip(m.leaderKey.name, m.width), m.width, m.height)
@@ -198,7 +220,7 @@ func (m Model) View() tea.View {
 		switch {
 		case overlay != "":
 			frame = composeModalOver(frame, overlay, m.renderDialog(d), m.width, m.height, m.deps.ColorProfile)
-		case agent != "":
+		case agent != "" || details != "":
 			frame = layModal(frame, m.renderDialog(d), m.width, m.height)
 		default:
 			frame = composeModal(frame, m.renderDialog(d), m.width, m.height, m.deps.ColorProfile)
@@ -294,9 +316,10 @@ func (m Model) paneForSelection() bool {
 // shouldRenderPane decides whether View draws the live pane: the right side
 // has the keyboard in the agent view AND a pane belongs to the selected row.
 // That is the Agent level with a pane (levelFacts). Since W3.T1 of T16.2 the
-// focus is part of it: at Project the right side always draws the overview,
-// and a pane connected for the row (a preview, or one left by going back)
-// stays connected behind it without being drawn (A5).
+// focus is part of it: at Project the body is the project view, and a pane
+// connected for the row (a preview, or one left by going back) stays
+// connected behind it without being drawn (A5). The details overlay laid
+// over the Agent leaves it drawn (T16.5).
 //
 // There is no "keyboard routed to the pane" clause keeping a pane drawn after
 // a discovery tick moves the cursor off its row. The two-axis model cannot
@@ -308,24 +331,22 @@ func (m Model) shouldRenderPane() bool {
 	return m.focus == focusRight && m.view == viewAgent && m.paneForSelection()
 }
 
-// detailDrawn is "the detail box is the surface in the main region": the
-// single predicate `f` branches on (applyKeyAction's actionFocusPane case)
-// and the gate that decides whether `f` is advertised at all
-// (normalBindingEnabled). Defining it once is the point — three
-// near-identical spellings of "the detail pane is drawn" is exactly the drift
-// that leaves the key advertised where it does nothing.
+// detailDrawn is "a project is open and no agent surface covers it": the
+// gate that decides whether enter is advertised at Project
+// (normalBindingEnabled), where enter opens the selected session's agent or
+// its details. Since T16.5 there is no detail box in the main region; the
+// name is kept for the tests that pin the gate.
 //
 // Both terms are load-bearing. !shouldRenderPane alone is NOT enough: it is
 // false whenever pane == nil, so `m.pane != nil || !m.shouldRenderPane()`
-// reduces to true and would advertise `f` over the empty state. View (above)
-// draws the detail box under exactly this conjunction.
+// reduces to true and would advertise enter over the empty state.
 func (m Model) detailDrawn() bool {
 	return m.detailInMain() && m.hasActiveProject()
 }
 
 // detailInMain is "neither the pane nor the agent placeholder is drawn": with
-// either agent surface up (the Agent level) the overview is under the agent
-// box, so there is no tab strip or overview to act on.
+// either agent surface up (the Agent level) the project view is under the
+// agent box.
 func (m Model) detailInMain() bool {
 	return !m.shouldRenderPane() && !m.agentPlaceholderDrawn()
 }
@@ -335,18 +356,19 @@ func (m Model) detailInMain() bool {
 // that HAS an agent to show — running, or with a restart of ours in flight.
 //
 // A row with no live agent (stopped, host gone, pending, worktree fault,
-// cleaning, finished) never gets the placeholder: the right side draws its
-// OVERVIEW whatever the sticky view says, because "no agent running" is not
-// something the user can read anything from, and the overview is. The view
-// preference itself is left alone, so the next running row still shows its
-// agent. `r` is how such a row gets an agent again (restartSelected), never
-// enter.
+// cleaning, finished) never gets the placeholder: "no agent running" is not
+// something the user can read anything from, and its details are, so enter
+// opens its details overlay instead (openAgent, T16.5) and a right focus left
+// on it by a non-key path is the Project (currentLevel's agentShown). The
+// view preference itself is left alone, so the next running row still shows
+// its agent. `r` is how such a row gets an agent again (restartSelected),
+// never enter.
 //
 // For a row that has an agent it is drawn only with the right side focused:
 // the keyboard is on the agent surface, connecting or lost, which is the
-// Agent level. With the list focused the Project draws the overview, whose
-// summary says what the row's agent is doing (W3.T1 of T16.2: the Agent is a
-// level of its own, so nothing on the Project stands in for it).
+// Agent level. With the list focused the Project's read-only pane says what
+// the row's agent is doing (W3.T1 of T16.2: the Agent is a level of its own,
+// so nothing on the Project stands in for it).
 func (m Model) agentPlaceholderDrawn() bool {
 	if m.focus != focusRight || m.view != viewAgent || m.paneForSelection() || !m.hasActiveProject() {
 		return false
@@ -361,12 +383,30 @@ func (m Model) agentCanRun(s Session) bool {
 }
 
 // rowHasAgent is "the agent view has an agent to show for this row": a live
-// host, or one this dashboard is restarting right now. It is the predicate
-// that sends a row's right side to the overview (agentPlaceholderDrawn), stops
-// enter from connecting it (focusRightSide), and makes ctrl+t inert on it
-// (toggleView).
+// host, or one this dashboard is restarting or dialing right now, on a row
+// that is a session (not pending, cleaning or a worktree fault). It is
+// sessionEnterTarget's answer with the pane left out, so the Agent draws its
+// placeholder (agentPlaceholderDrawn) for exactly the rows enter opens the
+// Agent for while no pane is installed: a row enter sent to the Agent with
+// nothing drawn there would be a right focus on an empty box.
 func (m Model) rowHasAgent(s Session) bool {
-	return m.agentCanRun(s) || m.restartingRow(s.Name)
+	f := m.sessionEnterFacts(s)
+	f.pane = false
+	return sessionEnterTarget(f) == opensAgent
+}
+
+// sessionEnterFacts reads sessionEnterTarget's facts for row s off the row and
+// the dashboard's own connection state.
+func (m Model) sessionEnterFacts(s Session) sessionEnterFacts {
+	return sessionEnterFacts{
+		hostRunning:   s.HostRunning,
+		pending:       s.Pending,
+		cleaning:      m.cleaningSessions[cleanIDFor(s)],
+		worktreeFault: isWorktreeFault(s.Kind),
+		restarting:    m.restartingRow(s.Name),
+		dialing:       s.Name != "" && m.attachInFlight.name == s.Name,
+		pane:          m.pane != nil && m.paneName == s.Name,
+	}
 }
 
 // restartingRow reports whether a host restart this dashboard dispatched for
@@ -436,7 +476,14 @@ func (m Model) renderAgentPlaceholder(outerW, outerH int) string {
 	if action != "" {
 		lines = append(lines, theme.dim.Render(truncate(action, contentW)))
 	}
-	return theme.pane(paneStripName(title), hint, strings.Join(lines, "\n"),
+	// The same band, rows and chips as the live pane (agentBody), so the
+	// placeholder's lines sit where the agent's first rows will.
+	name := ""
+	if s, ok := m.selected(); ok {
+		name = s.Name
+	}
+	return theme.pane(paneStripName(title), hint,
+		m.agentBody(name, strings.Join(lines, "\n"), contentW, outerH),
 		paneOuterWidth(contentW), outerH, true)
 }
 
@@ -568,7 +615,9 @@ func paneContentDims(outerW, outerH int) (cols, rows int) {
 
 // agentContentDims is the emulator's size inside the agent box (agentBoxRect)
 // of outer size outerW×outerH: the box less its border and one cell of padding
-// each side across, less the border rows and the title strip down. Unlike
+// each side across; down, the terminal's rows as agentBoxRows shares them
+// (the box less the border rows, the title strip, the band row and the chips
+// row, §4.3). Unlike
 // paneContentDims it gives back a box that is exactly outerW wide once
 // paneOuterWidth adds the padding and border again, because the agent box's
 // edges are §3.8's (the screen less one column each side) and must land on
@@ -576,7 +625,7 @@ func paneContentDims(outerW, outerH int) (cols, rows int) {
 // tests pin; both are floored at 1 (termpane requires a positive size).
 func agentContentDims(outerW, outerH int) (cols, rows int) {
 	cols = max(outerW-2-boxBorderCells, 1)
-	rows = max(outerH-boxBorderCells-paneStripRows, 1)
+	rows = agentBoxRows(outerH).screen
 	return cols, rows
 }
 
@@ -717,8 +766,14 @@ func (m Model) paneScreenGeometry() (originX, originY, cols, rows int) {
 	// uses, so the two cannot pick different hints and disagree about the
 	// strip's width. cols IS renderPane's contentW: both come from
 	// agentContentDims over the agent box.
+	//
+	// The agent's first row is under the band (§4.3), so the origin moves
+	// down by the band row agentBoxRows gives this box: the same rule
+	// renderPane draws the band by, which is what keeps a click and the
+	// cursor on the cell the agent drew.
 	originX, originY = paneContentOrigin(boxX, boxY,
 		paneStrip(m.paneName, m.paneTitleHint(), cols, m.paneOwnsKeyboard()))
+	originY += agentBoxRows(boxH).band
 	return originX, originY, cols, rows
 }
 
@@ -763,8 +818,16 @@ func (m Model) renderPane(outerW, outerH int) string {
 	// row neither wraps (which would double the line count) nor shifts the
 	// origin routeMouse computes. It cuts the screen to the rows under the
 	// strip, which is what MaxHeight used to bound.
-	return theme.pane(paneStripName(m.paneName), m.paneTitleHint(), screen,
-		paneOuterWidth(contentW), outerH, m.paneOwnsKeyboard())
+	// The details overlay laid over the Agent has the keyboard (§3.3: one
+	// pane at a time), so the agent's box goes back to line and strip under
+	// it, though its focus is unchanged and esc returns the keyboard to it.
+	//
+	// Under the strip the body is agentBody: the band, the screen padded to
+	// the rows agentContentDims sized the emulator to, and the chips on the
+	// last inner row.
+	return theme.pane(paneStripName(m.paneName), m.paneTitleHint(),
+		m.agentBody(m.paneName, screen, contentW, outerH),
+		paneOuterWidth(contentW), outerH, m.paneOwnsKeyboard() && !m.detailsOpen)
 }
 
 // paneBoxStyle picks the pane border: accent while the child owns keyboard
@@ -786,20 +849,6 @@ func (m Model) listBoxStyle() lipgloss.Style {
 		return theme.listBox
 	}
 	return theme.listBoxFocused
-}
-
-// detailBoxStyle picks the detail pane's border: accent while it owns
-// keyboard input (detailOwnsKeyboard), neutral otherwise. Mirrors paneBoxStyle
-// above; renderDetail hands the one returned style to both boxDetailBody
-// (which colors all four border sides via sizedBox) and labelBorders (which
-// repaints only the top/bottom edges FROM THE SAME STYLE) — a mismatched pair
-// of calls here is exactly how an indicator ends up with an accent top/bottom
-// and gray verticals (see boxDetailBody's doc).
-func (m Model) detailBoxStyle() lipgloss.Style {
-	if m.detailOwnsKeyboard() {
-		return theme.detailBoxFocused
-	}
-	return theme.detailBox
 }
 
 // renderNewForm draws the in-TUI session-creation form (newform.go) in the main
@@ -2153,28 +2202,23 @@ func (m Model) renderAllProjectsHelpKeyMap(mode inputMode) curatedKeyMap {
 	return curatedKeyMap{short: short, full: short}
 }
 
-// renderDetailHelpKeyMap is the focused overview's help, at Project: esc
-// back to the list first (or the state is a trap), enter to open the agent,
-// restart while it acts, then the overview's own tab and scroll keys, and
-// `:` and `?` last, where truncation drops them before the way out.
+// renderDetailHelpKeyMap is the details overlay's help: esc back first (or
+// the state is a trap), then the overlay's own tab and scroll keys, and `:`,
+// `?` and quit last, where truncation drops them before the way out. They are
+// the registry's bindings (inputDetail's spec), so the line cannot name a key
+// the overlay answers differently. `r restart` goes second, right after the
+// way out, where the session can be restarted (detailsRestartChip): it is not
+// one of the mode's rules (dispatchKey answers it, by the row), so it is
+// added here on the same predicate the chip and the key use.
 func (m Model) renderDetailHelpKeyMap() curatedKeyMap {
 	reg := m.modes()
-	c := m.leaderConditions()
 	own := reg.spec(inputDetail).keys.bindings
-	back := key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back to list"))
-	short := []key.Binding{back}
-	if s, ok := m.selected(); ok && (m.paneForSelection() || m.rowHasAgent(s)) {
-		short = append(short, key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open agent")))
+	if m.detailsRestartChip() && len(own) > 0 {
+		with := make([]key.Binding, 0, len(own)+1)
+		with = append(with, own[0], m.keys.Restart)
+		own = append(with, own[1:]...)
 	}
-	if m.restartKeyLive() {
-		short = append(short, m.tableHelp(levelProject, actionRestart, "restart", c))
-	}
-	short = append(short, own...)
-	short = append(short,
-		m.tableHelp(levelProject, actionActionsSearch, "actions", c),
-		m.tableHelp(levelProject, actionKeys, "keys", c),
-	)
-	return curatedKeyMap{short: short, full: short}
+	return curatedKeyMap{short: own, full: own}
 }
 
 // renderPaneHelpKeyMap builds inputPane's (the Agent's) help.KeyMap, plus
@@ -2234,9 +2278,9 @@ func (m Model) renderHelp() string {
 	case mode == inputKeyStrip:
 		km, prefix := m.renderKeyStripHelpKeyMap()
 		return theme.helpLine.Render(spin + prefix + renderStatusHelp(km, false, width-lipgloss.Width(prefix)))
-	case mode == inputDetail && m.agentPlaceholderDrawn():
-		// The agent placeholder: inputDetail by derivation, but only
-		// placeholderKey's keys act there (model.go levelKey). enter and
+	case mode == inputPlaceholder:
+		// The agent placeholder: only placeholderKey's keys act there
+		// (model.go levelKey). enter and
 		// `r` are advertised only where they would act, on the
 		// never-advertise-a-no-op rule: while a connect or restart for the
 		// row is already out, enter only joins it.
@@ -2932,95 +2976,17 @@ func renderFaultRow(s Session, selected bool, width int, marker string, l rowLay
 	return padSessionRow(line, selected, width)
 }
 
-// renderDetail draws the detail pane for the selected session, composed of
-// the tab strip and the active tab's panels and handed to boxDetailBody, which bounds it to the
-// box's row budget BEFORE the box is composed — the bound-content-then-box
-// discipline renderList (via the list's pagination) and renderPane (via the
-// emulator's row count) already follow.
-//
-// A trailing MaxHeight cannot stand in for that, which is what the arrangement
-// here before got wrong: lipgloss v2.0.6 applies the border first
-// (style.go:501) and only then slices for MaxHeight (style.go:516-522), while
-// Height() merely PADS short content and returns a too-tall block unchanged
-// (style.go:480-483 → align.go:61-65). An overlong plan therefore reached
-// MaxHeight already bordered and lost its trailing rows — the row COUNT came
-// out exactly right, so a height-only test stayed green, but the row that fell
-// off the end was the closing `╰───╯` and the box hung open mid-panel.
-//
-// Both dimensions come from the pure helpers below (detailContentWidth,
-// detailRowBudget) and from nowhere else, because syncDetailViewport
-// (model.go) sizes the Model's viewport — the one the scroll keys move — from
-// the same two helpers. See detailRowBudget's doc for what happens when the
-// two sides disagree by even one row.
-//
-// The title is the pane's title strip (§3.3), its first inner row, accent
-// while the box has the keyboard; detailRowBudget gives the body the rows
-// under it. The keys stay on the bottom edge (labelBorders), drawn in
-// detailBoxStyle, whose border glyphs and colour are the pane's for the same
-// focus (both rounded, line or accent by detailOwnsKeyboard).
-func (m Model) renderDetail(outerW, outerH int) string {
-	contentW := detailContentWidth(outerW)
-	title, hint := m.detailBoxLabels()
-	box := m.boxDetailBody(m.detailBody(contentW), contentW, outerH, title, m.detailOwnsKeyboard())
-	return labelBorders(box, m.detailBoxStyle(), "", hint)
-}
-
-// detailBoxLabels is the detail box's edge text: the selected session's
-// display name on top, and along the bottom the per-session keys that act on
-// it, spelled from the keymap so the edge and the dispatch cannot disagree.
-// A fault row offers only clean (it cannot be opened or labelled), a
-// placeholder nothing yet, and no selection a generic title.
-//
-// Focused (W3.T1), the bottom edge is the release hint REGARDLESS of the
-// selected row's kind: enter/c/l are all dead while inputDetail owns the
-// keyboard (its rule table, mode.go, omits them), so the per-session hint
-// below would advertise keys that do nothing. The title still names whatever
-// is selected — focus does not change what the box is looking at, only
-// which keys act on it.
-func (m Model) detailBoxLabels() (title, hint string) {
-	s, ok := m.selected()
-	title = "Details"
-	if ok {
-		title = displayName(s)
-	}
-	if m.detailOwnsKeyboard() {
-		return title, m.detailReleaseHint()
-	}
-	if !ok {
-		return title, ""
-	}
-	switch {
-	case s.Pending:
-		focus := m.keys.Focus.Help()
-		return title, fmt.Sprintf("%s: %s", focus.Key, focus.Desc)
-	case isWorktreeFault(s.Kind):
-		focus := m.keys.Focus.Help()
-		return title, fmt.Sprintf("%s: %s · %s: clean",
-			focus.Key, focus.Desc, keyName(m.leaderKey.name, levelProject, actionClean))
-	}
-	focus := m.keys.Focus.Help()
-	return title, fmt.Sprintf("%s: %s · %s: clean · %s: label",
-		focus.Key, focus.Desc, keyName(m.leaderKey.name, levelProject, actionClean), keyName(m.leaderKey.name, levelProject, actionEditLabel))
-}
-
-// detailReleaseHint is detailBoxLabels' focused-mode hint: the one live way
-// out, read from the key table (keyName) rather than a duplicated literal, so
-// the footer and this edge cannot say two different things about the same
-// key.
-func (m Model) detailReleaseHint() string {
-	return keyName(m.leaderKey.name, levelProject, actionGoBack) + ": back to list"
-}
-
 // detailContentWidth is the detail box's usable text width for a box outerW
 // cells wide: the border (one cell a side) and detailBox's Padding(0, 1) trim
 // four, floored at 10 so a very narrow terminal still gets a readable column.
-// boxDetailBody hands sizedBox contentW+2, not contentW: sizedBox's argument
-// includes detailBox's Padding(0, 1), and the panels draw lines up to contentW
-// wide — see renderSwitcher's doc for the full arithmetic.
+// The pane part lays the body inside one cell of padding each side, and the
+// panels draw lines up to contentW wide — see renderSwitcher's doc for the
+// full arithmetic.
 //
-// Pure, and the ONLY place this arithmetic lives: renderDetail sizes the frame
-// with it and syncDetailViewport (model.go) seeds the Model's viewport with it,
-// so the lines the keys scroll are byte-for-byte the lines the frame draws.
+// Pure, and the ONLY place this arithmetic lives: renderDetailsOverlay sizes
+// the frame with it and syncDetailViewport (model.go) seeds the Model's
+// viewport with it, so the lines the keys scroll are byte-for-byte the lines
+// the frame draws.
 func detailContentWidth(outerW int) int {
 	contentW := outerW - 4
 	if contentW < 10 {
@@ -3040,8 +3006,8 @@ func detailContentWidth(outerW int) int {
 //
 // Pure, and the single source of truth for the pane's visible row count. Both
 // sides of the scroll MUST size from it: the Model's viewport that the keys
-// move (syncDetailViewport, model.go) and the per-frame copy boxDetailBody
-// draws. bubbles' viewport clamps its offset to TotalLineCount()-Height()
+// move (syncDetailViewport, model.go) and the per-frame copy
+// renderDetailsOverlay draws, both through detailsBodyBudget. bubbles' viewport clamps its offset to TotalLineCount()-Height()
 // (viewport.go maxYOffset), so a Model viewport even one row taller than the
 // drawn one has a ceiling one row too low, and the last row of content is
 // unreachable from the keyboard no matter how often the user scrolls. That is
@@ -3066,13 +3032,13 @@ func detailRowBudget(outerH, totalLines int) (rows int, readout bool) {
 // pending/fault/no-selection messages on an 80-column terminal, the
 // untruncated session/branch head, verdictPanel's lines — folds onto the next
 // row exactly as it did when sizedBox wrapped the content itself. Without this
-// the viewport, whose SoftWrap is off (see boxDetailBody), would ansi.Cut those
+// the viewport, whose SoftWrap is off, would ansi.Cut those
 // lines instead and silently drop their tails ("...is running in the" with no
 // "background"). Wrapping here rather than in the viewport keeps the height
 // exact — every line is at most contentW wide before the row budget is
 // applied, so nothing can fold again after it.
 //
-// It is the one text both consumers see: renderDetail draws it and
+// It is the one text both consumers see: renderDetailsOverlay draws it and
 // syncDetailViewport (model.go) seeds the Model's viewport with it before a
 // scroll key moves the offset (View may not: it takes a value receiver, so a
 // mutation there lands on a copy the caller discards — see the detailViewport
@@ -3083,9 +3049,11 @@ func (m Model) detailBody(contentW int) string {
 	return lipgloss.Wrap(m.composeDetailBody(contentW), contentW, "")
 }
 
-// composeDetailBody builds the detail pane's unwrapped, unbounded text: the
-// no-selection, placeholder and worktree-fault messages, or the tab strip plus
-// the active tab's panels. detailBody is its only caller.
+// composeDetailBody builds the details overlay's unwrapped, unbounded body:
+// the no-selection, placeholder and worktree-fault messages, or the active
+// tab's panels. The tab row is not part of it: renderDetailsOverlay draws
+// that above the scrolled body, so it stays in view. detailBody is its only
+// caller.
 //
 // Every tab is about the selected session, so a row with none to show (no
 // selection, a placeholder, a fault) shows its message alone. The project's
@@ -3097,17 +3065,11 @@ func (m Model) composeDetailBody(contentW int) string {
 		return notice
 	}
 
-	// The tab strip and its rule, then the active tab's panels. The session's
-	// head (name, branch, phase) is the Overview's first lines rather than a
-	// fixture above every tab: the strip is the pane's title row now, and a
-	// head repeated over Waves or Stack would cost two rows on the tab that
-	// most needs them.
-	tabs := visibleDetailTabs(m.stack)
+	// The active tab's panels. The session's facts (phase, host, branch) are
+	// the Overview's SESSION lines rather than a head above every tab: the
+	// session is named in the overlay's strip, and a head repeated over
+	// Waves or Stack would cost rows on the tab that most needs them.
 	active := m.activeDetailTab()
-	b.WriteString(renderTabStrip(tabs, active, contentW))
-	b.WriteString("\n")
-	b.WriteString(theme.dim.Render(strings.Repeat("─", contentW)))
-	b.WriteString("\n")
 
 	ctx := panelContext{
 		Session: s, Sessions: m.sessions, Stack: m.stack, Now: m.deps.Now(), PlanStatus: m.planStatus,
@@ -3120,10 +3082,12 @@ func (m Model) composeDetailBody(contentW int) string {
 			continue
 		}
 		rendered++
-		// A single-panel tab is titled by the strip; only a tab that stacks
-		// several panels (Notes) needs a heading over each.
+		// A single-panel tab is titled by the tab row; only a tab that
+		// stacks several panels (Notes) needs a heading over each.
 		if len(spec.panels) > 1 {
-			b.WriteString("\n")
+			if rendered > 1 {
+				b.WriteString("\n")
+			}
 			b.WriteString(theme.panelTitle.Render(p.Title()))
 			b.WriteString("\n")
 		}
@@ -3136,7 +3100,6 @@ func (m Model) composeDetailBody(contentW int) string {
 		// Every panel declined (panel.Render's nil means "hide me"). Inside a
 		// tab the user chose, an empty box would read as a rendering fault, so
 		// the tab says in one line why there is nothing here.
-		b.WriteString("\n")
 		b.WriteString(theme.dim.Render(spec.empty(s)))
 		b.WriteString("\n")
 	}
@@ -3264,198 +3227,220 @@ func (m Model) activeDetailTab() detailTab {
 	return tabOverview
 }
 
-// renderTabStrip draws the tab names on one line, the active one in the panel
-// title style and the rest dim, with a right-aligned key hint when the width
-// allows. Exactly one row, width cells or fewer: the strip is the first line
-// of the body detailBody wraps, and a strip that folded would push every tab's
-// content down a row.
-func renderTabStrip(tabs []detailTab, active detailTab, width int) string {
-	specs := detailTabSpecs()
-	var b strings.Builder
-	b.WriteString("  ")
-	for i, t := range tabs {
-		if i > 0 {
-			b.WriteString("   ")
-		}
-		if t == active {
-			b.WriteString(theme.panelTitle.Render(specs[t].name))
-		} else {
-			b.WriteString(theme.dim.Render(specs[t].name))
-		}
-	}
-	strip := b.String()
-	hint := theme.dim.Render(fmt.Sprintf("tab/1-%d: switch", len(tabs)))
-	if gap := width - lipgloss.Width(strip) - lipgloss.Width(hint); gap >= 2 {
-		strip += strings.Repeat(" ", gap) + hint
-	}
-	return truncate(strip, width)
-}
-
-// overviewPanel is the Overview tab: the session's head and status line, then
-// the one-line facts a person checks before opening the pane — whether it is
-// waiting on them, how far along it is, the diff size, the verdict — the tasks
-// ready to run and any failures, where the branch sits in the stack, and the
-// last few issues.
-// Everything here is a summary of what the other tabs show in full.
+// overviewPanel is the Overview tab (§4.4): under SESSION the session's
+// phase, host, agent, branch, stack and last update, then the awaiting-input
+// line and, for the planning session, the plan line; under PROGRESS the tasks
+// bar, the diff and the verdict; under READY the tasks ready to run and any
+// failures; under ISSUES the last few issues. A heading with nothing under it
+// is left out, so a one-off session shows SESSION alone. Everything here is a
+// summary of what the other tabs show in full.
 type overviewPanel struct{}
 
 func (overviewPanel) Title() string { return "Overview" }
 
 func (overviewPanel) Render(ctx panelContext, width int) []string {
+	var out []string
+	for _, sec := range []struct {
+		title string
+		lines []string
+	}{
+		{"SESSION", overviewSessionLines(ctx, width)},
+		{"PROGRESS", overviewProgressLines(ctx.Session, width)},
+		{"READY", overviewReadyLines(ctx, width)},
+		{"ISSUES", overviewIssueLines(ctx.Session, width)},
+	} {
+		if len(sec.lines) == 0 {
+			continue
+		}
+		if len(out) > 0 {
+			out = append(out, "")
+		}
+		out = append(out, overviewHeading(sec.title))
+		out = append(out, sec.lines...)
+	}
+	return out
+}
+
+// overviewHeading is one of the Overview's headings: bold muted capitals,
+// the look of the home screen's column heads (§4.1), so the facts under it
+// carry the colour.
+func overviewHeading(title string) string {
+	return lipgloss.NewStyle().Bold(true).Foreground(tok(theme.tokens.Muted)).Render(title)
+}
+
+// overviewSessionLines is the Overview's SESSION block.
+//
+// The phase line is phase, loop and wedged age; a stale status has none of
+// those worth trusting and says so instead, and its update time and host line
+// go with it. The host line is the host's own glyph, not the row's
+// (hostIndicator): the phase already says done or failed, and this says only
+// whether the host process is alive, ◐ running or ○ stopped. A session paused
+// for usage says so on the host line instead of "stopped": the daemon stopped
+// this host on purpose and will start it again, and "stopped" would send the
+// owner looking for a fault that is not there. It has a line of its own
+// because the wake time is the one fact the owner is waiting for, and at the
+// overlay's width a phase line carrying it would cut it off.
+func overviewSessionLines(ctx panelContext, width int) []string {
 	s := ctx.Session
 	var out []string
-
-	// Head: name (or label, with the real name kept visible right beside it —
-	// see displayName's doc comment), branch → base.
-	head := theme.sessionName.Render(displayName(s))
+	fact := func(label, value string) { out = append(out, truncate(overviewFact(label, value), width)) }
 	if s.Label != "" {
-		head += "  " + theme.dim.Render(s.Name)
+		fact("Label", theme.sessionName.Render(s.Label))
+	}
+	if s.StatusStale {
+		fact("Phase", theme.staleText.Render("status.json is stale: "+string(s.StaleReason)))
+	} else {
+		// The phase as §3.6 draws a state: its glyph and word in its colour.
+		meta := theme.renderState(stateSession, sessionPhaseKey(s))
+		paused := usagePaused(s)
+		if s.LoopCount > 0 {
+			meta += theme.dim.Render(fmt.Sprintf("  loop %d", s.LoopCount))
+		}
+		if age, ok := showsWedged(s, ctx.Now); ok {
+			meta += "  " + theme.errorText.Render(wedgedGlyph+" wedged "+durationShort(age))
+		}
+		fact("Phase", meta)
+		switch {
+		case paused:
+			fact("Host", theme.renderGlyph(stateSession, "paused")+theme.awaitingFlag.Render(" "+usagePausedText(s)))
+		case s.HostRunning:
+			fact("Host", theme.renderGlyph(stateSession, hostRunningState)+theme.dim.Render(" running"))
+		default:
+			fact("Host", theme.renderGlyph(stateSession, hostStoppedState)+theme.dim.Render(" stopped"))
+		}
+	}
+	// Who runs it and how: the agent CLI the session was started with and
+	// the autonomous tag, on one line, left out when neither is known.
+	var agent []string
+	if s.Provider != "" {
+		agent = append(agent, s.Provider)
+	}
+	if s.Autonomous {
+		agent = append(agent, autonomousGlyph+" autonomous")
+	}
+	if len(agent) > 0 {
+		fact("Agent", theme.dim.Render(strings.Join(agent, "  ")))
 	}
 	if s.Branch != "" {
 		sub := s.Branch
 		if s.BaseBranch != "" {
 			sub += " → " + s.BaseBranch
 		}
-		head += "  " + theme.branch.Render(sub)
+		fact("Branch", theme.branch.Render(sub))
 	}
-	// The autonomous tag lives on the head line, not the status line below,
-	// because the status line is replaced by stale text when StatusStale and
-	// the tag must survive that. The head is truncated as a whole, so on a
-	// narrow pane with a long label/branch the tag is cut first; accepted, the
-	// row glyph still carries the signal there.
-	if s.Autonomous {
-		head += "  " + theme.dim.Render(autonomousGlyph+" autonomous")
-	}
-	// Same placement and truncation rule as the autonomous tag above.
-	if s.Provider != "" {
-		head += "  " + theme.dim.Render(s.Provider)
-	}
-	out = append(out, truncate(head, width))
-
-	// Status line: phase, loop, updated_at, host liveness, wedged age. A stale
-	// status has none of those worth trusting and says so instead.
-	if s.StatusStale {
-		out = append(out, theme.staleText.Render("status.json is stale: "+string(s.StaleReason)))
-	} else {
-		// The phase as §3.6 draws a state: its glyph and word in its colour.
-		meta := theme.renderState(stateSession, sessionPhaseKey(s))
-		// A session paused for usage says so straight after the phase, ahead
-		// of the loop count and the update time. The line is cut at the pane's
-		// width, and on a default terminal that cut used to land inside the
-		// wake time, which is the one fact on the line the owner is waiting
-		// for. "host stopped" is not said at all here: the daemon stopped
-		// this host on purpose and will start it again, and the words would
-		// send the owner looking for a fault that is not there.
-		paused := usagePaused(s)
-		if paused {
-			meta += "  " + theme.renderGlyph(stateSession, "paused") + theme.awaitingFlag.Render(" "+usagePausedText(s))
-		}
-		if s.LoopCount > 0 {
-			meta += theme.dim.Render(fmt.Sprintf("  loop %d", s.LoopCount))
-		}
-		if s.UpdatedAt != "" {
-			meta += theme.dim.Render("  updated " + s.UpdatedAt)
-		}
-		// The host's own glyph, not the row's (hostIndicator): the phase at
-		// the head of this line already says done or failed, and this part
-		// says only whether the host process is alive — ◐ running (one of
-		// §3.6's working words) or ○ stopped.
-		switch {
-		case paused:
-		case s.HostRunning:
-			meta += "  " + theme.renderGlyph(stateSession, hostRunningState) + theme.dim.Render(" host running")
-		default:
-			meta += "  " + theme.renderGlyph(stateSession, hostStoppedState) + theme.dim.Render(" host stopped")
-		}
-		if age, ok := showsWedged(s, ctx.Now); ok {
-			meta += "  " + theme.errorText.Render(wedgedGlyph+" wedged "+durationShort(age))
-		}
-		out = append(out, truncate(meta, width))
-	}
-
-	// Only the planning session's overview carries the plan line: the status
-	// is about the project's plan, which no other session owns.
-	if s.Name == session.PlanSessionName && ctx.PlanStatus.Known {
-		out = append(out, theme.dim.Render(truncate("plan: "+planStatusLine(ctx.PlanStatus), width)))
-	}
-
-	if showsAwaitingInput(s) {
-		out = append(out, "", theme.awaitingFlag.Render(awaitingGlyph+" Awaiting input")+
-			theme.dim.Render(" · press enter to answer"))
-	}
-
-	// Facts. A scratch session has none of these by design, and a stale
-	// status's progress and diff were zeroed by discovery, so both skip the
-	// block rather than print zeros that look like measurements.
-	if !s.Scratch && !s.StatusStale {
-		var facts []string
-		if s.Plan != nil || s.Progress.Total > 0 {
-			facts = append(facts, overviewFact("Progress", renderOverviewBar(s.Progress)))
-		}
-		if s.BaseBranch != "" {
-			if s.DiffStats.BaseMissing {
-				facts = append(facts, overviewFact("Diff", theme.staleText.Render(
-					fmt.Sprintf("base branch '%s' no longer exists", s.BaseBranch))))
-			} else if s.DiffStats.Err != "" {
-				facts = append(facts, overviewFact("Diff", theme.staleText.Render("error: "+s.DiffStats.Err)))
-			} else {
-				d := s.DiffStats
-				facts = append(facts, overviewFact("Diff", theme.dim.Render(
-					fmt.Sprintf("+%d/-%d · %d file(s) vs %s", d.Added, d.Removed, d.Files, s.BaseBranch))))
-			}
-		}
-		switch {
-		case s.VerdictError != "":
-			facts = append(facts, overviewFact("Verdict", theme.staleText.Render("parse error: "+s.VerdictError)))
-		case s.Verdict != nil:
-			v := s.Verdict
-			style := theme.verdictOK
-			if v.Verdict != state.VerdictApprove {
-				style = theme.verdictBad
-			}
-			facts = append(facts, overviewFact("Verdict", style.Render(string(v.Verdict))+
-				theme.dim.Render(fmt.Sprintf("  compliance %s · quality %s · qa %s", v.Compliance, v.Quality, v.QA))))
-		default:
-			facts = append(facts, overviewFact("Verdict", theme.dim.Render("— not reviewed yet")))
-		}
-		out = append(out, "")
-		for _, f := range facts {
-			out = append(out, truncate(f, width))
-		}
-	}
-
-	// What it is doing right now: the scheduler's ready tasks, blocked count
-	// and failures (overviewTaskBlock). The full plan is the Waves tab's.
-	if !s.Scratch {
-		switch {
-		case s.PlanError != "":
-			out = append(out, "", theme.staleText.Render("plan parse error: "+s.PlanError))
-		case s.Plan == nil:
-			out = append(out, "")
-			out = append(out, wavesPanel{}.Render(ctx, width)...)
-		default:
-			if block := overviewTaskBlock(s.Plan, width); len(block) > 0 {
-				out = append(out, "")
-				out = append(out, block...)
-			}
-		}
-	}
-
 	// Where the branch sits: trunk down to this branch, one line. The full
 	// tree with every sibling is the Stack tab's.
 	if ctx.Stack.Detected && s.Branch != "" {
 		if path := stackPath(ctx.Stack.Branches, s.Branch); path != "" {
-			out = append(out, "", overviewFact("Stack", theme.branch.Render(path)))
+			fact("Stack", theme.branch.Render(path))
 		}
 	}
+	if !s.StatusStale && s.UpdatedAt != "" {
+		fact("Updated", theme.dim.Render(s.UpdatedAt))
+	}
+	// Only the planning session carries the plan line: the status is about
+	// the project's plan, which no other session owns.
+	if s.Name == session.PlanSessionName && ctx.PlanStatus.Known {
+		out = append(out, theme.dim.Render(truncate("plan: "+planStatusLine(ctx.PlanStatus), width)))
+	}
+	if showsAwaitingInput(s) {
+		// Answering is done in the agent, which esc and enter reach from
+		// here; the overlay itself has no key for it.
+		out = append(out, "", truncate(theme.awaitingFlag.Render(awaitingGlyph+" Awaiting input")+
+			theme.dim.Render(" · answer it in the agent"), width))
+	}
+	return out
+}
 
-	if n := len(s.IssuesTail); n > 0 {
-		out = append(out, "", theme.panelTitle.Render("Issues (last 3)"))
-		for _, ln := range s.IssuesTail[max(0, n-3):] {
-			out = append(out, theme.dim.Render(truncate("  "+ln, width)))
+// overviewProgressLines is the Overview's PROGRESS block: the tasks bar, the
+// diff and the verdict. A one-off session has none of these by design, and a
+// stale status's progress and diff were zeroed by discovery, so both get no
+// block rather than zeros that look like measurements.
+func overviewProgressLines(s Session, width int) []string {
+	if s.Scratch || s.StatusStale {
+		return nil
+	}
+	var facts []string
+	if s.Plan != nil || s.Progress.Total > 0 {
+		facts = append(facts, overviewFact("Tasks", overviewTasksBar(s.Progress, width-overviewFactLabelCells)))
+	}
+	if s.BaseBranch != "" {
+		switch {
+		case s.DiffStats.BaseMissing:
+			facts = append(facts, overviewFact("Diff", theme.staleText.Render(
+				fmt.Sprintf("base branch '%s' no longer exists", s.BaseBranch))))
+		case s.DiffStats.Err != "":
+			facts = append(facts, overviewFact("Diff", theme.staleText.Render("error: "+s.DiffStats.Err)))
+		default:
+			d := s.DiffStats
+			facts = append(facts, overviewFact("Diff", theme.dim.Render(
+				fmt.Sprintf("+%d/-%d · %d file(s) vs %s", d.Added, d.Removed, d.Files, s.BaseBranch))))
 		}
 	}
+	switch {
+	case s.VerdictError != "":
+		facts = append(facts, overviewFact("Verdict", theme.staleText.Render("parse error: "+s.VerdictError)))
+	case s.Verdict != nil:
+		v := s.Verdict
+		style := theme.verdictOK
+		if v.Verdict != state.VerdictApprove {
+			style = theme.verdictBad
+		}
+		facts = append(facts, overviewFact("Verdict", style.Render(string(v.Verdict))+
+			theme.dim.Render(fmt.Sprintf("  compliance %s · quality %s · qa %s", v.Compliance, v.Quality, v.QA))))
+	default:
+		facts = append(facts, overviewFact("Verdict", theme.dim.Render("— not reviewed yet")))
+	}
+	for i, f := range facts {
+		facts[i] = truncate(f, width)
+	}
+	return facts
+}
 
+// overviewTasksBar is the PROGRESS block's bar (§3.7, progressCount): done in
+// done, the rest faint, then "3/12", at most overviewBarWidth glyphs of bar
+// so the line does not stretch with the box, and less when width is short.
+// Failed tasks are said after it in the failure colour: the bar has no
+// segment of its own to show them in.
+func overviewTasksBar(p discover.Progress, width int) string {
+	failed := ""
+	if p.Failed > 0 {
+		failed = theme.taskFailed.Render(fmt.Sprintf(" · %d failed", p.Failed))
+	}
+	label := fmt.Sprintf("%d/%d", p.Complete, p.Total)
+	room := width - lipgloss.Width(failed)
+	return theme.progressCount(p.Complete, p.Total, min(room, overviewBarWidth+1+len(label))) + failed
+}
+
+// overviewReadyLines is the Overview's READY block: what the session will do
+// next, from the scheduler's ready set (overviewTaskBlock), the plan's parse
+// error, or the Waves tab's own line for a session with no plan file. A
+// one-off session has no plan, so no block.
+func overviewReadyLines(ctx panelContext, width int) []string {
+	s := ctx.Session
+	if s.Scratch {
+		return nil
+	}
+	switch {
+	case s.PlanError != "":
+		return []string{theme.staleText.Render("plan parse error: " + s.PlanError)}
+	case s.Plan == nil:
+		return wavesPanel{}.Render(ctx, width)
+	}
+	return overviewTaskBlock(s.Plan, width)
+}
+
+// overviewIssueLines is the Overview's ISSUES block: the last three lines of
+// the session's issues notepad. The full tail is the Notes tab's.
+func overviewIssueLines(s Session, width int) []string {
+	n := len(s.IssuesTail)
+	if n == 0 {
+		return nil
+	}
+	var out []string
+	for _, ln := range s.IssuesTail[max(0, n-3):] {
+		out = append(out, theme.dim.Render(truncate(ln, width)))
+	}
 	return out
 }
 
@@ -3463,6 +3448,10 @@ func (overviewPanel) Render(ctx panelContext, width int) []string {
 // the fact lines share one left column and a bar that flexed with the pane
 // would make the label after it jump around on resize.
 const overviewBarWidth = 20
+
+// overviewFactLabelCells is the cells overviewFact gives its label, the
+// padding and the space after it included, so a value knows its room.
+const overviewFactLabelCells = 10
 
 // overviewFact is one "Label   value" line, the label padded to a common width
 // so the values line up.
@@ -3641,54 +3630,6 @@ func stackPath(branches []spice.Branch, name string) string {
 	return strings.Join(chain, " › ")
 }
 
-// boxDetailBody bounds body to the rows the pane has room for and only then
-// draws the pane (title in its strip, accent when focused), so the box is
-// always asked for exactly the height it was given — see renderDetail's doc
-// for why the reverse order loses the bottom border. focused changes only the
-// border's and the strip's colour, never this function's arithmetic.
-//
-// The bounding is m.detailViewport's, on a value copy (renderDetail's doc: View
-// may not mutate the Model). Two of its behaviours are load-bearing here and
-// are the reason nothing clips the result afterwards. With SoftWrap left off,
-// visibleLines returns at most Height() lines and, once any line is wider than
-// the viewport, CUTS every line to that width with ansi.Cut
-// (bubbles/v2@v2.2.1 viewport/viewport.go:332-364); detailBody has already
-// wrapped every line to contentW, so the cut never fires, and it is the wrap
-// rather than the cut that keeps a wide line from pushing the box past its
-// budget. View then pads that block back out to exactly Width x Height
-// (viewport.go:728-750). The result is a block of precisely rows x contentW,
-// which is what detailBox wants and what makes MaxHeight unnecessary.
-//
-// The row count is detailRowBudget's, computed from the SAME line count the
-// Model's viewport holds (SoftWrap off makes TotalLineCount width-independent:
-// calculateLine returns len(lines)), so this copy's Height equals the Model
-// viewport's Height and the offset the keys reached is the offset drawn here.
-func (m Model) boxDetailBody(body string, contentW, outerH int, title string, focused bool) string {
-	vp := m.detailViewport
-	vp.SetWidth(contentW)
-	vp.SetContent(body)
-
-	rows, readout := detailRowBudget(outerH, vp.TotalLineCount())
-	vp.SetHeight(rows)
-	// Re-read the offset from the Model rather than trusting the copy's: both
-	// SetContent and the SetHeight above can have moved it (SetContent snaps to
-	// the bottom when the old offset no longer fits), and SetYOffset is the only
-	// call that clamps against the height in force now.
-	vp.SetYOffset(m.detailViewport.YOffset())
-
-	block := vp.View()
-	innerH := rows
-	if readout {
-		block = lipgloss.JoinVertical(lipgloss.Left, block, scrollReadout(vp.ScrollPercent(), contentW))
-		innerH++
-	}
-	// The pane part is sizedBox(detailBox, contentW+2, innerH) cell for cell
-	// plus the title strip's row, with the interior painted panel and a
-	// selected row's fill carried to the border.
-	return theme.pane(title, "", block, paneOuterWidth(contentW),
-		innerH+paneStripRows+boxBorderCells, focused)
-}
-
 // scrollReadout renders the detail pane's position indicator — a right-aligned
 // percentage on its own row. It is the chosen overflow affordance instead of a
 // scrollbar column, which would cost a cell of width on every row to say the
@@ -3859,48 +3800,6 @@ func (verdictPanel) Render(ctx panelContext, width int) []string {
 }
 
 // --- small render helpers ---
-
-// progressLabel returns the raw (unstyled) "done/total" suffix text for
-// progress p, plus a "(N failed)" note when any tasks failed. Kept separate
-// from the bar glyphs so callers can measure the label's width and size the
-// bar to whatever room remains.
-func progressLabel(p discover.Progress) string {
-	if p.Total == 0 {
-		return " 0/0"
-	}
-	label := fmt.Sprintf(" %d/%d", p.Complete, p.Total)
-	if p.Failed > 0 {
-		label += fmt.Sprintf(" (%d failed)", p.Failed)
-	}
-	return label
-}
-
-// renderOverviewBar is the Overview's progress bar: bubbles/progress, drawn
-// once through ViewAs (no animation, so View stays pure) with the palette's
-// accent→success blend and the palette's empty-cell colour, followed by the
-// done/total label. The label goes red when any task failed, since a blended
-// bar has no segment of its own to show a failure in — progressLabel already
-// says how many.
-func renderOverviewBar(p discover.Progress) string {
-	bar := progress.New(
-		progress.WithWidth(overviewBarWidth),
-		progress.WithoutPercentage(),
-		progress.WithColors(theme.progressBlend[0], theme.progressBlend[1]),
-		// Full blocks, as the hand-drawn bar this replaced used; the package's
-		// default fill is a half block that reads as a stripe.
-		progress.WithFillCharacters('█', '░'),
-	)
-	bar.EmptyColor = theme.progressEmpty
-	pct := 0.0
-	if p.Total > 0 {
-		pct = float64(p.Complete) / float64(p.Total)
-	}
-	label := theme.dim.Render(progressLabel(p))
-	if p.Failed > 0 {
-		label = theme.taskFailed.Render(progressLabel(p))
-	}
-	return bar.ViewAs(pct) + label
-}
 
 // truncate shortens s (measured by display width, ANSI-aware) to max cells,
 // appending an ellipsis when it had to cut. A non-positive max returns "".

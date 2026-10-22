@@ -332,3 +332,45 @@ func TestProjectBandText(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionEnterTarget is the pure decision behind enter on a session
+// (§4.3, last paragraph). Load-bearing rows:
+//
+//   - "running" and "stopped" are the split itself: a live host opens the
+//     Agent, a stopped one its details, and enter never restarts it.
+//   - "pending" and "cleaning" open the details even with the host flag set:
+//     neither has an agent a pane could show, and the Agent's box would be
+//     empty.
+//   - "restarting" and "dialing" open the Agent for a stopped host: an agent
+//     is on its way and the placeholder says so, and the restart or dial is
+//     joined rather than doubled.
+//   - "running with a pane" and "stopped with a pane" open the Agent: an
+//     installed pane is drawn whatever discovery says about the host.
+//   - "restarting while cleaning" pins the order: a clean confirmed after the
+//     restart went out will refuse its pane, so there is no agent coming.
+func TestSessionEnterTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		f    sessionEnterFacts
+		want sessionOpens
+	}{
+		{"running", sessionEnterFacts{hostRunning: true}, opensAgent},
+		{"stopped", sessionEnterFacts{}, opensDetails},
+		{"pending", sessionEnterFacts{pending: true}, opensDetails},
+		{"pending with the host flag set", sessionEnterFacts{pending: true, hostRunning: true}, opensDetails},
+		{"cleaning", sessionEnterFacts{cleaning: true}, opensDetails},
+		{"cleaning with the host still running", sessionEnterFacts{cleaning: true, hostRunning: true}, opensDetails},
+		{"worktree fault", sessionEnterFacts{worktreeFault: true}, opensDetails},
+		{"restarting", sessionEnterFacts{restarting: true}, opensAgent},
+		{"dialing", sessionEnterFacts{dialing: true}, opensAgent},
+		{"restarting while cleaning", sessionEnterFacts{restarting: true, cleaning: true}, opensDetails},
+		{"running with a pane", sessionEnterFacts{hostRunning: true, pane: true}, opensAgent},
+		{"stopped with a pane", sessionEnterFacts{pane: true}, opensAgent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionEnterTarget(tc.f); got != tc.want {
+				t.Errorf("sessionEnterTarget(%+v) = %v, want %v", tc.f, got, tc.want)
+			}
+		})
+	}
+}

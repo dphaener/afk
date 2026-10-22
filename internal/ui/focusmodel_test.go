@@ -55,7 +55,7 @@ func (h *scenarioHarness) forwarded() int {
 
 // scenarioState is what every step asserts. owner collapses the three
 // predicates that decide where a keypress goes into one word so a table row
-// reads as the user's model: list, agent pane, overview, placeholder.
+// reads as the user's model: list, agent pane, details, placeholder.
 type scenarioState struct {
 	focus     paneFocus
 	view      rightView
@@ -70,12 +70,14 @@ type scenarioState struct {
 
 func (h *scenarioHarness) owner() string {
 	switch {
+	// The details overlay is laid over the agent with the pane still
+	// focused behind it, so it is asked first: it has the keyboard.
+	case h.m.detailOwnsKeyboard():
+		return "details"
 	case h.m.paneOwnsKeyboard():
 		return "agent"
 	case h.m.agentPlaceholderDrawn() && h.m.focus == focusRight:
 		return "placeholder"
-	case h.m.detailOwnsKeyboard():
-		return "overview"
 	default:
 		return "list"
 	}
@@ -230,11 +232,11 @@ func assertInboxOpen(h *scenarioHarness) {
 //     shows up as a changed focus or a second dial.
 //   - "ctrl+backslash then ctrl+t": the no-op must emit no Cmd and move
 //     neither axis, or ctrl+t has regained a list-side meaning.
-//   - "enter on a stopped row": zero spawns is the point. enter is pure focus;
-//     restart belongs to r. The overview must own the keyboard, not the agent
-//     placeholder.
-//   - "r from the list" vs "r from the right overview": same one spawn and one
-//     dial, but focus differs. From the list the keyboard stays on the list.
+//   - "enter on a stopped row": zero spawns is the point. enter opens the
+//     row's details; restart belongs to r. The details own the keyboard, not
+//     the agent placeholder.
+//   - "r from the list" is one spawn and one dial with the keyboard kept on
+//     the list; "r in the details" starts nothing (W2.T1 gives it r).
 //   - "b typed into a focused agent": the Build tab's key is a list and
 //     overview key. Forwarded once, no tab change, no view change is the proof
 //     the agent pane lost none of its keys to it; the last step shows the same
@@ -248,12 +250,10 @@ func assertInboxOpen(h *scenarioHarness) {
 //   - "enter after a cursor move": the preview timer is armed but never fired
 //     before enter, then fires stale. One dial total and a stable pane is the
 //     retired 300ms race staying retired.
-//   - "a cursor move under the overview": view is the user's ctrl+t choice and
-//     nothing else may write it. A preview there would dial a pane nobody can
-//     see and, on arrival, flip the right side back to the agent. Zero dials
-//     and view=overview after a FIRED timer pins both refusals (arming and
-//     dialing); its agent-view twin proves the gate is on view, not a blanket
-//     preview kill.
+//   - "j in the details over the agent": the overlay owns the move keys, so
+//     j scrolls it and moves no cursor, and a fired timer dials nothing for
+//     the row under it; its agent-view twin proves previews still run once
+//     the keyboard is back on the Project.
 func TestFocusScenario(t *testing.T) {
 	list := scenarioState{focus: focusList, view: viewAgent, owner: "list"}
 	with := func(base scenarioState, edit func(*scenarioState)) scenarioState {
@@ -305,8 +305,8 @@ func TestFocusScenario(t *testing.T) {
 					s.focus, s.owner, s.selected = focusRight, "agent", "alpha"
 				})},
 				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
-				{name: "d from the list hides the agent behind the overview", leader: true, msg: keyRune('d'), want: scenarioState{
-					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
+				{name: "d from the list opens the details over the Project", leader: true, msg: keyRune('d'), want: scenarioState{
+					focus: focusList, view: viewAgent, owner: "details", selected: "alpha",
 				}},
 			},
 		},
@@ -332,16 +332,19 @@ func TestFocusScenario(t *testing.T) {
 			},
 		},
 		{
-			name: "ctrl+] d and enter round trip keeps focus right",
+			name: "ctrl+] d and esc round trip keeps focus right",
 			rows: []Session{runningSess("alpha")},
 			steps: []scenarioStep{
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+] d to overview", msg: keyRune('d'), leader: true, want: scenarioState{
-					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
+				{name: "ctrl+] d to the details", msg: keyRune('d'), leader: true, want: scenarioState{
+					focus: focusRight, view: viewAgent, owner: "details", selected: "alpha",
 				}},
-				{name: "enter back to agent", msg: keyEnter, want: scenarioState{
+				{name: "x reaches neither the agent nor the list", msg: scenarioX, want: scenarioState{
+					focus: focusRight, view: viewAgent, owner: "details", selected: "alpha",
+				}},
+				{name: "esc back to agent", msg: keyEscMsg(), want: scenarioState{
 					focus: focusRight, view: viewAgent, owner: "agent", selected: "alpha",
 				}},
 				{name: "the agent is live again", msg: scenarioX, want: scenarioState{
@@ -362,16 +365,16 @@ func TestFocusScenario(t *testing.T) {
 			},
 		},
 		{
-			name: "enter on a stopped row focuses the overview without restarting",
+			name: "enter on a stopped row opens its details without restarting",
 			rows: []Session{stoppedSess("alpha")},
 			steps: []scenarioStep{
 				{name: "enter", msg: keyEnter, settle: true, want: scenarioState{
-					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
+					focus: focusList, view: viewAgent, owner: "details", selected: "alpha",
 				}},
 				{name: "ctrl+t is inert", act: pressDimmedToggle, want: scenarioState{
-					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
+					focus: focusList, view: viewAgent, owner: "details", selected: "alpha",
 				}},
-				{name: "esc releases", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
+				{name: "esc closes them", msg: keyEscMsg(), leader: true, want: with(list, func(s *scenarioState) { s.selected = "alpha" })},
 			},
 		},
 		{
@@ -384,14 +387,18 @@ func TestFocusScenario(t *testing.T) {
 			},
 		},
 		{
-			name: "r restarts a stopped row from the right overview",
+			// r in a stopped row's details (T16.5) is the restart: one
+			// spawn and one dial, and the arriving pane closes the details
+			// and lands the keyboard in the agent.
+			name: "r in a stopped row's details restarts it into the agent",
 			rows: []Session{stoppedSess("alpha")},
 			steps: []scenarioStep{
 				{name: "enter", msg: keyEnter, settle: true, want: scenarioState{
-					focus: focusRight, view: viewAgent, owner: "overview", selected: "alpha",
+					focus: focusList, view: viewAgent, owner: "details", selected: "alpha",
 				}},
 				{name: "r", leader: true, msg: scenarioR, settle: true, want: scenarioState{
-					focus: focusRight, view: viewAgent, owner: "agent", selected: "alpha", spawns: 1, dials: 1, cmd: true,
+					focus: focusRight, view: viewAgent, owner: "agent", selected: "alpha",
+					spawns: 1, dials: 1, cmd: true,
 				}},
 			},
 		},
@@ -437,23 +444,20 @@ func TestFocusScenario(t *testing.T) {
 			},
 		},
 		{
-			name: "a cursor move under the overview previews nothing",
+			name: "j in the details over the agent scrolls and moves no cursor",
 			rows: []Session{runningSess("alpha"), runningSess("beta")},
 			steps: []scenarioStep{
 				{name: "enter", msg: keyEnter, settle: true, want: with(list, func(s *scenarioState) {
 					s.focus, s.owner, s.selected, s.dials, s.cmd = focusRight, "agent", "alpha", 1, true
 				})},
-				{name: "ctrl+] d to overview", msg: keyRune('d'), leader: true, want: scenarioState{
-					focus: focusRight, view: viewOverview, owner: "overview", selected: "alpha",
-				}},
-				{name: "ctrl+] esc", msg: keyEscMsg(), leader: true, want: scenarioState{
-					focus: focusList, view: viewOverview, owner: "list", selected: "alpha",
+				{name: "ctrl+] d to the details", msg: keyRune('d'), leader: true, want: scenarioState{
+					focus: focusRight, view: viewAgent, owner: "details", selected: "alpha",
 				}},
 				{name: "j arms no preview", msg: scenarioJ, want: scenarioState{
-					focus: focusList, view: viewOverview, owner: "list", selected: "beta",
+					focus: focusRight, view: viewAgent, owner: "details", selected: "alpha",
 				}},
 				{name: "a fired timer dials nothing", act: settlePreview, want: scenarioState{
-					focus: focusList, view: viewOverview, owner: "list", selected: "beta",
+					focus: focusRight, view: viewAgent, owner: "details", selected: "alpha",
 				}},
 			},
 		},
@@ -484,13 +488,11 @@ func TestFocusScenario(t *testing.T) {
 	}
 }
 
-// TestPassivePreviewNeverChangesTheView pins the rule that `view` changes only
-// through ctrl+t on the right side. The review's reproduction is the overview
-// row: enter, ctrl+t to the overview, ctrl+\ to the list, j, and the preview
-// timer fires. A preview there used to dial the new row and its arrival
-// rewrote view to agent, so the overview the user chose vanished on a cursor
-// move. The agent row is the control: the same keys must still preview, or
-// the gate has turned into a blanket preview kill.
+// TestPassivePreviewNeverChangesTheView pins that a passive preview leaves
+// the view and the focus as they were. The overview row it was written for
+// went with the overview itself (T16.5: `d` opens an overlay and changes no
+// view); the agent row stays as the control that a cursor move still
+// previews.
 //
 // The timer is fired with the CURRENT generation whether or not j armed one,
 // so the overview row proves applyPreviewTimer refuses on its own, not only
@@ -504,7 +506,6 @@ func TestPassivePreviewNeverChangesTheView(t *testing.T) {
 		wantPane  string
 		wantTimer bool
 	}{
-		{name: "overview: no timer, no dial, overview kept", overview: true, wantView: viewOverview, wantDials: 0, wantPane: "", wantTimer: false},
 		{name: "agent control: j previews the new row", overview: false, wantView: viewAgent, wantDials: 1, wantPane: "beta", wantTimer: true},
 	}
 	for _, tc := range cases {
@@ -662,19 +663,18 @@ func TestStartupPaneBelongsToTheSelectedRow(t *testing.T) {
 
 // TestAgentKeyHintNamesAKeyThatWorks pins the key a toast names for "get
 // back to the agent". Since T16.2 enter opens the selected session's agent
-// from the list and from the focused overview alike (openAgent), so every
-// toast names enter, and none names ctrl+] t, which T16.2 retired. Before it,
-// the overview had no enter and the hint was ctrl+] t there (docs/decisions.md,
-// T0.6).
+// from the list (openAgent), so every toast names enter, and none names
+// ctrl+] t, which T16.2 retired. With the details overlay up (T16.5) enter is
+// not its key, so the toast says esc first: "esc, then enter".
 //
 // Load-bearing rows, and why:
 //
-//   - the four "overview focused" rows: one per toast that can be raised while
-//     the overview has the keyboard, which named ctrl+] t until T16.2.
+//   - the three "overview focused" rows (the details over the agent): one per
+//     toast that can be raised while the overlay has the keyboard.
 //   - the "list focused" and "agent pane focused" rows: the controls.
 //
-// The last check presses the key: enter from the focused overview must reach
-// the agent, which is what makes the hint true.
+// The last check presses the key: esc from the details must reach the
+// agent, which is what makes "esc, then" true.
 func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 	wedgedScratch := func() Session {
 		s := scratchSess("alpha")
@@ -688,8 +688,8 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		h.m, cmd = update(h.t, h.m, keyEnter)
 		h.m = settleConnect(h.t, h.m, cmd)
 		h.m, _ = pressAction(h.t, h.m, keyRune('d'))
-		if h.owner() != "overview" {
-			h.t.Fatalf("precondition: owner = %q, want the focused overview", h.owner())
+		if h.owner() != "details" {
+			h.t.Fatalf("precondition: owner = %q, want the details over the agent", h.owner())
 		}
 	}
 	focusAgent := func(h *scenarioHarness) {
@@ -747,13 +747,6 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 			want: "enter to show the agent", wrong: "ctrl+] t", viaLeader: true,
 		},
 		{
-			name:  "one-off restart refused, overview focused",
-			row:   wedgedScratch(),
-			setup: focusOverview,
-			msg:   func(*scenarioHarness) tea.Msg { return scenarioR },
-			want:  "enter to show the agent", wrong: "ctrl+] t", viaLeader: true,
-		},
-		{
 			name:  "connection dropped behind the focused overview",
 			row:   runningSess("alpha"),
 			setup: focusOverview,
@@ -788,12 +781,12 @@ func TestAgentKeyHintNamesAKeyThatWorks(t *testing.T) {
 		})
 	}
 
-	t.Run("from the focused overview enter reaches the agent", func(t *testing.T) {
+	t.Run("from the details esc reaches the agent", func(t *testing.T) {
 		h := newScenarioHarness(t, runningSess("alpha"))
 		focusOverview(h)
-		h.m, _ = update(t, h.m, keyEnter)
+		h.m, _ = update(t, h.m, keyEscMsg())
 		if got := h.owner(); got != "agent" {
-			t.Fatalf("after enter: owner = %q, want the agent", got)
+			t.Fatalf("after esc: owner = %q, want the agent", got)
 		}
 	})
 }

@@ -179,9 +179,9 @@ func detailsBlockedReason(c leaderConds) string {
 //   - `s` and `t` (the leader's S and T) need the project view's Build
 //     section to have the keyboard (T16.4); their blocked reasons say so.
 //   - tab, shift+tab and 1–3 change the project view's section (T16.4). The
-//     overview `d` gives the keyboard to keeps the same keys for its own
-//     tabs (1–5) while it has the keyboard: levelKey hands them to the
-//     overview's mode first there, as an overlay owns its keys.
+//     details overlay `d` opens (T16.5) uses the same keys for its own tabs
+//     (1–5) while it is up: its input mode outranks the level's, as an
+//     overlay owns its keys.
 //
 // "start a new plan" has two rows for one action: `n` at All projects, as
 // §5 binds it, and by name at Project and the Agent, where `n` is new

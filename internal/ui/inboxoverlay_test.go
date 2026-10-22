@@ -987,15 +987,12 @@ func TestInboxOpening(t *testing.T) {
 		}
 	})
 
-	t.Run("from a focused overview, and closing returns there", func(t *testing.T) {
+	t.Run("not from the details overlay, which keeps its keys", func(t *testing.T) {
 		m := focusOverview(t, withBuild(t, testModel(sess("alpha")), inboxSnap()))
 		m = pressKey(t, m, keyI)
-		if !m.inboxOpen || activeInputMode(m.modeSnapshot()) != inputInbox {
-			t.Fatal("i did not open the overlay from the overview")
-		}
-		m, _ = update(t, m, keyEsc)
-		if m.focus != focusRight || activeInputMode(m.modeSnapshot()) != inputDetail {
-			t.Errorf("closing left focus=%v mode=%v, want the overview as it was", m.focus, activeInputMode(m.modeSnapshot()))
+		if m.inboxOpen || activeInputMode(m.modeSnapshot()) != inputDetail {
+			t.Fatalf("i in the details: inbox=%v mode=%v, want the details still up and no inbox",
+				m.inboxOpen, activeInputMode(m.modeSnapshot()))
 		}
 	})
 

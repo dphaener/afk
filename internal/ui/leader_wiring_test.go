@@ -433,29 +433,29 @@ func TestKeysRunAnActionOnce(t *testing.T) {
 			},
 		},
 		{
-			name: "ctrl+] d from the agent pane gives the overview the keyboard",
+			name: "ctrl+] d from the agent pane opens the details over it",
 			model: func(t *testing.T) (Model, *fakePane) {
 				fp := newFakePane("X")
 				return leaderFocusedPane(t, fp), fp
 			},
 			key: leaderPress("d"),
 			check: func(t *testing.T, _, after Model) {
-				if after.view != viewOverview || !after.detailOwnsKeyboard() || after.pane == nil {
-					t.Fatalf("view %v, overview focused %v, pane %v; want the overview focused, the pane behind it",
-						after.view, after.detailOwnsKeyboard(), after.pane != nil)
+				if !after.detailOwnsKeyboard() || !after.shouldRenderPane() || after.pane == nil {
+					t.Fatalf("details %v, pane drawn %v, pane %v; want the details over the drawn agent",
+						after.detailOwnsKeyboard(), after.shouldRenderPane(), after.pane != nil)
 				}
-				if after.level() != levelProject {
-					t.Fatalf("level = %v, want Project", after.level())
+				if after.level() != levelAgent || after.detailsFrom != levelAgent {
+					t.Fatalf("level = %v, opened from %v, want the Agent for both", after.level(), after.detailsFrom)
 				}
 			},
 		},
 		{
-			name:  "d from the list gives the overview the keyboard",
+			name:  "d from the list opens the details",
 			model: func(t *testing.T) (Model, *fakePane) { return testModel(sess("a")), nil },
 			key:   leaderPress("d"),
 			check: func(t *testing.T, _, after Model) {
-				if !after.detailOwnsKeyboard() {
-					t.Fatal("d did not give the overview the keyboard")
+				if !after.detailOwnsKeyboard() || after.detailsFrom != levelProject {
+					t.Fatalf("details %v opened from %v, want the details open from the Project", after.detailOwnsKeyboard(), after.detailsFrom)
 				}
 			},
 		},

@@ -7,8 +7,11 @@ import "testing"
 // all-projects screen open over a focused agent, and no active project with
 // the focus left on the right, both All projects — otherwise the keyboard
 // would go into an agent nobody can see. "agent placeholder" pins A6: the
-// agent view focused with no live pane is still the Agent, because the level
-// does not read the pane.
+// agent view focused with no live pane but the placeholder drawn is still the
+// Agent. "nothing in the agent box" pins T16.5's other half: with neither a
+// pane nor a placeholder (a row with no live agent) the right focus is the
+// Project, whose view is what is drawn, so no key is sent to an agent that is
+// not there.
 func TestCurrentLevel(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -16,13 +19,14 @@ func TestCurrentLevel(t *testing.T) {
 		want  level
 	}{
 		{"no project, list focus", levelFacts{}, levelAllProjects},
-		{"no project, agent focused (load-bearing)", levelFacts{focus: focusRight, view: viewAgent}, levelAllProjects},
+		{"no project, agent focused (load-bearing)", levelFacts{focus: focusRight, view: viewAgent, agentShown: true}, levelAllProjects},
 		{"screen open, list focus", levelFacts{allProjectsOpen: true, hasActiveProject: true}, levelAllProjects},
-		{"screen open over a focused agent (load-bearing)", levelFacts{allProjectsOpen: true, hasActiveProject: true, focus: focusRight, view: viewAgent}, levelAllProjects},
+		{"screen open over a focused agent (load-bearing)", levelFacts{allProjectsOpen: true, hasActiveProject: true, focus: focusRight, view: viewAgent, agentShown: true}, levelAllProjects},
 		{"project, list focus, agent view", levelFacts{hasActiveProject: true, focus: focusList, view: viewAgent}, levelProject},
 		{"project, list focus, overview view", levelFacts{hasActiveProject: true, focus: focusList, view: viewOverview}, levelProject},
 		{"project, overview focused", levelFacts{hasActiveProject: true, focus: focusRight, view: viewOverview}, levelProject},
-		{"project, agent placeholder focused (load-bearing)", levelFacts{hasActiveProject: true, focus: focusRight, view: viewAgent}, levelAgent},
+		{"project, agent pane or placeholder focused (load-bearing)", levelFacts{hasActiveProject: true, focus: focusRight, view: viewAgent, agentShown: true}, levelAgent},
+		{"project, right focus with nothing in the agent box (load-bearing)", levelFacts{hasActiveProject: true, focus: focusRight, view: viewAgent}, levelProject},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

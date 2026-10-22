@@ -1611,10 +1611,11 @@ type Model struct {
 	// during render lands on a copy the caller discards and is gone before
 	// the next frame. A viewport that clamped or resized itself while
 	// rendering would appear to work once and then silently stop clamping.
-	// W3.T1's boxDetailBody (views.go), called from renderDetail every
-	// frame, reads this field's offset to bound content before composing
-	// the box (the fix for the MaxHeight-after-applyBorder bug W1.T1's
-	// failing test documents); W4.T1's actionDetail* cases scroll it
+	// renderDetailsOverlay (detailsoverlay.go), called from View every
+	// frame the details overlay is up, reads this field's offset to bound
+	// content before composing the box (the fix for the
+	// MaxHeight-after-applyBorder bug W1.T1's failing test documents);
+	// W4.T1's actionDetail* cases scroll it
 	// directly, after syncDetailViewport has seeded real content and the
 	// frame's own row count — see its doc for why both are required.
 	detailViewport viewport.Model
@@ -2023,6 +2024,21 @@ type Model struct {
 	// reason; the struct is not zeroed on close, for the same reason either.
 	taskTokensView taskTokensOverlay
 	taskTokensOpen bool
+
+	// detailsOpen is the details overlay's flag (detailsoverlay.go, §4.4),
+	// beside the other overlays' for their reason. detailsFrom is the level
+	// it was opened from and detailsFor the session it was opened for. They
+	// are recorded at open because the overlay moves no focus: the level
+	// under it is the one it was opened on, and closeDetailsIfGone needs the
+	// name to tell when the session left the list.
+	detailsOpen bool
+	detailsFrom level
+	detailsFor  string
+	// detailsRestartFor is the session `r` in the overlay restarted
+	// (detailsRestart), so the pane that restart brings can close the
+	// overlay and open the Agent (applyPaneAttached). closeDetails clears
+	// it: an owner who closed the overlay has moved away from it.
+	detailsRestartFor string
 
 	// leader is the `:` actions search (leader.go); leaderOpen is its "is
 	// it open" flag, beside the other overlays' for their reason. leaderFrom
@@ -3143,6 +3159,9 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 	}
 	previous := m.pane
 	previousName := m.paneName
+	// Read before the install: detailsAwaitsPane compares against the
+	// overlay, which the switch below closes.
+	fromDetails := !honourFocus && m.detailsAwaitsPane(msg.name)
 	m.pane = msg.pane
 	m.paneName = msg.name
 	m.paneLost = lostPane{}
@@ -3159,6 +3178,14 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		// A connect the user has since switched to the overview or the list
 		// for: the pane fills in, and focus and view stay exactly as the user
 		// left them.
+	case fromDetails:
+		// The restart `r` asked for in the session's details overlay, with
+		// the overlay still up on that session: the owner is still waiting
+		// on it, so the overlay closes and the Agent opens with the keyboard
+		// on it (T16.5). Had the owner closed the overlay or moved off the
+		// row meanwhile, this is the default case's quiet install instead.
+		m.closeDetails()
+		m.showAndFocusPane()
 	default:
 		// An arriving pane nobody focused — preview, post-create auto-open,
 		// startup pane — lands with the keyboard on the list and leaves the
@@ -3211,7 +3238,7 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 		case previous != nil:
 			text = "switched to " + msg.name + " — " + previousName +
 				" still running in the background"
-		case honourFocus:
+		case honourFocus, fromDetails:
 			text = focusRequestHonoredStatus(m.leaderKey.name, msg.name)
 		default:
 			text = "opened " + msg.name + " · " + m.keys.Focus.Help().Key + " to focus, " + keyName(m.leaderKey.name, levelAgent, actionGoBack) + " to return"
@@ -3237,26 +3264,26 @@ func (m Model) applyPaneAttached(msg paneAttachedMsg) (tea.Model, tea.Cmd) {
 //     (projectWheel). Nothing reaches a pane, and a click opens nothing:
 //     enter does. Before T16.4 a click on the right side was `d`; the right
 //     side is now the Build and Inbox sections, so that is gone (A12).
-//   - Project with the overview `d` opened focused: the session list is
-//     drawn beside it as before T16.4, and a click in the list region moves
-//     focus back to the list; the list has no mouse behaviour of its own, so
-//     that is the whole effect. Other events are dropped by routeMouse, which
-//     forwards only to a drawn pane.
+//   - The details overlay, over either: a wheel notch over its box scrolls
+//     it (detailsWheel) and everything else is dropped, so nothing reaches
+//     the agent or a section under it.
 //
 // The drop-early shape is deliberate: only a click needs the frame layout
-// (mouseFrameLayout renders the header and footer), so wheel and motion — one
-// event per cell the pointer crosses — never pay for it here.
+// (mouseFrameLayout renders the header and footer), so motion — one event
+// per cell the pointer crosses — never pays for it here.
 //
-// The same input-mode guard as routeMouse applies first, widened by inputDetail
-// so a click can leave a focused overview. Mouse capture released (ctrl+g)
-// silences every case, focus changes included: the user handed the mouse back
-// to the terminal.
+// The same input-mode guard as routeMouse applies first, widened by
+// inputDetail for the overlay's wheel and inputPlaceholder for the Agent's
+// box. Mouse capture released (ctrl+g) silences every case, focus changes
+// included: the user handed the mouse back to the terminal.
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.quitting || !m.ready || m.width == 0 || m.height == 0 || !m.mouseCapture {
 		return m, nil
 	}
 	switch activeInputMode(m.modeSnapshot()) {
-	case inputNormal, inputPane, inputDetail:
+	case inputDetail:
+		return m.detailsWheel(msg)
+	case inputNormal, inputPane, inputPlaceholder:
 	default:
 		return m, nil
 	}
@@ -3266,52 +3293,22 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	click, isClick := msg.(tea.MouseClickMsg)
-
-	if m.focus == focusList {
-		// The empty state stands where the project view would be when there
-		// is no project; it has nothing to click.
-		if !m.hasActiveProject() {
-			return m, nil
-		}
-		if isClick && click.Mouse().Button == tea.MouseLeft {
-			return m.projectClick(click.Mouse().X, click.Mouse().Y)
-		}
-		if wheel, ok := msg.(tea.MouseWheelMsg); ok {
-			return m.projectWheel(wheel.Mouse().Button)
-		}
+	// The Project: the project view is what is drawn, whichever side the
+	// focus was last left on (a right focus with nothing in the agent box is
+	// the Project too, currentLevel's agentShown).
+	//
+	// The empty state stands where the project view would be when there is
+	// no project; it has nothing to click.
+	if !m.hasActiveProject() {
 		return m, nil
 	}
-
-	// focus=right: the overview `d` opened, beside the session list.
-	if isClick {
-		x, y := click.Mouse().X, click.Mouse().Y
-		if inList, _ := m.mouseRegion(x, y); inList {
-			// Focus only: the list has no click-to-select-row on main, so
-			// there is no list click to act as.
-			m.focus = focusList
-			return m, nil
-		}
+	if click, ok := msg.(tea.MouseClickMsg); ok && click.Mouse().Button == tea.MouseLeft {
+		return m.projectClick(click.Mouse().X, click.Mouse().Y)
 	}
-	m.routeMouse(msg)
+	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+		return m.projectWheel(wheel.Mouse().Button)
+	}
 	return m, nil
-}
-
-// mouseRegion classifies a screen cell against the body's two columns while
-// the overview `d` opened is drawn beside the session list: the session list
-// (the sidebar's rendered width) and the right side (everything right of it),
-// both bounded vertically by the body rows between the header and the footer.
-// A cell in the header or footer is in neither. The project view has its own
-// regions, its sections (projectHitAt).
-func (m Model) mouseRegion(x, y int) (inList, inRight bool) {
-	listOuter, _, bodyHeight, headerRows, _ := m.mouseFrameLayout()
-	if y < headerRows || y >= headerRows+bodyHeight || x < 0 {
-		return false, false
-	}
-	if x < sidebarRenderedWidth(listOuter) {
-		return true, false
-	}
-	return false, x < m.width
 }
 
 // routeMouse forwards a terminal mouse event to the hosted session when it
@@ -3370,9 +3367,9 @@ func (m Model) routeMouse(msg tea.MouseMsg) {
 		return
 	}
 	// A pane can EXIST without being drawn. The preview feature made
-	// shouldRenderPane's false branch reachable — move the cursor off the paned row
-	// while unfocused and View paints the detail panels instead (views.go's
-	// renderDetail), with m.pane still non-nil — so the nil check above is no longer
+	// shouldRenderPane's false branch reachable — go back to the Project with
+	// the pane connected and View paints the project view instead, with
+	// m.pane still non-nil — so the nil check above is no longer
 	// the same question as "is the pane on screen". Without this the geometry
 	// helpers answer for a box the user cannot see and the event reaches the
 	// session anyway.
@@ -3495,17 +3492,14 @@ func (m Model) routeConditions() routeConds {
 // switchDetailTab is the three tab actions: next and previous wrap around the
 // visible tabs, jump lands on the tab at the pressed digit's position among
 // them (so with git-spice absent, `3` is Notes, not a hidden Stack). A digit
-// past the last tab is ignored. Only detail mode routes these keys, and it is
-// never active over a drawn session pane; the shouldRenderPane check here is
-// belt-and-braces for a caller that bypasses routing.
+// past the last tab is ignored. Only detail mode routes these keys, which is
+// the details overlay's, so no guard is needed here: a tab switched with the
+// overlay closed is simply the tab it opens on.
 //
 // A switch snaps the viewport to the top before syncing: the offset belonged
 // to the tab that was showing, and a Waves offset applied to a three-line
 // Overview would clamp to its bottom and hide the head.
 func (m Model) switchDetailTab(a modeAction, k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.shouldRenderPane() {
-		return m, nil
-	}
 	tabs := visibleDetailTabs(m.stack)
 	cur := slices.Index(tabs, m.activeDetailTab())
 	switch a {
@@ -3550,17 +3544,26 @@ func (m Model) switchDetailTab(a modeAction, k tea.KeyPressMsg) (tea.Model, tea.
 // modePrecedence or a rule present in one mode's spec and absent from
 // another's.
 //
-// Since T16.2 the modes that ARE a level — the list, the overview, All
-// projects, the agent pane and the key strip — go to levelKey, which asks the
+// Since T16.2 the modes that ARE a level — the list, All projects, the agent
+// pane, its placeholder and the key strip — go to levelKey, which asks the
 // key table (decideKey, levels.go) what the key does at that level. The
 // overlays, forms and modals keep their own rules: an open overlay gets every
 // key first (§5), which is what activeInputMode ranking them above the level
-// modes already means.
+// modes already means. The details overlay is one of them since T16.5.
 func (m Model) dispatchKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	mode := activeInputMode(m.modeSnapshot())
 	switch mode {
-	case inputNormal, inputDetail, inputAllProjects, inputPane, inputKeyStrip:
+	case inputNormal, inputAllProjects, inputPane, inputPlaceholder, inputKeyStrip:
 		return m.levelKey(mode, k)
+	}
+	if mode == inputDetail && key.Matches(k, m.keys.Restart) {
+		// `r` in the details overlay (T16.5). It is answered here rather
+		// than as one of the overlay's mode rules because whether it acts is
+		// the row's (restartKeyLive), not the mode's: the rules are a static
+		// table, and a rule that claimed `r` everywhere would also have the
+		// overlay's help line name it on a pending or cleaning session. The
+		// help line and the chip ask restartKeyLive too.
+		return m.detailsRestart()
 	}
 	reg := m.modes()
 	switch dec := reg.route(mode, m.routeConditions(), k); dec.kind {
@@ -3577,24 +3580,16 @@ func (m Model) dispatchKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// levelFacts snapshots the facts currentLevel derives the level from.
-//
-// The view is the DRAWN one, not the stored preference: a row with no live
-// agent draws its overview in the agent view (agentPlaceholderDrawn is false
-// and no pane is shown), and with the right side focused there the keyboard
-// is on the overview, which is the Project level — the overview's scroll and
-// tab keys must answer, not the agent's every-key-goes-through rule. The
-// agent pane and its placeholder are what the Agent level is.
+// levelFacts snapshots the facts currentLevel derives the level from. The
+// agent pane and its placeholder are what the Agent level is (agentShown); the
+// details overlay is drawn over a level and is not one.
 func (m Model) levelFacts() levelFacts {
-	view := m.view
-	if view == viewAgent && m.focus == focusRight && !m.shouldRenderPane() && !m.agentPlaceholderDrawn() {
-		view = viewOverview
-	}
 	return levelFacts{
 		allProjectsOpen:  m.allProjectsOpen,
 		hasActiveProject: m.hasActiveProject(),
 		focus:            m.focus,
-		view:             view,
+		view:             m.view,
+		agentShown:       m.shouldRenderPane() || m.agentPlaceholderDrawn(),
 	}
 }
 
@@ -3619,8 +3614,8 @@ func (m Model) keyHintFor(a modeAction) string {
 //     to Project, and any other key closes the strip and sends nothing. The
 //     strip closes on every key, whatever it did.
 //   - A move key and a key the table does not list go to the mode's own
-//     rules: the list's cursor, the overview's scroll and tabs, the
-//     all-projects screen's rows. A key none of them claims does nothing.
+//     rules: the list's cursor and the all-projects screen's rows. A key
+//     none of them claims does nothing.
 //
 // The agent placeholder (no live pane yet, or a lost one) is the Agent level
 // too (A6), but it has no agent to send keys to, so with the strip closed its
@@ -3639,19 +3634,6 @@ func (m Model) levelKey(mode inputMode, k tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		return m.placeholderKey(k)
 	}
 	o := decideKey(lv, overlayNone, armed, m.leaderKey.name, k.String())
-	if mode == inputDetail && o.kind == outcomeRun && sectionKeyFor(o.action) != "" {
-		// The overview `d` gave the keyboard to is still at the Project
-		// level, where the key table says tab, shift+tab and 1–3 change the
-		// project view's section. While it has the keyboard they are its own
-		// tab keys instead (inputDetail's rules), as an overlay owns its
-		// keys: the section strip is not on screen behind the overview, and
-		// a tab key that moved it would change something nobody can see.
-		reg := m.modes()
-		if dec := reg.route(mode, m.routeConditions(), k); dec.kind == routeAction {
-			return m.applyKeyAction(mode, dec.action, k)
-		}
-		return m, nil
-	}
 	switch o.kind {
 	case outcomeOpenStrip:
 		m.keyStripOpen = true
@@ -3670,7 +3652,7 @@ func (m Model) levelKey(mode inputMode, k tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	case outcomeGoIn:
 		return m.levelGoIn(lv)
 	case outcomeGoBack:
-		return m.levelGoBack(lv, mode, placeholder)
+		return m.levelGoBack(lv, placeholder)
 	case outcomeRun:
 		return m.runLevelAction(lv, mode, o.action, placeholder)
 	}
@@ -3708,9 +3690,7 @@ func (m Model) sendLeaderToPane() {
 // drawn (the empty state stands in for All projects there) it opens the
 // screen. At Project it opens what the focused section's selection suggests
 // (projectGoIn): a session's agent, a task's details or an inbox item. The
-// overview `d` gives the keyboard to is about the selected session, so enter
-// there still opens that session's agent. The Agent has no level below it, so
-// enter is not a key there.
+// Agent has no level below it, so enter is not a key there.
 func (m Model) levelGoIn(lv level) (tea.Model, tea.Cmd) {
 	switch lv {
 	case levelAllProjects:
@@ -3724,9 +3704,6 @@ func (m Model) levelGoIn(lv level) (tea.Model, tea.Cmd) {
 		}
 		return m.toggleAllProjects()
 	case levelProject:
-		if m.focus == focusRight {
-			return m.openAgent()
-		}
 		return m.projectGoIn()
 	}
 	return m, nil
@@ -3734,19 +3711,16 @@ func (m Model) levelGoIn(lv level) (tea.Model, tea.Cmd) {
 
 // levelGoBack is esc at lv: out one level, or close what is open (§5).
 //
-// At Project the overview gives the keyboard back to the list
-// (releaseDetailFocus, A2), and the list goes to All projects. In the Agent
+// At Project esc goes to All projects. In the Agent
 // (the leader then esc) the keyboard comes back to Project and the pane stays
 // connected while the session is selected (A5): the pane's own release, or
 // the placeholder's, which each say the right thing. All projects is the top
-// level, so esc there does nothing. The keys overlay `?` opens is an overlay
-// with its own esc (keysoverlay.go), so it never reaches here.
-func (m Model) levelGoBack(lv level, mode inputMode, placeholder bool) (tea.Model, tea.Cmd) {
+// level, so esc there does nothing. The keys overlay `?` opens and the
+// details overlay `d` opens are overlays with their own esc (keysoverlay.go,
+// detailsoverlay.go), so they never reach here.
+func (m Model) levelGoBack(lv level, placeholder bool) (tea.Model, tea.Cmd) {
 	switch lv {
 	case levelProject:
-		if mode == inputDetail {
-			return m.releaseDetailFocus()
-		}
 		return m.toggleAllProjects()
 	case levelAgent:
 		if placeholder {
@@ -3760,7 +3734,9 @@ func (m Model) levelGoBack(lv level, mode inputMode, placeholder bool) (tea.Mode
 // agentActionStays reports whether action a, run from the Agent, runs with
 // the keyboard where it is. The ones that do not care where the keyboard is
 // (the mouse, quit, a usage read) stay; `:` and `d` choose their own place
-// (openActions records it, showDetails moves to the overview). Everything
+// (openActions records it, and the details overlay is laid over the Agent
+// with the pane still focused behind it, so esc there returns to the
+// agent). Everything
 // else moves the keyboard to the list first, as its key is a Project key: an
 // overlay it opens (the switcher, the inbox, a plan form) is then over the
 // Project, and closing it leaves the list with the keyboard rather than
@@ -3799,11 +3775,25 @@ func (m Model) runLevelAction(lv level, mode inputMode, a modeAction, placeholde
 			return m, nil
 		}
 	}
+	if m.detailsOpen && a == actionRestart {
+		// The `:` search's restart row run over the details overlay is `r`
+		// inside it, so the restart's pane can bring the Agent up in the
+		// overlay's place (detailsRestart).
+		return m.detailsRestart()
+	}
+	if m.detailsOpen && !detailsActionStays(a) {
+		// A row run from the `:` search the details overlay opened: the
+		// action opens or changes something the overlay would cover, so the
+		// overlay closes first and the action runs from the level under it,
+		// in the mode that level has (the overlay's mode is gone with it).
+		m.closeDetails()
+		mode = activeInputMode(m.modeSnapshot())
+	}
 	switch a {
 	case actionGoIn:
 		return m.levelGoIn(lv)
 	case actionGoBack:
-		return m.levelGoBack(lv, mode, placeholder)
+		return m.levelGoBack(lv, placeholder)
 	case actionActionsSearch:
 		return m.openActions(mode, lv, placeholder)
 	}
@@ -3835,6 +3825,13 @@ func (m Model) applyKeyAction(mode inputMode, a modeAction, k tea.KeyPressMsg) (
 		return m.openKeys()
 	case actionDetails:
 		return m.showDetails()
+	case actionDetailsClose:
+		m.closeDetails()
+		return m, nil
+	case actionActionsSearch:
+		// `:` from the details overlay (its own rule); the level keys reach
+		// the search through runLevelAction instead.
+		return m.openActions(mode, m.level(), m.focus == focusRight && m.agentPlaceholderDrawn())
 	case actionPauseToggle:
 		return m.pauseToggle()
 	case actionAnswerOldest:
@@ -4148,19 +4145,21 @@ func (m *Model) sizeSessionList() {
 }
 
 // syncDetailViewport brings the Model's detail viewport — the one the scroll
-// keys move — into agreement with the frame renderDetail will draw: the same
-// body (detailBody), the same content width (detailContentWidth) and the same
-// row count (detailRowBudget), then a re-clamp of the offset against that
+// keys move — into agreement with the frame renderDetailsOverlay will draw:
+// the same box (detailsBoxRect), the same body (detailBody), the same content
+// width (detailContentWidth) and the same row count (detailsBodyBudget), then
+// a re-clamp of the offset against that
 // height. It runs from Update only (tea.WindowSizeMsg, rebuildListItems and
 // scrollDetail), never from View, for the reason documented on the
 // detailViewport field.
 //
 // All three inputs matter, not just the height. The content is what gives the
 // viewport a TotalLineCount at all: SetContent is otherwise called only on
-// boxDetailBody's per-frame value copy, so without it the Model's viewport
+// renderDetailsOverlay's per-frame value copy, so without it the Model's viewport
 // holds zero lines and every scroll method clamps its offset straight back to
 // 0 regardless of how far it was asked to move. The height must be the rows
-// the frame draws — detailRowBudget's, readout row already subtracted — and
+// the frame draws — detailsBodyBudget's, tab row and readout row already
+// subtracted — and
 // not bodyHeight or any other outer measure, because maxYOffset is
 // TotalLineCount()-Height() (bubbles/v2@v2.2.1 viewport.go): a Model viewport
 // taller than the drawn one has a ceiling that stops short of the last rows of
@@ -4177,11 +4176,11 @@ func (m *Model) syncDetailViewport() {
 	if !m.ready || m.width == 0 || m.height == 0 {
 		return
 	}
-	_, mainOuter, bodyHeight := m.layoutDims()
-	contentW := detailContentWidth(mainOuter)
+	boxW, boxH := m.detailsSize()
+	contentW := detailContentWidth(boxW)
 	m.detailViewport.SetWidth(contentW)
 	m.detailViewport.SetContent(m.detailBody(contentW))
-	rows, _ := detailRowBudget(bodyHeight, m.detailViewport.TotalLineCount())
+	rows, _ := detailsBodyBudget(boxH, m.detailViewport.TotalLineCount())
 	m.detailViewport.SetHeight(rows)
 	m.detailViewport.SetYOffset(m.detailViewport.YOffset())
 }
@@ -4205,16 +4204,14 @@ func (m *Model) resetDetailScroll() {
 	}
 }
 
-// scrollDetail is the eight detail-scroll actions — the four pre-existing
-// chords (shift+up/down, ctrl+u/ctrl+d) and the four W2.T1 adds for the
-// focused pane's pgup/pgdn and home/end. It does nothing while the pane is
-// the surface on screen (shouldRenderPane): the detail view is not drawn
-// then, so moving its offset would be state changing on an invisible
-// surface, and the next switch to the overview should show it where it was
-// left. syncDetailViewport runs first every time — see its doc for why
-// the offset otherwise clamps to 0, or stops short of the last rows.
+// scrollDetail is the eight detail-scroll actions: up/down, ctrl+u/ctrl+d,
+// pgup/pgdn and home/end, and the wheel's notches. It does nothing while the
+// details overlay is closed: nothing is drawing the viewport then, so moving
+// its offset would be state changing on an invisible surface.
+// syncDetailViewport runs first every time — see its doc for why the offset
+// otherwise clamps to 0, or stops short of the last rows.
 func (m Model) scrollDetail(a modeAction) (tea.Model, tea.Cmd) {
-	if m.shouldRenderPane() {
+	if !m.detailsOpen {
 		return m, nil
 	}
 	m.syncDetailViewport()
@@ -4249,101 +4246,85 @@ func (m Model) releasePaneFocus() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// focusDetail routes the keyboard to the detail pane's viewport. It is
-// focusRightSide's overview-view branch: enter/f from the list while the right
-// side shows the overview.
-//
-// It moves focus only; the view is left as it is — the view is ctrl+t's, and
-// only from the right side.
-//
-// detailDrawn is checked here for the reason scrollDetail re-checks
-// shouldRenderPane: this must not be enterable from a path that bypasses
-// routing, or the keyboard lands on a surface nobody can see.
-func (m Model) focusDetail() (tea.Model, tea.Cmd) {
-	if !m.detailDrawn() {
+// showDetails is `d` (the leader then `d` in the Agent): the selected
+// session's details overlay (detailsoverlay.go, §4.4), recorded as opened
+// from the level the dashboard is at. Nothing under it moves: from the Agent
+// the pane stays installed, focused and drawn (dimmed) behind the overlay,
+// its preview generation untouched, so esc puts the keyboard straight back
+// in the agent. With no session selected nothing opens and the notice says
+// why (detailsBlockedReason, which runLevelAction checks for a key; this
+// check is for a caller that reaches here another way).
+func (m Model) showDetails() (tea.Model, tea.Cmd) {
+	s, ok := m.selected()
+	if !ok || !m.hasActiveProject() {
+		m.notify(notifyInfo, reasonSentence(detailsBlockedReason(leaderConds{})))
 		return m, nil
 	}
-	m.focus = focusRight
-	// Focusing the overview invalidates every UNCLAIMED pending/dispatched
-	// preview: a passive preview landing now would flip nothing the user is
-	// reading (applyPaneAttached drops it while the right side owns input),
-	// but bumping here keeps a timer armed before the keypress from dialing at
-	// all. A preview an earlier enter CLAIMED is deliberately left alone: that
-	// dial is the user's own connect, not a preview any more, and the
-	// generation is exactly what a claim is exempt from (see
-	// applyPaneAttached's stalePreview). Revoking it here would make enter,
-	// ctrl+t, ctrl+\, enter lose the connect the first enter asked for.
-	m.previewGen++
-	// The way out is read from the key table, as detailReleaseHint
-	// (views.go) reads it, so this toast and the pane's own edge hint cannot
-	// name two different keys.
-	m.notify(notifyInfo, "scrolling the detail view — the session list is frozen · "+keyName(m.leaderKey.name, levelProject, actionGoBack)+" to return")
+	m.openDetails(m.level(), s.Name)
 	return m, nil
 }
 
-// showDetails is `d` (the leader then `d` in the Agent): the selected
-// session's details. Until T16.5 builds the details overlay that is the
-// overview with the keyboard (A2): the right side switches to the overview
-// view and takes the keyboard, so its scroll and tab keys answer and esc
-// gives the keyboard back to the list. A live agent pane on screen goes
-// behind the overview: still connected, still running, one enter away. It is
-// never closed.
-//
-// The focus is set here rather than through focusDetail's list-only path
-// because `d` also comes from the Agent, where the right side already has the
-// keyboard; focusDetail's checks and its notice still apply.
-func (m Model) showDetails() (tea.Model, tea.Cmd) {
-	if _, ok := m.selected(); !ok || !m.hasActiveProject() {
-		m.notify(notifyInfo, "No session selected.")
-		return m, nil
-	}
-	hidPane := m.shouldRenderPane()
-	m.view = viewOverview
-	m.syncDetailViewport()
-	next, cmd := m.focusDetail()
-	m = next.(Model)
-	if hidPane && m.pane != nil {
-		m.notify(notifyInfo, m.paneName+" still running behind the overview · "+m.keyHintFor(actionGoIn)+" for the agent")
-	}
-	return m, cmd
-}
-
-// openAgent is enter on a session at Project: its Agent, with the keyboard on
-// the agent pane (§5). The right side switches to the agent view; an
-// installed pane for the row is focused, and a running row with none is
-// connected with the focus already on the right, so the pane lands focused
-// (connectSelected). A row with no live agent (stopped, pending, a fault,
-// cleaning, finished) has no agent to open: its overview is what the agent
-// view draws for it, so enter gives that the keyboard (focusDetail), as §4.3
-// says the Agent shows such a session's details. Enter NEVER restarts a host
-// — `r` is the restart key (restartSelected) — because "look at this
-// session" must not spawn a process as a side effect. The view stays the
-// agent's either way, so a row that comes back to life shows its agent.
+// openAgent is enter on a session at Project: what sessionEnterTarget says
+// the row opens. A row with an agent opens its Agent with the keyboard on it
+// (§5): the right side switches to the agent view, an installed pane for the
+// row is focused, and a row with none is connected with the focus already on
+// the right, so the pane lands focused (connectSelected), or joins the
+// restart or dial already out for it. A row with no live agent (stopped,
+// pending, a fault, cleaning) opens its details overlay over the Project
+// instead, as §4.3 says the Agent shows such a session's details; `r` there
+// restarts a stopped one (detailsRestart). Enter NEVER restarts a host,
+// because "look at this session" must not spawn a process as a side effect.
+// The view is the agent's either way, so a row that comes back to life shows
+// its agent.
 func (m Model) openAgent() (tea.Model, tea.Cmd) {
 	if !m.hasActiveProject() {
 		return m, nil
 	}
 	m.view = viewAgent
 	s, ok := m.selected()
-	if ok && !m.paneForSelection() && !m.rowHasAgent(s) {
-		return m.focusDetail()
+	if !ok {
+		if m.paneForSelection() {
+			return m.focusPane()
+		}
+		return m, nil
+	}
+	if sessionEnterTarget(m.sessionEnterFacts(s)) == opensDetails {
+		m.openDetails(levelProject, s.Name)
+		return m, nil
 	}
 	if m.paneForSelection() {
 		return m.focusPane()
 	}
-	if !ok {
-		return m, nil
-	}
 	return m.connectSelected()
 }
 
-// releaseDetailFocus is the focused overview's esc: the keyboard goes back
-// to the session list and the viewport keeps its offset,
-// so a release and a re-focus resume where the reading left off.
-func (m Model) releaseDetailFocus() (tea.Model, tea.Cmd) {
-	m.focus = focusList
-	m.notify(notifyInfo, "input goes to the session list · "+m.keys.Focus.Help().Key+" to scroll the detail view again")
-	return m, nil
+// detailsRestart is `r` inside the details overlay: restartSelected exactly
+// (a stopped row restarts at once, a WEDGED running one asks first), but only
+// where restartKeyLive says `r` acts, which is also where the overlay draws
+// its `r restart` chip. Anywhere else it does nothing, silently: the key is
+// not offered there, and restartSelected's "being cleaned" notice would toast
+// over the overlay for a key the overlay never named.
+//
+// A stopped row's restart is recorded in detailsRestartFor so its pane's
+// arrival can close the overlay and open the Agent (applyPaneAttached's
+// fromDetails). The request itself goes out exactly as `r` from the list
+// sends it (selectionBound), because the overlay was opened at Project with
+// the keyboard there: if the owner closes the overlay before the pane lands,
+// the pane installs quietly behind the Project as it always has.
+func (m Model) detailsRestart() (tea.Model, tea.Cmd) {
+	if !m.restartKeyLive() {
+		return m, nil
+	}
+	if s, ok := m.selected(); ok && m.restartableStopped(s) {
+		m.detailsRestartFor = s.Name
+	}
+	return m.restartSelected()
+}
+
+// detailsAwaitsPane is whether a pane arriving for name is the one `r` in the
+// details overlay asked for, with the overlay still open on that session.
+func (m Model) detailsAwaitsPane(name string) bool {
+	return name != "" && m.detailsOpen && m.detailsFor == name && m.detailsRestartFor == name
 }
 
 // cleanRequested is the clean action (`c` at Project). It goes straight to
@@ -5152,46 +5133,9 @@ func (m Model) dismissSpawnError() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// focusRightSide is enter/f from the list: the one way the keyboard moves to
-// the right side. What it lands on is decided by the view alone, never by a
-// guess about which surface happens to be drawn:
-//
-//   - overview view: focus the overview (focusDetail).
-//   - agent view, the selected row's pane installed: focus it (focusPane).
-//   - agent view, a row with no live agent (stopped, host gone, pending,
-//     fault, cleaning, finished): the overview is what the right side draws
-//     for it (agentPlaceholderDrawn), so focus that overview. Enter NEVER
-//     restarts a host — `r` is the restart key (restartSelected) — because
-//     "look at this session" must not spawn a process as a side effect.
-//   - agent view, a running row with no pane: connect the selected session
-//     and focus the right side now, so the pane lands focused
-//     (connectSelected). This is what retires the old 300ms race — enter no
-//     longer focuses "whatever is drawn" while a preview is still dialing; it
-//     claims that dial or opens its own.
-//
-// With no active project there is no right side to focus, and the current
-// status (including an empty one) is preserved rather than overwritten with
-// guidance for a surface that is not drawn.
-func (m Model) focusRightSide() (tea.Model, tea.Cmd) {
-	if !m.hasActiveProject() {
-		return m, nil
-	}
-	if m.view == viewOverview {
-		return m.focusDetail()
-	}
-	if m.paneForSelection() {
-		return m.focusPane()
-	}
-	if s, ok := m.selected(); ok && !m.rowHasAgent(s) {
-		return m.focusDetail()
-	}
-	return m.connectSelected()
-}
-
 // connectSelected opens the selected session's agent and focuses the right
-// side for it. It is the agent-view half of both right-side entrances: enter/f
-// from the list (focusRightSide) and ctrl+t from the overview (toggleView). Its
-// dials go through openPaneFor only, so the clean gate, the preview
+// side for it: enter on a running session (openAgent) and enter in the agent
+// placeholder (placeholderKey). Its dials go through openPaneFor only, so the clean gate, the preview
 // invalidation and the project stamp all apply, and there is no second dial
 // path.
 //
@@ -5384,15 +5328,14 @@ func lostPaneMessage(name string, msg paneExitedMsg) (string, bool) {
 // handBackUnansweredFocus returns the keyboard to the list when a connect the
 // user focused (connectSelected, or `r` from the right side) ends without a
 // pane for the selected row: the dial failed, the restart failed, or a clean
-// got there first. It acts only while the agent placeholder is what the
-// focused right side shows — a placeholder with nothing to connect has
-// nothing that can act on a key, and the retry gesture is a list key. The
-// guard keeps it from undoing a choice the user made since the keypress: if
-// they already went back to the list, switched to the overview, or the row
-// now draws its overview (a stopped row whose restart failed — the overview
-// is still worth reading, and `r` retries from there), nothing changes.
+// got there first. It acts while the focused right side shows the agent
+// placeholder — a placeholder with nothing to connect has nothing that can
+// act on a key, and the retry gesture is a Project key — and while it shows
+// nothing at all (a stopped row whose restart failed has no agent to show),
+// so the focus is never left on a surface that is not drawn. With the pane
+// drawn, the user already went back to it, and nothing changes.
 func (m *Model) handBackUnansweredFocus() {
-	if m.focus == focusRight && m.agentPlaceholderDrawn() {
+	if m.focus == focusRight && !m.shouldRenderPane() {
 		m.focus = focusList
 	}
 }
@@ -5422,9 +5365,14 @@ func (m *Model) forgetPane() {
 
 // agentKeyHint is the key a toast names for "get to this row's agent" from
 // wherever the keyboard is now: enter, which opens the selected session's
-// agent from the list and from the focused overview alike (openAgent), and
-// from the agent placeholder reconnects it (placeholderKey).
+// agent from the list (openAgent), and from the agent placeholder reconnects
+// it (placeholderKey). With the details overlay up enter is not its key, and
+// esc first puts the keyboard back on the one of those two it was opened
+// from, so the toast says both.
 func (m Model) agentKeyHint() string {
+	if m.detailsOpen {
+		return "esc, then " + m.keys.Focus.Help().Key
+	}
 	return m.keys.Focus.Help().Key
 }
 
@@ -5558,8 +5506,8 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// A stopped host is not restarted by a click, on enter's rule (see
-	// focusRightSide): the right side is focused in the agent view, which for
-	// a row with no live agent draws its overview, and `r` restarts it.
+	// openAgent): a row with no live agent opens its details overlay over the
+	// Project, and `r` restarts it.
 	//
 	// previewGen is bumped because a click is the one selection change that
 	// skips schedulePreview (see above): a timer armed for the row the user
@@ -5573,7 +5521,8 @@ func (m Model) applyFocusRequest(msg focusRequestMsg) (tea.Model, tea.Cmd) {
 		m.previewGen++
 		m.dropPaneForOtherRows()
 		m.view = viewAgent
-		m.focus = focusRight
+		m.focus = focusList
+		m.openDetails(levelProject, target.name)
 		// The row is looked up for its wording only: a session the daemon
 		// paused for usage must not be called stopped here either.
 		word := "is stopped"
@@ -5676,6 +5625,15 @@ func (m Model) maybeOpenInitialPane() (tea.Model, tea.Cmd) {
 	// here with StartAgent, and a Model built without a StartLevel keeps the
 	// older unfocused open.
 	toAgent := m.deps.StartLevel == StartAgent
+	if toAgent && (s.Pending || isWorktreeFault(s.Kind)) {
+		// No host to restart and no agent to land in: a create still in
+		// flight, or a worktree with no session of its own. --open shows
+		// the session's details instead, as enter does (sessionEnterTarget).
+		// A stopped session is not here: --open restarts it first, below.
+		m.view = viewAgent
+		m.openDetails(levelProject, s.Name)
+		return m, nil
+	}
 	if !s.HostRunning {
 		m.notify(notifyInfo, "restarting "+s.Name+"…")
 		if toAgent {
@@ -5732,7 +5690,7 @@ func (m *Model) schedulePreview() tea.Cmd {
 	// range for a viewport of any content length, so the previous session's
 	// line count lingering on the Model viewport cannot produce a wrong clamp
 	// here. Both parties that would care re-sync before they act anyway —
-	// boxDetailBody sizes its own copy every frame, and scrollDetail syncs
+	// renderDetailsOverlay sizes its own copy every frame, and scrollDetail syncs
 	// ahead of every key — so composing a body in this funnel would only cost
 	// a render nobody reads, on the hot path of every cursor move.
 	m.resetDetailScroll()
@@ -5929,7 +5887,7 @@ func (m Model) applyPreviewTimer(msg previewTimerMsg) (tea.Model, tea.Cmd) {
 	if msg.gen != m.previewGen {
 		return m, nil
 	}
-	if m.modal != inputNormal || m.formOpen || m.focus == focusRight {
+	if m.modal != inputNormal || m.formOpen || m.focus == focusRight || m.detailsOpen {
 		return m, nil
 	}
 	// The overview is drawn: a preview has nothing to fill in. Re-checked
@@ -6673,7 +6631,7 @@ func (m Model) dispatchConfirmedClean(opts session.CleanOptions) (tea.Model, tea
 }
 
 // restartSelected is `r`, the one restart key. It is live on the session list,
-// on a focused overview, and on the agent placeholder — everywhere except a
+// in the details overlay (detailsRestart), and on the agent placeholder — everywhere except a
 // live agent pane, where `r` is typing and forwards to the child (inputPane
 // has no rule for it). What it does depends on the row:
 //
@@ -6688,7 +6646,10 @@ func (m Model) dispatchConfirmedClean(opts session.CleanOptions) (tea.Model, tea
 // From the right side the restart carries focusOnArrival, so the agent lands
 // focused (or behind the overview, when that is the view). From the list it
 // is selectionBound instead: the keyboard stays on the list, and the arriving
-// pane is dropped if the cursor has moved off the row by then.
+// pane is dropped if the cursor has moved off the row by then. From the
+// details overlay (opened at Project, so the keyboard is on the list) it is
+// selectionBound too, and the arrival closes the overlay and opens the Agent
+// while the overlay is still up on the row (detailsRestart).
 //
 // restartableStopped refuses a row whose restart is already in flight, whose
 // dial is outstanding, or whose pane is installed, so a second `r` — or an `r`
@@ -8136,14 +8097,16 @@ func (m *Model) rebuildListItems(sel int) {
 	// would leave the clamp ceiling stale until the next scroll key.
 	m.resetDetailScroll()
 	m.syncDetailViewport()
+	m.closeDetailsIfGone()
 }
 
 // holdSelection applies the pane-lifecycle rules to a rebuild that moved the
 // selection off before, the row selected going in.
 //
-// With the right side focused the selection is PINNED by name (and kind, since
-// a fault row and a session can share a name): a tick that reshuffles the
-// list must not change which session the focused surface belongs to. This is
+// With the right side focused, or the details overlay open, the selection is
+// PINNED by name (and kind, since a fault row and a session can share a
+// name): a tick that reshuffles the list must not change which session the
+// focused surface or the overlay belongs to. This is
 // the one exception to rebuildListItems' hold-the-index rule, and it costs
 // applyPreviewTimer's name check nothing — previews never fire under right
 // focus. A pinned row that left discovery cannot be held; its pane, if it had
@@ -8157,7 +8120,7 @@ func (m *Model) holdSelection(before Session) {
 	if after, ok := m.selected(); ok && after.Name == before.Name && after.Kind == before.Kind {
 		return
 	}
-	if m.focus == focusRight {
+	if m.focus == focusRight || m.detailsOpen {
 		for i := range m.sessions {
 			if m.sessions[i].Name == before.Name && m.sessions[i].Kind == before.Kind {
 				m.selectSessionIndex(i)

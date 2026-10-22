@@ -310,21 +310,30 @@ func TestGoldenModals(t *testing.T) {
 			assertGolden(t, size.name, render(m))
 		})
 	}
-	// The Agent (§4.3, W3.T1 of T16.2): the agent's pane over the dimmed
-	// Project at §3.8's width (the screen less one column each side), its
-	// strip "Agent · feat-auth" with the agent context, and the status bar
-	// left at full strength.
-	t.Run("dash-120x40-agent", func(t *testing.T) {
-		m := goldenModel(t, 120, 40)
-		s, _ := m.selected()
-		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("agent output"), name: s.Name})
-		m, _ = update(t, m, keyEnter)
-		if m.level() != levelAgent || !m.shouldRenderPane() {
-			t.Fatal("enter did not open the agent")
-		}
-		m.clearStatus()
-		assertGolden(t, "dash-120x40-agent", render(m))
-	})
+	// The Agent (§4.3): the agent's pane over the dimmed Project at §3.8's
+	// width (the screen less one column each side; the full width below 100
+	// columns), its strip "Agent · feat-auth" with the agent context, the
+	// band under it, the fake agent's output, the chips on the last inner
+	// row, and the status bar left at full strength.
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-120x40-agent", 120, 40},
+		{"dash-80x24-agent", 80, 24},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m := goldenModel(t, size.w, size.h)
+			s, _ := m.selected()
+			m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("agent output"), name: s.Name})
+			m, _ = update(t, m, keyEnter)
+			if m.level() != levelAgent || !m.shouldRenderPane() {
+				t.Fatal("enter did not open the agent")
+			}
+			m.clearStatus()
+			assertGolden(t, size.name, render(m))
+		})
+	}
 	// The keys overlay (§4.9): the path, the agent rule in the alert band,
 	// then the keys in two columns by level.
 	t.Run("dash-120x40-keys", func(t *testing.T) {
@@ -416,10 +425,10 @@ func TestGoldenToast(t *testing.T) {
 	})
 }
 
-// TestGoldenDetailTabs pins each detail tab at 120×40 with the first fixture
-// session selected. The Overview is already in dash-120x40; these are the
-// other four, so a change to any one tab's composition is reviewable on its
-// own frame.
+// TestGoldenDetailTabs pins each tab of the details overlay at 120×40 with
+// the first fixture session selected. The Overview is dash-120x40-details
+// (TestGoldenDetailsOverlay); these are the other four, so a change to any
+// one tab's composition is reviewable on its own frame.
 func TestGoldenDetailTabs(t *testing.T) {
 	cases := []struct {
 		name string
@@ -434,10 +443,68 @@ func TestGoldenDetailTabs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := goldenModel(t, 120, 40)
 			m.detailTab = tc.tab
-			m.syncDetailViewport()
+			m, _ = update(t, m, keyRune('d'))
+			if !m.detailsOpen {
+				t.Fatal("d did not open the details")
+			}
 			assertGolden(t, tc.name, render(m))
 		})
 	}
+}
+
+// TestGoldenDetailsOverlay pins the details overlay of §4.4 (T16.5) on the
+// Overview tab: at 120×40 the 54-column pane flush to the right edge over the
+// Project, at 80×24 the full width, at 120×40 over the Agent, whose pane
+// stays drawn under it, and at 120×40 for a stopped session, with r restart. The frames are stripped of colour, so the dimming
+// under the box is TestDetailsOverlayDimsWhatIsUnderIt's to pin.
+func TestGoldenDetailsOverlay(t *testing.T) {
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"dash-120x40-details", 120, 40},
+		{"dash-80x24-details", 80, 24},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m, _ := update(t, goldenModel(t, size.w, size.h), keyRune('d'))
+			if !m.detailsOpen || m.activeDetailTab() != tabOverview {
+				t.Fatal("d did not open the details on the Overview")
+			}
+			assertGolden(t, size.name, render(m))
+		})
+	}
+	t.Run("dash-120x40-details-agent", func(t *testing.T) {
+		m := goldenModel(t, 120, 40)
+		s, _ := m.selected()
+		m, _ = update(t, m, paneAttachedMsg{pane: newFakePane("agent output"), name: s.Name})
+		m, _ = update(t, m, keyEnter)
+		m, _ = update(t, m, leaderKeyPress)
+		m, _ = update(t, m, keyRune('d'))
+		if !m.detailsOpen || m.level() != levelAgent || !m.shouldRenderPane() {
+			t.Fatal("ctrl+] d did not open the details over the drawn agent")
+		}
+		assertGolden(t, "dash-120x40-details-agent", render(m))
+	})
+	// A stopped session's details (§4.3, last paragraph): enter on
+	// feat-search, whose host is not running, opens its details over the
+	// Project with the `r restart` chip on the overlay's last row and
+	// `r restart` in the status bar, and starts nothing.
+	t.Run("dash-120x40-details-stopped", func(t *testing.T) {
+		m := goldenModel(t, 120, 40)
+		i, ok := m.sessionIndex("feat-search")
+		if !ok {
+			t.Fatal("fixture has no feat-search")
+		}
+		m.selectSessionIndex(i)
+		m, cmd := update(t, m, keyEnter)
+		if cmd != nil {
+			t.Fatalf("enter on a stopped session dispatched %T, want nothing started", cmd())
+		}
+		if !m.detailsOpen || m.level() != levelProject || !m.detailsRestartChip() {
+			t.Fatal("enter on the stopped session did not open its details with r restart")
+		}
+		assertGolden(t, "dash-120x40-details-stopped", render(m))
+	})
 }
 
 // TestGoldenMultiProjectDashboard pins the header redesign's populated path,

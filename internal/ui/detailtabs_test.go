@@ -153,11 +153,12 @@ func TestDetailTabSwitching(t *testing.T) {
 	})
 
 	t.Run("keys reach the session, not the tabs, while its pane is focused", func(t *testing.T) {
-		m := newModel(true)
+		m := press(newModel(true), keyEsc)
 		pane := newFakePane("x")
 		m.pane = pane
 		m.paneName = "alpha"
 		m.view = viewAgent
+		m.focus = focusRight
 		if !m.paneOwnsKeyboard() {
 			t.Fatalf("fixture broken: the pane must own the keyboard")
 		}
@@ -204,8 +205,8 @@ func TestOverviewSummarises(t *testing.T) {
 	}}}
 	out := xansi.Strip(strings.Join(overviewPanel{}.Render(ctx, 80), "\n"))
 
-	for _, want := range []string{"Awaiting input", "host running", "Ready (1)", "\n  ○ W3.T1 c\n",
-		"Failed (1)", "\n  ✗ W2.T1 b — boom\n", "main › feat-a", "Issues (last 3)", "two", "three", "four"} {
+	for _, want := range []string{"SESSION", "PROGRESS", "READY", "ISSUES", "Awaiting input", "◐ running", "Ready (1)", "\n  ○ W3.T1 c\n",
+		"Failed (1)", "\n  ✗ W2.T1 b — boom\n", "main › feat-a", "two", "three", "four"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Overview missing %q:\n%s", want, out)
 		}

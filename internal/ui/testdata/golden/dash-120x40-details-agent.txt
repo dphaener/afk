@@ -1,0 +1,40 @@
+ afk Dashboard                                                                                                          
+ ╭────────────────────────────────────────────────────────────────╭────────────────────────────────────────────────────╮
+ │ Agent · feat-auth                                              │ Details · feat-auth                       esc back │
+ │  ◐ executing  ·  +412 −88  ·  loop 3  ·  ◐ host running        │  1 Overview  2 Waves  3 Stack  4 Notes  5 Diff     │
+ │ agent output                                                   │ SESSION                                            │
+ │                                                                │ Phase     ◐ executing  loop 3                      │
+ │                                                                │ Host      ◐ running                                │
+ │                                                                │ Branch    feat-auth → main                         │
+ │                                                                │ Stack     main › feat-auth                         │
+ │                                                                │ Updated   2026-07-10T00:00:00Z                     │
+ │                                                                │                                                    │
+ │                                                                │ ● Awaiting input · answer it in the agent          │
+ │                                                                │                                                    │
+ │                                                                │ PROGRESS                                           │
+ │                                                                │ Tasks     █████████░░░░░░░░░░░ 3/7                 │
+ │                                                                │ Diff      +412/-88 · 9 file(s) vs main             │
+ │                                                                │ Verdict   — not reviewed yet                       │
+ │                                                                │                                                    │
+ │                                                                │ READY                                              │
+ │                                                                │ Ready (4)                                          │
+ │                                                                │   ○ W2.T1 Migrate legacy sessions                  │
+ │                                                                │   ○ W2.T2 Add logout endpoint                      │
+ │                                                                │   ○ W2.T3 Rotate refresh tokens                    │
+ │                                                                │   ○ W2.T4 Remove legacy table                      │
+ │                                                                │                                                    │
+ │                                                                │ ISSUES                                             │
+ │                                                                │ legacy_sessions has no FK to users — confirm befo… │
+ │                                                                │ rate limiter test flaky under -race                │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │                                                                │                                                    │
+ │  ctrl+] esc  back   ctrl+] d  details   ctrl+] m  mouse   ctrl+│                                                    │
+ ╰────────────────────────────────────────────────────────────────╰────────────────────────────────────────────────────╯
+esc back · tab next tab · shift+tab previous tab · 1-5 jump to tab · ↑/k scroll up · ↓/j scroll down …                  

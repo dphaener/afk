@@ -712,11 +712,12 @@ func TestFocusRequestOnTheOpenPaneJustFocuses(t *testing.T) {
 }
 
 // TestFocusRequestOnAStoppedHostFocusesItsOverview pins the click on a
-// session whose host is down to enter's rule (plan W3.T1 d/e): the right side
-// is focused in the agent view, the row draws its overview because it has no
-// live agent, and nothing is spawned. A notification can be clicked long after
-// its session's host exited, so this is an ordinary case — and `r` from that
-// overview is what brings the agent back, landing focused.
+// session whose host is down to enter's rule (plan W3.T1 d/e): the row has no
+// live agent, so its details overlay opens over the Project (T16.5), and
+// nothing is spawned. A notification can be clicked long after its session's
+// host exited, so this is an ordinary case — and `r` is what brings the agent
+// back: from the Project once the details are closed, until W2.T1 of T16.5
+// gives the overlay its own r.
 func TestFocusRequestOnAStoppedHostFocusesItsOverview(t *testing.T) {
 	w := newFakeFocusWatcher()
 	m, _ := focusRequestModel(t, w, sess("target"))
@@ -734,26 +735,26 @@ func TestFocusRequestOnAStoppedHostFocusesItsOverview(t *testing.T) {
 	if spawns != 0 {
 		t.Fatalf("SpawnHost called %d times, want 0", spawns)
 	}
-	if m.focus != focusRight || m.view != viewAgent {
-		t.Fatalf("focus/view = %v/%v, want right/agent", m.focus, m.view)
+	if m.focus != focusList || m.view != viewAgent || !m.detailsOpen || m.detailsFor != "target" {
+		t.Fatalf("focus/view = %v/%v details=%v for %q, want the target's details over the list",
+			m.focus, m.view, m.detailsOpen, m.detailsFor)
 	}
-	if !m.detailDrawn() || m.agentPlaceholderDrawn() {
-		t.Fatalf("detailDrawn=%v placeholder=%v, want the stopped row's overview drawn",
-			m.detailDrawn(), m.agentPlaceholderDrawn())
+	if m.agentPlaceholderDrawn() {
+		t.Fatal("a stopped row must not draw the agent placeholder")
 	}
 
+	m, _ = update(t, m, keyEsc)
 	m, restart := pressAction(t, m, keyRune('r'))
 	if restart == nil {
-		t.Fatal("r on the focused overview must dispatch the restart")
+		t.Fatal("r on the clicked stopped session must dispatch the restart")
 	}
 	m, openCmd := update(t, m, drainForHostRestarted(t, restart))
 	if openCmd == nil {
 		t.Fatal("the restart must chain into the pane open")
 	}
 	m, _ = update(t, m, drainForPaneAttached(t, openCmd))
-	if !m.paneOwnsKeyboard() || m.paneName != "target" || spawns != 1 {
-		t.Fatalf("after r the pane must be open AND focused: name=%q focused=%v spawns=%d",
-			m.paneName, m.paneOwnsKeyboard(), spawns)
+	if m.pane == nil || m.paneName != "target" || spawns != 1 {
+		t.Fatalf("after r the pane must be open: name=%q spawns=%d", m.paneName, spawns)
 	}
 }
 
@@ -801,9 +802,9 @@ func TestFocusRequestOnAStoppedHostDetachesAnotherRowsPane(t *testing.T) {
 			if paneA.closed != 1 {
 				t.Fatalf("pane A closed %d times, want exactly 1", paneA.closed)
 			}
-			if m.focus != focusRight || !m.detailDrawn() {
-				t.Fatalf("focus=%v detailDrawn=%v, want the stopped row's overview focused",
-					m.focus, m.detailDrawn())
+			if !m.detailsOpen || m.detailsFor != "target" {
+				t.Fatalf("details=%v for %q, want the stopped row's details open",
+					m.detailsOpen, m.detailsFor)
 			}
 
 			m.setSessions([]Session{runningSess("a"), sess("target")})
@@ -849,8 +850,8 @@ func hasHostRestarted(t *testing.T, cmd tea.Cmd) bool {
 //     than by reading previewGen back. That is deliberate: a bump written to a
 //     discarded copy (a value-receiver trap) would still satisfy a field read
 //     taken from the returned Model, but cannot satisfy this.
-//   - the clicked session still arriving open and focused once `r` restarts it
-//     is what stops the fix from being "cancel everything".
+//   - the clicked session still arriving open once `r` restarts it is what
+//     stops the fix from being "cancel everything".
 func TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview(t *testing.T) {
 	w := newFakeFocusWatcher()
 	m, _ := focusRequestModel(t, w, sess("target"), runningSess("other"))
@@ -883,6 +884,9 @@ func TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview(t *testing.T) {
 		t.Errorf("opens = %d (%+v), want 0 — the stale timer dialed after the click", len(opened), opened)
 	}
 
+	// The click opened the target's details; esc closes them, and r from
+	// the Project restarts it.
+	m, _ = update(t, m, keyEsc)
 	m, restart := pressAction(t, m, keyRune('r'))
 	if restart == nil {
 		t.Fatal("r on the clicked stopped session must dispatch the restart")
@@ -892,9 +896,8 @@ func TestFocusRequestOnAStoppedHostInvalidatesAPendingPreview(t *testing.T) {
 		t.Fatal("the restart must chain into the pane open")
 	}
 	m, _ = update(t, m, drainForPaneAttached(t, openCmd))
-	if m.paneName != "target" || !m.paneOwnsKeyboard() {
-		t.Fatalf("paneName = %q focused = %v, want the clicked session open and focused",
-			m.paneName, m.paneOwnsKeyboard())
+	if m.paneName != "target" || m.pane == nil {
+		t.Fatalf("paneName = %q pane=%v, want the clicked session open", m.paneName, m.pane != nil)
 	}
 }
 
@@ -945,9 +948,9 @@ func TestWaitForRestartedHostMetaReturnsFinalErrorAtBound(t *testing.T) {
 }
 
 // TestStoppedRestartWaitsForMetadataBeforeOpening pins the restart chain's
-// order for `r` on a stopped row from its focused overview: spawn, then
-// host-record readiness, then the pane open — and the focus request riding
-// through all three, since the keyboard is already on the right side.
+// order for `r` on a stopped row: spawn, then host-record readiness, then the
+// pane open — and the no-focus request riding through all three, since the
+// keyboard is on the Project (its details, opened by enter, closed first).
 func TestStoppedRestartWaitsForMetadataBeforeOpening(t *testing.T) {
 	m := testModel(stoppedSess("alpha"))
 	var order []string
@@ -968,16 +971,17 @@ func TestStoppedRestartWaitsForMetadataBeforeOpening(t *testing.T) {
 	}
 
 	m, _ = update(t, m, keyEnter)
-	if m.focus != focusRight || !m.detailDrawn() {
-		t.Fatalf("setup: enter on a stopped row must focus its overview (focus=%v detail=%v)", m.focus, m.detailDrawn())
+	if !m.detailsOpen {
+		t.Fatalf("setup: enter on a stopped row must open its details (focus=%v)", m.focus)
 	}
+	m, _ = update(t, m, keyEsc)
 	m, restart := pressAction(t, m, keyRune('r'))
 	if restart == nil {
 		t.Fatal("r did not dispatch the stopped-host restart")
 	}
 	restarted, ok := restart().(hostRestartedMsg)
-	if !ok || restarted.err != nil || !restarted.focusOnArrival {
-		t.Fatalf("restart result = %#v, want a focused success", restarted)
+	if !ok || restarted.err != nil || restarted.focusOnArrival {
+		t.Fatalf("restart result = %#v, want an unfocused success", restarted)
 	}
 	if len(order) != 2 || order[0] != "spawn" || order[1] != "metadata" {
 		t.Fatalf("pre-open order = %v, want spawn then metadata", order)
@@ -987,8 +991,8 @@ func TestStoppedRestartWaitsForMetadataBeforeOpening(t *testing.T) {
 		t.Fatal("ready restart did not chain into pane open")
 	}
 	attached := open().(paneAttachedMsg)
-	if !attached.focusOnArrival {
-		t.Fatal("r's chained open lost its focus request")
+	if attached.focusOnArrival {
+		t.Fatal("r's chained open gained a focus request the keypress did not make")
 	}
 	if len(order) != 3 || order[2] != "open" {
 		t.Fatalf("order = %v, want open only after metadata readiness", order)

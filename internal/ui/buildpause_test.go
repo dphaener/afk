@@ -15,10 +15,11 @@ import (
 // at All projects and Project, and in the Agent the leader first, then the
 // key. It returns what the key returned, so a test can still read the command
 // it produced, and in the Agent it fails the test if the leader did not open
-// the key strip, so a later assertion is about the key.
+// the key strip, so a later assertion is about the key. An overlay over the
+// Agent (the details, `:`) has the keyboard itself, so no leader goes first.
 func pressAction(t *testing.T, m Model, k tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
-	if m.level() == levelAgent && activeInputMode(m.modeSnapshot()) != inputLeader {
+	if mode := activeInputMode(m.modeSnapshot()); m.level() == levelAgent && (mode == inputPane || mode == inputPlaceholder) {
 		m, _ = update(t, m, leaderKeyPress)
 		if !m.keyStripOpen {
 			t.Fatal("setup: ctrl+] did not open the key strip")
@@ -212,7 +213,8 @@ func TestBuildPauseNotices(t *testing.T) {
 }
 
 // TestBuildPauseKeysCallTheSeam drives `p` through Update on a running and on
-// a paused build, from the list and from a focused overview. Load-bearing:
+// a paused build, from the list. (The details overlay keeps its keys to
+// itself since T16.5, so p is not one of them there.) Load-bearing:
 //
 //   - the seam gets the SNAPSHOT's root (/main), not the folder the dashboard
 //     was started in (/repo): started inside a session's worktree, the
@@ -228,15 +230,12 @@ func TestBuildPauseKeysCallTheSeam(t *testing.T) {
 	cases := []struct {
 		name       string
 		key        tea.Msg
-		fromDetail bool
 		wantPause  int
 		wantResume int
 		wantNotice string
 	}{
-		{"p on a running build from the list", keyPause, false, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press p to resume."},
-		{"p on a running build from a focused overview", keyPause, true, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press p to resume."},
-		{"p on a paused build from the list", keyPause, false, 0, 1, "Build resumed. The daemon may start new tasks again."},
-		{"p on a paused build from a focused overview", keyPause, true, 0, 1, "Build resumed. The daemon may start new tasks again."},
+		{"p on a running build from the list", keyPause, 1, 0, "Build paused. A task that is running finishes; nothing new starts. Press p to resume."},
+		{"p on a paused build from the list", keyPause, 0, 1, "Build resumed. The daemon may start new tasks again."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,10 +247,6 @@ func TestBuildPauseKeysCallTheSeam(t *testing.T) {
 			}
 			m = withBuild(t, m, snap)
 			wantMode := inputNormal
-			if tc.fromDetail {
-				m = focusOverview(t, m)
-				wantMode = inputDetail
-			}
 			if got := activeInputMode(m.modeSnapshot()); got != wantMode {
 				t.Fatalf("fixture broken: mode = %v, want %v", got, wantMode)
 			}

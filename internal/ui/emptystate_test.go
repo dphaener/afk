@@ -1367,22 +1367,23 @@ func TestRenderListLabelTruncatesALongProjectNameWithoutOverflow(t *testing.T) {
 	}
 }
 
-// TestRenderDetailTitleStyleUnchanged pins that renderDetail's title is the
-// pane's title strip (§3.3, its first inner row since T16.1), drawn exactly
-// as titleStrip draws an unfocused strip (bold strip-fg on strip), and that
-// renderList's stronger boxTitleStrong style does not leak into it.
+// TestRenderDetailTitleStyleUnchanged pins that the details overlay's title
+// is the pane's title strip (§3.3, its first inner row), drawn exactly as
+// titleStrip draws the strip of the pane with the keyboard ("Details ·
+// alpha", "esc back"), and that renderList's stronger boxTitleStrong style
+// does not leak into it.
 func TestRenderDetailTitleStyleUnchanged(t *testing.T) {
 	m := testModel(sess("alpha"))
 	m.selectSessionIndex(0)
-	_, mainOuter, bodyHeight := m.layoutDims()
+	w, h := m.detailsSize()
 
-	title, _ := m.detailBoxLabels()
-	if title == "" {
-		t.Fatalf("test setup: detail box has no title to compare against")
+	title := m.detailsTitle()
+	if title != "Details · alpha" {
+		t.Fatalf("details title = %q, want %q", title, "Details · alpha")
 	}
 
-	strip := strings.Split(m.renderDetail(mainOuter, bodyHeight), "\n")[1]
-	want := theme.titleStrip(title, "", paneOuterWidth(detailContentWidth(mainOuter))-boxBorderCells, false)
+	strip := strings.Split(m.renderDetailsOverlay(w, h), "\n")[1]
+	want := theme.titleStrip(title, detailsContext, w-boxBorderCells, true)
 	if !strings.Contains(strip, want) {
 		t.Fatalf("detail box title is not the pane's title strip:\n%q\nwant it to contain %q", strip, want)
 	}

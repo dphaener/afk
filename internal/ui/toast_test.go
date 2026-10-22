@@ -24,7 +24,7 @@ func TestStatusChangeStampsTheToast(t *testing.T) {
 	if !m.statusChangedAt.IsZero() {
 		t.Fatalf("a fresh model must not be stamped")
 	}
-	m = pressKey(t, m, keyRune('d')) // "scrolling the detail view"
+	m = pressKey(t, m, keyRune('R')) // with no usage reader, R says why it cannot read
 	if m.statusChangedAt != m.deps.Now() {
 		t.Fatalf("statusChangedAt = %v, want the clock's %v after a status change", m.statusChangedAt, m.deps.Now())
 	}
