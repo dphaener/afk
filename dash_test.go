@@ -782,6 +782,31 @@ func TestDashProgramOptionsAskTheTerminalForMouseReports(t *testing.T) {
 	}
 }
 
+// TestDashProgramSendsRawStatusUnmodified pins that a tea.Raw command reaches
+// the wire byte for byte, which is what the dashboard's OSC 7501 status relies
+// on (internal/ui/selfstatus.go).
+func TestDashProgramSendsRawStatusUnmodified(t *testing.T) {
+	seq := "\x1b]7501;app=afk;state=blocked\x1b\\"
+	var out bytes.Buffer
+	p := newDashProgram(rawThenQuit{seq: seq},
+		tea.WithInput(strings.NewReader("")),
+		tea.WithOutput(&out),
+		tea.WithoutSignalHandler(),
+	)
+	if _, err := p.Run(); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out.String(), seq) {
+		t.Errorf("%q is absent from what the program wrote (%q)", seq, out.String())
+	}
+}
+
+type rawThenQuit struct{ seq string }
+
+func (r rawThenQuit) Init() tea.Cmd                       { return tea.Sequence(tea.Raw(r.seq), tea.Quit) }
+func (r rawThenQuit) Update(tea.Msg) (tea.Model, tea.Cmd) { return r, nil }
+func (r rawThenQuit) View() tea.View                      { return tea.NewView("") }
+
 // TestPickActiveProject is the decision matrix for W2.T2's --project/dash
 // wiring. The synthetic rows pin the pure string-matching contract (both
 // sides are assumed already normalized — see the two real-repo rows below for

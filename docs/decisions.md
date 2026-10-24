@@ -4348,3 +4348,18 @@ The session host now keeps what its agent last reported about itself (Program st
 - **Signal names come from a small table in the host** (`SIGHUP` to `SIGXFSZ`, else `signal N`), not from `golang.org/x/sys`, which would have been a new direct dependency.
 - **Discovery has its own copies of the two types** (`discover.AgentStatus`, `discover.LastExit`), so it still calls nothing in `internal/host` but `ReadMeta` and `Alive`. Later dashboard tasks use those.
 - **The Project level's session row shows the message too**, in `sessionSectionRow`, since that is the row the dashboard draws there. When the message does not fit beside the `open it` hint, it takes the hint's cells; `asks you` is never given up.
+
+## T17.5
+
+The dashboard and the foreground daemon now tell the terminal what needs the owner, as Program status records (OSC 7501). These are the choices the master plan left open, in plain language.
+
+- **One pure package builds the records (A1).** `internal/afkstatus` turns the project rows both the dashboard and the daemon already build into one root record and one child per project. It uses only the standard library, `projectrows` and `progstatus`, so the dashboard and the daemon cannot disagree about what a row means.
+- **What the root record says (A2).** `blocked` wins when an inbox item that holds a task up or blocks the owner is open, a plan waits for approval, or a project is waiting on the owner with no blocking item. `error` comes next, for a stopped line. Then `working` while a task runs, and `idle` otherwise. The message names the project and its oldest item, or "a plan to approve", so the tab reads as the owner's queue.
+- **A gone or unreadable folder is an error (A3).** It counts like a stopped line, because `projectrows` already treats it as needing the owner and nothing can be built in it.
+- **Child ids are safe to send (A4).** A child's id is its project name in lower case, with every byte outside `a-z0-9_.+-` turned into `-`, cut to 32 bytes, and given `-2` or `-3` on a clash. `progstatus.Encode` refuses any other id, so the real name goes in the title.
+- **Only changes are sent (A5).** A pure diff compares the last records sent with the new ones and gives the bytes to write, or nothing. A project that has gone gets a clear. The caller keeps the last set, so the dashboard model stays a value and a quiet tick writes nothing.
+- **The dashboard sends only when it is `afk dash` (A6).** `ui.Deps.ProgramStatus` is set only by `afk dash`, so tests and other callers see no change. Records go out when the project rows load. The clear is written by `afk dash` after the program ends, not by a command beside quit, because such a command may never run.
+- **The daemon sends only to a terminal (A7).** It sends only when its standard output is a terminal, once per pass on the planning hook it already runs, and clears on every exit after the loop starts. `--once` and `status` send nothing, and neither does a daemon under systemd, which has no terminal to report to.
+- **The Rex pane check is not run here (A8).** Rex is not installed on the build machine. The bytes are checked on a real pty instead, and the Rex check is an owner verification item. A check the machine cannot do does not block the task.
+
+**Verification for the owner.** In a Rex pane, run the new `afk dash` (or `afk daemon` in the foreground) with a project that has a blocking inbox item. `rex block call … program_status` should show a blocked root record ("1 thing needs you: …") and one child per project, and the tab should show the blocked badge. Quitting should clear them. This was not run here because Rex is not installed on the build machine.

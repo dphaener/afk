@@ -153,6 +153,12 @@ To run the daemon as a service on Linux, see [`contrib/README.md`](../contrib/RE
 
 ---
 
+## In a terminal
+
+When `afk daemon` runs in a terminal, it also sends afk's status records (Program status, OSC 7501) to that terminal, such as Rex. It sends them once per pass, and only when they change, and clears them when it stops. Under systemd there is no terminal, so the service sends nothing. `afk daemon --once` and `afk daemon status` send nothing either.
+
+---
+
 ## `afk project` — Choose the projects the daemon builds
 
 ```bash

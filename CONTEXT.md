@@ -267,3 +267,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Safe insertion point**: a byte offset in a terminal output stream that is outside every escape sequence and every multi-byte character, where afk may write a sequence of its own without tearing the program's.
 - **Agent status**: the last Program status report a session's own agent sent about itself (state, kind, message, when), kept by its host in `host.json` as `agent_status`.
 - **Last exit**: how a session's previous agent program ended (exit code, signal, when), written to `host.json` as `last_exit` when the host restarts it in place.
+- **afk status**: the Program status records afk itself sends from `afk dash` or a foreground `afk daemon`: one for the whole machine (what needs the owner) and one per project.

@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 
+	"github.com/dphaener/afk/internal/afkstatus"
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/dashmeta"
 	"github.com/dphaener/afk/internal/project"
@@ -329,6 +330,11 @@ func runDashProgram(repo string, interval time.Duration, openSession string, loc
 	// declares MouseModeNone, and the mouse goes back to the terminal without
 	// ending the session.
 	_, err := newDashProgram(model).Run()
+	// Clear afk's Program status records (T17.5). It is written here, not from
+	// a Cmd beside tea.Quit, which may never run. Covers quit, ctrl+c and a
+	// failed Run; a clear of nothing is harmless, and a write error is ignored
+	// because the dashboard is already over.
+	_, _ = os.Stdout.Write(afkstatus.ClearAll())
 	return err
 }
 
@@ -643,6 +649,7 @@ func rememberSidebarPct(pct int) error {
 func dashDeps(openSession string, loc dashLocation, projects []project.Project, activeProject int) ui.Deps {
 	return ui.Deps{
 		InitialSessionName: openSession,
+		ProgramStatus:      true,
 		// A project is "in view" when the caller found one (the cwd repo, or
 		// --project's); dashInitialProjects hands -1 otherwise.
 		StartLevel:         dashStartLevel(activeProject >= 0, openSession != "", len(projects) == 0),
