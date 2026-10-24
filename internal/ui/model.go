@@ -49,6 +49,7 @@ import (
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/inbox"
+	"github.com/dphaener/afk/internal/progstatus"
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
@@ -365,6 +366,12 @@ type Deps struct {
 	// only the root package (`afk dash`) wires it. A nil LoadAllProjects means
 	// the screen cannot open, and esc at Project says so.
 	LoadAllProjects func() AllProjects
+	// ProgramStatus is true only from the real `afk dash` (dash.go): it makes
+	// the model write OSC 7501 Program status records, built by afkstatus
+	// from the newest project rows, to the terminal whenever they change. It
+	// has no default, so tests (which pin the allProjectsLoadedMsg command)
+	// see no change.
+	ProgramStatus bool
 	// LoadActivity reads the home screen's LAST 24H cells and THIS WEEK sums
 	// (T16.8) from the decision log and the token ledger of each project at
 	// roots, counted against now. It runs on the project scan (once a
@@ -1333,7 +1340,9 @@ type Model struct {
 	// everyProjectSeq is the start number of the read it came from,
 	// everyProjectAt when that read finished, and allProjectsSeq the shared
 	// counter that numbers reads as they start.
-	everyProject    AllProjects
+	everyProject AllProjects
+	// lastReported is the record set last written by reportSelfStatus.
+	lastReported    []progstatus.Record
 	everyProjectSeq int64
 	everyProjectAt  time.Time
 	// homeUsage is the usage reading that read carried, and homeUsageKnown
@@ -2657,7 +2666,15 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case allProjectsLoadedMsg:
 		m = m.applyAllProjectsLoaded(msg)
-		return m, m.activityOnNewRoots()
+		if !m.deps.ProgramStatus {
+			return m, m.activityOnNewRoots()
+		}
+		var report tea.Cmd
+		m, report = m.reportSelfStatus(msg.res.Err != nil)
+		if report == nil {
+			return m, m.activityOnNewRoots()
+		}
+		return m, tea.Batch(m.activityOnNewRoots(), report)
 
 	case activityLoadedMsg:
 		return m.applyActivityLoaded(msg), nil

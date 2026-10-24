@@ -116,6 +116,10 @@ type daemonEnv struct {
 	// listen opens the web page's port. It is a field so a test hands back a
 	// listener of its own and no test ever binds a fixed port.
 	listen func(addr string) (net.Listener, error)
+	// statusOut is the terminal to report afk's status to, nil when stdout
+	// is not a terminal (under systemd, or piped). Nil, or an answer of nil,
+	// means nothing is sent.
+	statusOut func() io.Writer
 }
 
 func realDaemonEnv() daemonEnv {
@@ -159,6 +163,12 @@ func realDaemonEnv() daemonEnv {
 			return daemon.ReadBinary(exe)
 		},
 		listen: func(addr string) (net.Listener, error) { return net.Listen("tcp", addr) },
+		statusOut: func() io.Writer {
+			if isTerminal(os.Stdout) {
+				return os.Stdout
+			}
+			return nil
+		},
 	}
 }
 
@@ -351,6 +361,11 @@ func runDaemon(args []string, stdout, stderr io.Writer, env daemonEnv) int {
 		defer serveDaemonWeb(ln, h, logf)()
 		logf("web page: listening on http://%s", cfg.Web.Bind)
 	}
+
+	// The status report to the terminal. Placed after the --once return so a
+	// single pass never sends it, and deferred so both exits after the loop
+	// (stop and new binary) clear what was sent.
+	defer attachDaemonStatus(env, &deps, list.get, stateDir)()
 
 	logf("afk daemon started (pid %d): %d project(s), looking every %s. The project list in %s is read again on every look. The tick and everything else under [daemon], [governor], [web] and provider were read once: restart afk daemon after changing any of them.", env.pid, len(projects), cfg.Tick, cfgPath)
 	if len(projects) == 0 {

@@ -4414,6 +4414,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of the mapping (nothing running, a task running, an inbox item, a stopped
   line, a paused machine) and of when it sends; against a scratch build in a Rex pane, `rex block call …
   program_status` shows the records and the tab shows the blocked badge; `make check` is green.
+- Amended 2026-10-23 (T17.5 done): `internal/afkstatus` has `Records([]projectrows.Row) []progstatus.Record` (root first, one child per project, `app=afk`, child `id` the sanitized project name), `Diff(prev, next) []byte` and `ClearAll() []byte`. `afk dash` sends through `tea.Raw` when `ui.Deps.ProgramStatus` is set and clears after the program ends; `afk daemon` sends only when stdout is a terminal, from its per-pass planning hook (`daemon_status.go`), never for `--once`. T17.7's host record is separate (`id=afk` in an agent's terminal), and T17.11's "next agent that needs the owner" can read the control room's root `blocked` record. The Rex pane check is an owner item: Rex was not installed on the build machine.
 
 #### T17.6 — One seam for every runtime
 - **Depends on:** T17.4
