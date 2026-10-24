@@ -420,16 +420,30 @@ func (h *hostRuntime) requestProbe() bool {
 // the loop. Narrowing the mutex to a snapshot-then-write would reopen the
 // shutdown window above, which is the worse trade.
 func (h *hostRuntime) publishLiveness(snap livenessSnapshot) {
+	h.publish("the session's liveness", func() { h.pubLive = snap })
+}
+
+// publish is the one host.json rewrite after startup, shared by the liveness
+// monitor and the agent-status publisher (agentstatus.go). Each caller hands
+// in only the fields it owns, through update, and the file is written whole
+// from baseMeta plus the last-published values of every field, so neither
+// publisher's write can drop the other's. Everything said about publishMu on
+// publishLiveness holds for both: update runs, and the file is written, under
+// the mutex, and nothing is written once stopPublishing has run.
+func (h *hostRuntime) publish(what string, update func()) {
 	h.publishMu.Lock()
 	defer h.publishMu.Unlock()
 	if h.publishOff {
 		return
 	}
+	update()
 	m := h.baseMeta
-	m.LastOutputAt = snap.LastOutputAt
-	m.WedgedSince = snap.WedgedSince
+	m.LastOutputAt = h.pubLive.LastOutputAt
+	m.WedgedSince = h.pubLive.WedgedSince
+	m.AgentStatus = h.pubAgent.Status
+	m.LastExit = h.pubAgent.Exit
 	if err := writeMetaFile(h.cfg.MetaPath, m); err != nil {
-		h.log.Printf("republishing %s with the session's liveness: %v", h.cfg.MetaPath, err)
+		h.log.Printf("republishing %s with %s: %v", h.cfg.MetaPath, what, err)
 	}
 }
 

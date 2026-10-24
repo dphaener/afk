@@ -634,6 +634,25 @@ func sessionSectionRow(s Session, selected, focused bool, nameW, width int) stri
 	default:
 		right = mutedStyle().Render(w)
 	}
+	// The agent's own message fills what is left between the tasks count and
+	// the right word, so no column moves (withRowMessage; rowMessageGap also
+	// keeps it off the right word). The right word's cells are reserved, with
+	// the gap, even when the row has none, so the message never shifts when the
+	// word appears.
+	//
+	// The Sessions section is a fixed 50 cells wide on a wide terminal, which
+	// leaves under rowMessageMin cells beside "open it". That word is only a
+	// hint (every running session has it and the detail pane and keys say the
+	// same), so when the message does not fit beside it the message takes its
+	// cells instead. "asks you" is never given up: it is the one thing the
+	// owner must act on.
+	withMsg := withRowMessage(left, s, width-len("asks you")-rowMessageGap)
+	if withMsg == left && right != "" && !showsAwaitingInput(s) {
+		if alone := withRowMessage(left, s, width); alone != left {
+			withMsg, right = alone, ""
+		}
+	}
+	left = withMsg
 	return theme.row(spread(left, right, width), width, selected && focused, "")
 }
 

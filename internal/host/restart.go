@@ -342,6 +342,14 @@ func (h *hostRuntime) finishRestart(hs restartHandoff) error {
 		h.log.Printf("restart: closing the retired pty master: %v", err)
 	}
 
+	// Before the spawn, so the new generation's pump starts in the new epoch
+	// and anything the retired pump still hands over is ignored. The old
+	// agent's status goes (the new agent has not reported yet) and the old
+	// child's exit becomes last_exit: host.json survives a restart, so this
+	// is the one exit it can show. waitChild has already logged it.
+	h.agent.reset()
+	h.agent.recordExit(old.exit)
+
 	if err := h.spawn(argv); err != nil {
 		// The old child is reaped and no new one started, so there is nothing
 		// left to serve. Staying up would advertise a reachable session that
@@ -358,6 +366,9 @@ func (h *hostRuntime) finishRestart(hs restartHandoff) error {
 	// with the SIGWINCH, including nothing at all.
 	h.live.noteRestart(time.Now())
 	h.setResumedChild(argv, h.cur.pid())
+	// After setResumedChild, so the forced publish of last_exit already
+	// carries the resumed child's argv and pid.
+	h.nudgeAgentStatus()
 	// The attached pane is still showing the dead child's screen, and the
 	// resumed child has no idea anyone is looking; the same nudge an attaching
 	// client gets is what makes it paint.

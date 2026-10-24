@@ -8,6 +8,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/dphaener/afk/internal/buildview"
+	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/state"
@@ -39,6 +40,9 @@ func TestAgentBandText(t *testing.T) {
 
 	stopped := sess("stopped")
 
+	withMessage := runningSess("working")
+	withMessage.AgentStatus = &discover.AgentStatus{State: "working", Msg: "Running tests"}
+
 	cases := []struct {
 		name  string
 		s     Session
@@ -69,6 +73,22 @@ func TestAgentBandText(t *testing.T) {
 		{
 			name: "a stopped host says so", s: stopped, found: true, width: 30,
 			want: "◐ executing  ·  ○ host stopped",
+		},
+		{
+			// Load-bearing: the message sits after the phase when all fit...
+			name: "the agent's message follows the phase", s: withMessage, found: true, width: 60,
+			want: "◐ executing  ·  Running tests  ·  ◐ host running" + strings.Repeat(" ", 60-len([]rune("◐ executing  ·  Running tests  ·  ◐ host running"))),
+		},
+		{
+			// ...and is the first piece to go, before the host that follows
+			// it, when they do not.
+			name: "the message is dropped first when narrow", s: withMessage, found: true, width: 40,
+			want: "◐ executing  ·  ◐ host running" + strings.Repeat(" ", 40-len([]rune("◐ executing  ·  ◐ host running"))),
+		},
+		{
+			name: "the message is dropped before next needing you gives anything up", s: withMessage, found: true,
+			next: "fix-login", width: 62,
+			want: "◐ executing  ·  ◐ host running     next needing you: fix-login",
 		},
 		{
 			name: "narrow: the host then the loop drop, next needing you stays", s: withDiff, found: true, task: "W2.T1",

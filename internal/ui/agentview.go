@@ -53,11 +53,14 @@ const agentNextPrefix = "next needing you: "
 // field empty (or zero) is a piece left out.
 type agentBandInput struct {
 	Phase string // the phase's glyph and word, from stateLook
-	Task  string // the linked build task's id
-	Diff  string // "+a −r"
-	Loop  int    // the conductor's loop count; 0 says nothing
-	Host  string // the host's glyph and word, from stateLook
-	Next  string // what `]` goes to next, across every project (needLabel)
+	// Status is the agent's own message; the first piece dropped when the
+	// band is short of room, and never cut, so it is whole or absent.
+	Status string
+	Task   string // the linked build task's id
+	Diff   string // "+a −r"
+	Loop   int    // the conductor's loop count; 0 says nothing
+	Host   string // the host's glyph and word, from stateLook
+	Next   string // what `]` goes to next, across every project (needLabel)
 }
 
 // agentBandFacts turns the session the Agent shows into the band's facts.
@@ -77,6 +80,7 @@ func agentBandFacts(s Session, found bool, task, next string) agentBandInput {
 	}
 	ph := stateLook(stateSession, sessionPhaseKey(s))
 	in.Phase = strings.TrimSpace(ph.glyph + " " + ph.word)
+	in.Status = rowMessageText(s)
 	in.Task = task
 	d := s.DiffStats
 	if !s.Scratch && !s.StatusStale && s.BaseBranch != "" && !d.BaseMissing && d.Err == "" &&
@@ -98,18 +102,21 @@ func agentBandFacts(s Session, found bool, task, next string) agentBandInput {
 }
 
 // agentBandText lays the band's pieces out in width cells: the left part
-// (phase, task, diff, loop, host, in that order) at the start and
+// (phase, the agent's message, task, diff, loop, host, in that order) at the start and
 // "next needing you: <item>" at the end. When they do not all fit, pieces
 // drop from the right of the left part; next needing you goes last, only
 // when it does not fit even alone, and then the left part gets back the room
 // it gave up for it. The band never wraps or cuts a piece in half: a cut
 // word would read as a different phase or session.
 func agentBandText(in agentBandInput, width int) string {
-	var left []string
-	for _, p := range []string{in.Phase, in.Task, in.Diff, agentLoopPiece(in.Loop), in.Host} {
-		if p != "" {
-			left = append(left, p)
+	pieces := func(status string) []string {
+		var l []string
+		for _, p := range []string{in.Phase, status, in.Task, in.Diff, agentLoopPiece(in.Loop), in.Host} {
+			if p != "" {
+				l = append(l, p)
+			}
 		}
+		return l
 	}
 	right := ""
 	if in.Next != "" {
@@ -124,6 +131,13 @@ func agentBandText(in agentBandInput, width int) string {
 			w += lipgloss.Width(r)
 		}
 		return w <= width
+	}
+	// The message sits after the phase but is the first piece to go: it is
+	// shown only when every piece, the message too, fits whole. The other
+	// pieces are the band's facts; the message is a bonus on top of them.
+	left := pieces(in.Status)
+	if in.Status != "" && !fits(left, right) {
+		left = pieces("")
 	}
 	keep := len(left)
 	for keep > 0 && !fits(left[:keep], right) {

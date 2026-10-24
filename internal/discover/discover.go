@@ -303,6 +303,32 @@ type SessionState struct {
 	// "unknown" (absent/unparseable host.json, or a pre-W1.T2 host) since
 	// there is no way to tell those apart from the file alone.
 	WedgedSince string
+	// AgentStatus is host.json's `agent_status`: the latest root Program
+	// status report the session's own agent sent, as the host saw it. Nil
+	// means unknown (host.json absent or unparseable, an older host, or an
+	// agent that has not reported). Advisory like HostRunning, never an
+	// error. It is a discover-local copy, not a host type, because the
+	// package's AST guard allows only host.ReadMeta and host.Alive.
+	AgentStatus *AgentStatus
+	// LastExit is host.json's `last_exit`: how the previous program in this
+	// session ended, written by the host on a restart in place. Nil means
+	// unknown. Advisory, same as AgentStatus.
+	LastExit *LastExit
+}
+
+// AgentStatus is the discover-side copy of host.json's agent_status.
+// State, Kind and Msg are the report's own words; At is when the host saw it
+// (RFC 3339 UTC). Msg and Kind may be empty.
+type AgentStatus struct {
+	State, Kind, Msg, At string
+}
+
+// LastExit is the discover-side copy of host.json's last_exit. Code is -1
+// when a signal ended the program, and Signal then names it.
+type LastExit struct {
+	Code   int
+	Signal string
+	At     string
 }
 
 // Deps is the injectable seam for discover's one environment-touching
@@ -701,6 +727,14 @@ func applyHostMeta(ss *SessionState) {
 	ss.HostRunning = host.Alive(meta.PID)
 	ss.LastOutputAt = meta.LastOutputAt
 	ss.WedgedSince = meta.WedgedSince
+	// Copy, never alias, so a row does not share memory with the Meta.
+	ss.AgentStatus, ss.LastExit = nil, nil
+	if a := meta.AgentStatus; a != nil {
+		ss.AgentStatus = &AgentStatus{State: a.State, Kind: a.Kind, Msg: a.Msg, At: a.At}
+	}
+	if e := meta.LastExit; e != nil {
+		ss.LastExit = &LastExit{Code: e.Code, Signal: e.Signal, At: e.At}
+	}
 }
 
 // progressFromPlan tallies every task across every wave of plan by checkbox
