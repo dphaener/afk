@@ -202,7 +202,7 @@ func realApproveDeps() approveDeps {
 		// removed must never be written to a terminal the dashboard owns.
 		// withDefaults fills the rest.
 		stopPlanHost: func(root string) (session.HostStop, error) {
-			return session.StopHost(root, session.PlanSessionName, session.CleanDeps{Stderr: io.Discard})
+			return stopPlanSessionHost(root)
 		},
 	}
 }

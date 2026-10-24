@@ -4363,3 +4363,21 @@ The dashboard and the foreground daemon now tell the terminal what needs the own
 - **The Rex pane check is not run here (A8).** Rex is not installed on the build machine. The bytes are checked on a real pty instead, and the Rex check is an owner verification item. A check the machine cannot do does not block the task.
 
 **Verification for the owner.** In a Rex pane, run the new `afk dash` (or `afk daemon` in the foreground) with a project that has a blocking inbox item. `rex block call … program_status` should show a blocked root record ("1 thing needs you: …") and one child per project, and the tab should show the blocked badge. Quitting should clear them. This was not run here because Rex is not installed on the build machine.
+
+## T17.6
+
+Everything that starts, stops, restarts, types into or opens a session now goes through one interface, so the Rex runtime of T17.7 is a second implementation rather than a second set of call sites. These are the choices the master plan left open.
+
+- **The seam lives in `internal/session` (A1).** `session.Runtime` and its `afk` implementation sit beside `SpawnHost` and `StopHost`, because the session package's own rollback and `afk clean` must use it too, and a separate package would have to import `internal/session` and go round in a circle.
+- **The host writes `runtime: "afk"` (A2).** A new host says which runtime made it. A `host.json` without the field, from any earlier afk, reads as `afk`.
+- **No `host.json` means afk (A3).** A new session has no `host.json` yet, and a corrupt one must still be cleanable, so both choose afk's own host, which then behaves exactly as before.
+- **An unknown runtime is refused, everywhere (A4).** If `host.json` names a runtime this afk does not know, starting, stopping, restarting, typing and opening all refuse with a message that names it and says to use the afk that started the session or update afk. Nothing is signalled or removed, so a session started by a newer afk is never half-stopped.
+- **Nothing callers inject changed shape (A5).** Every `Deps` field keeps its signature; only the real defaults go through the seam, which is why the existing tests pass unchanged.
+- **A test keeps callers on the seam (A6).** It fails if code outside `internal/host` and `internal/session` calls the low-level start, stop, type, restart, exit or dial functions directly.
+- **Tests (A7, A8).** Table tests with `go test`; nothing had to be in place first beyond T17.4.
+- **This section, and the CONTEXT.md term, belong to the change (A9).** The planner wrote them.
+
+### Decided while building it
+
+- **The daemon's forced stop still signals the host itself.** The polite stop (an Exit through the seam) goes through `RuntimeFor`, but the forced stop after it sends SIGTERM to the host's pid as before, once it has checked the process is afk's own host for this session. That keeps today's behaviour; T17.7 decides whether a Rex-backed host needs a stop of its own there.
+- **The dashboard's restart request and its pane both dial through the seam.** The host socket lookup they shared moved into the afk runtime's `Dial`, with the same error text.

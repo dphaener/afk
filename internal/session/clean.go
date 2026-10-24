@@ -1357,7 +1357,11 @@ var (
 // confirmed dead — proceeding past that point is exactly the failure mode
 // this step exists to prevent.
 func terminateCleanHost(d CleanDeps, sess Session) error {
-	_, err := StopHost(sess.WorktreePath, sess.Name, d)
+	rt, err := RuntimeFor(sess.WorktreePath, sess.Name)
+	if err != nil {
+		return err
+	}
+	_, err = rt.Stop(sess.WorktreePath, sess.Name, d)
 	return err
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/usagetext"
 )
@@ -472,12 +473,18 @@ type stopDeps struct {
 
 func realStopDeps() stopDeps {
 	return stopDeps{
-		RequestExit: host.RequestExit,
-		ReadMeta:    host.ReadMeta,
-		Cmdline:     procCmdline,
-		Signal:      syscall.Kill,
-		Alive:       host.Alive,
-		Sleep:       time.Sleep,
+		RequestExit: func(worktree, name string, wait time.Duration) error {
+			rt, err := session.RuntimeFor(worktree, name)
+			if err != nil {
+				return err
+			}
+			return rt.Exit(worktree, name, wait)
+		},
+		ReadMeta: host.ReadMeta,
+		Cmdline:  procCmdline,
+		Signal:   syscall.Kill,
+		Alive:    host.Alive,
+		Sleep:    time.Sleep,
 	}
 }
 

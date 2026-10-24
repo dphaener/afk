@@ -338,7 +338,11 @@ func webPlanReply(now func() time.Time) func(project, root string, r planchat.Re
 			return provider.Lookup(meta.Provider)
 		},
 		Send: func(root string, chunks [][]byte) error {
-			return host.SendKeys(root, session.PlanSessionName, chunks, planReplyWait)
+			rt, err := session.RuntimeFor(root, session.PlanSessionName)
+			if err != nil {
+				return err
+			}
+			return rt.SendKeys(root, session.PlanSessionName, chunks, planReplyWait)
 		},
 	}
 	return func(project, root string, r planchat.Reply) error {

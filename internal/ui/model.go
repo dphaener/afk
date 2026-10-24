@@ -6964,8 +6964,8 @@ func (m Model) restartChildCmd(name, worktree string) tea.Cmd {
 var restartReplyTimeout = 15 * time.Second
 
 // defaultSendRestart is Deps.SendRestart's real implementation: dial the
-// session's host at the same socket path hostpane.go's hostSocketPath
-// resolves for the pane itself, then delegate the frame exchange to
+// session's host through the runtime host.json names, which finds the
+// same socket the pane itself dials, then delegate the frame exchange to
 // sendRestartAndAwaitResult.
 //
 // This is a NEW connection, not the pane's existing one — paneHandle
@@ -6978,11 +6978,11 @@ var restartReplyTimeout = 15 * time.Second
 // dashboard's own pane on the target FIRST, precisely so this dial never
 // steals from the process that issued it.
 func defaultSendRestart(worktree, name string) (bool, error) {
-	socket, err := hostSocketPath(worktree, name)
+	rt, err := session.RuntimeFor(worktree, name)
 	if err != nil {
 		return false, err
 	}
-	conn, err := host.Dial(socket, host.DefaultAttachWait)
+	conn, err := rt.Dial(worktree, name, host.DefaultAttachWait)
 	if err != nil {
 		return false, err
 	}

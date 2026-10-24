@@ -748,7 +748,11 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 	cd := session.DefaultCleanDeps()
 	cd.Stdout, cd.Stderr = logw, logw
 	sendInput := func(worktree, sess, text string) error {
-		return host.SendInput(worktree, sess, text, daemonSendWait)
+		rt, err := session.RuntimeFor(worktree, sess)
+		if err != nil {
+			return err
+		}
+		return rt.SendInput(worktree, sess, text, daemonSendWait)
 	}
 	sw := shipWiring{
 		// One runner for git and gh: ship's adapters need a runner that
@@ -816,12 +820,20 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		SendPrompt:   sendInput,
 		Clean:        daemonClean(cd, ledger.Load),
 		Restart: func(worktree, sess string) (string, error) {
-			return host.RequestRestart(worktree, sess, daemonSendWait, daemonRestartReply)
+			rt, err := session.RuntimeFor(worktree, sess)
+			if err != nil {
+				return "", err
+			}
+			return rt.Restart(worktree, sess, daemonSendWait, daemonRestartReply)
 		},
 		// The provider and the unattended mode come from the session's own
 		// files inside SpawnHost, so none is passed here.
 		Relaunch: func(req daemon.RelaunchRequest) error {
-			_, err := session.SpawnHost(session.HostSpawn{Name: req.Session, Worktree: req.Worktree, ResumeID: req.ResumeID}, sd)
+			rt, err := session.RuntimeFor(req.Worktree, req.Session)
+			if err != nil {
+				return err
+			}
+			_, err = rt.Spawn(session.HostSpawn{Name: req.Session, Worktree: req.Worktree, ResumeID: req.ResumeID}, sd)
 			return err
 		},
 		ReadPlan:    os.ReadFile,
