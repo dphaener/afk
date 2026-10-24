@@ -263,3 +263,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Answer screen**: the inbox item screen of `a` and `enter` on an inbox row: the item's choices numbered `1`–`n`, a "Write my own answer" field, and a line on what happens next.
 - **Activity line**: the twelve cells of a home-screen row that show how many decisions the project's loop made in each two hours of the last day.
 - **This week**: the home-screen chart of the tokens every listed project used on each of the last seven days, with the usage line beside it.
+- **Program status**: Rex's OSC 7501 escape sequence, by which a program tells its terminal it is idle, working, done, blocked or in error, with a short message; one report sets one record.
+- **Safe insertion point**: a byte offset in a terminal output stream that is outside every escape sequence and every multi-byte character, where afk may write a sequence of its own without tearing the program's.

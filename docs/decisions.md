@@ -4308,3 +4308,20 @@ The owner met none of these in their own terminals. The agent's sweep found elev
 
 - Filed notices: 2jx4v2 (F1), 6g3yec (F2), eg34b3 (F5), kdn6xd (F6), 7wa252 (F8 placement), swm44r (F9).
 - The question erwqed: which second terminal the owner used.
+
+## T17.3
+
+`internal/progstatus` encodes Program Status (OSC 7501) reports and picks them out of terminal output. It follows the spec's revision 0.4 (2026-10-10). These are the choices the master plan and the spec left open.
+
+### What this task decided, and why
+
+- **A record carries progress too (A1).** The spec defines `progress` (0 to 100), so the record has it now and T17.4 and T17.5 need no second change to the type.
+- **Encode refuses what a terminal would drop (A2).** An unknown state, a `kind` on a state other than `blocked`, a progress out of range, a bad `app` or `id`, text over its limit or with a control character, a report over 4096 bytes, or a `clear` that carries more than an `id` is an error. A bug in afk then shows up as an error, not as a report Rex quietly ignores.
+- **Reports end with ST (A3),** the `ESC \` form the spec's own examples use, with the keys in a fixed order.
+- **The scanner gives the last safe offset in each chunk and where each report ends (A4).** That is enough for the host (T17.7) to split a write and put afk's record in between, and it keeps memory bounded.
+- **Inside a sequence means inside any escape sequence or any multi-byte character (A5).** Writing in the middle of a UTF-8 character would break the glyph as surely as writing in a CSI. Raw 8-bit C1 bytes are treated as text, as UTF-8 terminals treat them.
+- **Only a 7501 report is held in memory, and never more than 4096 bytes of it (A6).** A longer one is followed to its end and dropped. A sequence that never ends keeps the stream unsafe, because that is the truth; the caller decides how long to wait.
+- **Gaps in the spec (A7).** Decoded text that is not valid UTF-8 drops the report. CAN and SUB end any sequence. An ESC inside a string that is not followed by `\` ends that string and starts a new sequence. Another control byte inside a 7501 report drops that report. The feature-detection query `?` is not a report.
+- **Tested with tables, a split at every byte and a fuzz test (A8).** The fuzz seeds run with `go test`.
+- **Nothing had to be in place first (A9).** T17.3 depends on no other task.
+- **This section, and the two CONTEXT.md terms, belong to the change.** The planner wrote them.
