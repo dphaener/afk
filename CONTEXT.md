@@ -268,3 +268,4 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Agent status**: the last Program status report a session's own agent sent about itself (state, kind, message, when), kept by its host in `host.json` as `agent_status`.
 - **Last exit**: how a session's previous agent program ended (exit code, signal, when), written to `host.json` as `last_exit` when the host restarts it in place.
 - **afk status**: the Program status records afk itself sends from `afk dash` or a foreground `afk daemon`: one for the whole machine (what needs the owner) and one per project.
+- **Runtime**: the way a session is run: `afk` (afk's own session host) today, Rex from T17.7. `host.json` names it as `runtime`, and everything that starts, stops, restarts, types into or opens the session goes through that runtime.

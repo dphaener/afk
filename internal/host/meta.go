@@ -8,6 +8,9 @@ import (
 	"syscall"
 )
 
+// RuntimeAfk is the runtime word for a session run by afk's own host.
+const RuntimeAfk = "afk"
+
 // Meta is the host process's persisted metadata: enough for another process
 // (the CLI, the dashboard) to find and validate a running host without
 // dialing it.
@@ -27,6 +30,12 @@ type Meta struct {
 	// "opencode"). Empty means claude: hosts written before this field
 	// existed omit the key.
 	Provider string `json:"provider,omitempty"`
+	// Runtime names the runtime that made this session, so every caller that
+	// starts, stops, restarts, types into or opens it chooses the
+	// implementation from this file rather than from a machine setting
+	// (docs/PLAN.md §2 "Rex is optional"). Empty means "afk": a host.json
+	// written before the field existed omits the key and must read as today.
+	Runtime string `json:"runtime,omitempty"`
 	// AgentStatus is the latest Program status (OSC 7501) root record the
 	// session's own agent sent in its output; LastExit is how the previous
 	// child generation ended (written after a restart in place, since a host

@@ -742,7 +742,7 @@ func defaultWaitHostReady(worktree, name string) error {
 }
 
 // waitForRestartedHostMeta retries only restart-driven metadata readiness.
-// Ordinary opens and previews still reach hostSocketPath immediately. The
+// Ordinary opens and previews still reach dialHostPane immediately. The
 // backoff matches host.Dial and package main's readMetaWithRetry: immediate
 // first attempt, 10ms doubling to a 100ms cap, and the final read error once
 // the deadline is exhausted. now/sleep are injected for deterministic tests.
@@ -1415,7 +1415,18 @@ func readTail(path string, n int) []string {
 // SpawnHost fills in every real default itself (including os.Executable, which
 // locates the afk binary it re-execs as `afk _host`).
 func defaultSpawnHost(name, worktree string) (session.HostProcess, error) {
-	return session.SpawnHost(session.HostSpawn{Name: name, Worktree: worktree}, session.Deps{})
+	return spawnThroughRuntime(session.HostSpawn{Name: name, Worktree: worktree})
+}
+
+// spawnThroughRuntime starts a host with the runtime host.json names (the afk
+// runtime for a session that has no host.json yet), so the dashboard never
+// calls the afk host directly.
+func spawnThroughRuntime(spec session.HostSpawn) (session.HostProcess, error) {
+	rt, err := session.RuntimeFor(spec.Worktree, spec.Name)
+	if err != nil {
+		return session.HostProcess{}, err
+	}
+	return rt.Spawn(spec, session.Deps{})
 }
 
 // defaultSpawnScratchHost is defaultSpawnHost's one-off sibling: Scratch: true
@@ -1425,7 +1436,7 @@ func defaultSpawnHost(name, worktree string) (session.HostProcess, error) {
 // signature is pinned by its existing injectors; restartHostCmd picks between
 // the two off paneOpenRequest.scratch.
 func defaultSpawnScratchHost(name, worktree string) (session.HostProcess, error) {
-	return session.SpawnHost(session.HostSpawn{Name: name, Worktree: worktree, Scratch: true}, session.Deps{})
+	return spawnThroughRuntime(session.HostSpawn{Name: name, Worktree: worktree, Scratch: true})
 }
 
 // defaultDiscover wires the UI to the real internal/discover.Discover with

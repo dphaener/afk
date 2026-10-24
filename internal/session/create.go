@@ -762,8 +762,11 @@ type Step struct {
 // execState is the shared mutable state threaded through the step closures at
 // execution time. It is never touched during dry-run.
 type execState struct {
-	worktree      string
-	host          HostProcess
+	worktree string
+	host     HostProcess
+	// runtime is the runtime that spawned host, so the rollback undoes it
+	// with the same implementation.
+	runtime       Runtime
 	createdWT     bool
 	createdBranch bool
 	createdDir    bool
@@ -1459,11 +1462,16 @@ func (p *Plan) assembleSteps(leadDesc string) {
 		Desc: "Launch detached session host running: " + childCommandLine(spawn) + hostProviderNote(spawn),
 		run: func() error {
 			spawn.Worktree = st.worktree
-			h, err := SpawnHost(spawn, d)
+			rt, err := RuntimeFor(spawn.Worktree, spawn.Name)
+			if err != nil {
+				return err
+			}
+			h, err := rt.Spawn(spawn, d)
 			if err != nil {
 				return err
 			}
 			st.host = h
+			st.runtime = rt
 			return nil
 		},
 		// Rollback: a session whose worktree and branch are about to be
@@ -1517,7 +1525,11 @@ func (p *Plan) hostUndo() func() error {
 		if p.st.host.PID == 0 {
 			return nil
 		}
-		if err := stopSpawnedHost(p.deps, p.st.host); err != nil {
+		rt := p.st.runtime
+		if rt == nil {
+			rt = afkRuntime{}
+		}
+		if err := rt.Undo(p.st.host, p.deps); err != nil {
 			fmt.Fprintf(p.stderr, "rollback: %v (see %s)\n", err, p.st.host.LogPath)
 		}
 		return nil
@@ -1599,11 +1611,16 @@ func (p *Plan) assembleScratchSteps(leadDesc string) {
 	steps = append(steps, Step{
 		Desc: fmt.Sprintf("Launch detached session host running: %s (one-off, in %s)%s", childCommandLine(spawn), repo, hostProviderNote(spawn)),
 		run: func() error {
-			h, err := SpawnHost(spawn, d)
+			rt, err := RuntimeFor(spawn.Worktree, spawn.Name)
+			if err != nil {
+				return err
+			}
+			h, err := rt.Spawn(spawn, d)
 			if err != nil {
 				return err
 			}
 			st.host = h
+			st.runtime = rt
 			return nil
 		},
 		undo: p.hostUndo(),

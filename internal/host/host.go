@@ -255,6 +255,7 @@ func Serve(cfg ServeConfig) error {
 			StartedAt: time.Now().UTC().Format(time.RFC3339),
 			Argv:      cfg.Argv,
 			Provider:  cfg.Provider,
+			Runtime:   RuntimeAfk,
 		},
 		ChildPID: h.cur.pid(),
 	}

@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/dphaener/afk/internal/host"
+	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/termpane"
 )
 
@@ -64,15 +65,15 @@ func openHostPane(cfg hostPaneConfig) (paneHandle, error) {
 // surface does not handle instructs the user to type that key into the
 // wedged child.
 func dialHostPane(cfg hostPaneConfig, wedgeHint string) (paneHandle, *hostChild, error) {
-	socket, err := hostSocketPath(cfg.Worktree, cfg.Name)
-	if err != nil {
-		return nil, nil, err
-	}
 	wait := cfg.Wait
 	if wait <= 0 {
 		wait = host.DefaultAttachWait
 	}
-	conn, err := host.Dial(socket, wait)
+	rt, err := session.RuntimeFor(cfg.Worktree, cfg.Name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("attaching to the %s session: %w", cfg.Name, err)
+	}
+	conn, err := rt.Dial(cfg.Worktree, cfg.Name, wait)
 	if err != nil {
 		return nil, nil, fmt.Errorf("attaching to the %s session: %w", cfg.Name, err)
 	}
@@ -103,19 +104,6 @@ func dialHostPane(cfg hostPaneConfig, wedgeHint string) (paneHandle, *hostChild,
 	// the pane has travelled through a message, so no race is opened.
 	wrapped.child = child
 	return wrapped, child, nil
-}
-
-// hostSocketPath prefers the path the host recorded over the derived one, so a
-// host listening somewhere unexpected is still reachable.
-func hostSocketPath(worktree, name string) (string, error) {
-	meta, err := host.ReadMeta(worktree, name)
-	if err != nil {
-		return "", fmt.Errorf("reading the host record for %s: %w", name, err)
-	}
-	if meta.Socket != "" {
-		return meta.Socket, nil
-	}
-	return host.SocketPath(worktree, name)
 }
 
 // wedgeRecoveryKey names the dashboard's one restart key (Model.restartSelected):
@@ -222,7 +210,7 @@ func (p *wedgeBannerPane) detachReason() host.DetachReason {
 }
 
 // newWedgeBannerPane wraps inner and starts the background poll against the
-// session's host.json (worktree/name locate it exactly as hostSocketPath
+// session's host.json (worktree/name locate it exactly as dialHostPane
 // does). The first poll runs synchronously so an already-wedged session's
 // very first Render() shows the banner rather than waiting a full interval.
 func newWedgeBannerPane(inner paneHandle, worktree, name, hint string) *wedgeBannerPane {

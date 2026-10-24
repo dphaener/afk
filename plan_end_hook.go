@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"github.com/dphaener/afk/internal/daemon"
@@ -113,7 +112,7 @@ func realPlanEnder(projects func() []daemon.Project, stateDir string, now func()
 		chat:      webPlanChat(now),
 		hostAlive: planHostAlive,
 		stop: func(root string) (session.HostStop, error) {
-			return session.StopHost(root, session.PlanSessionName, session.CleanDeps{Stderr: io.Discard})
+			return stopPlanSessionHost(root)
 		},
 		logDecision: func(root string, e decisionlog.Entry) error {
 			return decisionlog.Append(decisionlog.Path(root), e)

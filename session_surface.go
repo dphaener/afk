@@ -152,10 +152,18 @@ func defaultRestartSurfaceDeps() restartSurfaceDeps {
 			return discover.Discover(root, discover.DefaultDeps())
 		},
 		SpawnHost: func(spec session.HostSpawn) (session.HostProcess, error) {
-			return session.SpawnHost(spec, session.Deps{})
+			rt, err := session.RuntimeFor(spec.Worktree, spec.Name)
+			if err != nil {
+				return session.HostProcess{}, err
+			}
+			return rt.Spawn(spec, session.Deps{})
 		},
 		RequestRestart: func(worktree, name string) (string, error) {
-			return host.RequestRestart(worktree, name, daemonSendWait, restartReplyWait)
+			rt, err := session.RuntimeFor(worktree, name)
+			if err != nil {
+				return "", err
+			}
+			return rt.Restart(worktree, name, daemonSendWait, restartReplyWait)
 		},
 	}
 }
