@@ -378,3 +378,43 @@ func TestCheckMode(t *testing.T) {
 		})
 	}
 }
+
+// TestFromApp pins the Program status app-word mapping. Load-bearing rows:
+// claude-code must map to claude (the one confirmed word); empty must be
+// false (a report with no app is handled by the caller, not guessed here); a
+// near-miss such as "claude" or "Claude-Code" must be false (the match is
+// exact and case-sensitive); an unrelated tool such as "brew" must be false
+// so a tool run inside the agent never counts as the agent.
+func TestFromApp(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"claude-code", "claude-code", ClaudeName, true},
+		{"codex", "codex", CodexName, true},
+		{"opencode", "opencode", OpenCodeName, true},
+		{"empty", "", "", false},
+		{"near miss claude", "claude", "", false},
+		{"near miss case", "Claude-Code", "", false},
+		{"unrelated tool", "brew", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			p, ok := FromApp(tt.in)
+			if ok != tt.wantOK {
+				t.Fatalf("FromApp(%q) ok = %v, want %v", tt.in, ok, tt.wantOK)
+			}
+			if !ok {
+				if p != nil {
+					t.Fatalf("FromApp(%q) = %v with ok false, want nil", tt.in, p)
+				}
+				return
+			}
+			if p.Name() != tt.wantName {
+				t.Fatalf("FromApp(%q).Name() = %q, want %q", tt.in, p.Name(), tt.wantName)
+			}
+		})
+	}
+}

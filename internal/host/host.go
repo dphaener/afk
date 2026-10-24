@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/dphaener/afk/internal/progstatus"
 )
 
 // ErrHostAlreadyRunning is returned by Serve when a live host is already
@@ -131,11 +133,11 @@ type ServeConfig struct {
 	MetaPath string
 	// LogPath is the host's own log file (.afk/<name>/host.log).
 	LogPath string
-	// Argv is the child command and its arguments, e.g.
-	// {"claude", "/afk:go --session <name>"}.
+	// Argv is the child command and its arguments: the provider's agent
+	// CLI and its `/afk:go --session <name>` prompt (provider.LaunchArgv).
 	Argv []string
-	// Provider names the provider whose binary Argv runs ("claude",
-	// "codex", "opencode"); empty means claude. Argv alone cannot carry it: a wedged
+	// Provider names the provider whose binary Argv runs (one of
+	// provider.Names); empty means provider.Default. Argv alone cannot carry it: a wedged
 	// restart builds a different command line (restart.go's resumeArgv), and
 	// only the provider says which binary that must be. Optional, so it is not
 	// checked by validate; an unknown name refuses a restart, not startup.
@@ -285,6 +287,14 @@ type childProc struct {
 	// retired closes when this generation has been replaced, stopping its
 	// input writer so it cannot feed a PTY whose child is gone.
 	retired chan struct{}
+
+	// epoch is the agent keeper's epoch this generation was spawned in; its
+	// pump reports under it, so a retired pump's late reports are ignored
+	// (see agentKeeper.epoch).
+	epoch uint64
+	// exit is how this child ended. Written by waitChild before it closes
+	// exited, so anyone who has seen exited closed may read it.
+	exit LastExit
 }
 
 func (g *childProc) pid() int {
@@ -348,9 +358,22 @@ type hostRuntime struct {
 	baseMeta hostMeta
 
 	// publishMu guards host.json republishes against shutdown; see
-	// publishLiveness for why that window has to be closed.
+	// publishLiveness for why that window has to be closed. pubLive and
+	// pubAgent are the field values host.json last carried, kept so every
+	// rewrite (publish, liveness.go) carries all of them; guarded by it too.
 	publishMu  sync.Mutex
 	publishOff bool
+	pubLive    livenessSnapshot
+	pubAgent   agentSnapshot
+
+	// agent keeps what the agent last reported and how the previous child
+	// ended (agentstatus.go). The PTY pump feeds it and nudges agentNudge
+	// (one slot, never blocked on) when a publish is forced;
+	// monitorAgentStatus publishes. now is the clock for both, copied from
+	// hostClock so tests can drive it.
+	agent      *agentKeeper
+	agentNudge chan struct{}
+	now        func() time.Time
 
 	// childWriteSince is the unix-nano start time of the ptmx write
 	// currently in flight, or 0 while the writer is idle. Atomic because
@@ -461,6 +484,9 @@ func newHostRuntime(cfg ServeConfig, logger *log.Logger, ln net.Listener) *hostR
 		probes:      make(chan struct{}, 1),
 		restartDone: make(chan restartHandoff, 1),
 		live:        newLiveness(livenessTiming, time.Now()),
+		agent:       newAgentKeeper(agentStatusTiming, cfg.Provider),
+		agentNudge:  make(chan struct{}, 1),
+		now:         hostClock,
 		acceptDone:  make(chan struct{}),
 		afterAccept: afterAccept,
 		done:        make(chan struct{}),
@@ -492,6 +518,7 @@ func (h *hostRuntime) spawn(argv []string) error {
 		exited:  make(chan struct{}),
 		ptyDone: make(chan struct{}),
 		retired: make(chan struct{}),
+		epoch:   h.agent.currentEpoch(),
 	}
 	h.cur = g
 	go h.waitChild(g)
@@ -529,6 +556,7 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 	// which Serve has only just written, and it must not race that first
 	// write (nor run at all on a startup path that failed before it).
 	go h.monitorLiveness()
+	go h.monitorAgentStatus()
 
 	for {
 		// A closed exited channel is permanently ready, and mid-restart that
@@ -878,9 +906,16 @@ func (h *hostRuntime) dropClient(c *clientConn) {
 // rather than buffered (no unbounded memory) and reading never stops (a
 // full PTY buffer would block the child). Reattaching redraws via the
 // resize nudge, so there is nothing to replay.
+//
+// Every chunk also goes through this generation's own progstatus.Scanner,
+// one per generation because a restarted child starts a fresh stream and a
+// sequence the dead child left half-written must not swallow the new child's
+// first bytes. What the scanner finds only updates the agent keeper's memory;
+// the publish is monitorAgentStatus's, woken by a send that never blocks.
 func (h *hostRuntime) pumpPTY(g *childProc) {
 	defer close(g.ptyDone)
 
+	sc := progstatus.NewScanner()
 	buf := make([]byte, ptyReadBufSize)
 	for {
 		n, err := g.ptmx.Read(buf)
@@ -889,6 +924,13 @@ func (h *hostRuntime) pumpPTY(g *childProc) {
 			// attached: this is the host's only evidence that the child is
 			// still alive, and it is worth just as much while detached.
 			h.live.noteOutput(time.Now())
+			// Also whether or not anyone is attached: the agent's status
+			// is for the dashboard and the daemon, which never attach.
+			if res := sc.Scan(buf[:n]); len(res.Reports) > 0 {
+				if h.agent.observe(g.epoch, res.Reports, h.now()) {
+					h.nudgeAgentStatus()
+				}
+			}
 			h.mu.Lock()
 			c := h.client
 			h.mu.Unlock()
@@ -960,14 +1002,21 @@ func (h *hostRuntime) setSize(rows, cols uint16) {
 	h.rows, h.cols = rows, cols
 }
 
-// waitChild reaps one generation's child and announces it by closing that
-// generation's exited channel.
+// waitChild reaps one generation's child, records how it ended in g.exit,
+// and announces it by closing that generation's exited channel. The log line
+// is the record of every exit, the child's own and a restart's alike: a child
+// that exits on its own ends the host, which removes host.json, so host.log
+// is the only place its exit code survives.
 func (h *hostRuntime) waitChild(g *childProc) {
 	err := g.cmd.Wait()
-	if err != nil {
-		h.log.Printf("child (pid %d) exited: %v", g.pid(), err)
-	} else {
-		h.log.Printf("child (pid %d) exited cleanly", g.pid())
+	g.exit = lastExitOf(g.cmd.ProcessState, h.now())
+	switch {
+	case g.exit.Signal != "":
+		h.log.Printf("child (pid %d) exited: killed by %s", g.pid(), g.exit.Signal)
+	case err != nil:
+		h.log.Printf("child (pid %d) exited: %v (code %d)", g.pid(), err, g.exit.Code)
+	default:
+		h.log.Printf("child (pid %d) exited cleanly (code %d)", g.pid(), g.exit.Code)
 	}
 	close(g.exited)
 }

@@ -136,6 +136,34 @@ func Lookup(name string) (Provider, error) {
 	return nil, fmt.Errorf("unknown provider %q (valid: %s)", name, strings.Join(Names(), ", "))
 }
 
+// appWords maps the `app` word an agent CLI puts in its Program status
+// (OSC 7501) reports to the provider's name. Claude Code's word,
+// "claude-code", is recorded in docs/PLAN.md (M17 background). The codex and
+// opencode words are unconfirmed guesses (their command names) until T17.1
+// and T17.12 capture what those CLIs really send; a wrong guess only means
+// that agent's reports are not kept, never that something else is.
+var appWords = map[string]string{
+	"claude-code": ClaudeName,
+	"codex":       CodexName,
+	"opencode":    OpenCodeName,
+}
+
+// FromApp returns the provider whose agent CLI reports with the given `app`
+// word. The match is exact and case-sensitive because the spec's app is a
+// fixed token; an empty or unknown word (a tool run inside the agent's
+// terminal, say) returns (nil, false).
+func FromApp(app string) (Provider, bool) {
+	name, ok := appWords[app]
+	if !ok {
+		return nil, false
+	}
+	p, err := Lookup(name)
+	if err != nil {
+		return nil, false
+	}
+	return p, true
+}
+
 // ErrNoPlanSession is returned by PlanArgv for a provider that cannot run a
 // planning session. The master-plan skill ships only in plugins/afk, the
 // default provider's plugin; the OpenCode port does not carry it (see the lag

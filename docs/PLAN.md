@@ -207,7 +207,7 @@ keeps forge's layout, renamed.
 | File | Writer | Notes |
 |---|---|---|
 | `.afk/{session}/status.json` | conductor; hooks write only `awaiting_input` | The schema document `plugins/afk/skills/conductor/status-schema.md` stays binding. Don't add fields without changing it first. |
-| `.afk/{session}/host.json`, `host.log` | session host | Liveness and discovery. Independent of `status.json` by design. |
+| `.afk/{session}/host.json`, `host.log` | session host | Liveness and discovery. Independent of `status.json` by design. Two more fields, each omitted when unknown, and neither goes into `status.json`: `agent_status` (`state`, `kind`, `msg`, `at`) is the latest root Program status report (OSC 7501) from the session's own agent, republished at most every 2 seconds on change and at once on a state change; `last_exit` (`code`, `signal`, `at`) is how the previous program ended, written when a restart in place ends its generation. The exit code is also in `host.log`. |
 | `.afk/plans/{session}.md` | planner | The per-task work plan (waves, `(W1.T2)` ids, `**Depends on**`). Not the master plan. |
 | `.afk/{session}/review-verdict.md` | conductor | Severity-gated verdict. |
 | `.afk/{session}/learnings.md`, `decisions.md`, `issues.md` | agents, append-only | |
@@ -4399,6 +4399,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of the record kept across chunked output and of the republish timing; an
   end-to-end host test with a stand-in agent that prints reports; against a scratch build, a stand-in
   agent's `working … msg=Running tests` shows in the dashboard's row; `make check` is green.
+- Amended 2026-10-23 (T17.4 done): `host.Meta` has `AgentStatus *AgentStatus` (`agent_status`: `state`, `kind`, `msg`, `at`) and `LastExit *LastExit` (`last_exit`: `code`, -1 when signalled, `signal` name, `at`); discovery rows carry them as `discover.AgentStatus`/`discover.LastExit`. Only the root record whose `app` is empty or `provider.FromApp` maps to the session's provider is kept (`claude-code` known; `codex`/`opencode` guessed). `last_exit` appears only after a restart in place, because a child's own exit still ends the host and removes `host.json` (the code is in `host.log`). Every `host.json` write goes through one `publish` function in `internal/host`; T17.7 adds its fields there.
 
 #### T17.5 — afk reports its own status
 - **Depends on:** T17.3

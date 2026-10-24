@@ -1786,3 +1786,145 @@ func TestDetailHelpJumpRange(t *testing.T) {
 		})
 	}
 }
+
+// withMsg is s with the agent's own message set, as discovery copies it from
+// host.json.
+func withMsg(s Session, msg string) Session {
+	s.AgentStatus = &discover.AgentStatus{State: "working", Msg: msg}
+	return s
+}
+
+// TestSessionRowAgentMessage pins where a row shows the agent's message
+// (renderSessionRow, the one-line row) and, as important, where it does not.
+// Load-bearing rows: "narrow: every rowColumns rung" (below the message
+// threshold the row is byte-for-byte the no-message row, so no column moved
+// and the feature costs narrow terminals nothing), "no message" (a nil status
+// and an empty msg draw as today), "long message" (it is cut with an ellipsis
+// and the row is exactly width cells, so a hostile or long message cannot
+// widen the row) and "control characters" (an escape inside the text must not
+// reach the screen).
+func TestSessionRowAgentMessage(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	base := sess("api")
+	// A name wider than any narrow rung's name column: it fills the cell, so
+	// no room is left over for a message.
+	long := sess("a-fairly-long-session-name")
+	strip := func(s string) string { return xansi.Strip(s) }
+	cases := []struct {
+		name  string
+		msg   string
+		width int
+		long  bool   // use the long-named session
+		want  string // substring of the stripped row; "" means the row equals the no-message row
+	}{
+		{"wide: the message shows", "Running tests", 80, false, "Running tests"},
+		{"long message is truncated", strings.Repeat("word ", 40), 80, false, "word word"},
+		{"control characters are dropped", "Run\x1b[31mning\x07 tests", 80, false, "Run [31mning tests"},
+		{"narrow: rung 40", "Running tests", 40, true, ""},
+		{"narrow: rung 32", "Running tests", 32, true, ""},
+		{"narrow: rung 24", "Running tests", 24, true, ""},
+		{"narrow: below 24", "Running tests", 20, true, ""},
+		{"no message", "", 80, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := base
+			if tc.long {
+				base = long
+			}
+			got := renderSessionRow(withMsg(base, tc.msg), false, tc.width, now)
+			if w := lipgloss.Width(got); w != tc.width {
+				t.Errorf("row is %d cells, want exactly %d: %q", w, tc.width, strip(got))
+			}
+			if strings.ContainsAny(got, "\x07") {
+				t.Errorf("a control character reached the row: %q", got)
+			}
+			plain := renderSessionRow(base, false, tc.width, now)
+			if tc.want == "" {
+				if got != plain {
+					t.Errorf("row differs from the no-message row:\n got %q\nwant %q", got, plain)
+				}
+				return
+			}
+			if !strings.Contains(strip(got), tc.want) {
+				t.Errorf("row %q lacks %q", strip(got), tc.want)
+			}
+		})
+	}
+	// The same session with and without a message keeps every column in
+	// place: the text before the message is identical.
+	with := strip(renderSessionRow(withMsg(base, "Running tests"), false, 80, now))
+	without := strip(renderSessionRow(base, false, 80, now))
+	if i := strings.Index(with, "Running tests"); i < 0 || !strings.HasPrefix(without, strings.TrimRight(with[:i], " ")) {
+		t.Errorf("a message moved a column:\n with %q\n without %q", with, without)
+	}
+	if len(with) == 0 || lipgloss.Width(with) != lipgloss.Width(without) {
+		t.Errorf("message changed the row width: %d vs %d", lipgloss.Width(with), lipgloss.Width(without))
+	}
+}
+
+// TestSessionSectionRowAgentMessage is the same rule for the Project level's
+// Sessions section row, the one the dashboard actually draws there: the
+// message shows between the tasks count and the right word when the width has
+// room, and a narrow section draws the row it drew before. Load-bearing row:
+// "narrow" (the room left is under rowMessageMin, so nothing changes) and
+// "section 46" (the 140x40 Sessions section: too tight beside "open it", so
+// the message takes that hint's cells, and "asks you" is never given up).
+func TestSessionSectionRowAgentMessage(t *testing.T) {
+	base := runningSess("api")
+	for _, tc := range []struct {
+		name  string
+		width int
+		shows bool
+	}{
+		{"wide", 90, true},
+		{"section 46", 46, true},
+		{"narrow", 36, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sessionSectionRow(withMsg(base, "Running tests"), false, false, 4, tc.width)
+			plain := sessionSectionRow(base, false, false, 4, tc.width)
+			if w := lipgloss.Width(got); w != tc.width {
+				t.Errorf("row is %d cells, want %d", w, tc.width)
+			}
+			if has := strings.Contains(xansi.Strip(got), "Running tests"); has != tc.shows {
+				t.Errorf("message shown = %v, want %v: %q", has, tc.shows, xansi.Strip(got))
+			}
+			if !tc.shows && got != plain {
+				t.Errorf("narrow row differs from the no-message row")
+			}
+		})
+	}
+}
+
+// TestSessionSectionRowMessageKeepsAsksYou pins the one thing the message may
+// not take: at the 140x40 section width a session that asks the owner keeps
+// "asks you" and shows no message, while a running one trades "open it" for
+// the message.
+func TestSessionSectionRowMessageKeepsAsksYou(t *testing.T) {
+	ask := runningSess("api")
+	ask.AwaitingInput = true
+	for _, tc := range []struct {
+		name       string
+		s          Session
+		wantMsg    bool
+		wantAsks   bool
+		wantOpenIt bool
+	}{
+		{"running", runningSess("api"), true, false, false},
+		{"asking", ask, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := xansi.Strip(sessionSectionRow(withMsg(tc.s, "Running tests"), false, false, 4, 46))
+			if has := strings.Contains(got, "Running tests"); has != tc.wantMsg {
+				t.Errorf("message shown = %v, want %v: %q", has, tc.wantMsg, got)
+			}
+			if has := strings.Contains(got, "asks you"); has != tc.wantAsks {
+				t.Errorf("asks you shown = %v, want %v: %q", has, tc.wantAsks, got)
+			}
+			if has := strings.Contains(got, "open it"); has != tc.wantOpenIt {
+				t.Errorf("open it shown = %v, want %v: %q", has, tc.wantOpenIt, got)
+			}
+		})
+	}
+}

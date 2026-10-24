@@ -2807,7 +2807,7 @@ func renderSessionRow(s Session, selected bool, width int, now time.Time) string
 		return renderFaultRow(s, selected, width, marker, l)
 	}
 
-	name := renderRowName(s, l.name)
+	name := withRowMessage(renderRowName(s, l.name), s, l.name)
 
 	// A stale status has no trustworthy phase, so the column says so instead
 	// of showing the neutral UNKNOWN a corrupt file would otherwise wear —
@@ -2842,6 +2842,52 @@ func renderSessionRow(s Session, selected bool, width int, now time.Time) string
 
 	line := composeRow(l, marker, hostIndicator(s), name, phase, taskCount(s), flag, width)
 	return padSessionRow(line, selected, width)
+}
+
+// rowMessageGap and rowMessageMin shape where a row shows the agent's own
+// message. The message rides in room the row already has and takes none from
+// a column: it shows only when the cell it sits in (the name's cell, whose
+// width is rowColumns' elastic name, or the Sessions section's row) has at
+// least rowMessageMin cells left after the name at its natural width and
+// rowMessageGap cells of air. Ten cells is about two short words, enough to
+// read as a message; a shorter sliver ("Ru…") would only look like noise. A
+// name that is itself cut leaves no room, so a long name always wins.
+const (
+	rowMessageGap = 2
+	rowMessageMin = 10
+)
+
+// rowMessageText is the agent's message as one line of plain text, "" when
+// the session has none. The text comes from a program's escape sequence, so
+// control characters are dropped (they could move the cursor or start a style
+// inside the row) and runs of whitespace collapse into single spaces.
+func rowMessageText(s Session) string {
+	if s.AgentStatus == nil {
+		return ""
+	}
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s.AgentStatus.Msg)
+	return strings.Join(strings.Fields(clean), " ")
+}
+
+// withRowMessage appends the dimmed message to cellText when room is the
+// cell's width and at least rowMessageMin cells are left after the text and
+// the gap. Otherwise it returns cellText untouched, so a row with no message,
+// or too little room, is byte-for-byte what it was without this feature.
+func withRowMessage(cellText string, s Session, room int) string {
+	msg := rowMessageText(s)
+	if msg == "" {
+		return cellText
+	}
+	left := room - lipgloss.Width(cellText) - rowMessageGap
+	if left < rowMessageMin {
+		return cellText
+	}
+	return cellText + strings.Repeat(" ", rowMessageGap) + theme.dim.Render(truncate(msg, left))
 }
 
 // rowProviderMinName is the fewest name cells a row keeps before it drops the

@@ -692,6 +692,90 @@ func TestDiscover_LivenessFieldsPassthrough(t *testing.T) {
 	}
 }
 
+// TestDiscover_AgentStatusAndLastExitPassthrough checks that host.json's
+// agent_status and last_exit reach the row field for field. Load-bearing:
+// the signal row (code -1 plus a name) and the empty kind/msg row, which
+// must not turn into a made-up value.
+func TestDiscover_AgentStatusAndLastExitPassthrough(t *testing.T) {
+	tests := []struct {
+		name string
+		meta host.Meta
+	}{
+		{"both fields", host.Meta{
+			AgentStatus: &host.AgentStatus{State: "working", Kind: "tool", Msg: "Running tests", At: "2026-07-09T21:10:00Z"},
+			LastExit:    &host.LastExit{Code: 3, At: "2026-07-09T21:00:00Z"},
+		}},
+		{"signalled exit, bare status", host.Meta{
+			AgentStatus: &host.AgentStatus{State: "idle", At: "2026-07-09T21:10:00Z"},
+			LastExit:    &host.LastExit{Code: -1, Signal: "SIGTERM", At: "2026-07-09T21:00:00Z"},
+		}},
+		{"status only", host.Meta{
+			AgentStatus: &host.AgentStatus{State: "working", Msg: "x", At: "2026-07-09T21:10:00Z"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			writeStatus(t, repo, "agent-session", statusOpts{phase: state.PhaseExecuting})
+			meta := tt.meta
+			meta.PID = os.Getpid()
+			if err := host.WriteMeta(repo, "agent-session", meta); err != nil {
+				t.Fatalf("WriteMeta: %v", err)
+			}
+			sessions, err := Discover(repo, DefaultDeps())
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			got, ok := findByName(sessions, "agent-session")
+			if !ok {
+				t.Fatal("agent-session not found")
+			}
+			if (got.AgentStatus == nil) != (meta.AgentStatus == nil) {
+				t.Fatalf("AgentStatus = %+v, want %+v", got.AgentStatus, meta.AgentStatus)
+			}
+			if a := meta.AgentStatus; a != nil && *got.AgentStatus != (AgentStatus{State: a.State, Kind: a.Kind, Msg: a.Msg, At: a.At}) {
+				t.Errorf("AgentStatus = %+v, want %+v", *got.AgentStatus, *a)
+			}
+			if (got.LastExit == nil) != (meta.LastExit == nil) {
+				t.Fatalf("LastExit = %+v, want %+v", got.LastExit, meta.LastExit)
+			}
+			if e := meta.LastExit; e != nil && *got.LastExit != (LastExit{Code: e.Code, Signal: e.Signal, At: e.At}) {
+				t.Errorf("LastExit = %+v, want %+v", *got.LastExit, *e)
+			}
+		})
+	}
+}
+
+// TestDiscover_AgentStatusAbsentIsNilNotError covers a legacy host.json
+// without agent_status or last_exit: both stay nil and Discover succeeds.
+// Load-bearing: the literal has no such keys at all.
+func TestDiscover_AgentStatusAbsentIsNilNotError(t *testing.T) {
+	repo := newTestRepo(t)
+	writeStatus(t, repo, "legacy-agent", statusOpts{phase: state.PhaseExecuting})
+	dir := filepath.Join(repo, ".afk", "legacy-agent")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy := `{"pid": ` + strconv.Itoa(os.Getpid()) + `, "socket": "", "started_at": "", "argv": []}`
+	if err := os.WriteFile(filepath.Join(dir, "host.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy host.json: %v", err)
+	}
+	sessions, err := Discover(repo, DefaultDeps())
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	got, ok := findByName(sessions, "legacy-agent")
+	if !ok {
+		t.Fatal("legacy-agent not found")
+	}
+	if !got.HostRunning {
+		t.Errorf("HostRunning = false, want true")
+	}
+	if got.AgentStatus != nil || got.LastExit != nil {
+		t.Errorf("AgentStatus = %+v, LastExit = %+v, want both nil", got.AgentStatus, got.LastExit)
+	}
+}
+
 // TestDiscover_LivenessFieldsAbsentAreUnknownNotError covers a host.json
 // written before last_output_at/wedged_since existed (or by a host that
 // never populated them) — both must read as "unknown" (empty string), never

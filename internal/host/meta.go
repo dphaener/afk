@@ -27,6 +27,36 @@ type Meta struct {
 	// "opencode"). Empty means claude: hosts written before this field
 	// existed omit the key.
 	Provider string `json:"provider,omitempty"`
+	// AgentStatus is the latest Program status (OSC 7501) root record the
+	// session's own agent sent in its output; LastExit is how the previous
+	// child generation ended (written after a restart in place, since a host
+	// whose child exits on its own removes host.json). Both are pointers so
+	// that "unknown" is an absent key rather than a zero record: a host.json
+	// written before these fields existed, or by a host whose agent has not
+	// reported yet, parses with both nil, and older readers ignore the keys.
+	AgentStatus *AgentStatus `json:"agent_status,omitempty"`
+	LastExit    *LastExit    `json:"last_exit,omitempty"`
+}
+
+// AgentStatus is what the agent last said about itself. State, Kind and Msg
+// are the report's own fields (state is never "clear": a root clear removes
+// the record). At is RFC 3339 UTC and is when the HOST saw the report, not a
+// time the agent claimed, because reports carry no timestamp.
+type AgentStatus struct {
+	State string `json:"state"`
+	Kind  string `json:"kind,omitempty"`
+	Msg   string `json:"msg,omitempty"`
+	At    string `json:"at"`
+}
+
+// LastExit is how one child generation ended. Code is the exit status, or -1
+// when a signal killed the child, in which case Signal names it (for example
+// "SIGTERM"); Signal is empty for an ordinary exit. At is RFC 3339 UTC, when
+// the host reaped the child.
+type LastExit struct {
+	Code   int    `json:"code"`
+	Signal string `json:"signal,omitempty"`
+	At     string `json:"at"`
 }
 
 func metaDir(repoRoot, name string) string {

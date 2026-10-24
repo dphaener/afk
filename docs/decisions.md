@@ -4325,3 +4325,26 @@ The owner met none of these in their own terminals. The agent's sweep found elev
 - **Tested with tables, a split at every byte and a fuzz test (A8).** The fuzz seeds run with `go test`.
 - **Nothing had to be in place first (A9).** T17.3 depends on no other task.
 - **This section, and the two CONTEXT.md terms, belong to the change.** The planner wrote them.
+
+## T17.4
+
+The session host now keeps what its agent last reported about itself (Program status, OSC 7501) and how its last program ended, and writes both into `host.json`. These are the choices the master plan left open.
+
+### What this task decided, and why
+
+- **`last_exit` shows after a restart in place (A1).** When an agent exits on its own, its host ends and removes `host.json`, as before, so there is nowhere left to keep the exit. A restart in place keeps the host and its `host.json`, so that is where `last_exit` appears. The exit code and signal are written to `host.log` either way. Keeping a dead host's `host.json` around would have changed how one-off sessions are found.
+- **Only the agent's own report counts (A2).** The host keeps the root record, and only when its `app` is empty or names the session's own agent. A tool the agent runs in the same terminal (say `brew`) must not overwrite what the agent said. `internal/provider` turns the `app` word into a provider: `claude-code` is known; `codex` and `opencode` are guessed from their command names until T17.12 confirms what those agents send. A wrong guess only means their reports are not kept.
+- **How an exit is written (A3).** `code` is the exit code, or -1 when a signal killed the program; `signal` is the signal's name (for example `SIGTERM`), only then; `at` is the time, in UTC.
+- **The output pump does no file work (A4).** It updates a record in memory and nudges a background publisher, which rewrites `host.json` through the same single path the liveness fields use, at most every 2 seconds, and at once when the state changes. A slow disk or a wedged reader cannot hold up the agent.
+- **When the status goes away (A5).** A root `clear` report forgets it, and so does a restart in place, because the new agent has not said anything yet. `at` is when the host saw the report.
+- **Where the dashboard shows it (A6).** The session row shows the agent's message, dimmed, only when the window is wide enough that every existing column keeps its width. In the Agent band it is the first thing dropped when space runs out. The home and project bands are unchanged.
+- **Tests (A7, A8).** Table tests with `go test`, plus end-to-end host tests with a stand-in agent that prints reports. Nothing had to be in place first beyond T17.3.
+- **This section, and the two CONTEXT.md terms, belong to the change (A9).** The planner wrote them.
+
+### Decided while building it
+
+- **A report that repeats the current status changes nothing, not even `at`.** So `at` is when the host first saw this status, and an agent that resends its status does not rewrite `host.json` (and fire the web page's change events) every 2 seconds.
+- **A retired agent's last bytes cannot become the new agent's status.** The keeper counts child generations, and a report from an older one is ignored, because the old pump may still hand over output for a moment after a restart.
+- **Signal names come from a small table in the host** (`SIGHUP` to `SIGXFSZ`, else `signal N`), not from `golang.org/x/sys`, which would have been a new direct dependency.
+- **Discovery has its own copies of the two types** (`discover.AgentStatus`, `discover.LastExit`), so it still calls nothing in `internal/host` but `ReadMeta` and `Alive`. Later dashboard tasks use those.
+- **The Project level's session row shows the message too**, in `sessionSectionRow`, since that is the row the dashboard draws there. When the message does not fit beside the `open it` hint, it takes the hint's cells; `asks you` is never given up.
