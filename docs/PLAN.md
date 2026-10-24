@@ -4343,7 +4343,8 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
     leaves behind for afk to see.
 - **Must not:** change afk's code beyond the throwaway prototype, which is not merged.
 - **Acceptance:** the write-up answers every point with what was run and seen, names the design chosen,
-  and amends the later tasks of M17 where an answer changes them ("Amended 2026-…").
+  writes the answers into the two §10 rows that say "T17.1 answers it", and amends the later tasks of
+  M17 where an answer changes them ("Amended 2026-…").
 
 #### T17.2 — Talk to Rex
 - **Depends on:** T17.1
@@ -4673,8 +4674,8 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 | How a subscription weights cache reads, cache writes and output against its limits. Unpublished; compare the token ledger with the usage percentages the governor records. | after T2.4 |
 | Licence for the open-source release. **Answered 2026-10-19:** MIT, copyright Darin Haener (§2, "Releases"). | T12.2 |
 | Is the repository public, with release binaries anyone can download without logging in to GitHub? The bootstrap script cannot be tried for real until it is. The owner said on 2026-10-17 that this is "on the table soon". **Answered 2026-10-18:** The repo is now public | T11.6 |
-| A Rex-backed session: afk's host running inside the Rex terminal with its own inner PTY (stdio host), or as the agent's parent on the one Rex terminal, typing through Rex's API? The plan assumes the stdio host. | T17.1 |
-| What does Claude Code report over OSC 7501 at a permission prompt, at an AskUserQuestion, at the end of a turn and when idle; and do Codex and OpenCode report anything? | T17.1 |
+| Which way does a Rex-backed session run: afk's host inside the Rex terminal with its own inner PTY (the stdio host the plan assumes), or as the agent's parent on the one Rex terminal, typing through Rex's API? T17.1 answers it. | T17.7 |
+| Which program status records does each agent CLI send (Claude Code at a permission prompt, at an AskUserQuestion, at the end of a turn and when idle; Codex and OpenCode at all)? T17.1 answers it. | T17.12 |
 | Does Rex become the default runtime where a Rex server answers, and do the afk-only Agent level and `internal/termpane` retire? Decide from T17.17's write-up. | after T17.17 |
 
 ## 11. Definition of done (every task)
