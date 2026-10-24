@@ -4381,6 +4381,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests from the spec's own examples, every limit at and over its edge, a report
   split at every byte, BEL and ST endings, an unended sequence, and insertion points around CSI, OSC and
   DCS sequences; `make check` is green.
+- Amended 2026-10-23 (T17.3 done): `internal/progstatus` follows spec revision 0.4 and has `Encode(Record) ([]byte, error)` (ends with ST, refuses anything a terminal would drop), `Parse(body) (Record, bool)` and `NewScanner().Scan(chunk) Result{Reports []Report{Record; End}; LastSafe int}` plus `Safe()`. `Record` carries `Progress`/`HasProgress` too. T17.4 keeps the root record from `Reports` with `ID == ""`; T17.7 inserts at `LastSafe` or a report's `End`, and must choose its own wait when a sequence never ends (`Safe()` stays false). The middle of a UTF-8 character counts as unsafe.
 
 #### T17.4 — The host records what its agent reports
 - **Depends on:** T17.3
