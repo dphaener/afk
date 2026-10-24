@@ -142,6 +142,9 @@ Finish nebari: 17 tasks remain (M4–M9 of `~/code/nebari/docs/PLAN.md`).
 | Bug fixes | Decided 2026-10-19 (M13): `afk plan fix` is a fifth planning mode, a change session like amend. It reproduces the bug and finds its cause, then adds **one** task titled with `(fix)`, whose Acceptance is a test that fails today, to a standing milestone titled `Fixes` (created by the first fix). The owner confirms the entry first unless `--yes`. The task that caused the bug gets an Amended line naming the fix. The daemon picks a ready `(fix)` task **ahead of every other ready task**. |
 | Planning sessions end themselves | Decided 2026-10-19 (M13): a finished planning session never blocks the next one. `afk plan approve` ends a new session's agent; a change session's agent is ended once it is at `review`, has saved its summary to `.afk/plan/summary.md` and is waiting for the owner, by the daemon on its next pass or by the next `afk plan`. The files in `.afk/plan/` stay until the next session archives them. |
 | Native notifications | Decided 2026-10-20 (M15): the web page installs as an app (a manifest, the owner's icons, a service worker) and sends **web push** to every device signed up on a machine-wide Notifications page, which the owner designs in Claude Design (From the owner profile, a default: design tool) and which lists the devices with Remove. It replaces ntfy, which is **removed completely** (T15.8); an `ntfy_url` left in a settings file is ignored without a word (the owner's choice). Push goes only for what blocks on the owner: an inbox item that blocks a task, the urgent notices and a planning session waiting; the idle and plan-ready notices go. Push needs an `https://` address, so over plain `http://` the page says so, and in iPhone Safari it shows the Add to Home Screen steps. The owner makes each icon size by hand (T15.1). afk makes its own push key and keeps it in its state folder. macOS desktop toasts stay, with the new icon in place of the pickaxe. |
+| The hub | Decided 2026-10-23 (M17): the build machine is **the hub**. It runs afk's daemon and a Rex server, holds every `.afk/` file, and is reached from anywhere over Tailscale: the owner's laptop through Rex for Mac, a phone through Rex for iOS (in beta) and the web page. **afk is the brain, Rex is the body**: afk keeps the plan, the loop, the policy and every file; Rex holds the terminals, the windows, the remote access and every client. afk shows its state in Rex's own terms (program status records, session and window labels, palette actions), so each Rex client shows it without afk building anything for that client. The laptop runs Rex for Mac and nothing of afk (the owner chose the simplest start; a laptop `afk` that acts on the hub can come later). |
+| Rex is optional | Decided 2026-10-23 (M17): afk's own session host stays, and Rex is a second way to run a session, chosen per machine with `[runtime] backend` in `config.toml`. A session is driven by the runtime that made it for its whole life (`host.json` says which). afk is for hobbyists on any machine, and Rex is in beta with its Linux server in testing waves, so nothing afk does may need Rex. Whether Rex becomes the default, and whether the afk-only attach and `internal/termpane` retire, is decided after M17's proof (§10). |
+| Agents open in Rex | Decided 2026-10-23 (M17): for a Rex-backed session, going into an agent (the dashboard's Agent level, `afk attach`) hands off to Rex, which shows the agent's own window. Rex already does what the Agent level imitates: many viewers at once, scrollback, sizing, and reaching it from any device. The dashboard keeps All projects and Project and becomes the **control room**, kept running on the hub in a Rex session named `afk` so any Rex client can open it. Sessions run by afk's own host keep today's Agent level. |
 | Rules | `~/code/.claude/rules/*.md` are Rails rules and **do not apply** to this repo. T0.1 writes afk's own `CLAUDE.md`. |
 
 ---
@@ -4247,6 +4250,352 @@ Amended 2026-10-22 (T16.8 done): the counting is the new package `internal/activ
   "unknown") are filed in the inbox for a later task to pick up. 16 colours cannot be produced inside
   tmux, because the colour library floors at 256 when `TMUX` is set.
 
+### M17 — The hub: afk on Rex
+
+**Outcome:** the build VM is the hub (§2, "The hub"). Its daemon runs each task's agent in a Rex window,
+the control room (`afk dash`) runs there in a Rex session of its own, and the owner watches, answers and
+steps into any agent from the laptop's Rex for Mac or a phone's Rex for iOS, from anywhere on their
+tailnet. Every Rex client shows what each agent and each project is doing, and what needs the owner,
+because afk reports it in Rex's own terms. A machine without Rex runs exactly as it does today.
+
+```
+                ┌──────────────────── build VM (the hub) ─────────────────────┐
+                │  Rex server (login-server mode, Tailscale)                   │
+                │    session "afk"      → afk dash (the control room)          │
+                │    session "nebari"   → window t4-3, window t4-4, window plan│
+                │  afk daemon: loop, governor, ship, inbox, web page           │
+                │  .afk/ files: the only record of state, as today             │
+                └─────▲──────────────────────▲──────────────────────▲─────────┘
+            Tailscale │            Tailscale │                HTTPS │
+              Rex for Mac (laptop)    Rex for iOS (beta)     web page (push, answers)
+```
+
+**Background** (what was true on 2026-10-23; the community MCP's feedback threads and Rex's changelog
+are the sources, and the spike re-checks anything a task leans on):
+
+- Rex is a terminal multiplexer whose server outlives every client. A session holds windows (tabs), a
+  window holds blocks (panes), and today the only kind of block is a terminal. The `rex` command talks
+  to the server: `rex api call <method> <json>` calls any method (about 18 ms a call on the owner's Mac)
+  and `rex events --json` streams events. `rex api list` and `rex api describe` document every method,
+  from the server that answers. A terminal block takes a `command`, a `cwd`, a starting `size`, colours
+  (`theme`) and whether it closes when its program exits. It has no environment setting, so environment
+  goes on the command line through `env`.
+- **Program status (OSC 7501)** is an escape sequence a program writes to say what it is doing:
+  `idle`, `working`, `done`, `blocked` (with `kind` `permission`, `question` or `auth`) or `error`,
+  with a short message (`msg`). A terminal holds one record per `id`, and the root record when there
+  is none. The spec is at `superlogical.com/rex/docs/build/program-status`. Claude Code already sends
+  it (`app=claude-code`). Rex shows it as tab spinners and badges, in Activity (on iOS too), in hover
+  cards and in a palette that finds sessions across every connected host, and Rex for Mac can turn it
+  into sounds, macOS notifications and Dock badges. Rex no longer guesses status from the screen.
+  Nothing lets one program report status for another program's terminal. Someone asked for that,
+  under "Agent lifecycle integration for external orchestrators", and was pointed at Lua.
+- Custom actions (`rex.action` in `init.lua`) belong to the **client**: defined in the laptop's
+  `init.lua`, they act on sessions on any host, and the hub's own `init.lua` actions do not reach the
+  laptop. Rex for iOS has no custom actions yet.
+- Restarting a Rex server ends every session on it, except in **login-server mode**, whose
+  per-account servers keep running through upgrades. Rex aims to need server restarts rarely, and does
+  not plan to restore sessions after one. Rex's own push notifications are accepted but "a little way
+  off". Non-terminal blocks (a browser or a diff viewer) and block plugins (`--block-dir`, not
+  documented) are not something to build on yet.
+- Today afk's host owns each agent's PTY, serves one client that steals the session from the last,
+  keeps no scrollback, records no exit code, and is drawn in the dashboard through `internal/termpane`.
+  The emulator there swallows OSC 7501, so even inside Rex nothing of an agent's status gets out.
+
+**The design.** A Rex-backed session is afk's own host running **inside** a Rex terminal:
+`afk _host --stdio …` is the block's command, so the host's always-attached client is its own stdin
+and stdout (the Rex terminal), while its socket still takes the daemon's requests. The host keeps its
+inner PTY to the agent, so the wedge check, restarting in place, typing from the daemon and the web
+page, and the exit code all stay host code that exists today. The agent's status records pass straight
+through to Rex. Because the host sees every byte, it can also write afk's own record (`id=afk`) between
+the agent's escape sequences without tearing them, which is the one thing Rex cannot do for an outside
+program. Rex is needed only to create, label, show and read terminals. `host.json` stays the file every
+reader uses. T17.1 checks this against the alternative (the host as the agent's parent on the one Rex
+terminal, typing through Rex's API) and picks.
+
+Tasks in one Go package collide at merge, so the ones that edit `internal/ui` (T17.4, T17.5, T17.10,
+T17.15) and the ones that edit `internal/host` (T17.4, T17.6, T17.7) run one after another. Rex is never
+called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` are.
+
+#### T17.1 — Spike: afk on Rex (owner + agent)
+- **Depends on:** —
+- **Goal:** every question the later tasks lean on is answered on the Mac and on the VM, and written in
+  `docs/decisions.md` under `## T17.1`.
+- **Scope:** the owner installs the Rex Linux server on the VM in login-server mode with Tailscale, and
+  adds the VM to Rex for Mac and to Rex for iOS. The session then answers, with a captured example for
+  each:
+  - What Claude Code reports, record by record, while it works, when a turn ends, at a permission
+    prompt, at an AskUserQuestion, when it is idle, and when it exits; and what Codex and OpenCode
+    report, if anything.
+  - The stdio host against the parent host (the design above): a hand-built `afk _host --stdio`
+    prototype in a Rex block runs a real agent; check resizes reach the inner PTY, the agent's records
+    reach Rex, an `id=afk` record written between the agent's writes never tears its drawing, a
+    restart in place redraws, and the dashboard's existing restart and typing requests work through the
+    socket. Then decide between the two and say why.
+  - How a block behaves with no client watching (its size, whether the wedge probe's resize nudge still
+    makes an idle agent redraw), and after the owner's Mac takes it over at another size.
+  - How to put a window on the owner's screen from a program running on the hub (`session.select` on
+    the right client, found from `client.list`), and what happens with two clients connected.
+  - `com.superlogical.terminal.format` on a busy agent: how long it takes, and how large the HTML of the
+    screen alone is, against the screen and its scrollback.
+  - What Rex for iOS shows of afk's control room: the columns and rows it gets in portrait and
+    landscape, and whether the dashboard's keys can be typed.
+  - That a Rex upgrade on the VM in login-server mode keeps a running agent, and what a server restart
+    leaves behind for afk to see.
+- **Must not:** change afk's code beyond the throwaway prototype, which is not merged.
+- **Acceptance:** the write-up answers every point with what was run and seen, names the design chosen,
+  and amends the later tasks of M17 where an answer changes them ("Amended 2026-…").
+
+#### T17.2 — Talk to Rex
+- **Depends on:** T17.1
+- **Goal:** afk can find a Rex server, call it and read its events, and every caller is table-testable.
+- **Background:** the `rex` command is the documented way in, and it derives everything from the server
+  it talks to; the wire protocol underneath is not documented, so afk does not speak it.
+- **Scope:**
+  - `internal/rex`: an interface over the `rex` command (`Call(method, args) (json, error)`, the block
+    calls, and an event stream that ends cleanly), with a deadline on every call and a fake for tests.
+    It checks the server's `api_revision` once and refuses a server older than the one T17.1 tested,
+    saying which version is needed.
+  - The few calls M17 uses, each typed: create a session or find it by label, open a window with one
+    terminal, set labels, list a session's blocks, read a block's program status, `process` and
+    `format`, list clients, ask a client to show a window.
+  - `internal/probe` learns whether `rex` is installed, whether a server answers, and whether afk is
+    itself running inside Rex (`REX_SESSION`, `REX_BLOCK`). `afk doctor` (or the install's check) shows
+    the result in plain words.
+- **Must not:** be called from `internal/discover`, or block anything that draws a screen.
+- **Acceptance:** table tests of the parsing of each call's answer and error, the revision check and the
+  probe's every case; against a scratch build on the Mac, a hidden `afk _rex-check` (or a test behind a
+  build tag) lists sessions and reads its own pane's status; `make check` is green.
+
+#### T17.3 — Program status, read and written
+- **Depends on:** —
+- **Goal:** afk can write an OSC 7501 report and pick reports out of a stream of terminal output.
+- **Scope:** a pure package, `internal/progstatus`: `Encode(Record) ([]byte, error)` keeps the spec's
+  limits (keys, the base64 of `msg` and `title`, `app`, `id`, 4096 bytes in all) and refuses control
+  characters; a `Scanner` takes output in chunks of any size, finds every complete OSC 7501 report even
+  when one is split across chunks, ends with either ST or BEL, and reports the byte offsets where it is
+  safe to insert a sequence of afk's own (never inside any escape sequence). Malformed reports are
+  dropped as the spec says.
+- **Must not:** allocate without bound on a stream that never ends a sequence; a sequence longer than
+  the spec's limit is dropped.
+- **Acceptance:** table tests from the spec's own examples, every limit at and over its edge, a report
+  split at every byte, BEL and ST endings, an unended sequence, and insertion points around CSI, OSC and
+  DCS sequences; `make check` is green.
+
+#### T17.4 — The host records what its agent reports
+- **Depends on:** T17.3
+- **Goal:** `host.json` says what the agent last reported about itself and how its last program ended,
+  on every machine, with or without Rex.
+- **Scope:** the host's output pump passes its output through the scanner and keeps the latest root
+  record. `host.json` gains `agent_status` (`state`, `kind`, `msg`, `at`) and `last_exit` (`code`,
+  `signal`, `at`), each omitted when unknown, and is republished at most every 2 seconds when the record
+  changes (a change of `state` immediately). `internal/provider` turns an `app` word into a provider, so
+  nothing else names one. `internal/discover` copies both fields into its rows, and the dashboard shows
+  the agent's message in the session row and the band where there is room. §4.1 is amended with the
+  new fields.
+- **Must not:** slow or stall the pump (a wedged reader of `host.json` cannot hold it); write a field
+  into `status.json`.
+- **Acceptance:** table tests of the record kept across chunked output and of the republish timing; an
+  end-to-end host test with a stand-in agent that prints reports; against a scratch build, a stand-in
+  agent's `working … msg=Running tests` shows in the dashboard's row; `make check` is green.
+
+#### T17.5 — afk reports its own status
+- **Depends on:** T17.3
+- **Goal:** a terminal running `afk dash` or `afk daemon` in the foreground tells Rex, and any terminal
+  that understands OSC 7501, what needs the owner.
+- **Scope:** a pure function from the dashboard's projects and inbox to records: the root record is
+  `blocked` (`kind=question`, `msg` "2 things need you: …") while anything waits on the owner, `error`
+  while a project's line is stopped, `working` while a task runs and `idle` otherwise, and one child
+  record per project (`id=<project>`, `title` the project's name, `msg` the running task and its
+  phase). Sent when the answer changes, not on every tick, and cleared on exit. The window title and the
+  OSC 9;4 progress the dashboard sends today stay. `afk daemon` run in a terminal sends the same.
+- **Acceptance:** table tests of the mapping (nothing running, a task running, an inbox item, a stopped
+  line, a paused machine) and of when it sends; against a scratch build in a Rex pane, `rex block call …
+  program_status` shows the records and the tab shows the blocked badge; `make check` is green.
+
+#### T17.6 — One seam for every runtime
+- **Depends on:** T17.4
+- **Goal:** everything that starts, stops, restarts, types into or opens a session goes through one
+  interface, so a second runtime is a second implementation, with no change in behaviour.
+- **Background:** the callers are `session.SpawnHost`, `session.StopHost` and the rollback in
+  `create.go`, `host.SendInput`, `host.SendKeys`, `host.RequestRestart` and `host.RequestExit` (daemon,
+  web page, `afk plan`, `plan approve`, the plan-end hook), and the dashboard's and `afk attach`'s pane
+  (`internal/ui/hostpane.go`).
+- **Scope:** the interface and today's runtime behind it; `host.json` gains `runtime` (`afk` when
+  absent, so every existing file reads as today). Callers choose the implementation from `host.json`,
+  never from the machine's setting, so a session keeps its runtime. §4.1 is amended.
+- **Must not:** change any behaviour, protocol or file other than the new field.
+- **Acceptance:** the existing tests pass unchanged; a table test of the runtime chosen for each
+  `host.json` (absent field, `afk`, an unknown word refused with a plain message); `make check` is green.
+
+#### T17.7 — The host inside a Rex terminal
+- **Depends on:** T17.2, T17.6
+- **Goal:** a session can run as `afk _host --stdio` in a Rex block (or as T17.1 decided), with every
+  request the daemon, the web page and the dashboard make still working.
+- **Scope:**
+  - The host's client is its stdin and stdout: never stolen, never dropped, sized from its terminal on
+    every SIGWINCH. A socket client asking to attach is refused with "This session runs in Rex; open it
+    there", and the restart, exit and typing requests work as today.
+  - The host writes afk's own record, `id=afk`, at safe offsets from T17.3: the task and its phase from
+    `status.json` (`working`), `blocked` while `awaiting_input` is set or the task is parked on the
+    owner, and `error` for a failed phase, re-sent after the agent's own reports clear it.
+  - `host.json` records `runtime: "rex"` and the block it lives in (`rex.server`, `rex.session_id`,
+    `rex.window_id`, `rex.block_id`), so readers stay on files and signal-0 on the host's pid as today.
+  - The wedge check keeps its schedule; with no Rex client watching, it uses what T17.1 found works.
+  - A Rex server that goes away takes the host with it: that is the "host gone" the daemon already
+    relaunches (§5.6).
+- **Must not:** dial Rex from `internal/discover`; change the frame protocol for the afk runtime.
+- **Acceptance:** table tests of when afk's record is sent and what it says; an end-to-end test of the
+  stdio host with a stand-in agent on a pipe pair (no Rex); against a scratch build in Rex, a stand-in
+  agent restarted from the dashboard redraws in its Rex window and the daemon's typed line reaches it;
+  `make check` is green.
+
+#### T17.8 — Sessions in Rex
+- **Depends on:** T17.7
+- **Goal:** with `[runtime] backend = "rex"`, every session afk starts (a task, a one-off, a planning
+  session) opens in Rex, laid out and labelled so the owner can find it from any client.
+- **Scope:**
+  - `[runtime] backend` (`afk` or `rex`, default `afk`) in `config.toml`, read by `internal/daemonconfig`;
+    `rex` with no Rex server answering refuses to start a session with a plain message and a blocking
+    `failure` item, never falls back silently. §4.6 (or the `config.toml` section) and
+    `docs/configuration.md` are amended.
+  - One Rex session per project, labelled with the project's name and found again from the block ids
+    `host.json` records (labels are not unique in Rex, so afk never trusts a label alone). One window
+    per afk session, labelled `t4-3 · review` and relabelled on each phase change by the host; the
+    planning session's window is `plan`. Each terminal starts at 160×48 with the dashboard's theme
+    colours, and closes when its host exits unless the session failed.
+  - Cleaning a session closes its window after the host has stopped.
+- **Must not:** create a Rex session the owner did not ask for when the backend is `afk`.
+- **Acceptance:** table tests of the layout decision (first session of a project, a second, a planning
+  session, a Rex session closed by hand, a label clash), of the label for each phase and of the refusal;
+  against a scratch build on the Mac with a stand-in agent, `afk new` opens the window and `afk clean`
+  closes it; `make check` is green. README: `docs/reference.md` (the runtime), `docs/configuration.md`.
+
+#### T17.9 — The hub
+- **Depends on:** T17.8
+- **Goal:** the VM runs as the hub, and the owner reaches it from the laptop and the phone.
+- **Scope:**
+  - `docs/runbook-vm.md` gains the hub: Rex's Linux server in login-server mode (so upgrades keep the
+    agents), Tailscale with access for the owner only and never `--tailscale-allow-tailnet-members`,
+    `afkd` ordered after the Rex service, `[runtime] backend = "rex"`, and adding the VM in Rex for Mac
+    and Rex for iOS. It says plainly that anyone who can connect to the Rex server can run anything as
+    afk's account, which is why only the owner may.
+  - The control room: the daemon keeps a Rex session named `afk` with one window running `afk dash`,
+    and starts the window again when it is closed or its program ends (at most once a minute).
+  - `afk install` offers the Rex runtime when it finds `rex` with a server answering, and explains
+    login-server mode on Linux; `docs/install.md` and `docs/daemon.md` say what changes.
+- **Acceptance:** table tests of the control room's keep-alive decision and the install step's offer;
+  on the VM, the owner opens the control room and a running agent from the laptop and from the phone,
+  and a Rex upgrade does not end the agent; `make check` is green.
+
+#### T17.10 — Going into an agent opens it in Rex
+- **Depends on:** T17.8
+- **Goal:** for a Rex-backed session, `enter` on its row and `afk attach` show the agent's own Rex
+  window on the owner's screen, and a key brings the owner back to the control room.
+- **Scope:** a pure decision (`afk` or `rex` runtime; the dashboard inside Rex or not; one or several
+  Rex clients connected) of what going in does: inside Rex, ask the client showing the control room to
+  show the agent's window (`session.select`); outside Rex, say in the band "This agent runs in Rex: open
+  `<project>` › `t4-3` in Rex" and copy nothing. Restart, details (`d`) and every other key keep working
+  on the row. Sessions on afk's own host keep today's Agent level unchanged. `docs/dashboard.md` and
+  `docs/dash-design.md` say what the Agent level does for each runtime.
+- **Must not:** change the Agent level for sessions on afk's own host; draw a Rex-backed agent through
+  `termpane`.
+- **Acceptance:** table tests of the decision, every row a case; against a scratch build in Rex, `enter`
+  on a Rex-backed row brings its window forward and the action from T17.11 returns to the control room;
+  `make check` is green.
+
+#### T17.11 — afk in Rex's palette
+- **Depends on:** T17.10
+- **Goal:** the laptop's Rex for Mac has afk's own actions in its palette and on keys.
+- **Background:** custom actions belong to the client, so they are installed on the laptop and act on
+  the hub's sessions through the hub's label in `rex.servers()`.
+- **Scope:** `afk rex setup` writes `afk.lua` beside the laptop's Rex `init.lua` and prints the one
+  `require` line to add, never editing `init.lua` itself. Its actions, each in the palette under `afk`:
+  open the control room; go to the next agent that needs the owner (the first `blocked` record across
+  the hub's sessions, then the first `error`, in the hub's session order); pause and resume the build
+  (each runs `afk pause` or `afk resume` in a short-lived terminal on the hub that closes when done).
+  Keys are suggested in comments, not bound. It works on a laptop with no `afk` installed, by passing
+  the hub's label (`afk rex setup --print --hub vm` writes the file to stdout).
+- **Acceptance:** table tests of the generated file for each option, and a Lua syntax check of it in
+  `make check`; on the laptop, each action works against the hub; `make check` is green. README:
+  `docs/reference.md`, and a short "afk in Rex" section in `docs/dashboard.md`.
+
+#### T17.12 — Program status as a signal
+- **Depends on:** T17.4
+- **Goal:** the daemon and the planning chat use what the agent reports about itself, beside the hooks.
+- **Scope:** `agent_status` from `host.json` becomes an input to the pure decisions that ask whether an
+  agent is waiting on someone: the daemon's stall rule (§5.3: `blocked` for longer than `stall_after`
+  counts as waiting, as `awaiting_input` does, whichever came first) and `planchat` (a `blocked` record
+  with `kind=question` means waiting even before the transcript has the question). The hooks stay
+  the authority for `awaiting_input`; a report never writes `status.json`. A stall item quotes the
+  agent's `msg`.
+- **Acceptance:** new rows in the stall-rule and `planchat` tables (the hook alone, the report alone,
+  both, a stale report, a report from an earlier agent before a restart); `make check` is green.
+
+#### T17.13 — Keep the agent's last screen
+- **Depends on:** T17.8
+- **Goal:** when a Rex-backed task fails, parks or stalls, what was on its terminal is saved and linked,
+  so the owner can see what happened from a phone.
+- **Scope:** the daemon saves the block's screen and scrollback with `format` as HTML to
+  `.afk/{session}/terminal.html` (the last 2 MB) when it raises the item, and again when the session is
+  cleaned after a failure. The inbox item and the web page's session screen link to it, served through
+  the page's sign-in, with its colours kept and its scripts none. §4.1 is amended.
+- **Must not:** read a block on the dashboard's 2-second refresh, or fail the item when the read fails
+  (the item says the screen could not be saved).
+- **Acceptance:** table tests of when the screen is saved and of trimming to the limit; a web test that
+  the page is behind the sign-in and its HTML carries no script; against a scratch build, a stand-in
+  agent's failure leaves the file and the link; `make check` is green. README: `docs/web.md`.
+
+#### T17.14 — Watch an agent from the web page
+- **Depends on:** T17.13
+- **Goal:** the web page shows a Rex-backed agent's screen, live and read-only, and a reply to the
+  planning chat no longer takes the session from anyone.
+- **Background:** a remote terminal on the page was set aside in M8 (§9) because a host serves one
+  client and a live keyboard into an agent with permissions bypassed is too much. A read-only view needs
+  neither.
+- **Scope:** on the session screen, "Watch" shows the agent's screen (`format`, HTML, the screen only)
+  refreshed over the existing event stream at most every 2 seconds while someone is watching, and never
+  read otherwise. A planning reply to a Rex-backed session is typed through its host as today, and the
+  rule that it takes the session from the dashboard (M8, §2 "Web page as command center") no longer
+  applies to it, because Rex shows the agent to every client. `docs/web.md` says so.
+- **Must not:** send a key to an agent from the watch view.
+- **Acceptance:** table tests of when the screen is read (watching, not watching, two watchers, a gone
+  block); a JS test of the view; against a scratch build on a phone-width browser, the screen follows a
+  stand-in agent; `make check` is green.
+
+#### T17.15 — The control room at phone width
+- **Depends on:** T17.10
+- **Goal:** the control room is easy to use in Rex for iOS, at the sizes T17.1 measured.
+- **Scope:** All projects and Project at the narrowest portrait size Rex for iOS gives: which columns
+  and parts go first, the status bar's chips, the answer screen, and the keys that can be typed on the
+  phone's keyboard and its symbol bar. `docs/dash-design.md` gets the narrow layout, drawn with the
+  owner first if it changes the look.
+- **Acceptance:** saved screens at the measured portrait and landscape sizes; table tests of what each
+  width keeps; the owner answers an inbox item and opens an agent from the phone; `make check` is green.
+
+#### T17.16 — Notices that open the right window
+- **Depends on:** T17.2
+- **Goal:** a desktop notice from afk opens the Rex window it is about, and afk does not repeat a
+  notice Rex for Mac already gives.
+- **Scope:** `afk notify` learns the Rex ids `internal/dashmeta` records beside tmux's, and a click on a
+  toast asks Rex to show that window (falling back to today's tmux focus). When the session is
+  Rex-backed and Rex for Mac is connected, the toast for an agent waiting on the owner is left to Rex's
+  own program notification, which says the same thing; web push (M15) is unchanged.
+- **Acceptance:** table tests of the decision (tmux, Rex, both, neither; Rex for Mac connected or not);
+  against a scratch build on the Mac, clicking the toast brings the window forward; `make check` is
+  green.
+
+#### T17.17 — Prove the hub (owner + agent)
+- **Depends on:** T17.9, T17.11, T17.12, T17.14, T17.15, T17.16
+- **Goal:** the owner has run real tasks on the hub for several days, steering from the laptop and the
+  phone, and what worked is written down.
+- **Scope:** the session waits for the owner (an inbox item). The owner sets the VM to the Rex runtime
+  and lets the daemon build at least three tasks, answering at least one inbox item from the phone and
+  stepping into a running agent from both devices. The session writes up in `docs/decisions.md` under
+  `## T17.17` every fault met with its cause, fixes what it can within M17's code and files the rest,
+  and records the numbers the open question in §10 needs (sessions recovered, Rex restarts met,
+  anything only afk's own host could have done).
+- **Acceptance:** the write-up covers both devices and every M17 surface; every fault is fixed or filed.
+
 ## 9. Deferred / later
 
 - **`afk plan`** moved to M5 (2026-10-13).
@@ -4278,7 +4627,18 @@ Amended 2026-10-22 (T16.8 done): the counting is the new package `internal/activ
 - **A remote terminal on the web page** (attach to any session from a browser): left out of M8 by the
   owner. It would take the session from the dashboard (a host serves one client), is awkward at phone
   width, and is a live keyboard into an agent with permissions bypassed. Watchers beside the typing
-  client would need a change to the host.
+  client would need a change to the host. Amended 2026-10-23 (M17): for Rex-backed sessions, Rex gives
+  every client the live terminal and T17.14 gives the page a read-only view; a keyboard on the page
+  stays out.
+- **A laptop `afk` that acts on the hub** (`afk --hub vm inbox`, carried by the daemon's JSON API or by
+  running the command on the hub through Rex): left out of M17 by the owner (2026-10-23), who starts
+  with Rex for Mac alone.
+- **Rex for iOS in place of the web page** (answers and push): left open by the owner (2026-10-23)
+  until Rex for iOS is out of beta and Rex's push notifications exist.
+- **A native afk block in Rex** (a control room that is not a terminal UI): waits on Rex documenting
+  block plugins or adding non-terminal blocks; on 2026-10-23 neither was planned short-term.
+- **Reporting afk's status into an agent's Rex terminal from outside it**, if Rex adds a way for one
+  program to report status for another's terminal. The stdio host (T17.7) does it from inside today.
 - **Found projects on the web page** (those the dashboard finds under its `[dash]` search folders but
   the daemon does not build): left out of M8 by the owner (2026-10-13). The dashboard shows them
   mainly to open their sessions' terminals, which the page cannot do; T8.16 adds a folder to the build.
@@ -4313,6 +4673,9 @@ Amended 2026-10-22 (T16.8 done): the counting is the new package `internal/activ
 | How a subscription weights cache reads, cache writes and output against its limits. Unpublished; compare the token ledger with the usage percentages the governor records. | after T2.4 |
 | Licence for the open-source release. **Answered 2026-10-19:** MIT, copyright Darin Haener (§2, "Releases"). | T12.2 |
 | Is the repository public, with release binaries anyone can download without logging in to GitHub? The bootstrap script cannot be tried for real until it is. The owner said on 2026-10-17 that this is "on the table soon". **Answered 2026-10-18:** The repo is now public | T11.6 |
+| A Rex-backed session: afk's host running inside the Rex terminal with its own inner PTY (stdio host), or as the agent's parent on the one Rex terminal, typing through Rex's API? The plan assumes the stdio host. | T17.1 |
+| What does Claude Code report over OSC 7501 at a permission prompt, at an AskUserQuestion, at the end of a turn and when idle; and do Codex and OpenCode report anything? | T17.1 |
+| Does Rex become the default runtime where a Rex server answers, and do the afk-only Agent level and `internal/termpane` retire? Decide from T17.17's write-up. | after T17.17 |
 
 ## 11. Definition of done (every task)
 
