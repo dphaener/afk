@@ -269,3 +269,10 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Last exit**: how a session's previous agent program ended (exit code, signal, when), written to `host.json` as `last_exit` when the host restarts it in place.
 - **afk status**: the Program status records afk itself sends from `afk dash` or a foreground `afk daemon`: one for the whole machine (what needs the owner) and one per project.
 - **Runtime**: the way a session is run: `afk` (afk's own session host) today, Rex from T17.7. `host.json` names it as `runtime`, and everything that starts, stops, restarts, types into or opens the session goes through that runtime.
+- **Hub**: the build VM when it runs the Rex server, afk's daemon and the control room, so the owner can watch and steer every agent from Rex for Mac or Rex for iOS over the tailnet.
+- **Rex block**: one terminal pane inside a Rex window; a Rex-backed session's host runs as a block's command, and a block is read by `program_status`, `size`, `format` and `process`.
+- **Block owner**: the Rex client whose requested size a block takes; the connection that created the block owns it, even after it has gone, until another client takes it, and a resize from anyone else is accepted and ignored.
+- **Stdio host**: afk's session host run as a Rex block's command (`afk _host --stdio`), with its own stdin and stdout as its one client and its socket still taking the daemon's requests; the design T17.1 chose for Rex-backed sessions.
+- **Exit-empty server**: a Rex account server that stops about ten seconds after its last session ends; the next connection starts a new one, with a new instance id and no sessions.
+- **Instance id**: the id `server.status` gives one run of a Rex server; a new one means the server restarted and every session, block and agent in it is gone.
+- **Owner check pending**: the mark on a spike finding that only the owner's own devices or rights can finish, with an inbox verification item carrying the exact steps.

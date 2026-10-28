@@ -4345,6 +4345,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** the write-up answers every point with what was run and seen, names the design chosen,
   writes the answers into the two §10 rows that say "T17.1 answers it", and amends the later tasks of
   M17 where an answer changes them ("Amended 2026-…").
+- Amended 2026-10-28 (T17.1 done): the design is the stdio host (`afk _host --stdio` as a Rex block's command), answered in `docs/decisions.md` `## T17.1` and both §10 rows; later tasks read their own Amended lines (T17.2 and T17.7–T17.16) for the API revision over the proxy (0) and locally (7), the exit-empty account server, `session.focus_window` in place of the missing `session.select`, Claude Code's records and the `format` cost. The iOS sizes, the Mac takeover, a window forward on the Mac and a Rex upgrade are still owner checks in the inbox; the unmerged prototype is in `~/.cache/t17-1-proto`.
 
 #### T17.2 — Talk to Rex
 - **Depends on:** T17.1
@@ -4366,6 +4367,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of the parsing of each call's answer and error, the revision check and the
   probe's every case; against a scratch build on the Mac, a hidden `afk _rex-check` (or a test behind a
   build tag) lists sessions and reads its own pane's status; `make check` is green.
+- Amended 2026-10-28 (T17.1 done): the server tested is rex 0.0.1793217377-g0e681a with `api_revision` 7 on the local socket but 0 over the login-server proxy (`rex -S https://…`), so the revision check reads the server it will call and treats 0 over the proxy as "unknown", not "too old". `rex api call` has no `--json` flag: a result is JSON on stdout; an error goes to stderr as `Error: … (status=404 code=not_found)`, exit 3 for a 404 (`not_found`, `session_not_found`) and exit 1 for a 400 (`bad_request`), a 413 (`too_large`) or a 504 (`timeout`). An unknown session is `session_not_found` even when the block id is the wrong one; a nil UUID block id is `bad_request` ("block_id is required"); `target.resolve` answers `{"status":"not_found"}` as a success. `block.method` takes the SHORT method name (`program_status`, `size`, `resize`, `format`, `process`) with the arguments under `args`; the long `com.superlogical.terminal.…` name is `method_not_found`. `program_status` on a real block whose agent has gone is `{"records":[]}`, never an error. `session.select` does not exist: "ask a client to show a window" is `session.focus_window {session_id, window_id}` (session-wide, 42–192 ms), and the per-client form is `client.perform {client_id, action, …}` of an action `client.inspect` lists (a command-line client lists none and `perform` on it fails with 504 after `timeout_ms`). `format` is called with `max_bytes` (983040 worked) and the rest read by `blob_read` (same `id`, `offset` = bytes received); without it a reply over 1 MiB fails with 413. `rex events --all --json` carries every session's block events (`program_status_changed`, `program_status_removed`, `process_changed`, `active_window_changed`), so the stream is filtered by session id. Rex's `owner.name` for Claude Code is its version number (`"2.1.311"`), so an agent is known by `app`.
 
 #### T17.3 — Program status, read and written
 - **Depends on:** —
@@ -4453,6 +4455,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
   stdio host with a stand-in agent on a pipe pair (no Rex); against a scratch build in Rex, a stand-in
   agent restarted from the dashboard redraws in its Rex window and the daemon's typed line reaches it;
   `make check` is green.
+- Amended 2026-10-28 (T17.1 done): the design is the stdio host, as written here (`docs/decisions.md` `## T17.1` §2; prototype diff in `.afk/t17-1/evidence/w1-t5-proto.diff`, not merged). What the prototype settled: (1) with no Rex client watching, the wedge check nudges the host's own inner PTY, which needs no Rex ownership and worked with nobody attached; a Rex `resize` is ignored unless the caller owns the block, so the nudge never goes through Rex. (2) Claude Code's exit clear removes EVERY record on the terminal, `id=afk` included (`program_status_removed ids ["", "afk"]`), so afk's record is re-sent after every clear and not only when it changes (the prototype re-sent every 2 s and was back within one tick); and because Rex clears records only when the block's own child, the host, exits, the host writes `state=clear` for the agent's root record when the agent exits under it. (3) The insertion scanner runs on the OUTER stream, kept across restarts, apart from the per-generation scanner that feeds `agent_status`. (4) A socket client's opening `Resize` is the attach to refuse; the protocol has no refusal frame (`host.Attach` reports the Data line and "connection dropped", exit 13), so the rex runtime's `Dial` refuses before dialling, from `host.json`'s `runtime`, and the host's Data line stays as the backstop. (5) A full terminal writer blocks the pump rather than dropping output, because dropped bytes corrupt the screen for good. (6) SIGHUP, from the block closing or the server stopping, is an orderly stop: it removed `host.json` and the socket cleanly in the restart test. The block's starting size is the terminal's (80x24 unless T17.8 sets one), and `RequestRestart` resumes with the provider's resume command, which drops `--model` and the like from the first launch (today's behaviour). The account server is exit-empty (stops about 10 s after its last session); a running host keeps its session, and so the server, alive.
 
 #### T17.8 — Sessions in Rex
 - **Depends on:** T17.7
@@ -4474,6 +4477,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
   session, a Rex session closed by hand, a label clash), of the label for each phase and of the refusal;
   against a scratch build on the Mac with a stand-in agent, `afk new` opens the window and `afk clean`
   closes it; `make check` is green. README: `docs/reference.md` (the runtime), `docs/configuration.md`.
+- Amended 2026-10-28 (T17.1 done): the account server is exit-empty (it stops about 10 s after its last session) and a server restart ends every session and every host in it; the next connection starts a fresh server in 0.2 s with a new `server.status.instance_id` and an empty list, and the recorded ids answer `session_not_found` (404). Treat "new `instance_id`, no sessions" as normal: recreate the project's session and relaunch its hosts through §5.6, never raise it as an error. When a block's program exits Rex closes the block but leaves the session (and its window list) behind empty until `rex kill`, so cleaning must close or reuse empty sessions. A block made by a one-shot `rex api call` keeps that dead connection as its owner, and any other client's `resize` then returns `{}` and does nothing: set the size at creation (`options.size`, honoured as given; the default is 80x24) rather than resizing afterwards, and always read `size` after a `resize`. Session and window labels are free text and not unique, as written; the spike's own sessions were `t17-1-…`, and `rex events --all` shows every session on the shared server, so afk filters by the ids it recorded.
 
 #### T17.9 — The hub
 - **Depends on:** T17.8
@@ -4491,6 +4495,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of the control room's keep-alive decision and the install step's offer;
   on the VM, the owner opens the control room and a running agent from the laptop and from the phone,
   and a Rex upgrade does not end the agent; `make check` is green.
+- Amended 2026-10-28 (T17.1 done): the control room's keep-alive also keeps the exit-empty account server alive (it stops about 10 s after its last session), so the `afk` session is the first thing the daemon creates and the last it closes. The account server runs as a child of `systemd --user`, not of the login server; `systemctl cat rex-login-server.service` says account servers survive that service's restarts, and rex's `postinst` only `try-restart`s the login server on an upgrade, so an upgrade should keep the agents, but this is unverified: the owner's upgrade check (a T17.1 inbox item) stands for the acceptance line "a Rex upgrade does not end the agent" until it is done. A server stop (`server.stop`) does end every agent; the runbook says so and points at §5.6.
 
 #### T17.10 — Going into an agent opens it in Rex
 - **Depends on:** T17.8
@@ -4507,6 +4512,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of the decision, every row a case; against a scratch build in Rex, `enter`
   on a Rex-backed row brings its window forward and the action from T17.11 returns to the control room;
   `make check` is green.
+- Amended 2026-10-28 (T17.1 done): `session.select` does not exist. Inside Rex, showing the agent's window is `session.focus_window {"session_id":S,"window_id":W}` (42–192 ms; `session.focus_block` also works), and it is session-wide: every client attached to that session switches, so the decision must know whether the owner's client is attached to the agent's session (in T17.8's layout the control room is in session `afk` and the agent in the project's session). "Ask the client showing the control room" can only be done through `client.perform` of an action the Mac app lists under `client.inspect`, which was not measured (no Mac client was connected; owner check pending). Until that list is known, the decision inside Rex is: if the owner's `app` client (`client.list {"kinds":["app"]}`, `connection_state` connected, `platform` `macos` then `ios`, newest `connected_at`) is attached to the agent's session, `focus_window` it; otherwise show the band text with the session and window names, as for outside Rex.
 
 #### T17.11 — afk in Rex's palette
 - **Depends on:** T17.10
@@ -4523,6 +4529,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of the generated file for each option, and a Lua syntax check of it in
   `make check`; on the laptop, each action works against the hub; `make check` is green. README:
   `docs/reference.md`, and a short "afk in Rex" section in `docs/dashboard.md`.
+- Amended 2026-10-28 (T17.1 done): "go to the next agent that needs the owner" finds `blocked` records in each session's blocks' `program_status` (Claude Code: `kind=permission` with `msg` "approve Bash: …", `kind=question` with `msg` "answer: …"; match on `app`, never on `owner.name`, which is the agent's version number) and brings its window forward with `session.focus_window`, which is session-wide (T17.10's amendment); the Mac's own client actions, which Lua on the laptop could call instead, were not measured and are an owner check. Pause and resume in a short-lived terminal: Rex leaves the session behind empty when the block's program exits, so the action closes the session too (or uses a window of the `afk` session).
 
 #### T17.12 — Program status as a signal
 - **Depends on:** T17.4
@@ -4535,6 +4542,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
   agent's `msg`.
 - **Acceptance:** new rows in the stall-rule and `planchat` tables (the hook alone, the report alone,
   both, a stale report, a report from an earlier agent before a restart); `make check` is green.
+- Amended 2026-10-28 (T17.1 done): the records Claude Code 2.1.311 sends (`docs/decisions.md` `## T17.1` §1): `idle` once at start-up; `working` with no `msg` for a whole turn; `done` at the end of a turn, and it STAYS `done` while idle with nothing further sent, so "idle for longer than" is read from the record's `at`, not from a state; `blocked` `kind=permission` `msg` "approve Bash: touch hello.txt"; `blocked` `kind=question` `msg` "answer: What is your favourite colour? (Red · Green · Blue)"; `clear` three times on exit. A `working` record carrying the question as `msg` arrives 29 ms before the question's `blocked`, so "working with a msg" is not waiting. The trust dialog at start-up reports nothing (`program_status` is `[]`), so the stall rule keeps a fallback that does not need a report for a session that has never reported. A crashed agent under a living host leaves its last record (T17.7's host clears it), so a report older than `last_exit.at` is stale. Codex and OpenCode were not measured (not installed on the VM).
 
 #### T17.13 — Keep the agent's last screen
 - **Depends on:** T17.8
@@ -4549,6 +4557,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of when the screen is saved and of trimming to the limit; a web test that
   the page is behind the sign-in and its HTML carries no script; against a scratch build, a stand-in
   agent's failure leaves the file and the link; `make check` is green. README: `docs/web.md`.
+- Amended 2026-10-28 (T17.1 done): `format` returns the screen plus the whole scrollback every time (it has no screen-only or scrollback-only option) and `max_bytes` keeps the OLDEST bytes, so "the last 2 MB" is afk's own trim after fetching all of it: call with `max_bytes` 983040 (a reply over 1 MiB without it fails with 413 `too_large`), follow the reply's `id` and `total` with `blob_read` (`offset` = bytes received) until `eof`, then keep the tail. HTML costs about 280 bytes a line (0.9 MB and 200–350 ms for 3.3k coloured lines, one `blob_read`); its colours are `var(--vt-palette-N)`, so the saved page must define the palette itself (`extra_palette` applies to the `vt` form only). After a server restart the block is gone (`session_not_found`), one of the "could not be saved" cases.
 
 #### T17.14 — Watch an agent from the web page
 - **Depends on:** T17.13
@@ -4566,6 +4575,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of when the screen is read (watching, not watching, two watchers, a gone
   block); a JS test of the view; against a scratch build on a phone-width browser, the screen follows a
   stand-in agent; `make check` is green.
+- Amended 2026-10-28 (T17.1 done): Rex cannot give "the screen only": every `format` reply is the screen plus the scrollback, and `max_bytes` keeps the oldest part. The screen-only cost holds for a program on the alternate screen (about 7 KB of HTML in about 55 ms, measured; Claude Code with `"tui": "fullscreen"` runs that way and its block had no scrollback), while a scrolling block costs the whole scrollback (0.9 MB and 200–350 ms of HTML at 3.3k lines, growing with the chat). So the watch view learns the block's size first (a `format` with a small `max_bytes` answers with `total`), polls HTML every 2 s only while the block stays under a bound (256 KB, say), and otherwise refreshes less often or shows the tail of the `text` form; the page defines the `--vt-palette-N` colours itself.
 
 #### T17.15 — The control room at phone width
 - **Depends on:** T17.10
@@ -4576,6 +4586,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
   owner first if it changes the look.
 - **Acceptance:** saved screens at the measured portrait and landscape sizes; table tests of what each
   width keeps; the owner answers an inbox item and opens an agent from the phone; `make check` is green.
+- Amended 2026-10-28 (T17.1 done): the portrait and landscape sizes and the typeable keys were NOT measured: the iPhone is not connected to the VM and the owner deferred the iOS checks. They are an owner verification item from T17.1 in the inbox (open `stty size; read` or `afk dash` in Rex for iOS, note rows and columns in each orientation, try the dashboard's keys). T17.15 reads the answer from that item before choosing its widths; until then the narrowest size is unknown, and a Rex block made with no size is 80x24.
 
 #### T17.16 — Notices that open the right window
 - **Depends on:** T17.2
@@ -4588,6 +4599,7 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** table tests of the decision (tmux, Rex, both, neither; Rex for Mac connected or not);
   against a scratch build on the Mac, clicking the toast brings the window forward; `make check` is
   green.
+- Amended 2026-10-28 (T17.1 done): "ask Rex to show that window" is `session.focus_window {"session_id":S,"window_id":W}` (session-wide, under 200 ms; see T17.10's amendment), and the Rex ids to record are the session, window and block ids `host.json` carries from T17.7. "Rex for Mac connected" is `client.list {"kinds":["app"]}` holding a client with `info.platform` `macos` and `connection_state` `connected`; the VM showed none during the spike, so the Mac's own notice for a blocked agent is unverified (owner check pending among T17.1's inbox items). Claude Code's blocked records carry the text afk would show anyway (`approve Bash: …`, `answer: …`).
 
 #### T17.17 — Prove the hub (owner + agent)
 - **Depends on:** T17.9, T17.11, T17.12, T17.14, T17.15, T17.16
@@ -4678,8 +4690,8 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 | How a subscription weights cache reads, cache writes and output against its limits. Unpublished; compare the token ledger with the usage percentages the governor records. | after T2.4 |
 | Licence for the open-source release. **Answered 2026-10-19:** MIT, copyright Darin Haener (§2, "Releases"). | T12.2 |
 | Is the repository public, with release binaries anyone can download without logging in to GitHub? The bootstrap script cannot be tried for real until it is. The owner said on 2026-10-17 that this is "on the table soon". **Answered 2026-10-18:** The repo is now public | T11.6 |
-| Which way does a Rex-backed session run: afk's host inside the Rex terminal with its own inner PTY (the stdio host the plan assumes), or as the agent's parent on the one Rex terminal, typing through Rex's API? T17.1 answers it. | T17.7 |
-| Which program status records does each agent CLI send (Claude Code at a permission prompt, at an AskUserQuestion, at the end of a turn and when idle; Codex and OpenCode at all)? T17.1 answers it. | T17.12 |
+| Which way does a Rex-backed session run: afk's host inside the Rex terminal with its own inner PTY (the stdio host the plan assumes), or as the agent's parent on the one Rex terminal, typing through Rex's API? **Answered 2026-10-28 (T17.1): the stdio host.** A prototype in a Rex block with a real agent held all five properties (resizes reach the inner PTY within a millisecond, the agent's records reach Rex, 754 `id=afk` inserts tore nothing, a restart in place redraws in the same block in 0.31 s, typing and restart work through the socket). The parent host cannot write afk's record (`terminal.write` is program input, and two writers on one terminal tore every split report), its wedge nudge through Rex is ignored unless afk owns the block, and `last_exit` exists only with `--keep-open`. Details in `docs/decisions.md` under `## T17.1`. | T17.7 |
+| Which program status records does each agent CLI send (Claude Code at a permission prompt, at an AskUserQuestion, at the end of a turn and when idle; Codex and OpenCode at all)? **Answered 2026-10-28 (T17.1):** Claude Code 2.1.311 writes only root records with `app=claude-code`, BEL-terminated: `idle` once at start-up, `working` (no `msg`) while a turn runs, `done` at the end of a turn and it stays `done` while idle (nothing more is sent), `blocked` with `kind=permission` and `msg` "approve Bash: touch hello.txt" at a permission prompt, `blocked` with `kind=question` and `msg` "answer: Q (A · B · C)" at an AskUserQuestion (29 ms after a `working` record carrying the question as `msg`), and `state=clear` three times on exit, leaving nothing. The trust dialog reports nothing, and a crashed agent's record stays until the block's own child exits. Codex and OpenCode: not installed on the VM, not measured. Details in `docs/decisions.md` under `## T17.1`. | T17.12 |
 | Does Rex become the default runtime where a Rex server answers, and do the afk-only Agent level and `internal/termpane` retire? Decide from T17.17's write-up. | after T17.17 |
 
 ## 11. Definition of done (every task)
