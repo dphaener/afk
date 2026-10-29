@@ -362,3 +362,67 @@ func TestPrintCleanSurfaceResult(t *testing.T) {
 		})
 	}
 }
+
+// TestCleanSurfaceBeforeClean shows `afk clean` and the web page's clean
+// hand the teardown a BeforeClean made for the repository being cleaned, so a
+// failed Rex session keeps its last screen (PLAN T17.13).
+//
+// "save fails, still cleaned" is the load-bearing row: the save is a picture
+// of the session and must never stand between the owner and the clean they
+// asked for; its failure is a note on the clean's stderr. "default saver" is
+// the promise that a surface which sets nothing still gets the real saver
+// (here over a session with no host record, so it saves nothing and runs no
+// Rex).
+func TestCleanSurfaceBeforeClean(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	tests := []struct {
+		name     string
+		hookErr  error
+		fake     bool
+		wantNote string
+	}{
+		{name: "save works", fake: true},
+		{name: "save fails, still cleaned", fake: true, hookErr: errors.New("the agent's screen could not be saved: Rex is not answering"),
+			wantNote: "Rex is not answering"},
+		{name: "default saver"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newCleanSurfaceFixture(t)
+			f.addSession(t, "t1-1", "failed")
+			d := f.deps()
+			var gotRepo string
+			var calls int
+			if tt.fake {
+				d.BeforeClean = func(repo string) func(session.Session) error {
+					gotRepo = repo
+					return func(s session.Session) error {
+						calls++
+						if s.Name != "t1-1" || s.Status.Phase != "failed" {
+							t.Errorf("BeforeClean got %s in phase %q, want t1-1 failed", s.Name, s.Status.Phase)
+						}
+						return tt.hookErr
+					}
+				}
+			}
+			res := cleanSessionForSurface(f.root, "t1-1", cleanSurfaceRequest{}, d)
+			if res.Outcome != cleanCleaned {
+				t.Fatalf("outcome = %s (%s), want cleaned", res.Outcome, res.Text)
+			}
+			if cleanSurfaceExists(f.worktree("t1-1")) {
+				t.Fatal("the worktree is still there after the clean")
+			}
+			if tt.fake && (gotRepo != f.root || calls != 1) {
+				t.Fatalf("BeforeClean made for %q and called %d times; want the repo, once", gotRepo, calls)
+			}
+			if tt.wantNote == "" && res.Result.Notes != "" {
+				t.Fatalf("Notes = %q, want none", res.Result.Notes)
+			}
+			if tt.wantNote != "" && (!strings.Contains(res.Result.Notes, tt.wantNote) || !strings.Contains(res.EchoStderr, tt.wantNote)) {
+				t.Fatalf("Notes = %q, stderr = %q; want both to carry %q", res.Result.Notes, res.EchoStderr, tt.wantNote)
+			}
+		})
+	}
+}

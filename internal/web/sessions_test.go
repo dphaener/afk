@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -481,6 +483,89 @@ func TestSessionPages404(t *testing.T) {
 			}
 			if !strings.Contains(body, tc.want) {
 				t.Errorf("answer %q does not say %q", body, tc.want)
+			}
+		})
+	}
+}
+
+// TestSessionScreen serves the saved screen of a session. Load-bearing rows:
+// "no cookie" (the page holds what the agent printed, so it needs the
+// sign-in like every other page), "bad name" (the name reaches a path, so
+// ".." must never read outside .afk), "missing file" (the plain sentence, not
+// a blank page) and the served row, which checks the body is the file as it
+// was, that no script is in it and that the content policy refuses scripts.
+func TestSessionScreen(t *testing.T) {
+	const page = "<!doctype html><title>x</title><pre><span style=\"color:var(--vt-palette-1)\">boom</span></pre>"
+	tests := []struct {
+		name   string
+		target string
+		cookie string
+		file   bool
+		want   int
+		body   string
+	}{
+		{name: "served", target: "/p/app/sessions/t1-2/screen", cookie: goodCookie(), file: true, want: http.StatusOK, body: page},
+		{name: "missing file", target: "/p/app/sessions/t1-2/screen", cookie: goodCookie(), want: http.StatusNotFound, body: "No screen was saved for this session."},
+		{name: "bad name", target: "/p/app/sessions/..%2f..%2fetc/screen", cookie: goodCookie(), want: http.StatusNotFound},
+		{name: "upper case name", target: "/p/app/sessions/T1-2/screen", cookie: goodCookie(), file: true, want: http.StatusNotFound},
+		{name: "no cookie", target: "/p/app/sessions/t1-2/screen", file: true, want: http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rg := newRig(t, Config{})
+			if tt.file {
+				dir := filepath.Join(rg.root, ".afk", "t1-2")
+				must(t, os.MkdirAll(dir, 0o755))
+				must(t, os.WriteFile(filepath.Join(dir, "terminal.html"), []byte(page), 0o644))
+			}
+			rec := authReq{target: tt.target, cookie: tt.cookie}.send(rg.h)
+			if tt.want == http.StatusUnauthorized && strings.Contains(rec.Body.String(), "boom") {
+				t.Fatalf("the screen was served without a sign-in")
+			}
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d\n%s", rec.Code, tt.want, rec.Body.String())
+			}
+			if tt.body != "" && !strings.Contains(rec.Body.String(), tt.body) {
+				t.Errorf("body = %q, want it to hold %q", rec.Body.String(), tt.body)
+			}
+			if tt.want == http.StatusOK {
+				if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+					t.Errorf("Content-Type = %q", ct)
+				}
+				if rec.Body.String() != page {
+					t.Errorf("body changed: %q", rec.Body.String())
+				}
+				if strings.Contains(rec.Body.String(), "<script") || strings.Contains(rec.Header().Get("Content-Security-Policy"), "script-src") {
+					t.Errorf("the screen may run a script: CSP %q", rec.Header().Get("Content-Security-Policy"))
+				}
+			}
+		})
+	}
+}
+
+// TestSessionScreenLinks checks the links appear only when the file exists,
+// on the session page and on the inbox item of that session.
+func TestSessionScreenLinks(t *testing.T) {
+	for _, saved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no file", true: "saved"}[saved], func(t *testing.T) {
+			rg := newRig(t, Config{})
+			rg.seedInbox()
+			if saved {
+				dir := filepath.Join(rg.root, ".afk", "t1-2")
+				must(t, os.MkdirAll(dir, 0o755))
+				must(t, os.WriteFile(filepath.Join(dir, "terminal.html"), []byte("<pre>x</pre>"), 0o644))
+			}
+			for target, text := range map[string]string{
+				"/p/app/sessions/t1-2":       ">Last screen</a>",
+				"/p/app/inbox/" + idBlocking: ">Screen</a>",
+			} {
+				rec := authReq{target: target, cookie: goodCookie()}.send(rg.h)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s: status = %d", target, rec.Code)
+				}
+				if got := strings.Contains(rec.Body.String(), text); got != saved {
+					t.Errorf("%s: link present = %v, want %v", target, got, saved)
+				}
 			}
 		})
 	}
