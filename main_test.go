@@ -367,7 +367,7 @@ func TestRouteArgsNeverReturnsInvalid(t *testing.T) {
 // is named here explicitly rather than the guard being loosened to "some names
 // may be missing".
 func TestPrintUsageDocumentsEverySubcommand(t *testing.T) {
-	undocumented := map[string]bool{"_host": true}
+	undocumented := map[string]bool{"_host": true, "_rex-check": true}
 
 	got := capturePrintUsage(t)
 	for name := range subcommands {

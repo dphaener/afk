@@ -4486,3 +4486,15 @@ Everything that starts, stops, restarts, types into or opens a session now goes 
 
 - **The daemon's forced stop still signals the host itself.** The polite stop (an Exit through the seam) goes through `RuntimeFor`, but the forced stop after it sends SIGTERM to the host's pid as before, once it has checked the process is afk's own host for this session. That keeps today's behaviour; T17.7 decides whether a Rex-backed host needs a stop of its own there.
 - **The dashboard's restart request and its pane both dial through the seam.** The host socket lookup they shared moved into the afk runtime's `Dial`, with the same error text.
+
+## T17.2
+
+`internal/rex` is the one package that calls the `rex` command. These are the choices the master plan left open.
+
+- **One seam, `Caller` (A2).** Every call goes through `Call(ctx, method, args)`, which runs `rex api call`. Typed helpers are functions over it, and `Fake` is exported so T17.7 and later can script answers. The wire protocol is not spoken: T17.1 measured `api call` and that is what afk uses.
+- **Ten-second deadline (A3).** A call that outlives it is killed; the kill is given two seconds to land before the pipes are closed. Rex calls answer in tens of milliseconds, so a long wait means a wedged server.
+- **Revision check, not cached (A4, A8).** `CheckServer` reads `server.status` and refuses revisions below 7. Revision 0, which the login-server proxy reports, is unknown rather than too old. No version number is compared, because the docs name none.
+- **`InsideRex` needs both ids (A5).** `REX_SESSION` alone is not enough to say the program runs in a block.
+- **`_rex-check` is hidden (A6).** It exists so a built binary can be checked against the real server; the reference page does not list it.
+- **`session.set_label` name (A7).** The method name is read from `rex api describe` at implementation time, not taken from memory.
+- **Method names as built.** The names the code calls were confirmed with `rex api describe` on the build machine after the work landed: `session.list`, `session.create`, `session.set_label` (A7), `session.new_window` (one window with one terminal block), `session.list_blocks`, `session.set_block_label`, `session.focus_window`, and `client.list`. Block methods go through `block.method` with the short names.
