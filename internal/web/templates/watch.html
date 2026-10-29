@@ -1,0 +1,17 @@
+{{define "title"}}Watch {{.Name}}: {{.Project}}{{end}}
+{{define "content"}}
+<div class="session">
+<div class="session__head">
+  <h1 class="tid session__id">{{.Name}}</h1>
+</div>
+{{if .HasFrame}}
+<section id="agent-watch" data-project="{{.Project}}" data-session="{{.Name}}" aria-label="Agent screen for {{.Name}}">
+  <iframe id="agent-watch-frame" sandbox="" title="Agent screen for {{.Name}}" srcdoc="{{.Frame}}" width="100%" height="520"></iframe>
+  <p class="meta" id="agent-watch-status" aria-live="polite">{{if .Note}}{{.Note}}{{else}}Live. This view only shows the screen. It never sends a key.{{end}}</p>
+</section>
+{{else}}
+<p class="meta">{{.Note}}</p>
+{{end}}
+<p class="meta"><a href="{{.Back}}">Back to the session screen</a></p>
+</div>
+{{end}}

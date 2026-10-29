@@ -107,6 +107,10 @@ type SessionView struct {
 	// can link to it. The session handler sets it from a file check; the
 	// seam that lists sessions leaves it false.
 	HasScreen bool
+	// Watchable is true when the session runs in Rex, so the page can offer
+	// the Watch view. The root package sets it from host.json alone; it
+	// never asks Rex.
+	Watchable bool
 	// Branch and BaseBranch are status.json's branch and base_branch.
 	Branch, BaseBranch string
 	// SessionID is status.json's session_id, or "".
@@ -400,7 +404,41 @@ type Deps struct {
 	// re-reads the same files every two seconds, and §3 of docs/PLAN.md
 	// forbids reading them faster than that.
 	Ticker func() (<-chan time.Time, func())
+	// WatchScreen reads the live screen of the session called session in
+	// the project at root, for the Watch view (T17.14). bound is the most
+	// HTML the page will take: HTML is the whole screen when Total is no
+	// more than bound and its last bound bytes otherwise, and Slow then says
+	// so. It is a seam because the read goes to Rex through host.json, both
+	// the root package's to reach; this package never calls Rex. It may take
+	// a few hundred milliseconds, so the live reader only ever calls it on
+	// its own goroutine, bounded by ctx, and only while someone watches (see
+	// watchTick in live.go). An error wrapping ErrWatchNotRex means the
+	// session has no Rex screen; one wrapping ErrWatchGone means its block
+	// is gone. Nil means this page cannot watch screens, and the page says
+	// so.
+	WatchScreen func(ctx context.Context, root, session string, bound int64) (WatchReading, error)
 }
+
+// WatchReading is one read of a watched session's screen.
+type WatchReading struct {
+	// Total is the whole screen's size in bytes of HTML, as Rex announced.
+	Total int64
+	// HTML is the screen, or its last bound bytes when Slow is true.
+	HTML []byte
+	// Slow says the screen is above the bound: the page shows its tail and
+	// polls on the slow cadence.
+	Slow bool
+}
+
+// The errors Deps.WatchScreen wraps, so a caller can tell why there is no
+// screen with errors.Is without reading the root package's sentences.
+var (
+	// ErrWatchNotRex: the session does not run in Rex, so there is no
+	// screen to read.
+	ErrWatchNotRex = errors.New("not a Rex session")
+	// ErrWatchGone: the session ran in Rex but its block is gone.
+	ErrWatchGone = errors.New("the Rex block is gone")
+)
 
 // TaskTokens is one task's token record as Deps.TaskTokens reports it: a plain
 // copy of what `afk tokens <task>` reads, with its own types so this package
@@ -548,6 +586,11 @@ type server struct {
 	// pass; it holds names and folders, never a file's contents, so the "no
 	// cache" rule stands.
 	pending *projectPending
+	// watch is the Watch view's leases: which browser is watching which
+	// session's screen (see watch.go). It is the hub's own registry, shared
+	// so a ping renews the lease the live reader counts. It holds who is
+	// watching, never a screen, so the "no cache" rule stands.
+	watch *watchLeases
 }
 
 // route is one address and the handler method behind it. The path carries no
@@ -676,6 +719,7 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	s.offered = newGitHubOffered()
 	s.pending = newProjectPending()
 	s.hub = newHub(d, s.refresher.generation)
+	s.watch = &s.hub.watch
 
 	mux := http.NewServeMux()
 	s.register(mux, "/api")
@@ -721,6 +765,14 @@ func build(cfg Config, d Deps) (*server, http.Handler, error) {
 	// the address /sessions/new (see sessionNewPage).
 	mux.HandleFunc("GET /p/{project}/sessions/{name}/confirm/{action}", s.sessionConfirmPage)
 	mux.HandleFunc("GET /p/{project}/sessions/new", s.sessionNewPage)
+	// The Watch view of a Rex session (watch_handlers.go): its page, the
+	// frame's live fragment and the ping that keeps the live reader going.
+	// All HTML only, and none takes a key, an input body or a size. The
+	// ping's other methods get a 405 and not the catch-all's 404.
+	mux.HandleFunc("GET /p/{project}/sessions/{name}/watch", s.watchPage)
+	mux.HandleFunc("GET /p/{project}/sessions/{name}/watch/screen", s.watchScreen)
+	mux.HandleFunc("POST /p/{project}/sessions/{name}/watch/ping", s.watchPing)
+	mux.HandleFunc("/p/{project}/sessions/{name}/watch/ping", s.watchPingWrongMethod)
 	// The no-JS page behind Approve the plan… is HTML only too.
 	mux.HandleFunc("GET /p/{project}/plan/approve", s.planApprovePage)
 	// So is the page behind the Change the plan rows.
