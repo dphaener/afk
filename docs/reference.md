@@ -340,6 +340,33 @@ curl -fsSL https://raw.githubusercontent.com/dphaener/afk/main/install.sh | sh
 
 Exit codes: 0 afk is in place (and `afk install` finished, or was not wanted, or there was no terminal to run it in: run `~/bin/afk install` from a terminal), 1 nothing was installed because of a refusal or a failure (root, an unsupported machine, no release found, a failed download, a checksum that did not match, or a binary that would not run), and otherwise the exit code of `afk install`. The message says which, in plain words.
 
+## `afk rex setup` — Add afk to Rex's command palette
+
+Write a file of afk actions for the Rex palette on the machine you sit at.
+
+```bash
+afk rex setup --hub LABEL [--print]
+```
+
+It writes `afk.lua` beside your Rex `init.lua`. It never opens or edits `init.lua` itself; you add one line to it by hand. The file is made again on every run, so don't edit it.
+
+**Options:**
+
+- `--hub LABEL` — The name your Rex gives the machine that runs afk (the label in `rex hosts`). Required. There is no default, because a guessed label would point the palette at the wrong server.
+- `--print` — Print `afk.lua` to the screen and write nothing. It needs `--hub` and does not look for the Rex folder.
+
+**Where the file goes:** the folder holding the file named by `REX_CONFIG` when that is set, otherwise `~/.config/rex`. The folder is created if it is missing.
+
+**The one line to add** to `init.lua`, then run `rex config reload`:
+
+```lua
+require("afk")
+```
+
+The file defines four palette actions and binds no key. See [afk in Rex](dashboard.md#afk-in-rex) for what they do.
+
+**Exit codes:** 0 the file was written (or printed), 1 the write failed, 2 a bad argument (no `--hub`, a label Rex would not accept, an unknown flag, or no folder could be found).
+
 ## `afk plugin install` — Install the agent plugin
 
 Install the afk plugin into the agent CLIs on this machine.

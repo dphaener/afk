@@ -11,6 +11,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/mattn/go-isatty v0.0.20
+	github.com/yuin/gopher-lua v1.1.1
 )
 
 require github.com/charmbracelet/harmonica v0.2.0 // indirect
