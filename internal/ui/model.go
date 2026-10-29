@@ -53,6 +53,7 @@ import (
 	"github.com/dphaener/afk/internal/project"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/spice"
 	"github.com/dphaener/afk/internal/state"
@@ -605,6 +606,19 @@ type Deps struct {
 	// "the session renders inside the dashboard" true by construction: there is
 	// no seam here that could hand over the real terminal.
 	OpenHostPane func(cfg hostPaneConfig) (paneHandle, error)
+	// RexCaller, Getenv and ReadHostMeta are what going into a Rex-backed
+	// session reads (rexgo.go, T17.10). Such a session's host runs inside a
+	// Rex block and refuses the dashboard's dial, so OpenHostPane is never
+	// used for it: Getenv tells whether the dashboard itself runs inside Rex
+	// (REX_SESSION and REX_BLOCK), ReadHostMeta reads the agent's Rex session
+	// id from its host.json, and RexCaller asks Rex for the owner's app client
+	// and brings the agent's window forward. RexCaller and ReadHostMeta are
+	// only ever used inside a tea.Cmd (rexGoInCmd), never in Update, because a
+	// Rex call can take up to its deadline. Defaults: the machine's own `rex`
+	// command with rex.DefaultTimeout per call, os.Getenv and host.ReadMeta.
+	RexCaller    rex.Caller
+	Getenv       func(key string) string
+	ReadHostMeta func(worktree, name string) (host.Meta, error)
 	// CleanSession resolves name to a real session and applies lifecycle
 	// cleanup: stop its host, snapshot-commit dirty tracked changes,
 	// archive `.afk/{name}/`, remove the worktree, prune. The branch is kept
@@ -945,6 +959,15 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.OpenHostPane == nil {
 		d.OpenHostPane = openHostPane
+	}
+	if d.RexCaller == nil {
+		d.RexCaller = rex.NewCaller(rex.NewRun(rex.DefaultTimeout), "rex")
+	}
+	if d.Getenv == nil {
+		d.Getenv = os.Getenv
+	}
+	if d.ReadHostMeta == nil {
+		d.ReadHostMeta = host.ReadMeta
 	}
 	if d.SendRestart == nil {
 		d.SendRestart = defaultSendRestart
@@ -2729,6 +2752,9 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notifyBranchesError(msg)
 		return m, nil
 
+	case rexGoInDoneMsg:
+		return m.applyRexGoInDone(msg)
+
 	case hostRestartedMsg:
 		// Balances the noteOtherOpStarted call at every restartHostCmd dispatch site,
 		// unconditionally and before any branch below: every outcome this case
@@ -2770,6 +2796,17 @@ func (m Model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.handBackUnansweredFocus()
 			}
 			m.notify(notifyWarn, "can't open "+msg.name+" — it's being cleaned")
+			return m, m.loadCmd()
+		}
+		// A Rex-backed session restarts like any other, but there is no pane to
+		// chain into: its host refuses our dial (openPaneFor refuses it too).
+		// Say where it runs instead of "connecting…", and hand back a focus
+		// the request moved, since nothing will arrive to take it.
+		if s, ok := m.sessionByName(msg.name); ok && isRexRow(s) {
+			if focusOnArrival {
+				m.handBackUnansweredFocus()
+			}
+			m.notify(notifySuccess, "restarted "+msg.name+" · "+rexBandText(m.rexProjectName(), msg.name, ""))
 			return m, m.loadCmd()
 		}
 		// restartHostCmd reports success only after the new host has published a
@@ -4378,6 +4415,13 @@ func (m Model) openAgent() (tea.Model, tea.Cmd) {
 		m.openDetails(levelProject, s.Name)
 		return m, nil
 	}
+	// A session whose host runs in a Rex block is shown by Rex, not here: its
+	// host refuses our dial, so the Agent level would only ever show a dial
+	// error. The going-in decision (rexgo.go) either brings its Rex window
+	// forward or says where it runs, and the keyboard stays at Project.
+	if isRexRow(s) {
+		return m, m.goInRex(s)
+	}
 	if m.paneForSelection() {
 		return m.focusPane()
 	}
@@ -5270,6 +5314,12 @@ func (m Model) connectSelected() (tea.Model, tea.Cmd) {
 // dials only through openPaneFor. It never starts a restart: callers refuse a
 // row with no live agent first, and a restart already in flight is joined.
 func (m *Model) connect(req paneOpenRequest) tea.Cmd {
+	// ctrl+t, a click-to-focus and a needs-you landing reach a Rex-backed row
+	// here without passing openAgent, so the same going-in decision is made
+	// here, before the view or the focus moves: no pane is coming for it.
+	if s, ok := m.sessionByName(req.name); ok && isRexRow(s) {
+		return m.goInRex(s)
+	}
 	req.focusOnArrival = true
 	m.view = viewAgent
 	// A dial for this session is ALREADY outstanding — almost always a preview
@@ -5827,6 +5877,11 @@ func (m *Model) schedulePreview() tea.Cmd {
 	if m.cleaningSessions[cleanIDFor(s)] {
 		return nil
 	}
+	// A Rex-backed row has no pane to preview: its host refuses our dial, and
+	// a cursor move must not ask Rex anything either.
+	if isRexRow(s) {
+		return nil
+	}
 	// Only an EXPLICIT open blocks arming, though applyPreviewTimer refuses to DIAL
 	// while ANY open is outstanding. The asymmetry is deliberate: refusing to arm
 	// during a preview's own dial would leave a dead spot — a move onto C while B's
@@ -6206,6 +6261,19 @@ func (m *Model) openPaneFor(req paneOpenRequest) tea.Cmd {
 	req.gen = m.projectGen
 	if m.cleaningByName(req.name) {
 		m.notify(notifyWarn, "can't open "+req.name+" — it's being cleaned")
+		return nil
+	}
+	// A Rex-backed row is never dialed (T17.10): its host runs in a Rex block
+	// and refuses the connection, so a dial could only end in an error toast.
+	// Checked here, at the single gate, so the restart chain, the startup pane,
+	// a preview timer and any entrance added later all refuse the same way.
+	// Only an owner's request is told where it runs; a preview stays silent.
+	// Like the clean refusal above, it returns before attachInFlight is set,
+	// because no paneAttachedMsg will come to clear it.
+	if s, ok := m.sessionByName(req.name); ok && isRexRow(s) {
+		if !req.preview {
+			m.notify(notifyInfo, rexBandText(m.rexProjectName(), s.Name, ""))
+		}
 		return nil
 	}
 	// Recorded only on the path that actually returns a Cmd, and therefore only where

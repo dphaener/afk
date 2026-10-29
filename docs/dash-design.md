@@ -225,6 +225,16 @@ ctrl+]` send ctrl+] to the agent.
 A session with no live agent (stopped, pending, cleaning) shows its details overlay instead, with
 `r restart` when restarting is possible.
 
+**Per runtime.** A session on afk's own host (the `afk` runtime, or no runtime recorded) keeps this
+level exactly as above. A session whose host runs in Rex (`rex` in its `host.json`) has no Agent
+level: Rex draws the agent in its own window, and the dashboard cannot draw it through `termpane`,
+because that host refuses the dashboard's connection. `enter` on its row brings the agent's Rex
+window forward when the dashboard runs inside Rex and the owner's Rex app is showing that session,
+and the keyboard stays on the dashboard. Otherwise `enter` shows a toast in the top-right corner:
+`This agent runs in Rex: open <project> › <session> in Rex.`, with the reason after it. A stopped
+Rex-backed session still takes `r restart`; the restart toast says where the agent runs, and no
+Agent level opens.
+
 ### 4.4 Details
 
 `d` anywhere a session is selected, `ctrl+] d` in the agent. 54 columns from the right, over the

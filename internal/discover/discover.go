@@ -314,6 +314,19 @@ type SessionState struct {
 	// session ended, written by the host on a restart in place. Nil means
 	// unknown. Advisory, same as AgentStatus.
 	LastExit *LastExit
+	// Runtime is host.json's `runtime`: "rex" for a session whose host runs
+	// inside a Rex block, and "" for afk's own host. The empty value is also
+	// what a missing or unparseable host.json gives, which is why the
+	// dashboard reads it as afk and never as an error. It is copied from the
+	// host's own file and never from the `.afk/{name}/runtime` marker: a
+	// session whose host is gone is shown as stopped, so it does not need the
+	// runtime, and the marker is not a file discover reads.
+	Runtime string
+	// RexWindowID is host.json's `rex.window_id`: the Rex window the session's
+	// agent is shown in. "" when host.json is absent, unparseable, or has no
+	// Rex block. The dashboard uses it to focus that window; discover only
+	// carries the id and never asks Rex about it.
+	RexWindowID string
 }
 
 // AgentStatus is the discover-side copy of host.json's agent_status.
@@ -727,6 +740,15 @@ func applyHostMeta(ss *SessionState) {
 	ss.HostRunning = host.Alive(meta.PID)
 	ss.LastOutputAt = meta.LastOutputAt
 	ss.WedgedSince = meta.WedgedSince
+	// Runtime and the Rex window id are only what host.json already says. This
+	// file never calls Rex, never dials, and never resolves a runtime from a
+	// marker: a read that could block or fail on Rex would stall every 2s tick
+	// of the dashboard. Rex is optional, so an afk host.json (no runtime key,
+	// no rex block) simply leaves both empty.
+	ss.Runtime, ss.RexWindowID = meta.Runtime, ""
+	if meta.Rex != nil {
+		ss.RexWindowID = meta.Rex.WindowID
+	}
 	// Copy, never alias, so a row does not share memory with the Meta.
 	ss.AgentStatus, ss.LastExit = nil, nil
 	if a := meta.AgentStatus; a != nil {

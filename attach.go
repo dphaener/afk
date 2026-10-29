@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/host"
+	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/ui"
 )
 
@@ -100,6 +104,16 @@ Options:
 // print+os.Exit — purely so the exit-code contract is unit-testable without
 // special-casing os.Exit in a test process.
 func runAttach(repo, name string, wait time.Duration) (msg string, code int, isError bool) {
+	return runAttachWith(repo, name, wait, os.Getenv, func() rex.Caller {
+		return rex.NewCaller(rex.NewRun(rex.DefaultTimeout), "rex")
+	})
+}
+
+// runAttachWith is runAttach with its two outside facts injected: the
+// environment (is the caller inside Rex) and the Rex caller. The caller is a
+// constructor so that an afk-runtime attach never builds one, and a machine
+// without Rex is never asked about it.
+func runAttachWith(repo, name string, wait time.Duration, getenv func(string) string, newCaller func() rex.Caller) (msg string, code int, isError bool) {
 	worktree, ok, err := resolveSessionWorktree(repo, name)
 	if err != nil {
 		return fmt.Sprintf("afk attach: %v", err), 1, true
@@ -109,9 +123,17 @@ func runAttach(repo, name string, wait time.Duration) (msg string, code int, isE
 			host.ExitNotRunning, true
 	}
 
-	if _, err := readMetaWithRetry(worktree, name, metaReadWait); err != nil {
+	meta, err := readMetaWithRetry(worktree, name, metaReadWait)
+	if err != nil {
 		return fmt.Sprintf("afk attach: session %q is not running (no host.json found)", name),
 			host.ExitNotRunning, true
+	}
+
+	// A Rex-backed session's host runs inside a Rex block and refuses the
+	// socket dial below, so it takes the same going-in decision as the
+	// dashboard's enter and never dials.
+	if meta.Runtime == "rex" {
+		return attachRex(repo, name, meta, getenv, newCaller()), 0, false
 	}
 
 	reason, err := ui.AttachPane(name, worktree, wait)
@@ -129,6 +151,40 @@ func runAttach(repo, name string, wait time.Duration) (msg string, code int, isE
 	}
 
 	return fmt.Sprintf("afk attach: %s", reason.String()), reason.ExitCode(), false
+}
+
+// attachRex makes the going-in decision (rex.GoIn) for a Rex-backed session and
+// returns the one line to print. Rex is only asked when the caller is inside Rex
+// and the window is known: those are the only facts that need the owner's
+// client, and every other path answers with the band text without a call. A
+// failed client list counts as "owner not on that session", so the owner still
+// gets the band text rather than an error for a convenience step.
+func attachRex(repo, name string, meta host.Meta, getenv func(string) string, caller rex.Caller) string {
+	var sessionID, windowID string
+	if meta.Rex != nil {
+		sessionID, windowID = meta.Rex.SessionID, meta.Rex.WindowID
+	}
+	facts := rex.GoInFacts{
+		Runtime:   meta.Runtime,
+		InsideRex: getenv("REX_SESSION") != "" && getenv("REX_BLOCK") != "",
+		WindowID:  windowID,
+	}
+	ctx := context.Background()
+	if facts.InsideRex && windowID != "" && sessionID != "" {
+		if clients, err := rex.ListClients(ctx, caller, "app"); err == nil {
+			if c, ok := rex.OwnerClient(clients); ok {
+				facts.OwnerClientOnAgentSession = slices.Contains(c.SessionIDs, sessionID)
+			}
+		}
+	}
+	band := fmt.Sprintf("This agent runs in Rex: open %s › %s in Rex", filepath.Base(repo), name)
+	if rex.GoIn(facts).Kind != rex.GoInFocusWindow {
+		return band
+	}
+	if err := rex.FocusWindow(ctx, caller, sessionID, windowID); err != nil {
+		return fmt.Sprintf("%s (afk could not bring the window forward: %v)", band, err)
+	}
+	return fmt.Sprintf("afk attach: %s is shown in Rex.", name)
 }
 
 // resolveSessionWorktree finds the worktree hosting the session named name

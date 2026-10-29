@@ -199,6 +199,8 @@ afk attach [options] <name>
 
 Attaches directly without opening the dashboard. Only one client can be attached at a time; if another client is already attached, that client is disconnected.
 
+**Sessions that run in Rex.** A session whose host runs inside Rex (its `host.json` says `rex`) is not attached here, because Rex draws its agent in its own window. `afk attach` makes the same choice as the dashboard's `enter`: if you run it inside Rex and your Rex app is showing that session, it brings the agent's window forward and prints `afk attach: <name> is shown in Rex.`. Otherwise it prints one line naming the project and session, for example `This agent runs in Rex: open my-project › my-session in Rex.`, with the reason after it when there is one. Either way it exits `0`, and it does not connect to the session's host. If Rex cannot be reached when it should bring the window forward, the same line is printed with the cause after it. Sessions on afk's own host attach as before. The line needs the session's `host.json` to be there; a session with none gets the usual not-running message and exit `12`.
+
 **Options:**
 
 - `--project PATH` — Look for `<name>` in the repo at `PATH` instead of the current working directory's. `~/` is expanded.
@@ -227,7 +229,7 @@ afk dash --open my-session
 
 **Exit codes:**
 
-- `0` (ExitDetached) — Detached normally with `ctrl+\`
+- `0` (ExitDetached) — Detached normally with `ctrl+\`; also the exit for a session that runs in Rex, which prints its one line (see above)
 - `10` (ExitStolen) — Another client attached to the session while this one was connected
 - `11` (ExitSessionEnded) — The session ended (the host process exited)
 - `12` (ExitNotRunning) — The session is not running (host not found or dial timeout)

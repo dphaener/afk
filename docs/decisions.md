@@ -4549,3 +4549,15 @@ The hub is the control room kept open by the daemon, the install offer for Rex, 
 **What is not verified.** The owner's checks stand: the control room opened from the laptop and the phone, and a Rex upgrade that keeps a running agent. The runbook says both are unverified, and the T17.9 acceptance line stays open on them. Login-server mode's behaviour on upgrade is taken from the T17.1 measurements and the Rex packaging, not from an upgrade on this VM.
 
 **Access.** Anyone who can connect to the Rex server runs as afk's account, so the runbook says only the owner may connect, and it warns against `--tailscale-allow-tailnet-members`. That flag appears only in the warning.
+
+## T17.10
+
+Going into a Rex-backed agent shows its Rex window, or says where it runs, and never draws it through `termpane`. These are the choices the master plan left open, numbered D1 to D5 for the owner checks below. The plan's assumptions A1 to A5 are the decisions, one for one, and A6 is the owner check.
+
+- **D1: the going-in choice is one pure decision in `internal/rex` (A1).** `rex.GoIn` maps the facts (runtime, inside Rex, owner client on the agent's session, window id known) to one action with a plain reason. The dashboard's `enter`, its restart and `afk attach` all call it, so they cannot disagree. A session on afk's own host always gets the Agent level (`afk_agent`).
+- **D2: runtime and window come from host.json (A2).** Discover copies the runtime and the Rex window id from host.json only, and never calls Rex, so a stalled Rex cannot freeze the dashboard tick. A missing host.json means afk, as it does for `host.Meta`.
+- **D3: focus only when the owner's client is on the agent's session (A3).** Rex's `focus_window` is session-wide (see the T17.1 amendment in `docs/PLAN.md`), so the window is brought forward only when the owner's app client (Mac before iOS, then the newest connection) is attached to the agent's session, the dashboard runs inside Rex and the window id is known. Every other case says where the agent runs. The Agent level is not opened for a Rex-backed row in any case.
+- **D4: the band text is a toast in the dashboard and a line on stdout for attach (A4).** The toast is "This agent runs in Rex: open <project> › <session> in Rex." with the reason after it. The preview timer never opens such a row, so it stays silent. Nothing is copied to the clipboard.
+- **D5: `afk attach` exits 0 in both outcomes (A5).** Bringing the window forward and the band line both exit `0`, because each is a successful answer. A failed focus adds the cause to the line and still exits `0`. A session with no host.json keeps the usual not-running message and exit `12`.
+
+**Owner checks (A6), not blockers.** Two things cannot be checked on the build VM: that the Mac's Rex app comes forward when afk asks for a focus, and the key that takes the owner from the agent's window back to the control room. The return key is T17.11's, so the docs do not name one.

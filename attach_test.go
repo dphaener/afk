@@ -12,6 +12,7 @@ import (
 
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/host"
+	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/state"
 )
@@ -385,5 +386,78 @@ func TestReadMetaWithRetry_ZeroWaitTriesOnce(t *testing.T) {
 	}
 	if elapsed > 50*time.Millisecond {
 		t.Errorf("readMetaWithRetry(wait=0) took %s, want a single immediate attempt", elapsed)
+	}
+}
+
+// TestRunAttach_Rex drives the Rex branch of runAttach through a fake Rex. The
+// load-bearing rows: outside Rex says where the agent runs and makes no Rex
+// call at all; inside Rex without the owner on that session must not focus
+// (focus_window is session-wide); a missing window id must not focus; and an
+// afk-runtime session never reaches the Rex branch (the dial path is kept,
+// shown by it failing the way it always did with no socket).
+func TestRunAttach_Rex(t *testing.T) {
+	clients := func(sessions string) string {
+		return `{"clients":[{"client_id":"c1","connected_at":"2026-01-01T00:00:00Z","connection_state":"connected",` +
+			`"info":{"kind":"app","platform":"macos"},"session_ids":[` + sessions + `]}]}`
+	}
+	inside := func(k string) string {
+		if k == "REX_SESSION" || k == "REX_BLOCK" {
+			return "x"
+		}
+		return ""
+	}
+	outside := func(string) string { return "" }
+	tests := []struct {
+		name       string
+		runtime    string
+		window     string
+		getenv     func(string) string
+		clients    string
+		wantCode   int
+		wantErr    bool
+		wantMsg    string
+		wantMethod []string
+	}{
+		{name: "outside rex gives band text", runtime: "rex", window: "w1", getenv: outside,
+			wantMsg: "This agent runs in Rex: open", wantMethod: nil},
+		{name: "inside rex with owner on session focuses", runtime: "rex", window: "w1", getenv: inside,
+			clients: clients(`"s1"`), wantMsg: "is shown in Rex", wantMethod: []string{"client.list", "session.focus_window"}},
+		{name: "inside rex owner on another session gives band text", runtime: "rex", window: "w1", getenv: inside,
+			clients: clients(`"other"`), wantMsg: "This agent runs in Rex: open", wantMethod: []string{"client.list"}},
+		{name: "inside rex missing window id gives band text", runtime: "rex", window: "", getenv: inside,
+			wantMsg: "This agent runs in Rex: open", wantMethod: nil},
+		{name: "afk runtime keeps the dial path", runtime: "", window: "", getenv: inside,
+			wantCode: host.ExitNotRunning, wantErr: true, wantMsg: "not running"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			writeStatus(t, repo, "sess")
+			meta := host.Meta{PID: os.Getpid(), Socket: filepath.Join(t.TempDir(), "none.sock"), Runtime: tt.runtime}
+			if tt.runtime == "rex" {
+				meta.Rex = &host.RexBlock{SessionID: "s1", WindowID: tt.window, BlockID: "b1"}
+			}
+			if err := host.WriteMeta(repo, "sess", meta); err != nil {
+				t.Fatal(err)
+			}
+			f := (&rex.Fake{}).On("client.list", tt.clients, nil).On("session.focus_window", `{"revision":1}`, nil)
+			msg, code, isErr := runAttachWith(repo, "sess", 0, tt.getenv, func() rex.Caller { return f })
+			if code != tt.wantCode || isErr != tt.wantErr {
+				t.Errorf("code, isErr = %d, %v; want %d, %v (msg %q)", code, isErr, tt.wantCode, tt.wantErr, msg)
+			}
+			if !strings.Contains(msg, tt.wantMsg) {
+				t.Errorf("msg = %q, want it to contain %q", msg, tt.wantMsg)
+			}
+			if tt.runtime == "rex" && !strings.Contains(msg, "sess") {
+				t.Errorf("msg = %q, want the session name", msg)
+			}
+			var got []string
+			for _, c := range f.Calls() {
+				got = append(got, c.Method)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.wantMethod, ",") {
+				t.Errorf("rex calls = %v, want %v", got, tt.wantMethod)
+			}
+		})
 	}
 }
