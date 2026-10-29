@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
@@ -125,6 +126,18 @@ type SessionView struct {
 	// It is shown to the owner and decides nothing.
 	TurnFailedAt     time.Time
 	TurnFailedReason string
+	// Report is the agent's own Program status report, the `agent_status`
+	// record of host.json (PLAN §4.1), already parsed; the zero Report when
+	// the host has none. HostStartedAt is host.json's `started_at` and
+	// LastExitAt its `last_exit.at`, the zero time when either is missing.
+	// They come from host.json, so like HostRunning they hold for a stale
+	// session too. The stall rule counts a `blocked` report only when it is
+	// newer than both times (see agentWaitSince): a record left behind by an
+	// agent that has exited is not a wait. A report decides nothing else and
+	// never writes status.json.
+	Report        agentreport.Report
+	HostStartedAt time.Time
+	LastExitAt    time.Time
 }
 
 // UsageView is the usage governor's verdict as the loop sees it: plain values
@@ -679,7 +692,9 @@ func stoppedReason(o Observation) string {
 //	w. The agent's last turn failed (see decideWake; lettered out of order
 //	   for the reason u is): type the resume command after WakeAfter, wait
 //	   out the backoff before a later one, and give up once MaxWakes is used.
-//	h. The session is asking something, past StallAfter: type the resume
+//	h. The session is asking something, past StallAfter (its hook's
+//	   awaiting_input or its agent's fresh blocked report, from whichever
+//	   started first; see agentWaitSince): type the resume
 //	   command once (see stallWake), and report a stall when that has been
 //	   done for this wait or may not be done.
 //	i. Otherwise wait.
@@ -833,8 +848,10 @@ func decideRunning(o Observation, e ledger.Entry) Action {
 	}
 
 	// "Over" the limit, not "at" it: a prompt exactly at the stall limit
-	// waits one more tick.
-	if s.AwaitingInput && o.Now.Sub(ref) > o.StallAfter {
+	// waits one more tick. The wait is the hook's awaiting_input or a fresh
+	// blocked report, from whichever started first (see agentWaitSince).
+	floor := latest(latest(latest(startedAt, restartAt), wakeAt), lastAnswer(o, e))
+	if since, waiting := agentWaitSince(s, ref, floor); waiting && o.Now.Sub(since) > o.StallAfter {
 		if reported(o.Items, e.ID, StallTitlePrefix, startedAt) {
 			return act(ActWait, alreadyReported)
 		}

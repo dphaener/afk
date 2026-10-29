@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/provider"
 )
 
@@ -265,6 +266,12 @@ func hasRecommended(qs []provider.Question) bool {
 	return false
 }
 
+// qReport builds a report for the TestRead rows: a state and kind, written
+// sec seconds after t0 (the host start in those rows).
+func qReport(state, kind string, sec int) agentreport.Report {
+	return agentreport.Report{State: state, Kind: kind, Msg: "secret words", At: at(sec)}
+}
+
 // TestRead is the matrix for Read's outside checks. The load-bearing rows:
 //   - "host not alive" and "no host": the conversation must not be read at
 //     all (PLAN T8.3: no transcript read unless the planning host is alive),
@@ -275,6 +282,11 @@ func hasRecommended(qs []provider.Question) bool {
 //     scary problem, or a lost one shows "working" forever.
 //   - "no planning session for the provider": an agent without planning
 //     sessions is not broken, so it is "none", not a problem.
+//   - the "report ..." rows: a fresh blocked question report is the only
+//     thing that moves a working chat to waiting_for_text. "transcript choice
+//     keeps the choice" must hold or the options vanish; "permission",
+//     "working", "stale" and "host not alive" must not move the state, or the
+//     page offers a typed reply to an agent that asked nothing.
 func TestRead(t *testing.T) {
 	started := t0
 	readErr := errors.New("permission denied")
@@ -303,6 +315,13 @@ func TestRead(t *testing.T) {
 		{name: "no transcript stale", hasHost: true, host: HostInfo{StartedAt: started, Alive: true}, err: fmt.Errorf("%w: nothing", provider.ErrNoTranscript), now: started.Add(2*time.Minute + time.Second), wantCalled: true, wantState: StateUnknown, wantProblem: "The planning session is running, but its conversation has not started. It may be waiting at a question in its terminal, such as whether to trust a new folder; open it in afk dash or with afk attach and answer it. If it was started by hand or cleared, afk cannot show it here."},
 		{name: "read error", hasHost: true, host: HostInfo{StartedAt: started, Alive: true}, err: readErr, now: started.Add(time.Hour), wantCalled: true, wantState: StateUnknown, wantProblem: "afk could not read the planning session's conversation: permission denied"},
 		{name: "ok", hasHost: true, host: HostInfo{StartedAt: started, Provider: "p", Alive: true}, entries: okEntries, now: started.Add(time.Hour), wantCalled: true, wantState: StateWaitingForChoice, wantMsgs: 2, wantQs: 1},
+		{name: "report question with no transcript yet waits for text", hasHost: true, host: HostInfo{StartedAt: started, Alive: true, Report: qReport("blocked", "question", 5)}, err: provider.ErrNoTranscript, now: started.Add(10 * time.Second), wantCalled: true, wantState: StateWaitingForText},
+		{name: "report question during working turn waits for text", hasHost: true, host: HostInfo{StartedAt: started, Alive: true, Report: qReport("blocked", "question", 5)}, entries: []provider.ConversationEntry{text(provider.WhoOwner, "Plan it", 0)}, now: started.Add(time.Hour), wantCalled: true, wantState: StateWaitingForText, wantMsgs: 1},
+		{name: "report question with transcript choice keeps the choice", hasHost: true, host: HostInfo{StartedAt: started, Alive: true, Report: qReport("blocked", "question", 5)}, entries: okEntries, now: started.Add(time.Hour), wantCalled: true, wantState: StateWaitingForChoice, wantMsgs: 2, wantQs: 1},
+		{name: "report permission never changes the state", hasHost: true, host: HostInfo{StartedAt: started, Alive: true, Report: qReport("blocked", "permission", 5)}, err: provider.ErrNoTranscript, now: started.Add(10 * time.Second), wantCalled: true, wantState: StateWorking},
+		{name: "stale question report stays working", hasHost: true, host: HostInfo{StartedAt: started, Alive: true, LastExitAt: at(10), Report: qReport("blocked", "question", 5)}, err: provider.ErrNoTranscript, now: started.Add(20 * time.Second), wantCalled: true, wantState: StateWorking},
+		{name: "report question with host not alive stays none", hasHost: true, host: HostInfo{StartedAt: started, Alive: false, Report: qReport("blocked", "question", 5)}, wantState: StateNone},
+		{name: "working report never changes the state", hasHost: true, host: HostInfo{StartedAt: started, Alive: true, Report: qReport("working", "question", 5)}, err: provider.ErrNoTranscript, now: started.Add(10 * time.Second), wantCalled: true, wantState: StateWorking},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -373,5 +392,34 @@ func TestChatJSONKeys(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("JSON %s\nmissing %s", got, want)
 		}
+	}
+}
+
+// TestReadReportChatJSON pins that a report's message stays out of the chat.
+// The load-bearing check is the question-report row that changes the state:
+// the state moves, yet nothing of the agent's words may appear in the JSON,
+// because the page's live fingerprint is built from it (PLAN T17.12, A6).
+func TestReadReportChatJSON(t *testing.T) {
+	const secret = "secret words"
+	for _, kind := range []string{"question", "permission"} {
+		t.Run(kind, func(t *testing.T) {
+			d := Deps{
+				Host: func(string) (HostInfo, bool) {
+					return HostInfo{StartedAt: t0, Alive: true, Report: qReport("blocked", kind, 5)}, true
+				},
+				Conversation: func(string, provider.ConversationQuery) ([]provider.ConversationEntry, error) {
+					return nil, provider.ErrNoTranscript
+				},
+				Home: "/home/owner",
+				Now:  func() time.Time { return at(10) },
+			}
+			b, err := json.Marshal(Read("demo", "/work/project", d))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(b), secret) || strings.Contains(string(b), "msg") {
+				t.Errorf("chat JSON carries the report: %s", b)
+			}
+		})
 	}
 }

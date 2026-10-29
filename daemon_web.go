@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/discover"
@@ -290,7 +291,22 @@ func webPlanChat(now func() time.Time) func(project, root string) planchat.Chat 
 			if err != nil {
 				return planchat.HostInfo{Provider: meta.Provider}, true
 			}
-			return planchat.HostInfo{StartedAt: started, Provider: meta.Provider, Alive: host.Alive(meta.PID)}, true
+			info := planchat.HostInfo{StartedAt: started, Provider: meta.Provider, Alive: host.Alive(meta.PID)}
+			// The agent's own report and the child's last exit time let the
+			// chat tell a question the agent is blocked on before its
+			// transcript has it (internal/agentreport). A report whose own
+			// time cannot be read stays out: it cannot be told from one left
+			// by an earlier agent. The msg is never sent to a web response;
+			// planchat only reads the report's state and kind.
+			if a := meta.AgentStatus; a != nil {
+				if at, err := time.Parse(time.RFC3339, a.At); err == nil {
+					info.Report = agentreport.Report{State: a.State, Kind: a.Kind, Msg: a.Msg, At: at}
+				}
+			}
+			if meta.LastExit != nil {
+				info.LastExitAt, _ = time.Parse(time.RFC3339, meta.LastExit.At)
+			}
+			return info, true
 		},
 		// An empty name is the default provider; Lookup resolves it.
 		Conversation: func(name string, q provider.ConversationQuery) ([]provider.ConversationEntry, error) {

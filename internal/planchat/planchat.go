@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/provider"
 )
 
@@ -81,6 +82,14 @@ type HostInfo struct {
 	Provider string
 	// Alive is whether the host's process is running.
 	Alive bool
+	// Report is the host's latest Program status record (host.json
+	// agent_status), already parsed; a zero At means none. Read uses only
+	// its state, kind and age; its Msg never reaches the Chat.
+	Report agentreport.Report
+	// LastExitAt is when the host's child last exited (host.json
+	// last_exit.at), zero when it never has. A report from before it is
+	// stale: the agent that wrote it is gone.
+	LastExitAt time.Time
 }
 
 // Deps carries everything Read needs from outside. All fields are required.
@@ -126,6 +135,15 @@ const problemReadPrefix = "afk could not read the planning session's conversatio
 // never costs a transcript read, then the provider's answer. A provider with
 // no planning session is StateNone rather than a problem, because it is not
 // broken; it simply has nothing to show.
+//
+// A fresh blocked report of kind "question" turns a working state into
+// StateWaitingForText. The question is known from the report before the
+// transcript holds it, and no options are known until it does, so a typed
+// answer is the only reply the page can offer (PLAN T17.12, A5). A transcript
+// that already says the agent waits (for a choice or for text) keeps its
+// state, so the options are never hidden; a permission or auth report never
+// changes the state, because the chat only answers questions; and the
+// report's message is never copied into the Chat.
 func Read(project, root string, d Deps) Chat {
 	chat := Chat{Project: project, State: StateNone, Messages: []Message{}, Questions: []provider.Question{}}
 	info, ok := d.Host(root)
@@ -142,6 +160,7 @@ func Read(project, root string, d Deps) Chat {
 		// started": it cannot be stale.
 		if d.Now().Sub(info.StartedAt) <= transcriptGrace {
 			chat.State = StateWorking
+			chat.State = withQuestionReport(chat.State, info)
 			return chat
 		}
 		chat.State = StateUnknown
@@ -153,7 +172,18 @@ func Read(project, root string, d Deps) Chat {
 		return chat
 	}
 	chat.Messages, chat.State, chat.Questions = Build(entries)
+	chat.State = withQuestionReport(chat.State, info)
 	return chat
+}
+
+// withQuestionReport applies the report rule described on Read to a state
+// read from the transcript. Only StateWorking is ever changed.
+func withQuestionReport(state State, info HostInfo) State {
+	if state == StateWorking && agentreport.Blocked(info.Report) && info.Report.Kind == "question" &&
+		agentreport.Fresh(info.Report, info.StartedAt, info.LastExitAt) {
+		return StateWaitingForText
+	}
+	return state
 }
 
 // Build turns conversation entries into chat messages and decides the state.
