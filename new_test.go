@@ -1,12 +1,17 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/dphaener/afk/internal/daemonconfig"
+	"github.com/dphaener/afk/internal/inbox"
+	"github.com/dphaener/afk/internal/session"
 )
 
 // TestNewSessionGuidance pins the post-create hand-off line. `afk new` no
@@ -574,6 +579,79 @@ func TestResolveProviderArg(t *testing.T) {
 			}
 			if got != tt.wantMsg {
 				t.Errorf("resolveProviderArg(%q, %v, %v) = %q, want %q", tt.provider, tt.scratch, tt.autonomous, got, tt.wantMsg)
+			}
+		})
+	}
+}
+
+// TestRecordStartRefusal pins what a refused start leaves in the inbox. Load-
+// bearing rows:
+//   - "one blocking failure item": a refusal makes exactly one item, kind
+//     failure, Blocking true, the plain title, and the refusal's own words in
+//     the body.
+//   - "same refusal twice": an open item with the same words is reused, so a
+//     loop or a repeated command does not pile up copies.
+//   - "other errors": only a StartRefusedError raises an item; a failed
+//     worktree must not.
+func TestRecordStartRefusal(t *testing.T) {
+	refusal := &session.StartRefusedError{Err: errors.New("Rex is not installed, so this session was not started.")}
+	t.Run("one blocking failure item", func(t *testing.T) {
+		root := t.TempDir()
+		var out strings.Builder
+		reportStartRefusal(root, "s1", refusal, &out)
+		items, _, err := inbox.Store{Dir: inbox.Dir(root)}.List()
+		if err != nil || len(items) != 1 {
+			t.Fatalf("items = %v, err %v; want exactly one", items, err)
+		}
+		it := items[0]
+		if it.Kind != "failure" || !it.Blocking || it.Title != startRefusedTitle || !strings.Contains(it.Body, "Rex is not installed") || it.Session != "s1" {
+			t.Errorf("item = %+v", it)
+		}
+		if !strings.Contains(out.String(), it.ID) {
+			t.Errorf("output %q does not name item %s", out.String(), it.ID)
+		}
+	})
+	t.Run("same refusal twice", func(t *testing.T) {
+		root := t.TempDir()
+		reportStartRefusal(root, "s1", refusal, &strings.Builder{})
+		reportStartRefusal(root, "s1", refusal, &strings.Builder{})
+		items, _, _ := inbox.Store{Dir: inbox.Dir(root)}.List()
+		if len(items) != 1 {
+			t.Errorf("%d items, want 1", len(items))
+		}
+	})
+	t.Run("other errors", func(t *testing.T) {
+		root := t.TempDir()
+		reportStartRefusal(root, "s1", errors.New("worktree failed"), &strings.Builder{})
+		items, _, _ := inbox.Store{Dir: inbox.Dir(root)}.List()
+		if len(items) != 0 {
+			t.Errorf("%d items, want 0", len(items))
+		}
+	})
+}
+
+// TestWithRuntimeSetting: the backend word and a carried error reach the
+// session deps, and a config that cannot be read becomes a carried error
+// (refused), never a silent afk.
+func TestWithRuntimeSetting(t *testing.T) {
+	carried := errors.New("bad word")
+	tests := []struct {
+		name        string
+		cfg         daemonconfig.Config
+		loadErr     error
+		wantBackend string
+		wantErr     bool
+	}{
+		{name: "rex", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "rex"}}, wantBackend: "rex"},
+		{name: "afk", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "afk"}}, wantBackend: "afk"},
+		{name: "carried error", cfg: daemonconfig.Config{RuntimeErr: carried}, wantErr: true},
+		{name: "load error", loadErr: errors.New("unreadable"), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := withRuntimeSetting(session.Deps{}, func() (daemonconfig.Config, error) { return tt.cfg, tt.loadErr })
+			if d.Backend != tt.wantBackend || (d.RuntimeErr != nil) != tt.wantErr {
+				t.Errorf("Backend %q, RuntimeErr %v; want %q, error %v", d.Backend, d.RuntimeErr, tt.wantBackend, tt.wantErr)
 			}
 		})
 	}

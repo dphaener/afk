@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -123,11 +125,21 @@ func realPlanDeps() planDeps {
 		stdoutTTY:    func() bool { return isTerminal(os.Stdout) },
 		hostAlive:    planHostAlive,
 		spawn: func(spec session.HostSpawn) (session.HostProcess, error) {
-			rt, err := session.RuntimeFor(spec.Worktree, spec.Name)
+			// The planning session is the one start here that makes a
+			// session, so the machine's backend decides where it runs. A
+			// refusal is also raised as an inbox item, like a build start.
+			sd := withRuntimeSetting(session.DefaultDeps(), func() (daemonconfig.Config, error) {
+				return daemonconfig.Load(daemonconfig.DefaultDeps())
+			})
+			if err := session.RefuseNewStart(context.Background(), sd); err != nil {
+				reportStartRefusal(spec.Worktree, spec.Name, &session.StartRefusedError{Err: err}, io.Discard)
+				return session.HostProcess{}, err
+			}
+			rt, err := session.NewStartRuntime(spec.Worktree, spec.Name, sd)
 			if err != nil {
 				return session.HostProcess{}, err
 			}
-			return rt.Spawn(spec, session.DefaultDeps())
+			return rt.Spawn(spec, sd)
 		},
 		attach:     attachPlanSession,
 		lintErrors: func(plan []byte) int { return planlint.Lint(plan).Summary.Errors },

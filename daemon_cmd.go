@@ -609,7 +609,13 @@ func daemonLaunchConfig(req daemon.LaunchRequest, providerName string) session.C
 // existing one. Session creation treats that as a warning, because a person
 // is watching and can install the plugin; here nobody is, and an agent
 // started without the plugin would sit at an unknown command for ever.
-func daemonPreflight(p provider.Provider, ud provider.UnattendedDeps, run provider.RunFunc) func(daemon.Project) (bool, string) {
+//
+// start is the machine's runtime check for a new session (daemonStartCheck);
+// nil is none. It rides this hook because a refusal wants exactly what a
+// failed preflight gets: one blocking failure item, nothing launched, and no
+// second check until the owner answers it. It is the last step so the item
+// lists the Rex problem beside any other.
+func daemonPreflight(p provider.Provider, ud provider.UnattendedDeps, run provider.RunFunc, start func() error) func(daemon.Project) (bool, string) {
 	return func(proj daemon.Project) (bool, string) {
 		okMode, modeSteps := p.UnattendedPreflight(ud)
 		okPlugin, pluginSteps := p.Preflight(proj.Root, run)
@@ -620,7 +626,24 @@ func daemonPreflight(p provider.Provider, ud provider.UnattendedDeps, run provid
 		if !okPlugin && strings.TrimSpace(pluginSteps) != "" {
 			steps = append(steps, strings.TrimSpace(pluginSteps))
 		}
-		return okMode && okPlugin, strings.Join(steps, "\n\n")
+		okStart := true
+		if start != nil {
+			if err := start(); err != nil {
+				okStart = false
+				steps = append(steps, err.Error())
+			}
+		}
+		return okMode && okPlugin && okStart, strings.Join(steps, "\n\n")
+	}
+}
+
+// daemonStartCheck reads the machine's runtime setting afresh and asks
+// whether a new session may start. Fresh on every call, so a config.toml the
+// owner fixed takes effect on the next pass without restarting the daemon.
+// For backend afk it makes no Rex call.
+func daemonStartCheck(sd session.Deps, load func() (daemonconfig.Config, error)) func() error {
+	return func() error {
+		return session.RefuseNewStart(context.Background(), withRuntimeSetting(sd, load))
 	}
 }
 
@@ -747,6 +770,7 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 	// The same for a clean-up's notes.
 	cd := session.DefaultCleanDeps()
 	cd.Stdout, cd.Stderr = logw, logw
+	loadRuntime := func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) }
 	sendInput := func(worktree, sess, text string) error {
 		rt, err := session.RuntimeFor(worktree, sess)
 		if err != nil {
@@ -797,9 +821,9 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		Sessions: func(root string) ([]discover.SessionState, error) {
 			return discover.Discover(root, discover.DefaultDeps())
 		},
-		Preflight: daemonPreflight(p, provider.UnattendedDeps{Home: home, Euid: os.Geteuid, ReadFile: os.ReadFile}, sd.Run),
+		Preflight: daemonPreflight(p, provider.UnattendedDeps{Home: home, Euid: os.Geteuid, ReadFile: os.ReadFile}, sd.Run, daemonStartCheck(sd, loadRuntime)),
 		Launch: func(req daemon.LaunchRequest) error {
-			return session.Create(daemonLaunchConfig(req, providerName), sd)
+			return session.Create(daemonLaunchConfig(req, providerName), withRuntimeSetting(sd, loadRuntime))
 		},
 		RecordTokens: func(proj daemon.Project, task, sess, sessionID string) (int, error) {
 			res, err := tokens.Record(tokens.RecordInput{

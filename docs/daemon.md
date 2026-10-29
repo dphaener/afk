@@ -6,6 +6,8 @@
 
 The daemon works through a project's master plan on its own. It runs one task at a time: it starts a session for the next task that is ready, watches that session, and when the session finishes it records the result and moves on. Nobody has to be at the keyboard.
 
+When `[runtime] backend` in `config.toml` is `"rex"`, the daemon opens each new session in a Rex window instead of afk's own host (see [configuration](configuration.md#runtime--where-new-sessions-run)).
+
 ```bash
 afk daemon            # run until stopped
 afk daemon --once     # look at every project once, do what is due, and exit

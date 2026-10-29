@@ -4,7 +4,7 @@ afk reads a few plain TOML files. You can edit each by hand.
 
 | File | Where | What it holds |
 |---|---|---|
-| `config.toml` | `~/.config/afk/` | The machine's settings: the projects the daemon builds, the daemon's timings, the usage limits, the web page, and the dashboard's search folders |
+| `config.toml` | `~/.config/afk/` | The machine's settings: the projects the daemon builds, the daemon's timings, the usage limits, the web page, the dashboard's search folders, and where new sessions run (`[runtime]`) |
 | `profile.toml` | `~/.config/afk/` | How you build and host things, read by the planning session |
 | `afk.toml` | each project's root folder, committed | Where the plan is, how a finished task ships, notifications |
 | `afk.local.toml` | each project's root folder, never committed | Private project settings, kept on this machine |
@@ -35,6 +35,9 @@ on_unknown_usage = "run"       # "run" or "hold": what to do when the agent cann
 bind = "127.0.0.1:4253"        # host:port the web page listens on (this is the default); the port is 1 to 65535
 public_url = "https://afk.example"  # optional: where you open the page from; starts with http:// or https://, no ? or #
 
+[runtime]
+backend = "afk"                # where new sessions run: "afk" (the default) or "rex"
+
 [[project]]
 path = "~/code/my-app"         # an absolute path, or one starting with ~/
 name = "my-app"                # optional; defaults to the folder name
@@ -44,6 +47,19 @@ path = "/srv/another-app"
 ```
 
 The `[dash]` table, the dashboard's search folders, leader key and colour theme (`tide`, `fjord`, `paper` or `phosphor`), is described in [dashboard.md](dashboard.md#config-file).
+
+### `[runtime]` — Where new sessions run
+
+`backend` chooses where every **new** session runs: a task the daemon starts, a one-off from `afk new --scratch`, and a planning session.
+
+- **`"afk"`** (the default, and what you get when the table or the key is left out) runs each session in afk's own background host. afk makes no call to Rex and does not need it.
+- **`"rex"`** runs each session in a window in Rex, a terminal multiplexer that keeps its windows on a server you can reach from a laptop or a phone. Rex must be installed (its `rex` command on your `PATH`) and its server must answer. The windows and their labels are described in [the reference](reference.md#rex-sessions).
+
+The words are lower case only: `"Rex"` or `"REX"` is a mistake, not a synonym. Any other word, or a value that is not text in quotes, is a problem with this file. afk then starts no new session, says which line is wrong, and raises an item in the inbox saying so. It never falls back to `"afk"` on its own, because you asked for Rex.
+
+With `"rex"` and Rex missing or silent, a new session is not started either. The message says which it is: Rex is not installed, or it is installed but its server does not answer. Start Rex and try again, or set `backend = "afk"` to run sessions without it. The same message goes to the inbox as a blocking item, so the daemon does not keep trying until you answer.
+
+The setting is read when a session starts. A session that already exists keeps the runtime that made it (its `host.json` says which), so changing this line never moves a running or stopped session to the other runtime.
 
 ---
 

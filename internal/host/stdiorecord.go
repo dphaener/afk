@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/dphaener/afk/internal/progstatus"
+	"github.com/dphaener/afk/internal/rexlayout"
 )
 
 // StdioHeartbeat is how often an unchanged record is sent again. It is a
@@ -63,4 +64,37 @@ func RecordFor(session string, v PhaseView) (progstatus.Record, bool) {
 // (a root clear removes ours with them), or the heartbeat is due.
 func ShouldSend(last, next progstatus.Record, sent bool, since time.Duration, agentCleared bool) bool {
 	return !sent || next != last || agentCleared || since >= StdioHeartbeat
+}
+
+// nextWindowLabel decides whether the Rex window gets a new label after one
+// reading of status.json. An unreadable reading sends nothing and keeps the
+// last label, for the same reason RecordFor keeps the last record: a stale
+// file says nothing about the session. A label equal to the one last sent is
+// not sent again, so an unchanged phase makes no Rex call at all.
+func nextWindowLabel(session string, planning bool, v PhaseView, last string, sent bool) (string, bool) {
+	if !v.Readable {
+		return "", false
+	}
+	next := rexlayout.WindowLabel(session, v.Phase, planning)
+	if sent && next == last {
+		return "", false
+	}
+	return next, true
+}
+
+// closeWindowOnExit says whether the host closes its window as it exits. It
+// does unless the phase is failed: a failed session's window is left open so
+// its last screen can be read (docs/PLAN.md, T17.8 assumption A5). The phase
+// is now's when status.json can be read at exit, else the last readable
+// reading, and a session that never had a readable status.json closes, since
+// nothing says it failed.
+func closeWindowOnExit(now PhaseView, last *PhaseView) bool {
+	phase := ""
+	switch {
+	case now.Readable:
+		phase = now.Phase
+	case last != nil:
+		phase = last.Phase
+	}
+	return phase != "failed"
 }

@@ -2,6 +2,7 @@ package host
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -369,11 +370,14 @@ type stdioHarness struct {
 // restore runs after the host has stopped.
 func compressStdioTiming(t *testing.T) {
 	t.Helper()
-	prevStatus, prevTick, prevWait := stdioStatusEvery, stdioTick, stdioSafeWait
-	t.Cleanup(func() { stdioStatusEvery, stdioTick, stdioSafeWait = prevStatus, prevTick, prevWait })
+	prevStatus, prevTick, prevWait, prevWindow := stdioStatusEvery, stdioTick, stdioSafeWait, windowCallDeadline
+	t.Cleanup(func() {
+		stdioStatusEvery, stdioTick, stdioSafeWait, windowCallDeadline = prevStatus, prevTick, prevWait, prevWindow
+	})
 	stdioStatusEvery = 40 * time.Millisecond
 	stdioTick = 20 * time.Millisecond
 	stdioSafeWait = 300 * time.Millisecond
+	windowCallDeadline = 300 * time.Millisecond
 }
 
 // startStdio runs script as the child of a stdio host whose terminal is a
@@ -825,4 +829,269 @@ func TestStdioRequestRestart(t *testing.T) {
 			t.Logf("requester heard %q; terminal shows %q", refused, tc.wantScreen)
 		})
 	}
+}
+
+// TestStdioWindowLabel pins when the host sends its Rex window a new label,
+// as a table over nextWindowLabel. Load-bearing rows: "the same phase sends
+// none" (a status write every few seconds must not become a Rex call every
+// few seconds), "unreadable keeps the last label" (a stale file says nothing,
+// so the window must not be relabelled from it), "failed maps to the failed
+// word" (the owner finds a failed session by its window), and "planning is
+// plan" (the planning window carries no session prefix whatever its phase).
+func TestStdioWindowLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		planning bool
+		view     PhaseView
+		last     string
+		sent     bool
+		want     string
+		wantSend bool
+	}{
+		{name: "the first reading sends one", view: PhaseView{Readable: true, Phase: "executing"}, want: "sess · build", wantSend: true},
+		{name: "a phase change sends one", view: PhaseView{Readable: true, Phase: "reviewing"}, last: "sess · build", sent: true, want: "sess · review", wantSend: true},
+		{name: "the same phase sends none", view: PhaseView{Readable: true, Phase: "executing"}, last: "sess · build", sent: true},
+		{name: "awaiting input alone sends none", view: PhaseView{Readable: true, Phase: "executing", AwaitingInput: true}, last: "sess · build", sent: true},
+		{name: "unreadable keeps the last label", view: PhaseView{}, last: "sess · build", sent: true},
+		{name: "unreadable before any label sends none", view: PhaseView{}},
+		{name: "failed maps to the failed word", view: PhaseView{Readable: true, Phase: "failed"}, last: "sess · build", sent: true, want: "sess · failed", wantSend: true},
+		{name: "fixing maps to fix", view: PhaseView{Readable: true, Phase: "fixing"}, last: "sess · review", sent: true, want: "sess · fix", wantSend: true},
+		{name: "planning is plan", planning: true, view: PhaseView{Readable: true, Phase: "executing"}, want: "plan", wantSend: true},
+		{name: "planning sends plan once", planning: true, view: PhaseView{Readable: true, Phase: "reviewing"}, last: "plan", sent: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, send := nextWindowLabel("sess", tc.planning, tc.view, tc.last, tc.sent)
+			if got != tc.want || send != tc.wantSend {
+				t.Errorf("nextWindowLabel = (%q, %v), want (%q, %v)", got, send, tc.want, tc.wantSend)
+			}
+		})
+	}
+}
+
+// TestStdioCloseDecision pins whether the host closes its window as it
+// exits, as a table over closeWindowOnExit. Load-bearing rows: "exit under
+// failed does not close" (the spec keeps a failed session's window open to be
+// read), "a fresh reading beats the last one" (the agent's final write lands
+// after the watcher's last tick) and "unreadable at exit falls back to the
+// last reading" (a file mid-rewrite at exit must not undo a failure).
+func TestStdioCloseDecision(t *testing.T) {
+	failed := &PhaseView{Readable: true, Phase: "failed"}
+	executing := &PhaseView{Readable: true, Phase: "executing"}
+	tests := []struct {
+		name string
+		now  PhaseView
+		last *PhaseView
+		want bool
+	}{
+		{name: "exit under failed does not close", now: *failed, last: failed, want: false},
+		{name: "exit under done closes", now: PhaseView{Readable: true, Phase: "done"}, last: executing, want: true},
+		{name: "exit under executing closes", now: *executing, last: executing, want: true},
+		{name: "exit under reviewing closes", now: PhaseView{Readable: true, Phase: "reviewing"}, want: true},
+		{name: "a fresh reading beats the last one", now: *failed, last: executing, want: false},
+		{name: "a fresh non-failed reading beats a failed last one", now: *executing, last: failed, want: true},
+		{name: "unreadable at exit falls back to the last reading", now: PhaseView{}, last: failed, want: false},
+		{name: "unreadable at exit after executing closes", now: PhaseView{}, last: executing, want: true},
+		{name: "never readable closes", now: PhaseView{}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := closeWindowOnExit(tc.now, tc.last); got != tc.want {
+				t.Errorf("closeWindowOnExit = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// fakeWindow is a WindowControl that records what the host asked of it.
+// With hang set, every call blocks until the test ends, standing in for a
+// Rex server that never answers.
+type fakeWindow struct {
+	mu       sync.Mutex
+	labels   []string
+	closes   int
+	err      error
+	hang     chan struct{}
+	metaPath string
+	// metaAtClose says host.json still existed when CloseSelf ran.
+	metaAtClose bool
+}
+
+func (f *fakeWindow) SetLabel(label string) error {
+	f.mu.Lock()
+	f.labels = append(f.labels, label)
+	f.mu.Unlock()
+	if f.hang != nil {
+		<-f.hang
+	}
+	return f.err
+}
+
+func (f *fakeWindow) CloseSelf() error {
+	f.mu.Lock()
+	f.closes++
+	if _, err := os.Stat(f.metaPath); err == nil {
+		f.metaAtClose = true
+	}
+	f.mu.Unlock()
+	if f.hang != nil {
+		<-f.hang
+	}
+	return f.err
+}
+
+func (f *fakeWindow) snapshot() ([]string, int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.labels...), f.closes, f.metaAtClose
+}
+
+// waitLabels polls until the window has been asked for n labels.
+func (f *fakeWindow) waitLabels(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(testBudget)
+	for time.Now().Before(deadline) {
+		if l, _, _ := f.snapshot(); len(l) >= n {
+			return
+		}
+		time.Sleep(testPollStep)
+	}
+	l, _, _ := f.snapshot()
+	t.Fatalf("the window was asked for %d labels, want %d: %q", len(l), n, l)
+}
+
+// TestStdioWindowControl runs a real stdio host with a fake WindowControl
+// and a child that ends when told to. Load-bearing rows: "done closes the
+// window last" (labels follow the phases, an unchanged phase sends none, and
+// the close comes after host.json is gone, so nothing points at a closed
+// block); "failed leaves the window open" (and the host passes the child's
+// status on, which is what the Rex block shows); "a failing Rex is logged
+// once" (Rex that is not reachable fails every call; one line says so).
+func TestStdioWindowControl(t *testing.T) {
+	tests := []struct {
+		name       string
+		phases     []string
+		exit       int
+		err        error
+		wantLabels []string
+		wantCloses int
+		wantErr    *ChildExited
+		wantLog    string
+		wantLogN   int
+	}{
+		{name: "done closes the window last", phases: []string{"executing", "executing", "reviewing", "done"},
+			wantLabels: []string{"sess · build", "sess · review", "sess · done"}, wantCloses: 1, wantLog: "closing this session's Rex window", wantLogN: 1},
+		{name: "failed leaves the window open", phases: []string{"executing", "failed"}, exit: 3,
+			wantLabels: []string{"sess · build", "sess · failed"}, wantErr: &ChildExited{Code: 3}, wantLog: "leaving its Rex window open", wantLogN: 1},
+		{name: "a failing Rex is logged once", phases: []string{"executing", "reviewing"}, err: errors.New("rex: no server"),
+			wantLabels: []string{"sess · build", "sess · review"}, wantCloses: 1, wantLog: "Rex is not reachable", wantLogN: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			flag := filepath.Join(t.TempDir(), "end")
+			script := fmt.Sprintf("echo started\nwhile [ ! -f %s ]; do sleep 0.02; done\nexit %d\n", flag, tc.exit)
+			fw := &fakeWindow{err: tc.err}
+			h := startStdio(t, script, func(cfg *ServeConfig) {
+				cfg.Window = fw
+				fw.metaPath = cfg.MetaPath
+			})
+			want := 0
+			for i, p := range tc.phases {
+				h.writeStatus(t, p, false)
+				if i > 0 && p == tc.phases[i-1] {
+					// Several watcher ticks on the unchanged phase: none
+					// of them may send a label.
+					time.Sleep(4 * stdioStatusEvery)
+					continue
+				}
+				want++
+				fw.waitLabels(t, want)
+			}
+			touch(t, flag)
+			err := h.waitDone(t)
+			var ce *ChildExited
+			switch {
+			case tc.wantErr == nil && err != nil:
+				t.Errorf("Serve = %v, want nil", err)
+			case tc.wantErr != nil && (!errors.As(err, &ce) || *ce != *tc.wantErr):
+				t.Errorf("Serve = %v, want %v", err, tc.wantErr)
+			}
+			labels, closes, metaAtClose := fw.snapshot()
+			if strings.Join(labels, " | ") != strings.Join(tc.wantLabels, " | ") {
+				t.Errorf("labels = %q, want %q", labels, tc.wantLabels)
+			}
+			if closes != tc.wantCloses {
+				t.Errorf("CloseSelf called %d times, want %d", closes, tc.wantCloses)
+			}
+			if metaAtClose {
+				t.Errorf("CloseSelf ran while host.json still existed; the close must be the host's last act")
+			}
+			data, _ := os.ReadFile(h.cfg.LogPath)
+			if n := bytes.Count(data, []byte(tc.wantLog)); n != tc.wantLogN {
+				t.Errorf("the log has %q %d times, want %d; log:\n%s", tc.wantLog, n, tc.wantLogN, data)
+			}
+			t.Logf("labels %q, closes %d, Serve = %v", labels, closes, err)
+		})
+	}
+}
+
+// TestStdioWindowDeadline stands in for a Rex server that never answers:
+// every WindowControl call blocks for the rest of the test. The child's
+// output must still reach the terminal at full speed while a relabel hangs
+// (no Rex call sits on the pump or the writer), a phase change made while it
+// hangs must not start a second call, and the host must still end, bounded
+// by windowCallDeadline, when its close at exit hangs too.
+func TestStdioWindowDeadline(t *testing.T) {
+	work := t.TempDir()
+	flag, endFlag := filepath.Join(work, "go"), filepath.Join(work, "end")
+	script := fmt.Sprintf(`stty -opost
+echo started
+while [ ! -f %s ]; do sleep 0.02; done
+i=1
+while [ $i -le 500 ]; do printf 'line %%d\n' $i; i=$((i+1)); done
+while [ ! -f %s ]; do sleep 0.02; done
+`, flag, endFlag)
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	fw := &fakeWindow{hang: hang}
+	h := startStdio(t, script, func(cfg *ServeConfig) {
+		cfg.Window = fw
+		fw.metaPath = cfg.MetaPath
+	})
+	h.writeStatus(t, "executing", false)
+	fw.waitLabels(t, 1)
+
+	start := time.Now()
+	touch(t, flag)
+	h.out.waitFor(t, "line 500", func(s []byte) bool { return bytes.Contains(s, []byte("line 500\n")) })
+	pumped := time.Since(start)
+	if pumped > windowCallDeadline {
+		t.Errorf("the child's 500 lines took %s to reach the terminal while a relabel hung, longer than the %s deadline", pumped, windowCallDeadline)
+	}
+
+	// A phase change while the first relabel hangs, given time to pass the
+	// deadline and several watcher ticks: it must wait, not start a call.
+	h.writeStatus(t, "reviewing", false)
+	time.Sleep(windowCallDeadline + 4*stdioStatusEvery)
+	exitAt := time.Now()
+	touch(t, endFlag)
+	if err := h.waitDone(t); err != nil {
+		t.Errorf("Serve = %v, want nil", err)
+	}
+	ended := time.Since(exitAt)
+	// The child's exit, one hung close bounded by the deadline, and the
+	// writer's flush grace; anything near the test budget means a hung call
+	// held the host.
+	if limit := windowCallDeadline + stdioFlushGrace + 2*time.Second; ended > limit {
+		t.Errorf("the host took %s to end with a hung close, want under %s", ended, limit)
+	}
+	labels, closes, _ := fw.snapshot()
+	if len(labels) != 1 {
+		t.Errorf("labels = %q, want only the first: a second call started while the first hung", labels)
+	}
+	if closes != 1 {
+		t.Errorf("CloseSelf called %d times, want 1", closes)
+	}
+	awaitLogLine(t, h.cfg.LogPath, "did not answer within")
+	t.Logf("500 lines in %s with a relabel hung; host ended %s after the child was told to exit, with its close hung", pumped, ended)
 }

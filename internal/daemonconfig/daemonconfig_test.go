@@ -188,6 +188,9 @@ name = "bee"
 			if reflect.DeepEqual(want.Dash, Dash{}) {
 				want.Dash = defaultDash()
 			}
+			if want.Runtime == (RuntimeConfig{}) {
+				want.Runtime = RuntimeConfig{Backend: BackendAfk}
+			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -491,6 +494,69 @@ func TestLoopbackBind(t *testing.T) {
 		t.Run(c.addr, func(t *testing.T) {
 			if got := LoopbackBind(c.addr); got != c.want {
 				t.Errorf("LoopbackBind(%q) = %v, want %v", c.addr, got, c.want)
+			}
+		})
+	}
+}
+
+// TestLoadRuntime pins the [runtime] backend. Load-bearing rows: "absent" (the
+// default must stay afk so a machine that never set it makes no Rex call),
+// "unknown", "wrong type" and "capitalised" (each is an error and Backend is
+// never rex, so a typo cannot start a session under the wrong runtime), and
+// "bad runtime beside valid dash" (a bad [runtime] must not cost the other
+// tables, and Load must not fail).
+func TestLoadRuntime(t *testing.T) {
+	cases := []struct {
+		name    string
+		toml    string
+		backend string
+		errHas  []string
+		dash    []string // want these search roots still loaded
+	}{
+		{name: "absent", toml: "", backend: "afk"},
+		{name: "empty table", toml: "[runtime]\n", backend: "afk"},
+		{name: "afk", toml: "[runtime]\nbackend = \"afk\"\n", backend: "afk"},
+		{name: "rex", toml: "[runtime]\nbackend = \"rex\"\n", backend: "rex"},
+		{name: "unknown", toml: "[runtime]\nbackend = \"tmux\"\n", backend: "afk",
+			errHas: []string{"config.toml", "[runtime] backend", "tmux"}},
+		{name: "capitalised", toml: "[runtime]\nbackend = \"Rex\"\n", backend: "afk",
+			errHas: []string{"[runtime] backend", "lower case"}},
+		{name: "wrong type", toml: "[runtime]\nbackend = 5\n", backend: "afk",
+			errHas: []string{"config.toml", "[runtime] backend"}},
+		{name: "not a table", toml: "runtime = \"rex\"\n", backend: "afk",
+			errHas: []string{"config.toml", "runtime"}},
+		{name: "bad runtime beside valid dash", toml: "[runtime]\nbackend = \"nope\"\n[dash]\nsearch_roots = [\"/srv/code\"]\n",
+			backend: "afk", errHas: []string{"[runtime] backend"}, dash: []string{"/srv/code"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := deps(nil, map[string]string{home: c.toml})
+			got, err := Load(d)
+			if err != nil {
+				t.Fatalf("Load returned %v; a [runtime] value must never fail Load", err)
+			}
+			if got.Runtime.Backend != c.backend {
+				t.Errorf("Backend = %q, want %q", got.Runtime.Backend, c.backend)
+			}
+			if len(c.errHas) == 0 {
+				if got.RuntimeErr != nil {
+					t.Fatalf("RuntimeErr = %v, want none", got.RuntimeErr)
+				}
+			} else {
+				if got.RuntimeErr == nil {
+					t.Fatalf("want RuntimeErr containing %v, got none", c.errHas)
+				}
+				for _, s := range c.errHas {
+					if !strings.Contains(got.RuntimeErr.Error(), s) {
+						t.Errorf("RuntimeErr %q lacks %q", got.RuntimeErr, s)
+					}
+				}
+			}
+			if got.DashErr != nil {
+				t.Errorf("DashErr = %v, want none", got.DashErr)
+			}
+			if len(c.dash) > 0 && !reflect.DeepEqual(got.Dash.SearchRoots, c.dash) {
+				t.Errorf("Dash.SearchRoots = %v, want %v", got.Dash.SearchRoots, c.dash)
 			}
 		})
 	}

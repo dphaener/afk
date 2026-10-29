@@ -4513,3 +4513,25 @@ The stdio host is the second way a session runs (`afk _host --stdio` as a Rex bl
 - **Rex runtime: socket methods, no spawn (A8).** The `rex` runtime sends input, restart, exit and stop through the socket, as afk's runtime does, and refuses an attach before dialling. Starting a session in Rex is refused until T17.8 creates the block.
 - **The prototype is a reference, not a base (A9).** The T17.1 prototype was never merged. It is ported and rewritten here, and its record-interval flag is dropped in favour of a constant the tests drive.
 - **This section belongs to the change.** The planner wrote it.
+
+## T17.8
+
+Sessions can start in Rex when the machine's backend says so, and everything else stays as it was. These are the choices the master plan left open, and one it got wrong.
+
+- **The backend is carried, not thrown (A1).** `[runtime] backend` is read into the config, and an unknown word or a wrong type is kept as a carried error, not a load error, so the daemon and every other reader of `config.toml` keep running. A session start with a carried error is refused in the same way as a bad Rex, and never runs on afk's own host.
+- **One Rex session per project, found by id (A2).** The project's Rex session id is taken from a sibling session's `host.json`, then checked with `session.list`. Labels are never matched, because they are not unique. A new session is created only when no recorded session is listed.
+- **Labels say the phase in one word (A3).** A window is `<session> · <word>`: `plan`, `build`, `review`, `fix`, `done` or `failed`. The planning session's window is `plan`. `build` is a plain word for the executing phase, where the spec gave only `review` as an example.
+- **The host finds its own ids in its environment (A4).** A block's id exists only once its command has started, so the spawner cannot pass it as a flag. Rex sets `REX_SESSION`, `REX_BLOCK` and `REX_SERVER` in a block's program (checked on the build VM); there is no `REX_WINDOW`, so the host finds its window with `session.list_blocks`. This replaces the flags in T17.7's A5, which stay as overrides.
+- **The window closes with its host unless the session failed (A5).** Every terminal is created with `exit.on_completion` false. The host closes its own block as its last act, unless its phase is `failed`, so a failed session's last screen stays readable. Rex's default could not know the phase at exit.
+- **An empty project session is reused, never destroyed (A6).** `session.destroy` works one call at a time, but a destroy would race a new session in the same project.
+- **A Rex session keeps its runtime after its host is gone (A7).** A session started on Rex writes `.afk/{name}/runtime` with `rex`. Without a `host.json`, the runtime is read from that marker, so a relaunch stays in Rex. A session with no marker stays on afk, as before.
+- **The theme is the dashboard's (A8).** Foreground, background and cursor come from the resolved dashboard theme, and `scheme` is light or dark by the background. The 256-colour palette is not changed.
+- **A refusal is one pure decision (A9).** The refusal is decided by `rexlayout.Refusal`. The daemon and the dashboard raise a blocking `failure` item, `afk new` prints the same message and also adds the item, and nothing falls back to afk.
+- **Tests never call Rex (A10).** Every Rex call in a test goes through `rex.Fake`. The layout, label and refusal decisions are pure functions in `internal/rexlayout`.
+- **Owner checks are not blockers (A11).** How the window looks on the Mac, and the Mac-side layout, cannot be checked on the build VM. They are owner checks, not blockers.
+
+Open, and found after the checks passed: a failed session's window is not closed by `afk clean`. `Stop` finds the window id in `host.json`, and a failed host exit removes that file, so the marker (which holds only `rex`) is the only record left. The fix is to keep the window id in the marker or in `host.json` on a failed exit. Until then the docs tell the owner to close that window in Rex by hand.
+
+Also open: `afk new --dry-run` with backend `rex` and no Rex writes one blocking `failure` item, although a dry run should change nothing. The plan's failure scenario expects that item, so it is kept and noted here.
+
+**This section belongs to the change.** The planner wrote it.

@@ -1,13 +1,17 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/dphaener/afk/internal/daemonconfig"
+	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/prompt"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/session"
@@ -171,9 +175,13 @@ Options:
 	if tty {
 		deps.PickBase = prompt.PickBase
 	}
+	// The machine's backend decides where a NEW session runs. Read here, once
+	// per start, so a change to config.toml takes effect on the next session.
+	deps = withRuntimeSetting(deps, func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) })
 
 	if err := session.Create(cfg, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "afk new: %v\n", err)
+		reportStartRefusal(repo, name, err, os.Stderr)
 		os.Exit(1)
 	}
 	if dryRun {
@@ -448,4 +456,71 @@ func validateProjectPath(cmd, path string, p projectPathProbe) error {
 	default:
 		return nil
 	}
+}
+
+// withRuntimeSetting puts the machine's `[runtime]` setting on d, for a start
+// that creates a session. A config.toml that cannot be read at all is carried
+// as RuntimeErr and refused like a bad backend word: with the file unreadable
+// afk cannot know the owner did not ask for Rex, and starting on its own host
+// anyway is the silent fallback the setting forbids. The load happens on the
+// caller's goroutine, so a dashboard caller must call this inside its tea.Cmd.
+func withRuntimeSetting(d session.Deps, load func() (daemonconfig.Config, error)) session.Deps {
+	cfg, err := load()
+	if err != nil {
+		d.RuntimeErr = fmt.Errorf("afk could not read config.toml, so it cannot tell where this session should run: %w", err)
+		return d
+	}
+	d.Backend = cfg.Runtime.Backend
+	d.RuntimeErr = cfg.RuntimeErr
+	return d
+}
+
+// startRefusedTitle is the title of the blocking item a refused start raises.
+const startRefusedTitle = "A new session was not started"
+
+// startRefusalItem is the inbox item for a refused start. The text is the
+// refusal's own plain message, so the terminal, the toast and the inbox all
+// say the same thing.
+func startRefusalItem(name string, err error) inbox.NewItem {
+	return inbox.NewItem{
+		Session:  name,
+		Kind:     "failure",
+		Blocking: true,
+		Title:    startRefusedTitle,
+		Body:     err.Error() + "\n\nNothing was started. Fix this, then start the session again.",
+	}
+}
+
+// recordStartRefusal adds the refusal's item to the project's inbox, unless
+// an open one with the same words is already there: a build loop or a
+// repeated `afk new` must not pile up copies of one problem. It returns the
+// item and whether this call added it.
+func recordStartRefusal(store inbox.Store, name string, err error) (inbox.Item, bool, error) {
+	n := startRefusalItem(name, err)
+	items, _, lerr := store.List()
+	if lerr == nil {
+		for _, it := range items {
+			if it.Open() && it.Kind == n.Kind && it.Title == n.Title && it.Body == n.Body {
+				return it, false, nil
+			}
+		}
+	}
+	it, aerr := store.Add(n)
+	return it, aerr == nil, aerr
+}
+
+// reportStartRefusal raises the inbox item when err is a refused start and
+// says so on w. Any other error is left alone. A failure to write the item is
+// told, never hidden, but never replaces the refusal already printed.
+func reportStartRefusal(root, name string, err error, w io.Writer) {
+	var refused *session.StartRefusedError
+	if !errors.As(err, &refused) {
+		return
+	}
+	it, _, aerr := recordStartRefusal(inbox.Store{Dir: inbox.Dir(root)}, name, err)
+	if aerr != nil {
+		fmt.Fprintf(w, "afk new: the inbox item for this could not be written: %v\n", aerr)
+		return
+	}
+	fmt.Fprintf(w, "afk new: this is also in your inbox as item %s.\n", it.ID)
 }
