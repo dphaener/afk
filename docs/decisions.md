@@ -4630,6 +4630,14 @@ Going into a Rex-backed agent shows its Rex window, or says where it runs, and n
 5. **The Watch link shows only for Rex sessions.** The session screen reads `host.json` for it and never Rex, so the page render stays free of a block read. Reason: a session on afk's own host has no block to read, and a link that leads to "no screen" is noise.
 6. **A reply to a Rex planning session does not take it from the dashboard.** Fact, read from the code: a Rex session's runtime embeds afk's own runtime, so `SendKeys` and `SendInput` reach `host.SendKeys` and `host.SendInput`, which dial the host's socket (`internal/session/runtime.go`, `internal/session/rexruntime.go`, `internal/host/input.go`). Only `Dial`, the interactive attach, is overridden to refuse. On a Rex session the host runs as a stdio host (`internal/host/stdio.go`): its one client is its own Rex terminal, "never stolen or dropped", and a socket connection that sends keys is a requester that "never receives the screen and never steals it". A dashboard cannot hold a pane on such a session either, because attaching is refused. So the reply takes no session from anyone. On afk's own host a typed reply still takes the session's single client slot, as before, so that behaviour is unchanged and the docs say so.
 
+## T17.15
+
+**The control room at phone width, device-independent part.** The phone's sizes and typeable keys are owner measurements (inbox `4qbmxd`), so this session built only what does not depend on them.
+
+1. **The sweep uses fixtures, not device sizes.** `TestNarrowSweep` renders every view at widths 20, 30, 40, 50, 60, 79 and heights 8, 12, 24. Reason: the phone's real widths are not known, and a sweep that claimed one would pin a guess. The check is three bounds (no panic, no line wider than the window, no frame taller than the window), not a pixel golden, so no golden file is added.
+2. **Nothing needed fixing.** The sweep passed on every row, so W2.T1 changed no code and every golden is byte-identical. Reason: the bounds hold at these widths already; a readable-at-20-columns check would need a rule that is part of the owner's narrow layout.
+3. **The rest is parked, not guessed.** The narrow layout in `docs/dash-design.md`, the chosen widths, the typeable keys, the saved screens at measured sizes and the phone acceptance wait on the owner's measurement. Inbox `yc8myz` (blocking) records that, so the ledger keeps T17.15 open. Reason: T17.15's own text says it reads those numbers before choosing widths.
+
 ## T17.16
 
 **Notices that open the right window.** A desktop notice from `afk notify` now knows about a Rex session. A click on it shows the agent's Rex window, and a notice is skipped when Rex for Mac already shows the same one.
