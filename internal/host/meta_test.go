@@ -274,3 +274,70 @@ func TestSocketPath(t *testing.T) {
 		}
 	})
 }
+
+// TestMetaRex pins the rex block: "rex fields round trip" proves the ids are
+// kept verbatim, "no rex key" is load-bearing because every host.json written
+// before Rex must read with Rex == nil, and "not JSON" proves an unparseable
+// file is still an error rather than an empty block.
+func TestMetaRex(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		meta    *Meta
+		wantRex *RexBlock
+		wantErr bool
+	}{
+		{
+			name: "rex fields round trip",
+			meta: &Meta{PID: 3, Socket: "/tmp/r.sock", StartedAt: "2026-01-01T00:00:00Z", Runtime: RuntimeRex,
+				Rex: &RexBlock{Server: "srv", SessionID: "s1", WindowID: "w1", BlockID: "b1"}},
+			wantRex: &RexBlock{Server: "srv", SessionID: "s1", WindowID: "w1", BlockID: "b1"},
+		},
+		{
+			name:    "optional ids omitted",
+			meta:    &Meta{PID: 3, Runtime: RuntimeRex, Rex: &RexBlock{SessionID: "s1", BlockID: "b1"}},
+			wantRex: &RexBlock{SessionID: "s1", BlockID: "b1"},
+		},
+		{
+			name: "no rex key",
+			raw:  `{"pid": 4, "socket": "/tmp/a.sock", "started_at": "2026-01-01T00:00:00Z", "argv": []}`,
+		},
+		{
+			name:    "not JSON",
+			raw:     "not json at all",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			const name = "sess"
+			if tt.meta != nil {
+				if err := WriteMeta(repoRoot, name, *tt.meta); err != nil {
+					t.Fatalf("WriteMeta: %v", err)
+				}
+			} else {
+				dir := filepath.Join(repoRoot, ".afk", name)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "host.json"), []byte(tt.raw), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := ReadMeta(repoRoot, name)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ReadMeta error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			switch {
+			case tt.wantRex == nil && got.Rex != nil:
+				t.Errorf("Rex = %+v, want nil", got.Rex)
+			case tt.wantRex != nil && (got.Rex == nil || *got.Rex != *tt.wantRex):
+				t.Errorf("Rex = %+v, want %+v", got.Rex, tt.wantRex)
+			}
+		})
+	}
+}

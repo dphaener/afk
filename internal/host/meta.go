@@ -11,6 +11,21 @@ import (
 // RuntimeAfk is the runtime word for a session run by afk's own host.
 const RuntimeAfk = "afk"
 
+// RuntimeRex is the runtime word for a session whose host runs inside a Rex
+// terminal block (`afk _host --stdio`).
+const RuntimeRex = "rex"
+
+// RexBlock records where a Rex session lives. The ids are recorded verbatim
+// from what the spawner passed in; the host never calls Rex, so it cannot
+// check them and does not try. An absent "rex" key in host.json means the
+// session is not in Rex. Server is empty for the machine's default Rex server.
+type RexBlock struct {
+	Server    string `json:"server,omitempty"`
+	SessionID string `json:"session_id"`
+	WindowID  string `json:"window_id,omitempty"`
+	BlockID   string `json:"block_id"`
+}
+
 // Meta is the host process's persisted metadata: enough for another process
 // (the CLI, the dashboard) to find and validate a running host without
 // dialing it.
@@ -36,6 +51,10 @@ type Meta struct {
 	// (docs/PLAN.md §2 "Rex is optional"). Empty means "afk": a host.json
 	// written before the field existed omits the key and must read as today.
 	Runtime string `json:"runtime,omitempty"`
+	// Rex holds the Rex block ids for a session with Runtime "rex". It is a
+	// pointer so a host.json from before this field, or from an afk-runtime
+	// host, reads as nil rather than as an empty block.
+	Rex *RexBlock `json:"rex,omitempty"`
 	// AgentStatus is the latest Program status (OSC 7501) root record the
 	// session's own agent sent in its output; LastExit is how the previous
 	// child generation ended (written after a restart in place, since a host
