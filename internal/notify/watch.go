@@ -4,7 +4,9 @@
 // for every other file here — the split inside this file keeps the spirit of it:
 // everything that BRANCHES is a pure function (IsFocusOutcome, Focusable,
 // FocusPlan, PaneListed, ValidTerminalApp) and exec lives only in the thin
-// runners at the bottom, which take the pure results as parameters.
+// runners at the bottom, which take the pure results as parameters. ClickRoute is
+// the one decision that calls out, and only through the FocusRexFunc its caller
+// hands in, so its tests pass a fake.
 //
 // The watcher lives beside the argv builders on purpose. Its decisions are made
 // entirely out of this package's own vocabulary — alerter's outcome strings and
@@ -104,10 +106,14 @@ func IsFocusOutcome(outcome string) bool {
 }
 
 // Focusable reports whether a toast should carry the Focus action button at all.
-// It matches FocusPlan's own preconditions exactly, so a rendered button always
-// has something to do: without a pane there is nothing to switch to, and without
-// a client tty there is no deterministic client to switch (see FocusPlan).
+// It matches the click path's own preconditions exactly, so a rendered button
+// always has something to do: a Rex window can be asked to come forward when
+// both its ids are known (see ClickRoute), and otherwise FocusPlan needs a pane to
+// switch to and a client tty to switch deterministically.
 func Focusable(t Target) bool {
+	if t.RexSession != "" && t.RexWindow != "" {
+		return true
+	}
 	return t.PaneID != "" && t.ClientTTY != ""
 }
 
@@ -226,12 +232,53 @@ func listedExactly(out, want string) bool {
 //
 // This runs in the already-detached child (see the spawn in notify_cmd.go), so
 // blocking here for up to WatchLifetime is the point.
-func Watch(alerterPath string, args []string, t Target, fr FocusRequest) {
+func Watch(alerterPath string, args []string, t Target, fr FocusRequest, focusRex FocusRexFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), WatchLifetime)
 	defer cancel()
 
 	outcome := runAlerter(ctx, alerterPath, args)
-	RunFocus(outcome, t, fr)
+	RunFocus(outcome, t, fr, focusRex)
+}
+
+// FocusRexFunc asks Rex to bring one window forward. The caller supplies it
+// because this package must not import internal/rex: the watcher's decisions are
+// made out of this package's own vocabulary, and the Rex call (with its deadline)
+// belongs to the command that owns the Rex caller. A nil func means "Rex cannot
+// be asked", which takes the tmux path.
+type FocusRexFunc func(sessionID, windowID string) error
+
+// Route is where a click went.
+type Route int
+
+const (
+	// RouteNone: nothing to focus, or the outcome was not a click.
+	RouteNone Route = iota
+	// RouteRex: Rex was asked and said yes; tmux is not touched.
+	RouteRex
+	// RouteTmux: the existing tmux path (FocusPlan) runs.
+	RouteTmux
+)
+
+// ClickRoute decides where a click goes, calling focusRex itself so the Rex
+// attempt and its fallback are one decision. Rex goes first whenever the parent
+// passed both Rex ids, because the parent passes them only when ChooseNotice
+// picked Rex (a Rex-backed session's agent is not in any tmux pane). A Rex error
+// (Rex down, the window closed, the 2-second deadline) falls back to tmux rather
+// than to nothing: the pane, when one was recorded, is still a better place to
+// land than nowhere, and FocusPlan re-checks it before switching.
+func ClickRoute(outcome string, t Target, focusRex FocusRexFunc) Route {
+	if !IsFocusOutcome(outcome) {
+		return RouteNone
+	}
+	if t.RexSession != "" && t.RexWindow != "" && focusRex != nil {
+		if focusRex(t.RexSession, t.RexWindow) == nil {
+			return RouteRex
+		}
+	}
+	if t.PaneID == "" {
+		return RouteNone
+	}
+	return RouteTmux
 }
 
 // RunFocus performs the pane-existence check and then whatever FocusPlan
@@ -247,10 +294,14 @@ func Watch(alerterPath string, args []string, t Target, fr FocusRequest) {
 //
 // The switch does not depend on the request: a skipped or failed write costs the
 // open+focus half of the click and leaves the pane switch intact.
-func RunFocus(outcome string, t Target, fr FocusRequest) {
-	// Short-circuit before spending a tmux call: nothing about a non-focus
-	// outcome or an unrecorded pane can produce an action.
-	if !IsFocusOutcome(outcome) || t.PaneID == "" {
+//
+// A click Rex answered writes no dashboard request: the request opens the session
+// inside a dashboard's tmux pane, and on that route nobody is being switched to a
+// dashboard to see it.
+func RunFocus(outcome string, t Target, fr FocusRequest, focusRex FocusRexFunc) {
+	// ClickRoute short-circuits before spending a tmux call: nothing about a
+	// non-focus outcome or an unrecorded pane can produce a tmux action.
+	if ClickRoute(outcome, t, focusRex) != RouteTmux {
 		return
 	}
 	plan := FocusPlan(outcome, t, paneExists(t.PaneID), clientAttached(t.ClientTTY))

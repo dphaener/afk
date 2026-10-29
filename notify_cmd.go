@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -10,10 +11,27 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/dphaener/afk/internal/dashmeta"
+	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/notify"
+	"github.com/dphaener/afk/internal/progstatus"
+	"github.com/dphaener/afk/internal/rex"
 )
+
+// notifyRexDeadline bounds every Rex call `afk notify` makes, the Mac check in
+// the parent and the window focus in the watcher alike. The parent runs on a
+// hook's critical path, and a notice must never be lost or held up because Rex is
+// slow (decision D4): past this deadline the command behaves as it does without
+// Rex.
+const notifyRexDeadline = 2 * time.Second
+
+// newRexCaller is the Rex seam for `afk notify`. A package variable so tests can
+// swap in a rex.Fake; nothing in a test may run the real rex binary.
+var newRexCaller = func() rex.Caller {
+	return rex.NewCaller(rex.NewRun(notifyRexDeadline), "rex")
+}
 
 // notifyInstallCmd is how a user gets the click-to-focus backend. Printed by
 // --check whenever the resolved backend is osascript or nothing, since those are
@@ -106,8 +124,27 @@ func cmdNotify(args []string) {
 	entry, entryFound := dashmeta.PeekEntry(gitCommonDir)
 	target := notify.ResolveTarget(entry, entryFound, os.Getenv)
 
+	// The Rex facts are read ONCE, before either path, so --dry-run reports the
+	// same decision the delivering path acts on and Rex is never asked twice.
+	// The worktree comes first because a session's host.json lives in its own
+	// worktree; the common dir's parent covers a session run in the main checkout
+	// (the planning session's master-plan host).
+	rexCtx, rexCancel := context.WithTimeout(context.Background(), notifyRexDeadline)
+	worktree := ""
+	if f.plan != "" {
+		if cwd, err := os.Getwd(); err == nil {
+			worktree = resolveCwdRepoRoot(cwd)
+		}
+	}
+	block, waiting, macConnected := notifyRexFacts(rexCtx, newRexCaller(), worktree, gitCommonDir, f.plan)
+	rexCancel()
+
 	if f.dryRun {
-		for _, line := range notifyDryRunLines(toast, selected, found, target) {
+		action, rexTarget := notifyChoose(target, block, waiting, macConnected)
+		for _, line := range notifyDryRunLines(toast, selected, found, rexTarget) {
+			fmt.Println(line)
+		}
+		for _, line := range notifyRexDryRunLines(action, rexTarget, block, waiting, macConnected) {
 			fmt.Println(line)
 		}
 		return
@@ -117,6 +154,13 @@ func cmdNotify(args []string) {
 	// otherwise keep aiming clicks at a dead dashboard's pane forever.
 	entry, entryFound = dashmeta.ReadEntry(gitCommonDir)
 	target = notify.ResolveTarget(entry, entryFound, os.Getenv)
+	action, target := notifyChoose(target, block, waiting, macConnected)
+
+	if !action.Toast {
+		// Rex for Mac already shows this agent waiting on the owner; a second
+		// notice for the same block would be a duplicate.
+		return
+	}
 
 	if !found {
 		// The default path with no notifier installed is a silent success. A
@@ -152,6 +196,8 @@ type notifyFlags struct {
 	terminalApp string
 	session     string
 	dashPID     int
+	rexSession  string
+	rexWindow   string
 }
 
 // defineNotifyFlags registers every flag name on fs. The names here are the
@@ -166,6 +212,11 @@ type notifyFlags struct {
 // never belong to different dashboards. It is not re-resolved in the child: by
 // click time the entry may have changed, and a request addressed to a dashboard
 // other than the one being switched to is the two-dashboard bug in miniature.
+//
+// --rex-session and --rex-window carry the Rex window a click should bring
+// forward. The parent sets them only when notify.ChooseNotice picked Rex, so
+// their presence is the focus choice itself and no separate flag carries it; the
+// child still holds --pane and --client-tty as the fallback when Rex says no.
 //
 // --session carries the session name to the click path so a honored click can
 // name the session it wants opened. It is separate from --plan (the public flag)
@@ -210,6 +261,8 @@ func notifyWatchInputs(f notifyFlags, gitCommonDir string) (notify.Toast, notify
 		PaneID:      f.pane,
 		ClientTTY:   f.clientTTY,
 		TerminalApp: f.terminalApp,
+		RexSession:  f.rexSession,
+		RexWindow:   f.rexWindow,
 	}
 	request := notify.FocusRequest{
 		Session:      f.session,
@@ -237,6 +290,8 @@ func defineNotifyFlags(fs *flag.FlagSet, f *notifyFlags) {
 	fs.StringVar(&f.terminalApp, "terminal-app", "", "")
 	fs.StringVar(&f.session, "session", "", "")
 	fs.IntVar(&f.dashPID, "dash-pid", 0, "")
+	fs.StringVar(&f.rexSession, "rex-session", "", "")
+	fs.StringVar(&f.rexWindow, "rex-window", "", "")
 }
 
 // notifyUsage writes the help text. It lists the public options by hand instead
@@ -280,7 +335,7 @@ func runNotifyWatch(backend notify.Backend, toast notify.Toast, target notify.Ta
 		// flag: extraction touches the filesystem, and the parent is on a
 		// hook's critical path. IconPath() returns "" on any failure and
 		// AlerterArgs then omits --app-icon entirely.
-		notify.Watch(path, notify.AlerterArgs(toast, notify.Focusable(target), notify.IconPath()), target, fr)
+		notify.Watch(path, notify.AlerterArgs(toast, notify.Focusable(target), notify.IconPath()), target, fr, notifyFocusRex)
 	case notify.BackendOsascript:
 		cmd := exec.Command(path, notify.OsascriptArgs(toast)...)
 		if null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0); err == nil {
@@ -378,6 +433,8 @@ func notifySpawnArgs(t notify.Toast, backend notify.Backend, target notify.Targe
 		{"terminal-app", target.TerminalApp},
 		{"session", session},
 		{"dash-pid", dash},
+		{"rex-session", target.RexSession},
+		{"rex-window", target.RexWindow},
 	} {
 		if f.value == "" {
 			continue
@@ -408,6 +465,130 @@ func notifyDryRunLines(t notify.Toast, backend notify.Backend, found bool, targe
 		"client-tty:   " + notifyDryRunValue(target.ClientTTY),
 		"terminal-app: " + notifyDryRunValue(target.TerminalApp),
 	}
+}
+
+// notifyRexDryRunLines adds the Rex half of the --dry-run report: the ids read
+// from host.json, the two facts asked of the agent and of Rex, and what
+// notify.ChooseNotice made of them, so a toast that is skipped, or a click that
+// goes to Rex instead of tmux, can be explained without delivering anything.
+// Pure, like notifyDryRunLines.
+func notifyRexDryRunLines(action notify.NoticeAction, target notify.Target, block *host.RexBlock, waiting, macConnected bool) []string {
+	session, window := "", ""
+	if block != nil {
+		session, window = block.SessionID, block.WindowID
+	}
+	click := "nothing"
+	switch {
+	case action.FocusRex:
+		click = "Rex window " + target.RexWindow + " in session " + target.RexSession
+		if target.PaneID != "" {
+			click += " (tmux pane " + target.PaneID + " if Rex cannot)"
+		}
+	case action.FocusTmux:
+		click = "tmux pane " + target.PaneID
+	}
+	toast := "yes"
+	if !action.Toast {
+		toast = "no"
+	}
+	return []string{
+		"rex-session:  " + notifyDryRunValue(session),
+		"rex-window:   " + notifyDryRunValue(window),
+		"waiting:      " + notifyDryRunYesNo(waiting),
+		"rex-for-mac:  " + notifyDryRunYesNo(macConnected),
+		"toast:        " + toast,
+		"click:        " + click,
+		"why:          " + action.Reason,
+	}
+}
+
+func notifyDryRunYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+// notifyChoose turns the tmux target and the Rex facts into notify.ChooseNotice's
+// facts, and returns the decision with the target the watcher should get. Pure,
+// so the mapping is table-testable. A Rex block counts as a window only with both
+// ids: rex.FocusWindow refuses an empty one, and an empty window id would ask Rex
+// to clear the active window. The tmux fields are kept even when Rex is chosen,
+// because they are the watcher's fallback when Rex cannot answer at click time.
+func notifyChoose(target notify.Target, block *host.RexBlock, waiting, macConnected bool) (notify.NoticeAction, notify.Target) {
+	hasWindow := block != nil && block.SessionID != "" && block.WindowID != ""
+	action := notify.ChooseNotice(notify.NoticeFacts{
+		HasTmuxPane:    target.PaneID != "",
+		HasRexWindow:   hasWindow,
+		MacConnected:   macConnected,
+		WaitingOnOwner: waiting,
+	})
+	target.RexSession, target.RexWindow = "", ""
+	if action.FocusRex && hasWindow {
+		target.RexSession, target.RexWindow = block.SessionID, block.WindowID
+	}
+	return action, target
+}
+
+// notifyRexFacts is the impure read behind notifyChoose. It reads the session's
+// host.json (worktree first, then the git common dir's parent, the two places a
+// session's .afk/<name>/ lives) and returns its rex block, whether the agent's own
+// last program status says it is blocked on the owner, and whether the owner's
+// Rex client is Rex for Mac and connected.
+//
+// "Waiting" is the agent's blocked record and not afk's own awaiting_input,
+// because Rex for Mac raises its notice from that record: a deliberate stop the
+// agent did not report as blocked gets no Rex notice, and suppressing afk's toast
+// there would lose it.
+//
+// Rex is asked only when the answer can change the decision (a Rex window and a
+// waiting agent): every other notice would spend a rex call on the hook's
+// critical path for nothing. Every failure (no plan, no host.json, no block, Rex
+// down, the deadline) reads as "not in Rex" or "no Mac", which is today's
+// behaviour (decision D4): a notice must never be lost because Rex is slow.
+func notifyRexFacts(ctx context.Context, caller rex.Caller, worktree, gitCommonDir, plan string) (rexBlock *host.RexBlock, waiting, macConnected bool) {
+	if plan == "" || strings.ContainsRune(plan, filepath.Separator) || plan == "." || plan == ".." {
+		return nil, false, false
+	}
+	var roots []string
+	if worktree != "" {
+		roots = append(roots, worktree)
+	}
+	if gitCommonDir != "" {
+		if checkout := filepath.Dir(filepath.Clean(gitCommonDir)); checkout != worktree {
+			roots = append(roots, checkout)
+		}
+	}
+	for _, root := range roots {
+		meta, err := host.ReadMeta(root, plan)
+		if err != nil {
+			continue
+		}
+		if meta.Rex == nil {
+			return nil, false, false
+		}
+		rexBlock = meta.Rex
+		waiting = meta.AgentStatus != nil && meta.AgentStatus.State == string(progstatus.StateBlocked)
+		break
+	}
+	if rexBlock == nil || rexBlock.WindowID == "" || !waiting || caller == nil {
+		return rexBlock, waiting, false
+	}
+	clients, err := rex.ListClients(ctx, caller, "app")
+	if err != nil {
+		return rexBlock, waiting, false
+	}
+	owner, ok := rex.OwnerClient(clients)
+	return rexBlock, waiting, ok && owner.Platform == "macos" && owner.ConnectionState == "connected"
+}
+
+// notifyFocusRex is the watcher's FocusRexFunc: one session.focus_window call
+// under the same deadline as the parent's Rex check, so a click on a toast never
+// waits on Rex longer than that before falling back to tmux.
+func notifyFocusRex(sessionID, windowID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), notifyRexDeadline)
+	defer cancel()
+	return rex.FocusWindow(ctx, newRexCaller(), sessionID, windowID)
 }
 
 // notifyDryRunSound reports the sound the chosen backend would actually use.

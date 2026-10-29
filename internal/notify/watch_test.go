@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -303,20 +304,111 @@ func TestFocusable(t *testing.T) {
 		{"no client tty -> not focusable", Target{PaneID: "%1"}, false},
 		{"neither -> not focusable", Target{}, false},
 		{"terminal app alone -> not focusable", Target{TerminalApp: "Ghostty"}, false},
+		{"rex session and window -> focusable", Target{RexSession: "S", RexWindow: "W"}, true},
+		{"rex session without window -> not focusable", Target{RexSession: "S"}, false},
+		{"rex window without session -> not focusable", Target{RexWindow: "W"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := Focusable(tt.target); got != tt.want {
 				t.Errorf("Focusable(%+v) = %v, want %v", tt.target, got, tt.want)
 			}
-			// The agreement itself: whenever Focusable says yes, FocusPlan with
-			// a live pane must produce at least the switch.
+			// The agreement itself: whenever Focusable says yes, the click must
+			// have somewhere to go — Rex when both ids are set, else FocusPlan
+			// with a live pane must produce at least the switch.
+			if tt.target.RexSession != "" && tt.target.RexWindow != "" {
+				ok := func(string, string) error { return nil }
+				if got := ClickRoute(OutcomeFocus, tt.target, ok); tt.want != (got == RouteRex) {
+					t.Errorf("Focusable(%+v) = %v but ClickRoute = %v", tt.target, tt.want, got)
+				}
+				return
+			}
 			plan := FocusPlan("Focus", tt.target, true, true)
 			if tt.want != (len(plan) > 0) {
 				t.Errorf("Focusable(%+v) = %v but FocusPlan produced %d actions",
 					tt.target, tt.want, len(plan))
 			}
 		})
+	}
+}
+
+// TestClickRoute is where a click goes once the toast is answered. Nothing here
+// execs anything: the Rex call is a fake that records what it was asked.
+//
+// Load-bearing rows:
+//
+//   - "rex answers" — Rex wins over a recorded tmux pane, and tmux is not
+//     touched (the route is RouteRex, so RunFocus returns before any tmux call).
+//   - "rex error falls back to tmux" — a Rex that is down or a window that is gone
+//     must not lose the click when a pane is known.
+//   - "no window id goes to tmux without asking Rex" — FocusWindow would refuse an
+//     empty id anyway, but asking at all would spend the deadline for nothing.
+//   - "dismissed toast never asks Rex" — @CLOSED must not raise any window.
+func TestClickRoute(t *testing.T) {
+	errDown := errors.New("rex is down")
+	rexIDs := Target{RexSession: "S", RexWindow: "W"}
+	both := Target{RexSession: "S", RexWindow: "W", PaneID: "%1", ClientTTY: "/dev/ttys000"}
+
+	tests := []struct {
+		name      string
+		outcome   string
+		target    Target
+		rexErr    error
+		nilRex    bool
+		want      Route
+		wantAsked bool
+	}{
+		{name: "rex answers", outcome: OutcomeFocus, target: both, want: RouteRex, wantAsked: true},
+		{name: "rex answers with no pane", outcome: OutcomeContentClicked, target: rexIDs, want: RouteRex, wantAsked: true},
+		{name: "rex error falls back to tmux", outcome: OutcomeFocus, target: both, rexErr: errDown, want: RouteTmux, wantAsked: true},
+		{name: "rex error with no pane does nothing", outcome: OutcomeFocus, target: rexIDs, rexErr: errDown, want: RouteNone, wantAsked: true},
+		{name: "no window id goes to tmux without asking Rex", outcome: OutcomeFocus,
+			target: Target{RexSession: "S", PaneID: "%1", ClientTTY: "/dev/ttys000"}, want: RouteTmux},
+		{name: "no rex func goes to tmux", outcome: OutcomeFocus, target: both, nilRex: true, want: RouteTmux},
+		{name: "tmux only", outcome: OutcomeFocus, target: Target{PaneID: "%1", ClientTTY: "/dev/ttys000"}, want: RouteTmux},
+		{name: "neither", outcome: OutcomeFocus, target: Target{}, want: RouteNone},
+		{name: "dismissed toast never asks Rex", outcome: "@CLOSED", target: both, want: RouteNone},
+		{name: "timed-out toast never asks Rex", outcome: "@TIMEOUT", target: both, want: RouteNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var asked [][2]string
+			var focus FocusRexFunc = func(s, w string) error {
+				asked = append(asked, [2]string{s, w})
+				return tt.rexErr
+			}
+			if tt.nilRex {
+				focus = nil
+			}
+			if got := ClickRoute(tt.outcome, tt.target, focus); got != tt.want {
+				t.Errorf("ClickRoute() = %v, want %v", got, tt.want)
+			}
+			if (len(asked) > 0) != tt.wantAsked {
+				t.Fatalf("Rex asked %d times, want asked=%v", len(asked), tt.wantAsked)
+			}
+			if tt.wantAsked && (len(asked) != 1 || asked[0] != [2]string{tt.target.RexSession, tt.target.RexWindow}) {
+				t.Errorf("Rex asked %v, want once for %s/%s", asked, tt.target.RexSession, tt.target.RexWindow)
+			}
+		})
+	}
+}
+
+// TestRunFocusRexRouteWritesNoRequest pins that a click Rex answered publishes no
+// dashboard request: the request opens the session in a dashboard's tmux pane, and
+// nothing is switching the owner to that dashboard. The Rex fake answers, so
+// RunFocus returns before any tmux exec.
+func TestRunFocusRexRouteWritesNoRequest(t *testing.T) {
+	dir := t.TempDir()
+	var asked int
+	RunFocus(OutcomeFocus,
+		Target{RexSession: "S", RexWindow: "W", PaneID: "%42", ClientTTY: "/dev/ttys000"},
+		FocusRequest{Session: "s", GitCommonDir: dir, TargetPID: testDashPID},
+		func(string, string) error { asked++; return nil })
+	if asked != 1 {
+		t.Errorf("Rex asked %d times, want 1", asked)
+	}
+	if _, found := dashmeta.ReadRequest(dir, testDashPID); found {
+		t.Errorf("a dashboard request was published for a click Rex answered")
 	}
 }
 
@@ -522,7 +614,7 @@ func TestRunFocusWritesNoRequestWhenItWillNotSwitch(t *testing.T) {
 			dir := t.TempDir()
 			RunFocus(tt.outcome,
 				Target{PaneID: tt.paneID, ClientTTY: "/dev/ttys000"},
-				FocusRequest{Session: "s", GitCommonDir: dir, TargetPID: testDashPID})
+				FocusRequest{Session: "s", GitCommonDir: dir, TargetPID: testDashPID}, nil)
 			if _, found := dashmeta.ReadRequest(dir, testDashPID); found {
 				t.Errorf("a request was published for an outcome that switches nothing")
 			}
