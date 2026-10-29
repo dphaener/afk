@@ -74,6 +74,7 @@ const (
 	StepProjectLocation StepID = "project-location"
 	StepWebPage         StepID = "web-page"
 	StepService         StepID = "service"
+	StepRex             StepID = "rex"
 	StepCheck           StepID = "check"
 )
 
@@ -138,6 +139,15 @@ type Facts struct {
 
 	Service ServiceFacts
 
+	// RexFound is rex on PATH and RexServer is its server answering. Both are
+	// read by Probe; neither is ever guessed, so a hung server reads as not
+	// answering and the offer is simply not made.
+	RexFound  bool
+	RexServer bool
+	// RuntimeBackend is [runtime] backend in config.toml, empty when the file
+	// or the table is absent or the table is broken.
+	RuntimeBackend string
+
 	// RiskAccepted is set by the caller after the person has passed the safety
 	// screen in this run, never by Probe. It is held in memory for one run on
 	// purpose: nothing on disk may say "this machine is safe", so every run
@@ -154,7 +164,7 @@ type Step struct {
 	Fix    string
 }
 
-// Plan is the risk and the twelve steps, in order.
+// Plan is the risk and the thirteen steps, in order.
 type Plan struct {
 	Risk  Risk
 	Steps []Step

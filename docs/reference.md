@@ -307,7 +307,7 @@ afk notify --plan my-session --message "Test" --dry-run
 afk install [--dry-run] [--yes]
 ```
 
-Guided setup for a Linux machine (Ubuntu or another system with `apt-get` and systemd) or a Mac with Homebrew (the background service is a launchd LaunchAgent). It looks at the machine, shows the twelve steps as a checklist, and does the ones that are not done yet, checking the machine again after each one.
+Guided setup for a Linux machine (Ubuntu or another system with `apt-get` and systemd) or a Mac with Homebrew (the background service is a launchd LaunchAgent). It looks at the machine, shows the thirteen steps as a checklist, and does the ones that are not done yet, checking the machine again after each one.
 
 - **On a Mac,** the safety screen always asks you to type `I accept the risk`, because a Mac is a computer you use every day. The packages step runs `brew install` for the missing tools. With no Homebrew, the step tells you to install it from brew.sh and run `afk install` again: afk never installs Homebrew and never uses `sudo` on a Mac. Run `afk install` from a desktop login on the Mac, not over SSH, because the service is loaded into your desktop session.
 
@@ -851,6 +851,8 @@ With `[runtime] backend = "rex"` in `config.toml` (see [configuration](configura
 - **Closing.** When the session's host exits, its window closes, unless the phase is `failed`. A failed session's window stays open so you can read its last screen. Once the host has gone, `afk clean` cannot find that window, so close it in Rex by hand.
 - **Clean.** `afk clean` closes the session's window after its host has stopped. A session in afk's own host is not affected.
 - **Relaunch.** A session in Rex whose host has stopped is started again in Rex, not in afk's own host, because its `.afk/{name}/runtime` marker still says `rex`.
+- **Offer.** `afk install` offers this setting (its "Offer the Rex runtime" step, before the last check) only when `rex` is found and its server answers. Answering yes writes `backend = "rex"` under `[runtime]`, and keeps the rest of `config.toml`. Where Rex is missing, the step is skipped and the install goes on. Answering no stops the run at that step, as the other steps do.
+- **The control room.** Under `backend = "rex"`, the daemon keeps a Rex session named `afk` open, with one window running `afk dash` (see [the daemon](daemon.md#the-control-room)). It starts that window again when it is closed or its program ends, at most once a minute. Under `backend = "afk"`, or with a bad `[runtime]` line, it makes no Rex call. Anyone who can connect to the Rex server can run anything as afk's account, so connect only as the owner (see [the runbook, section 8](runbook-vm.md#8-the-hub-rex-and-the-control-room)).
 
 ### One-off Sessions
 

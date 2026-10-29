@@ -462,7 +462,7 @@ func installStyled(st lipgloss.Style, text string) string {
 
 // renderInstallChecklist is the list of steps at the top of every screen:
 // done steps ticked and the step at work marked. Only the step at work and a
-// step that cannot be done carry their reason: with all twelve reasons the
+// step that cannot be done carry their reason: with all thirteen reasons the
 // list alone is taller than a 24-row terminal, and the question below it
 // would scroll out of sight. --dry-run prints every reason.
 func renderInstallChecklist(p install.Plan, current install.StepID, width int) string {
@@ -498,7 +498,7 @@ func (m *installModel) render() string {
 	w := m.viewWidth()
 	var b strings.Builder
 	b.WriteString(installTitleStyle.Render("afk install") + "\n\n")
-	// The refusal shows the fix and nothing else: twelve "cannot" lines
+	// The refusal shows the fix and nothing else: thirteen "cannot" lines
 	// would bury the one thing that has to change.
 	if len(m.plan.Steps) > 0 && m.phase != installRefused {
 		b.WriteString(renderInstallChecklist(m.plan, m.current.ID, w))

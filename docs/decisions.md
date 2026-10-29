@@ -4535,3 +4535,17 @@ Open, and found after the checks passed: a failed session's window is not closed
 Also open: `afk new --dry-run` with backend `rex` and no Rex writes one blocking `failure` item, although a dry run should change nothing. The plan's failure scenario expects that item, so it is kept and noted here.
 
 **This section belongs to the change.** The planner wrote it.
+
+## T17.9
+
+The hub is the control room kept open by the daemon, the install offer for Rex, and the runbook that sets both up. These are the choices the master plan left open. The drafted list (`.afk/drafts/t17-9.md`, D1 to D5) was not on disk when this section was written, so the five decisions below are the plan's assumptions A1 to A5, which the draft's numbering follows one for one.
+
+- **D1: the keep-alive is one pure decision (A1).** `internal/controlroom` decides Nothing, Start or Wait from plain facts (backend, config error, server answering, session and window found, last start). The daemon runs it once per pass beside the plan-wait hook, so it also runs while paused and in `--once`. The hook is `controlRoom` in `controlroom_hook.go`.
+- **D2: the once-a-minute limit is held in memory (A2).** A start is allowed at most one a minute. After a daemon restart the first start is not held back, because a restart usually means the window is gone. The control room belongs to the machine, so the hook writes no decision log entry, no `daemon.json` and no inbox item; a failure goes to the daemon's log only.
+- **D3: the install offer is a step before the final check (A3).** It is offered only when `rex` is found and its server answers, and it is Done when `[runtime] backend` is `"rex"`. A machine without Rex sees the step as Cannot, which `afk install` skips, so the run goes on. Answering no is a stop, not a skip: the run ends at that step, as the other steps end, and a later change could let the model skip a declined optional step.
+- **D4: afkd's order after the Rex service is a drop-in (A4).** The unit file gets a comment only (no behaviour change), and the order is set by a drop-in (`systemctl --user edit afkd`). The Rex unit's name is not yet checked on the VM, so the runbook says to check it with `systemctl cat` before relying on it. This is the owner's check, not a verified fact.
+- **D5: under `afk` or a bad `[runtime]`, the daemon makes no Rex call (A5).** The decision returns Nothing before any Rex fact is read, so an afk-only machine, and one whose `config.toml` cannot be read, never touch Rex and raise no inbox item for the control room.
+
+**What is not verified.** The owner's checks stand: the control room opened from the laptop and the phone, and a Rex upgrade that keeps a running agent. The runbook says both are unverified, and the T17.9 acceptance line stays open on them. Login-server mode's behaviour on upgrade is taken from the T17.1 measurements and the Rex packaging, not from an upgrade on this VM.
+
+**Access.** Anyone who can connect to the Rex server runs as afk's account, so the runbook says only the owner may connect, and it warns against `--tailscale-allow-tailnet-members`. That flag appears only in the warning.

@@ -161,6 +161,18 @@ When `afk daemon` runs in a terminal, it also sends afk's status records (Progra
 
 ---
 
+## The control room
+
+The control room is afk's dashboard (`afk dash`) kept open in a Rex window, so you can reach it from a laptop or a phone. It is the hub's front door (see [the runbook, section 8](runbook-vm.md#8-the-hub-rex-and-the-control-room)).
+
+- **What the daemon does.** Once per pass, the daemon checks for a Rex session named `afk` with a window that is running. If the window is missing or its program has ended, the daemon opens it again. Closing the window does not keep it closed: the daemon opens it again on a later pass, and it starts a window at most once a minute.
+- **Only under Rex.** It runs only when `[runtime] backend` is `"rex"` in `config.toml`, and only when `config.toml` reads without a problem. Under `"afk"`, or with a bad `[runtime]` line, the daemon makes no Rex call at all.
+- **When Rex is down.** If the Rex server does not answer, the control room waits, and the daemon tries again on a later pass. This does not stop the build.
+- **Paused or not.** It runs while the daemon is paused, and at the end of `afk daemon --once`, because it belongs to the machine and not to any project. It writes nothing to a project's decision log or `daemon.json`, and it raises no inbox item; a failure only goes to the daemon's log.
+- **After a restart.** The once-a-minute limit is kept in memory, so after the daemon restarts the first start is not held back. That is deliberate: a restart usually means the window is gone.
+
+---
+
 ## `afk project` — Choose the projects the daemon builds
 
 ```bash

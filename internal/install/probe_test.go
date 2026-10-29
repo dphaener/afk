@@ -67,6 +67,7 @@ func (m *machine) deps() Deps {
 			}
 			return "", errors.New("not found")
 		},
+		Rex:          func(context.Context) (bool, bool) { _, ok := m.paths["rex"]; return ok, ok },
 		Executable:   func() (string, error) { return "/home/u/bin/afk", nil },
 		EvalSymlinks: func(p string) (string, error) { return p, nil },
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -112,6 +113,7 @@ func fullMachine(t *testing.T) *machine {
 			"/home/u/.config/afk/profile.toml":           "[[entry]]\ntopic = \"project location\"\nvalue = \"/home/u/code\"\n",
 			"/home/u/.local/state/afk/web-password.json": string(rj),
 			"/home/u/bin/afk":                            "",
+			"/home/u/.config/afk/config.toml":            "[runtime]\nbackend = \"rex\"\n",
 			"/home/u/.config/systemd/user/afkd.service":  "",
 		},
 		paths: paths,
@@ -131,7 +133,7 @@ func fullMachine(t *testing.T) *machine {
 }
 
 // TestProbeFullMachine ties Probe to Build: a fully installed Linux VM must
-// read as twelve Done steps, so a Facts field the probe forgets to fill shows
+// read as thirteen Done steps, so a Facts field the probe forgets to fill shows
 // up here as a step that is not Done.
 func TestProbeFullMachine(t *testing.T) {
 	m := fullMachine(t)
@@ -140,7 +142,7 @@ func TestProbeFullMachine(t *testing.T) {
 	if plan.Risk != RiskVM {
 		t.Errorf("risk = %q, want vm", plan.Risk)
 	}
-	if len(plan.Steps) != 12 {
+	if len(plan.Steps) != 13 {
 		t.Fatalf("got %d steps", len(plan.Steps))
 	}
 	for _, s := range plan.Steps {

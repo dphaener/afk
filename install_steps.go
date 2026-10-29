@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
@@ -64,6 +67,8 @@ func (m *installModel) runStep(s install.Step) tea.Cmd {
 		return m.stepProjectLocation()
 	case install.StepWebPage:
 		return m.stepWebPage()
+	case install.StepRex:
+		return m.stepRex()
 	case install.StepService:
 		return m.stepService()
 	}
@@ -564,6 +569,171 @@ func installWriteWeb(env installEnv, kv [][2]string) error {
 	}
 	return nil
 }
+
+// stepRex offers Rex as the place new sessions run. runStep only gets here for
+// a ToDo step (install.Next skips Done and Cannot ones), so the backend is
+// never written when Rex is absent or already chosen. Nothing here restarts
+// the daemon: it reads config.toml on its next pass.
+//
+// The default is yes under --yes like the other steps: the step is only to do
+// when Rex is installed and its server answers, and the offer text says what
+// it changes.
+func (m *installModel) stepRex() tea.Cmd {
+	env := m.env
+	return m.ask("Run new sessions in Rex?",
+		"afk will set backend = \"rex\" under [runtime] in "+env.configPath+" and keep everything else in the file. Sessions you start from then on open as Rex windows. The daemon is not restarted.",
+		true, func(yes bool) tea.Cmd {
+			if !yes {
+				return m.declined()
+			}
+			return m.async("Saving the runtime setting…", func() installResult {
+				return installResult{err: installWriteRex(env)}
+			}, func(r installResult) tea.Cmd {
+				if r.err != nil {
+					return m.failStep(r.err.Error(), "")
+				}
+				return m.stepDone()
+			})
+		})
+}
+
+// installWriteRex sets [runtime] backend = "rex" in config.toml as a text
+// edit, so the file's comments and layout survive (the same promise as
+// installWriteWeb, whose daemonconfig.SetWeb only knows the [web] table). A
+// file that does not parse is refused before anything is written, and the
+// edited text is parsed again and must equal the old file with only that key
+// changed; if it does not, nothing is written.
+func installWriteRex(env installEnv) error {
+	path := env.configPath
+	if path == "" {
+		return errors.New("afk could not find its config folder. Make sure HOME is set")
+	}
+	text, err := installReadText(env, path)
+	if err != nil {
+		return err
+	}
+	newText, err := installSetRexBackend(text)
+	if err != nil {
+		return fmt.Errorf("%s: %v", path, err)
+	}
+	if newText == text {
+		return nil
+	}
+	if err := env.mkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("afk could not make %s: %v", filepath.Dir(path), err)
+	}
+	if err := env.writeText(path, []byte(newText)); err != nil {
+		return fmt.Errorf("afk could not write %s: %v", path, err)
+	}
+	return nil
+}
+
+// installSetRexBackend is the pure edit behind installWriteRex: an existing
+// backend line under [runtime] is replaced, a [runtime] table without one
+// gets the line, and a file without the table gets a new table at the end.
+func installSetRexBackend(text string) (string, error) {
+	var old map[string]any
+	if _, err := toml.Decode(text, &old); err != nil {
+		return text, fmt.Errorf("the file has a mistake in it, fix it first: %v", err)
+	}
+	nl := "\n"
+	if strings.Contains(text, "\r\n") {
+		nl = "\r\n"
+	}
+	const line = `backend = "rex"`
+	lines := strings.SplitAfter(text, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	header := func(l string) string {
+		t := strings.TrimSpace(l)
+		if i := strings.Index(t, "#"); i >= 0 {
+			t = strings.TrimSpace(t[:i])
+		}
+		return t
+	}
+	rt := -1
+	for i, l := range lines {
+		if header(l) == "[runtime]" {
+			rt = i
+			break
+		}
+	}
+	var b strings.Builder
+	if rt < 0 {
+		n := len(lines)
+		for n > 0 && strings.TrimSpace(lines[n-1]) == "" {
+			n--
+		}
+		for _, l := range lines[:n] {
+			b.WriteString(l)
+		}
+		if n > 0 {
+			if !strings.HasSuffix(lines[n-1], "\n") {
+				b.WriteString(nl)
+			}
+			b.WriteString(nl)
+		}
+		b.WriteString("[runtime]" + nl + line + nl)
+	} else {
+		at, replace := rt+1, false
+		for i := rt + 1; i < len(lines); i++ {
+			t := header(lines[i])
+			if strings.HasPrefix(t, "[") {
+				break
+			}
+			if strings.TrimSpace(lines[i]) != "" {
+				at = i + 1
+			}
+			if k, _, ok := strings.Cut(t, "="); ok && strings.TrimSpace(k) == "backend" {
+				at, replace = i, true
+				break
+			}
+		}
+		for i, l := range lines {
+			switch {
+			case replace && i == at:
+				b.WriteString(line + nl)
+			case !replace && i == at:
+				b.WriteString(line + nl)
+				b.WriteString(l)
+			default:
+				b.WriteString(l)
+			}
+			if !replace && at == len(lines) && i == len(lines)-1 {
+				if !strings.HasSuffix(l, "\n") {
+					b.WriteString(nl)
+				}
+				b.WriteString(line + nl)
+			}
+		}
+	}
+	newText := b.String()
+
+	// The result must be the old file with only [runtime] backend changed.
+	var got map[string]any
+	if _, err := toml.Decode(newText, &got); err != nil {
+		return text, errUnsafeRuntimeEdit
+	}
+	want := old
+	table, _ := want["runtime"].(map[string]any)
+	if _, has := want["runtime"]; has && table == nil {
+		return text, errUnsafeRuntimeEdit
+	}
+	if table == nil {
+		table = map[string]any{}
+		want["runtime"] = table
+	}
+	table["backend"] = "rex"
+	if !reflect.DeepEqual(got, want) {
+		return text, errUnsafeRuntimeEdit
+	}
+	return newText, nil
+}
+
+// errUnsafeRuntimeEdit is returned when the edit cannot prove it changed only
+// the backend. The caller still holds the original text, so nothing is lost.
+var errUnsafeRuntimeEdit = errors.New("afk could not edit the [runtime] part safely, so nothing was changed; set backend = \"rex\" under [runtime] by hand in an editor")
 
 func (m *installModel) unitPath() string {
 	return filepath.Join(m.env.home, ".config", "systemd", "user", "afkd.service")

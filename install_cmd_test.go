@@ -56,7 +56,7 @@ func TestRunInstallCommand(t *testing.T) {
 		wantErr    []string
 		wantProbes int
 	}{
-		{name: "dry run without a terminal prints twelve steps", args: []string{"--dry-run"}, terminal: false, wantCode: 0,
+		{name: "dry run without a terminal prints thirteen steps", args: []string{"--dry-run"}, terminal: false, wantCode: 0,
 			wantOut: []string{"nothing was changed", "[to do]  Install the tools afk needs", "[done]   Check that this machine", "Run afk install in a terminal"}, wantProbes: 1},
 		{name: "dry run on a terminal is the same", args: []string{"--dry-run"}, terminal: true, wantCode: 0,
 			wantOut: []string{"[to do]  Start the afk service"}, wantProbes: 1},
@@ -95,7 +95,7 @@ func TestRunInstallCommand(t *testing.T) {
 }
 
 // TestRunInstallDryRunLines pins the dry-run shape: exactly one line per
-// step, twelve of them, and the fix on a cannot line.
+// step, thirteen of them, and the fix on a cannot line.
 func TestRunInstallDryRunLines(t *testing.T) {
 	f := freshInstallFacts()
 	f.BinHasAfk = false
@@ -108,13 +108,13 @@ func TestRunInstallDryRunLines(t *testing.T) {
 	for _, l := range strings.Split(out.String(), "\n") {
 		if strings.HasPrefix(l, "[") {
 			n++
-			if strings.HasPrefix(l, "[cannot]") && !strings.Contains(l, "To fix: Put afk in ~/bin") {
+			if strings.HasPrefix(l, "[cannot]") && !strings.Contains(l, "To fix: ") {
 				t.Errorf("cannot line has no fix: %q", l)
 			}
 		}
 	}
-	if n != 12 {
-		t.Errorf("got %d step lines, want 12:\n%s", n, out.String())
+	if n != 13 {
+		t.Errorf("got %d step lines, want 13:\n%s", n, out.String())
 	}
 }
 

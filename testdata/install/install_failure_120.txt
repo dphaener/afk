@@ -12,6 +12,10 @@ afk install
   ○ Choose where projects live
   ○ Set the web page password
   ○ Start the afk service
+  ✗ Offer the Rex runtime
+      rex is not installed or its server is not answering
+      To fix: This is optional: afk runs its own sessions without Rex. Install Rex and start its server if you want the
+      hub to use it.
   ○ Check everything
 
 ✗ Stopped at: Install the tools afk needs
