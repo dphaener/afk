@@ -17,6 +17,7 @@ import (
 
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/spice"
 )
 
@@ -4565,4 +4566,80 @@ func TestHostProviderNote(t *testing.T) {
 			t.Errorf("hostProviderNote(%q) = %q, want %q", c.provider, got, c.want)
 		}
 	}
+}
+
+// TestNewStartBackend covers backend x Rex facts for a new start. Load-bearing
+// rows:
+//   - every "afk" row records zero Rex calls and builds, whatever the facts
+//     say: the setting must change nothing for a machine that never asked for
+//     Rex.
+//   - "carried error" refuses with no Rex call and never falls back to afk,
+//     even when Rex is installed and answering.
+//   - the rex rows refuse as a *StartRefusedError (the type callers raise the
+//     inbox item on), and a silent server costs only the status check.
+//   - "rex answers" builds and picks the Rex runtime for the new session.
+func TestNewStartBackend(t *testing.T) {
+	carried := errors.New("config.toml: [runtime] backend must be \"afk\" or \"rex\"")
+	rows := []struct {
+		name        string
+		backend     string
+		runtimeErr  error
+		look        func(string) (string, error)
+		statusErr   error
+		wantErr     string // "" builds
+		wantMethods []string
+		wantRuntime string
+	}{
+		{name: "afk not installed", backend: "afk", look: rexMissing, wantRuntime: "afk"},
+		{name: "afk no answer", backend: "afk", look: rexFound, statusErr: errors.New("down"), wantRuntime: "afk"},
+		{name: "afk answers", backend: "afk", look: rexFound, wantRuntime: "afk"},
+		{name: "unset backend is afk", backend: "", look: rexMissing, wantRuntime: "afk"},
+		{name: "rex not installed", backend: "rex", look: rexMissing, wantErr: "Rex is not installed"},
+		{name: "rex no answer", backend: "rex", look: rexFound, statusErr: errors.New("down"),
+			wantErr: "does not answer", wantMethods: []string{"server.status"}},
+		{name: "rex answers", backend: "rex", look: rexFound, wantMethods: []string{"server.status"}, wantRuntime: "rex"},
+		{name: "carried error", backend: "afk", runtimeErr: carried, look: rexFound, wantErr: "[runtime] backend"},
+		{name: "carried error not installed", backend: "rex", runtimeErr: carried, look: rexMissing, wantErr: "[runtime] backend"},
+	}
+	for _, tt := range rows {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := (&rex.Fake{}).On("server.status", `{"api_revision":7}`, tt.statusErr)
+			fr := &fakeRunner{}
+			d := baseDeps(t, fr)
+			d.Backend, d.RuntimeErr = tt.backend, tt.runtimeErr
+			d.Rex = RexDeps{Caller: fake, LookPath: tt.look}
+			_, err := Build(Config{Name: "x", RepoDir: t.TempDir(), DryRun: true}, d)
+			if tt.wantErr != "" {
+				var refused *StartRefusedError
+				if !errors.As(err, &refused) || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Build err = %v, want a StartRefusedError containing %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			got := methods(fake.Calls())
+			if len(got) != len(tt.wantMethods) || (len(got) > 0 && !reflect.DeepEqual(got, tt.wantMethods)) {
+				t.Errorf("rex calls = %v, want %v", got, tt.wantMethods)
+			}
+			if tt.wantRuntime != "" {
+				rt, err := NewStartRuntime(t.TempDir(), "x", d)
+				if err != nil || rt.Name() != tt.wantRuntime {
+					t.Errorf("NewStartRuntime = %v, %v; want %s", rt, err, tt.wantRuntime)
+				}
+			}
+		})
+	}
+
+	// A session whose own files name Rex keeps it when the backend is afk, and
+	// one that names afk is not moved by the setting alone being read.
+	t.Run("existing rex session keeps rex", func(t *testing.T) {
+		wt := t.TempDir()
+		if err := host.WriteMeta(wt, "s1", host.Meta{PID: 7, Runtime: host.RuntimeRex}); err != nil {
+			t.Fatal(err)
+		}
+		rt, err := NewStartRuntime(wt, "s1", Deps{Backend: "afk"})
+		if err != nil || rt.Name() != host.RuntimeRex {
+			t.Errorf("NewStartRuntime = %v, %v; want rex", rt, err)
+		}
+	})
 }

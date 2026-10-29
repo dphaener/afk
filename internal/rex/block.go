@@ -152,6 +152,156 @@ func CreateTerminal(ctx context.Context, c Caller, sessionID, label string, comm
 	return Terminal{WindowID: reply.WindowID, BlockID: reply.BlockIDs[0]}, nil
 }
 
+// Theme is a terminal's default colours. A field left empty is left out of
+// the request, so Rex keeps its built-in colour for it. Colours are hex,
+// RRGGBB or #RRGGBB; Scheme is "light" or "dark".
+type Theme struct {
+	Foreground string
+	Background string
+	Cursor     string
+	Scheme     string
+}
+
+// TerminalOptions is what CreateWindow needs to start one terminal window.
+//
+// Size is set at creation and never changed afterwards: a block made by a
+// one-shot `rex api call` keeps that dead connection as its owner, and a
+// resize from anyone else is then blocked (T17.1). A zero Size leaves it out,
+// so Rex starts the terminal at 80x24. There is no environment field: the
+// shell flavor takes none, so a caller that needs variables puts `env
+// NAME=value` at the front of Command.
+type TerminalOptions struct {
+	Command []string
+	Cwd     string
+	Size    Size
+	Theme   Theme
+}
+
+// Window is a window made by CreateWindow and the one terminal block in it.
+type Window struct {
+	WindowID string
+	BlockID  string
+}
+
+// CreateWindow opens a window labelled label in a session, holding one shell
+// block that runs t.Command directly (shell "none", so no startup file reads
+// it first and the argument list reaches the program unchanged). The block
+// does not exit on completion: a window whose program ended stays, and the
+// host closes it itself unless the session failed, so a failed session keeps
+// its last screen for the owner to read.
+func CreateWindow(ctx context.Context, c Caller, sessionID, label string, t TerminalOptions) (Window, error) {
+	if sessionID == "" {
+		return Window{}, errors.New("Rex session id is empty; afk cannot open a window without it")
+	}
+	if len(t.Command) == 0 || t.Command[0] == "" {
+		return Window{}, errors.New("no command to run; afk cannot open a Rex window without one")
+	}
+	options := map[string]any{
+		"command": t.Command,
+		"shell":   "none",
+		"exit":    map[string]any{"on_completion": false},
+	}
+	if t.Cwd != "" {
+		options["cwd"] = t.Cwd
+	}
+	if t.Size != (Size{}) {
+		if t.Size.Columns < 1 || t.Size.Columns > 65535 || t.Size.Rows < 1 || t.Size.Rows > 65535 {
+			return Window{}, fmt.Errorf("terminal size %dx%d is out of range; columns and rows must each be 1 to 65535", t.Size.Columns, t.Size.Rows)
+		}
+		options["size"] = map[string]int{"columns": t.Size.Columns, "rows": t.Size.Rows}
+	}
+	theme := map[string]string{}
+	for k, v := range map[string]string{"foreground": t.Theme.Foreground, "background": t.Theme.Background, "cursor": t.Theme.Cursor, "scheme": t.Theme.Scheme} {
+		if v != "" {
+			theme[k] = v
+		}
+	}
+	if len(theme) > 0 {
+		options["theme"] = theme
+	}
+	block := map[string]any{"flavor": TerminalFlavor, "options": options}
+	if label != "" {
+		block["label"] = label
+	}
+	args := map[string]any{
+		"session_id": sessionID,
+		"layout":     map[string]any{"block": block},
+	}
+	if label != "" {
+		args["window_label"] = label
+	}
+	raw, err := c.Call(ctx, "session.new_window", args)
+	if err != nil {
+		return Window{}, err
+	}
+	var reply struct {
+		WindowID string   `json:"window_id"`
+		BlockIDs []string `json:"block_ids"`
+	}
+	if err := decodeLoose("session.new_window", raw, &reply); err != nil {
+		return Window{}, err
+	}
+	if reply.WindowID == "" || len(reply.BlockIDs) != 1 || reply.BlockIDs[0] == "" {
+		return Window{}, fmt.Errorf("Rex call session.new_window answered without one window and one block (window %q, blocks %q)", reply.WindowID, reply.BlockIDs)
+	}
+	return Window{WindowID: reply.WindowID, BlockID: reply.BlockIDs[0]}, nil
+}
+
+// SetWindowLabel renames a window. An empty label makes Rex restore a default
+// made from the window's id.
+func SetWindowLabel(ctx context.Context, c Caller, sessionID, windowID, label string) error {
+	if sessionID == "" || windowID == "" {
+		return errors.New("Rex session or window id is empty; afk cannot relabel a window without both")
+	}
+	_, err := c.Call(ctx, "session.set_window_label", map[string]string{
+		"session_id": sessionID, "window_id": windowID, "label": label,
+	})
+	return err
+}
+
+// CloseWindow closes a window and every block in it. The window id is
+// required: Rex closes the active window when it is left out, which is never
+// what afk means.
+func CloseWindow(ctx context.Context, c Caller, sessionID, windowID string) error {
+	if sessionID == "" || windowID == "" {
+		return errors.New("Rex session or window id is empty; afk cannot close a window without both")
+	}
+	_, err := c.Call(ctx, "session.close_window", map[string]string{
+		"session_id": sessionID, "window_id": windowID,
+	})
+	return err
+}
+
+// CloseBlock closes one block and ends the program in it.
+func CloseBlock(ctx context.Context, c Caller, sessionID, blockID string) error {
+	if err := checkBlockIDs(sessionID, blockID); err != nil {
+		return err
+	}
+	_, err := c.Call(ctx, "block.close", map[string]string{
+		"session_id": sessionID, "block_id": blockID,
+	})
+	return err
+}
+
+// WindowOfBlock finds the window a block sits in, from session.list_blocks.
+// found is false, with no error, when the block is not listed or is detached
+// (it has no window).
+func WindowOfBlock(ctx context.Context, c Caller, sessionID, blockID string) (string, bool, error) {
+	if err := checkBlockIDs(sessionID, blockID); err != nil {
+		return "", false, err
+	}
+	blocks, err := ListBlocks(ctx, c, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	for _, b := range blocks {
+		if b.ID == blockID {
+			return b.WindowID, b.WindowID != "", nil
+		}
+	}
+	return "", false, nil
+}
+
 // SetBlockLabel renames a block. An empty label makes Rex restore a default
 // made from the block's id.
 func SetBlockLabel(ctx context.Context, c Caller, sessionID, blockID, label string) error {

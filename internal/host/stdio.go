@@ -63,7 +63,23 @@ var (
 	// writer to drain and write its final clear. A terminal that stopped
 	// reading would otherwise hold the host open for ever.
 	stdioFlushGrace = time.Second
+	// windowCallDeadline bounds each WindowControl call the host waits for.
+	// About two seconds: a relabel is cosmetic, and the close at exit must
+	// not keep a finished host alive for long when Rex does not answer.
+	windowCallDeadline = 2 * time.Second
 )
+
+// WindowControl is the host's handle on the Rex window it runs in. It is an
+// interface so this package never imports internal/rex: the host must run,
+// and be tested, with no Rex at all, and host_cmd.go is where the real calls
+// are wired in. Both calls may block (they run a command), so the host only
+// ever makes them on goroutines of their own, under windowCallDeadline.
+type WindowControl interface {
+	// SetLabel renames the window.
+	SetLabel(label string) error
+	// CloseSelf closes the host's own block, and with it the window.
+	CloseSelf() error
+}
 
 // stdioQueueDepth bounds the chunks waiting for the terminal. A full queue
 // blocks the PTY pump, as a real terminal that stops reading blocks its
@@ -127,6 +143,14 @@ type stdioHost struct {
 
 	// view is the status watcher's latest reading, which the writer reads.
 	view atomic.Pointer[PhaseView]
+	// lastReadable is the watcher's latest readable reading, nil until
+	// status.json has been read once. The close decision at exit falls back
+	// to it when the file cannot be read at that moment.
+	lastReadable atomic.Pointer[PhaseView]
+
+	// window keeps the Rex window's label up to date; nil when
+	// ServeConfig.Window is.
+	window *windowCtl
 
 	ch       chan termChunk
 	stop     chan struct{}
@@ -190,6 +214,14 @@ func (h *hostRuntime) openStdio() (func(), error) {
 			}
 		}
 	}
+	if h.cfg.Window != nil {
+		s.window = &windowCtl{
+			wc:       h.cfg.Window,
+			log:      h.log,
+			deadline: windowCallDeadline,
+			labels:   make(chan string, 1),
+		}
+	}
 	h.stdio = s
 	h.log.Printf("stdio host: serving its own terminal at %dx%d", h.cols, h.rows)
 	return restore, nil
@@ -226,6 +258,9 @@ func (h *hostRuntime) startStdio() {
 		},
 	}
 	go s.runWriter(w)
+	if s.window != nil {
+		go s.window.run(h.done)
+	}
 	go h.watchStdioStatus()
 	go h.readTerminalInput()
 	go h.watchWinch()
@@ -464,13 +499,29 @@ func offerLatest(ch chan [2]uint16, v [2]uint16) {
 // stores the view for the writer. On its own goroutine because Parked is
 // injected (T17.8 wires the ledger) and a file read must never sit on the
 // writer's path to the terminal.
+//
+// It is also where the window's label is decided, because a phase change is
+// only ever seen here; the label itself is sent by windowCtl.run, so a Rex
+// call never delays the next reading either.
 func (h *hostRuntime) watchStdioStatus() {
 	s := h.stdio
 	t := time.NewTicker(s.statusEvery)
 	defer t.Stop()
+	var label string
+	var labelled bool
 	for {
 		v := readPhaseView(h.statusPath(), h.cfg.Parked)
 		s.view.Store(&v)
+		if v.Readable {
+			r := v
+			s.lastReadable.Store(&r)
+		}
+		if s.window != nil {
+			if next, send := nextWindowLabel(h.cfg.Name, h.cfg.Planning, v, label, labelled); send {
+				label, labelled = next, true
+				s.window.offer(next)
+			}
+		}
 		select {
 		case <-h.done:
 			return
@@ -672,4 +723,112 @@ func (w *termWriter) write(b []byte) {
 		w.errLogged = true
 		w.log.Printf("stdio host: writing to the terminal: %v", err)
 	}
+}
+
+// windowCtl sends the Rex window's labels and makes the close at exit. Every
+// call runs on a goroutine of its own and is waited for at most deadline, so
+// neither the PTY pump, the terminal writer nor the status watcher ever waits
+// on Rex. Best effort: a failure is logged once for the host's whole life
+// (Rex that is not reachable fails every call, and one line says so) and the
+// session carries on with the window as it was.
+type windowCtl struct {
+	wc       WindowControl
+	log      *log.Logger
+	deadline time.Duration
+	// labels holds the label to send next, one slot, replaced rather than
+	// queued: only the newest label is worth sending. The watcher is its
+	// only sender.
+	labels chan string
+
+	failOnce sync.Once
+}
+
+// offer hands run the newest label, replacing one it has not taken yet. The
+// watcher is the only sender, so after the stale label is taken the second
+// send cannot find the slot full.
+func (w *windowCtl) offer(label string) {
+	select {
+	case w.labels <- label:
+		return
+	default:
+	}
+	select {
+	case <-w.labels:
+	default:
+	}
+	select {
+	case w.labels <- label:
+	default:
+	}
+}
+
+// run sends each offered label until the host shuts down. One call is in
+// flight at a time: when a call outlives the deadline, run logs it and then
+// waits for that call to come back before it starts another, so a Rex that
+// hangs costs one goroutine, not one per phase change.
+func (w *windowCtl) run(done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		case label := <-w.labels:
+			res := w.start(func() error { return w.wc.SetLabel(label) })
+			if !w.await("relabel this session's window", res) {
+				select {
+				case <-res:
+				case <-done:
+					return
+				}
+			}
+		}
+	}
+}
+
+// start runs fn on its own goroutine and returns where its error will land.
+// The channel has room for the answer, so the goroutine never blocks on a
+// caller that stopped waiting.
+func (w *windowCtl) start(fn func() error) chan error {
+	res := make(chan error, 1)
+	go func() { res <- fn() }()
+	return res
+}
+
+// await waits for res at most deadline. It reports whether the call came
+// back in time, and logs a failure (an error or no answer) once.
+func (w *windowCtl) await(what string, res <-chan error) bool {
+	t := time.NewTimer(w.deadline)
+	defer t.Stop()
+	select {
+	case err := <-res:
+		if err != nil {
+			w.fail(what, err)
+		}
+		return true
+	case <-t.C:
+		w.fail(what, fmt.Errorf("Rex did not answer within %s", w.deadline))
+		return false
+	}
+}
+
+func (w *windowCtl) fail(what string, err error) {
+	w.failOnce.Do(func() {
+		w.log.Printf("stdio host: Rex is not reachable, so afk could not %s: %v. The session itself is not affected; further Rex failures are not logged.", what, err)
+	})
+}
+
+// closeWindowAtExit closes the host's own block unless the session failed,
+// so a failed session's window stays open with its last screen for the owner
+// to read. Serve runs it as its very last act, after host.json and the socket
+// are gone. The phase is read fresh, because the agent's last write may have
+// landed after the watcher's last tick, and falls back to the watcher's last
+// readable reading when the file cannot be read now.
+func (h *hostRuntime) closeWindowAtExit() {
+	s := h.stdio
+	now := readPhaseView(h.statusPath(), nil)
+	if !closeWindowOnExit(now, s.lastReadable.Load()) {
+		h.log.Printf("stdio host: the session failed; leaving its Rex window open so its last screen can be read")
+		return
+	}
+	h.log.Printf("stdio host: closing this session's Rex window")
+	s.window.await("close this session's window", s.window.start(s.window.wc.CloseSelf))
 }

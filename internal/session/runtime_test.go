@@ -24,26 +24,50 @@ func writeHostJSON(t *testing.T, worktree, name, body string) string {
 	return path
 }
 
-// TestRuntimeFor pins how the runtime is chosen from host.json. Load-bearing
+// writeMarker seeds <worktree>/.afk/<name>/runtime with body.
+func writeMarker(t *testing.T, worktree, name, body string) {
+	t.Helper()
+	dir := filepath.Join(worktree, ".afk", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runtime"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRuntimeFor pins how the runtime is chosen from host.json and, when
+// host.json is absent, from the .afk/{name}/runtime marker. Load-bearing
 // rows: "no host.json" and "unparseable host.json" (a new session has none
-// yet, and a corrupt one must stay cleanable, so both read as afk), "no
-// runtime key" (every file written before the field existed), and the two
-// unknown words (refused with ErrUnknownRuntime and a message that names the
-// word and the session, so a session a newer afk started is never driven by
-// an afk that does not know how).
+// yet, and a corrupt one must stay cleanable, so both read as afk, the
+// second even beside a rex marker), "no runtime key" (every file written
+// before the field existed), "no host.json, marker rex" (a Rex session whose
+// host has stopped must be relaunched in Rex, T17.8 A7), "host.json beats
+// the marker" (a live host's own word is the truth), and the unknown words
+// (refused with ErrUnknownRuntime and a message that names the word and the
+// session, so a session a newer afk started is never driven by an afk that
+// does not know how).
 func TestRuntimeFor(t *testing.T) {
 	tests := []struct {
 		name      string
-		body      string // empty means no file
-		wantAfk   bool
+		body      string // empty means no host.json
+		marker    string // empty means no runtime marker
+		want      string // runtime name; empty means refused
 		wantInMsg []string
 	}{
-		{name: "no host.json", wantAfk: true},
-		{name: "unparseable host.json", body: "{not json", wantAfk: true},
-		{name: "no runtime key", body: `{"pid":1}`, wantAfk: true},
-		{name: "runtime afk", body: `{"pid":1,"runtime":"afk"}`, wantAfk: true},
-		{name: "runtime empty", body: `{"pid":1,"runtime":""}`, wantAfk: true},
+		{name: "no host.json", want: "afk"},
+		{name: "unparseable host.json", body: "{not json", want: "afk"},
+		{name: "unparseable host.json beside a rex marker", body: "{not json", marker: "rex\n", want: "afk"},
+		{name: "no runtime key", body: `{"pid":1}`, want: "afk"},
+		{name: "runtime afk", body: `{"pid":1,"runtime":"afk"}`, want: "afk"},
+		{name: "runtime empty", body: `{"pid":1,"runtime":""}`, want: "afk"},
+		{name: "runtime rex", body: `{"pid":1,"runtime":"rex"}`, want: "rex"},
 		{name: "runtime bogus", body: `{"pid":1,"runtime":"bogus"}`, wantInMsg: []string{`"bogus"`, "sess1"}},
+		{name: "no host.json, marker rex", marker: "rex\n", want: "rex"},
+		{name: "no host.json, marker afk", marker: "afk\n", want: "afk"},
+		{name: "no host.json, empty marker", marker: "\n", want: "afk"},
+		{name: "no host.json, marker bogus", marker: "bogus\n", wantInMsg: []string{`"bogus"`, "sess1"}},
+		{name: "host.json beats the marker", body: `{"pid":1,"runtime":"afk"}`, marker: "rex\n", want: "afk"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,13 +75,16 @@ func TestRuntimeFor(t *testing.T) {
 			if tt.body != "" {
 				writeHostJSON(t, wt, "sess1", tt.body)
 			}
+			if tt.marker != "" {
+				writeMarker(t, wt, "sess1", tt.marker)
+			}
 			rt, err := RuntimeFor(wt, "sess1")
-			if tt.wantAfk {
+			if tt.want != "" {
 				if err != nil {
 					t.Fatalf("RuntimeFor: %v", err)
 				}
-				if rt.Name() != "afk" {
-					t.Errorf("runtime = %q, want afk", rt.Name())
+				if rt.Name() != tt.want {
+					t.Errorf("runtime = %q, want %s", rt.Name(), tt.want)
 				}
 				return
 			}
@@ -77,12 +104,11 @@ func TestRuntimeFor(t *testing.T) {
 	}
 }
 
-// TestRuntimeRex pins the rex runtime. Load-bearing rows: "Dial with no
-// socket" (the refusal comes before any dialling, so the words are the same
-// whether or not the host is up), and "Spawn" and "Undo" (nothing in this afk
-// may start a Rex session until T17.8, and a silent success would record a
-// host that does not exist). The last rows keep the afk words and the
-// refusal of an unknown word unchanged.
+// TestRuntimeRex pins the rex runtime's identity and its Dial. Load-bearing
+// row: "Dial with no socket" (the refusal comes before any dialling, so the
+// words are the same whether or not the host is up). Spawn, Undo and Stop
+// are TestRexRuntime's, in rexruntime_test.go. The last rows keep the afk
+// words and the refusal of an unknown word unchanged.
 func TestRuntimeRex(t *testing.T) {
 	wt := t.TempDir()
 	writeHostJSON(t, wt, "sess1", `{"pid":1,"runtime":"rex"}`)
@@ -102,18 +128,6 @@ func TestRuntimeRex(t *testing.T) {
 		}
 		if err == nil || err.Error() != "This session runs in Rex; open it there." {
 			t.Errorf("err = %v, want the Rex sentence", err)
-		}
-	})
-	t.Run("Spawn", func(t *testing.T) {
-		_, err := rt.Spawn(HostSpawn{}, Deps{})
-		if err == nil || !strings.Contains(err.Error(), "not available in this afk yet") {
-			t.Errorf("err = %v, want the not-available message", err)
-		}
-	})
-	t.Run("Undo", func(t *testing.T) {
-		err := rt.Undo(HostProcess{}, Deps{})
-		if err == nil || !strings.Contains(err.Error(), "not available in this afk yet") {
-			t.Errorf("err = %v, want the not-available message", err)
 		}
 	})
 	for _, word := range []string{"", "afk"} {

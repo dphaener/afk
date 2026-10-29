@@ -4,21 +4,24 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"github.com/dphaener/afk/internal/host"
 )
 
 // Runtime is the one seam every caller uses to start, stop, restart, type
-// into or open a session. Today there is a single implementation, afk's own
-// detached host. T17.7 adds a second one that runs the session inside a Rex
-// terminal; it must be a second implementation of this interface, not a
-// second set of call sites, or a caller that skipped the seam would drive a
-// Rex session as if afk's host owned it.
+// into or open a session. There are two implementations: afk's own detached
+// host, and the Rex runtime (rexruntime.go), which runs the session's host
+// inside a Rex terminal. The second is an implementation of this interface,
+// not a second set of call sites, or a caller that skipped the seam would
+// drive a Rex session as if afk's host owned it.
 //
-// Callers get their Runtime from RuntimeFor, which reads the session's
-// host.json rather than any machine setting, so a session keeps the runtime
-// that made it for its whole life (docs/PLAN.md §2, "Rex is optional").
+// Callers get an existing session's Runtime from RuntimeFor, which reads the
+// session's own files rather than any machine setting, so a session keeps
+// the runtime that made it for its whole life (docs/PLAN.md §2, "Rex is
+// optional"). Only a new session's runtime comes from the machine's
+// `[runtime] backend` (NewRexRuntime).
 //
 // The methods mirror the functions they replace, argument for argument, so
 // moving a caller onto the seam changes no behaviour.
@@ -97,34 +100,6 @@ func (afkRuntime) Dial(worktree, name string, wait time.Duration) (net.Conn, err
 	return host.Dial(socket, wait)
 }
 
-// rexRuntime is a session whose host runs inside a Rex terminal
-// (`afk _host --stdio`). It reuses afkRuntime for everything the host's
-// socket still serves (restart, exit, typing, stop), because a stdio host
-// keeps its socket for exactly those requests. It differs in two places:
-// nothing in this afk starts a Rex session yet (T17.8 replaces Spawn and
-// Undo), and Dial refuses, because the terminal is the Rex block and a
-// socket client attaching to it would be a second screen on a session that
-// has one.
-type rexRuntime struct{ afkRuntime }
-
-func (rexRuntime) Name() string { return host.RuntimeRex }
-
-func (rexRuntime) Spawn(HostSpawn, Deps) (HostProcess, error) {
-	return HostProcess{}, errRexSpawnUnavailable
-}
-
-func (rexRuntime) Undo(HostProcess, Deps) error { return errRexSpawnUnavailable }
-
-// Dial refuses before looking at the socket, so the sentence is the same
-// whether or not the host is still up. It uses the host's own sentence so a
-// client that reaches the socket and one that goes through the seam read the
-// same words.
-func (rexRuntime) Dial(string, string, time.Duration) (net.Conn, error) {
-	return nil, errors.New(host.RefuseAttachLine)
-}
-
-var errRexSpawnUnavailable = errors.New("starting a session in Rex is not available in this afk yet. Sessions start with afk's own host")
-
 // runtimeNamed maps the word in host.json to its implementation. An empty
 // word is afk, so every host.json written before the field existed reads as
 // it always did. name is only used to make the refusal say which session.
@@ -140,14 +115,25 @@ func runtimeNamed(name, word string) (Runtime, error) {
 }
 
 // RuntimeFor chooses the runtime of the session name in worktree from its
-// host.json. A missing or unparseable file gives afk's runtime: a new session
-// has no host.json yet, and StopHost must keep cleaning a corrupt one. An
-// unknown word is refused, so a session a newer afk started is never
-// half-handled by one that does not know how.
+// host.json. An unparseable file gives afk's runtime, because StopHost must
+// keep cleaning a corrupt one. A missing file falls back to the
+// .afk/{name}/runtime marker a Rex start writes, because a host that has
+// stopped takes its host.json with it, and a relaunch after that must stay in
+// Rex (T17.8 A7); with no marker either, as for every session afk started
+// before the marker existed and every new session, it is afk's runtime, as
+// it always was. An unknown word in either file is refused, so a session a
+// newer afk started is never half-handled by one that does not know how.
 func RuntimeFor(worktree, name string) (Runtime, error) {
 	meta, err := host.ReadMeta(worktree, name)
-	if err != nil {
+	if err == nil {
+		return runtimeNamed(name, meta.Runtime)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
 		return afkRuntime{}, nil
 	}
-	return runtimeNamed(name, meta.Runtime)
+	word, ok := readRuntimeMarker(worktree, name)
+	if !ok {
+		return afkRuntime{}, nil
+	}
+	return runtimeNamed(name, word)
 }

@@ -166,8 +166,10 @@ type ServeConfig struct {
 	// Terminal is the terminal a stdio host serves; nil means the
 	// process's own (see Terminal). Ignored unless Stdio.
 	Terminal *Terminal
-	// Rex holds the Rex block ids the spawner passed, recorded verbatim in
-	// host.json. The host never calls Rex, so it runs with no Rex installed.
+	// Rex holds the Rex block ids, from the --rex-* flags or else from the
+	// environment Rex gives the block's command (host_cmd.go), recorded
+	// verbatim in host.json. This package never calls Rex itself (Window is
+	// its only way to reach it), so it runs with no Rex installed.
 	// Ignored unless Stdio.
 	Rex *RexBlock
 	// Parked reports whether the session's task is parked on the owner,
@@ -176,6 +178,44 @@ type ServeConfig struct {
 	// T17.8 wires it in, so the host stays free of the ledger's path.
 	// Ignored unless Stdio.
 	Parked func() bool
+	// Window relabels the Rex window this host runs in and closes its block
+	// when the host exits (stdio.go's windowCtl). nil means there is no Rex
+	// window to keep up to date: every afk-runtime host, and a stdio host run
+	// outside Rex. The host makes these calls off the PTY pump and the
+	// terminal writer, each bounded by windowCallDeadline, so a Rex server
+	// that hangs can never hold up the child's output. Ignored unless Stdio.
+	Window WindowControl
+	// Planning says this host runs the project's planning session, whose
+	// window is always labelled "plan" (rexlayout.WindowLabel). The host
+	// cannot tell from its name: the planning session's name is owned by
+	// internal/session, which imports this package. Ignored unless Window.
+	Planning bool
+}
+
+// ChildExited is what Serve returns when a stdio host's child ended on its
+// own with a status other than 0. A stdio host's process is the Rex block's
+// command, and Rex shows how that command ended, so passing the child's status
+// through is what makes a failed agent read as failed in the block. Only a
+// stdio host returns it: an afk-runtime host is detached, nobody reads its
+// status, and its "nil means orderly" contract is unchanged.
+type ChildExited struct {
+	// Code is the status to exit with: the child's exit code, or 1 when the
+	// child was killed by a signal and so has no code of its own.
+	Code int
+}
+
+func (e *ChildExited) Error() string {
+	return fmt.Sprintf("the session's program exited with status %d", e.Code)
+}
+
+// childExitStatus is the status a stdio host passes on for how its child
+// ended: the code itself, or 1 for a child killed by a signal (whose code
+// reads -1), so a killed child is never reported as a success.
+func childExitStatus(e LastExit) int {
+	if e.Signal != "" || e.Code < 0 {
+		return 1
+	}
+	return e.Code
 }
 
 func (c ServeConfig) validate() error {
@@ -240,6 +280,17 @@ func Serve(cfg ServeConfig) error {
 		logger.Printf("not starting: %v", err)
 		return err
 	}
+	// Closing the Rex block is the host's last act, so it is deferred before
+	// the socket and host.json are released and runs after them: by the time
+	// the block goes, nothing on disk still points at this host. It is set
+	// only once the serve loop is about to run, so a host that failed to
+	// start leaves its block open with the reason on screen.
+	var closeWindow func()
+	defer func() {
+		if closeWindow != nil {
+			closeWindow()
+		}
+	}()
 	// Past this point the socket file and host.json are ours, so every
 	// return path must release both. (Registered before the child starts:
 	// even a failed child start must not leave a socket behind.)
@@ -314,7 +365,19 @@ func Serve(cfg ServeConfig) error {
 		return err
 	}
 
-	return h.run(signals)
+	if h.stdio != nil && h.stdio.window != nil {
+		closeWindow = h.closeWindowAtExit
+	}
+	if err := h.run(signals); err != nil {
+		return err
+	}
+	if h.stdio != nil && h.childEnded {
+		// exited is closed, so g.exit is written (see waitChild).
+		if code := childExitStatus(h.cur.exit); code != 0 {
+			return &ChildExited{Code: code}
+		}
+	}
+	return nil
 }
 
 // childProc is one generation of the hosted child: the process, the PTY it
@@ -454,6 +517,11 @@ type hostRuntime struct {
 	// Set before the first spawn and never again, so the pump reads it
 	// without a lock.
 	stdio *stdioHost
+
+	// childEnded is set by the serve loop when it returns because the child
+	// exited on its own, rather than on a signal or an Exit request; Serve
+	// reads it after run returns, on the same goroutine.
+	childEnded bool
 
 	done         chan struct{} // closed when the host is shutting down
 	shutdownOnce sync.Once
@@ -705,6 +773,7 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 		case <-exited:
 			h.log.Printf("child exited on its own; shutting down")
 			h.drainPTY(h.cur)
+			h.childEnded = true
 			return nil
 
 		case sig := <-signals:

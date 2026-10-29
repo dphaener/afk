@@ -201,6 +201,31 @@ type Config struct {
 	// stop the build loop or make an unrelated command refuse. So only the
 	// dashboard looks at this field, and everyone else never sees the error.
 	DashErr error
+	// Runtime is always filled: an absent [runtime] table, and one with a bad
+	// value in it, both carry backend "afk".
+	Runtime RuntimeConfig
+	// RuntimeErr is what is wrong with the [runtime] table, or nil. It names
+	// the file and `[runtime] backend`.
+	//
+	// It is carried here for the same reason as DashErr: the commands that
+	// share this load must not all refuse over one setting. Unlike DashErr it
+	// is never a licence to guess: Runtime.Backend stays "afk" only so the
+	// struct is whole, and whoever starts a session checks RuntimeErr first
+	// and refuses, so a misspelt "rex" never quietly runs the session under
+	// afk, and never under Rex either.
+	RuntimeErr error
+}
+
+// The [runtime] backend words.
+const (
+	BackendAfk = "afk"
+	BackendRex = "rex"
+)
+
+// RuntimeConfig is the [runtime] table: where new sessions run.
+type RuntimeConfig struct {
+	// Backend is BackendAfk (the default) or BackendRex.
+	Backend string
 }
 
 // The [dash] defaults: how often the dashboard looks through the search
@@ -293,7 +318,10 @@ type rawFile struct {
 	// The decoder fills an `any` with plain maps, slices, strings and numbers,
 	// which reflect.DeepEqual compares by value, so the "nothing but the
 	// projects changed" check in edit.go still covers this table.
-	Dash    any `toml:"dash"`
+	Dash any `toml:"dash"`
+	// Runtime is left as the written TOML value for the same reason as Dash:
+	// backend = 5 must not become a decode error that fails Load.
+	Runtime any `toml:"runtime"`
 	Project []struct {
 		Path string `toml:"path"`
 		Name string `toml:"name"`
@@ -319,7 +347,7 @@ func Load(d Deps) (Config, error) {
 	cfg := Config{Tick: DefaultTick, StallAfter: DefaultStallAfter,
 		MaxRestarts: DefaultMaxRestarts, RestartBackoff: DefaultRestartBackoff,
 		MaxWakes: DefaultMaxWakes, Governor: defaultGovernor(), Web: Web{Bind: DefaultWebBind},
-		Dash: defaultDash()}
+		Dash: defaultDash(), Runtime: RuntimeConfig{Backend: BackendAfk}}
 	path := Path(d)
 	if path == "" {
 		return cfg, errors.New("cannot find afk's config folder: set XDG_CONFIG_HOME to an absolute path or make sure your home directory is known")
@@ -415,7 +443,39 @@ func Load(d Deps) (Config, error) {
 	} else {
 		cfg.Dash = dash
 	}
+	if rt, rerr := loadRuntime(path, raw); rerr != nil {
+		cfg.RuntimeErr = rerr
+	} else {
+		cfg.Runtime = rt
+	}
 	return cfg, nil
+}
+
+// loadRuntime checks the [runtime] table. Its error is for Config.RuntimeErr
+// only: Load must never return it. Only the lower-case words are accepted, so
+// "Rex" is an error and not a guess.
+func loadRuntime(path string, raw rawFile) (RuntimeConfig, error) {
+	rt := RuntimeConfig{Backend: BackendAfk}
+	if raw.Runtime == nil {
+		return rt, nil
+	}
+	table, ok := raw.Runtime.(map[string]any)
+	if !ok {
+		return RuntimeConfig{}, fmt.Errorf("%s: runtime is not a table; write a [runtime] line and put backend = \"afk\" or backend = \"rex\" under it", path)
+	}
+	v, ok := table["backend"]
+	if !ok {
+		return rt, nil
+	}
+	s, isString := v.(string)
+	if !isString {
+		return RuntimeConfig{}, fmt.Errorf("%s: [runtime] backend is %#v, which is not text in quotes; write it like backend = \"rex\" or backend = \"afk\"", path, v)
+	}
+	switch s {
+	case BackendAfk, BackendRex:
+		return RuntimeConfig{Backend: s}, nil
+	}
+	return RuntimeConfig{}, fmt.Errorf("%s: [runtime] backend is %q, which is not a backend; use \"afk\" or \"rex\" in lower case", path, s)
 }
 
 // loadDash checks the [dash] table. Its error is for Config.DashErr only: Load

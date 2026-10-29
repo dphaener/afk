@@ -395,3 +395,255 @@ func TestBlockLabelAndList(t *testing.T) {
 		}
 	})
 }
+
+func errCode(t *testing.T, err error, want int) {
+	t.Helper()
+	var ce *CallError
+	if !errors.As(err, &ce) || ce.ExitCode() != want {
+		t.Fatalf("err = %v, want a CallError with exit code %d", err, want)
+	}
+}
+
+func callErr(method string, code int, status string) error {
+	return &CallError{Method: method, Code: code, Stderr: status}
+}
+
+// TestCreateWindow: the request rows are load-bearing. shell none and
+// exit.on_completion false are what make the host's own exit handling the
+// only thing that closes a window; empty theme fields must be omitted or Rex
+// rejects them or paints black.
+func TestCreateWindow(t *testing.T) {
+	full := TerminalOptions{
+		Command: []string{"afk", "_host"}, Cwd: "/w", Size: Size{160, 48},
+		Theme: Theme{Foreground: "#fff", Background: "#000", Cursor: "#ccc", Scheme: "dark"},
+	}
+	opts := func(extra map[string]any) map[string]any {
+		o := map[string]any{"command": []string{"afk", "_host"}, "shell": "none", "exit": map[string]any{"on_completion": false}}
+		for k, v := range extra {
+			o[k] = v
+		}
+		return o
+	}
+	req := func(o map[string]any) map[string]any {
+		return map[string]any{
+			"session_id":   "session:s1",
+			"window_label": "x · build",
+			"layout":       map[string]any{"block": map[string]any{"flavor": TerminalFlavor, "label": "x · build", "options": o}},
+		}
+	}
+	ok := `{"window_id":"window:w1","block_ids":["block:b1"],"revision":3}`
+	tests := []struct {
+		name     string
+		t        TerminalOptions
+		session  string
+		reply    string
+		err      error
+		want     map[string]any
+		wantErr  bool
+		wantCode int
+	}{
+		{name: "full options", t: full, session: "session:s1", reply: ok, want: req(opts(map[string]any{
+			"cwd": "/w", "size": map[string]int{"columns": 160, "rows": 48},
+			"theme": map[string]string{"foreground": "#fff", "background": "#000", "cursor": "#ccc", "scheme": "dark"},
+		}))},
+		{name: "empty theme fields omitted", t: TerminalOptions{Command: []string{"afk", "_host"}, Theme: Theme{Scheme: "dark"}}, session: "session:s1", reply: ok,
+			want: req(opts(map[string]any{"theme": map[string]string{"scheme": "dark"}}))},
+		{name: "no theme no size no cwd", t: TerminalOptions{Command: []string{"afk", "_host"}}, session: "session:s1", reply: ok, want: req(opts(nil))},
+		{name: "no command", t: TerminalOptions{}, session: "session:s1", wantErr: true},
+		{name: "empty session", t: full, session: "", wantErr: true},
+		{name: "size out of range", t: TerminalOptions{Command: []string{"a"}, Size: Size{0, 5}}, session: "session:s1", wantErr: true},
+		{name: "reply without block", t: full, session: "session:s1", reply: `{"window_id":"window:w1","block_ids":[]}`, wantErr: true},
+		{name: "session_not_found", t: full, session: "session:s1", err: callErr("session.new_window", 3, "session_not_found"), wantErr: true, wantCode: 3},
+		{name: "bad_request", t: full, session: "session:s1", err: callErr("session.new_window", 2, "bad_request"), wantErr: true, wantCode: 2},
+	}
+	for _, tt := range tests {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			f := (&Fake{}).On("session.new_window", tt.reply, tt.err)
+			w, err := CreateWindow(context.Background(), f, tt.session, "x · build", tt.t)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("want an error, got %+v", w)
+				}
+				if tt.wantCode != 0 {
+					errCode(t, err, tt.wantCode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w != (Window{WindowID: "window:w1", BlockID: "block:b1"}) {
+				t.Errorf("window = %+v", w)
+			}
+			calls := f.Calls()
+			if len(calls) != 1 || string(calls[0].Args) != mustJSON(t, tt.want) {
+				t.Errorf("args = %s\nwant   %s", calls[0].Args, mustJSON(t, tt.want))
+			}
+		})
+	}
+}
+
+// TestSetWindowLabel: the exact keys, plus the not_found row that must
+// surface as a CallError rather than be swallowed.
+func TestSetWindowLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		session  string
+		window   string
+		err      error
+		wantErr  bool
+		wantCode int
+		wantCall bool
+	}{
+		{name: "ok", session: "session:s1", window: "window:w1", wantCall: true},
+		{name: "empty window", session: "session:s1", window: "", wantErr: true},
+		{name: "not_found", session: "session:s1", window: "window:w1", err: callErr("session.set_window_label", 3, "not_found"), wantErr: true, wantCode: 3, wantCall: true},
+		{name: "session_not_found", session: "session:s1", window: "window:w1", err: callErr("session.set_window_label", 3, "session_not_found"), wantErr: true, wantCode: 3, wantCall: true},
+		{name: "bad_request", session: "session:s1", window: "window:w1", err: callErr("session.set_window_label", 2, "bad_request"), wantErr: true, wantCode: 2, wantCall: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := (&Fake{}).On("session.set_window_label", `{}`, tt.err)
+			err := SetWindowLabel(context.Background(), f, tt.session, tt.window, "x · fix")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v", err)
+			}
+			if tt.wantCode != 0 {
+				errCode(t, err, tt.wantCode)
+			}
+			calls := f.Calls()
+			if (len(calls) == 1) != tt.wantCall {
+				t.Fatalf("calls = %d", len(calls))
+			}
+			if tt.wantCall {
+				want := mustJSON(t, map[string]string{"session_id": tt.session, "window_id": tt.window, "label": "x · fix"})
+				if string(calls[0].Args) != want {
+					t.Errorf("args = %s, want %s", calls[0].Args, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCloseWindow: not_found is the load-bearing row (a window closed by hand
+// must come back as a CallError with exit 3 so a caller can treat it as
+// already closed); an empty window id is refused because Rex would close the
+// active window instead.
+func TestCloseWindow(t *testing.T) {
+	tests := []struct {
+		name     string
+		window   string
+		err      error
+		wantErr  bool
+		wantCode int
+		wantCall bool
+	}{
+		{name: "ok", window: "window:w1", wantCall: true},
+		{name: "empty window", window: "", wantErr: true},
+		{name: "not_found", window: "window:w1", err: callErr("session.close_window", 3, "window window:w1 not found (status=404 code=not_found)"), wantErr: true, wantCode: 3, wantCall: true},
+		{name: "session_not_found", window: "window:w1", err: callErr("session.close_window", 3, "session_not_found"), wantErr: true, wantCode: 3, wantCall: true},
+		{name: "bad_request", window: "window:w1", err: callErr("session.close_window", 2, "bad_request"), wantErr: true, wantCode: 2, wantCall: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := (&Fake{}).On("session.close_window", `{}`, tt.err)
+			err := CloseWindow(context.Background(), f, "session:s1", tt.window)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v", err)
+			}
+			if tt.wantCode != 0 {
+				errCode(t, err, tt.wantCode)
+			}
+			calls := f.Calls()
+			if (len(calls) == 1) != tt.wantCall {
+				t.Fatalf("calls = %d", len(calls))
+			}
+			if tt.wantCall {
+				want := mustJSON(t, map[string]string{"session_id": "session:s1", "window_id": tt.window})
+				if string(calls[0].Args) != want {
+					t.Errorf("args = %s, want %s", calls[0].Args, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCloseBlock: block.close is sent with block_id only, never window_id
+// (Rex says to send one or the other).
+func TestCloseBlock(t *testing.T) {
+	tests := []struct {
+		name     string
+		block    string
+		err      error
+		wantErr  bool
+		wantCode int
+		wantCall bool
+	}{
+		{name: "ok", block: "block:b1", wantCall: true},
+		{name: "empty block", block: "", wantErr: true},
+		{name: "not_found", block: "block:b1", err: callErr("block.close", 3, "not_found"), wantErr: true, wantCode: 3, wantCall: true},
+		{name: "session_not_found", block: "block:b1", err: sessionNotFound("block.close"), wantErr: true, wantCode: 3, wantCall: true},
+		{name: "bad_request", block: "block:b1", err: callErr("block.close", 2, "bad_request"), wantErr: true, wantCode: 2, wantCall: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := (&Fake{}).On("block.close", `{}`, tt.err)
+			err := CloseBlock(context.Background(), f, "session:s1", tt.block)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v", err)
+			}
+			if tt.wantCode != 0 {
+				errCode(t, err, tt.wantCode)
+			}
+			calls := f.Calls()
+			if (len(calls) == 1) != tt.wantCall {
+				t.Fatalf("calls = %d", len(calls))
+			}
+			if tt.wantCall {
+				want := mustJSON(t, map[string]string{"session_id": "session:s1", "block_id": tt.block})
+				if string(calls[0].Args) != want {
+					t.Errorf("args = %s, want %s", calls[0].Args, want)
+				}
+			}
+		})
+	}
+}
+
+// TestWindowOfBlock: detached and unlisted blocks are found=false with no
+// error, so the caller can tell "no window" from "Rex failed".
+func TestWindowOfBlock(t *testing.T) {
+	list := `{"blocks":[{"block_id":"block:b1","placement":"placed","window_id":"window:w1"},{"block_id":"block:b2","placement":"detached"}]}`
+	tests := []struct {
+		name      string
+		block     string
+		reply     string
+		err       error
+		wantWin   string
+		wantFound bool
+		wantErr   bool
+		wantCode  int
+	}{
+		{name: "placed", block: "block:b1", reply: list, wantWin: "window:w1", wantFound: true},
+		{name: "detached", block: "block:b2", reply: list},
+		{name: "not listed", block: "block:zz", reply: list},
+		{name: "empty block", block: "", reply: list, wantErr: true},
+		{name: "not json", block: "block:b1", reply: `nope`, wantErr: true},
+		{name: "session_not_found", block: "block:b1", err: sessionNotFound("session.list_blocks"), wantErr: true, wantCode: 3},
+		{name: "bad_request", block: "block:b1", err: callErr("session.list_blocks", 2, "bad_request"), wantErr: true, wantCode: 2},
+	}
+	for _, tt := range tests {
+		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
+			f := (&Fake{}).On("session.list_blocks", tt.reply, tt.err)
+			win, found, err := WindowOfBlock(context.Background(), f, "session:s1", tt.block)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v", err)
+			}
+			if tt.wantCode != 0 {
+				errCode(t, err, tt.wantCode)
+			}
+			if win != tt.wantWin || found != tt.wantFound {
+				t.Errorf("got (%q, %v), want (%q, %v)", win, found, tt.wantWin, tt.wantFound)
+			}
+		})
+	}
+}

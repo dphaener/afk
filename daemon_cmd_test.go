@@ -28,6 +28,7 @@ import (
 	"github.com/dphaener/afk/internal/planpatch"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/usagestate"
@@ -1840,7 +1841,7 @@ func TestDaemonPreflight(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &preflightProvider{modeOK: tt.modeOK, pluginOK: tt.pluginOK, modeSteps: "accept the warning\n", pluginSteps: "install the plugin"}
-			ok, steps := daemonPreflight(p, provider.UnattendedDeps{Home: "/home/x"}, nil)(daemon.Project{Name: "demo", Root: "/p/demo"})
+			ok, steps := daemonPreflight(p, provider.UnattendedDeps{Home: "/home/x"}, nil, nil)(daemon.Project{Name: "demo", Root: "/p/demo"})
 			if ok != tt.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -3187,5 +3188,57 @@ func TestPatchPlanNebariRowPassesTheGuard(t *testing.T) {
 	}
 	if after.OpenQuestions != before.OpenQuestions-1 {
 		t.Errorf("open questions went from %d to %d, want one fewer", before.OpenQuestions, after.OpenQuestions)
+	}
+}
+
+// TestDaemonStartCheck covers backend (afk, rex, carried error, unreadable
+// config) x Rex facts (not installed, no answer, answers) at the daemon's
+// launch gate. Load-bearing rows:
+//   - every afk row passes with zero Rex calls, so the build loop of a machine
+//     that never chose Rex is untouched.
+//   - the refusal rows go through daemonPreflight, which is what raises the
+//     one blocking failure item and launches nothing; the steps carry the
+//     plain Rex message.
+//   - "config unreadable" refuses rather than starting on afk's host.
+func TestDaemonStartCheck(t *testing.T) {
+	carried := errors.New("config.toml: [runtime] backend must be \"afk\" or \"rex\"")
+	missing := func(string) (string, error) { return "", errors.New("not found") }
+	found := func(string) (string, error) { return "/usr/bin/rex", nil }
+	rows := []struct {
+		name        string
+		cfg         daemonconfig.Config
+		loadErr     error
+		look        func(string) (string, error)
+		statusErr   error
+		wantMsg     string // "" passes
+		wantMethods int
+	}{
+		{name: "afk not installed", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "afk"}}, look: missing},
+		{name: "afk no answer", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "afk"}}, look: found, statusErr: errors.New("down")},
+		{name: "afk answers", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "afk"}}, look: found},
+		{name: "rex not installed", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "rex"}}, look: missing, wantMsg: "Rex is not installed"},
+		{name: "rex no answer", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "rex"}}, look: found, statusErr: errors.New("down"),
+			wantMsg: "does not answer", wantMethods: 1},
+		{name: "rex answers", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "rex"}}, look: found, wantMethods: 1},
+		{name: "carried error", cfg: daemonconfig.Config{RuntimeErr: carried}, look: found, wantMsg: "[runtime] backend"},
+		{name: "config unreadable", loadErr: errors.New("bad toml"), look: found, wantMsg: "could not read config.toml"},
+	}
+	for _, tt := range rows {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := (&rex.Fake{}).On("server.status", `{"api_revision":7}`, tt.statusErr)
+			sd := session.Deps{Rex: session.RexDeps{Caller: fake, LookPath: tt.look}}
+			check := daemonStartCheck(sd, func() (daemonconfig.Config, error) { return tt.cfg, tt.loadErr })
+			p := &preflightProvider{modeOK: true, pluginOK: true}
+			ok, steps := daemonPreflight(p, provider.UnattendedDeps{Home: "/home/x"}, nil, check)(daemon.Project{Name: "demo", Root: "/p/demo"})
+			if ok != (tt.wantMsg == "") {
+				t.Errorf("ok = %v, steps %q; want pass = %v", ok, steps, tt.wantMsg == "")
+			}
+			if tt.wantMsg != "" && !strings.Contains(steps, tt.wantMsg) {
+				t.Errorf("steps %q lack %q", steps, tt.wantMsg)
+			}
+			if got := len(fake.Calls()); got != tt.wantMethods {
+				t.Errorf("rex calls = %d, want %d", got, tt.wantMethods)
+			}
+		})
 	}
 }

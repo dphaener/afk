@@ -88,7 +88,7 @@ afk new headless-session </dev/null | cat
 5. Creates a worktree at `.claude/worktrees/{name}` (or `.claude/worktrees/{name}-2`, `-3`, etc. to avoid collisions)
 6. Seeds `.afk/{name}/status.json` with session state (phase, session_id, branch, base_branch, etc. — `tmux_window` is always seeded empty; no code path in `afk new` ever writes a tmux window ID)
 7. Writes the description to `.afk/{name}/description.md` (if provided via flag or prompt, after trimming trailing newlines)
-8. Spawns a detached session host process that runs the selected provider's CLI: `claude "/afk:go --session {name}"` by default, `codex` under `--provider codex`, or `opencode --standalone --prompt "/afk-go --session {name}"` under `--provider opencode`. For a one-off (`--scratch`) the CLI runs bare, with no conductor
+8. Spawns a detached session host process that runs the selected provider's CLI: `claude "/afk:go --session {name}"` by default, `codex` under `--provider codex`, or `opencode --standalone --prompt "/afk-go --session {name}"` under `--provider opencode`. For a one-off (`--scratch`) the CLI runs bare, with no conductor. With `[runtime] backend = "rex"` in `config.toml` the host runs in a Rex window instead of afk's own host (see [Rex sessions](#rex-sessions))
 9. On a terminal: hands the terminal to `afk dash --open <name>`, so you land in the dashboard with the session live in an embedded pane. Pass `--no-dash` (or redirect stdio, as a script would) to get a one-line pointer instead
 10. Prints the session creation status and exits
 
@@ -97,6 +97,7 @@ afk new headless-session </dev/null | cat
 - **git-spice absent**: The picker offers the repo's local branches with trunk first; trunk is resolved from `origin/HEAD`, then a `main`/`master` match, then the current branch. Non-interactive runs take the trunk with no prompt.
 - **worktrunk absent**: Uses `git worktree add` instead of `wt switch --create`. With git-spice present, the branch is created through `gs branch create` and tracked in the stack when the base is tracked (or can be tracked from its session's status.json); otherwise it is created as a plain git branch with a warning, the same rule as the worktrunk-present case below.
 - **worktrunk present** (with git-spice also present): Branches are created via `wt switch --create` and are tracked in the git-spice stack best-effort with the base branch, enabling stacking via the base picker. An untracked base is tracked first via `gs branch track --base <parent>` when the parent is known from the base session's status.json and itself tracked; otherwise the branch is left untracked (created by worktrunk or plain git when worktrunk is absent) with a warning the CLI prints and the dashboard displays as a toast — never an error, never a guessed parent.
+- **Rex backend, Rex missing or silent** (`[runtime] backend = "rex"` only): `afk new` starts nothing, not even the worktree or branch. It prints why (Rex is not installed, or its server does not answer, or `config.toml` has a bad `[runtime]` line) and says to start Rex or set `backend = "afk"`, and it raises a blocking inbox item titled "A new session was not started" with the same words. It never falls back to afk's own host.
 - **Codex CLI or afk plugin absent** (`--provider codex` only): The preflight runs `codex plugin list` and never blocks creation. When it finds no installed `afk@` entry, `afk new` prints a preflight warning with the install steps and continues.
 - **OpenCode CLI or afk plugin absent** (`--provider opencode` only): The preflight runs `opencode plugin list` and never blocks creation. When the check fails (no `afk` row, or the CLI cannot run), `afk new` prints a preflight warning naming `~/.config/opencode/plugins/afk/` and `opencode plugin list` and continues.
 - **stdin/stdout not terminals**: Skips the dashboard hand-off and prints a pointer instead (the session is still created and running; reach it with `afk attach <name>` or `afk dash --open <name>`)
@@ -113,6 +114,8 @@ List all discovered sessions, or clean a specific session.
 afk clean                # List sessions with phase
 afk clean [options] <name>  # Archive and remove the session's worktree
 ```
+
+A session that runs in Rex also has its window closed, once its host has stopped (see [Rex sessions](#rex-sessions)). If Rex is down, clean still finishes and says the window must be closed in Rex by hand.
 
 **Options:**
 
@@ -802,7 +805,9 @@ Each session records the agent CLI its host runs: `claude` (default), `codex`, o
 
 - **`.afk/{name}/provider`** — written only for a non-default provider, so Claude sessions leave no file. A missing file means `claude`.
 - **`host.json`** — the `provider` field, omitted for `claude`. The host restarts its child with this provider.
-- **`host.json`'s `runtime`** — the runtime that made the session. It says `afk` for a session afk's own host runs. A missing field also means `afk`. Every command that starts, stops, restarts, types into or opens the session uses the runtime named here, not the machine's setting. If a session's runtime is one this afk does not know, afk refuses to touch it and says to use the afk that started it or to update afk.
+- **`host.json`'s `runtime`** — the runtime that made the session. It says `afk` for a session afk's own host runs, and `rex` for one that runs in a Rex window (see [Rex sessions](#rex-sessions)). A missing field also means `afk`. Every command that starts, stops, restarts, types into or opens the session uses the runtime named here, not the machine's setting. If a session's runtime is one this afk does not know, afk refuses to touch it and says to use the afk that started it or to update afk.
+- **`host.json`'s `rex`** — present only for a session in Rex, with the ids of its place there: `session_id` (the Rex session the window is in), `window_id`, `block_id` (the window's terminal block, which is also the host's own block), and `server`, which is empty for the machine's default Rex server.
+- **`.afk/{name}/runtime`** — a one-line marker written when a session starts in Rex. It holds `rex`. It exists so that a session whose host has stopped, and so has removed `host.json`, is still relaunched in Rex rather than on afk's own host. A session with no marker and no `host.json` is afk's.
 - **`host.json`'s `agent_status`** — what the session's own agent last reported about itself, in its terminal output. It has the state (`working`, `blocked`, `done` and so on), the kind, the message the agent chose, and when the host first saw that status. A report from a program the agent runs inside its terminal is ignored, so a tool's message never replaces the agent's. The host writes it at most every 2 seconds, or at once when the state changes. A `clear` report removes it. It is omitted until the agent reports, and it is never written to `status.json`.
 - **`host.json`'s `last_exit`** — how the previous program in this session ended: its exit code, the signal name if a signal ended it, and when. A restart in place writes it. A session whose agent exits on its own ends its host, and the host removes `host.json` as it always did, so the exit shows in `last_exit` after you restart the session. The exit code is also written to `host.log` in both cases. It is omitted when unknown.
 
@@ -824,6 +829,28 @@ A one-off (`--scratch`) runs the bare CLI for its provider: `claude`, `codex`, o
 A host restart resumes the conversation by its id (the `session_id` in status.json) with the provider's resume argv in the table above. A dashboard relaunch of a stopped session reads the same sidecar, so a stopped Codex or OpenCode session relaunches under its own CLI, not `claude`. A sidecar naming an unknown provider is an error, never a fallback to `claude`.
 
 **From the dashboard.** The dashboard's `n` form's Provider selector (see [the dashboard](dashboard.md)) creates a session under any provider. Picking `codex` ticks Autonomous, and the form won't submit `codex` with Autonomous unticked. The `o` key opens a provider picker that defaults to Claude (see the `o` key above), and `afk new --scratch --provider codex` (or `opencode`) creates a one-off for another provider from a shell. Non-default sessions show their provider on the row and in the detail head. Claude sessions don't show anything extra.
+
+### Rex sessions
+
+With `[runtime] backend = "rex"` in `config.toml` (see [configuration](configuration.md#runtime--where-new-sessions-run)), a new session's host runs inside a Rex window instead of afk's own background host. Only new sessions follow the setting; a session that exists keeps its runtime.
+
+- **One Rex session per project.** It is named after the project's folder, and every afk session in that project opens its window in it. afk never closes the Rex session, even an empty one, because another session may be opening a window in it at that moment.
+- **One window per session.** Each window is 160 columns by 48 rows, in the colours of the dashboard theme (the `[dash]` table). The size is set when the window is made.
+- **Window labels.** A window is labelled with the session's name and its phase, and the label changes when the phase does:
+
+  | Phase | Label |
+  |---|---|
+  | planning | `<name> · plan` |
+  | executing | `<name> · build` |
+  | reviewing | `<name> · review` |
+  | fixing | `<name> · fix` |
+  | done | `<name> · done` |
+  | failed | `<name> · failed` |
+
+  The planning session's window is labelled `plan` on its own, since a project has only one. A one-off's window has its bare name. A phase afk does not know shows its own word after the name.
+- **Closing.** When the session's host exits, its window closes, unless the phase is `failed`. A failed session's window stays open so you can read its last screen. Once the host has gone, `afk clean` cannot find that window, so close it in Rex by hand.
+- **Clean.** `afk clean` closes the session's window after its host has stopped. A session in afk's own host is not affected.
+- **Relaunch.** A session in Rex whose host has stopped is started again in Rex, not in afk's own host, because its `.afk/{name}/runtime` marker still says `rex`.
 
 ### One-off Sessions
 
