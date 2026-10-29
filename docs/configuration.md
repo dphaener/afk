@@ -61,6 +61,8 @@ With `"rex"` and Rex missing or silent, a new session is not started either. The
 
 The setting is read when a session starts. A session that already exists keeps the runtime that made it (its `host.json` says which), so changing this line never moves a running or stopped session to the other runtime.
 
+The hub's control room (the `afk` Rex session that the daemon keeps open, see [the daemon](daemon.md#the-control-room)) runs only under `"rex"`. Under `"afk"`, or when this table has an error, the daemon makes no call to Rex for it, so the control room is not started.
+
 ---
 
 ## `afk profile` — How you build and host things

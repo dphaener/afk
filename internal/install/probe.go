@@ -14,6 +14,7 @@ import (
 
 	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/planfolder"
+	"github.com/dphaener/afk/internal/probe"
 	"github.com/dphaener/afk/internal/profile"
 	"github.com/dphaener/afk/internal/provider"
 	"github.com/dphaener/afk/internal/usagestate"
@@ -46,6 +47,9 @@ type Deps struct {
 	// Run runs one command and returns its stdout. Probe always hands it a
 	// context with a deadline.
 	Run provider.CmdFunc
+	// Rex reports whether rex is on PATH and its server answers. Nil means
+	// neither. It gets a context with a deadline, like every command here.
+	Rex func(ctx context.Context) (found, answers bool)
 	// Timeout bounds each command; zero means 10 seconds.
 	Timeout time.Duration
 	// Provider names the agent provider; empty means the default.
@@ -62,6 +66,10 @@ func DefaultDeps() Deps {
 		Executable: os.Executable, EvalSymlinks: filepath.EvalSymlinks,
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).Output()
+		},
+		Rex: func(ctx context.Context) (bool, bool) {
+			f := probe.ProbeRex(ctx, probe.DefaultRexDeps())
+			return f.Installed, f.ServerAnswers
 		},
 	}
 }
@@ -196,6 +204,7 @@ func Probe(d Deps) Facts {
 
 	p.settings(&f, getenv)
 	f.Tailscale = p.found("tailscale")
+	p.rex(&f)
 	switch {
 	case linux:
 		p.linuxService(&f, getenv, euid)
@@ -203,6 +212,21 @@ func Probe(d Deps) Facts {
 		p.macService(&f, euid)
 	}
 	return f
+}
+
+// rex asks whether Rex is installed and answering. The deadline is built here
+// for the same reason as in run: no call may go without one.
+func (p *prober) rex(f *Facts) {
+	if p.d.Rex == nil {
+		return
+	}
+	t := p.d.Timeout
+	if t <= 0 {
+		t = defaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), t)
+	defer cancel()
+	f.RexFound, f.RexServer = p.d.Rex(ctx)
 }
 
 func (p *prober) found(name string) bool {
@@ -411,6 +435,9 @@ func (p *prober) settings(f *Facts, getenv func(string) string) {
 	cfg, err := daemonconfig.Load(daemonconfig.Deps{Getenv: getenv, HomeDir: homeDir, ReadFile: read})
 	if err == nil {
 		f.WebBind = cfg.Web.Bind
+		if cfg.RuntimeErr == nil {
+			f.RuntimeBackend = cfg.Runtime.Backend
+		}
 	}
 }
 

@@ -24,7 +24,8 @@ func full() Facts {
 		GitHubLogin: Yes, GitUsesGitHub: Yes, GitName: "A", GitEmail: "a@b.c",
 		ProjectLocation: "/home/u/code", ProjectLocationSet: true,
 		WebPassword: Yes,
-		Service:     ServiceFacts{Installed: Yes, Enabled: Yes, Running: Yes, Linger: Yes},
+		RexFound:    true, RexServer: true, RuntimeBackend: "rex",
+		Service: ServiceFacts{Installed: Yes, Enabled: Yes, Running: Yes, Linger: Yes},
 	}
 }
 
@@ -198,8 +199,8 @@ func TestBuildCannotAll(t *testing.T) {
 			if p.Risk != tc.risk {
 				t.Errorf("risk = %q, want %q", p.Risk, tc.risk)
 			}
-			if len(p.Steps) != 12 {
-				t.Fatalf("steps = %d, want 12", len(p.Steps))
+			if len(p.Steps) != 13 {
+				t.Fatalf("steps = %d, want 13", len(p.Steps))
 			}
 			for _, s := range p.Steps {
 				if s.State != Cannot || !strings.HasPrefix(s.Fix, tc.fix) {
@@ -232,10 +233,53 @@ func TestBuildFullyInstalled(t *testing.T) {
 	}
 }
 
-// TestBuildStepOrder: the twelve IDs, in install order, for every kind of plan.
+// TestBuildRexOffer: one row per branch of the Rex step. Load-bearing: "rex
+// found, no server" and "rex not found" must be Cannot yet leave the final
+// check Done, because the offer is optional and a machine without Rex is
+// fully set up; "rex found and answering" must be ToDo and hold the check back.
+func TestBuildRexOffer(t *testing.T) {
+	cases := []struct {
+		name      string
+		mod       func(*Facts)
+		want      State
+		reason    string
+		wantCheck State
+	}{
+		{"backend rex", func(f *Facts) { f.RexFound, f.RexServer, f.RuntimeBackend = false, false, "rex" }, Done, "run in Rex", Done},
+		{"found and answering, backend unset", func(f *Facts) { f.RuntimeBackend = "" }, ToDo, "login-server mode", ToDo},
+		{"found but no server", func(f *Facts) { f.RexServer, f.RuntimeBackend = false, "" }, Cannot, "rex is not installed or its server is not answering", Done},
+		{"not found", func(f *Facts) { f.RexFound, f.RexServer, f.RuntimeBackend = false, false, "" }, Cannot, "rex is not installed or its server is not answering", Done},
+	}
+	for _, tc := range cases {
+		t.Run(strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
+			f := full()
+			tc.mod(&f)
+			var rex, check Step
+			for _, s := range Build(f).Steps {
+				switch s.ID {
+				case StepRex:
+					rex = s
+				case StepCheck:
+					check = s
+				}
+			}
+			if rex.State != tc.want || !strings.Contains(rex.Reason, tc.reason) {
+				t.Errorf("rex step = %q %q, want %q containing %q", rex.State, rex.Reason, tc.want, tc.reason)
+			}
+			if rex.Title != "Offer the Rex runtime" {
+				t.Errorf("title = %q", rex.Title)
+			}
+			if check.State != tc.wantCheck {
+				t.Errorf("check = %q, want %q", check.State, tc.wantCheck)
+			}
+		})
+	}
+}
+
+// TestBuildStepOrder: the thirteen IDs, in install order, for every kind of plan.
 func TestBuildStepOrder(t *testing.T) {
 	want := []StepID{StepSafety, StepPackages, StepAgentCLI, StepAgentLogin, StepUnattended, StepPlugin,
-		StepGitHubLogin, StepGitIdentity, StepProjectLocation, StepWebPage, StepService, StepCheck}
+		StepGitHubLogin, StepGitIdentity, StepProjectLocation, StepWebPage, StepService, StepRex, StepCheck}
 	root := full()
 	root.Root = true
 	for name, f := range map[string]Facts{"full": full(), "root": root, "empty": {OS: "linux"}} {

@@ -83,7 +83,7 @@ The one-line command in step 2 has already started it. If you built afk from sou
 afk install
 ```
 
-It looks at the machine, shows twelve steps as a checklist with the ones already done ticked, and works through the rest, checking the machine again after each one:
+It looks at the machine, shows thirteen steps as a checklist with the ones already done ticked, and works through the rest, checking the machine again after each one:
 
 1. **Safety.** What running agents with permissions bypassed means. On a server or a VM a key press accepts; on a computer you use every day it asks you to type `I accept the risk`.
 2. **The tools afk needs** (git, gh, jq, ruby), with `sudo apt-get`. `sudo` asks for your password itself.
@@ -96,7 +96,8 @@ It looks at the machine, shows twelve steps as a checklist with the ones already
 9. **Where new projects go** (default `~/code`). The web page's **Plan a new project** makes its folders here.
 10. **The web page's password**, typed twice and never shown. afk keeps only a salted hash of it.
 11. **The background service**, so the daemon starts at boot and keeps running when you log out.
-12. **A last check**, then the web page's address in large type.
+12. **Running sessions in Rex**, offered only when `rex` is installed and its server answers. It sets `backend = "rex"` under `[runtime]` in `config.toml`, so each new session opens as a window in Rex that your laptop or phone can reach. On Linux, Rex needs login-server mode so its server keeps running after you log out. If Rex is not there, the step says so and the run goes on without it; afk works without Rex. If you answer no to the offer, the run stops at this step like the others, and running `afk install` again offers it again. The hub's full setup (Tailscale, the control room, your devices) is in [the runbook, section 8](runbook-vm.md#8-the-hub-rex-and-the-control-room).
+13. **A last check**, then the web page's address in large type.
 
 Each step asks before it changes anything; answering no stops the run and undoes nothing. A step that fails stops the run and says what to do. Run `afk install` again at any time: it checks every step and does only what is missing, so it is also the way to fix a machine. `afk install --dry-run` shows the checklist and changes nothing. Every flag is in [the command reference](reference.md#afk-install--set-up-this-machine).
 

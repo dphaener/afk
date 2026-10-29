@@ -11,7 +11,7 @@ import (
 
 func plan(states ...State) Plan {
 	ids := []StepID{StepSafety, StepPackages, StepAgentCLI, StepAgentLogin, StepUnattended, StepPlugin,
-		StepGitHubLogin, StepGitIdentity, StepProjectLocation, StepWebPage, StepService, StepCheck}
+		StepGitHubLogin, StepGitIdentity, StepProjectLocation, StepWebPage, StepService, StepRex, StepCheck}
 	var p Plan
 	for i, id := range ids {
 		st := Done
@@ -25,7 +25,7 @@ func plan(states ...State) Plan {
 
 // TestNext has a row for every outcome. Load-bearing: the cannot-before-to-do
 // row (stop, do not run the later to-do) and the cannot-after row (the to-do
-// runs first), and only-check-left (finished, never "run the check").
+// runs first), a Cannot Rex offer (skipped, the install goes on), and only-check-left (finished, never "run the check").
 func TestNext(t *testing.T) {
 	cases := []struct {
 		name string
@@ -38,7 +38,8 @@ func TestNext(t *testing.T) {
 		{"cannot after first to do", plan(Done, ToDo, Cannot), StepPackages, ActionRun},
 		{"cannot with nothing to do", plan(Done, Done, Done, Done, Cannot), StepUnattended, ActionStop},
 		{"all done", plan(), "", ActionFinished},
-		{"only check left", plan(Done, Done, Done, Done, Done, Done, Done, Done, Done, Done, Done, ToDo), "", ActionFinished},
+		{"only check left", plan(Done, Done, Done, Done, Done, Done, Done, Done, Done, Done, Done, Done, ToDo), "", ActionFinished},
+		{"cannot rex is skipped", plan(Done, Done, Done, Done, Done, Done, Done, Done, Done, Done, Done, Cannot), "", ActionFinished},
 		{"everything cannot", plan(Cannot, Cannot, Cannot), StepSafety, ActionStop},
 	}
 	for _, tc := range cases {

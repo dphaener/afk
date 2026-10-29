@@ -11,7 +11,7 @@ whose remaining tasks are in its `docs/PLAN.md`. For another project, keep the
 order of the sections and swap the nebari details (its packages, its checks,
 its `afk.toml`) for your own.
 
-Do the sections in order. Section 8 is the one that starts unattended work, so
+Do the sections in order. Section 9 is the one that starts unattended work, so
 it comes last on purpose.
 
 Who does what:
@@ -25,7 +25,8 @@ Who does what:
 | 5. Prepare the project for afk | `afk.toml`, `.gitignore`, CI runner, ledger | Machine step, on a local branch |
 | 6. Owner checks before the first unattended run | Backups, auto-deploy, the pull request, the phone check | Owner step |
 | 7. The web page over a tunnel | Turn the page on and reach it from a phone | Owner step |
-| 8. Add the project to the daemon | The `[[project]]` lines | Owner step, at the supervised first run |
+| 8. The hub | Rex's Linux server, Tailscale for you alone, the control room, and the laptop and phone | Owner step |
+| 9. Add the project to the daemon | The `[[project]]` lines | Owner step, at the supervised first run |
 
 A "machine step" is one an agent session can do on the VM without you. An
 "owner step" needs your accounts, your phone or your judgement, and nothing
@@ -101,7 +102,7 @@ Check each one:
 
    Expect a `PATH=` value that lists `~/bin`, the folder the agent CLI is in,
    and (for nebari) the mise shims folder. If something is missing, see the
-   last row of the table in section 10.
+   last row of the table in section 11.
 
 ## 2. Project prerequisites (nebari)
 
@@ -262,7 +263,7 @@ run.
    short name is `gs` too, and afk looks for git-spice under two names,
    `git-spice` first and `gs` second. With no `git-spice` on the PATH, afk
    takes Ghostscript for git-spice: afk's own `make check` then fails in
-   `internal/spice` with `Unknown switch --no-prompt` (section 10 has the
+   `internal/spice` with `Unknown switch --no-prompt` (section 11 has the
    row), and that is how this was found on the VM.
 
    The fix is to have a program named `git-spice` in `~/bin`, which comes
@@ -330,7 +331,7 @@ run.
    RSpec` reports `7209 examples, 1 failure, 2 pending`, so `bin/ci` exits
    non-zero. The one failure is `spec/system/task_swipe_spec.rb:266`, which
    fails the same way in nebari's own CI and is not about this machine
-   (section 9 has the details). The 2 pending examples save screenshots only
+   (section 10 has the details). The 2 pending examples save screenshots only
    when asked to and are skipped on purpose. Any other failure is new, and
    the table below says where to look.
 
@@ -580,7 +581,7 @@ pushed; section 6 is where you push and merge it.
 
 ## 6. Owner checks before the first unattended run
 
-Four things only you can do. Do all of them before section 8.
+Four things only you can do. Do all of them before section 9.
 
 **(a) Database backups, and one restore drill.** Nebari's production database
 has no backup yet. Its `docs/ops.md` says so in section 1, and the open item is
@@ -609,7 +610,7 @@ deployment without being asked.
 What happens if it does not deploy by itself: after a merge afk asks
 `health_url`, the old container is still running and answers healthy at once,
 and afk marks the task done. The task list then says done for work that was
-never deployed. afk cannot tell the difference (see section 9).
+never deployed. afk cannot tell the difference (see section 10).
 
 **(c) Push the set-up branch and merge it.**
 
@@ -622,7 +623,7 @@ gh pr checks --watch
 
 Expect all four jobs (`scan_ruby`, `scan_js`, `lint`, `test`) to pass on
 `ubuntu-26.04`. **As of 2026-10-12 `test` will not pass, on any runner:**
-nebari's `main` already fails it (the first entry in section 9). Fix that in
+nebari's `main` already fails it (the first entry in section 10). Fix that in
 nebari first, or this pull request cannot go green and neither can any task
 afk builds. Once it is fixed, if `test` fails on `ubuntu-26.04` and passed on
 `ubuntu-latest`, the package install step in the workflow is the first place
@@ -635,7 +636,7 @@ git switch main
 git pull --ff-only
 ```
 
-The checkout must be on `main`, with this merge in it, before section 8. afk
+The checkout must be on `main`, with this merge in it, before section 9. afk
 reads `afk.toml` from the main checkout and cuts each task's branch from the
 local `main`.
 
@@ -731,7 +732,94 @@ password. This is an owner step.
    - press Pause, see `afk daemon status` show a `Paused:` line for the
      project, then press Resume and see it go.
 
-## 8. Add the project to the daemon
+## 8. The hub: Rex and the control room
+
+The hub is the one always-on machine your laptop and phone open to see what
+afk is doing and to reach a running agent. Its daemon keeps a Rex session
+named `afk` open, with one window running `afk dash`, the control room. Any Rex
+client that can reach the Rex server can open that window. If you close it, or
+its program ends, the daemon opens it again, at most once a minute.
+
+The control room runs only when `[runtime] backend` is `"rex"` (see
+[configuration](configuration.md#runtime--where-new-sessions-run)). Under
+`"afk"`, the daemon makes no call to Rex at all, so a machine that runs afk
+alone is unchanged.
+
+These steps need your accounts and your devices, so you do them, in order.
+
+**Step 1. Run Rex's Linux server in login-server mode.** Install Rex's Linux
+server on the VM and run it in login-server mode. In this mode each account has
+its own server, and those servers are meant to keep running when the login
+server restarts. That is why login-server mode is the choice here: an upgrade
+of Rex should then leave a running agent alone. **This is not yet verified.**
+The owner's upgrade check is still open (see "Not verified yet" below), so until
+it is done, treat a Rex upgrade as something that may end running agents, and
+do it when no agent is running. Stopping the Rex server itself, as opposed to
+restarting its login service, ends every agent on it.
+
+`afk install` offers the Rex runtime only when it finds `rex` and its server
+answers, so run Step 1 before you run `afk install`.
+
+**Step 2. Tailscale, for you alone.** Install Tailscale on the VM, on your
+laptop and on your phone, and give access to the VM for your own account only.
+Then the Rex server and the web page are reachable from your devices and from
+nobody else's.
+
+> **Do not use `--tailscale-allow-tailnet-members`.** It lets other members of
+> your tailnet reach the VM. Only you may reach the Rex server, so never add
+> that flag, and never share the VM with anyone else on the tailnet.
+
+**Step 3. Start the daemon after Rex.** At boot, the Rex server should be up
+before the daemon tries to open the control room. Give the daemon's service a
+drop-in file (a small override) that orders it after the Rex service. Run
+`systemctl --user edit afkd` and put in:
+
+```ini
+[Unit]
+After=rex-login-server.service
+```
+
+The unit name `rex-login-server.service` is **to be checked on the VM**, not yet
+confirmed. Before you rely on the line, run `systemctl cat rex-login-server.service`
+and check that it prints the Rex unit. If it does not, find the Rex unit's
+name with `systemctl --user list-units 'rex*'` (or the system-wide `systemctl
+list-units 'rex*'`), and use that name instead. Then run
+`systemctl --user restart afkd` so the new order applies.
+
+**Step 4. Turn on the Rex runtime.** In `~/.config/afk/config.toml`, set:
+
+```toml
+[runtime]
+backend = "rex"
+```
+
+`afk install` offers this line as a step when Rex and its server answer. It
+writes the line and keeps the rest of the file as it was. The setting is read
+when a session starts, so only new sessions run in Rex; a session that already
+exists keeps the runtime that made it.
+
+**Step 5. Add the VM to Rex on your devices.** In Rex for Mac and in Rex for
+iOS, add the VM as a server, using its Tailscale address. Then the control room
+opens from either device, and so does any agent running in Rex.
+
+**Who may connect.** Anyone who can connect to the Rex server can run anything
+as afk's account, on the VM. afk's account is the one that runs the daemon and
+the agents, and the agents run with their permission prompts switched off. So
+only you may connect. Keep the VM on your own Tailscale access, and do not give
+the Rex server to anyone else.
+
+**Not verified yet.** Two things rest on your checks, not on anything the
+repository tested:
+
+- Opening the control room and a running agent from the laptop and from the
+  phone. Do it once after Step 5.
+- That a Rex upgrade on the VM keeps a running agent (Step 1). Do it the next
+  time Rex has an upgrade, while an agent is running, and check the agent is
+  still there afterwards.
+
+Until both are done, do not count on either.
+
+## 9. Add the project to the daemon
 
 **This is the last step, and it starts unattended work.** Once the daemon
 knows about the project it starts the next ready task by itself. Do it only
@@ -774,7 +862,7 @@ when you are there to watch.
 
    The daemon starts T4.4 in a session named `t4-4`.
 
-## 9. Known limits
+## 10. Known limits
 
 - **Nebari's checks do not pass today, and that blocks every merge.** Found
   on 2026-10-12 at commit `4b193d1`. On the VM one example fails every time:
@@ -839,7 +927,7 @@ when you are there to watch.
   `~/bin/git-spice` exists. afk does not warn about the clash; the test
   failure or a `gs --version` that prints `GPL Ghostscript` is how you see it.
 
-## 10. If something goes wrong
+## 11. If something goes wrong
 
 | What you see | Why | What to do |
 |---|---|---|
@@ -849,9 +937,9 @@ when you are there to watch.
 | A task parks with an item naming a variable such as `S3_BUCKET` | The branch adds a line that `required_env_pattern` matches: a new required variable in the compose file | Set the variable in Coolify, then answer the item. The ship carries on from where it stopped |
 | `afk tasks: afk.toml: [ship] required_env_pattern does not compile as a regular expression (...)` | The pattern in `afk.toml` was mistyped. Until it is fixed the daemon does nothing for the project | Copy the pattern from section 5 again, inside single quotes. Double quotes change what the backslashes mean |
 | System specs fail, and the error says the browser could not be started or could not be found | Chrome is not installed, is not under a name Ferrum looks for, or its sandbox cannot start. On this VM none of these happened: the specs start Chrome with `CI` set and with it unset, so there is no error text from here to quote | Run `google-chrome --version`. If that fails, redo section 2, step 5. If the browser is somewhere else, set `BROWSER_PATH` to its full path. If it is installed and still will not start, run the specs with `CI=true` in front, which starts Chrome without its sandbox |
-| `bin/ci` fails at `Tests: RSpec` with exactly one failure, `spec/system/task_swipe_spec.rb:266`, `expected: > 1000, got: 900` | A known failure inside nebari, the same in its own CI. Not this machine | Nothing to fix on the VM. See the first entry in section 9 |
+| `bin/ci` fails at `Tests: RSpec` with exactly one failure, `spec/system/task_swipe_spec.rb:266`, `expected: > 1000, got: 900` | A known failure inside nebari, the same in its own CI. Not this machine | Nothing to fix on the VM. See the first entry in section 10 |
 | A spec run stops part-way with no failure listed, or two runs give different database errors | Two spec runs overlapped (they share the `nebari_test` database), or a time limit cut the run short. rspec prints a normal-looking `0 failures` summary when it is stopped early, so check the exit code and the example count | Run one at a time, in pieces small enough to finish (section 3) |
-| The web page answers 502 through the tunnel right after you added a project, and `systemctl --user status afkd` shows it restarting | `config.toml` is not valid: usually the new `path` line was put under the existing `[[project]]` header, so one block has two `path` keys. `journalctl --user -u afkd -n 20` shows `Key 'project.path' has already been defined` | Give each project its own `[[project]]` header, as in section 8. The daemon starts again by itself within 30 seconds |
+| The web page answers 502 through the tunnel right after you added a project, and `systemctl --user status afkd` shows it restarting | `config.toml` is not valid: usually the new `path` line was put under the existing `[[project]]` header, so one block has two `path` keys. `journalctl --user -u afkd -n 20` shows `Key 'project.path' has already been defined` | Give each project its own `[[project]]` header, as in section 9. The daemon starts again by itself within 30 seconds |
 | `apt-get` ends with `User sessions running outdated binaries` and names `afkd.service` | A library the daemon has loaded was updated. Information only | Nothing. Do not restart `afkd` for it; it picks the new library up the next time it is restarted for another reason |
 | `bin/ci` stops at Setup with `connection to server on socket ... failed` or `role "<you>" does not exist` | PostgreSQL is not running, or there is no role with your Linux user's name | `systemctl status postgresql` (start it with `sudo systemctl start postgresql`). Then `sudo -u postgres createuser --createdb "$USER"`, and check with `psql -d postgres -c 'select 1'` |
 | A session works in your terminal but fails under the daemon with `bundle: command not found` or `gh: command not found`; or a task parks with an item saying the GitHub tool is missing | The daemon's `PATH` does not include the folder that tool is in. A user unit does not read your shell profile | Find the folder with `command -v bundle` (on the VM, `~/.local/share/mise/shims`). Run `systemctl --user edit afkd`, and in the `[Service]` part set `Environment=PATH=...` with that folder added (write your home folder as `%h`). Then `systemctl --user restart afkd` and check with `systemctl --user show afkd -p Environment` |

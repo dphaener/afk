@@ -812,6 +812,15 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 			realPlanEnder(projects, stateDir, now, logf).check,
 		)
 	}
+	// The control room needs no state folder (it is machine-wide and writes
+	// no file of afk's), so it is chained on after the guard above rather
+	// than skipped with it.
+	controlRoom := realControlRoom(loadRuntime, now, logf).check
+	if planWaits == nil {
+		planWaits = controlRoom
+	} else {
+		planWaits = composePlanHooks(planWaits, controlRoom)
+	}
 	return daemon.Deps{
 		Now: now,
 		LoadBuild: func(root string) ([]masterplan.Task, string, ledger.Ledger, error) {

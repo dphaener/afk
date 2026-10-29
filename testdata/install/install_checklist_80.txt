@@ -14,6 +14,10 @@ afk install
       The service runs ~/bin/afk and it is not there.
       To fix: Put afk in ~/bin first (the install script does this), then run
       afk install again.
+  ✗ Offer the Rex runtime
+      rex is not installed or its server is not answering
+      To fix: This is optional: afk runs its own sessions without Rex. Install
+      Rex and start its server if you want the hub to use it.
   ○ Check everything
 
 … Looking at this machine…

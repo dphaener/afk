@@ -23,6 +23,7 @@ var stepTitles = []struct {
 	{StepProjectLocation, "Choose where projects live"},
 	{StepWebPage, "Set the web page password"},
 	{StepService, "Start the afk service"},
+	{StepRex, "Offer the Rex runtime"},
 	{StepCheck, "Check everything"},
 }
 
@@ -47,7 +48,7 @@ func riskOf(f Facts) Risk {
 func Build(f Facts) Plan {
 	p := Plan{Risk: riskOf(f)}
 
-	// A blanket "cannot" is one message, not twelve different ones: nothing
+	// A blanket "cannot" is one message, not thirteen different ones: nothing
 	// else matters until the person fixes it.
 	blanket := ""
 	switch {
@@ -235,10 +236,24 @@ func Build(f Facts) Plan {
 		}
 	}
 
+	// Rex runtime. It is an offer, so a machine without a Rex server is not
+	// broken: the Cannot below tells the person why nothing is offered and the
+	// check step ignores it.
+	switch {
+	case f.RuntimeBackend == "rex":
+		add(StepRex, Done, "New sessions run in Rex.", "")
+	case f.RexFound && f.RexServer:
+		add(StepRex, ToDo, "Rex is running here, so the hub can run sessions in Rex and you can open them from any Rex client. "+
+			"On Linux, Rex needs login-server mode so its server keeps running after you log out.", "")
+	default:
+		add(StepRex, Cannot, "rex is not installed or its server is not answering",
+			"This is optional: afk runs its own sessions without Rex. Install Rex and start its server if you want the hub to use it.")
+	}
+
 	// Check.
 	allDone := true
 	for _, st := range p.Steps {
-		if st.State != Done {
+		if st.State != Done && !(st.ID == StepRex && st.State == Cannot) {
 			allDone = false
 		}
 	}
