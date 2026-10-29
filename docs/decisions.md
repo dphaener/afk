@@ -4498,3 +4498,18 @@ Everything that starts, stops, restarts, types into or opens a session now goes 
 - **`_rex-check` is hidden (A6).** It exists so a built binary can be checked against the real server; the reference page does not list it.
 - **`session.set_label` name (A7).** The method name is read from `rex api describe` at implementation time, not taken from memory.
 - **Method names as built.** The names the code calls were confirmed with `rex api describe` on the build machine after the work landed: `session.list`, `session.create`, `session.set_label` (A7), `session.new_window` (one window with one terminal block), `session.list_blocks`, `session.set_block_label`, `session.focus_window`, and `client.list`. Block methods go through `block.method` with the short names.
+
+## T17.7
+
+The stdio host is the second way a session runs (`afk _host --stdio` as a Rex block's command), and the rest of M17 builds on how it writes to its terminal. These are the choices the master plan left open.
+
+- **The terminal is injected (A1).** The host reads and writes the terminal through `ServeConfig`, with the process's own stdin, stdout and SIGWINCH as the defaults, so the end-to-end test can drive it over a pipe pair at a fixed size.
+- **afk's record is sent on change, not on a timer (A2).** It goes out when its content changes, straight after the agent's own root clear is seen, and every ten seconds as a safety net. Writing it every few seconds into an agent's output would only add churn to a terminal that reads it.
+- **The record follows the files (A3).** `failed` is `error`, `awaiting_input` or a parked task is `blocked`, `done` is `done`, and any other phase is `working`. An unreadable `status.json` keeps the last record and writes nothing new, so the owner never sees a state the files do not say.
+- **"Parked" is handed in, not read (A4).** The host gets a function that says whether the task is parked on the owner. The ledger reader that answers it is wired in T17.8, so the host never learns where the daemon keeps its ledger.
+- **The Rex ids are recorded, never used (A5).** The spawner passes the session, window and block ids as flags, and the host copies them into host.json. It never calls Rex, so it runs without Rex installed and `internal/host` does not import `internal/rex`.
+- **End of input is not end of terminal (A6).** Closing stdin is logged and the host keeps running. SIGHUP, which the block sends when it closes or the server stops, is an orderly stop, and the daemon relaunches a host that is gone (§5.6).
+- **An agent's sequence is never closed by afk (A7).** A record that is due waits for the next safe place in the output. If the agent's sequence never ends, the host logs the wait once after thirty seconds and keeps waiting. Closing it with an ST would split the agent's report, and a terminal drops a split report.
+- **Rex runtime: socket methods, no spawn (A8).** The `rex` runtime sends input, restart, exit and stop through the socket, as afk's runtime does, and refuses an attach before dialling. Starting a session in Rex is refused until T17.8 creates the block.
+- **The prototype is a reference, not a base (A9).** The T17.1 prototype was never merged. It is ported and rewritten here, and its record-interval flag is dropped in favour of a constant the tests drive.
+- **This section belongs to the change.** The planner wrote it.

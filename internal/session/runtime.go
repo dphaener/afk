@@ -97,6 +97,34 @@ func (afkRuntime) Dial(worktree, name string, wait time.Duration) (net.Conn, err
 	return host.Dial(socket, wait)
 }
 
+// rexRuntime is a session whose host runs inside a Rex terminal
+// (`afk _host --stdio`). It reuses afkRuntime for everything the host's
+// socket still serves (restart, exit, typing, stop), because a stdio host
+// keeps its socket for exactly those requests. It differs in two places:
+// nothing in this afk starts a Rex session yet (T17.8 replaces Spawn and
+// Undo), and Dial refuses, because the terminal is the Rex block and a
+// socket client attaching to it would be a second screen on a session that
+// has one.
+type rexRuntime struct{ afkRuntime }
+
+func (rexRuntime) Name() string { return host.RuntimeRex }
+
+func (rexRuntime) Spawn(HostSpawn, Deps) (HostProcess, error) {
+	return HostProcess{}, errRexSpawnUnavailable
+}
+
+func (rexRuntime) Undo(HostProcess, Deps) error { return errRexSpawnUnavailable }
+
+// Dial refuses before looking at the socket, so the sentence is the same
+// whether or not the host is still up. It uses the host's own sentence so a
+// client that reaches the socket and one that goes through the seam read the
+// same words.
+func (rexRuntime) Dial(string, string, time.Duration) (net.Conn, error) {
+	return nil, errors.New(host.RefuseAttachLine)
+}
+
+var errRexSpawnUnavailable = errors.New("starting a session in Rex is not available in this afk yet. Sessions start with afk's own host")
+
 // runtimeNamed maps the word in host.json to its implementation. An empty
 // word is afk, so every host.json written before the field existed reads as
 // it always did. name is only used to make the refusal say which session.
@@ -104,6 +132,8 @@ func runtimeNamed(name, word string) (Runtime, error) {
 	switch word {
 	case "", host.RuntimeAfk:
 		return afkRuntime{}, nil
+	case host.RuntimeRex:
+		return rexRuntime{}, nil
 	}
 	return nil, fmt.Errorf("%w: session %s was started by the %q runtime, which this afk does not know. Use the afk that started it, or update afk, and try again",
 		ErrUnknownRuntime, name, word)

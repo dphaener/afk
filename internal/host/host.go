@@ -155,6 +155,27 @@ type ServeConfig struct {
 	// repaint, and a verdict nobody asked for would only be a wrong cell in
 	// the dashboard. Optional, so it is not checked by validate.
 	ProbeUnattached bool
+
+	// Stdio makes the host serve its own terminal as its one client: input
+	// from the terminal, output to it, its size on every resize, and never
+	// stolen or dropped (stdio.go). It is how a session runs inside a Rex
+	// block. The socket still takes requests (typing, restart, exit), and a
+	// socket client that asks to attach is refused. host.json then records
+	// runtime "rex". Off for every afk-runtime host.
+	Stdio bool
+	// Terminal is the terminal a stdio host serves; nil means the
+	// process's own (see Terminal). Ignored unless Stdio.
+	Terminal *Terminal
+	// Rex holds the Rex block ids the spawner passed, recorded verbatim in
+	// host.json. The host never calls Rex, so it runs with no Rex installed.
+	// Ignored unless Stdio.
+	Rex *RexBlock
+	// Parked reports whether the session's task is parked on the owner,
+	// which shows as blocked in afk's record like awaiting_input does. nil
+	// means never parked: the ledger that knows lives with the daemon, and
+	// T17.8 wires it in, so the host stays free of the ledger's path.
+	// Ignored unless Stdio.
+	Parked func() bool
 }
 
 func (c ServeConfig) validate() error {
@@ -205,6 +226,13 @@ func Serve(cfg ServeConfig) error {
 	// socket file and host.json.
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	if cfg.Stdio {
+		// A stdio host's terminal is a Rex block: SIGHUP is the block
+		// closing or the Rex server stopping, and is an orderly stop like
+		// SIGTERM (child ended, socket and host.json removed). Registered
+		// only for stdio, so an afk-runtime host keeps its disposition.
+		signal.Notify(signals, syscall.SIGHUP)
+	}
 	defer signal.Stop(signals)
 
 	ln, err := listenExclusive(cfg.Socket, logger)
@@ -232,6 +260,17 @@ func Serve(cfg ServeConfig) error {
 	}()
 
 	h := newHostRuntime(cfg, logger, ln)
+	if cfg.Stdio {
+		// Before the spawn, so the first child is born at the terminal's
+		// size. restore is deferred ahead of shutdown, so it runs after it
+		// and the final clear of afk's record goes to the terminal first.
+		restore, err := h.openStdio()
+		if err != nil {
+			logger.Printf("%v", err)
+			return err
+		}
+		defer restore()
+	}
 	if err := h.spawn(cfg.Argv); err != nil {
 		logger.Printf("%v", err)
 		return err
@@ -241,6 +280,9 @@ func Serve(cfg ServeConfig) error {
 	// that one and closes its master itself (see restart.go).
 	defer h.closeCurrentPTY()
 	defer h.shutdown()
+	if cfg.Stdio {
+		h.startStdio()
+	}
 
 	// ChildPID from the generation spawned just above, not from a later
 	// lookup: host.json is how a restart is observed from outside this
@@ -258,6 +300,10 @@ func Serve(cfg ServeConfig) error {
 			Runtime:   RuntimeAfk,
 		},
 		ChildPID: h.cur.pid(),
+	}
+	if cfg.Stdio {
+		meta.Runtime = RuntimeRex
+		meta.Rex = cfg.Rex
 	}
 	h.baseMeta = meta
 	if err := writeMetaFile(cfg.MetaPath, meta); err != nil {
@@ -403,6 +449,11 @@ type hostRuntime struct {
 	// afterAccept is the package-level seam of the same name, copied at
 	// construction; see there.
 	afterAccept func(done <-chan struct{})
+
+	// stdio is the stdio host's state (stdio.go), nil for any other host.
+	// Set before the first spawn and never again, so the pump reads it
+	// without a lock.
+	stdio *stdioHost
 
 	done         chan struct{} // closed when the host is shutting down
 	shutdownOnce sync.Once
@@ -559,6 +610,13 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 	go h.monitorLiveness()
 	go h.monitorAgentStatus()
 
+	// The stdio terminal's size changes; nil (never ready) for any other
+	// host, whose size comes from its client's Resize frames.
+	var resized <-chan [2]uint16
+	if h.stdio != nil {
+		resized = h.stdio.resized
+	}
+
 	for {
 		// A closed exited channel is permanently ready, and mid-restart that
 		// is the ladder doing its job, not the child "exiting on its own" —
@@ -580,6 +638,11 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 			// rate-limited to once per wedgeProbeInterval; waiting for the
 			// answer happens in monitorLiveness, not here.
 			h.nudgeRepaint()
+
+		case sz := <-resized:
+			// The stdio terminal changed size (SIGWINCH). On the loop
+			// because rows and cols belong to it; bounded like a Resize.
+			h.resize(sz[0], sz[1])
 
 		case hs := <-h.restartDone:
 			// The ladder goroutine is done; the swap itself (retire, drain,
@@ -604,6 +667,13 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 			}
 			switch f.typ {
 			case Resize:
+				if h.stdio != nil {
+					// The Resize every interactive attach opens with. A
+					// stdio host's screen is its terminal, so the attach
+					// is refused rather than allowed to steal it.
+					h.refuseAttach(f.conn)
+					continue
+				}
 				rows, cols, err := DecodeResize(f.payload)
 				if err != nil {
 					h.log.Printf("bad resize frame: %v", err)
@@ -618,6 +688,11 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 				h.terminateChild()
 				return nil
 			case Restart:
+				if h.stdio != nil && !h.restarting {
+					// The answer goes to whoever asked; a stdio host has
+					// no attached client to send it to.
+					h.stdio.restartFor = f.conn
+				}
 				// Bounded: beginRestart only validates the request and hands
 				// the ladder to its own goroutine, so a slow restart can no
 				// longer park this loop (and with it readClient, whose ctrl
@@ -692,7 +767,14 @@ func (h *hostRuntime) acceptLoop() {
 // attach makes c the active client, stealing the terminal from whoever held
 // it: the previous client is told Stolen and closed. Steal, not multiplex —
 // two clients rendering the same PTY cannot agree on a size.
+//
+// A stdio host has nothing to steal: its screen is its own terminal. There c
+// is a requester, whose requests are read and which is never sent the screen.
 func (h *hostRuntime) attach(c *clientConn) {
+	if h.stdio != nil {
+		h.addRequester(c)
+		return
+	}
 	h.mu.Lock()
 	old := h.client
 	h.client = c
@@ -877,15 +959,23 @@ func (h *hostRuntime) noteInputDrop(n int, reason string) {
 
 // attached reports whether any client currently holds the session, which is
 // what gates the liveness probe: an unattached session has no screen to
-// repaint. See decideProbe.
+// repaint. See decideProbe. A stdio host is always attached: its terminal is
+// its client, so the wedge probe runs with nobody else watching.
 func (h *hostRuntime) attached() bool {
+	if h.stdio != nil {
+		return true
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.client != nil
 }
 
-// isCurrent reports whether c is the attached client.
+// isCurrent reports whether c is the attached client, or on a stdio host the
+// terminal's sentinel or a requester.
 func (h *hostRuntime) isCurrent(c *clientConn) bool {
+	if c != nil && h.stdio != nil && h.stdio.holds(c) {
+		return true
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return c != nil && h.client == c
@@ -893,6 +983,9 @@ func (h *hostRuntime) isCurrent(c *clientConn) bool {
 
 // dropClient detaches c and closes it; the host keeps serving.
 func (h *hostRuntime) dropClient(c *clientConn) {
+	if h.stdio != nil {
+		h.stdio.removeRequester(c)
+	}
 	h.mu.Lock()
 	if h.client == c {
 		h.client = nil
@@ -932,23 +1025,15 @@ func (h *hostRuntime) pumpPTY(g *childProc) {
 					h.nudgeAgentStatus()
 				}
 			}
-			h.mu.Lock()
-			c := h.client
-			h.mu.Unlock()
-			if c != nil {
-				// Copy: buf is reused, and the frame is written
-				// later by the client's writer goroutine.
-				chunk := append([]byte(nil), buf[:n]...)
-				if !c.send(Data, chunk) && h.isCurrent(c) {
-					// dropClient rather than a bare close: it also clears
-					// h.client, so the rest of this burst is discarded like
-					// unattached output instead of logging one line per
-					// chunk against a client that is already gone. The close
-					// carries no Exit frame, which is how the client tells
-					// this apart from the session ending (DetachDropped).
-					h.log.Printf("client is not consuming output (more than %d bytes behind); dropping it", clientPendingLimit)
-					h.dropClient(c)
-				}
+			if h.stdio != nil {
+				// The terminal writer is the stdio host's client. It
+				// blocks when full, stalling this pump the way a real
+				// terminal that stops reading stalls its program, because
+				// dropped terminal output corrupts the screen for good.
+				// Copied: buf is reused.
+				h.stdio.write(append([]byte(nil), buf[:n]...), h.done)
+			} else {
+				h.forwardToClient(buf[:n])
 			}
 		}
 		if err != nil {
@@ -956,6 +1041,30 @@ func (h *hostRuntime) pumpPTY(g *childProc) {
 			// gone. Either way the child is finished writing.
 			return
 		}
+	}
+}
+
+// forwardToClient sends one chunk of child output to the attached client, if
+// any; see pumpPTY.
+func (h *hostRuntime) forwardToClient(b []byte) {
+	h.mu.Lock()
+	c := h.client
+	h.mu.Unlock()
+	if c == nil {
+		return
+	}
+	// Copy: buf is reused, and the frame is written
+	// later by the client's writer goroutine.
+	chunk := append([]byte(nil), b...)
+	if !c.send(Data, chunk) && h.isCurrent(c) {
+		// dropClient rather than a bare close: it also clears
+		// h.client, so the rest of this burst is discarded like
+		// unattached output instead of logging one line per
+		// chunk against a client that is already gone. The close
+		// carries no Exit frame, which is how the client tells
+		// this apart from the session ending (DetachDropped).
+		h.log.Printf("client is not consuming output (more than %d bytes behind); dropping it", clientPendingLimit)
+		h.dropClient(c)
 	}
 }
 
@@ -1097,6 +1206,12 @@ func (h *hostRuntime) shutdown() {
 		// child's final output is already flushing while that happens.
 		c.end()
 		ending = append(ending, c)
+	}
+	if h.stdio != nil {
+		// The terminal writer first: it drains the child's last output
+		// and clears afk's record, bounded by its own grace.
+		h.stdio.stopWriter(stdioFlushGrace)
+		ending = append(ending, h.stdio.endRequesters()...)
 	}
 	ending = append(ending, h.endUnattached()...)
 	waitFlushed(ending, clientFlushGrace)

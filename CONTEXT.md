@@ -275,4 +275,5 @@ Terms afk uses. Each line comes from `docs/PLAN.md` or the plugin docs under `pl
 - **Stdio host**: afk's session host run as a Rex block's command (`afk _host --stdio`), with its own stdin and stdout as its one client and its socket still taking the daemon's requests; the design T17.1 chose for Rex-backed sessions.
 - **Exit-empty server**: a Rex account server that stops about ten seconds after its last session ends; the next connection starts a new one, with a new instance id and no sessions.
 - **Instance id**: the id `server.status` gives one run of a Rex server; a new one means the server restarted and every session, block and agent in it is gone.
+- **afk record**: afk's own Program status report, `id=afk`, that a stdio host writes into its Rex block beside the agent's records, so a Rex client shows afk's phase (working, blocked, error or done) without the agent's help.
 - **Owner check pending**: the mark on a spike finding that only the owner's own devices or rights can finish, with an inbox verification item carrying the exact steps.

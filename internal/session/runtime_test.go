@@ -43,7 +43,6 @@ func TestRuntimeFor(t *testing.T) {
 		{name: "no runtime key", body: `{"pid":1}`, wantAfk: true},
 		{name: "runtime afk", body: `{"pid":1,"runtime":"afk"}`, wantAfk: true},
 		{name: "runtime empty", body: `{"pid":1,"runtime":""}`, wantAfk: true},
-		{name: "runtime rex", body: `{"pid":1,"runtime":"rex"}`, wantInMsg: []string{`"rex"`, "sess1"}},
 		{name: "runtime bogus", body: `{"pid":1,"runtime":"bogus"}`, wantInMsg: []string{`"bogus"`, "sess1"}},
 	}
 	for _, tt := range tests {
@@ -76,6 +75,60 @@ func TestRuntimeFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRuntimeRex pins the rex runtime. Load-bearing rows: "Dial with no
+// socket" (the refusal comes before any dialling, so the words are the same
+// whether or not the host is up), and "Spawn" and "Undo" (nothing in this afk
+// may start a Rex session until T17.8, and a silent success would record a
+// host that does not exist). The last rows keep the afk words and the
+// refusal of an unknown word unchanged.
+func TestRuntimeRex(t *testing.T) {
+	wt := t.TempDir()
+	writeHostJSON(t, wt, "sess1", `{"pid":1,"runtime":"rex"}`)
+	rt, err := RuntimeFor(wt, "sess1")
+	if err != nil {
+		t.Fatalf("RuntimeFor: %v", err)
+	}
+	if _, ok := rt.(rexRuntime); !ok || rt.Name() != "rex" {
+		t.Fatalf("runtime = %T %q, want rexRuntime named rex", rt, rt.Name())
+	}
+
+	t.Run("Dial with no socket", func(t *testing.T) {
+		conn, err := rt.Dial(t.TempDir(), "nosuch", time.Millisecond)
+		if conn != nil {
+			conn.Close()
+			t.Fatal("Dial returned a connection")
+		}
+		if err == nil || err.Error() != "This session runs in Rex; open it there." {
+			t.Errorf("err = %v, want the Rex sentence", err)
+		}
+	})
+	t.Run("Spawn", func(t *testing.T) {
+		_, err := rt.Spawn(HostSpawn{}, Deps{})
+		if err == nil || !strings.Contains(err.Error(), "not available in this afk yet") {
+			t.Errorf("err = %v, want the not-available message", err)
+		}
+	})
+	t.Run("Undo", func(t *testing.T) {
+		err := rt.Undo(HostProcess{}, Deps{})
+		if err == nil || !strings.Contains(err.Error(), "not available in this afk yet") {
+			t.Errorf("err = %v, want the not-available message", err)
+		}
+	})
+	for _, word := range []string{"", "afk"} {
+		t.Run("word "+word, func(t *testing.T) {
+			rt, err := runtimeNamed("s", word)
+			if err != nil || rt.Name() != "afk" {
+				t.Errorf("runtimeNamed(%q) = %v, %v; want afk", word, rt, err)
+			}
+		})
+	}
+	t.Run("unknown word", func(t *testing.T) {
+		if _, err := runtimeNamed("s", "bogus"); !errors.Is(err, ErrUnknownRuntime) {
+			t.Errorf("err = %v, want ErrUnknownRuntime", err)
+		}
+	})
 }
 
 // TestRuntimeCleanRefusesUnknownRuntime pins that clean with an unknown

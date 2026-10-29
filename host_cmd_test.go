@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/dphaener/afk/internal/host"
 )
 
 // TestHostFlagsProvider parses real `_host` argument lists through the same
@@ -141,6 +143,57 @@ func TestHostFlagsProbeUnattached(t *testing.T) {
 			}
 			if strings.Join(cfg.Argv, "\x00") != strings.Join(tc.wantArgv, "\x00") {
 				t.Errorf("Argv = %q, want %q", cfg.Argv, tc.wantArgv)
+			}
+		})
+	}
+}
+
+// TestHostFlagsStdioRex parses real `_host` argument lists for --stdio and
+// the Rex ids. Load-bearing rows: the three refusals, each checked by its
+// message so a wrong refusal fails (a Rex id without --stdio would record a
+// block for a host that owns its own terminal; a half pair could not be found
+// again), and "absent", which must leave every ordinary host unchanged.
+func TestHostFlagsStdioRex(t *testing.T) {
+	base := []string{"--name", "s", "--worktree", "/wt", "--socket", "/sock", "--log", "/log", "--meta", "/meta"}
+	cases := []struct {
+		name      string
+		extra     []string
+		wantErr   string
+		wantStdio bool
+		wantRex   *host.RexBlock
+	}{
+		{name: "absent"},
+		{name: "stdio alone", extra: []string{"--stdio"}, wantStdio: true},
+		{name: "stdio with ids", extra: []string{"--stdio", "--rex-server", "srv", "--rex-session", "S1", "--rex-window", "W1", "--rex-block", "B1"},
+			wantStdio: true, wantRex: &host.RexBlock{Server: "srv", SessionID: "S1", WindowID: "W1", BlockID: "B1"}},
+		{name: "ids without stdio", extra: []string{"--rex-session", "S1", "--rex-block", "B1"}, wantErr: "only apply with --stdio"},
+		{name: "server without stdio", extra: []string{"--rex-server", "srv"}, wantErr: "only apply with --stdio"},
+		{name: "session without block", extra: []string{"--stdio", "--rex-session", "S1"}, wantErr: "--rex-session needs --rex-block"},
+		{name: "block without session", extra: []string{"--stdio", "--rex-block", "B1"}, wantErr: "--rex-block needs --rex-session"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, flags := newHostFlagSet(flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			args := append(append(append([]string{}, base...), tc.extra...), "--", "agent")
+			if err := fs.Parse(args); err != nil {
+				t.Fatalf("Parse = %v", err)
+			}
+			cfg, err := flags.serveConfig(fs.Args())
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("serveConfig: %v", err)
+			}
+			if cfg.Stdio != tc.wantStdio {
+				t.Errorf("Stdio = %v, want %v", cfg.Stdio, tc.wantStdio)
+			}
+			if (cfg.Rex == nil) != (tc.wantRex == nil) || (tc.wantRex != nil && *cfg.Rex != *tc.wantRex) {
+				t.Errorf("Rex = %+v, want %+v", cfg.Rex, tc.wantRex)
 			}
 		})
 	}
