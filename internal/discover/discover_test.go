@@ -692,6 +692,62 @@ func TestDiscover_LivenessFieldsPassthrough(t *testing.T) {
 	}
 }
 
+// TestDiscover_HostRuntimePassthrough checks that host.json's runtime and
+// rex.window_id reach SessionState.Runtime and RexWindowID, and that every
+// absence reads as the afk runtime with no window. Load-bearing: the rex row
+// with no window id (a Rex block recorded before its window was known must
+// not invent one), and the afk row with no runtime key (an older or afk host
+// must stay "" so the dashboard keeps the Agent level). The no-host.json row
+// is the stopped-session shape, which must read the same as afk and never
+// error.
+func TestDiscover_HostRuntimePassthrough(t *testing.T) {
+	tests := []struct {
+		name        string
+		meta        *host.Meta // nil means no host.json is written
+		wantRuntime string
+		wantWindow  string
+	}{
+		{"rex with window", &host.Meta{
+			PID:     os.Getpid(),
+			Runtime: host.RuntimeRex,
+			Rex:     &host.RexBlock{SessionID: "session:x", WindowID: "window:w1", BlockID: "block:b1"},
+		}, "rex", "window:w1"},
+		{"rex without window id", &host.Meta{
+			PID:     os.Getpid(),
+			Runtime: host.RuntimeRex,
+			Rex:     &host.RexBlock{SessionID: "session:x", BlockID: "block:b1"},
+		}, "rex", ""},
+		{"afk host with no runtime key", &host.Meta{PID: os.Getpid()}, "", ""},
+		{"no host.json", nil, "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			const name = "runtime-session"
+			writeStatus(t, repo, name, statusOpts{phase: state.PhaseExecuting})
+			if tc.meta != nil {
+				if err := host.WriteMeta(repo, name, *tc.meta); err != nil {
+					t.Fatalf("WriteMeta: %v", err)
+				}
+			}
+			sessions, err := Discover(repo, DefaultDeps())
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			got, ok := findByName(sessions, name)
+			if !ok {
+				t.Fatalf("%s not found", name)
+			}
+			if got.Runtime != tc.wantRuntime {
+				t.Errorf("Runtime = %q, want %q", got.Runtime, tc.wantRuntime)
+			}
+			if got.RexWindowID != tc.wantWindow {
+				t.Errorf("RexWindowID = %q, want %q", got.RexWindowID, tc.wantWindow)
+			}
+		})
+	}
+}
+
 // TestDiscover_AgentStatusAndLastExitPassthrough checks that host.json's
 // agent_status and last_exit reach the row field for field. Load-bearing:
 // the signal row (code -1 plus a name) and the empty kind/msg row, which
