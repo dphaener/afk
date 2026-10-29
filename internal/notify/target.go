@@ -2,10 +2,18 @@ package notify
 
 import "github.com/dphaener/afk/internal/dashmeta"
 
+// Target is where a click on a toast should take the owner. PaneID, ClientTTY
+// and TerminalApp are the tmux route. RexSession and RexWindow are the Rex route:
+// the parent sets them (from the session's host.json rex block, never from
+// dashmeta, which records only the dashboard's tmux pane) only when ChooseNotice
+// picked Rex, so a non-empty pair is itself the instruction to try Rex first.
+// ResolveTarget leaves them empty, so this package needs nothing but dashmeta.
 type Target struct {
 	PaneID      string
 	ClientTTY   string
 	TerminalApp string
+	RexSession  string
+	RexWindow   string
 }
 
 // ResolveTarget extracts focus metadata from a dashmeta entry. PaneID and

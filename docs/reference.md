@@ -288,6 +288,8 @@ Spawns a detached watcher that delivers the notification via `alerter` (full-fid
 
 **Click-to-focus:** When `alerter` is present and a `afk dash` is running (which records pane metadata for every project it knows about, not just the one it launched in), the notification includes a Focus button. Clicking it switches the dashboard to the session's project first if that project isn't already active, then switches the tmux client to the dashboard's pane and focuses the right side on the named session. A running session is connected and its pane takes your keystrokes; a stopped one opens its details with an `r restart` chip (a click never restarts a host). Without a running dashboard the toast still appears with correct formatting, sound, and grouping — it just has no Focus button. This is correct by design: a button that cannot act is worse than no button.
 
+**On a Rex session:** When the agent runs in a Rex window (see [Rex sessions](#rex-sessions)), a click on the notice brings that window forward in Rex, not a tmux pane. If Rex for Mac is connected and the agent is waiting on you, afk shows no notice of its own, because Rex for Mac already shows the same one. If Rex cannot be reached, afk does what it does without Rex: it shows its notice and, if there is a tmux pane, a click switches to it.
+
 **Degradation:** If no notifier is found, exits 0 silently (hook contract: notification absence is not an error). Always exits 0, even on failure (broken pane metadata, stale PID, etc.) — failed notifications do not fail the caller.
 
 **Examples:**

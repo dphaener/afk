@@ -4616,6 +4616,8 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
   green.
 - Amended 2026-10-28 (T17.1 done): "ask Rex to show that window" is `session.focus_window {"session_id":S,"window_id":W}` (session-wide, under 200 ms; see T17.10's amendment), and the Rex ids to record are the session, window and block ids `host.json` carries from T17.7. "Rex for Mac connected" is `client.list {"kinds":["app"]}` holding a client with `info.platform` `macos` and `connection_state` `connected`; the VM showed none during the spike, so the Mac's own notice for a blocked agent is unverified (owner check pending among T17.1's inbox items). Claude Code's blocked records carry the text afk would show anyway (`approve Bash: …`, `answer: …`).
 
+- Amended 2026-10-28 (T17.16 done): later tasks may assume the following. (1) `afk notify` takes a Rex session's ids from its `host.json` `rex` block, never from `dashmeta`, which records only the dashboard's tmux pane. (2) The decision is `notify.ChooseNotice` in `internal/notify/rexnotice.go`: a waiting agent with a Rex window and a connected Rex for Mac gets no afk toast; a Rex window wins over a tmux pane for the click. (3) A Rex lookup that fails or times out (2 s) falls back to today's toast and tmux focus. (4) The Mac checks (a single notice on a Mac, a click bringing the Rex window forward) are an owner verification item, not verified on the VM. T17.17 is not affected.
+
 #### T17.17 — Prove the hub (owner + agent)
 - **Depends on:** T17.9, T17.11, T17.12, T17.14, T17.15, T17.16
 - **Goal:** the owner has run real tasks on the hub for several days, steering from the laptop and the

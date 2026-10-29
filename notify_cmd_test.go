@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/dphaener/afk/internal/dashmeta"
+	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/notify"
+	"github.com/dphaener/afk/internal/rex"
 )
 
 // notifyInternalFlags is the set of flags that cross the process boundary from
@@ -35,6 +39,7 @@ import (
 var notifyInternalFlags = []string{
 	"watch", "backend", "title", "subtitle", "body",
 	"group", "pane", "client-tty", "terminal-app", "session", "dash-pid",
+	"rex-session", "rex-window",
 }
 
 var notifyPublicFlags = []string{"plan", "repo", "message", "dry-run", "check"}
@@ -55,7 +60,7 @@ func TestNotifySpawnArgsMatchInternalFlags(t *testing.T) {
 	spawned := flagNamesIn(notifySpawnArgs(
 		notify.Toast{Title: "t", Subtitle: "s", Body: "b", Group: "g"},
 		notify.BackendAlerter,
-		notify.Target{PaneID: "%1", ClientTTY: "/dev/ttys000", TerminalApp: "Ghostty"},
+		notify.Target{PaneID: "%1", ClientTTY: "/dev/ttys000", TerminalApp: "Ghostty", RexSession: "S", RexWindow: "W"},
 		"a-session",
 		4242,
 	))
@@ -802,6 +807,8 @@ func TestNotifyWatchInputsCarriesEveryFlag(t *testing.T) {
 		terminalApp: "Ghostty",
 		session:     "session",
 		dashPID:     4242,
+		rexSession:  "rex-session-id",
+		rexWindow:   "rex-window-id",
 	}
 
 	toast, target, request := notifyWatchInputs(f, "/repo/.git")
@@ -814,6 +821,8 @@ func TestNotifyWatchInputsCarriesEveryFlag(t *testing.T) {
 		{"Target.PaneID", target.PaneID, f.pane},
 		{"Target.ClientTTY", target.ClientTTY, f.clientTTY},
 		{"Target.TerminalApp", target.TerminalApp, f.terminalApp},
+		{"Target.RexSession", target.RexSession, f.rexSession},
+		{"Target.RexWindow", target.RexWindow, f.rexWindow},
 		{"FocusRequest.Session", request.Session, f.session},
 		{"FocusRequest.GitCommonDir", request.GitCommonDir, "/repo/.git"},
 	} {
@@ -829,5 +838,184 @@ func TestNotifyWatchInputsCarriesEveryFlag(t *testing.T) {
 
 	if toast.Sound != "" {
 		t.Errorf("Toast.Sound = %q, want empty: there is no --sound flag on the wire because each backend's argv builder supplies its own name", toast.Sound)
+	}
+}
+
+// writeNotifyHostJSON writes .afk/<name>/host.json under root, the file
+// notifyRexFacts reads.
+func writeNotifyHostJSON(t *testing.T, root, name string, m host.Meta) {
+	t.Helper()
+	if err := host.WriteMeta(root, name, m); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const (
+	notifyMacClients = `{"clients":[{"client_id":"c1","connected_at":"2026-10-28T10:00:00Z","connection_state":"connected","info":{"kind":"app","platform":"macos","label":"Mac"}}]}`
+	notifyIOSClients = `{"clients":[{"client_id":"c2","connected_at":"2026-10-28T10:00:00Z","connection_state":"connected","info":{"kind":"app","platform":"ios","label":"iPhone"}}]}`
+	notifyLostMac    = `{"clients":[{"client_id":"c1","connected_at":"2026-10-28T10:00:00Z","connection_state":"lost","info":{"kind":"app","platform":"macos","label":"Mac"}}]}`
+)
+
+// TestNotifyRexFacts is the impure read behind the notice decision, run against
+// temp directories and a rex.Fake; no rex binary is run.
+//
+// Load-bearing rows:
+//
+//   - "client.list error fails open" — Rex down must read as "no Mac", or a
+//     waiting agent's only notice would be skipped (decision D4).
+//   - "only an iOS client" and "mac lost" — rule 1 may drop afk's toast only for a
+//     connected Rex for Mac, the one client known to raise its own notice.
+//   - "not waiting asks Rex nothing" and "no rex block asks Rex nothing" — the
+//     parent is on a hook's critical path, so Rex is asked only when the answer
+//     can change the decision.
+//   - "host.json in the worktree" — a session's host.json lives in its own
+//     worktree, not under the git common dir's parent.
+func TestNotifyRexFacts(t *testing.T) {
+	block := &host.RexBlock{SessionID: "S1", WindowID: "W1", BlockID: "B1"}
+	blocked := &host.AgentStatus{State: "blocked", Kind: "approval", At: "2026-10-28T10:00:00Z"}
+	working := &host.AgentStatus{State: "working", At: "2026-10-28T10:00:00Z"}
+
+	tests := []struct {
+		name        string
+		meta        *host.Meta // nil: no host.json at all
+		inWorktree  bool
+		plan        string
+		clients     string
+		clientsErr  error
+		wantBlock   bool
+		wantWaiting bool
+		wantMac     bool
+		wantCalls   int
+	}{
+		{name: "no host.json", plan: "p", wantCalls: 0},
+		{name: "no plan name", meta: &host.Meta{Rex: block, AgentStatus: blocked}, plan: "", wantCalls: 0},
+		{name: "no rex block asks Rex nothing", meta: &host.Meta{PID: 1, AgentStatus: blocked}, plan: "p", wantCalls: 0},
+		{name: "block present and Mac connected", meta: &host.Meta{Rex: block, AgentStatus: blocked}, plan: "p",
+			clients: notifyMacClients, wantBlock: true, wantWaiting: true, wantMac: true, wantCalls: 1},
+		{name: "host.json in the worktree", meta: &host.Meta{Rex: block, AgentStatus: blocked}, inWorktree: true, plan: "p",
+			clients: notifyMacClients, wantBlock: true, wantWaiting: true, wantMac: true, wantCalls: 1},
+		{name: "only an iOS client", meta: &host.Meta{Rex: block, AgentStatus: blocked}, plan: "p",
+			clients: notifyIOSClients, wantBlock: true, wantWaiting: true, wantCalls: 1},
+		{name: "mac lost", meta: &host.Meta{Rex: block, AgentStatus: blocked}, plan: "p",
+			clients: notifyLostMac, wantBlock: true, wantWaiting: true, wantCalls: 1},
+		{name: "client.list error fails open", meta: &host.Meta{Rex: block, AgentStatus: blocked}, plan: "p",
+			clientsErr: errors.New("rex: no server"), wantBlock: true, wantWaiting: true, wantCalls: 1},
+		{name: "not waiting asks Rex nothing", meta: &host.Meta{Rex: block, AgentStatus: working}, plan: "p",
+			wantBlock: true, wantCalls: 0},
+		{name: "no agent status asks Rex nothing", meta: &host.Meta{Rex: block}, plan: "p", wantBlock: true, wantCalls: 0},
+		{name: "block without window asks Rex nothing", meta: &host.Meta{Rex: &host.RexBlock{SessionID: "S1", BlockID: "B1"}, AgentStatus: blocked},
+			plan: "p", wantBlock: true, wantWaiting: true, wantCalls: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkout := t.TempDir()
+			worktree := t.TempDir()
+			gitCommonDir := filepath.Join(checkout, ".git")
+			if tt.meta != nil {
+				root := checkout
+				if tt.inWorktree {
+					root = worktree
+				}
+				writeNotifyHostJSON(t, root, "p", *tt.meta)
+			}
+			fake := &rex.Fake{}
+			if tt.clients != "" || tt.clientsErr != nil {
+				fake.OnArgs("client.list", map[string]any{"kinds": []string{"app"}}, tt.clients, tt.clientsErr)
+			}
+
+			gotBlock, gotWaiting, gotMac := notifyRexFacts(context.Background(), fake, worktree, gitCommonDir, tt.plan)
+
+			if (gotBlock != nil) != tt.wantBlock {
+				t.Fatalf("rex block = %+v, want present=%v", gotBlock, tt.wantBlock)
+			}
+			if tt.wantBlock && gotBlock.SessionID != "S1" {
+				t.Errorf("rex block session = %q, want S1", gotBlock.SessionID)
+			}
+			if gotWaiting != tt.wantWaiting {
+				t.Errorf("waiting = %v, want %v", gotWaiting, tt.wantWaiting)
+			}
+			if gotMac != tt.wantMac {
+				t.Errorf("macConnected = %v, want %v", gotMac, tt.wantMac)
+			}
+			if calls := fake.Calls(); len(calls) != tt.wantCalls {
+				t.Errorf("Rex calls = %v, want %d", calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// TestNotifyChoose maps the facts onto notify.ChooseNotice and the watcher's
+// target. Load-bearing rows: "waiting with Mac" is the only row with no toast;
+// "rex and tmux" keeps the pane as the watcher's fallback while the Rex ids carry
+// the choice; "block without window" must not set the Rex ids, since an empty
+// window id would ask Rex to clear the active window.
+func TestNotifyChoose(t *testing.T) {
+	tmux := notify.Target{PaneID: "%1", ClientTTY: "/dev/ttys000"}
+	block := &host.RexBlock{SessionID: "S1", WindowID: "W1", BlockID: "B1"}
+
+	tests := []struct {
+		name        string
+		target      notify.Target
+		block       *host.RexBlock
+		waiting     bool
+		mac         bool
+		wantToast   bool
+		wantRexIDs  bool
+		wantPane    string
+		wantFocusTm bool
+	}{
+		{name: "waiting with Mac", target: tmux, block: block, waiting: true, mac: true, wantToast: false, wantRexIDs: true, wantPane: "%1"},
+		{name: "waiting without Mac", target: tmux, block: block, waiting: true, wantToast: true, wantRexIDs: true, wantPane: "%1"},
+		{name: "rex and tmux", target: tmux, block: block, wantToast: true, wantRexIDs: true, wantPane: "%1"},
+		{name: "rex only", block: block, mac: true, wantToast: true, wantRexIDs: true},
+		{name: "tmux only", target: tmux, waiting: true, mac: true, wantToast: true, wantPane: "%1", wantFocusTm: true},
+		{name: "neither", wantToast: true},
+		{name: "block without window", target: tmux, block: &host.RexBlock{SessionID: "S1", BlockID: "B1"}, waiting: true, mac: true,
+			wantToast: true, wantPane: "%1", wantFocusTm: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			action, got := notifyChoose(tt.target, tt.block, tt.waiting, tt.mac)
+			if action.Toast != tt.wantToast {
+				t.Errorf("Toast = %v, want %v (%s)", action.Toast, tt.wantToast, action.Reason)
+			}
+			if action.FocusTmux != tt.wantFocusTm {
+				t.Errorf("FocusTmux = %v, want %v", action.FocusTmux, tt.wantFocusTm)
+			}
+			hasIDs := got.RexSession == "S1" && got.RexWindow == "W1"
+			if hasIDs != tt.wantRexIDs || (!tt.wantRexIDs && (got.RexSession != "" || got.RexWindow != "")) {
+				t.Errorf("Rex ids = %q/%q, want set=%v", got.RexSession, got.RexWindow, tt.wantRexIDs)
+			}
+			if got.PaneID != tt.wantPane {
+				t.Errorf("PaneID = %q, want %q", got.PaneID, tt.wantPane)
+			}
+		})
+	}
+}
+
+// TestNotifyRexDryRunLines pins that --dry-run names the Rex window a click would
+// bring forward, and says plainly when the toast is skipped.
+func TestNotifyRexDryRunLines(t *testing.T) {
+	block := &host.RexBlock{SessionID: "S1", WindowID: "W1", BlockID: "B1"}
+	action, target := notifyChoose(notify.Target{PaneID: "%1"}, block, false, false)
+	joined := strings.Join(notifyRexDryRunLines(action, target, block, false, false), "\n")
+	for _, want := range []string{"rex-session:  S1", "rex-window:   W1", "toast:        yes", "click:        Rex window W1 in session S1 (tmux pane %1 if Rex cannot)"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("dry-run lines missing %q:\n%s", want, joined)
+		}
+	}
+
+	action, target = notifyChoose(notify.Target{}, block, true, true)
+	joined = strings.Join(notifyRexDryRunLines(action, target, block, true, true), "\n")
+	if !strings.Contains(joined, "toast:        no") {
+		t.Errorf("dry-run lines do not say the toast is skipped:\n%s", joined)
+	}
+
+	action, target = notifyChoose(notify.Target{}, nil, false, false)
+	joined = strings.Join(notifyRexDryRunLines(action, target, nil, false, false), "\n")
+	for _, want := range []string{"rex-session:  (none)", "click:        nothing"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("dry-run lines missing %q:\n%s", want, joined)
+		}
 	}
 }
