@@ -647,3 +647,55 @@ func TestWindowOfBlock(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatSize: the no-id row and the no-blob_read row are load-bearing.
+// The no-id row pins that a small output reads as its own length (a watcher
+// then takes the reply as the screen with no second call); the no-blob_read
+// row pins that the probe never pays for the scrollback, which is its whole
+// reason to exist. The error rows pin that a failure returns no partial
+// content, and every row checks the max_bytes sent is the one passed.
+func TestFormatSize(t *testing.T) {
+	const max = 1000
+	sizeArgs := blockArgs("format", map[string]any{"format": "html", "max_bytes": max})
+	cases := []struct {
+		name        string
+		reply       string
+		callErr     error
+		wantTotal   int64
+		wantContent string
+		wantErr     string
+	}{
+		{name: "no id", reply: `{"content":"<pre>hi</pre>","eof":true}`, wantTotal: 13, wantContent: "<pre>hi</pre>"},
+		{name: "id and total no blob_read", reply: `{"content":"abcd","id":7,"total":900000,"eof":false}`, wantTotal: 900000, wantContent: "abcd"},
+		{name: "rex error", callErr: sessionNotFound("block.method"), wantErr: "session_not_found"},
+		{name: "missing total", reply: `{"content":"ab","id":1}`, wantErr: "no total"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := (&Fake{}).OnArgs("block.method", sizeArgs, tc.reply, tc.callErr)
+			got, err := FormatSize(context.Background(), f, "session:s1", "block:b1", "html", max)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want text %q", err, tc.wantErr)
+				}
+				if got.Total != 0 || got.Content != nil {
+					t.Fatalf("got partial result %+v with an error", got)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error %v", err)
+				}
+				if got.Total != tc.wantTotal || string(got.Content) != tc.wantContent {
+					t.Fatalf("got %+v, want total %d content %q", got, tc.wantTotal, tc.wantContent)
+				}
+			}
+			calls := f.Calls()
+			if len(calls) != 1 {
+				t.Fatalf("calls = %d, want 1: %+v", len(calls), calls)
+			}
+			if string(calls[0].Args) != mustJSON(t, sizeArgs) {
+				t.Fatalf("call args %s, want max_bytes %d sent", calls[0].Args, max)
+			}
+		})
+	}
+}

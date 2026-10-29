@@ -133,8 +133,11 @@ type sessionPage struct {
 	// it is served.
 	HasScreen  bool
 	ScreenHref string
-	Title      string
-	Badges     []badgeView
+	// Watchable says the session runs in Rex; WatchHref is its Watch view.
+	Watchable bool
+	WatchHref string
+	Title     string
+	Badges    []badgeView
 	// Lines say what an unusual row is, as on the list.
 	Lines []string
 	KV    []kvRow
@@ -354,6 +357,7 @@ func sessionPageFor(project string, s SessionView) SessionScreenView {
 		Project:      project,
 		SessionFacts: factsOf(s, k),
 		Page: sessionPage{
+			Watchable: s.Watchable, WatchHref: watchAddress(project, s.Name),
 			HasScreen: s.HasScreen, ScreenHref: "/p/" + url.PathEscape(project) + "/sessions/" + url.PathEscape(s.Name) + "/screen",
 			Title: titleOf(s), Badges: sessionBadges(s, k), Lines: sessionLines(s, k),
 			KV: sessionKV(s), Summary: sessionSummary(s),

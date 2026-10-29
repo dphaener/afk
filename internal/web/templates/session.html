@@ -19,7 +19,8 @@
   {{end}}</div>
 </div>
 </section>
-{{if .Page.HasScreen}}<p class="meta"><a href="{{.Page.ScreenHref}}">Last screen</a></p>
+{{if .Page.Watchable}}<p class="meta"><a href="{{.Page.WatchHref}}">Watch</a></p>
+{{end}}{{if .Page.HasScreen}}<p class="meta"><a href="{{.Page.ScreenHref}}">Last screen</a></p>
 {{end}}
 {{/* The Actions sit outside both live regions, and their sheets at the end
      of the page, so a live swap never takes a sheet away while it is open.

@@ -3,6 +3,8 @@ package web
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -168,13 +170,13 @@ func TestChangedParts(t *testing.T) {
 		{
 			name: "inbox: an item is added",
 			edit: func(fx *liveFixture) { fx.addItem(fx.app, "abc234", "Which database?") },
-			want: []change{{"app", partInbox}},
+			want: []change{{Project: "app", Part: partInbox}},
 		},
 		{
 			name:  "inbox: an item becomes unreadable",
 			setup: func(fx *liveFixture) { fx.addItem(fx.app, "abc234", "Which database?") },
 			edit:  func(fx *liveFixture) { fx.write(fx.app, ".afk/inbox/abc234.json", "{") },
-			want:  []change{{"app", partInbox}},
+			want:  []change{{Project: "app", Part: partInbox}},
 		},
 		{
 			name:    "inbox: an unreadable item stays unreadable",
@@ -185,7 +187,7 @@ func TestChangedParts(t *testing.T) {
 		{
 			name: "ledger: the ledger is written",
 			edit: func(fx *liveFixture) { fx.initLedger(fx.app) },
-			want: []change{{"app", partLedger}},
+			want: []change{{Project: "app", Part: partLedger}},
 		},
 		{
 			name:  "ledger: a damaged ledger becomes readable",
@@ -196,13 +198,13 @@ func TestChangedParts(t *testing.T) {
 				}
 				fx.initLedger(fx.app)
 			},
-			want: []change{{"app", partLedger}},
+			want: []change{{Project: "app", Part: partLedger}},
 		},
 		{
 			name:  "ledger: a readable ledger is damaged",
 			setup: func(fx *liveFixture) { fx.initLedger(fx.app) },
 			edit:  func(fx *liveFixture) { fx.write(fx.app, ".afk/build/ledger.json", damagedLedger) },
-			want:  []change{{"app", partLedger}},
+			want:  []change{{Project: "app", Part: partLedger}},
 		},
 		{
 			name:    "ledger: a damaged ledger stays damaged",
@@ -217,7 +219,7 @@ func TestChangedParts(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			want: []change{{"app", partPause}},
+			want: []change{{Project: "app", Part: partPause}},
 		},
 		{
 			name: "pause: the daemon records a new run state",
@@ -226,36 +228,36 @@ func TestChangedParts(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			want: []change{{"app", partPause}},
+			want: []change{{Project: "app", Part: partPause}},
 		},
 		{
 			name: "sessions: a session's phase moves",
 			edit: func(fx *liveFixture) {
 				fx.sessions = []SessionView{{Name: "t1-2", Phase: "verifying", HostRunning: true}}
 			},
-			want: []change{{"app", partSessions}},
+			want: []change{{Project: "app", Part: partSessions}},
 		},
 		{
 			name: "planning: the plan session's state is written",
 			edit: func(fx *liveFixture) { fx.write(fx.app, ".afk/plan/state.json", `{"phase":"brief"}`) },
-			want: []change{{"app", partPlanning}},
+			want: []change{{Project: "app", Part: partPlanning}},
 		},
 		{
 			name: "planning: the planning host starts",
 			edit: func(fx *liveFixture) { fx.write(fx.app, ".afk/master-plan/host.json", `{"pid":1}`) },
-			want: []change{{"app", partPlanning}},
+			want: []change{{Project: "app", Part: partPlanning}},
 		},
 		{
 			name:  "planning: an empty questions file is not a missing one",
 			setup: func(fx *liveFixture) { fx.write(fx.app, ".afk/plan/brief.md", "x") },
 			edit:  func(fx *liveFixture) { fx.write(fx.app, ".afk/plan/questions.jsonl", "") },
-			want:  []change{{"app", partPlanning}},
+			want:  []change{{Project: "app", Part: partPlanning}},
 		},
 		{
 			name:  "planning chat: a new agent message",
 			setup: func(fx *liveFixture) { fx.chat = chatWith(planchat.StateWorking, "first") },
 			edit:  func(fx *liveFixture) { fx.chat = chatWith(planchat.StateWorking, "first", "second") },
-			want:  []change{{"app", partPlanning}},
+			want:  []change{{Project: "app", Part: partPlanning}},
 		},
 		{
 			name:    "planning chat: the same chat read twice",
@@ -270,7 +272,7 @@ func TestChangedParts(t *testing.T) {
 				fx.chat = chatWith(planchat.StateWaitingForChoice, "first")
 				fx.chat.Questions = []provider.Question{{Header: "DB", Question: "Which?", Options: []provider.Option{{Label: "A"}}}}
 			},
-			want: []change{{"app", partPlanning}},
+			want: []change{{Project: "app", Part: partPlanning}},
 		},
 		{
 			name:    "planning chat: no PlanChat behaves as before",
@@ -282,7 +284,7 @@ func TestChangedParts(t *testing.T) {
 			edit: func(fx *liveFixture) {
 				fx.usage.Windows = []usagestate.Window{{Kind: "session", UsedPct: 55}}
 			},
-			want: []change{{"", partUsage}},
+			want: []change{{Project: "", Part: partUsage}},
 		},
 		{
 			// Load-bearing: a failed reading writes no file, so the
@@ -291,12 +293,12 @@ func TestChangedParts(t *testing.T) {
 			// forever after a failure.
 			name: "usage: the refresher's generation changes, with no file change",
 			edit: func(fx *liveFixture) { fx.refreshGen++ },
-			want: []change{{"", partUsage}},
+			want: []change{{Project: "", Part: partUsage}},
 		},
 		{
 			name: "devices: a device signs up, machine-wide",
 			edit: func(fx *liveFixture) { fx.addDevice(phoneEndpoint, "phone") },
-			want: []change{{"", partDevices}},
+			want: []change{{Project: "", Part: partDevices}},
 		},
 		{
 			name: "devices: a device is removed",
@@ -305,7 +307,7 @@ func TestChangedParts(t *testing.T) {
 				fx.addDevice(laptopEndpoint, "laptop")
 			},
 			edit: func(fx *liveFixture) { fx.removeDevice(phoneEndpoint) },
-			want: []change{{"", partDevices}},
+			want: []change{{Project: "", Part: partDevices}},
 		},
 		{
 			name:    "devices: the same list read twice",
@@ -344,7 +346,7 @@ func TestChangedParts(t *testing.T) {
 				fx.addItem(fx.app, "def567", "Hi")
 				fx.usage.Source = "statusline"
 			},
-			want: []change{{"", partUsage}, {"app", partInbox}, {"app", partLedger}, {"other", partInbox}},
+			want: []change{{Project: "", Part: partUsage}, {Project: "app", Part: partInbox}, {Project: "app", Part: partLedger}, {Project: "other", Part: partInbox}},
 		},
 	}
 	for _, tc := range cases {
@@ -798,9 +800,10 @@ func TestFormatLive(t *testing.T) {
 		msg  liveMsg
 		want string
 	}{
-		{"change", liveMsg{change: change{"my app", partLedger}}, "event: change\ndata: {\"project\":\"my app\",\"part\":\"ledger\"}\n\n"},
-		{"machine-wide", liveMsg{change: change{"", partUsage}}, "event: change\ndata: {\"project\":\"\",\"part\":\"usage\"}\n\n"},
-		{"machine-wide devices", liveMsg{change: change{"", partDevices}}, "event: change\ndata: {\"project\":\"\",\"part\":\"devices\"}\n\n"},
+		{"change", liveMsg{change: change{Project: "my app", Part: partLedger}}, "event: change\ndata: {\"project\":\"my app\",\"part\":\"ledger\"}\n\n"},
+		{"machine-wide", liveMsg{change: change{Project: "", Part: partUsage}}, "event: change\ndata: {\"project\":\"\",\"part\":\"usage\"}\n\n"},
+		{"machine-wide devices", liveMsg{change: change{Project: "", Part: partDevices}}, "event: change\ndata: {\"project\":\"\",\"part\":\"devices\"}\n\n"},
+		{"screen names its session", liveMsg{change: change{Project: "app", Part: partScreen, Session: "t1-2"}}, "event: change\ndata: {\"project\":\"app\",\"part\":\"screen\",\"session\":\"t1-2\"}\n\n"},
 		{"ping", liveMsg{ping: true}, ": ping\n\n"},
 	}
 	for _, tc := range cases {
@@ -810,4 +813,221 @@ func TestFormatLive(t *testing.T) {
 			}
 		})
 	}
+}
+
+// watchStep is one moment in a TestWatchHubScreen row: optionally a ping
+// from a watcher, then one tick of the reader at testNow plus at.
+type watchStep struct {
+	at time.Duration
+	// ping, when set, renews this watcher's lease on app/t1-2 before the
+	// tick.
+	ping string
+	// html and err are what the fake WatchScreen answers if it is called.
+	html string
+	err  error
+	// wantRead and wantChange are whether this tick read the screen and
+	// sent a screen change.
+	wantRead, wantChange bool
+}
+
+// TestWatchHubScreen pins the hub's screen rule: when a tick reads a watched
+// session's screen and when a reading becomes a change on the stream. The
+// tick and the reads are driven by hand (spawn runs each read at once), so
+// every row is exact.
+//
+// Load-bearing rows: "no watcher" (a tick with no live lease must never call
+// Rex: the plan's "never read for nobody") and "same hash" (an unchanged
+// screen must not make every open page refetch on every tick). "Gone block"
+// pins that a failed read is retried on the slow cadence and not every
+// tick, and "read in flight" that one hung read cannot stack up more.
+func TestWatchHubScreen(t *testing.T) {
+	gone := fmt.Errorf("%w: rex exit 3", ErrWatchGone)
+	cases := []struct {
+		name  string
+		steps []watchStep
+		// project is the watched project; "" means app.
+		project string
+		// holdReads leaves every read out (spawn never runs it).
+		holdReads bool
+		// wantFailed is the session's LastFailed after the last step.
+		wantFailed bool
+	}{
+		{
+			name: "watched and due",
+			steps: []watchStep{
+				{ping: "w1", html: "<pre>a</pre>", wantRead: true, wantChange: true},
+			},
+		},
+		{
+			name: "same hash",
+			steps: []watchStep{
+				{ping: "w1", html: "<pre>a</pre>", wantRead: true, wantChange: true},
+				{at: 2 * time.Second, ping: "w1", html: "<pre>a</pre>", wantRead: true},
+			},
+		},
+		{
+			name: "new screen sends again",
+			steps: []watchStep{
+				{ping: "w1", html: "<pre>a</pre>", wantRead: true, wantChange: true},
+				{at: 2 * time.Second, ping: "w1", html: "<pre>b</pre>", wantRead: true, wantChange: true},
+			},
+		},
+		{
+			name: "not due yet",
+			steps: []watchStep{
+				{ping: "w1", html: "<pre>a</pre>", wantRead: true, wantChange: true},
+				{at: 1900 * time.Millisecond, ping: "w1", html: "<pre>b</pre>"},
+			},
+		},
+		{
+			name: "no watcher",
+			steps: []watchStep{
+				{html: "<pre>a</pre>"},
+				{at: 2 * time.Second, html: "<pre>a</pre>"},
+			},
+		},
+		{
+			name: "lease lapsed",
+			steps: []watchStep{
+				{ping: "w1", html: "<pre>a</pre>", wantRead: true, wantChange: true},
+				{at: 10 * time.Second, html: "<pre>b</pre>"},
+			},
+		},
+		{
+			name: "read error",
+			steps: []watchStep{
+				{ping: "w1", err: errors.New("rex: connection refused"), wantRead: true},
+			},
+			wantFailed: true,
+		},
+		{
+			name: "gone block",
+			steps: []watchStep{
+				{ping: "w1", err: gone, wantRead: true},
+				{at: 2 * time.Second, ping: "w1", html: "<pre>a</pre>"},
+				{at: 9900 * time.Millisecond, ping: "w1", html: "<pre>a</pre>"},
+				{at: 10 * time.Second, ping: "w1", err: gone, wantRead: true},
+			},
+			wantFailed: true,
+		},
+		{
+			name: "back after a failure",
+			steps: []watchStep{
+				{ping: "w1", err: gone, wantRead: true},
+				{at: 10 * time.Second, ping: "w1", html: "<pre>a</pre>", wantRead: true, wantChange: true},
+			},
+		},
+		{
+			name: "read in flight",
+			steps: []watchStep{
+				{ping: "w1", html: "<pre>a</pre>", wantRead: true},
+				{at: 2 * time.Second, ping: "w1", html: "<pre>a</pre>"},
+			},
+			holdReads: true,
+		},
+		{
+			name:    "project not listed",
+			project: "gone-project",
+			steps: []watchStep{
+				{ping: "w1", html: "<pre>a</pre>"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project := tc.project
+			if project == "" {
+				project = "app"
+			}
+			var answer watchStep
+			// reads counts the reads started, so a held read counts too.
+			reads := 0
+			d := Deps{WatchScreen: func(ctx context.Context, root, session string, bound int64) (WatchReading, error) {
+				if root != "/app" || session != "t1-2" || bound != watchBound {
+					t.Errorf("WatchScreen(%q, %q, %d), want (/app, t1-2, %d)", root, session, bound, watchBound)
+				}
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("WatchScreen got a context with no deadline")
+				}
+				if answer.err != nil {
+					return WatchReading{}, answer.err
+				}
+				return WatchReading{Total: int64(len(answer.html)), HTML: []byte(answer.html)}, nil
+			}}
+			h := newHub(d, nil)
+			h.spawn = func(f func()) {
+				reads++
+				if !tc.holdReads {
+					f()
+				}
+			}
+			sub := &subscriber{ch: make(chan liveMsg, liveQueue)}
+			h.subs[sub] = struct{}{}
+			projects := []Project{{Name: "app", Root: "/app"}}
+
+			for i, step := range tc.steps {
+				now := testNow.Add(step.at)
+				if step.ping != "" {
+					h.watch.Touch(watchKey(project, "t1-2"), step.ping, now)
+				}
+				answer = step
+				before := reads
+				h.watchTick(projects, now)
+				if got := reads - before; got != map[bool]int{true: 1}[step.wantRead] {
+					t.Errorf("step %d: %d reads, want read=%v", i, got, step.wantRead)
+				}
+				var got []change
+				for len(sub.ch) > 0 {
+					got = append(got, (<-sub.ch).change)
+				}
+				var want []change
+				if step.wantChange {
+					want = []change{{Project: "app", Part: partScreen, Session: "t1-2"}}
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("step %d: changes %+v, want %+v", i, got, want)
+				}
+			}
+			h.mu.Lock()
+			st := h.screens[watchKey(project, "t1-2")]
+			failed := st != nil && st.lastFailed
+			h.mu.Unlock()
+			if failed != tc.wantFailed {
+				t.Errorf("LastFailed = %v, want %v", failed, tc.wantFailed)
+			}
+		})
+	}
+}
+
+// TestWatchHubFrameAndSeam pins two edges of the screen reader: a hub with
+// no WatchScreen seam reads nothing even with a watcher, and the last good
+// reading is kept for the screen route while the session is watched and
+// forgotten once nobody watches it.
+func TestWatchHubFrameAndSeam(t *testing.T) {
+	t.Run("no seam", func(t *testing.T) {
+		h := newHub(Deps{}, nil)
+		h.spawn = func(func()) { t.Error("a read was started with no WatchScreen seam") }
+		h.watch.Touch(watchKey("app", "t1-2"), "w1", testNow)
+		h.watchTick([]Project{{Name: "app", Root: "/app"}}, testNow)
+	})
+	t.Run("frame kept while watched", func(t *testing.T) {
+		h := newHub(Deps{WatchScreen: func(context.Context, string, string, int64) (WatchReading, error) {
+			return WatchReading{Total: 300 << 10, HTML: []byte("tail"), Slow: true}, nil
+		}}, nil)
+		h.spawn = func(f func()) { f() }
+		projects := []Project{{Name: "app", Root: "/app"}}
+		if _, ok := h.watchFrame("app", "t1-2"); ok {
+			t.Fatal("a frame before any read")
+		}
+		h.watch.Touch(watchKey("app", "t1-2"), "w1", testNow)
+		h.watchTick(projects, testNow)
+		got, ok := h.watchFrame("app", "t1-2")
+		if !ok || string(got.HTML) != "tail" || !got.Slow || got.Total != 300<<10 {
+			t.Fatalf("watchFrame = %+v, %v; want the slow tail", got, ok)
+		}
+		h.watchTick(projects, testNow.Add(watchLease))
+		if _, ok := h.watchFrame("app", "t1-2"); ok {
+			t.Error("the frame was kept after the lease lapsed")
+		}
+	})
 }

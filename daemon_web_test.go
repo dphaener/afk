@@ -35,6 +35,7 @@ import (
 	"github.com/dphaener/afk/internal/planchat"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/state"
 	"github.com/dphaener/afk/internal/usagestate"
@@ -1517,3 +1518,177 @@ func TestPlanChatReportWiring(t *testing.T) {
 		})
 	}
 }
+
+// TestDaemonWebWatch drives the real Deps.WatchScreen (webWatcher.screen)
+// with a fake Rex caller and fake host files, with a 16-byte bound.
+//
+// Load-bearing rows: "small total" (a screen within the bound must cost Rex
+// exactly one small call, or the 2-second poll pays the full read the probe
+// exists to avoid), "big total" (only the last bound bytes reach the page,
+// with Slow set so the hub drops to the slow cadence), "gone block" (Rex's
+// exit 3 must read as web.ErrWatchGone with no HTML and Slow set, so the page
+// says the block is gone and the hub retries only every 10 seconds) and "not
+// a Rex session" (an afk-host session is refused before any Rex call).
+func TestDaemonWebWatch(t *testing.T) {
+	const bound = 16
+	block := &host.RexBlock{SessionID: "s1", BlockID: "b1"}
+	probeArgs := map[string]any{"session_id": "s1", "block_id": "b1", "method": "format",
+		"args": map[string]any{"format": "html", "max_bytes": bound + 1}}
+	reply := func(content string, id, total int) string {
+		r := map[string]any{"content": content, "eof": id == 0}
+		if id != 0 {
+			r["id"], r["total"] = id, total
+		}
+		b, _ := json.Marshal(r)
+		return string(b)
+	}
+	big := "line one\nline two\nline three\n"
+	gone := &rex.CallError{Method: "block.method", Code: 3, Stderr: "block b1 not found (status=404 code=block_not_found)"}
+
+	cases := []struct {
+		name     string
+		worktree error
+		meta     host.Meta
+		metaErr  error
+		runtime  string
+		script   func(*rex.Fake)
+		// wantCalls is how many Rex calls were made.
+		wantCalls int
+		wantHTML  string
+		wantTotal int64
+		wantSlow  bool
+		// wantErr is a sentinel the error must wrap, or errAny for any
+		// error, or nil for none.
+		wantErr error
+	}{
+		{
+			name: "small total",
+			meta: host.Meta{Rex: block},
+			script: func(f *rex.Fake) {
+				f.OnArgs("block.method", probeArgs, reply("<pre>hi</pre>", 0, 0), nil)
+			},
+			wantCalls: 1, wantHTML: "<pre>hi</pre>", wantTotal: 13,
+		},
+		{
+			name: "big total",
+			meta: host.Meta{Rex: block},
+			script: func(f *rex.Fake) {
+				f.OnArgs("block.method", probeArgs, reply(big[:bound+1], 7, len(big)), nil)
+				f.On("block.method", reply(big, 0, 0), nil)
+			},
+			wantCalls: 2, wantHTML: "line three\n", wantTotal: int64(len(big)), wantSlow: true,
+		},
+		{
+			name: "short probe reply is read in full",
+			meta: host.Meta{Rex: block},
+			script: func(f *rex.Fake) {
+				f.OnArgs("block.method", probeArgs, reply("<pre>", 3, 13), nil)
+				f.On("block.method", reply("<pre>hi</pre>", 0, 0), nil)
+			},
+			wantCalls: 2, wantHTML: "<pre>hi</pre>", wantTotal: 13,
+		},
+		{
+			name: "gone block",
+			meta: host.Meta{Rex: block},
+			script: func(f *rex.Fake) {
+				f.OnArgs("block.method", probeArgs, "", gone)
+			},
+			wantCalls: 1, wantSlow: true, wantErr: web.ErrWatchGone,
+		},
+		{
+			name: "gone between probe and read",
+			meta: host.Meta{Rex: block},
+			script: func(f *rex.Fake) {
+				f.OnArgs("block.method", probeArgs, reply(big[:bound+1], 7, len(big)), nil)
+				f.On("block.method", "", gone)
+			},
+			wantCalls: 2, wantSlow: true, wantErr: web.ErrWatchGone,
+		},
+		{
+			name: "other Rex error",
+			meta: host.Meta{Rex: block},
+			script: func(f *rex.Fake) {
+				f.OnArgs("block.method", probeArgs, "", &rex.CallError{Method: "block.method", Err: context.DeadlineExceeded})
+			},
+			wantCalls: 1, wantSlow: true, wantErr: context.DeadlineExceeded,
+		},
+		{
+			name:     "not a Rex session",
+			meta:     host.Meta{},
+			script:   func(*rex.Fake) {},
+			wantSlow: true, wantErr: web.ErrWatchNotRex,
+		},
+		{
+			name:     "stopped afk host",
+			metaErr:  fmt.Errorf("reading host.json: %w", os.ErrNotExist),
+			runtime:  host.RuntimeAfk,
+			script:   func(*rex.Fake) {},
+			wantSlow: true, wantErr: web.ErrWatchNotRex,
+		},
+		{
+			name:     "stopped Rex host",
+			metaErr:  fmt.Errorf("reading host.json: %w", os.ErrNotExist),
+			runtime:  host.RuntimeRex,
+			script:   func(*rex.Fake) {},
+			wantSlow: true, wantErr: web.ErrWatchGone,
+		},
+		{
+			name:     "no such session",
+			worktree: errors.New("there is no session called t1-2"),
+			script:   func(*rex.Fake) {},
+			wantSlow: true, wantErr: errAnyWatch,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &rex.Fake{}
+			tc.script(f)
+			w := webWatcher{
+				worktree: func(root, name string) (string, error) {
+					if root != "/repo" || name != "t1-2" {
+						t.Errorf("worktree(%q, %q), want (/repo, t1-2)", root, name)
+					}
+					return "/repo/wt", tc.worktree
+				},
+				readMeta: func(worktree, name string) (host.Meta, error) {
+					if worktree != "/repo/wt" {
+						t.Errorf("readMeta(%q), want the session's worktree", worktree)
+					}
+					return tc.meta, tc.metaErr
+				},
+				runtimeName: func(string, string) string { return tc.runtime },
+				caller:      f,
+			}
+			got, err := w.screen(context.Background(), "/repo", "t1-2", bound)
+			switch {
+			case tc.wantErr == nil && err != nil:
+				t.Fatalf("screen error %v, want none", err)
+			case tc.wantErr == errAnyWatch && err == nil:
+				t.Fatal("screen gave no error, want one")
+			case tc.wantErr != nil && tc.wantErr != errAnyWatch && !errors.Is(err, tc.wantErr):
+				t.Fatalf("screen error %v, want one wrapping %v", err, tc.wantErr)
+			}
+			if string(got.HTML) != tc.wantHTML || got.Total != tc.wantTotal || got.Slow != tc.wantSlow {
+				t.Errorf("screen = {Total %d, HTML %q, Slow %v}, want {Total %d, HTML %q, Slow %v}",
+					got.Total, got.HTML, got.Slow, tc.wantTotal, tc.wantHTML, tc.wantSlow)
+			}
+			calls := f.Calls()
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("%d Rex calls %v, want %d", len(calls), calls, tc.wantCalls)
+			}
+			if len(calls) > 0 {
+				var first struct {
+					Args struct {
+						MaxBytes int `json:"max_bytes"`
+					} `json:"args"`
+				}
+				if err := json.Unmarshal(calls[0].Args, &first); err != nil || first.Args.MaxBytes != bound+1 {
+					t.Errorf("the probe asked for max_bytes %d (%v), want %d", first.Args.MaxBytes, err, bound+1)
+				}
+			}
+		})
+	}
+}
+
+// errAnyWatch stands for "some error" in TestDaemonWebWatch.
+var errAnyWatch = errors.New("any error")

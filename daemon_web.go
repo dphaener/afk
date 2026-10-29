@@ -26,6 +26,7 @@ import (
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
@@ -134,6 +135,11 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		// page signs devices up into the list the daemon's own sends read.
 		PushDir:  stateDir,
 		PushSend: webPushSend(stateDir, now),
+		// The Watch view's screen read (T17.14). The live reader calls it
+		// only while someone watches and never on its own goroutine. Like
+		// every other Rex caller in afk it talks to the machine's default
+		// Rex server (see realScreenSaver in daemon_cmd.go).
+		WatchScreen: newWebWatcher(rex.NewCaller(rex.NewRun(rex.DefaultTimeout), "rex")).screen,
 	}
 }
 
@@ -521,7 +527,7 @@ func webSessionViews(found []discover.SessionState) []web.SessionView {
 // Both the web page's Sessions seam and the dashboard's all-projects seam use
 // it, so the two see the same facts.
 func webSessionViewsWithStart(found []discover.SessionState) []web.SessionView {
-	return withStartedAt(webSessionViews(found), host.ReadMeta)
+	return withWatchable(withStartedAt(webSessionViews(found), host.ReadMeta), host.ReadMeta)
 }
 
 // withStartedAt sets each view's StartedAt from its host.json. The file lives

@@ -21,7 +21,7 @@ var pageFiles embed.FS
 
 // pageNames are the views that have a page. Each is layout.html plus the file
 // of the same name.
-var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "notifications", "notifications_remove_confirm", "error", "signin"}
+var pageNames = []string{"overview", "usage", "project", "plan", "inbox", "item", "tasks", "task", "task_status", "sessions", "session", "watch", "session_confirm", "confirm", "plan_confirm", "plan_result", "plan_chat", "plan_change", "plan_new", "project_add", "project_remove", "project_remove_confirm", "notifications", "notifications_remove_confirm", "error", "signin"}
 
 // parsePages parses every page once. One set per page, because every page
 // defines the same block names ("title", "content") and a single shared set
@@ -199,6 +199,9 @@ func chromeFor(name string, view any, method, path string, projects int) chrome 
 	case SessionScreenView:
 		c.Title = v.Name
 		c.Back, c.BackLabel = sessionsBase(v.Project), "Back to the sessions of "+v.Project
+	case WatchView:
+		c.Title = "Watch " + v.Name
+		c.Back, c.BackLabel = v.Back, "Back to "+v.Name
 	case TaskStatusPageView:
 		c.Title = "Set status"
 		c.Back, c.BackLabel = taskBase(v.Project, v.ID), "Back to "+v.ID

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +53,10 @@ const (
 	partPlanning = "planning"
 	partUsage    = "usage"
 	partDevices  = "devices"
+	// partScreen is a watched session's screen (T17.14). It is not in parts:
+	// it is not read from files on every tick but from Rex, only while a
+	// watcher's lease is live (watchTick), and its change names a session.
+	partScreen = "screen"
 )
 
 // parts is every part in the order events are sent within one project.
@@ -101,9 +106,13 @@ const absent = "\x00absent"
 
 // change is one event: this part of this project is different from the last
 // tick. The JSON is the event's data on the wire.
+//
+// Session is set only for the screen part, which is per session; omitempty
+// keeps every other part's wire form exactly as it was before the Watch view.
 type change struct {
 	Project string `json:"project"`
 	Part    string `json:"part"`
+	Session string `json:"session,omitempty"`
 }
 
 // snapshot is one tick's reading: project name to part to fingerprint. The
@@ -351,10 +360,28 @@ type hub struct {
 	// reader gets its own, so a reader that is stopping cannot be confused
 	// with one started after it.
 	quit chan struct{}
+
+	// watch is who is watching which session's screen. It guards itself;
+	// the server's ping renews it and the reader only counts it.
+	watch watchLeases
+	// screens is the reader's memory of each watched session's screen, by
+	// watchKey, guarded by mu. An entry lives while its session is watched
+	// or a read of it is still out.
+	screens map[string]*watchScreen
+	// spawn runs one screen read off the reader's goroutine. It is go f()
+	// in real use; a test runs f at once so a tick's reads are done when
+	// the tick is.
+	spawn func(f func())
 }
 
 func newHub(d Deps, refreshGen func() uint64) *hub {
-	return &hub{d: d, refreshGen: refreshGen, subs: make(map[*subscriber]struct{})}
+	return &hub{
+		d:          d,
+		refreshGen: refreshGen,
+		subs:       make(map[*subscriber]struct{}),
+		screens:    make(map[string]*watchScreen),
+		spawn:      func(f func()) { go f() },
+	}
 }
 
 // subscribe opens a queue for one stream. It returns false when liveMaxStreams
@@ -441,7 +468,175 @@ func (h *hub) run(quit chan struct{}) {
 			h.fanOut(liveMsg{ping: true})
 		}
 		h.mu.Unlock()
+		now := time.Now
+		if h.d.Now != nil {
+			now = h.d.Now
+		}
+		h.watchTick(projects, now())
 	}
+}
+
+// watchReadLimit bounds one screen read. A Rex server that hangs must not
+// keep a read out for ever: while one is out no other read of that session
+// starts, so a hung read would freeze the watch until the daemon restarts.
+// Thirty seconds is far above a busy block's 200-350 ms render (T17.1).
+const watchReadLimit = 30 * time.Second
+
+// watchScreen is what the reader remembers of one watched session's screen
+// between ticks: the inputs watchReadDue decides from, whether a read is
+// out, and the last reading sent.
+type watchScreen struct {
+	project, session string
+	lastRead         time.Time
+	lastTotal        int64
+	lastFailed       bool
+	inFlight         bool
+	// hash is the hex SHA-256 of the last HTML a change was sent for, so the
+	// same screen read twice sends nothing.
+	hash string
+	// reading is the last good reading. The screen route can serve it
+	// rather than read Rex a second time for the change it just heard of;
+	// it is the reader's own last reading, kept only while someone watches,
+	// not a copy of a file, so a page never sees an older file through it.
+	reading WatchReading
+	ok      bool
+}
+
+// watchKey is one watched session's key in the lease registry and in
+// h.screens. The NUL cannot appear in a project or session name, so two
+// different pairs never share a key.
+func watchKey(project, session string) string {
+	return project + "\x00" + session
+}
+
+// watchedKeys lists the keys with at least one live lease. It reads the
+// registry's map under its own lock, because watch.go's registry only
+// counts one key at a time and the reader must find every watched key.
+func (l *watchLeases) watchedKeys(now time.Time) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for key, ws := range l.leases {
+		for _, last := range ws {
+			if now.Before(last.Add(watchLease)) {
+				out = append(out, key)
+				break
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// watchTick starts this tick's screen reads. It runs on the reader's
+// goroutine after the file changes are sent and must never wait on Rex: it
+// only decides and hands each read to spawn. A session is read only while a
+// lease on it is live, at most once at a time, and when watchReadDue says
+// so; with no watcher it reads nothing at all, the plan's "never read for
+// nobody". A session whose project is not on this tick's list is skipped,
+// since there is no folder to read it from.
+func (h *hub) watchTick(projects []Project, now time.Time) {
+	if h.d.WatchScreen == nil {
+		return
+	}
+	h.watch.Prune(now)
+	keys := h.watch.watchedKeys(now)
+	roots := make(map[string]string, len(projects))
+	for _, p := range projects {
+		roots[p.Name] = p.Root
+	}
+
+	type job struct{ key, root, project, session string }
+	var jobs []job
+	h.mu.Lock()
+	watched := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		watched[key] = true
+		project, session, _ := strings.Cut(key, "\x00")
+		root, ok := roots[project]
+		if !ok {
+			continue
+		}
+		st := h.screens[key]
+		if st == nil {
+			st = &watchScreen{project: project, session: session, lastTotal: -1}
+			h.screens[key] = st
+		}
+		if st.inFlight {
+			continue
+		}
+		due, _ := watchReadDue(WatchInputs{
+			Watchers:   h.watch.Count(key, now),
+			LastRead:   st.lastRead,
+			Now:        now,
+			LastTotal:  st.lastTotal,
+			LastFailed: st.lastFailed,
+		})
+		if !due {
+			continue
+		}
+		st.inFlight = true
+		st.lastRead = now
+		jobs = append(jobs, job{key, root, project, session})
+	}
+	// A session nobody watches any more is forgotten, so a watcher who
+	// comes back is read at once and gets a change for the first frame. One
+	// with a read still out is kept until the read settles.
+	for key, st := range h.screens {
+		if !watched[key] && !st.inFlight {
+			delete(h.screens, key)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, j := range jobs {
+		h.spawn(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), watchReadLimit)
+			defer cancel()
+			r, err := h.d.WatchScreen(ctx, j.root, j.session, watchBound)
+			h.settleWatch(j.key, r, err)
+		})
+	}
+}
+
+// settleWatch records one finished screen read and sends a screen change
+// when the HTML differs from the last one sent. A failed read sends
+// nothing: the page keeps the frame it has, and watchReadDue retries on the
+// slow cadence, so a gone block costs Rex one call every watchSlowEvery.
+func (h *hub) settleWatch(key string, r WatchReading, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st := h.screens[key]
+	if st == nil {
+		return
+	}
+	st.inFlight = false
+	if err != nil {
+		st.lastFailed = true
+		return
+	}
+	st.lastFailed = false
+	st.lastTotal = r.Total
+	sum := sha256.Sum256(r.HTML)
+	hash := hex.EncodeToString(sum[:])
+	st.reading, st.ok = r, true
+	if hash == st.hash {
+		return
+	}
+	st.hash = hash
+	h.fanOut(liveMsg{change: change{Project: st.project, Part: partScreen, Session: st.session}})
+}
+
+// watchFrame is the last good reading of a watched session's screen, and
+// false when there is none yet (nobody watches it, or every read failed).
+func (h *hub) watchFrame(project, session string) (WatchReading, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st := h.screens[watchKey(project, session)]
+	if st == nil || !st.ok {
+		return WatchReading{}, false
+	}
+	return st.reading, true
 }
 
 // fanOut hands msg to every stream without blocking. A stream whose queue is

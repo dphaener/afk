@@ -456,6 +456,45 @@ func Format(ctx context.Context, c Caller, sessionID, blockID, format string) ([
 	return got, nil
 }
 
+// ScreenSize is what FormatSize learned about a block's output. Total is the
+// whole output's length in bytes. Content is the first part Rex sent back,
+// which is the whole output when Total is no more than the max_bytes asked.
+type ScreenSize struct {
+	Total   int64
+	Content []byte
+}
+
+// FormatSize learns how big a block's formatted output is without reading all
+// of it. T17.1 measured that a format call with a small max_bytes answers with
+// the first part and a total, so the web page's watch view can read the size
+// first and skip the scrollback (about 0.9 MB of HTML for a busy block) when
+// it is large. Unlike Format it never calls blob_read: when Rex says more
+// remains, Content is only the first part and Total is the announced length.
+// A reply with no id is the whole output, so Total is its length. Errors are
+// the ones Format returns for the same first call.
+func FormatSize(ctx context.Context, c Caller, sessionID, blockID, format string, maxBytes int64) (ScreenSize, error) {
+	args := map[string]any{"max_bytes": maxBytes}
+	if format != "" {
+		args["format"] = format
+	}
+	var first struct {
+		Content string `json:"content"`
+		ID      *int64 `json:"id"`
+		Total   *int64 `json:"total"`
+	}
+	if err := callBlockMethod(ctx, c, sessionID, blockID, "format", args, &first); err != nil {
+		return ScreenSize{}, err
+	}
+	content := []byte(first.Content)
+	if first.ID == nil {
+		return ScreenSize{Total: int64(len(content)), Content: content}, nil
+	}
+	if first.Total == nil {
+		return ScreenSize{}, errors.New("Rex call format said more output remains but gave no total length")
+	}
+	return ScreenSize{Total: *first.Total, Content: content}, nil
+}
+
 // callBlockMethod calls one of a terminal block's own methods through
 // block.method and decodes its answer into reply. The method is the short
 // name (program_status, format, …), never the long

@@ -29,8 +29,8 @@ import (
 
 const idScript = "kmn345"
 
-// ownScript is the script tags every page carries: the hashed live.js, confirm.js, submit.js, chat.js, sw-register.js and notifications.js.
-var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit|chat|sw-register|notifications)\.js" defer></script>`)
+// ownScript is the script tags every page carries: the hashed live.js, confirm.js, submit.js, chat.js, watch.js, sw-register.js and notifications.js.
+var ownScript = regexp.MustCompile(`<script src="/static/[0-9a-f]{12}/(live|confirm|submit|chat|watch|sw-register|notifications)\.js" defer></script>`)
 
 // noOwnScript removes that tag, so the tests that look for injected markup
 // still see any other script tag a hostile text managed to open.
@@ -981,6 +981,7 @@ func TestPageLayout(t *testing.T) {
 		{name: "task status, no-JS, step two", page: "task_status", path: "/p/app/tasks/T1.2/status?to=done", status: 200, bars: true, back: `href="/p/app/tasks/T1.2" aria-label="Back to T1.2"`, navTitle: "Set status"},
 		{name: "sessions", page: "sessions", path: "/p/app/sessions", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, current: `href="/" aria-current="true"`, navTitle: "Sessions"},
 		{name: "session", page: "session", path: "/p/app/sessions/t1-2", status: 200, bars: true, back: `href="/p/app/sessions" aria-label="Back to the sessions of app"`, current: `href="/" aria-current="true"`, navTitle: "t1-2"},
+		{name: "watch", page: "watch", path: "/p/app/sessions/t1-2/watch", status: 200, bars: true, back: `href="/p/app/sessions/t1-2" aria-label="Back to t1-2"`, current: `href="/" aria-current="true"`, navTitle: "Watch t1-2"},
 		{name: "session action, no-JS", page: "session_confirm", path: "/p/app/sessions/t1-2/confirm/clean", status: 200, bars: true, back: `href="/p/app/sessions/t1-2" aria-label="Back to t1-2"`, current: `href="/" aria-current="true"`, navTitle: "Clean"},
 		{name: "new session, no-JS", page: "session_confirm", path: "/p/app/sessions/new?name=fix-login&description=Fix+it", status: 200, bars: true, back: `href="/p/app/sessions" aria-label="Back to the sessions of app"`, navTitle: "New session"},
 		{name: "confirm", page: "confirm", path: "/p/app/confirm/pause", status: 200, bars: true, back: `href="/p/app" aria-label="Back to app"`, navTitle: "Pause project"},
@@ -1119,6 +1120,7 @@ func TestDesktopBackRow(t *testing.T) {
 		{name: "task status", page: "task_status", path: "/p/app/tasks/T1.2/status", status: 200, back: "/p/app/tasks/T1.2", label: "Back to T1.2", title: "Set status"},
 		{name: "sessions", page: "sessions", path: "/p/app/sessions", status: 200, back: "/p/app", label: "Back to app", title: "Sessions"},
 		{name: "session", page: "session", path: "/p/app/sessions/t1-2", status: 200, back: "/p/app/sessions", label: "Back to the sessions of app", title: "t1-2"},
+		{name: "watch", page: "watch", path: "/p/app/sessions/t1-2/watch", status: 200, back: "/p/app/sessions/t1-2", label: "Back to t1-2", title: "Watch t1-2"},
 		{name: "session action", page: "session_confirm", path: "/p/app/sessions/t1-2/confirm/clean", status: 200, back: "/p/app/sessions/t1-2", label: "Back to t1-2", title: "Clean"},
 		{name: "new session", page: "session_confirm", path: "/p/app/sessions/new?name=fix-login&description=Fix+it", status: 200, back: "/p/app/sessions", label: "Back to the sessions of app", title: "New session"},
 		{name: "confirm", page: "confirm", path: "/p/app/confirm/pause", status: 200, back: "/p/app", label: "Back to app", title: "Pause project"},
