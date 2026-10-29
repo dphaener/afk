@@ -1101,6 +1101,69 @@ func TestCleanSession_NormalSessionStillRemovesWorktree(t *testing.T) {
 	}
 }
 
+// TestCleanSaveError pins CleanDeps.BeforeClean (PLAN T17.13): it is called
+// once, with the session, while the session's files are all still in place,
+// and whatever it returns the clean still runs to the end.
+//
+// The "hook fails" row is the load-bearing one: a save of a failed session's
+// screen that errors must never stop the session being cleaned, only add a
+// note. The "no hook" row is the promise that a caller who sets nothing gets
+// the clean it always got, with no note. "hook succeeds" keeps a passing
+// hook from adding a note, which would read as a problem to the owner.
+func TestCleanSaveError(t *testing.T) {
+	tests := []struct {
+		name     string
+		hook     bool
+		hookErr  error
+		wantNote string
+	}{
+		{name: "no hook"},
+		{name: "hook succeeds", hook: true},
+		{name: "hook fails", hook: true, hookErr: errors.New("the Rex block is gone"), wantNote: "before cleaning failed-session: the Rex block is gone"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			wt := addWorktree(t, repo, "failed-session")
+			statusPath := writeStatus(t, wt, "failed-session", "failed")
+			deps := testCleanDeps(t, t.TempDir())
+
+			var calls []Session
+			var filesThere bool
+			if tt.hook {
+				deps.BeforeClean = func(s Session) error {
+					calls = append(calls, s)
+					_, err := os.Stat(statusPath)
+					filesThere = err == nil
+					return tt.hookErr
+				}
+			}
+			sess := Session{
+				Name: "failed-session", WorktreePath: wt, Branch: "failed-session",
+				StatusPath: statusPath, Status: Status{Phase: "failed"},
+			}
+			res, err := CleanSessionWithOptions(repo, sess, deps, CleanOptions{})
+			if err != nil {
+				t.Fatalf("CleanSessionWithOptions: %v (the clean must not fail on the hook)", err)
+			}
+			if _, statErr := os.Stat(wt); !os.IsNotExist(statErr) {
+				t.Fatalf("worktree %s still there after the clean (stat err %v)", wt, statErr)
+			}
+			if tt.hook {
+				if len(calls) != 1 || calls[0].Name != "failed-session" || calls[0].WorktreePath != wt {
+					t.Fatalf("BeforeClean calls = %+v, want one with the session", calls)
+				}
+				if !filesThere {
+					t.Fatalf("BeforeClean ran after the session's files were removed; it must run first")
+				}
+			}
+			if res.Notes != tt.wantNote {
+				t.Fatalf("Notes = %q, want %q", res.Notes, tt.wantNote)
+			}
+		})
+	}
+}
+
 // TestCleanSession_ScratchLiveHostStopLadderRunsBeforeRemoval pins the
 // ordering: the host owns host.json, host.log and the socket inside the very
 // directory being removed, so removing the directory first would race a live

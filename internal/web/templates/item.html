@@ -6,6 +6,7 @@
 {{if .Body}}<p class="prose item-body">{{.Body}}</p>{{end}}
 {{if .Assumed}}<p><strong>If you do not answer, afk assumes:</strong></p><p class="prose item-body">{{.Assumed}}</p>{{end}}
 <p class="meta">{{.Page.Meta}}</p>
+{{if .Page.ScreenHref}}<p><a href="{{.Page.ScreenHref}}">Screen</a></p>{{end}}
 <div aria-live="polite"><p class="meta" id="item-status" data-live="inbox" data-project="{{.Project}}">{{if .Open}}Waiting for your answer{{else}}Answered{{end}}</p></div>
 {{if .Open}}
 <form method="post" action="/p/{{pe .Project}}/inbox/{{pe .ID}}/answer" class="stack" data-enhance data-answer-form>

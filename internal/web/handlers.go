@@ -606,7 +606,11 @@ func (s *server) item(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, fmt.Sprintf("The inbox item's file is damaged and could not be read: %v. Fix or delete the file in the project's .afk/inbox folder.", err))
 		return
 	}
-	s.respond(w, r, http.StatusOK, "item", ItemView{Project: p.Name, Item: it, Page: itemPageFor(it, s.d.Now())})
+	pg := itemPageFor(it, s.d.Now())
+	if it.Session != "" && hasScreen(p.Root, it.Session) {
+		pg.ScreenHref = "/p/" + url.PathEscape(p.Name) + "/sessions/" + url.PathEscape(it.Session) + "/screen"
+	}
+	s.respond(w, r, http.StatusOK, "item", ItemView{Project: p.Name, Item: it, Page: pg})
 }
 
 func (s *server) noSuchItem(w http.ResponseWriter, r *http.Request) {

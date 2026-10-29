@@ -402,8 +402,8 @@ var refusedWays = []struct {
 // without a sign-in would let anyone who can reach the port stop a build or
 // answer for the owner, so the test also checks nothing was changed.
 func TestAuthEveryRouteNeedsACookie(t *testing.T) {
-	if len(routes) != 27 {
-		t.Fatalf("the route table has %d routes; the plan lists 27", len(routes))
+	if len(routes) != 28 {
+		t.Fatalf("the route table has %d routes; the plan lists 28", len(routes))
 	}
 	for _, rt := range routes {
 		target := routeTarget("/api", rt)
@@ -498,6 +498,11 @@ func TestAuthEveryRouteNeedsACookie(t *testing.T) {
 			}
 			if rt.path == "/usage/refresh" {
 				want = http.StatusAccepted
+			}
+			// The rig saved no screen for t1-2, so the screen route reaches
+			// its handler and answers 404 (the plain "No screen was saved").
+			if strings.HasSuffix(rt.path, "/screen") {
+				want = http.StatusNotFound
 			}
 			if rec.Code != want {
 				t.Errorf("status = %d, want %d\n%s", rec.Code, want, rec.Body.String())

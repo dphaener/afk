@@ -29,8 +29,11 @@ import (
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
+	"github.com/dphaener/afk/internal/rex"
+	"github.com/dphaener/afk/internal/screen"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
+	"github.com/dphaener/afk/internal/state"
 	"github.com/dphaener/afk/internal/tokens"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
@@ -771,6 +774,9 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 	cd := session.DefaultCleanDeps()
 	cd.Stdout, cd.Stderr = logw, logw
 	loadRuntime := func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) }
+	// One saver for the agent's last screen, used by the loop at a failure,
+	// stall, host gone or park and by its clean (PLAN T17.13).
+	screens := realScreenSaver()
 	sendInput := func(worktree, sess, text string) error {
 		rt, err := session.RuntimeFor(worktree, sess)
 		if err != nil {
@@ -851,7 +857,7 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		Log:          logf,
 		Ship:         daemonShip(projectconfig.Load, sw),
 		SendPrompt:   sendInput,
-		Clean:        daemonClean(cd, ledger.Load),
+		Clean:        daemonClean(cd, ledger.Load, screens.beforeClean),
 		Restart: func(worktree, sess string) (string, error) {
 			rt, err := session.RuntimeFor(worktree, sess)
 			if err != nil {
@@ -875,6 +881,9 @@ func realDaemonDeps(p provider.Provider, providerName, home string, st usagestat
 		Login:       login.view,
 		StopSession: daemonStopSession(realStopDeps()),
 		PlanWaits:   planWaits,
+		SaveScreen: screens.daemonSave(projects, func(root string) ([]session.Session, error) {
+			return session.Discover(root, cd)
+		}),
 	}
 }
 
@@ -1176,8 +1185,18 @@ func daemonCleanOptions(e ledger.Entry) session.CleanOptions {
 //
 // The ledger is read here because the loop hands over only the session's
 // name. One that cannot be read just means the cautious options.
-func daemonClean(cd session.CleanDeps, loadLedger func(root string) (ledger.Ledger, error)) func(daemon.Project, string) error {
+//
+// beforeClean, when set, gives the clean its CleanDeps.BeforeClean for the
+// project being cleaned (the saved screen goes in that project's checkout).
+// The loop cleans a session once its task is done, so this saves nothing on
+// that path today; it is wired so a failed session the loop cleans keeps its
+// screen too, by the same rule `afk clean` uses (cleanSavesScreen).
+func daemonClean(cd session.CleanDeps, loadLedger func(root string) (ledger.Ledger, error), beforeClean func(repo string) func(session.Session) error) func(daemon.Project, string) error {
 	return func(p daemon.Project, name string) error {
+		cd := cd
+		if beforeClean != nil {
+			cd.BeforeClean = beforeClean(p.Root)
+		}
 		sessions, err := session.Discover(p.Root, cd)
 		if err != nil {
 			return err
@@ -1197,6 +1216,178 @@ func daemonClean(cd session.CleanDeps, loadLedger func(root string) (ledger.Ledg
 		}
 		_, err = session.CleanSessionWithOptions(p.Root, *target, cd, daemonCleanOptions(entry))
 		return err
+	}
+}
+
+// --- the agent's last screen (PLAN T17.13) ---
+
+// cleanScreenSaveBudget bounds the save a clean makes before it runs. It is
+// the daemon's own bound for a save (internal/daemon's screenSaveTimeout): a
+// Rex that does not answer must not hold up the clean for long, and the
+// clean goes ahead whatever the save did.
+const cleanScreenSaveBudget = 30 * time.Second
+
+// screenSaver saves a Rex session's terminal to
+// {project}/.afk/{session}/terminal.html. The daemon (Deps.SaveScreen) and
+// every clean (CleanDeps.BeforeClean) use one, so both find the block and
+// write the page the same way.
+//
+// The page goes in the project's main checkout, not in the session's
+// worktree beside host.json: the web page reads it from the project root,
+// and a clean removes the worktree and its .afk folder, while the main
+// checkout's .afk/{session}/ survives it. A folder holding only
+// terminal.html is not a session to discovery, which globs for status.json
+// and host.json.
+//
+// Every outside call is a field so a test never reads a real host record or
+// runs Rex: readMeta reads host.json, runtimeName names the runtime a
+// session was started on when host.json is gone, caller makes the Rex
+// caller (only once a block is known, so an afk session never builds one),
+// and save is screen.Save.
+type screenSaver struct {
+	readMeta    func(worktree, name string) (host.Meta, error)
+	runtimeName func(worktree, name string) string
+	caller      func() rex.Caller
+	save        func(ctx context.Context, c rex.Caller, b screen.BlockRef, dir string) error
+}
+
+// realScreenSaver is a screenSaver wired to the machine. The Rex caller
+// talks to the machine's default Rex server, as every other Rex caller in
+// afk does: none of them passes host.json's server, so a session on another
+// server could not be driven at all, let alone read.
+func realScreenSaver() screenSaver {
+	return screenSaver{
+		readMeta: host.ReadMeta,
+		runtimeName: func(worktree, name string) string {
+			rt, err := session.RuntimeFor(worktree, name)
+			if err != nil {
+				return ""
+			}
+			return rt.Name()
+		},
+		caller: func() rex.Caller { return rex.NewCaller(rex.NewRun(rex.DefaultTimeout), "rex") },
+		save:   screen.Save,
+	}
+}
+
+// block finds the session's Rex block. A nil block and nil error mean the
+// session has no screen afk can keep: it runs on afk's own host, whose
+// terminal is nobody's to read. An error means the session is, or was, in
+// Rex but its block cannot be found, which the owner is told.
+//
+// host.json is removed when a host stops, so a session whose host is gone is
+// told apart by the runtime marker session.RuntimeFor reads. That keeps a
+// gone afk host quiet and a gone Rex host reported.
+func (s screenSaver) block(worktree, name string) (*host.RexBlock, error) {
+	meta, err := s.readMeta(worktree, name)
+	if err == nil {
+		return meta.Rex, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("the session's host record could not be read (%v)", err)
+	}
+	if s.runtimeName(worktree, name) == host.RuntimeRex {
+		return nil, fmt.Errorf("the session ran in Rex, but its host has stopped and left no record of which block was its terminal")
+	}
+	return nil, nil
+}
+
+// saveTo writes block b's screen into repo/.afk/name/. The name is checked
+// first because it becomes a path in the owner's checkout: an empty or
+// traversing one could write outside .afk.
+func (s screenSaver) saveTo(ctx context.Context, repo, name string, b host.RexBlock) error {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return fmt.Errorf("%q is not a session name afk can save a screen under", name)
+	}
+	dir := filepath.Join(repo, ".afk", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("the folder %s could not be made (%v)", dir, err)
+	}
+	err := s.save(ctx, s.caller(), screen.BlockRef{SessionID: b.SessionID, WindowID: b.WindowID, BlockID: b.BlockID}, dir)
+	if err != nil {
+		// A failed save leaves no page, and a folder made just for it would
+		// be left empty in the owner's checkout. os.Remove only takes an
+		// empty folder, so an earlier page, or anything else there, stays.
+		_ = os.Remove(dir)
+	}
+	return err
+}
+
+// session saves the screen of the session name, whose host record is in
+// worktree, into repo. A session that is not in Rex is nil: it has nothing to
+// save, and its item is raised all the same.
+func (s screenSaver) session(ctx context.Context, repo, worktree, name string) error {
+	b, err := s.block(worktree, name)
+	if err != nil || b == nil {
+		return err
+	}
+	return s.saveTo(ctx, repo, name, *b)
+}
+
+// daemonSave is the loop's Deps.SaveScreen. The loop hands over only the
+// session's name, so the session is found the way daemonClean finds one: in
+// each project's worktrees. It is called at a failure, a stall, a host gone
+// or a park, never on a tick that only looks, so listing worktrees here costs
+// nothing on the dashboard's refresh.
+//
+// A name found in two projects is refused rather than guessed at: the page
+// would land in the wrong project's folder and its item would link to a
+// stranger's screen.
+func (s screenSaver) daemonSave(projects func() []daemon.Project, discover func(root string) ([]session.Session, error)) func(ctx context.Context, name string) error {
+	return func(ctx context.Context, name string) error {
+		type spot struct{ root, worktree string }
+		var found []spot
+		var listErrs []error
+		for _, p := range projects() {
+			sessions, err := discover(p.Root)
+			if err != nil {
+				listErrs = append(listErrs, fmt.Errorf("%s: %v", p.Name, err))
+				continue
+			}
+			if t := findCleanTarget(sessions, name); t != nil && t.WorktreePath != "" {
+				found = append(found, spot{p.Root, t.WorktreePath})
+			}
+		}
+		switch {
+		case len(found) == 1:
+			return s.session(ctx, found[0].root, found[0].worktree, name)
+		case len(found) > 1:
+			return fmt.Errorf("%d projects have a session named %s, so afk cannot tell whose screen to save", len(found), name)
+		case len(listErrs) > 0:
+			return fmt.Errorf("the session %s was not found, and the sessions of some projects could not be listed: %w", name, errors.Join(listErrs...))
+		}
+		return fmt.Errorf("no project has a session named %s", name)
+	}
+}
+
+// cleanSavesScreen is whether a clean saves the session's screen first: only
+// for a failed session in Rex. A failed session is the one whose screen the
+// owner will want after it is gone; a done one shipped, and its screen tells
+// nothing. A session on afk's own host has no screen to keep.
+func cleanSavesScreen(phase string, rexBacked bool) bool {
+	return phase == string(state.PhaseFailed) && rexBacked
+}
+
+// beforeClean is CleanDeps.BeforeClean for a clean in repo. The phase is the
+// one discovery read for the session being cleaned. A host record that
+// cannot be used counts as Rex-backed so a failed session whose block is lost
+// gets a note saying so, rather than a silent clean. The error comes back to
+// the clean, which notes it and carries on.
+func (s screenSaver) beforeClean(repo string) func(session.Session) error {
+	return func(sess session.Session) error {
+		b, err := s.block(sess.WorktreePath, sess.Name)
+		if !cleanSavesScreen(sess.Status.Phase, b != nil || err != nil) {
+			return nil
+		}
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), cleanScreenSaveBudget)
+			defer cancel()
+			err = s.saveTo(ctx, repo, sess.Name, *b)
+		}
+		if err != nil {
+			return fmt.Errorf("the agent's screen could not be saved: %w", err)
+		}
+		return nil
 	}
 }
 

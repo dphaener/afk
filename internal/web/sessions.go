@@ -1,9 +1,13 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -125,8 +129,12 @@ type SessionScreenView struct {
 
 // sessionPage is what session.html draws besides the facts.
 type sessionPage struct {
-	Title  string
-	Badges []badgeView
+	// HasScreen says the agent's last screen was saved; ScreenHref is where
+	// it is served.
+	HasScreen  bool
+	ScreenHref string
+	Title      string
+	Badges     []badgeView
 	// Lines say what an unusual row is, as on the list.
 	Lines []string
 	KV    []kvRow
@@ -346,6 +354,7 @@ func sessionPageFor(project string, s SessionView) SessionScreenView {
 		Project:      project,
 		SessionFacts: factsOf(s, k),
 		Page: sessionPage{
+			HasScreen: s.HasScreen, ScreenHref: "/p/" + url.PathEscape(project) + "/sessions/" + url.PathEscape(s.Name) + "/screen",
 			Title: titleOf(s), Badges: sessionBadges(s, k), Lines: sessionLines(s, k),
 			KV: sessionKV(s), Summary: sessionSummary(s),
 		},
@@ -544,6 +553,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	for _, sv := range s.d.Sessions(p.Root) {
 		if sv.Name == name {
+			sv.HasScreen = hasScreen(p.Root, sv.Name)
 			v := sessionPageFor(p.Name, sv)
 			v.Page.Actions = sessionActionsFor(p.Name, sv, s.seams())
 			s.respond(w, r, http.StatusOK, "session", v)
@@ -551,4 +561,67 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.noSuchSession(w, r)
+}
+
+// screenFileName is the saved screen's name inside .afk/{session}/.
+const screenFileName = "terminal.html"
+
+// screenNameRe is the session-name shape (as the inbox and `afk new` use).
+// It is checked before the name reaches a path, so "..", a slash or an
+// empty name cannot leave .afk.
+var screenNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// screenPath is where a session's saved screen is, or "" for a name that
+// is not a session name.
+func screenPath(root, name string) string {
+	if !screenNameRe.MatchString(name) {
+		return ""
+	}
+	return filepath.Join(root, ".afk", name, screenFileName)
+}
+
+// hasScreen reports whether the session's saved screen exists. It is one
+// stat: the session page and the inbox item page call it on a request, and
+// neither may read the file or ask Rex.
+func hasScreen(root, name string) bool {
+	path := screenPath(root, name)
+	if path == "" {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// sessionScreen serves the saved screen of a session. The route is in
+// routes, so guard has already asked for the sign-in. The file is the
+// build loop's HTML of the agent's terminal: the page is served with a
+// content policy of its own that allows inline styles (Rex's colours are
+// style attributes) and nothing else, so no script can run even if the
+// saved text held one. The session need not still be in the list: a failed
+// session's screen is kept after it is cleaned.
+func (s *server) sessionScreen(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.findProject(w, r)
+	if !ok {
+		return
+	}
+	path := screenPath(p.Root, r.PathValue("name"))
+	if path == "" {
+		s.noSuchSession(w, r)
+		return
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		s.fail(w, r, http.StatusNotFound, "No screen was saved for this session.")
+		return
+	}
+	if err != nil {
+		s.fail(w, r, http.StatusInternalServerError, fmt.Sprintf("The saved screen could not be read: %v. Check the file in the project's .afk folder.", err))
+		return
+	}
+	h := w.Header()
+	setSecurityHeaders(h)
+	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

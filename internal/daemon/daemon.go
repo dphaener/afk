@@ -445,6 +445,15 @@ type Deps struct {
 	// must not silence the news that a question is waiting. Tick never calls
 	// it. Nil means the loop does nothing of the kind.
 	PlanWaits func(ctx context.Context)
+	// SaveScreen writes the session's terminal, screen and scrollback, to
+	// .afk/{session}/terminal.html (PLAN T17.13). It is called once at a
+	// failure, a stall, a host gone or a park, before the item is raised or
+	// the task parked, with a context that ends after 30 seconds; never on
+	// a tick that only looks. An error is told to the owner in the item's
+	// body and stops nothing. Nil means no screen is saved and every body
+	// reads as it did before screens were. It is a hook because reading a
+	// terminal is the caller's business (see the top of this file).
+	SaveScreen func(ctx context.Context, session string) error
 }
 
 // turnFailed is Deps.TurnFailed with its default.
@@ -1365,7 +1374,10 @@ func (t *pass) fail(a Action) daemonstate.State {
 	t.tokens(a)
 	title := fmt.Sprintf("%s failed (session %s)", a.Task, a.Session)
 	if _, have := openTitled(t.obs.Items, title); !have {
-		_, _ = t.add(inbox.NewItem{Task: a.Task, Session: a.Session, Kind: "failure", Title: title, Body: t.failBody(a)})
+		// Saved only when the item is about to be raised: an open item
+		// means an earlier tick got this far and saved already.
+		note := t.saveScreen(a)
+		_, _ = t.add(inbox.NewItem{Task: a.Task, Session: a.Session, Kind: "failure", Title: title, Body: withNote(t.failBody(a), note)})
 	}
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
 		e.Status = ledger.Failed
@@ -1416,16 +1428,26 @@ func (t *pass) failBody(a Action) string {
 }
 
 // park records that a task waits on the owner. Its session is left alone.
+//
+// The screen is saved first, as at every other save point. Park raises no
+// item of its own (the items it parks on are already there, written by the
+// agent or the owner), so there is no body to carry the note: saveScreen
+// logs a failed save, and the outcome goes into the decision log's line.
 func (t *pass) park(a Action) daemonstate.State {
+	note := t.saveScreen(a)
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
 		e.Status = ledger.Parked
 		e.ParkedOn = slices.Clone(a.Items)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
+	chosen := fmt.Sprintf("park it on inbox %s", strings.Join(a.Items, ", "))
+	if note != "" {
+		chosen += ". " + note
+	}
 	t.record("park", a.Task, a.Session,
 		fmt.Sprintf("%s has a question only the owner can answer. What now?", a.Task),
-		fmt.Sprintf("park it on inbox %s", strings.Join(a.Items, ", ")), ruleWatch)
+		chosen, ruleWatch)
 	return stateOf(a)
 }
 
@@ -1838,6 +1860,7 @@ func (t *pass) report(a Action) daemonstate.State {
 		n.Title = HostGoneTitlePrefix + fmt.Sprintf("%s (%s)", a.Task, a.Session)
 		n.Body = hostGoneBody(a.Task, a.Session)
 	}
+	n.Body = withNote(n.Body, t.saveScreen(a))
 	it, err := t.add(n)
 	if err != nil {
 		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,

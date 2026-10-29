@@ -103,6 +103,10 @@ type SessionView struct {
 
 	// Label is the session's display label, or "" when none is set.
 	Label string
+	// HasScreen is true when .afk/{name}/terminal.html exists, so the page
+	// can link to it. The session handler sets it from a file check; the
+	// seam that lists sessions leaves it false.
+	HasScreen bool
 	// Branch and BaseBranch are status.json's branch and base_branch.
 	Branch, BaseBranch string
 	// SessionID is status.json's session_id, or "".
@@ -611,6 +615,9 @@ var routes = []route{
 	// session's terminal (see sessions.go).
 	{http.MethodGet, "/p/{project}/sessions", (*server).sessionsList},
 	{http.MethodGet, "/p/{project}/sessions/{name}", (*server).session},
+	// The agent's last screen, saved by the build loop as HTML (see
+	// sessions.go screenPage). It reads one file and never calls Rex.
+	{http.MethodGet, "/p/{project}/sessions/{name}/screen", (*server).sessionScreen},
 	// The session actions, each behind the confirm and through its Deps seam
 	// and nothing else (see sessions_actions.go). POST on the list starts a
 	// new autonomous session.

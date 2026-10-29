@@ -88,8 +88,13 @@ type cleanSurfaceDeps struct {
 	Discover     func(repo string, d session.CleanDeps) ([]session.Session, error)
 	CleanSession func(repo string, sess session.Session, d session.CleanDeps, opts session.CleanOptions) (session.CleanResult, error)
 	FreshPhase   func(sess session.Session) string
-	TTY          bool
-	Confirm      func(title, yes, no string) (bool, error)
+	// BeforeClean makes the clean's CleanDeps.BeforeClean for repo, unless
+	// Clean already carries one. It defaults to the real screen saver, so a
+	// failed Rex session cleaned from the command or the web page keeps its
+	// last screen (PLAN T17.13); a test passes a fake so no Rex is run.
+	BeforeClean func(repo string) func(session.Session) error
+	TTY         bool
+	Confirm     func(title, yes, no string) (bool, error)
 }
 
 // defaultCleanSurfaceDeps is cleanSurfaceDeps wired to the real environment
@@ -107,6 +112,9 @@ func (d cleanSurfaceDeps) withDefaults() cleanSurfaceDeps {
 	}
 	if d.FreshPhase == nil {
 		d.FreshPhase = shownPhase
+	}
+	if d.BeforeClean == nil {
+		d.BeforeClean = realScreenSaver().beforeClean
 	}
 	return d
 }
@@ -143,6 +151,9 @@ func cleanSessionForSurface(repo, name string, req cleanSurfaceRequest, deps cle
 	var stdout, stderr bytes.Buffer
 	cd := deps.Clean
 	cd.Stdout, cd.Stderr = &stdout, &stderr
+	if cd.BeforeClean == nil {
+		cd.BeforeClean = deps.BeforeClean(repo)
+	}
 	done := func(res cleanSurfaceResult) cleanSurfaceResult {
 		res.EchoStdout, res.EchoStderr = stdout.String(), stderr.String()
 		return res

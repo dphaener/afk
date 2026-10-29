@@ -621,6 +621,9 @@ type itemPage struct {
 	// saying which one that is. A recommended value that is not one of the
 	// options is ignored, so no button is marked that does not exist.
 	Options []itemOption
+	// ScreenHref is the link to the session's saved screen, or "" when the
+	// item has no session or none was saved.
+	ScreenHref string
 }
 
 // itemOption is one answer button.

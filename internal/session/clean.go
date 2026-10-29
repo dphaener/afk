@@ -307,6 +307,22 @@ type CleanDeps struct {
 	// CleanSessionWithOptions computed (Force in particular) without
 	// depending on a real `gs branch delete` invocation.
 	DeleteSpiceBranch func(opts spice.BranchDeleteOptions) (spice.BranchDeleteResult, error)
+
+	// BeforeClean, when set, is called once with the session before
+	// CleanSessionWithOptions touches anything: before the host is stopped,
+	// because stopping it ends the terminal a caller may want to read (the
+	// agent's last screen of a failed session, PLAN T17.13). Nil, the
+	// default, calls nothing, which is how every clean behaved before it.
+	//
+	// What it does, and whether it does anything for this session, is the
+	// caller's decision; this package only promises the moment. An error it
+	// returns never stops the clean: it becomes one line of Notes, because
+	// removing a finished session matters more than keeping a picture of it.
+	//
+	// It lives here and not on CleanOptions because CleanOptions must stay
+	// comparable (internal/ui compares the options a key dispatched with ==),
+	// and a func field would make that a compile error.
+	BeforeClean func(sess Session) error
 }
 
 // DefaultCleanDeps returns CleanDeps wired to the real environment.
@@ -797,6 +813,14 @@ func CleanSessionWithOptions(repo string, sess Session, d CleanDeps, opts CleanO
 		res CleanResult
 		err error
 	)
+	// The hook runs first, ahead of every route's own guards, so it sees the
+	// session while its host and files are all still there. Its error is
+	// held and noted after the route has run: the route builds res afresh,
+	// so a note made now would be lost.
+	var beforeErr error
+	if d.BeforeClean != nil {
+		beforeErr = d.BeforeClean(sess)
+	}
 	switch {
 	case sess.Scratch:
 		res, err = cleanScratchSession(sess, d)
@@ -808,6 +832,9 @@ func CleanSessionWithOptions(repo string, sess Session, d CleanDeps, opts CleanO
 		res, err = cleanStatusWithoutWorktree(repo, sess, d)
 	default:
 		res, err = cleanNormalSession(repo, sess, d)
+	}
+	if beforeErr != nil {
+		res.note(d, "before cleaning %s: %v", sess.Name, beforeErr)
 	}
 	if err == nil && opts.DeleteBranch {
 		deleteSessionBranch(&res, repo, sess, d, opts)
