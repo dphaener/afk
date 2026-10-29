@@ -1472,3 +1472,48 @@ func testPushSubscription(t *testing.T, endpoint string) webpush.Subscription {
 	enc := base64.RawURLEncoding
 	return webpush.Subscription{Endpoint: endpoint, P256dh: enc.EncodeToString(priv.PublicKey().Bytes()), Auth: enc.EncodeToString(authSecret)}
 }
+
+// TestPlanChatReportWiring pins that webPlanChat feeds host.json's agent
+// report into the planning chat. The load-bearing rows: "question report" is
+// the whole feature (a blocked question reads as waiting for text before any
+// transcript has it); "no report" proves today's result is unchanged without
+// one; "stale report" (older than the host's start) and "other kind" prove the
+// report is not trusted blindly. The host's pid is this test process so the
+// host reads as alive; HOME is a scratch folder so no real transcript is read.
+func TestPlanChatReportWiring(t *testing.T) {
+	started := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	stamp := func(d time.Duration) string { return started.Add(d).Format(time.RFC3339) }
+	cases := []struct {
+		name   string
+		status *host.AgentStatus
+		exit   *host.LastExit
+		want   planchat.State
+	}{
+		{name: "question report", status: &host.AgentStatus{State: "blocked", Kind: "question", Msg: "Which database?", At: stamp(5 * time.Second)}, want: planchat.StateWaitingForText},
+		{name: "no report", want: planchat.StateWorking},
+		{name: "stale report", status: &host.AgentStatus{State: "blocked", Kind: "question", At: stamp(-time.Minute)}, want: planchat.StateWorking},
+		{name: "report older than the last exit", status: &host.AgentStatus{State: "blocked", Kind: "question", At: stamp(5 * time.Second)}, exit: &host.LastExit{At: stamp(8 * time.Second)}, want: planchat.StateWorking},
+		{name: "permission kind", status: &host.AgentStatus{State: "blocked", Kind: "permission", At: stamp(5 * time.Second)}, want: planchat.StateWorking},
+		{name: "report time unreadable", status: &host.AgentStatus{State: "blocked", Kind: "question", At: "soon"}, want: planchat.StateWorking},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			root := t.TempDir()
+			meta := host.Meta{PID: os.Getpid(), StartedAt: stamp(0), AgentStatus: tc.status, LastExit: tc.exit}
+			if err := host.WriteMeta(root, session.PlanSessionName, meta); err != nil {
+				t.Fatal(err)
+			}
+			chat := webPlanChat(func() time.Time { return started.Add(10 * time.Second) })("p", root)
+			if chat.State != tc.want {
+				t.Errorf("State = %q, want %q (problem %q)", chat.State, tc.want, chat.Problem)
+			}
+			if tc.want == planchat.StateWaitingForText && len(chat.Messages) != 0 {
+				t.Errorf("Messages = %v, want none", chat.Messages)
+			}
+			if b, _ := json.Marshal(chat); strings.Contains(string(b), "Which database") {
+				t.Errorf("chat carries the report msg: %s", b)
+			}
+		})
+	}
+}

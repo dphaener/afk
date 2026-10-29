@@ -314,6 +314,11 @@ type SessionState struct {
 	// session ended, written by the host on a restart in place. Nil means
 	// unknown. Advisory, same as AgentStatus.
 	LastExit *LastExit
+	// HostStartedAt is host.json's `started_at`: when the host process began
+	// (RFC 3339 UTC), "" when unknown. A report older than this was left by an
+	// earlier host, which is how the daemon tells a stale agent_status from a
+	// live one (internal/agentreport). Advisory, same as AgentStatus.
+	HostStartedAt string
 	// Runtime is host.json's `runtime`: "rex" for a session whose host runs
 	// inside a Rex block, and "" for afk's own host. The empty value is also
 	// what a missing or unparseable host.json gives, which is why the
@@ -740,6 +745,7 @@ func applyHostMeta(ss *SessionState) {
 	ss.HostRunning = host.Alive(meta.PID)
 	ss.LastOutputAt = meta.LastOutputAt
 	ss.WedgedSince = meta.WedgedSince
+	ss.HostStartedAt = meta.StartedAt
 	// Runtime and the Rex window id are only what host.json already says. This
 	// file never calls Rex, never dials, and never resolves a runtime from a
 	// marker: a read that could block or fail on Rex would stall every 2s tick

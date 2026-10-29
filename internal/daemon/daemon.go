@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
@@ -995,6 +996,20 @@ func viewOf(rows []discover.SessionState, name string) (*SessionView, *discover.
 		// verdict must not restart anything: there is no telling how long it
 		// has stood.
 		v.WedgedSince, _ = parseTime(r.WedgedSince)
+		// The agent's own report and the two times that decide whether it is
+		// still current (internal/agentreport). All stay zero when host.json
+		// does not say, which Decide reads as "no report". A report whose own
+		// time cannot be read is dropped: a report with no time cannot be
+		// told from one left by an earlier agent.
+		if a := r.AgentStatus; a != nil {
+			if at, ok := parseTime(a.At); ok {
+				v.Report = agentreport.Report{State: a.State, Kind: a.Kind, Msg: a.Msg, At: at}
+			}
+		}
+		v.HostStartedAt, _ = parseTime(r.HostStartedAt)
+		if r.LastExit != nil {
+			v.LastExitAt, _ = parseTime(r.LastExit.At)
+		}
 		return v, r
 	}
 	return nil, nil
@@ -1817,7 +1832,7 @@ func (t *pass) report(a Action) daemonstate.State {
 		// what was decided: woken already, or why it was not.
 		e, _ := t.obs.Ledger.Get(a.Task)
 		woken, whyNot := stallWake(t.obs, e, t.obs.Session)
-		n.Body = stallBody(a.Task, a.Session, woken, whyNot)
+		n.Body = stallBody(a.Task, a.Session, woken, whyNot, t.reportMsg(a))
 	} else {
 		kind = "host_gone"
 		n.Title = HostGoneTitlePrefix + fmt.Sprintf("%s (%s)", a.Task, a.Session)
@@ -1842,6 +1857,23 @@ func (t *pass) report(a Action) daemonstate.State {
 	return st
 }
 
+// reportMsg is the agent's own words to quote in a stall item, or "" when the
+// stall did not come from its report. It is asked of the observation Decide
+// chose from: the report is quoted only when it is what put the session over
+// the limit, i.e. agentWaitSince names the report's time and not the hook's.
+// A hook-driven stall quotes nothing, because the report may be a stale
+// leftover or say something unrelated to the wait the hook flagged.
+func (t *pass) reportMsg(a Action) string {
+	s := t.obs.Session
+	if s == nil || s.Name != a.Session {
+		return ""
+	}
+	if !agentreport.Blocked(s.Report) || !agentreport.Fresh(s.Report, s.HostStartedAt, s.LastExitAt) {
+		return ""
+	}
+	return s.Report.Msg
+}
+
 // stallBody tells the owner what to do about a session that is asking
 // something. `afk attach` is the right tool here because the host is alive:
 // attach connects to a running host and never starts one.
@@ -1859,7 +1891,7 @@ func (t *pass) report(a Action) daemonstate.State {
 //
 // The body cannot name its own item's id, which the store picks when the
 // item is written, so it says where the id is shown.
-func stallBody(task, sess string, woken bool, whyNot string) string {
+func stallBody(task, sess string, woken bool, whyNot, msg string) string {
 	var did string
 	switch {
 	case woken:
@@ -1870,13 +1902,17 @@ func stallBody(task, sess string, woken bool, whyNot string) string {
 	default:
 		did = "afk did not wake it by typing its resume command, so someone has to look."
 	}
+	var says string
+	if q := agentreport.Clean(msg); q != "" {
+		says = fmt.Sprintf("It says: \"%s\" ", q)
+	}
 	return fmt.Sprintf("The session for %s is asking something at the terminal, and has been for longer than afk waits. "+
-		"%s\n\n"+
+		"%s%s\n\n"+
 		"What to do next:\n"+
 		"1. Run `afk attach %s` and answer what it is asking. If the agent is idle instead, type `%s` there.\n"+
 		"2. Then answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
 		"afk goes back to watching %s once it is answered.",
-		task, did, sess, resumeCommand(sess), task)
+		task, says, did, sess, resumeCommand(sess), task)
 }
 
 // hostGoneBody tells the owner what to do about a session whose host has

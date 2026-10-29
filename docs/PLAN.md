@@ -708,6 +708,8 @@ in `decideNext`, so a held fix task is parked like any other.
    - `awaiting_input` set for longer than `stall_after` (default 10 minutes) → `failure` item
      "session is asking something at the terminal". Under bypassed permissions this should not happen;
      when it does, a human needs to look.
+
+   Amended 2026-10-28 (T17.12 done): a fresh blocked report from the agent counts as waiting; see docs/decisions.md ## T17.12.
 5. Record every transition in the decision log.
 
    Amended 2026-10-12 (T2.3): the stopped-host item ("Session stopped running: …") is now raised only
@@ -4551,6 +4553,8 @@ called by a test: `internal/rex` is an interface with a fake, as `gh` and `git` 
 - **Acceptance:** new rows in the stall-rule and `planchat` tables (the hook alone, the report alone,
   both, a stale report, a report from an earlier agent before a restart); `make check` is green.
 - Amended 2026-10-28 (T17.1 done): the records Claude Code 2.1.311 sends (`docs/decisions.md` `## T17.1` §1): `idle` once at start-up; `working` with no `msg` for a whole turn; `done` at the end of a turn, and it STAYS `done` while idle with nothing further sent, so "idle for longer than" is read from the record's `at`, not from a state; `blocked` `kind=permission` `msg` "approve Bash: touch hello.txt"; `blocked` `kind=question` `msg` "answer: What is your favourite colour? (Red · Green · Blue)"; `clear` three times on exit. A `working` record carrying the question as `msg` arrives 29 ms before the question's `blocked`, so "working with a msg" is not waiting. The trust dialog at start-up reports nothing (`program_status` is `[]`), so the stall rule keeps a fallback that does not need a report for a session that has never reported. A crashed agent under a living host leaves its last record (T17.7's host clears it), so a report older than `last_exit.at` is stale. Codex and OpenCode were not measured (not installed on the VM).
+
+- Amended 2026-10-28 (T17.12 done): the stall rule and the planning chat read a fresh `blocked` report from the agent. The report's own time starts its wait, a report from before the host's start or its last exit is ignored, and the stall item quotes what the agent says. The rules and the decisions behind them are in `docs/decisions.md` `## T17.12`.
 
 #### T17.13 — Keep the agent's last screen
 - **Depends on:** T17.8

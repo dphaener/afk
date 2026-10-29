@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/governor"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
@@ -242,6 +243,18 @@ func waiting(d time.Duration) func(*SessionView) {
 	return func(v *SessionView) { v.AwaitingInput, v.UpdatedAt = true, now.Add(-d) }
 }
 
+// blockedReport is the agent's own report of a `blocked` wait of the given
+// kind, made d before now, with a message the stall item may quote.
+func blockedReport(kind string, d time.Duration) agentreport.Report {
+	return agentreport.Report{State: "blocked", Kind: kind, Msg: "Approve the edit?", At: now.Add(-d)}
+}
+
+// withReport is a view change: the host republished r, and the host started
+// with the attempt, so a report made since is fresh.
+func withReport(r agentreport.Report) func(*SessionView) {
+	return func(v *SessionView) { v.Report, v.HostStartedAt = r, started }
+}
+
 // stopped is a view change: the host is not running, as after a pause. The
 // status time is left recent, so a row that reaches recovery by mistake is
 // caught by the gone rows and not by this one.
@@ -345,6 +358,26 @@ func questionHeld(id string, items ...string) ledger.Entry {
 //     paged every StallAfter for ever.
 //   - "a stall item from an earlier attempt does not suppress a new one":
 //     the limit is per attempt. A new attempt that stalls must still page.
+//   - "report-only blocked past stall_after stalls" and its "within" twin:
+//     the agent's own blocked report is a wait with no hook write at all,
+//     and it is measured from the report's time with the same "over".
+//   - "report-only working never stalls", "report-only stale report never
+//     stalls" and "report from an earlier agent before a restart never
+//     stalls": only a fresh blocked report counts. A record left behind by an
+//     agent that exited (same second as the exit included) or one from
+//     before the host's start would page the owner about a dead agent.
+//   - "hook and report both, report started first, stalls on the report":
+//     the earlier start wins, so the report brings the page forward; without
+//     it the hook's later write would hold the stall back.
+//   - "hook alone unchanged": a zero report decides as before reports
+//     existed, which every older stall row also pins.
+//   - "report alone, woken once, wakes first" and "a report-only wait after
+//     a wake gets a whole stall_after": a report-only stall goes through the
+//     one resume command first (plan A7), and the wake restarts its clock
+//     although the report keeps its time; without that the owner would be
+//     paged on the tick after the wake.
+//   - "an answer restarts the report's stall clock": the same reason the
+//     hook's clock restarts on an answer.
 //   - "stale status with a dead host past the grace reports host gone": an
 //     unreadable status.json is never a failure, but a daemon that waits
 //     silently for ever on a dead session is its worst failure.
@@ -1042,6 +1075,122 @@ func TestDecide(t *testing.T) {
 				v.UpdatedAt = now.Add(-time.Hour)
 			}),
 			want: Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+
+		// Rule 3g with the agent's own report (T17.12). The host started
+		// with the attempt, an hour ago, and the status was last written a
+		// second ago without awaiting_input, unless a row says otherwise.
+		{
+			name:    "report-only blocked past stall_after stalls",
+			ledger:  led(running("T1.1")),
+			session: view(withReport(blockedReport("question", stallAfter+time.Second))),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "report-only blocked within stall_after waits",
+			ledger:    led(running("T1.1")),
+			session:   view(withReport(blockedReport("permission", stallAfter))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:   "report-only working never stalls",
+			ledger: led(running("T1.1")),
+			session: view(withReport(func() agentreport.Report {
+				r := blockedReport("", time.Hour-time.Second)
+				r.State = "working"
+				return r
+			}())),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// The agent that sent it exited in the same second, under a host
+			// that lives on: same-second is stale (agentreport.Fresh).
+			name:   "report-only stale report never stalls",
+			ledger: led(running("T1.1")),
+			session: view(both(withReport(blockedReport("question", 30*time.Minute)), func(v *SessionView) {
+				v.LastExitAt = now.Add(-30 * time.Minute)
+			})),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:   "report from an earlier agent before a restart never stalls",
+			ledger: led(running("T1.1")),
+			session: view(both(withReport(blockedReport("question", 30*time.Minute)), func(v *SessionView) {
+				v.HostStartedAt = now.Add(-20 * time.Minute)
+			})),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			// The hook wrote awaiting_input five minutes ago, within the
+			// limit; the report says the agent was blocked eleven minutes ago.
+			name:    "hook and report both, report started first, stalls on the report",
+			ledger:  led(running("T1.1")),
+			session: view(both(waiting(5*time.Minute), withReport(blockedReport("question", stallAfter+time.Minute)))),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// The hook started first: a later report does not hold it back.
+			name:    "hook and report both, hook started first, stalls on the hook",
+			ledger:  led(running("T1.1")),
+			session: view(both(waiting(stallAfter+time.Minute), withReport(blockedReport("question", time.Minute)))),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:    "hook alone unchanged",
+			ledger:  led(running("T1.1")),
+			session: view(waiting(stallAfter + time.Second)),
+			want:    Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			// An earlier wake, for an earlier wait the session wrote its
+			// status after: this wait has not been woken yet.
+			name:      "report alone, woken once, wakes first",
+			obs:       waking(nil),
+			ledger:    led(woken("T1.1", 1, 30*time.Minute)),
+			session:   view(withReport(blockedReport("question", stallAfter+time.Second))),
+			want:      Action{Kind: ActWake, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"waiting at the terminal", "before telling you"},
+		},
+		{
+			// Woken five minutes ago and nothing written since; the report
+			// keeps its old time, but the wake restarts the clock.
+			name:   "a report-only wait after a wake gets a whole stall_after",
+			obs:    waking(nil),
+			ledger: led(woken("T1.1", 1, 5*time.Minute)),
+			session: view(both(withReport(blockedReport("question", 30*time.Minute)), func(v *SessionView) {
+				v.UpdatedAt = now.Add(-40 * time.Minute)
+			})),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:   "a report-only wait is reported stall_after after the wake",
+			obs:    waking(nil),
+			ledger: led(woken("T1.1", 1, stallAfter+time.Second)),
+			session: view(both(withReport(blockedReport("question", 30*time.Minute)), func(v *SessionView) {
+				v.UpdatedAt = now.Add(-40 * time.Minute)
+			})),
+			want: Action{Kind: ActStall, Task: "T1.1", Session: "t1-1"},
+		},
+		{
+			name:      "an answer restarts the report's stall clock",
+			ledger:    led(running("T1.1")),
+			items:     []inbox.Item{answered(blocking(item("q1", "T1.1", "")), stallAfter)},
+			session:   view(withReport(blockedReport("question", 30*time.Minute))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"running T1.1"},
+		},
+		{
+			name:      "a report-only stall is reported once per attempt",
+			ledger:    led(running("T1.1")),
+			items:     []inbox.Item{answered(titled(item("st1", "T1.1", "t1-1"), StallTitlePrefix), 20*time.Minute)},
+			session:   view(withReport(blockedReport("auth", 30*time.Minute))),
+			want:      Action{Kind: ActWait, Task: "T1.1", Session: "t1-1"},
+			reasonHas: []string{"already reported"},
 		},
 
 		// Rule 3h.

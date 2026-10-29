@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
@@ -713,6 +715,25 @@ func (r *rig) setAwaiting(name string, on bool) {
 	r.writeStatus(name, func(st *state.Status) { st.AwaitingInput = on })
 }
 
+// reportFixture is what the fake discovery reads in place of the agent_status
+// and started_at of a host.json.
+type reportFixture struct {
+	HostStartedAt, State, Kind, Msg, At string
+}
+
+// setReport gives the session a host.json agent report seen at the given time,
+// from a host that started at hostStarted.
+func (r *rig) setReport(name string, hostStarted time.Time, state, kind, msg string, at time.Time) {
+	r.t.Helper()
+	data, err := json.Marshal(reportFixture{HostStartedAt: stamp(hostStarted), State: state, Kind: kind, Msg: msg, At: stamp(at)})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.sessionDir(name), "report.json"), data, 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
 func (r *rig) stopHost(name string) {
 	r.t.Helper()
 	if err := os.Remove(filepath.Join(r.sessionDir(name), "hostup")); err != nil {
@@ -751,6 +772,14 @@ func (r *rig) sessions(root string) ([]discover.SessionState, error) {
 		// for a session whose status cannot be read too.
 		if data, err := os.ReadFile(filepath.Join(r.sessionDir(name), "wedged")); err == nil {
 			ss.WedgedSince = string(data)
+		}
+		// host.json's agent report, as setReport wrote it.
+		if data, err := os.ReadFile(filepath.Join(r.sessionDir(name), "report.json")); err == nil {
+			var f reportFixture
+			if json.Unmarshal(data, &f) == nil {
+				ss.HostStartedAt = f.HostStartedAt
+				ss.AgentStatus = &discover.AgentStatus{State: f.State, Kind: f.Kind, Msg: f.Msg, At: f.At}
+			}
 		}
 		res := state.ReadStatus(statusPath)
 		if res.Stale {
@@ -1393,7 +1422,7 @@ func TestTickHostGoneRaisesOneItem(t *testing.T) {
 	if strings.Contains(it.Body, "afk attach") {
 		t.Errorf("the host-gone body sends the owner to `afk attach`, which cannot start a stopped host:\n%s", it.Body)
 	}
-	if strings.Contains(stallBody("T1.1", "t1-1", false, ""), "afk dash") || strings.Contains(stallBody("T1.1", "t1-1", true, ""), "afk dash") {
+	if strings.Contains(stallBody("T1.1", "t1-1", false, "", ""), "afk dash") || strings.Contains(stallBody("T1.1", "t1-1", true, "", ""), "afk dash") {
 		t.Error("the stall body names `afk dash`; the two bodies must name their own commands")
 	}
 	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) {
@@ -5527,4 +5556,143 @@ func TestTickQuestionWithoutReadPlan(t *testing.T) {
 		t.Errorf("items = %+v, want the one item still open", items)
 	}
 	r.wantDecisions("launch")
+}
+
+// TestViewOfReport pins how host.json's agent report, its start and the last
+// exit reach the view. The load-bearing rows are the missing and unreadable
+// ones: a view with a zero report is how Decide reads "no report", so a time
+// that cannot be read must drop the report rather than guess one.
+func TestViewOfReport(t *testing.T) {
+	at := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	started := at.Add(-time.Hour)
+	exit := at.Add(-30 * time.Minute)
+	cases := []struct {
+		name       string
+		row        discover.SessionState
+		wantReport agentreport.Report
+		wantStart  time.Time
+		wantExit   time.Time
+	}{
+		{name: "no report leaves the view zero", row: discover.SessionState{Name: "t1-1"}},
+		{name: "a report and its host start",
+			row: discover.SessionState{Name: "t1-1", HostStartedAt: stamp(started),
+				AgentStatus: &discover.AgentStatus{State: "blocked", Kind: "question", Msg: "which?", At: stamp(at)}},
+			wantReport: agentreport.Report{State: "blocked", Kind: "question", Msg: "which?", At: at}, wantStart: started},
+		{name: "a last exit",
+			row:      discover.SessionState{Name: "t1-1", LastExit: &discover.LastExit{Code: 1, At: stamp(exit)}},
+			wantExit: exit},
+		{name: "an unreadable report time drops the report",
+			row: discover.SessionState{Name: "t1-1", AgentStatus: &discover.AgentStatus{State: "blocked", Kind: "question", Msg: "x", At: "soon"}}},
+		{name: "an unreadable exit time is the zero time",
+			row: discover.SessionState{Name: "t1-1", LastExit: &discover.LastExit{Code: -1, Signal: "KILL", At: "never"}}},
+	}
+	for _, tc := range cases {
+		t.Run(strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
+			v, _ := viewOf([]discover.SessionState{tc.row}, "t1-1")
+			if v == nil {
+				t.Fatal("no view")
+			}
+			if v.Report.State != tc.wantReport.State || v.Report.Kind != tc.wantReport.Kind ||
+				v.Report.Msg != tc.wantReport.Msg || !v.Report.At.Equal(tc.wantReport.At) {
+				t.Errorf("Report = %+v, want %+v", v.Report, tc.wantReport)
+			}
+			if !v.HostStartedAt.Equal(tc.wantStart) || !v.LastExitAt.Equal(tc.wantExit) {
+				t.Errorf("HostStartedAt = %v, LastExitAt = %v; want %v and %v", v.HostStartedAt, v.LastExitAt, tc.wantStart, tc.wantExit)
+			}
+		})
+	}
+}
+
+// TestStallBodyQuotesMsg pins the stall item's quote. The load-bearing row is
+// "empty": with no report the text must stay exactly what owners saw before,
+// so the other stall tests and any docs quoting it still hold. "cleaned" pins
+// that control bytes and runs of white space never reach an inbox item, and
+// "long" that a runaway message is cut to agentreport.MaxQuote runes.
+func TestStallBodyQuotesMsg(t *testing.T) {
+	plain := stallBody("T1.1", "t1-1", false, "", "")
+	cases := []struct {
+		name string
+		msg  string
+		want string
+		cut  bool
+	}{
+		{name: "empty", msg: ""},
+		{name: "white space only", msg: " \t\n "},
+		{name: "quoted", msg: "answer: Which colour?", want: `It says: "answer: Which colour?"`},
+		{name: "cleaned", msg: "Allow\x1b  Bash\n\tnow?", want: `It says: "Allow Bash now?"`},
+		{name: "long", msg: strings.Repeat("word ", 100), cut: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stallBody("T1.1", "t1-1", false, "", tc.msg)
+			switch {
+			case tc.want == "" && !tc.cut:
+				if got != plain {
+					t.Errorf("body changed with no usable msg:\n%s", got)
+				}
+			case tc.cut:
+				i := strings.Index(got, `It says: "`)
+				if i < 0 {
+					t.Fatalf("no quote:\n%s", got)
+				}
+				rest := got[i+len(`It says: "`):]
+				q := rest[:strings.Index(rest, `"`)]
+				if n := utf8.RuneCountInString(q); n > agentreport.MaxQuote || !strings.HasSuffix(q, "…") {
+					t.Errorf("quote has %d runes, want <= %d and cut with an ellipsis: %q", n, agentreport.MaxQuote, q)
+				}
+			default:
+				wantContains(t, "the body", got, tc.want, "afk attach t1-1")
+			}
+		})
+	}
+}
+
+// TestTickReportStall runs the tick end to end on a session with no hook flag
+// at all, only a blocked question report in host.json. The load-bearing rows
+// are the first (one item quoting the agent's words) and "second tick" (the
+// item is raised once, as the hook-driven stall is), and "no status write"
+// pins that a report never makes the daemon write status.json.
+func TestTickReportStall(t *testing.T) {
+	r := newRig(t, task("T1.1"))
+	r.tick()
+	r.advance(time.Minute)
+	started := r.clock.Add(-time.Hour)
+	r.setReport("t1-1", started, "blocked", "question", "answer: Which colour?", r.clock.Add(0))
+	statusPath := filepath.Join(r.sessionDir("t1-1"), "status.json")
+	before, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.advance(stallAfter / 2)
+	r.tick()
+	if n := len(r.items()); n != 0 {
+		t.Fatalf("items within stall_after = %d, want 0", n)
+	}
+	r.advance(stallAfter)
+	r.tick()
+	// The first report-only stall may wake the session once (A7); a stand-in
+	// that cannot type leaves the wait to be reported on the same pass.
+	items := r.items()
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1 (logs: %v)", len(items), r.logs)
+	}
+	t.Run("first tick", func(t *testing.T) {
+		wantContains(t, "the stall body", items[0].Body, `It says: "answer: Which colour?"`, "afk attach t1-1")
+	})
+	t.Run("second tick", func(t *testing.T) {
+		r.ticks(5, time.Minute)
+		if n := len(r.items()); n != 1 {
+			t.Errorf("items after more ticks = %d, want 1", n)
+		}
+	})
+	t.Run("no status write", func(t *testing.T) {
+		after, err := os.ReadFile(statusPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(before) {
+			t.Errorf("status.json changed:\n%s\n-> \n%s", before, after)
+		}
+	})
 }
