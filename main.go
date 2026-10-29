@@ -29,6 +29,7 @@ var subcommands = map[string]func([]string){
 	"install":    cmdInstall,
 	"pause":      cmdPause,
 	"resume":     cmdResume,
+	"rex":        cmdRex,
 	"version":    cmdVersion,
 	"_host":      cmdHost,
 	"_rex-check": cmdRexCheck,
@@ -242,6 +243,8 @@ Subcommands:
                  afk pause [project]
   resume         Let the daemon start new tasks in a project again:
                  afk resume [project]
+  rex setup      Write afk.lua, afk's actions for Rex's palette, beside your Rex
+                 init.lua (never editing it): afk rex setup --hub LABEL [--print]
   version        Show the version this binary was built from (also afk --version)
 
 Use 'afk <subcommand> --help' for subcommand options.

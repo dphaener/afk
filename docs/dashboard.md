@@ -224,6 +224,21 @@ The catch is that your terminal doesn't see click-drag while the dashboard holds
 
 ---
 
+## afk in Rex
+
+If you run afk on a server and sit at a laptop with the Rex app, `afk rex setup` gives Rex's command palette four afk actions. The palette runs on your laptop and talks to the hub (the machine running afk) over Rex. Nothing from the palette runs on the laptop itself except the calls.
+
+Set it up once on the laptop: `afk rex setup --hub LABEL`, add `require("afk")` to Rex's `init.lua`, then `rex config reload` (see [`afk rex setup`](reference.md#afk-rex-setup--add-afk-to-rexs-command-palette)).
+
+| Action | What it does |
+|---|---|
+| afk: Open the control room | Brings forward the window of the dashboard in the Rex session named `afk`. |
+| afk: Go to the next agent that needs you | Looks through the agents' reports; an agent that is blocked on you comes first, then one that hit an error. It brings that agent's window forward and logs its message. |
+| afk: Pause the build | Opens a short terminal in the `afk` session that runs `afk pause`. It closes itself when the command finishes; if the command fails at once it stays open so you can read why. |
+| afk: Resume the build | The same, running `afk resume`. |
+
+Keys are suggested in comments inside `afk.lua` (ctrl+alt+a, n, p and r) but none is bound. Remove the `--` in front of a `rex.bind` line if you want one.
+
 ## Multi-project support
 
 The dashboard lists every project you added with `afk project add` (or started with `afk plan approve`), plus the repo you launched it from. Give it search roots in the `[dash]` table of `config.toml` and it discovers every other afk-enabled repo beneath them too, lets you switch between all of them from inside the dashboard (`/`, see [`afk dash`](#afk-dash--launch-the-dashboard)), and no longer needs a repo to launch from at all.
