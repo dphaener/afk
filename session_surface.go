@@ -9,10 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/host"
-	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/session"
 )
 
@@ -67,10 +65,6 @@ type newSurfaceDeps struct {
 	Build         func(cfg session.Config, d session.Deps) (*session.Plan, error)
 	Run           func(p *session.Plan) error
 	CheckProvider func(name string, scratch, autonomous bool) string
-	// LoadConfig reads the machine's settings, for where a new session runs.
-	// nil is the real config.toml. It is called inside the action, which the
-	// page's handler runs off any update loop.
-	LoadConfig func() (daemonconfig.Config, error)
 }
 
 func defaultNewSurfaceDeps() newSurfaceDeps {
@@ -86,9 +80,6 @@ func (d newSurfaceDeps) withDefaults() newSurfaceDeps {
 	}
 	if d.CheckProvider == nil {
 		d.CheckProvider = resolveProviderArg
-	}
-	if d.LoadConfig == nil {
-		d.LoadConfig = func() (daemonconfig.Config, error) { return daemonconfig.Load(daemonconfig.DefaultDeps()) }
 	}
 	return d
 }
@@ -127,17 +118,8 @@ func newAutonomousForSurface(root, name, description string, d newSurfaceDeps) s
 	var out, errOut bytes.Buffer
 	sd := d.Session
 	sd.Stdout, sd.Stderr = &out, &errOut
-	sd = withRuntimeSetting(sd, d.LoadConfig)
 	plan, err := d.Build(cfg, sd)
 	if err != nil {
-		// A start Rex cannot take is also told to the inbox, so it is still
-		// there when the page is closed.
-		var refused *session.StartRefusedError
-		if errors.As(err, &refused) {
-			if _, _, aerr := recordStartRefusal(inbox.Store{Dir: inbox.Dir(root)}, name, err); aerr != nil {
-				return sessionRefused("%s The inbox item for this could not be written: %v", err, aerr)
-			}
-		}
 		return sessionRefused("%s", err)
 	}
 	if err := d.Run(plan); err != nil {
@@ -170,18 +152,10 @@ func defaultRestartSurfaceDeps() restartSurfaceDeps {
 			return discover.Discover(root, discover.DefaultDeps())
 		},
 		SpawnHost: func(spec session.HostSpawn) (session.HostProcess, error) {
-			rt, err := session.RuntimeFor(spec.Worktree, spec.Name)
-			if err != nil {
-				return session.HostProcess{}, err
-			}
-			return rt.Spawn(spec, session.Deps{})
+			return session.SpawnHost(spec, session.Deps{})
 		},
 		RequestRestart: func(worktree, name string) (string, error) {
-			rt, err := session.RuntimeFor(worktree, name)
-			if err != nil {
-				return "", err
-			}
-			return rt.Restart(worktree, name, daemonSendWait, restartReplyWait)
+			return host.RequestRestart(worktree, name, daemonSendWait, restartReplyWait)
 		},
 	}
 }

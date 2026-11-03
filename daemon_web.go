@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/daemon"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/discover"
@@ -26,7 +25,6 @@ import (
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/projectrows"
 	"github.com/dphaener/afk/internal/provider"
-	"github.com/dphaener/afk/internal/rex"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/usagestate"
 	"github.com/dphaener/afk/internal/web"
@@ -135,11 +133,6 @@ func daemonWebDeps(projects func() []daemon.Project, stateDir string, st usagest
 		// page signs devices up into the list the daemon's own sends read.
 		PushDir:  stateDir,
 		PushSend: webPushSend(stateDir, now),
-		// The Watch view's screen read (T17.14). The live reader calls it
-		// only while someone watches and never on its own goroutine. Like
-		// every other Rex caller in afk it talks to the machine's default
-		// Rex server (see realScreenSaver in daemon_cmd.go).
-		WatchScreen: newWebWatcher(rex.NewCaller(rex.NewRun(rex.DefaultTimeout), "rex")).screen,
 	}
 }
 
@@ -297,22 +290,7 @@ func webPlanChat(now func() time.Time) func(project, root string) planchat.Chat 
 			if err != nil {
 				return planchat.HostInfo{Provider: meta.Provider}, true
 			}
-			info := planchat.HostInfo{StartedAt: started, Provider: meta.Provider, Alive: host.Alive(meta.PID)}
-			// The agent's own report and the child's last exit time let the
-			// chat tell a question the agent is blocked on before its
-			// transcript has it (internal/agentreport). A report whose own
-			// time cannot be read stays out: it cannot be told from one left
-			// by an earlier agent. The msg is never sent to a web response;
-			// planchat only reads the report's state and kind.
-			if a := meta.AgentStatus; a != nil {
-				if at, err := time.Parse(time.RFC3339, a.At); err == nil {
-					info.Report = agentreport.Report{State: a.State, Kind: a.Kind, Msg: a.Msg, At: at}
-				}
-			}
-			if meta.LastExit != nil {
-				info.LastExitAt, _ = time.Parse(time.RFC3339, meta.LastExit.At)
-			}
-			return info, true
+			return planchat.HostInfo{StartedAt: started, Provider: meta.Provider, Alive: host.Alive(meta.PID)}, true
 		},
 		// An empty name is the default provider; Lookup resolves it.
 		Conversation: func(name string, q provider.ConversationQuery) ([]provider.ConversationEntry, error) {
@@ -360,11 +338,7 @@ func webPlanReply(now func() time.Time) func(project, root string, r planchat.Re
 			return provider.Lookup(meta.Provider)
 		},
 		Send: func(root string, chunks [][]byte) error {
-			rt, err := session.RuntimeFor(root, session.PlanSessionName)
-			if err != nil {
-				return err
-			}
-			return rt.SendKeys(root, session.PlanSessionName, chunks, planReplyWait)
+			return host.SendKeys(root, session.PlanSessionName, chunks, planReplyWait)
 		},
 	}
 	return func(project, root string, r planchat.Reply) error {
@@ -527,7 +501,7 @@ func webSessionViews(found []discover.SessionState) []web.SessionView {
 // Both the web page's Sessions seam and the dashboard's all-projects seam use
 // it, so the two see the same facts.
 func webSessionViewsWithStart(found []discover.SessionState) []web.SessionView {
-	return withWatchable(withStartedAt(webSessionViews(found), host.ReadMeta), host.ReadMeta)
+	return withStartedAt(webSessionViews(found), host.ReadMeta)
 }
 
 // withStartedAt sets each view's StartedAt from its host.json. The file lives

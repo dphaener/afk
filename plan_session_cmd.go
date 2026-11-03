@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dphaener/afk/internal/daemonconfig"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -125,21 +123,7 @@ func realPlanDeps() planDeps {
 		stdoutTTY:    func() bool { return isTerminal(os.Stdout) },
 		hostAlive:    planHostAlive,
 		spawn: func(spec session.HostSpawn) (session.HostProcess, error) {
-			// The planning session is the one start here that makes a
-			// session, so the machine's backend decides where it runs. A
-			// refusal is also raised as an inbox item, like a build start.
-			sd := withRuntimeSetting(session.DefaultDeps(), func() (daemonconfig.Config, error) {
-				return daemonconfig.Load(daemonconfig.DefaultDeps())
-			})
-			if err := session.RefuseNewStart(context.Background(), sd); err != nil {
-				reportStartRefusal(spec.Worktree, spec.Name, &session.StartRefusedError{Err: err}, io.Discard)
-				return session.HostProcess{}, err
-			}
-			rt, err := session.NewStartRuntime(spec.Worktree, spec.Name, sd)
-			if err != nil {
-				return session.HostProcess{}, err
-			}
-			return rt.Spawn(spec, sd)
+			return session.SpawnHost(spec, session.DefaultDeps())
 		},
 		attach:     attachPlanSession,
 		lintErrors: func(plan []byte) int { return planlint.Lint(plan).Summary.Errors },
@@ -154,7 +138,7 @@ func realPlanDeps() planDeps {
 		// Stderr is discarded for the reason realApproveDeps gives: a warning
 		// must never be written into a terminal the dashboard owns.
 		stopPlanHost: func(root string) (session.HostStop, error) {
-			return stopPlanSessionHost(root)
+			return session.StopHost(root, session.PlanSessionName, session.CleanDeps{Stderr: io.Discard})
 		},
 		logDecision: func(root string, e decisionlog.Entry) error {
 			return decisionlog.Append(decisionlog.Path(root), e)
@@ -1558,16 +1542,4 @@ func runPlanAdvance(args []string, stdout, stderr io.Writer, deps planDeps) int 
 		recordPlanReady(project.Root, deps.review, deps.now(), stderr)
 	}
 	return 0
-}
-
-// stopPlanSessionHost ends the planning session's host through the runtime
-// its host.json names. Stderr is discarded because a warning must never be
-// written into a terminal the dashboard owns. An unknown runtime is refused
-// as HostGone with the error, so nothing is signalled or removed.
-func stopPlanSessionHost(root string) (session.HostStop, error) {
-	rt, err := session.RuntimeFor(root, session.PlanSessionName)
-	if err != nil {
-		return session.HostGone, err
-	}
-	return rt.Stop(root, session.PlanSessionName, session.CleanDeps{Stderr: io.Discard})
 }

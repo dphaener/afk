@@ -9,30 +9,28 @@ import (
 // name can never be routable-but-undispatchable. `_host` is deliberately here
 // but absent from printUsage: it is the internal session-host entry point.
 var subcommands = map[string]func([]string){
-	"new":        cmdNew,
-	"dash":       cmdDash,
-	"clean":      cmdClean,
-	"attach":     cmdAttach,
-	"notify":     cmdNotify,
-	"plugin":     cmdPlugin,
-	"plan":       cmdPlan,
-	"tasks":      cmdTasks,
-	"next":       cmdNext,
-	"ledger":     cmdLedger,
-	"profile":    cmdProfile,
-	"project":    cmdProject,
-	"usage":      cmdUsage,
-	"inbox":      cmdInbox,
-	"tokens":     cmdTokens,
-	"daemon":     cmdDaemon,
-	"web":        cmdWeb,
-	"install":    cmdInstall,
-	"pause":      cmdPause,
-	"resume":     cmdResume,
-	"rex":        cmdRex,
-	"version":    cmdVersion,
-	"_host":      cmdHost,
-	"_rex-check": cmdRexCheck,
+	"new":     cmdNew,
+	"dash":    cmdDash,
+	"clean":   cmdClean,
+	"attach":  cmdAttach,
+	"notify":  cmdNotify,
+	"plugin":  cmdPlugin,
+	"plan":    cmdPlan,
+	"tasks":   cmdTasks,
+	"next":    cmdNext,
+	"ledger":  cmdLedger,
+	"profile": cmdProfile,
+	"project": cmdProject,
+	"usage":   cmdUsage,
+	"inbox":   cmdInbox,
+	"tokens":  cmdTokens,
+	"daemon":  cmdDaemon,
+	"web":     cmdWeb,
+	"install": cmdInstall,
+	"pause":   cmdPause,
+	"resume":  cmdResume,
+	"version": cmdVersion,
+	"_host":   cmdHost,
 }
 
 type routeKind int
@@ -243,8 +241,6 @@ Subcommands:
                  afk pause [project]
   resume         Let the daemon start new tasks in a project again:
                  afk resume [project]
-  rex setup      Write afk.lua, afk's actions for Rex's palette, beside your Rex
-                 init.lua (never editing it): afk rex setup --hub LABEL [--print]
   version        Show the version this binary was built from (also afk --version)
 
 Use 'afk <subcommand> --help' for subcommand options.

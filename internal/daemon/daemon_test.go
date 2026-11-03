@@ -11,9 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
-	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
@@ -161,22 +159,6 @@ type rig struct {
 	promptSaw    []ledger.Entry
 	onPrompt     func()
 	turnFailedFn func(worktree, sess string) (state.TurnFailed, bool)
-
-	// screenOn sets Deps.SaveScreen. Off unless a test turns it on, so every
-	// test written before the loop saved screens runs as it did. screenSaves
-	// is every call made, and screenErr what the fake answers.
-	screenOn    bool
-	screenSaves []screenCall
-	screenErr   error
-}
-
-// screenCall is one screen save the loop asked for. left is how long the
-// context it was handed had to run, and deadline whether it had an end at
-// all: a save with no deadline could hold a tick up for ever.
-type screenCall struct {
-	session  string
-	left     time.Duration
-	deadline bool
 }
 
 // recoveryTakes is how far a fake restart or relaunch that works moves the
@@ -511,13 +493,6 @@ func (r *rig) deps() Deps {
 		d.PatchPlan = r.fakePatch
 	}
 	d.TurnFailed = r.turnFailedFn
-	if r.screenOn {
-		d.SaveScreen = func(ctx context.Context, sess string) error {
-			dl, ok := ctx.Deadline()
-			r.screenSaves = append(r.screenSaves, screenCall{session: sess, left: time.Until(dl), deadline: ok})
-			return r.screenErr
-		}
-	}
 	return d
 }
 
@@ -738,25 +713,6 @@ func (r *rig) setAwaiting(name string, on bool) {
 	r.writeStatus(name, func(st *state.Status) { st.AwaitingInput = on })
 }
 
-// reportFixture is what the fake discovery reads in place of the agent_status
-// and started_at of a host.json.
-type reportFixture struct {
-	HostStartedAt, State, Kind, Msg, At string
-}
-
-// setReport gives the session a host.json agent report seen at the given time,
-// from a host that started at hostStarted.
-func (r *rig) setReport(name string, hostStarted time.Time, state, kind, msg string, at time.Time) {
-	r.t.Helper()
-	data, err := json.Marshal(reportFixture{HostStartedAt: stamp(hostStarted), State: state, Kind: kind, Msg: msg, At: stamp(at)})
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(r.sessionDir(name), "report.json"), data, 0o644); err != nil {
-		r.t.Fatal(err)
-	}
-}
-
 func (r *rig) stopHost(name string) {
 	r.t.Helper()
 	if err := os.Remove(filepath.Join(r.sessionDir(name), "hostup")); err != nil {
@@ -795,14 +751,6 @@ func (r *rig) sessions(root string) ([]discover.SessionState, error) {
 		// for a session whose status cannot be read too.
 		if data, err := os.ReadFile(filepath.Join(r.sessionDir(name), "wedged")); err == nil {
 			ss.WedgedSince = string(data)
-		}
-		// host.json's agent report, as setReport wrote it.
-		if data, err := os.ReadFile(filepath.Join(r.sessionDir(name), "report.json")); err == nil {
-			var f reportFixture
-			if json.Unmarshal(data, &f) == nil {
-				ss.HostStartedAt = f.HostStartedAt
-				ss.AgentStatus = &discover.AgentStatus{State: f.State, Kind: f.Kind, Msg: f.Msg, At: f.At}
-			}
 		}
 		res := state.ReadStatus(statusPath)
 		if res.Stale {
@@ -1445,7 +1393,7 @@ func TestTickHostGoneRaisesOneItem(t *testing.T) {
 	if strings.Contains(it.Body, "afk attach") {
 		t.Errorf("the host-gone body sends the owner to `afk attach`, which cannot start a stopped host:\n%s", it.Body)
 	}
-	if strings.Contains(stallBody("T1.1", "t1-1", false, "", ""), "afk dash") || strings.Contains(stallBody("T1.1", "t1-1", true, "", ""), "afk dash") {
+	if strings.Contains(stallBody("T1.1", "t1-1", false, ""), "afk dash") || strings.Contains(stallBody("T1.1", "t1-1", true, ""), "afk dash") {
 		t.Error("the stall body names `afk dash`; the two bodies must name their own commands")
 	}
 	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) {
@@ -1459,201 +1407,6 @@ func TestTickHostGoneRaisesOneItem(t *testing.T) {
 		t.Errorf("items after the answer = %d, want still 1", n)
 	}
 	r.wantDecisions("launch", "host_gone", "unpark")
-}
-
-// wantOneSave checks the loop asked for exactly one screen save, of sess,
-// with a context that ends within the 30-second bound.
-func (r *rig) wantOneSave(sess string) {
-	r.t.Helper()
-	if len(r.screenSaves) != 1 {
-		r.t.Fatalf("screen saves = %+v, want exactly one", r.screenSaves)
-	}
-	c := r.screenSaves[0]
-	if c.session != sess || !c.deadline || c.left <= 0 || c.left > screenSaveTimeout {
-		r.t.Errorf("screen save = %+v, want %s with a deadline of at most %s", c, sess, screenSaveTimeout)
-	}
-}
-
-// TestTickFailedPhaseScreenSaved: a failed session's screen is saved once,
-// before its one item is raised, and the item says where. The later ticks
-// (moving on to the next task, the failed item sitting open) save nothing:
-// only the transition saves.
-func TestTickFailedPhaseScreenSaved(t *testing.T) {
-	r := newRig(t, task("T1.1"), task("T1.2"))
-	r.screenOn = true
-	r.tick()
-	r.advance(time.Minute)
-	r.setPhase("t1-1", state.PhaseFailed)
-	if st := r.tick(); st.Kind != string(ActFail) {
-		t.Fatalf("state = %+v", st)
-	}
-	items := r.items()
-	if len(items) != 1 {
-		t.Fatalf("items = %d, want 1", len(items))
-	}
-	r.wantOneSave("t1-1")
-	if want := "\n\nThe agent's screen was saved to .afk/t1-1/terminal.html."; !strings.HasSuffix(items[0].Body, want) {
-		t.Errorf("the failure body does not end with %q:\n%s", want, items[0].Body)
-	}
-	r.ticks(10, 5*time.Second)
-	if len(r.screenSaves) != 1 || len(r.items()) != 1 {
-		t.Errorf("after ten more ticks: saves %d, items %d; want 1 and 1", len(r.screenSaves), len(r.items()))
-	}
-}
-
-// TestTickStallRaisesOneItemScreenSaveFails: a screen that cannot be saved
-// still raises the stall item, exactly once, and parks the task. The item
-// says the screen could not be saved and why. This is the load-bearing rule
-// of the feature: a failed read must never cost the owner the item.
-func TestTickStallRaisesOneItemScreenSaveFails(t *testing.T) {
-	r := newRig(t, task("T1.1"))
-	r.screenOn = true
-	r.screenErr = errors.New("the block for t1-1 is gone.")
-	r.tick()
-	r.advance(time.Minute)
-	r.setAwaiting("t1-1", true)
-	r.advance(stallAfter + time.Second)
-	st := r.tick()
-
-	items := r.items()
-	if len(items) != 1 {
-		t.Fatalf("items = %d, want 1 (logs: %v)", len(items), r.logs)
-	}
-	it := items[0]
-	if st.Kind != string(ActStall) || !strings.HasPrefix(it.Title, StallTitlePrefix) {
-		t.Errorf("state %+v, item %q", st, it.Title)
-	}
-	r.wantOneSave("t1-1")
-	if want := "\n\nThe agent's screen could not be saved: the block for t1-1 is gone."; !strings.HasSuffix(it.Body, want) {
-		t.Errorf("the stall body does not end with %q:\n%s", want, it.Body)
-	}
-	if e := r.wantStatus("T1.1", ledger.Parked); !slices.Equal(e.ParkedOn, []string{it.ID}) {
-		t.Errorf("parked on %v, want [%s]", e.ParkedOn, it.ID)
-	}
-	if !slices.ContainsFunc(r.logs, func(l string) bool { return strings.Contains(l, "could not be saved") }) {
-		t.Errorf("the failed save was not logged: %v", r.logs)
-	}
-	r.ticks(20, time.Minute)
-	if len(r.items()) != 1 || len(r.screenSaves) != 1 {
-		t.Errorf("after twenty more ticks: items %d, saves %d; want 1 and 1", len(r.items()), len(r.screenSaves))
-	}
-	r.wantDecisions("launch", "stall")
-}
-
-// TestTickHostGoneRaisesOneItemScreen: a gone host's item carries the screen
-// note whether the save worked or not, and with no saver the body is exactly
-// hostGoneBody, the text it had before screens were saved. The nil row is
-// load-bearing: it is the promise that a loop wired without SaveScreen
-// changes nothing.
-func TestTickHostGoneRaisesOneItemScreen(t *testing.T) {
-	cases := []struct {
-		name      string
-		screenOn  bool
-		screenErr error
-		wantBody  string
-		wantSaves int
-	}{
-		{name: "saved", screenOn: true, wantSaves: 1,
-			wantBody: hostGoneBody("T1.1", "t1-1") + "\n\nThe agent's screen was saved to .afk/t1-1/terminal.html."},
-		{name: "save fails", screenOn: true, screenErr: errors.New("rex is not running"), wantSaves: 1,
-			wantBody: hostGoneBody("T1.1", "t1-1") + "\n\nThe agent's screen could not be saved: rex is not running."},
-		{name: "no saver", wantBody: hostGoneBody("T1.1", "t1-1")},
-	}
-	for _, tt := range cases {
-		t.Run(strings.ReplaceAll(tt.name, " ", "_"), func(t *testing.T) {
-			r := newRig(t, task("T1.1"))
-			r.screenOn, r.screenErr = tt.screenOn, tt.screenErr
-			r.tick()
-			r.stopHost("t1-1")
-			r.advance(hostGrace + time.Second)
-			r.tick()
-			items := r.items()
-			if len(items) != 1 {
-				t.Fatalf("items = %d, want 1 (logs: %v)", len(items), r.logs)
-			}
-			if items[0].Body != tt.wantBody {
-				t.Errorf("body =\n%s\nwant\n%s", items[0].Body, tt.wantBody)
-			}
-			if len(r.screenSaves) != tt.wantSaves {
-				t.Errorf("screen saves = %d, want %d", len(r.screenSaves), tt.wantSaves)
-			}
-			r.wantStatus("T1.1", ledger.Parked)
-		})
-	}
-}
-
-// TestTickScreenNilSaverFailBody: with no saver a failure item says nothing
-// about a screen.
-func TestTickScreenNilSaverFailBody(t *testing.T) {
-	r := newRig(t, task("T1.1"))
-	r.tick()
-	r.advance(time.Minute)
-	r.setPhase("t1-1", state.PhaseFailed)
-	r.tick()
-	items := r.items()
-	if len(items) != 1 {
-		t.Fatalf("items = %d, want 1", len(items))
-	}
-	if strings.Contains(items[0].Body, "screen") {
-		t.Errorf("the body names a screen with no saver:\n%s", items[0].Body)
-	}
-}
-
-// TestTickParkScreenSaved: the daemon's own park saves the screen once, and
-// the parked hour after it and the un-park save nothing. Park raises no item,
-// so the outcome is in the decision log's choice.
-func TestTickParkScreenSaved(t *testing.T) {
-	r := newRig(t, task("T1.1"))
-	r.screenOn = true
-	r.tick()
-	r.advance(time.Minute)
-	q, err := r.store().Add(inbox.NewItem{Task: "T1.1", Session: "t1-1", Kind: "question", Blocking: true, Title: "Which database?"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.setAwaiting("t1-1", true)
-	if st := r.tick(); st.Kind != string(ActPark) {
-		t.Fatalf("state = %+v", st)
-	}
-	r.wantOneSave("t1-1")
-	entries, err := decisionlog.Read(decisionlog.Path(r.root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	last := entries[len(entries)-1]
-	if last.Kind != "park" || !strings.Contains(last.Chosen, "park it on inbox "+q.ID) || !strings.Contains(last.Chosen, "screen was saved") {
-		t.Errorf("park decision = %+v", last)
-	}
-
-	r.ticks(12, 5*time.Minute)
-	r.answer(q.ID)
-	r.advance(5 * time.Second)
-	if st := r.tick(); st.Kind != string(ActUnpark) {
-		t.Errorf("state on answer = %+v", st)
-	}
-	if len(r.screenSaves) != 1 {
-		t.Errorf("screen saves = %d after the parked hour and the un-park, want 1", len(r.screenSaves))
-	}
-}
-
-// TestTickScreenNotSavedOnRefresh: a session that runs, works and waits at
-// its prompt for less than the stall limit is looked at on every tick and
-// never has its screen read. Reading a terminal costs a call to another
-// process; doing it on the regular tick is what the feature must never do.
-func TestTickScreenNotSavedOnRefresh(t *testing.T) {
-	r := newRig(t, task("T1.1"))
-	r.screenOn = true
-	r.tick()
-	r.setPhase("t1-1", state.PhaseExecuting)
-	r.ticks(30, 5*time.Second)
-	r.setAwaiting("t1-1", true)
-	r.ticks(5, stallAfter/10)
-	if len(r.screenSaves) != 0 {
-		t.Errorf("screen saves = %+v on ticks with no transition, want none", r.screenSaves)
-	}
-	if len(r.items()) != 0 {
-		t.Errorf("items = %d, want none", len(r.items()))
-	}
 }
 
 // TestTickRestartAdoptsRunningSession: a daemon killed mid-task and started
@@ -5774,143 +5527,4 @@ func TestTickQuestionWithoutReadPlan(t *testing.T) {
 		t.Errorf("items = %+v, want the one item still open", items)
 	}
 	r.wantDecisions("launch")
-}
-
-// TestViewOfReport pins how host.json's agent report, its start and the last
-// exit reach the view. The load-bearing rows are the missing and unreadable
-// ones: a view with a zero report is how Decide reads "no report", so a time
-// that cannot be read must drop the report rather than guess one.
-func TestViewOfReport(t *testing.T) {
-	at := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
-	started := at.Add(-time.Hour)
-	exit := at.Add(-30 * time.Minute)
-	cases := []struct {
-		name       string
-		row        discover.SessionState
-		wantReport agentreport.Report
-		wantStart  time.Time
-		wantExit   time.Time
-	}{
-		{name: "no report leaves the view zero", row: discover.SessionState{Name: "t1-1"}},
-		{name: "a report and its host start",
-			row: discover.SessionState{Name: "t1-1", HostStartedAt: stamp(started),
-				AgentStatus: &discover.AgentStatus{State: "blocked", Kind: "question", Msg: "which?", At: stamp(at)}},
-			wantReport: agentreport.Report{State: "blocked", Kind: "question", Msg: "which?", At: at}, wantStart: started},
-		{name: "a last exit",
-			row:      discover.SessionState{Name: "t1-1", LastExit: &discover.LastExit{Code: 1, At: stamp(exit)}},
-			wantExit: exit},
-		{name: "an unreadable report time drops the report",
-			row: discover.SessionState{Name: "t1-1", AgentStatus: &discover.AgentStatus{State: "blocked", Kind: "question", Msg: "x", At: "soon"}}},
-		{name: "an unreadable exit time is the zero time",
-			row: discover.SessionState{Name: "t1-1", LastExit: &discover.LastExit{Code: -1, Signal: "KILL", At: "never"}}},
-	}
-	for _, tc := range cases {
-		t.Run(strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
-			v, _ := viewOf([]discover.SessionState{tc.row}, "t1-1")
-			if v == nil {
-				t.Fatal("no view")
-			}
-			if v.Report.State != tc.wantReport.State || v.Report.Kind != tc.wantReport.Kind ||
-				v.Report.Msg != tc.wantReport.Msg || !v.Report.At.Equal(tc.wantReport.At) {
-				t.Errorf("Report = %+v, want %+v", v.Report, tc.wantReport)
-			}
-			if !v.HostStartedAt.Equal(tc.wantStart) || !v.LastExitAt.Equal(tc.wantExit) {
-				t.Errorf("HostStartedAt = %v, LastExitAt = %v; want %v and %v", v.HostStartedAt, v.LastExitAt, tc.wantStart, tc.wantExit)
-			}
-		})
-	}
-}
-
-// TestStallBodyQuotesMsg pins the stall item's quote. The load-bearing row is
-// "empty": with no report the text must stay exactly what owners saw before,
-// so the other stall tests and any docs quoting it still hold. "cleaned" pins
-// that control bytes and runs of white space never reach an inbox item, and
-// "long" that a runaway message is cut to agentreport.MaxQuote runes.
-func TestStallBodyQuotesMsg(t *testing.T) {
-	plain := stallBody("T1.1", "t1-1", false, "", "")
-	cases := []struct {
-		name string
-		msg  string
-		want string
-		cut  bool
-	}{
-		{name: "empty", msg: ""},
-		{name: "white space only", msg: " \t\n "},
-		{name: "quoted", msg: "answer: Which colour?", want: `It says: "answer: Which colour?"`},
-		{name: "cleaned", msg: "Allow\x1b  Bash\n\tnow?", want: `It says: "Allow Bash now?"`},
-		{name: "long", msg: strings.Repeat("word ", 100), cut: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := stallBody("T1.1", "t1-1", false, "", tc.msg)
-			switch {
-			case tc.want == "" && !tc.cut:
-				if got != plain {
-					t.Errorf("body changed with no usable msg:\n%s", got)
-				}
-			case tc.cut:
-				i := strings.Index(got, `It says: "`)
-				if i < 0 {
-					t.Fatalf("no quote:\n%s", got)
-				}
-				rest := got[i+len(`It says: "`):]
-				q := rest[:strings.Index(rest, `"`)]
-				if n := utf8.RuneCountInString(q); n > agentreport.MaxQuote || !strings.HasSuffix(q, "…") {
-					t.Errorf("quote has %d runes, want <= %d and cut with an ellipsis: %q", n, agentreport.MaxQuote, q)
-				}
-			default:
-				wantContains(t, "the body", got, tc.want, "afk attach t1-1")
-			}
-		})
-	}
-}
-
-// TestTickReportStall runs the tick end to end on a session with no hook flag
-// at all, only a blocked question report in host.json. The load-bearing rows
-// are the first (one item quoting the agent's words) and "second tick" (the
-// item is raised once, as the hook-driven stall is), and "no status write"
-// pins that a report never makes the daemon write status.json.
-func TestTickReportStall(t *testing.T) {
-	r := newRig(t, task("T1.1"))
-	r.tick()
-	r.advance(time.Minute)
-	started := r.clock.Add(-time.Hour)
-	r.setReport("t1-1", started, "blocked", "question", "answer: Which colour?", r.clock.Add(0))
-	statusPath := filepath.Join(r.sessionDir("t1-1"), "status.json")
-	before, err := os.ReadFile(statusPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r.advance(stallAfter / 2)
-	r.tick()
-	if n := len(r.items()); n != 0 {
-		t.Fatalf("items within stall_after = %d, want 0", n)
-	}
-	r.advance(stallAfter)
-	r.tick()
-	// The first report-only stall may wake the session once (A7); a stand-in
-	// that cannot type leaves the wait to be reported on the same pass.
-	items := r.items()
-	if len(items) != 1 {
-		t.Fatalf("items = %d, want 1 (logs: %v)", len(items), r.logs)
-	}
-	t.Run("first tick", func(t *testing.T) {
-		wantContains(t, "the stall body", items[0].Body, `It says: "answer: Which colour?"`, "afk attach t1-1")
-	})
-	t.Run("second tick", func(t *testing.T) {
-		r.ticks(5, time.Minute)
-		if n := len(r.items()); n != 1 {
-			t.Errorf("items after more ticks = %d, want 1", n)
-		}
-	})
-	t.Run("no status write", func(t *testing.T) {
-		after, err := os.ReadFile(statusPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(after) != string(before) {
-			t.Errorf("status.json changed:\n%s\n-> \n%s", before, after)
-		}
-	})
 }

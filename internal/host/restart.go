@@ -342,14 +342,6 @@ func (h *hostRuntime) finishRestart(hs restartHandoff) error {
 		h.log.Printf("restart: closing the retired pty master: %v", err)
 	}
 
-	// Before the spawn, so the new generation's pump starts in the new epoch
-	// and anything the retired pump still hands over is ignored. The old
-	// agent's status goes (the new agent has not reported yet) and the old
-	// child's exit becomes last_exit: host.json survives a restart, so this
-	// is the one exit it can show. waitChild has already logged it.
-	h.agent.reset()
-	h.agent.recordExit(old.exit)
-
 	if err := h.spawn(argv); err != nil {
 		// The old child is reaped and no new one started, so there is nothing
 		// left to serve. Staying up would advertise a reachable session that
@@ -366,9 +358,6 @@ func (h *hostRuntime) finishRestart(hs restartHandoff) error {
 	// with the SIGWINCH, including nothing at all.
 	h.live.noteRestart(time.Now())
 	h.setResumedChild(argv, h.cur.pid())
-	// After setResumedChild, so the forced publish of last_exit already
-	// carries the resumed child's argv and pid.
-	h.nudgeAgentStatus()
 	// The attached pane is still showing the dead child's screen, and the
 	// resumed child has no idea anyone is looking; the same nudge an attaching
 	// client gets is what makes it paint.
@@ -438,21 +427,14 @@ func (l *liveness) noteRestart(now time.Time) {
 // It uses the same non-blocking send as the PTY pump, so a client that has
 // stopped reading cannot delay a restart. The log line beside every call is
 // the durable record.
-//
-// A stdio host's screen is its own terminal, so there the line goes through
-// the terminal writer, which holds it until the stream is at a safe offset.
 func (h *hostRuntime) notifyClient(format string, args ...any) {
-	msg := fmt.Sprintf("\r\n[afk] "+format+"\r\n", args...)
-	if h.stdio != nil {
-		h.stdio.hostLine([]byte(msg), h.log)
-		return
-	}
 	h.mu.Lock()
 	c := h.client
 	h.mu.Unlock()
 	if c == nil {
 		return
 	}
+	msg := fmt.Sprintf("\r\n[afk] "+format+"\r\n", args...)
 	if !c.send(Data, []byte(msg)) {
 		h.log.Printf("could not tell the attached client %q: its queue is full", msg)
 	}
@@ -466,19 +448,10 @@ func (h *hostRuntime) notifyClient(format string, args ...any) {
 // branch on rather than terminal output to grep. Same non-blocking send, same
 // reasoning: a client that has stopped reading cannot delay the host, and the
 // log lines around every restart are the durable record.
-//
-// On a stdio host the answer goes to the requester whose Restart started this
-// restart (stdioHost.restartFor, set on the serve loop, where every caller of
-// this runs), not to the screen, which is the terminal and reads no frames.
 func (h *hostRuntime) sendRestartResult(failure error) {
-	var c *clientConn
-	if h.stdio != nil {
-		c, h.stdio.restartFor = h.stdio.restartFor, nil
-	} else {
-		h.mu.Lock()
-		c = h.client
-		h.mu.Unlock()
-	}
+	h.mu.Lock()
+	c := h.client
+	h.mu.Unlock()
 	if c == nil {
 		return
 	}
