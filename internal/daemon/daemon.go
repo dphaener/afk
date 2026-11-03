@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/dphaener/afk/internal/agentreport"
 	"github.com/dphaener/afk/internal/daemonstate"
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
@@ -445,15 +444,6 @@ type Deps struct {
 	// must not silence the news that a question is waiting. Tick never calls
 	// it. Nil means the loop does nothing of the kind.
 	PlanWaits func(ctx context.Context)
-	// SaveScreen writes the session's terminal, screen and scrollback, to
-	// .afk/{session}/terminal.html (PLAN T17.13). It is called once at a
-	// failure, a stall, a host gone or a park, before the item is raised or
-	// the task parked, with a context that ends after 30 seconds; never on
-	// a tick that only looks. An error is told to the owner in the item's
-	// body and stops nothing. Nil means no screen is saved and every body
-	// reads as it did before screens were. It is a hook because reading a
-	// terminal is the caller's business (see the top of this file).
-	SaveScreen func(ctx context.Context, session string) error
 }
 
 // turnFailed is Deps.TurnFailed with its default.
@@ -1005,20 +995,6 @@ func viewOf(rows []discover.SessionState, name string) (*SessionView, *discover.
 		// verdict must not restart anything: there is no telling how long it
 		// has stood.
 		v.WedgedSince, _ = parseTime(r.WedgedSince)
-		// The agent's own report and the two times that decide whether it is
-		// still current (internal/agentreport). All stay zero when host.json
-		// does not say, which Decide reads as "no report". A report whose own
-		// time cannot be read is dropped: a report with no time cannot be
-		// told from one left by an earlier agent.
-		if a := r.AgentStatus; a != nil {
-			if at, ok := parseTime(a.At); ok {
-				v.Report = agentreport.Report{State: a.State, Kind: a.Kind, Msg: a.Msg, At: at}
-			}
-		}
-		v.HostStartedAt, _ = parseTime(r.HostStartedAt)
-		if r.LastExit != nil {
-			v.LastExitAt, _ = parseTime(r.LastExit.At)
-		}
 		return v, r
 	}
 	return nil, nil
@@ -1374,10 +1350,7 @@ func (t *pass) fail(a Action) daemonstate.State {
 	t.tokens(a)
 	title := fmt.Sprintf("%s failed (session %s)", a.Task, a.Session)
 	if _, have := openTitled(t.obs.Items, title); !have {
-		// Saved only when the item is about to be raised: an open item
-		// means an earlier tick got this far and saved already.
-		note := t.saveScreen(a)
-		_, _ = t.add(inbox.NewItem{Task: a.Task, Session: a.Session, Kind: "failure", Title: title, Body: withNote(t.failBody(a), note)})
+		_, _ = t.add(inbox.NewItem{Task: a.Task, Session: a.Session, Kind: "failure", Title: title, Body: t.failBody(a)})
 	}
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
 		e.Status = ledger.Failed
@@ -1428,26 +1401,16 @@ func (t *pass) failBody(a Action) string {
 }
 
 // park records that a task waits on the owner. Its session is left alone.
-//
-// The screen is saved first, as at every other save point. Park raises no
-// item of its own (the items it parks on are already there, written by the
-// agent or the owner), so there is no body to carry the note: saveScreen
-// logs a failed save, and the outcome goes into the decision log's line.
 func (t *pass) park(a Action) daemonstate.State {
-	note := t.saveScreen(a)
 	if err := t.change(a.Task, ledger.Running, func(e *ledger.Entry) {
 		e.Status = ledger.Parked
 		e.ParkedOn = slices.Clone(a.Items)
 	}); err != nil {
 		return t.ledgerTrouble(a, err)
 	}
-	chosen := fmt.Sprintf("park it on inbox %s", strings.Join(a.Items, ", "))
-	if note != "" {
-		chosen += ". " + note
-	}
 	t.record("park", a.Task, a.Session,
 		fmt.Sprintf("%s has a question only the owner can answer. What now?", a.Task),
-		chosen, ruleWatch)
+		fmt.Sprintf("park it on inbox %s", strings.Join(a.Items, ", ")), ruleWatch)
 	return stateOf(a)
 }
 
@@ -1854,13 +1817,12 @@ func (t *pass) report(a Action) daemonstate.State {
 		// what was decided: woken already, or why it was not.
 		e, _ := t.obs.Ledger.Get(a.Task)
 		woken, whyNot := stallWake(t.obs, e, t.obs.Session)
-		n.Body = stallBody(a.Task, a.Session, woken, whyNot, t.reportMsg(a))
+		n.Body = stallBody(a.Task, a.Session, woken, whyNot)
 	} else {
 		kind = "host_gone"
 		n.Title = HostGoneTitlePrefix + fmt.Sprintf("%s (%s)", a.Task, a.Session)
 		n.Body = hostGoneBody(a.Task, a.Session)
 	}
-	n.Body = withNote(n.Body, t.saveScreen(a))
 	it, err := t.add(n)
 	if err != nil {
 		return daemonstate.State{Kind: string(ActWait), Task: a.Task, Session: a.Session,
@@ -1880,23 +1842,6 @@ func (t *pass) report(a Action) daemonstate.State {
 	return st
 }
 
-// reportMsg is the agent's own words to quote in a stall item, or "" when the
-// stall did not come from its report. It is asked of the observation Decide
-// chose from: the report is quoted only when it is what put the session over
-// the limit, i.e. agentWaitSince names the report's time and not the hook's.
-// A hook-driven stall quotes nothing, because the report may be a stale
-// leftover or say something unrelated to the wait the hook flagged.
-func (t *pass) reportMsg(a Action) string {
-	s := t.obs.Session
-	if s == nil || s.Name != a.Session {
-		return ""
-	}
-	if !agentreport.Blocked(s.Report) || !agentreport.Fresh(s.Report, s.HostStartedAt, s.LastExitAt) {
-		return ""
-	}
-	return s.Report.Msg
-}
-
 // stallBody tells the owner what to do about a session that is asking
 // something. `afk attach` is the right tool here because the host is alive:
 // attach connects to a running host and never starts one.
@@ -1914,7 +1859,7 @@ func (t *pass) reportMsg(a Action) string {
 //
 // The body cannot name its own item's id, which the store picks when the
 // item is written, so it says where the id is shown.
-func stallBody(task, sess string, woken bool, whyNot, msg string) string {
+func stallBody(task, sess string, woken bool, whyNot string) string {
 	var did string
 	switch {
 	case woken:
@@ -1925,17 +1870,13 @@ func stallBody(task, sess string, woken bool, whyNot, msg string) string {
 	default:
 		did = "afk did not wake it by typing its resume command, so someone has to look."
 	}
-	var says string
-	if q := agentreport.Clean(msg); q != "" {
-		says = fmt.Sprintf("It says: \"%s\" ", q)
-	}
 	return fmt.Sprintf("The session for %s is asking something at the terminal, and has been for longer than afk waits. "+
-		"%s%s\n\n"+
+		"%s\n\n"+
 		"What to do next:\n"+
 		"1. Run `afk attach %s` and answer what it is asking. If the agent is idle instead, type `%s` there.\n"+
 		"2. Then answer this item with `afk inbox answer <id> done`, using this item's id (shown by `afk inbox`). "+
 		"afk goes back to watching %s once it is answered.",
-		task, says, did, sess, resumeCommand(sess), task)
+		task, did, sess, resumeCommand(sess), task)
 }
 
 // hostGoneBody tells the owner what to do about a session whose host has

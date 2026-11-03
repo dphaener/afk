@@ -21,7 +21,6 @@ import (
 	"github.com/dphaener/afk/internal/decisionlog"
 	"github.com/dphaener/afk/internal/discover"
 	"github.com/dphaener/afk/internal/governor"
-	"github.com/dphaener/afk/internal/host"
 	"github.com/dphaener/afk/internal/inbox"
 	"github.com/dphaener/afk/internal/ledger"
 	"github.com/dphaener/afk/internal/masterplan"
@@ -29,8 +28,6 @@ import (
 	"github.com/dphaener/afk/internal/planpatch"
 	"github.com/dphaener/afk/internal/projectconfig"
 	"github.com/dphaener/afk/internal/provider"
-	"github.com/dphaener/afk/internal/rex"
-	"github.com/dphaener/afk/internal/screen"
 	"github.com/dphaener/afk/internal/session"
 	"github.com/dphaener/afk/internal/ship"
 	"github.com/dphaener/afk/internal/usagestate"
@@ -1843,7 +1840,7 @@ func TestDaemonPreflight(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &preflightProvider{modeOK: tt.modeOK, pluginOK: tt.pluginOK, modeSteps: "accept the warning\n", pluginSteps: "install the plugin"}
-			ok, steps := daemonPreflight(p, provider.UnattendedDeps{Home: "/home/x"}, nil, nil)(daemon.Project{Name: "demo", Root: "/p/demo"})
+			ok, steps := daemonPreflight(p, provider.UnattendedDeps{Home: "/home/x"}, nil)(daemon.Project{Name: "demo", Root: "/p/demo"})
 			if ok != tt.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -2803,7 +2800,7 @@ func TestDaemonClean(t *testing.T) {
 					return ledger.Ledger{}, tt.ledgerErr
 				}
 				return ledger.Ledger{Tasks: []ledger.Entry{{ID: "T0.9", Status: ledger.Done, Session: "t0-9"}, *tt.entry}}, nil
-			}, nil)
+			})
 			if err := clean(daemon.Project{Name: "demo", Root: root}, tt.session); err != nil {
 				t.Fatalf("clean: %v\n%s", err, out.String())
 			}
@@ -2821,7 +2818,7 @@ func TestDaemonClean(t *testing.T) {
 	t.Run("sessions cannot be listed", func(t *testing.T) {
 		cd := session.DefaultCleanDeps()
 		cd.Run = func(string, string, ...string) (string, error) { return "", errors.New("git is broken") }
-		clean := daemonClean(cd, func(string) (ledger.Ledger, error) { return ledger.Ledger{}, nil }, nil)
+		clean := daemonClean(cd, func(string) (ledger.Ledger, error) { return ledger.Ledger{}, nil })
 		if err := clean(daemon.Project{Name: "demo", Root: t.TempDir()}, "t1-1"); err == nil {
 			t.Error("got no error; a listing that failed is not \"no such session\"")
 		}
@@ -3190,294 +3187,5 @@ func TestPatchPlanNebariRowPassesTheGuard(t *testing.T) {
 	}
 	if after.OpenQuestions != before.OpenQuestions-1 {
 		t.Errorf("open questions went from %d to %d, want one fewer", before.OpenQuestions, after.OpenQuestions)
-	}
-}
-
-// TestDaemonStartCheck covers backend (afk, rex, carried error, unreadable
-// config) x Rex facts (not installed, no answer, answers) at the daemon's
-// launch gate. Load-bearing rows:
-//   - every afk row passes with zero Rex calls, so the build loop of a machine
-//     that never chose Rex is untouched.
-//   - the refusal rows go through daemonPreflight, which is what raises the
-//     one blocking failure item and launches nothing; the steps carry the
-//     plain Rex message.
-//   - "config unreadable" refuses rather than starting on afk's host.
-func TestDaemonStartCheck(t *testing.T) {
-	carried := errors.New("config.toml: [runtime] backend must be \"afk\" or \"rex\"")
-	missing := func(string) (string, error) { return "", errors.New("not found") }
-	found := func(string) (string, error) { return "/usr/bin/rex", nil }
-	rows := []struct {
-		name        string
-		cfg         daemonconfig.Config
-		loadErr     error
-		look        func(string) (string, error)
-		statusErr   error
-		wantMsg     string // "" passes
-		wantMethods int
-	}{
-		{name: "afk not installed", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "afk"}}, look: missing},
-		{name: "afk no answer", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "afk"}}, look: found, statusErr: errors.New("down")},
-		{name: "afk answers", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "afk"}}, look: found},
-		{name: "rex not installed", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "rex"}}, look: missing, wantMsg: "Rex is not installed"},
-		{name: "rex no answer", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "rex"}}, look: found, statusErr: errors.New("down"),
-			wantMsg: "does not answer", wantMethods: 1},
-		{name: "rex answers", cfg: daemonconfig.Config{Runtime: daemonconfig.RuntimeConfig{Backend: "rex"}}, look: found, wantMethods: 1},
-		{name: "carried error", cfg: daemonconfig.Config{RuntimeErr: carried}, look: found, wantMsg: "[runtime] backend"},
-		{name: "config unreadable", loadErr: errors.New("bad toml"), look: found, wantMsg: "could not read config.toml"},
-	}
-	for _, tt := range rows {
-		t.Run(tt.name, func(t *testing.T) {
-			fake := (&rex.Fake{}).On("server.status", `{"api_revision":7}`, tt.statusErr)
-			sd := session.Deps{Rex: session.RexDeps{Caller: fake, LookPath: tt.look}}
-			check := daemonStartCheck(sd, func() (daemonconfig.Config, error) { return tt.cfg, tt.loadErr })
-			p := &preflightProvider{modeOK: true, pluginOK: true}
-			ok, steps := daemonPreflight(p, provider.UnattendedDeps{Home: "/home/x"}, nil, check)(daemon.Project{Name: "demo", Root: "/p/demo"})
-			if ok != (tt.wantMsg == "") {
-				t.Errorf("ok = %v, steps %q; want pass = %v", ok, steps, tt.wantMsg == "")
-			}
-			if tt.wantMsg != "" && !strings.Contains(steps, tt.wantMsg) {
-				t.Errorf("steps %q lack %q", steps, tt.wantMsg)
-			}
-			if got := len(fake.Calls()); got != tt.wantMethods {
-				t.Errorf("rex calls = %d, want %d", got, tt.wantMethods)
-			}
-		})
-	}
-}
-
-// fakeScreens is a screenSaver whose every outside call is a fake. meta is
-// what host.json holds (metaErr instead when set), runtime the runtime marker,
-// saveErr what the save returns. saves records each save's directory and
-// block; callers counts Rex callers made, which must stay zero for a session
-// with no Rex block.
-type fakeScreens struct {
-	meta    host.Meta
-	metaErr error
-	runtime string
-	saveErr error
-	saves   []fakeScreenSave
-	callers int
-}
-
-type fakeScreenSave struct {
-	dir   string
-	block screen.BlockRef
-}
-
-func (f *fakeScreens) saver() screenSaver {
-	return screenSaver{
-		readMeta:    func(string, string) (host.Meta, error) { return f.meta, f.metaErr },
-		runtimeName: func(string, string) string { return f.runtime },
-		caller:      func() rex.Caller { f.callers++; return nil },
-		save: func(_ context.Context, _ rex.Caller, b screen.BlockRef, dir string) error {
-			f.saves = append(f.saves, fakeScreenSave{dir: dir, block: b})
-			return f.saveErr
-		},
-	}
-}
-
-var fakeScreenBlock = &host.RexBlock{SessionID: "s1", WindowID: "w1", BlockID: "b1"}
-
-// TestDaemonSaveScreen pins the loop's Deps.SaveScreen as `afk daemon` wires
-// it: find the session in the projects' worktrees, read its host record, and
-// save a Rex block's screen into the project's own .afk/{session}/.
-//
-// Load-bearing rows:
-//   - "afk session": a session on afk's own host returns nil and makes no
-//     Rex caller and no save. Every daemon session before Rex is this one, and
-//     a Rex call for it would fail on every machine without Rex.
-//   - "rex session": the page lands in the project root, not the worktree,
-//     because a clean removes the worktree and the web page reads the root.
-//   - "host gone, ran in Rex" against "host gone, afk host": a stopped host
-//     leaves no host.json, and only the runtime marker tells a lost block
-//     (reported) from an afk host (quiet).
-//   - "same name in two projects": refused rather than saved into a guess.
-func TestDaemonSaveScreen(t *testing.T) {
-	tests := []struct {
-		name      string
-		fake      fakeScreens
-		inBoth    bool // the session is in both projects
-		missing   bool // the session is in neither project
-		listErr   error
-		wantErr   string // a part of the error; "" means nil
-		wantSaved bool
-	}{
-		{name: "afk session", fake: fakeScreens{meta: host.Meta{PID: 7, Runtime: host.RuntimeAfk}}},
-		{name: "rex session", fake: fakeScreens{meta: host.Meta{Runtime: host.RuntimeRex, Rex: fakeScreenBlock}}, wantSaved: true},
-		{name: "rex save fails", fake: fakeScreens{meta: host.Meta{Rex: fakeScreenBlock}, saveErr: screen.ErrBlockGone},
-			wantErr: "the Rex block is gone", wantSaved: true},
-		{name: "host gone, ran in Rex", fake: fakeScreens{metaErr: fmt.Errorf("reading host.json: %w", os.ErrNotExist), runtime: host.RuntimeRex},
-			wantErr: "left no record"},
-		{name: "host gone, afk host", fake: fakeScreens{metaErr: fmt.Errorf("reading host.json: %w", os.ErrNotExist), runtime: host.RuntimeAfk}},
-		{name: "host record unreadable", fake: fakeScreens{metaErr: errors.New("parsing host.json: bad json")},
-			wantErr: "could not be read"},
-		{name: "same name in two projects", fake: fakeScreens{meta: host.Meta{Rex: fakeScreenBlock}}, inBoth: true,
-			wantErr: "2 projects have a session named t1-1"},
-		{name: "no such session", fake: fakeScreens{meta: host.Meta{Rex: fakeScreenBlock}}, missing: true,
-			wantErr: "no project has a session named t1-1"},
-		{name: "a project cannot be listed", fake: fakeScreens{meta: host.Meta{Rex: fakeScreenBlock}}, missing: true, listErr: errors.New("git is broken"),
-			wantErr: "git is broken"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			demo, other := t.TempDir(), t.TempDir()
-			projects := func() []daemon.Project {
-				return []daemon.Project{{Name: "demo", Root: demo}, {Name: "other", Root: other}}
-			}
-			discover := func(root string) ([]session.Session, error) {
-				switch {
-				case root == other && tt.listErr != nil:
-					return nil, tt.listErr
-				case tt.missing:
-					return []session.Session{{Name: "t2-2", WorktreePath: root + "-t2-2"}}, nil
-				case root == demo || tt.inBoth:
-					return []session.Session{{Name: "t1-1", WorktreePath: root + "-t1-1", Status: session.Status{Phase: "failed"}}}, nil
-				}
-				return nil, nil
-			}
-			f := tt.fake
-			err := f.saver().daemonSave(projects, discover)(context.Background(), "t1-1")
-			if tt.wantErr == "" && err != nil {
-				t.Fatalf("SaveScreen: %v, want nil", err)
-			}
-			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
-				t.Fatalf("SaveScreen error = %v, want one containing %q", err, tt.wantErr)
-			}
-			if !tt.wantSaved {
-				if len(f.saves) != 0 || f.callers != 0 {
-					t.Fatalf("saves = %+v, Rex callers = %d; want none", f.saves, f.callers)
-				}
-				return
-			}
-			want := []fakeScreenSave{{dir: filepath.Join(demo, ".afk", "t1-1"), block: screen.BlockRef{SessionID: "s1", WindowID: "w1", BlockID: "b1"}}}
-			if !reflect.DeepEqual(f.saves, want) || f.callers != 1 {
-				t.Fatalf("saves = %+v (Rex callers %d), want %+v with one caller", f.saves, f.callers, want)
-			}
-			// The fake writes nothing, so the folder is empty: kept for a save
-			// that worked, removed after one that failed, so a failed save
-			// leaves no empty folder in the owner's checkout.
-			fi, statErr := os.Stat(want[0].dir)
-			if f.saveErr == nil && (statErr != nil || !fi.IsDir()) {
-				t.Fatalf("the session folder in the project root was not made: %v", statErr)
-			}
-			if f.saveErr != nil && !os.IsNotExist(statErr) {
-				t.Fatalf("a failed save left the empty folder %s behind (stat err %v)", want[0].dir, statErr)
-			}
-		})
-	}
-}
-
-// TestScreenSaveBeforeClean pins the pure rule for a clean: the screen is
-// saved first only for a failed session in Rex.
-//
-// "failed, in Rex" is the one saving row; "failed, afk host" and "done, in
-// Rex" are the two ways it must not save (no screen to keep; a shipped task's
-// screen tells nothing), and a running phase is never a reason either.
-func TestScreenSaveBeforeClean(t *testing.T) {
-	tests := []struct {
-		name      string
-		phase     string
-		rexBacked bool
-		want      bool
-	}{
-		{"failed, in Rex", "failed", true, true},
-		{"failed, afk host", "failed", false, false},
-		{"done, in Rex", "done", true, false},
-		{"done, afk host", "done", false, false},
-		{"executing, in Rex", "executing", true, false},
-		{"no phase, in Rex", "", true, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := cleanSavesScreen(tt.phase, tt.rexBacked); got != tt.want {
-				t.Errorf("cleanSavesScreen(%q, %v) = %v, want %v", tt.phase, tt.rexBacked, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestBeforeCleanScreen pins the BeforeClean a clean is given: it applies
-// cleanSavesScreen to the session as discovered and saves into the repo the
-// clean runs in.
-//
-// Load-bearing rows: "failed, in Rex" saves into repo/.afk/{name}; "failed,
-// afk host" and "done, in Rex" save nothing and make no Rex caller; "save
-// fails" and "failed, block record lost" return an error naming the screen,
-// which the clean turns into a note (TestDaemonCleanBeforeCleanSaveError
-// shows the clean still runs).
-func TestBeforeCleanScreen(t *testing.T) {
-	tests := []struct {
-		name      string
-		phase     string
-		fake      fakeScreens
-		wantErr   string
-		wantSaved bool
-	}{
-		{name: "failed, in Rex", phase: "failed", fake: fakeScreens{meta: host.Meta{Rex: fakeScreenBlock}}, wantSaved: true},
-		{name: "failed, afk host", phase: "failed", fake: fakeScreens{meta: host.Meta{PID: 7}}},
-		{name: "done, in Rex", phase: "done", fake: fakeScreens{meta: host.Meta{Rex: fakeScreenBlock}}},
-		{name: "done, block record lost", phase: "done", fake: fakeScreens{metaErr: fmt.Errorf("x: %w", os.ErrNotExist), runtime: host.RuntimeRex}},
-		{name: "save fails", phase: "failed", fake: fakeScreens{meta: host.Meta{Rex: fakeScreenBlock}, saveErr: errors.New("blob_read failed")},
-			wantErr: "the agent's screen could not be saved: blob_read failed", wantSaved: true},
-		{name: "failed, block record lost", phase: "failed", fake: fakeScreens{metaErr: fmt.Errorf("x: %w", os.ErrNotExist), runtime: host.RuntimeRex},
-			wantErr: "the agent's screen could not be saved: the session ran in Rex"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := t.TempDir()
-			f := tt.fake
-			sess := session.Session{Name: "t1-1", WorktreePath: repo + "-t1-1", Status: session.Status{Phase: tt.phase}}
-			err := f.saver().beforeClean(repo)(sess)
-			if tt.wantErr == "" && err != nil {
-				t.Fatalf("BeforeClean: %v, want nil", err)
-			}
-			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
-				t.Fatalf("BeforeClean error = %v, want one containing %q", err, tt.wantErr)
-			}
-			if got := len(f.saves) == 1; got != tt.wantSaved || (!tt.wantSaved && f.callers != 0) {
-				t.Fatalf("saves = %+v (Rex callers %d), want saved = %v", f.saves, f.callers, tt.wantSaved)
-			}
-			if tt.wantSaved && f.saves[0].dir != filepath.Join(repo, ".afk", "t1-1") {
-				t.Fatalf("saved into %s, want the repo's .afk/t1-1", f.saves[0].dir)
-			}
-		})
-	}
-}
-
-// TestDaemonCleanBeforeCleanSaveError cleans a failed session over real git
-// with a BeforeClean whose save fails: the session must still be cleaned,
-// with no error, and the hook must have been given the project root. A save
-// failure that stopped a clean would leave the owner with a worktree they
-// asked to remove.
-func TestDaemonCleanBeforeCleanSaveError(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not installed")
-	}
-	f := newCleanSurfaceFixture(t)
-	f.addSession(t, "t1-1", "failed")
-	var out bytes.Buffer
-	cd := f.deps().Clean
-	cd.Stdout, cd.Stderr = &out, &out
-	var gotRepo string
-	var gotPhases []string
-	beforeClean := func(repo string) func(session.Session) error {
-		gotRepo = repo
-		return func(s session.Session) error {
-			gotPhases = append(gotPhases, s.Status.Phase)
-			return errors.New("the agent's screen could not be saved: Rex is not answering")
-		}
-	}
-	clean := daemonClean(cd, func(string) (ledger.Ledger, error) { return ledger.Ledger{}, nil }, beforeClean)
-	if err := clean(daemon.Project{Name: "demo", Root: f.root}, "t1-1"); err != nil {
-		t.Fatalf("clean: %v (a failed save must not stop it)\n%s", err, out.String())
-	}
-	if cleanSurfaceExists(f.worktree("t1-1")) {
-		t.Fatalf("the worktree is still there after the clean\n%s", out.String())
-	}
-	if gotRepo != f.root || !reflect.DeepEqual(gotPhases, []string{"failed"}) {
-		t.Fatalf("BeforeClean made for %q and called with phases %v; want the project root, once with failed", gotRepo, gotPhases)
-	}
-	if !strings.Contains(out.String(), "Rex is not answering") {
-		t.Fatalf("the failed save was not noted in the clean's output:\n%s", out.String())
 	}
 }

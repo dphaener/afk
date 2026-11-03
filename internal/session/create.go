@@ -13,7 +13,6 @@ package session
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +33,6 @@ import (
 	"github.com/dphaener/afk/internal/palette"
 	"github.com/dphaener/afk/internal/probe"
 	"github.com/dphaener/afk/internal/provider"
-	"github.com/dphaener/afk/internal/rexlayout"
 	"github.com/dphaener/afk/internal/spice"
 	"github.com/dphaener/afk/internal/state"
 	"github.com/dphaener/afk/internal/worktree"
@@ -112,18 +110,6 @@ type Config struct {
 // hermetically. A nil field is filled in by Create/DefaultDeps where it has a
 // sensible default; PickBase intentionally defaults to nil (non-interactive).
 type Deps struct {
-	// Backend is the machine's `[runtime] backend` word. "rex" makes a NEW
-	// session start inside a Rex terminal; "" and "afk" start it on afk's own
-	// host, as before, and make no Rex call. An existing session ignores it:
-	// it keeps the runtime its own files name (RuntimeFor).
-	Backend string
-	// RuntimeErr is a carried `[runtime]` (or config.toml) error. A new start
-	// with one is refused, never run on afk's host, because the owner asked
-	// for something afk could not read.
-	RuntimeErr error
-	// Rex are the seams of the Rex runtime for a new start; the zero value
-	// talks to the machine's own `rex` command.
-	Rex RexDeps
 	// DetectGitSpice reports whether dir is operating in git-spice mode.
 	DetectGitSpice func(dir string) bool
 	// Stack returns the git-spice stack (trunk plus tracked branches).
@@ -776,11 +762,8 @@ type Step struct {
 // execState is the shared mutable state threaded through the step closures at
 // execution time. It is never touched during dry-run.
 type execState struct {
-	worktree string
-	host     HostProcess
-	// runtime is the runtime that spawned host, so the rollback undoes it
-	// with the same implementation.
-	runtime       Runtime
+	worktree      string
+	host          HostProcess
 	createdWT     bool
 	createdBranch bool
 	createdDir    bool
@@ -890,12 +873,6 @@ func Build(cfg Config, in Deps) (*Plan, error) {
 	repo := cfg.RepoDir
 	if repo == "" {
 		return nil, fmt.Errorf("RepoDir is required")
-	}
-	// A start that must run in Rex is refused before any side effect, dry-run
-	// included: found at the launch step it would come after the branch and
-	// worktree were made and have to be rolled back.
-	if err := RefuseNewStart(context.Background(), d); err != nil {
-		return nil, err
 	}
 	// Resolve the provider before any branch of Build so an unknown name
 	// aborts every mode, dry-run included. Canonicalizing the default to ""
@@ -1482,16 +1459,11 @@ func (p *Plan) assembleSteps(leadDesc string) {
 		Desc: "Launch detached session host running: " + childCommandLine(spawn) + hostProviderNote(spawn),
 		run: func() error {
 			spawn.Worktree = st.worktree
-			rt, err := NewStartRuntime(spawn.Worktree, spawn.Name, d)
-			if err != nil {
-				return err
-			}
-			h, err := rt.Spawn(spawn, d)
+			h, err := SpawnHost(spawn, d)
 			if err != nil {
 				return err
 			}
 			st.host = h
-			st.runtime = rt
 			return nil
 		},
 		// Rollback: a session whose worktree and branch are about to be
@@ -1545,11 +1517,7 @@ func (p *Plan) hostUndo() func() error {
 		if p.st.host.PID == 0 {
 			return nil
 		}
-		rt := p.st.runtime
-		if rt == nil {
-			rt = afkRuntime{}
-		}
-		if err := rt.Undo(p.st.host, p.deps); err != nil {
+		if err := stopSpawnedHost(p.deps, p.st.host); err != nil {
 			fmt.Fprintf(p.stderr, "rollback: %v (see %s)\n", err, p.st.host.LogPath)
 		}
 		return nil
@@ -1631,16 +1599,11 @@ func (p *Plan) assembleScratchSteps(leadDesc string) {
 	steps = append(steps, Step{
 		Desc: fmt.Sprintf("Launch detached session host running: %s (one-off, in %s)%s", childCommandLine(spawn), repo, hostProviderNote(spawn)),
 		run: func() error {
-			rt, err := NewStartRuntime(spawn.Worktree, spawn.Name, d)
-			if err != nil {
-				return err
-			}
-			h, err := rt.Spawn(spawn, d)
+			h, err := SpawnHost(spawn, d)
 			if err != nil {
 				return err
 			}
 			st.host = h
-			st.runtime = rt
 			return nil
 		},
 		undo: p.hostUndo(),
@@ -1896,54 +1859,4 @@ func BranchesPlain(d Deps, repo string) ([]string, error) {
 		}
 	}
 	return branches, nil
-}
-
-// StartRefusedError is the refusal of a new start that must run in Rex and
-// cannot: a bad setting, Rex not installed, or its server not answering. It is
-// its own type so a caller can raise the inbox item for it and tell it from an
-// ordinary failure to make a branch or a worktree.
-type StartRefusedError struct{ Err error }
-
-func (e *StartRefusedError) Error() string { return e.Err.Error() }
-func (e *StartRefusedError) Unwrap() error { return e.Err }
-
-// wantsRex reports whether a new start is meant for Rex. A carried error
-// counts: it is refused as a Rex start, never started on afk's host.
-func (d Deps) wantsRex() bool {
-	return d.RuntimeErr != nil || d.Backend == rexlayout.BackendRex
-}
-
-func (d Deps) rexDeps() RexDeps {
-	rd := d.Rex
-	rd.ConfigErr = d.RuntimeErr
-	return rd
-}
-
-// RefuseNewStart is nil for backend afk, and makes no Rex call for it. For
-// backend rex (or a carried error) it asks the Rex runtime's own refusal
-// check and wraps the answer in a StartRefusedError.
-func RefuseNewStart(ctx context.Context, d Deps) error {
-	if !d.wantsRex() {
-		return nil
-	}
-	if err := rexRefusal(ctx, d.rexDeps().withDefaults()); err != nil {
-		return &StartRefusedError{Err: err}
-	}
-	return nil
-}
-
-// NewStartRuntime is the runtime for a start that creates a session. A
-// session whose own files already name Rex keeps it; otherwise the machine's
-// backend decides, and "afk" is exactly RuntimeFor's answer. A relaunch of an
-// existing session must call RuntimeFor instead, so a changed setting never
-// moves a session between runtimes.
-func NewStartRuntime(worktree, name string, d Deps) (Runtime, error) {
-	rt, err := RuntimeFor(worktree, name)
-	if err != nil {
-		return nil, err
-	}
-	if rt.Name() == host.RuntimeRex || !d.wantsRex() {
-		return rt, nil
-	}
-	return NewRexRuntime(d.rexDeps()), nil
 }

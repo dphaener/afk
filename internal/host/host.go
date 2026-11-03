@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-
-	"github.com/dphaener/afk/internal/progstatus"
 )
 
 // ErrHostAlreadyRunning is returned by Serve when a live host is already
@@ -133,11 +131,11 @@ type ServeConfig struct {
 	MetaPath string
 	// LogPath is the host's own log file (.afk/<name>/host.log).
 	LogPath string
-	// Argv is the child command and its arguments: the provider's agent
-	// CLI and its `/afk:go --session <name>` prompt (provider.LaunchArgv).
+	// Argv is the child command and its arguments, e.g.
+	// {"claude", "/afk:go --session <name>"}.
 	Argv []string
-	// Provider names the provider whose binary Argv runs (one of
-	// provider.Names); empty means provider.Default. Argv alone cannot carry it: a wedged
+	// Provider names the provider whose binary Argv runs ("claude",
+	// "codex", "opencode"); empty means claude. Argv alone cannot carry it: a wedged
 	// restart builds a different command line (restart.go's resumeArgv), and
 	// only the provider says which binary that must be. Optional, so it is not
 	// checked by validate; an unknown name refuses a restart, not startup.
@@ -155,67 +153,6 @@ type ServeConfig struct {
 	// repaint, and a verdict nobody asked for would only be a wrong cell in
 	// the dashboard. Optional, so it is not checked by validate.
 	ProbeUnattached bool
-
-	// Stdio makes the host serve its own terminal as its one client: input
-	// from the terminal, output to it, its size on every resize, and never
-	// stolen or dropped (stdio.go). It is how a session runs inside a Rex
-	// block. The socket still takes requests (typing, restart, exit), and a
-	// socket client that asks to attach is refused. host.json then records
-	// runtime "rex". Off for every afk-runtime host.
-	Stdio bool
-	// Terminal is the terminal a stdio host serves; nil means the
-	// process's own (see Terminal). Ignored unless Stdio.
-	Terminal *Terminal
-	// Rex holds the Rex block ids, from the --rex-* flags or else from the
-	// environment Rex gives the block's command (host_cmd.go), recorded
-	// verbatim in host.json. This package never calls Rex itself (Window is
-	// its only way to reach it), so it runs with no Rex installed.
-	// Ignored unless Stdio.
-	Rex *RexBlock
-	// Parked reports whether the session's task is parked on the owner,
-	// which shows as blocked in afk's record like awaiting_input does. nil
-	// means never parked: the ledger that knows lives with the daemon, and
-	// T17.8 wires it in, so the host stays free of the ledger's path.
-	// Ignored unless Stdio.
-	Parked func() bool
-	// Window relabels the Rex window this host runs in and closes its block
-	// when the host exits (stdio.go's windowCtl). nil means there is no Rex
-	// window to keep up to date: every afk-runtime host, and a stdio host run
-	// outside Rex. The host makes these calls off the PTY pump and the
-	// terminal writer, each bounded by windowCallDeadline, so a Rex server
-	// that hangs can never hold up the child's output. Ignored unless Stdio.
-	Window WindowControl
-	// Planning says this host runs the project's planning session, whose
-	// window is always labelled "plan" (rexlayout.WindowLabel). The host
-	// cannot tell from its name: the planning session's name is owned by
-	// internal/session, which imports this package. Ignored unless Window.
-	Planning bool
-}
-
-// ChildExited is what Serve returns when a stdio host's child ended on its
-// own with a status other than 0. A stdio host's process is the Rex block's
-// command, and Rex shows how that command ended, so passing the child's status
-// through is what makes a failed agent read as failed in the block. Only a
-// stdio host returns it: an afk-runtime host is detached, nobody reads its
-// status, and its "nil means orderly" contract is unchanged.
-type ChildExited struct {
-	// Code is the status to exit with: the child's exit code, or 1 when the
-	// child was killed by a signal and so has no code of its own.
-	Code int
-}
-
-func (e *ChildExited) Error() string {
-	return fmt.Sprintf("the session's program exited with status %d", e.Code)
-}
-
-// childExitStatus is the status a stdio host passes on for how its child
-// ended: the code itself, or 1 for a child killed by a signal (whose code
-// reads -1), so a killed child is never reported as a success.
-func childExitStatus(e LastExit) int {
-	if e.Signal != "" || e.Code < 0 {
-		return 1
-	}
-	return e.Code
 }
 
 func (c ServeConfig) validate() error {
@@ -266,13 +203,6 @@ func Serve(cfg ServeConfig) error {
 	// socket file and host.json.
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
-	if cfg.Stdio {
-		// A stdio host's terminal is a Rex block: SIGHUP is the block
-		// closing or the Rex server stopping, and is an orderly stop like
-		// SIGTERM (child ended, socket and host.json removed). Registered
-		// only for stdio, so an afk-runtime host keeps its disposition.
-		signal.Notify(signals, syscall.SIGHUP)
-	}
 	defer signal.Stop(signals)
 
 	ln, err := listenExclusive(cfg.Socket, logger)
@@ -280,17 +210,6 @@ func Serve(cfg ServeConfig) error {
 		logger.Printf("not starting: %v", err)
 		return err
 	}
-	// Closing the Rex block is the host's last act, so it is deferred before
-	// the socket and host.json are released and runs after them: by the time
-	// the block goes, nothing on disk still points at this host. It is set
-	// only once the serve loop is about to run, so a host that failed to
-	// start leaves its block open with the reason on screen.
-	var closeWindow func()
-	defer func() {
-		if closeWindow != nil {
-			closeWindow()
-		}
-	}()
 	// Past this point the socket file and host.json are ours, so every
 	// return path must release both. (Registered before the child starts:
 	// even a failed child start must not leave a socket behind.)
@@ -311,17 +230,6 @@ func Serve(cfg ServeConfig) error {
 	}()
 
 	h := newHostRuntime(cfg, logger, ln)
-	if cfg.Stdio {
-		// Before the spawn, so the first child is born at the terminal's
-		// size. restore is deferred ahead of shutdown, so it runs after it
-		// and the final clear of afk's record goes to the terminal first.
-		restore, err := h.openStdio()
-		if err != nil {
-			logger.Printf("%v", err)
-			return err
-		}
-		defer restore()
-	}
 	if err := h.spawn(cfg.Argv); err != nil {
 		logger.Printf("%v", err)
 		return err
@@ -331,9 +239,6 @@ func Serve(cfg ServeConfig) error {
 	// that one and closes its master itself (see restart.go).
 	defer h.closeCurrentPTY()
 	defer h.shutdown()
-	if cfg.Stdio {
-		h.startStdio()
-	}
 
 	// ChildPID from the generation spawned just above, not from a later
 	// lookup: host.json is how a restart is observed from outside this
@@ -348,13 +253,8 @@ func Serve(cfg ServeConfig) error {
 			StartedAt: time.Now().UTC().Format(time.RFC3339),
 			Argv:      cfg.Argv,
 			Provider:  cfg.Provider,
-			Runtime:   RuntimeAfk,
 		},
 		ChildPID: h.cur.pid(),
-	}
-	if cfg.Stdio {
-		meta.Runtime = RuntimeRex
-		meta.Rex = cfg.Rex
 	}
 	h.baseMeta = meta
 	if err := writeMetaFile(cfg.MetaPath, meta); err != nil {
@@ -365,19 +265,7 @@ func Serve(cfg ServeConfig) error {
 		return err
 	}
 
-	if h.stdio != nil && h.stdio.window != nil {
-		closeWindow = h.closeWindowAtExit
-	}
-	if err := h.run(signals); err != nil {
-		return err
-	}
-	if h.stdio != nil && h.childEnded {
-		// exited is closed, so g.exit is written (see waitChild).
-		if code := childExitStatus(h.cur.exit); code != 0 {
-			return &ChildExited{Code: code}
-		}
-	}
-	return nil
+	return h.run(signals)
 }
 
 // childProc is one generation of the hosted child: the process, the PTY it
@@ -397,14 +285,6 @@ type childProc struct {
 	// retired closes when this generation has been replaced, stopping its
 	// input writer so it cannot feed a PTY whose child is gone.
 	retired chan struct{}
-
-	// epoch is the agent keeper's epoch this generation was spawned in; its
-	// pump reports under it, so a retired pump's late reports are ignored
-	// (see agentKeeper.epoch).
-	epoch uint64
-	// exit is how this child ended. Written by waitChild before it closes
-	// exited, so anyone who has seen exited closed may read it.
-	exit LastExit
 }
 
 func (g *childProc) pid() int {
@@ -468,22 +348,9 @@ type hostRuntime struct {
 	baseMeta hostMeta
 
 	// publishMu guards host.json republishes against shutdown; see
-	// publishLiveness for why that window has to be closed. pubLive and
-	// pubAgent are the field values host.json last carried, kept so every
-	// rewrite (publish, liveness.go) carries all of them; guarded by it too.
+	// publishLiveness for why that window has to be closed.
 	publishMu  sync.Mutex
 	publishOff bool
-	pubLive    livenessSnapshot
-	pubAgent   agentSnapshot
-
-	// agent keeps what the agent last reported and how the previous child
-	// ended (agentstatus.go). The PTY pump feeds it and nudges agentNudge
-	// (one slot, never blocked on) when a publish is forced;
-	// monitorAgentStatus publishes. now is the clock for both, copied from
-	// hostClock so tests can drive it.
-	agent      *agentKeeper
-	agentNudge chan struct{}
-	now        func() time.Time
 
 	// childWriteSince is the unix-nano start time of the ptmx write
 	// currently in flight, or 0 while the writer is idle. Atomic because
@@ -512,16 +379,6 @@ type hostRuntime struct {
 	// afterAccept is the package-level seam of the same name, copied at
 	// construction; see there.
 	afterAccept func(done <-chan struct{})
-
-	// stdio is the stdio host's state (stdio.go), nil for any other host.
-	// Set before the first spawn and never again, so the pump reads it
-	// without a lock.
-	stdio *stdioHost
-
-	// childEnded is set by the serve loop when it returns because the child
-	// exited on its own, rather than on a signal or an Exit request; Serve
-	// reads it after run returns, on the same goroutine.
-	childEnded bool
 
 	done         chan struct{} // closed when the host is shutting down
 	shutdownOnce sync.Once
@@ -604,9 +461,6 @@ func newHostRuntime(cfg ServeConfig, logger *log.Logger, ln net.Listener) *hostR
 		probes:      make(chan struct{}, 1),
 		restartDone: make(chan restartHandoff, 1),
 		live:        newLiveness(livenessTiming, time.Now()),
-		agent:       newAgentKeeper(agentStatusTiming, cfg.Provider),
-		agentNudge:  make(chan struct{}, 1),
-		now:         hostClock,
 		acceptDone:  make(chan struct{}),
 		afterAccept: afterAccept,
 		done:        make(chan struct{}),
@@ -638,7 +492,6 @@ func (h *hostRuntime) spawn(argv []string) error {
 		exited:  make(chan struct{}),
 		ptyDone: make(chan struct{}),
 		retired: make(chan struct{}),
-		epoch:   h.agent.currentEpoch(),
 	}
 	h.cur = g
 	go h.waitChild(g)
@@ -676,14 +529,6 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 	// which Serve has only just written, and it must not race that first
 	// write (nor run at all on a startup path that failed before it).
 	go h.monitorLiveness()
-	go h.monitorAgentStatus()
-
-	// The stdio terminal's size changes; nil (never ready) for any other
-	// host, whose size comes from its client's Resize frames.
-	var resized <-chan [2]uint16
-	if h.stdio != nil {
-		resized = h.stdio.resized
-	}
 
 	for {
 		// A closed exited channel is permanently ready, and mid-restart that
@@ -706,11 +551,6 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 			// rate-limited to once per wedgeProbeInterval; waiting for the
 			// answer happens in monitorLiveness, not here.
 			h.nudgeRepaint()
-
-		case sz := <-resized:
-			// The stdio terminal changed size (SIGWINCH). On the loop
-			// because rows and cols belong to it; bounded like a Resize.
-			h.resize(sz[0], sz[1])
 
 		case hs := <-h.restartDone:
 			// The ladder goroutine is done; the swap itself (retire, drain,
@@ -735,13 +575,6 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 			}
 			switch f.typ {
 			case Resize:
-				if h.stdio != nil {
-					// The Resize every interactive attach opens with. A
-					// stdio host's screen is its terminal, so the attach
-					// is refused rather than allowed to steal it.
-					h.refuseAttach(f.conn)
-					continue
-				}
 				rows, cols, err := DecodeResize(f.payload)
 				if err != nil {
 					h.log.Printf("bad resize frame: %v", err)
@@ -756,11 +589,6 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 				h.terminateChild()
 				return nil
 			case Restart:
-				if h.stdio != nil && !h.restarting {
-					// The answer goes to whoever asked; a stdio host has
-					// no attached client to send it to.
-					h.stdio.restartFor = f.conn
-				}
 				// Bounded: beginRestart only validates the request and hands
 				// the ladder to its own goroutine, so a slow restart can no
 				// longer park this loop (and with it readClient, whose ctrl
@@ -773,7 +601,6 @@ func (h *hostRuntime) run(signals <-chan os.Signal) error {
 		case <-exited:
 			h.log.Printf("child exited on its own; shutting down")
 			h.drainPTY(h.cur)
-			h.childEnded = true
 			return nil
 
 		case sig := <-signals:
@@ -836,14 +663,7 @@ func (h *hostRuntime) acceptLoop() {
 // attach makes c the active client, stealing the terminal from whoever held
 // it: the previous client is told Stolen and closed. Steal, not multiplex —
 // two clients rendering the same PTY cannot agree on a size.
-//
-// A stdio host has nothing to steal: its screen is its own terminal. There c
-// is a requester, whose requests are read and which is never sent the screen.
 func (h *hostRuntime) attach(c *clientConn) {
-	if h.stdio != nil {
-		h.addRequester(c)
-		return
-	}
 	h.mu.Lock()
 	old := h.client
 	h.client = c
@@ -1028,23 +848,15 @@ func (h *hostRuntime) noteInputDrop(n int, reason string) {
 
 // attached reports whether any client currently holds the session, which is
 // what gates the liveness probe: an unattached session has no screen to
-// repaint. See decideProbe. A stdio host is always attached: its terminal is
-// its client, so the wedge probe runs with nobody else watching.
+// repaint. See decideProbe.
 func (h *hostRuntime) attached() bool {
-	if h.stdio != nil {
-		return true
-	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.client != nil
 }
 
-// isCurrent reports whether c is the attached client, or on a stdio host the
-// terminal's sentinel or a requester.
+// isCurrent reports whether c is the attached client.
 func (h *hostRuntime) isCurrent(c *clientConn) bool {
-	if c != nil && h.stdio != nil && h.stdio.holds(c) {
-		return true
-	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return c != nil && h.client == c
@@ -1052,9 +864,6 @@ func (h *hostRuntime) isCurrent(c *clientConn) bool {
 
 // dropClient detaches c and closes it; the host keeps serving.
 func (h *hostRuntime) dropClient(c *clientConn) {
-	if h.stdio != nil {
-		h.stdio.removeRequester(c)
-	}
 	h.mu.Lock()
 	if h.client == c {
 		h.client = nil
@@ -1069,16 +878,9 @@ func (h *hostRuntime) dropClient(c *clientConn) {
 // rather than buffered (no unbounded memory) and reading never stops (a
 // full PTY buffer would block the child). Reattaching redraws via the
 // resize nudge, so there is nothing to replay.
-//
-// Every chunk also goes through this generation's own progstatus.Scanner,
-// one per generation because a restarted child starts a fresh stream and a
-// sequence the dead child left half-written must not swallow the new child's
-// first bytes. What the scanner finds only updates the agent keeper's memory;
-// the publish is monitorAgentStatus's, woken by a send that never blocks.
 func (h *hostRuntime) pumpPTY(g *childProc) {
 	defer close(g.ptyDone)
 
-	sc := progstatus.NewScanner()
 	buf := make([]byte, ptyReadBufSize)
 	for {
 		n, err := g.ptmx.Read(buf)
@@ -1087,22 +889,23 @@ func (h *hostRuntime) pumpPTY(g *childProc) {
 			// attached: this is the host's only evidence that the child is
 			// still alive, and it is worth just as much while detached.
 			h.live.noteOutput(time.Now())
-			// Also whether or not anyone is attached: the agent's status
-			// is for the dashboard and the daemon, which never attach.
-			if res := sc.Scan(buf[:n]); len(res.Reports) > 0 {
-				if h.agent.observe(g.epoch, res.Reports, h.now()) {
-					h.nudgeAgentStatus()
+			h.mu.Lock()
+			c := h.client
+			h.mu.Unlock()
+			if c != nil {
+				// Copy: buf is reused, and the frame is written
+				// later by the client's writer goroutine.
+				chunk := append([]byte(nil), buf[:n]...)
+				if !c.send(Data, chunk) && h.isCurrent(c) {
+					// dropClient rather than a bare close: it also clears
+					// h.client, so the rest of this burst is discarded like
+					// unattached output instead of logging one line per
+					// chunk against a client that is already gone. The close
+					// carries no Exit frame, which is how the client tells
+					// this apart from the session ending (DetachDropped).
+					h.log.Printf("client is not consuming output (more than %d bytes behind); dropping it", clientPendingLimit)
+					h.dropClient(c)
 				}
-			}
-			if h.stdio != nil {
-				// The terminal writer is the stdio host's client. It
-				// blocks when full, stalling this pump the way a real
-				// terminal that stops reading stalls its program, because
-				// dropped terminal output corrupts the screen for good.
-				// Copied: buf is reused.
-				h.stdio.write(append([]byte(nil), buf[:n]...), h.done)
-			} else {
-				h.forwardToClient(buf[:n])
 			}
 		}
 		if err != nil {
@@ -1110,30 +913,6 @@ func (h *hostRuntime) pumpPTY(g *childProc) {
 			// gone. Either way the child is finished writing.
 			return
 		}
-	}
-}
-
-// forwardToClient sends one chunk of child output to the attached client, if
-// any; see pumpPTY.
-func (h *hostRuntime) forwardToClient(b []byte) {
-	h.mu.Lock()
-	c := h.client
-	h.mu.Unlock()
-	if c == nil {
-		return
-	}
-	// Copy: buf is reused, and the frame is written
-	// later by the client's writer goroutine.
-	chunk := append([]byte(nil), b...)
-	if !c.send(Data, chunk) && h.isCurrent(c) {
-		// dropClient rather than a bare close: it also clears
-		// h.client, so the rest of this burst is discarded like
-		// unattached output instead of logging one line per
-		// chunk against a client that is already gone. The close
-		// carries no Exit frame, which is how the client tells
-		// this apart from the session ending (DetachDropped).
-		h.log.Printf("client is not consuming output (more than %d bytes behind); dropping it", clientPendingLimit)
-		h.dropClient(c)
 	}
 }
 
@@ -1181,21 +960,14 @@ func (h *hostRuntime) setSize(rows, cols uint16) {
 	h.rows, h.cols = rows, cols
 }
 
-// waitChild reaps one generation's child, records how it ended in g.exit,
-// and announces it by closing that generation's exited channel. The log line
-// is the record of every exit, the child's own and a restart's alike: a child
-// that exits on its own ends the host, which removes host.json, so host.log
-// is the only place its exit code survives.
+// waitChild reaps one generation's child and announces it by closing that
+// generation's exited channel.
 func (h *hostRuntime) waitChild(g *childProc) {
 	err := g.cmd.Wait()
-	g.exit = lastExitOf(g.cmd.ProcessState, h.now())
-	switch {
-	case g.exit.Signal != "":
-		h.log.Printf("child (pid %d) exited: killed by %s", g.pid(), g.exit.Signal)
-	case err != nil:
-		h.log.Printf("child (pid %d) exited: %v (code %d)", g.pid(), err, g.exit.Code)
-	default:
-		h.log.Printf("child (pid %d) exited cleanly (code %d)", g.pid(), g.exit.Code)
+	if err != nil {
+		h.log.Printf("child (pid %d) exited: %v", g.pid(), err)
+	} else {
+		h.log.Printf("child (pid %d) exited cleanly", g.pid())
 	}
 	close(g.exited)
 }
@@ -1275,12 +1047,6 @@ func (h *hostRuntime) shutdown() {
 		// child's final output is already flushing while that happens.
 		c.end()
 		ending = append(ending, c)
-	}
-	if h.stdio != nil {
-		// The terminal writer first: it drains the child's last output
-		// and clears afk's record, bounded by its own grace.
-		h.stdio.stopWriter(stdioFlushGrace)
-		ending = append(ending, h.stdio.endRequesters()...)
 	}
 	ending = append(ending, h.endUnattached()...)
 	waitFlushed(ending, clientFlushGrace)

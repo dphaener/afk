@@ -38,11 +38,6 @@ func Next(p Plan) (Step, Action) {
 		if s.ID == StepCheck && s.State != Cannot {
 			continue
 		}
-		// The Rex offer is optional: a machine without Rex is not stuck, so a
-		// Cannot there must not stop the install before the later steps.
-		if s.ID == StepRex && s.State == Cannot {
-			continue
-		}
 		switch s.State {
 		case Cannot:
 			return s, Action{Kind: ActionStop}

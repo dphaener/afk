@@ -6,8 +6,6 @@
 
 The daemon works through a project's master plan on its own. It runs one task at a time: it starts a session for the next task that is ready, watches that session, and when the session finishes it records the result and moves on. Nobody has to be at the keyboard.
 
-When `[runtime] backend` in `config.toml` is `"rex"`, the daemon opens each new session in a Rex window instead of afk's own host (see [configuration](configuration.md#runtime--where-new-sessions-run)).
-
 ```bash
 afk daemon            # run until stopped
 afk daemon --once     # look at every project once, do what is due, and exit
@@ -19,7 +17,6 @@ afk daemon status     # say what it is doing in each project, and why
 - If the plan, the ledger or `afk.toml` cannot be used, it stops for that project and says what to fix. It carries on by itself once the file is fixed.
 - If a task is running, it watches that task's session. A finished session moves the task on (see "Shipping" below). A session that ended as failed marks the task `failed` and adds a `failure` item to your inbox. An open blocking inbox item for the task parks it (see "What parks a task").
 - If the session has been asking a question at the terminal for longer than `stall_after`, afk first types the session's resume command into it, once, in case the session is only sitting at an empty prompt, when it can and the session's wakes are not used up. If the session is still waiting `stall_after` later, it adds an inbox item saying so, once, and parks the task. The item says whether afk typed the command, or why it did not.
-  The agent can also say so itself. When Claude Code shows a question or a permission prompt at the terminal, it reports itself as blocked, and afk's host passes that report on. A blocked report counts as waiting just like the hook's flag: the wait starts at the time the report was made, and whichever of the two started first sets the clock. The stall item quotes what the agent said, cut to 200 characters. A report is ignored when it is not blocked, or when it is older than the host's start or the last time the agent exited (a leftover from an agent that has already gone). A report never changes the session's status file.
 - If the session has stopped answering, it is restarted. If its host process is gone (a reboot, a crash), the session is started again. Each resumes the same conversation, and afterwards afk types the session's resume command so it carries on. See "Recovering a session".
 - If nothing is running and the project is not paused, it picks the next ready task (the same answer as `afk next`), checks that this machine can start the agent unattended, and starts a session for it. The session and the branch are both named after the task: `T4.3` becomes `t4-3`.
 - If nothing can start, it says why (waiting on you, blocked by a failed task, or all done) and no longer sends a notice about it (the old idle notice is gone). Push goes only for what blocks on you: a blocking inbox item, an urgent notice, or a planning session waiting.
@@ -153,24 +150,6 @@ A paused project gets a `Paused:` line first. `Doing:` becomes `Last:` when no d
 To run the daemon as a service on Linux, see [`contrib/README.md`](../contrib/README.md). To get a project ready on an always-on machine (its prerequisites, `afk.toml`, the ledger, the web page over a tunnel), see [`docs/runbook-vm.md`](runbook-vm.md).
 
 **Exit codes:** `afk daemon` returns 0 when it was stopped, when it stopped itself because it found a new version of afk on disk, or when `--once` finished, 1 when `config.toml` could not be used or a daemon is already running, and 2 when the command was written wrongly. `afk daemon status` returns 0 when the report was printed, 1 when `config.toml` itself cannot be read, and 2 when the command was written wrongly.
-
----
-
-## In a terminal
-
-When `afk daemon` runs in a terminal, it also sends afk's status records (Program status, OSC 7501) to that terminal, such as Rex. It sends them once per pass, and only when they change, and clears them when it stops. Under systemd there is no terminal, so the service sends nothing. `afk daemon --once` and `afk daemon status` send nothing either.
-
----
-
-## The control room
-
-The control room is afk's dashboard (`afk dash`) kept open in a Rex window, so you can reach it from a laptop or a phone. It is the hub's front door (see [the runbook, section 8](runbook-vm.md#8-the-hub-rex-and-the-control-room)).
-
-- **What the daemon does.** Once per pass, the daemon checks for a Rex session named `afk` with a window that is running. If the window is missing or its program has ended, the daemon opens it again. Closing the window does not keep it closed: the daemon opens it again on a later pass, and it starts a window at most once a minute.
-- **Only under Rex.** It runs only when `[runtime] backend` is `"rex"` in `config.toml`, and only when `config.toml` reads without a problem. Under `"afk"`, or with a bad `[runtime]` line, the daemon makes no Rex call at all.
-- **When Rex is down.** If the Rex server does not answer, the control room waits, and the daemon tries again on a later pass. This does not stop the build.
-- **Paused or not.** It runs while the daemon is paused, and at the end of `afk daemon --once`, because it belongs to the machine and not to any project. It writes nothing to a project's decision log or `daemon.json`, and it raises no inbox item; a failure only goes to the daemon's log.
-- **After a restart.** The once-a-minute limit is kept in memory, so after the daemon restarts the first start is not held back. That is deliberate: a restart usually means the window is gone.
 
 ---
 
